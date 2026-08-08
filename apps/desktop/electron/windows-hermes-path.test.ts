@@ -17,9 +17,11 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
+import { buildDesktopBackendEnv } from './backend-env'
 import {
   buildPathExtCandidates,
   chooseUpdaterArgs,
+  getVenvRootForPython,
   getVenvSitePackagesEntries,
   resolveVenvHermesCommand
 } from './windows-hermes-path'
@@ -211,4 +213,79 @@ test('getVenvSitePackagesEntries: returns empty for a falsy venvRoot', () => {
   assert.deepEqual(getVenvSitePackagesEntries('', { isWindows: true, directoryExists: () => true }), [])
   assert.deepEqual(getVenvSitePackagesEntries(null, { isWindows: true, directoryExists: () => true }), [])
   assert.deepEqual(getVenvSitePackagesEntries(undefined, { isWindows: true, directoryExists: () => true }), [])
+})
+
+test('POSIX backend keeps selected .venv Python, VIRTUAL_ENV, PATH, and site-packages on one ABI', () => {
+  const sourceRoot = '/repo/hermes-agent'
+  const selectedPython = `${sourceRoot}/.venv/bin/python`
+  const selectedVenv = `${sourceRoot}/.venv`
+  const managedVenv = `${sourceRoot}/venv`
+
+  const existing = new Set([
+    `${selectedVenv}/pyvenv.cfg`,
+    `${managedVenv}/pyvenv.cfg`,
+    `${selectedVenv}/lib/python3.11/site-packages`,
+    `${managedVenv}/lib/python3.12/site-packages`
+  ])
+
+  const venvRoot = getVenvRootForPython(selectedPython, {
+    isWindows: false,
+    fileExists: p => existing.has(p),
+    pathModule: path.posix
+  })
+
+  assert.equal(venvRoot, selectedVenv)
+
+  const sitePackages = getVenvSitePackagesEntries(venvRoot, {
+    isWindows: false,
+    directoryExists: p => existing.has(p),
+    readFile: p => (p === `${selectedVenv}/pyvenv.cfg` ? 'version_info = 3.11.15\n' : undefined)
+  })
+
+  const env = buildDesktopBackendEnv({
+    hermesHome: '/home/test/.hermes',
+    pythonPathEntries: [sourceRoot, ...sitePackages],
+    venvRoot,
+    currentEnv: { PATH: '/usr/bin:/bin' },
+    platform: 'linux',
+    pathModule: path.posix
+  })
+
+  assert.equal(env.VIRTUAL_ENV, selectedVenv)
+  assert.equal(env.PYTHONPATH, `${sourceRoot}:${selectedVenv}/lib/python3.11/site-packages`)
+  assert.ok(env.PATH.split(':').includes(`${selectedVenv}/bin`))
+  assert.equal(env.PATH.split(':').includes(`${managedVenv}/bin`), false)
+  assert.equal(env.PYTHONPATH.includes(`${managedVenv}/lib/python3.12/site-packages`), false)
+})
+
+test('getVenvRootForPython rejects a system interpreter with no owning pyvenv.cfg', () => {
+  assert.equal(
+    getVenvRootForPython('/usr/bin/python3', {
+      isWindows: false,
+      fileExists: () => false,
+      pathModule: path.posix
+    }),
+    null
+  )
+})
+
+test('getVenvRootForPython owns Windows Scripts/python.exe via adjacent pyvenv.cfg', () => {
+  const venvRoot = 'C:\\repo\\hermes-agent\\.venv'
+
+  assert.equal(
+    getVenvRootForPython(`${venvRoot}\\Scripts\\python.exe`, {
+      isWindows: true,
+      fileExists: p => p.toLowerCase() === `${venvRoot}\\pyvenv.cfg`.toLowerCase(),
+      pathModule: path.win32
+    }),
+    venvRoot
+  )
+  assert.equal(
+    getVenvRootForPython(`${venvRoot}\\SCRIPTS\\python.exe`, {
+      isWindows: true,
+      fileExists: p => p.toLowerCase() === `${venvRoot}\\pyvenv.cfg`.toLowerCase(),
+      pathModule: path.win32
+    }),
+    venvRoot
+  )
 })

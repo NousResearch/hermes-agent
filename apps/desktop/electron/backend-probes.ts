@@ -35,6 +35,8 @@
 
 import { execFileSync } from 'node:child_process'
 
+import { buildDesktopBackendChildEnv } from './backend-env'
+
 /** Default probe budget. 5s false-negativeed healthy Windows cold starts (#61764). */
 const DEFAULT_PROBE_TIMEOUT_MS = 15_000
 
@@ -141,14 +143,21 @@ function hermesRuntimeImportProbe() {
  * @param {object} [opts.env] - Additional environment for the probe.
  * @returns {boolean}
  */
-function canImportHermesCli(pythonPath: string, opts: { env?: Record<string, string> } = {}) {
+function buildHermesProbeEnv({ currentEnv = process.env, env = {} }: any = {}) {
+  return buildDesktopBackendChildEnv({ currentEnv, backendEnv: env })
+}
+
+function canImportHermesCli(
+  pythonPath: string,
+  opts: { currentEnv?: Record<string, string>; env?: Record<string, string> } = {}
+) {
   if (!pythonPath) {
     return false
   }
 
   try {
     execProbeSync(pythonPath, ['-c', hermesRuntimeImportProbe()], {
-      env: { ...process.env, ...(opts.env || {}) },
+      env: buildHermesProbeEnv({ currentEnv: opts.currentEnv, env: opts.env }),
       stdio: 'ignore',
       timeout: PROBE_TIMEOUT_MS,
       windowsHide: true
@@ -190,16 +199,20 @@ function shouldTrustHermesOverride(hermesOverride?: string) {
   return typeof hermesOverride === 'string' && hermesOverride.trim().length > 0
 }
 
-function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }) {
+function verifyHermesCli(
+  hermesCommand: string,
+  opts: { currentEnv?: Record<string, string>; env?: Record<string, string>; shell?: boolean } = {}
+) {
   if (!hermesCommand) {
     return false
   }
 
   try {
     execProbeSync(hermesCommand, ['--version'], {
+      env: buildHermesProbeEnv({ currentEnv: opts.currentEnv, env: opts.env }),
       stdio: 'ignore',
       timeout: PROBE_TIMEOUT_MS,
-      shell: Boolean(opts?.shell),
+      shell: Boolean(opts.shell),
       windowsHide: true
     })
 
@@ -210,6 +223,7 @@ function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }) {
 }
 
 export {
+  buildHermesProbeEnv,
   canImportHermesCli,
   DEFAULT_PROBE_TIMEOUT_MS,
   execProbeSync,

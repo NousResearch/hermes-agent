@@ -35,7 +35,13 @@ import { classifyActiveRuntime } from './active-runtime-state'
 import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
-import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
+import {
+  buildDesktopBackendChildEnv,
+  buildDesktopBackendEnv,
+  buildDesktopPythonBackend,
+  hermesManagedNodePathEntries,
+  normalizeHermesHomeRoot
+} from './backend-env'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
 import {
   canImportHermesCli,
@@ -220,6 +226,7 @@ import { hiddenWindowsChildOptions } from './windows-child-options'
 import {
   buildPathExtCandidates,
   chooseUpdaterArgs,
+  getVenvRootForPython,
   getVenvSitePackagesEntries,
   resolveVenvHermesCommand
 } from './windows-hermes-path'
@@ -1814,7 +1821,7 @@ function unpackedPathFor(filePath) {
   return filePath.replace(/app\.asar(?=$|[\\/])/, 'app.asar.unpacked')
 }
 
-function findOnPath(command) {
+function findOnPath(command, env = process.env) {
   if (!command) {
     return null
   }
@@ -1831,7 +1838,7 @@ function findOnPath(command) {
     return command
   }
 
-  const pathEntries = String(process.env.PATH || '')
+  const pathEntries = String(env.PATH || '')
     .split(path.delimiter)
     .filter(Boolean)
 
@@ -1841,7 +1848,7 @@ function findOnPath(command) {
   // shell-script shim named `hermes` — must not shadow `hermes.cmd`/`hermes.exe`.
   // The empty entry is kept LAST so callers that already include the extension
   // (py.exe, pwsh.exe, powershell.exe) still resolve.
-  const extensions = buildPathExtCandidates(process.env.PATHEXT, IS_WINDOWS)
+  const extensions = buildPathExtCandidates(env.PATHEXT, IS_WINDOWS)
 
   for (const entry of pathEntries) {
     for (const extension of extensions) {
@@ -1923,7 +1930,11 @@ function backendSupportsServe(backend) {
       // and its timeout-only retry instead of a thinner local bound.
       execProbeSync(backend.command, [...prefix, 'serve', '--help'], {
         cwd: backend.root || undefined,
-        env: { ...process.env, HERMES_HOME, ...(backend.env || {}) },
+        env: buildDesktopBackendChildEnv({
+          currentEnv: process.env,
+          backendEnv: backend.env || {},
+          overrides: { HERMES_HOME }
+        }),
         timeout: PROBE_TIMEOUT_MS,
         stdio: 'ignore',
         // `.cmd`/`.bat` shim backends carry shell: true in their descriptor
@@ -2024,10 +2035,16 @@ function findPythonForRoot(root) {
 }
 
 function findSystemPython() {
+  // System-Python discovery must ignore an activated parent virtualenv. The
+  // child is launched with this same isolation contract; selecting a foreign
+  // venv's absolute interpreter first would preserve its pyvenv.cfg ownership
+  // even after VIRTUAL_ENV/PYTHONHOME/PYTHONPATH are cleared.
+  const systemPythonEnv = buildDesktopBackendChildEnv({ currentEnv: process.env })
+
   if (!IS_WINDOWS) {
-    // POSIX systems: PATH lookup is safe.
+    // POSIX systems: search PATH after removing the parent venv's bin entry.
     for (const command of ['python3', 'python']) {
-      const candidate = findOnPath(command)
+      const candidate = findOnPath(command, systemPythonEnv)
 
       if (candidate) {
         return candidate
@@ -2135,7 +2152,7 @@ function findSystemPython() {
   // print(sys.executable)"` resolves to the actual python.exe path of
   // the requested version. We try in version-priority order so the
   // first hit wins.
-  const pyExe = findOnPath('py.exe')
+  const pyExe = findOnPath('py.exe', systemPythonEnv)
 
   if (pyExe) {
     for (const version of SUPPORTED_VERSIONS) {
@@ -3626,7 +3643,7 @@ function isActiveRuntimeUsable() {
     fileExists(venvPython) &&
     canImportHermesCli(venvPython, {
       env: {
-        PYTHONPATH: [ACTIVE_HERMES_ROOT, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
+        PYTHONPATH: ACTIVE_HERMES_ROOT
       }
     })
   )
@@ -3832,21 +3849,18 @@ function createPythonBackend(root, label, backendArgs, options: any = {}) {
   const venvRoot = path.join(root, 'venv')
   const venvPython = getVenvPython(venvRoot)
   const command = IS_WINDOWS && fileExists(venvPython) ? venvPython : python
+  const runtimeVenvRoot = getVenvRootForPython(command)
 
-  return {
-    kind: 'python',
+  return buildDesktopPythonBackend({
+    root,
     label,
     command,
-    args: ['-m', 'hermes_cli.main', ...backendArgs],
-    env: buildDesktopBackendEnv({
-      hermesHome: HERMES_HOME,
-      pythonPathEntries: [root, ...getVenvSitePackagesEntries(venvRoot)],
-      venvRoot
-    }),
-    root,
-    bootstrap: Boolean(options.bootstrap),
-    shell: false
-  }
+    backendArgs,
+    runtimeVenvRoot,
+    sitePackagesEntries: getVenvSitePackagesEntries(runtimeVenvRoot),
+    hermesHome: HERMES_HOME,
+    bootstrap: Boolean(options.bootstrap)
+  })
 }
 
 // createActiveBackend — build a backend pointing at ACTIVE_HERMES_ROOT, the
@@ -3856,21 +3870,18 @@ function createPythonBackend(root, label, backendArgs, options: any = {}) {
 function createActiveBackend(backendArgs) {
   const venvPython = getVenvPython(VENV_ROOT)
   const command = fileExists(venvPython) ? venvPython : findSystemPython()
+  const runtimeVenvRoot = getVenvRootForPython(command)
 
-  return {
-    kind: 'python',
+  return buildDesktopPythonBackend({
+    root: ACTIVE_HERMES_ROOT,
     label: `Hermes at ${ACTIVE_HERMES_ROOT}`,
     command,
-    args: ['-m', 'hermes_cli.main', ...backendArgs],
-    env: buildDesktopBackendEnv({
-      hermesHome: HERMES_HOME,
-      pythonPathEntries: [ACTIVE_HERMES_ROOT, ...getVenvSitePackagesEntries(VENV_ROOT)],
-      venvRoot: VENV_ROOT
-    }),
-    root: ACTIVE_HERMES_ROOT,
-    bootstrap: true,
-    shell: false
-  }
+    backendArgs,
+    runtimeVenvRoot,
+    sitePackagesEntries: getVenvSitePackagesEntries(runtimeVenvRoot),
+    hermesHome: HERMES_HOME,
+    bootstrap: true
+  })
 }
 
 function resolveHermesBackend(backendArgs) {
@@ -4010,15 +4021,16 @@ function resolveHermesBackend(backendArgs) {
     // failure, fall through to step 6 so the bootstrap runner pulls
     // a uv-managed 3.11 into %LOCALAPPDATA%\hermes\hermes-agent\venv.
     if (canImportHermesCli(python)) {
-      return {
-        kind: 'python',
+      return buildDesktopPythonBackend({
+        root: null,
         label: `installed hermes_cli module via ${python}`,
         command: python,
-        args: ['-m', 'hermes_cli.main', ...backendArgs],
+        backendArgs,
+        runtimeVenvRoot: null,
+        sitePackagesEntries: [],
+        hermesHome: HERMES_HOME,
         bootstrap: false,
-        env: {},
-        shell: false
-      }
+      })
     }
 
     rememberLog(`Ignoring system Python ${python}: hermes_cli is not importable; falling through to bootstrap.`)
@@ -8197,21 +8209,23 @@ async function spawnPoolBackend(profile, entry) {
     backend.args,
     hiddenWindowsChildOptions({
       cwd: hermesCwd,
-      env: {
-        ...process.env,
-        HERMES_HOME,
-        ...backend.env,
-        // Pin the gateway's tool/terminal cwd to the same directory we chose for
-        // the child process. Inherited TERMINAL_CWD (or a stale config bridge)
-        // can still point at the install dir even when spawn cwd is home.
-        TERMINAL_CWD: hermesCwd,
-        HERMES_DASHBOARD_SESSION_TOKEN: token,
-        // Marks this dashboard backend as desktop-spawned so it runs the cron
-        // scheduler tick loop (the gateway isn't running under the app).
-        HERMES_DESKTOP: '1',
-        HERMES_WEB_DIST: webDist,
-        ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
-      },
+      env: buildDesktopBackendChildEnv({
+        currentEnv: process.env,
+        backendEnv: backend.env,
+        overrides: {
+          HERMES_HOME,
+          // Pin the gateway's tool/terminal cwd to the same directory we chose for
+          // the child process. Inherited TERMINAL_CWD (or a stale config bridge)
+          // can still point at the install dir even when spawn cwd is home.
+          TERMINAL_CWD: hermesCwd,
+          HERMES_DASHBOARD_SESSION_TOKEN: token,
+          // Marks this dashboard backend as desktop-spawned so it runs the cron
+          // scheduler tick loop (the gateway isn't running under the app).
+          HERMES_DESKTOP: '1',
+          HERMES_WEB_DIST: webDist,
+          ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
+        }
+      }),
       shell: backend.shell,
       stdio: ['ignore', 'pipe', 'pipe']
     })
@@ -8485,26 +8499,28 @@ async function startHermes() {
       backend.args,
       hiddenWindowsChildOptions({
         cwd: hermesCwd,
-        env: {
-          ...process.env,
-          // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
-          // resolves to the SAME location our resolveHermesHome() picked. Without
-          // this pin, Python falls back to ~/.hermes on every platform — fine on
-          // mac/linux (where our default matches), but on Windows our default is
-          // %LOCALAPPDATA%\hermes, which differs from C:\Users\<u>\.hermes.
-          // Mismatch would split config / sessions / .env / logs across two
-          // directories. install.ps1 sets HERMES_HOME via setx; the desktop
-          // can't reliably do that, so we set it inline for every spawn.
-          HERMES_HOME,
-          ...backend.env,
-          TERMINAL_CWD: hermesCwd,
-          HERMES_DASHBOARD_SESSION_TOKEN: token,
-          // Marks this dashboard backend as desktop-spawned so it runs the cron
-          // scheduler tick loop (the gateway isn't running under the app).
-          HERMES_DESKTOP: '1',
-          HERMES_WEB_DIST: webDist,
-          ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
-        },
+        env: buildDesktopBackendChildEnv({
+          currentEnv: process.env,
+          backendEnv: backend.env,
+          overrides: {
+            // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
+            // resolves to the SAME location our resolveHermesHome() picked. Without
+            // this pin, Python falls back to ~/.hermes on every platform — fine on
+            // mac/linux (where our default matches), but on Windows our default is
+            // %LOCALAPPDATA%\hermes, which differs from C:\Users\<u>\.hermes.
+            // Mismatch would split config / sessions / .env / logs across two
+            // directories. install.ps1 sets HERMES_HOME via setx; the desktop
+            // can't reliably do that, so we set it inline for every spawn.
+            HERMES_HOME,
+            TERMINAL_CWD: hermesCwd,
+            HERMES_DASHBOARD_SESSION_TOKEN: token,
+            // Marks this dashboard backend as desktop-spawned so it runs the cron
+            // scheduler tick loop (the gateway isn't running under the app).
+            HERMES_DESKTOP: '1',
+            HERMES_WEB_DIST: webDist,
+            ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
+          }
+        }),
         shell: backend.shell,
         stdio: ['ignore', 'pipe', 'pipe']
       })

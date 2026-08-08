@@ -5,8 +5,10 @@ import { test } from 'vitest'
 
 import {
   appendUniquePathEntries,
+  buildDesktopBackendChildEnv,
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
+  buildDesktopPythonBackend,
   hermesManagedNodePathEntries,
   normalizeHermesHomeRoot,
   pathEnvKey,
@@ -105,7 +107,7 @@ test('desktop backend PATH preserves first occurrence and avoids duplicates', ()
   )
 })
 
-test('buildDesktopBackendEnv extends PYTHONPATH and backend PATH together', () => {
+test('buildDesktopBackendEnv replaces inherited PYTHONPATH and extends backend PATH', () => {
   const env = buildDesktopBackendEnv({
     hermesHome: '/Users/test/.hermes',
     pythonPathEntries: ['/repo/hermes-agent'],
@@ -118,13 +120,87 @@ test('buildDesktopBackendEnv extends PYTHONPATH and backend PATH together', () =
     pathModule: path.posix
   })
 
-  assert.equal(env.PYTHONPATH, '/repo/hermes-agent:/existing/pythonpath')
+  assert.equal(env.PYTHONPATH, '/repo/hermes-agent')
+  assert.equal(env.VIRTUAL_ENV, '/Users/test/.hermes/hermes-agent/venv')
   assert.ok(
     env.PATH.startsWith(
       '/Users/test/.hermes/node/bin:/Users/test/.hermes/node:/Users/test/.hermes/hermes-agent/venv/bin:'
     )
   )
   assert.ok(env.PATH.includes('/opt/homebrew/bin'))
+})
+
+test('actual system-Python resolver wiring strips inherited virtualenv state', () => {
+  const foreignVenv = '/tmp/foreign/.venv'
+
+  const currentEnv = {
+    PATH: `${foreignVenv}/bin:/custom/bin:/usr/bin`,
+    PYTHONHOME: '/tmp/foreign/python-home',
+    PYTHONPATH: `${foreignVenv}/lib/python3.11/site-packages`,
+    SAFE_PARENT_VALUE: 'preserved',
+    VIRTUAL_ENV: foreignVenv
+  }
+
+  const backend = buildDesktopPythonBackend({
+    root: '/repo/hermes-agent',
+    label: 'Hermes system Python fallback',
+    backendArgs: ['serve', '--port', '0'],
+    command: '/usr/bin/python3',
+    runtimeVenvRoot: null,
+    sitePackagesEntries: [],
+    hermesHome: '/home/test/.hermes',
+    currentEnv,
+    platform: 'linux',
+    pathModule: path.posix
+  })
+
+  assert.equal(backend.command, '/usr/bin/python3')
+  assert.deepEqual(backend.args, ['-m', 'hermes_cli.main', 'serve', '--port', '0'])
+  assert.equal(backend.env.VIRTUAL_ENV, undefined)
+  assert.equal(backend.env.PYTHONPATH, '/repo/hermes-agent')
+  assert.equal(backend.env.PATH.split(':').includes(`${foreignVenv}/bin`), false)
+  assert.ok(backend.env.PATH.split(':').includes('/custom/bin'))
+
+  const childEnv = buildDesktopBackendChildEnv({
+    currentEnv,
+    backendEnv: backend.env,
+    overrides: { HERMES_HOME: '/home/test/.hermes' }
+  })
+
+  assert.equal(childEnv.VIRTUAL_ENV, undefined)
+  assert.equal(childEnv.PYTHONHOME, undefined)
+  assert.equal(childEnv.PYTHONPATH, '/repo/hermes-agent')
+  assert.equal(childEnv.PATH.split(':').includes(`${foreignVenv}/bin`), false)
+  assert.equal(childEnv.SAFE_PARENT_VALUE, 'preserved')
+  assert.equal(childEnv.HERMES_HOME, '/home/test/.hermes')
+})
+
+test('pip-installed system Python descriptor clears inherited Python state without injecting a source root', () => {
+  const foreignVenv = '/tmp/foreign/.venv'
+
+  const backend = buildDesktopPythonBackend({
+    root: null,
+    label: 'installed hermes_cli module via /usr/bin/python3',
+    backendArgs: ['serve'],
+    command: '/usr/bin/python3',
+    runtimeVenvRoot: null,
+    sitePackagesEntries: [],
+    hermesHome: '/home/test/.hermes',
+    currentEnv: {
+      PATH: `${foreignVenv}/bin:/usr/bin`,
+      PYTHONHOME: '/tmp/foreign/python-home',
+      PYTHONPATH: `${foreignVenv}/lib/python3.11/site-packages`,
+      VIRTUAL_ENV: foreignVenv
+    },
+    platform: 'linux',
+    pathModule: path.posix
+  })
+
+  assert.equal(backend.root, null)
+  assert.equal(backend.env.VIRTUAL_ENV, undefined)
+  assert.equal(backend.env.PYTHONPATH, '')
+  assert.equal(backend.env.PATH.split(':').includes(`${foreignVenv}/bin`), false)
+  assert.ok(backend.env.PATH.split(':').includes('/usr/bin'))
 })
 
 test('buildDesktopBackendEnv forces PYTHONUTF8 unless the user set it explicitly', () => {
@@ -160,19 +236,23 @@ test('normalizeHermesHomeRoot maps profile homes back to the global Hermes root'
 })
 
 test('Windows PATH casing and delimiter are preserved without POSIX sane entries', () => {
+  const foreignVenv = 'C:\\Users\\test\\legacy-venv'
+
   const env = buildDesktopBackendEnv({
     hermesHome: 'C:\\Users\\test\\AppData\\Local\\hermes',
     pythonPathEntries: ['C:\\repo\\hermes-agent'],
     venvRoot: 'C:\\Users\\test\\AppData\\Local\\hermes\\hermes-agent\\venv',
     currentEnv: {
-      Path: 'C:\\Windows\\System32;C:\\Windows',
-      PYTHONPATH: 'C:\\existing\\pythonpath'
+      Path: `${foreignVenv}\\Scripts;C:\\Windows\\System32;C:\\Windows`,
+      PYTHONPATH: 'C:\\existing\\pythonpath',
+      virtual_env: foreignVenv
     },
     platform: 'win32',
     pathModule: path.win32
   })
 
   assert.equal(pathEnvKey({ Path: 'x' }, 'win32'), 'Path')
+
   assert.equal(env.PATH, undefined)
   // Windows leads with the portable layout (install.ps1 unpacks node.exe
   // straight into node\, no bin\), then the POSIX shape for migrated installs.
@@ -183,7 +263,21 @@ test('Windows PATH casing and delimiter are preserved without POSIX sane entries
   )
   assert.ok(env.Path.includes('\\venv\\Scripts;'))
   assert.ok(env.Path.includes(';C:\\Windows\\System32;C:\\Windows'))
+  assert.equal(env.Path.toLowerCase().includes(`${foreignVenv}\\scripts`.toLowerCase()), false)
   assert.equal(env.Path.includes('/opt/homebrew/bin'), false)
+  assert.equal(env.VIRTUAL_ENV, 'C:\\Users\\test\\AppData\\Local\\hermes\\hermes-agent\\venv')
+
+  const childEnv = buildDesktopBackendChildEnv({
+    currentEnv: {
+      Path: `${foreignVenv}\\SCRIPTS;C:\\Windows\\System32`,
+      virtual_env: foreignVenv
+    },
+    platform: 'win32',
+    pathModule: path.win32
+  })
+
+  assert.equal(childEnv.virtual_env, undefined)
+  assert.equal(childEnv.Path.toLowerCase().includes(`${foreignVenv}\\scripts`.toLowerCase()), false)
 })
 
 test('appendUniquePathEntries drops empty entries and keeps first occurrence', () => {

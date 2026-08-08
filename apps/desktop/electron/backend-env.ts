@@ -36,6 +36,42 @@ function currentPathValue(env = process.env, platform = process.platform) {
   return env?.[key] || ''
 }
 
+function environmentValue(env = process.env, name: string) {
+  const key = Object.keys(env || {}).find(key => key.toUpperCase() === name.toUpperCase())
+
+  return key ? env?.[key] : undefined
+}
+
+function removeVenvBinFromPath({
+  currentPath = '',
+  venvRoot,
+  platform = process.platform,
+  pathModule = pathModuleForPlatform(platform)
+}: any = {}) {
+  if (!venvRoot) {
+    return currentPath
+  }
+
+  const delimiter = delimiterForPlatform(platform)
+
+  const venvBin = pathModule.resolve(
+    pathModule.join(venvRoot, platform === 'win32' ? 'Scripts' : 'bin')
+  )
+
+  const normalize = value => {
+    const resolved = pathModule.resolve(String(value))
+
+    return platform === 'win32' ? resolved.toLowerCase() : resolved
+  }
+
+  const normalizedVenvBin = normalize(venvBin)
+
+  return String(currentPath)
+    .split(delimiter)
+    .filter(entry => entry && normalize(entry) !== normalizedVenvBin)
+    .join(delimiter)
+}
+
 function appendUniquePathEntries(entries, { delimiter = path.delimiter } = {}) {
   const seen = new Set()
   const ordered = []
@@ -125,13 +161,23 @@ function buildDesktopBackendEnv({
   currentEnv = process.env,
   platform = process.platform,
   pathModule = pathModuleForPlatform(platform)
-}: any = {}) {
+}: any = {}): Record<string, string> {
   const delimiter = delimiterForPlatform(platform)
-  const currentPythonPath = currentEnv?.PYTHONPATH || ''
   const key = pathEnvKey(currentEnv, platform)
 
+  const currentPath = removeVenvBinFromPath({
+    currentPath: currentPathValue(currentEnv, platform),
+    venvRoot: environmentValue(currentEnv, 'VIRTUAL_ENV'),
+    platform,
+    pathModule
+  })
+
   return {
-    PYTHONPATH: appendUniquePathEntries([...pythonPathEntries, currentPythonPath], { delimiter }),
+    ...(venvRoot ? { VIRTUAL_ENV: venvRoot } : {}),
+    // Never carry parent PYTHONPATH into the backend. The selected source root
+    // and its owning venv site-packages are supplied explicitly by the
+    // resolver; inheriting anything else can mix Python ABIs.
+    PYTHONPATH: appendUniquePathEntries(pythonPathEntries, { delimiter }),
     // Force PEP 540 UTF-8 mode in the spawned Python backend so its stdio and
     // subprocess defaults are UTF-8 even on non-UTF-8 Windows locales (GBK,
     // cp1252, ...). hermes_bootstrap sets this inside the child too, but only
@@ -142,20 +188,91 @@ function buildDesktopBackendEnv({
     [key]: buildDesktopBackendPath({
       hermesHome,
       venvRoot,
-      currentPath: currentPathValue(currentEnv, platform),
+      currentPath,
       platform,
       pathModule
     })
   }
 }
 
+function buildDesktopBackendChildEnv({
+  currentEnv = process.env,
+  backendEnv = {},
+  overrides = {},
+  platform = process.platform,
+  pathModule = pathModuleForPlatform(platform)
+}: any = {}): Record<string, string> {
+  const sanitized = { ...currentEnv }
+  const inheritedPythonKeys = new Set(['PYTHONHOME', 'PYTHONPATH', 'VIRTUAL_ENV'])
+  const inheritedVenvRoot = environmentValue(currentEnv, 'VIRTUAL_ENV')
+
+  for (const key of Object.keys(sanitized)) {
+    if (inheritedPythonKeys.has(key.toUpperCase())) {
+      delete sanitized[key]
+    }
+  }
+
+  const key = pathEnvKey(sanitized, platform)
+  const currentPath = currentPathValue(sanitized, platform)
+
+  if (currentPath) {
+    sanitized[key] = removeVenvBinFromPath({
+      currentPath,
+      venvRoot: inheritedVenvRoot,
+      platform,
+      pathModule
+    })
+  }
+
+  return {
+    ...sanitized,
+    ...backendEnv,
+    ...overrides
+  }
+}
+
+function buildDesktopPythonBackend({
+  root,
+  label,
+  backendArgs,
+  command,
+  runtimeVenvRoot,
+  sitePackagesEntries = [],
+  hermesHome,
+  currentEnv = process.env,
+  platform = process.platform,
+  pathModule = pathModuleForPlatform(platform),
+  bootstrap = false
+}: any) {
+  return {
+    kind: 'python' as const,
+    label,
+    command,
+    args: ['-m', 'hermes_cli.main', ...backendArgs],
+    env: buildDesktopBackendEnv({
+      hermesHome,
+      pythonPathEntries: [root, ...sitePackagesEntries],
+      venvRoot: runtimeVenvRoot,
+      currentEnv,
+      platform,
+      pathModule
+    }),
+    root,
+    bootstrap,
+    shell: false as const
+  }
+}
+
 export {
   appendUniquePathEntries,
+  buildDesktopBackendChildEnv,
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
+  buildDesktopPythonBackend,
   delimiterForPlatform,
   hermesManagedNodePathEntries,
   normalizeHermesHomeRoot,
   pathEnvKey,
-  POSIX_SANE_PATH_ENTRIES
+  POSIX_SANE_PATH_ENTRIES,
+  removeVenvBinFromPath
 }

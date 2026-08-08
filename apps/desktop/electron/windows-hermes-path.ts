@@ -164,6 +164,50 @@ export function getVenvSitePackagesEntries(
   return entries
 }
 
+/**
+ * Return the virtual-environment root that owns an executed Python binary.
+ *
+ * Desktop must derive VIRTUAL_ENV, PATH, and injected site-packages from this
+ * same root. Mixing `.venv/bin/python` with `venv/lib/pythonX.Y/site-packages`
+ * can load Python wrappers from one ABI beside native extensions for another.
+ */
+export function getVenvRootForPython(
+  python: string | undefined | null,
+  opts: {
+    isWindows?: boolean
+    fileExists?: (p: string) => boolean
+    pathModule?: typeof path.posix | typeof path.win32
+  } = {}
+): string | null {
+  if (!python) {
+    return null
+  }
+
+  const isWindows = opts.isWindows ?? process.platform === 'win32'
+  const pathModule = opts.pathModule ?? (isWindows ? path.win32 : path.posix)
+
+  const fileExists =
+    opts.fileExists ??
+    ((p: string) => {
+      try {
+        return fs.statSync(p).isFile()
+      } catch {
+        return false
+      }
+    })
+
+  const scriptsDir = pathModule.dirname(pathModule.resolve(String(python)))
+  const expectedDir = isWindows ? 'scripts' : 'bin'
+
+  if (pathModule.basename(scriptsDir).toLowerCase() !== expectedDir) {
+    return null
+  }
+
+  const venvRoot = pathModule.dirname(scriptsDir)
+
+  return fileExists(pathModule.join(venvRoot, 'pyvenv.cfg')) ? venvRoot : null
+}
+
 export interface ResolveVenvHermesCommandDeps {
   isWindows: boolean
   isCommandScript: (command: string) => boolean
@@ -261,9 +305,7 @@ export function resolveVenvHermesCommand(
   if (
     !canImportHermesCli(python, {
       env: {
-        PYTHONPATH: [...(directoryExists(root) ? [root] : []), process.env.PYTHONPATH]
-          .filter((entry): entry is string => Boolean(entry))
-          .join(path.delimiter)
+        ...(directoryExists(root) ? { PYTHONPATH: root } : {})
       }
     })
   ) {

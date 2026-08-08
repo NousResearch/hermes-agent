@@ -13,6 +13,7 @@ import path from 'node:path'
 import { test } from 'vitest'
 
 import {
+  buildHermesProbeEnv,
   canImportHermesCli,
   DEFAULT_PROBE_TIMEOUT_MS,
   hermesRuntimeImportProbe,
@@ -28,6 +29,27 @@ import {
 // non-zero) and as a way to script verifyHermesCli's success path
 // (a tiny script we write to disk that exits 0 on --version).
 const NODE_BIN = process.execPath
+
+test('Hermes runtime probes sanitize inherited virtualenv state', () => {
+  const foreignVenv = '/tmp/foreign/.venv'
+
+  const env = buildHermesProbeEnv({
+    currentEnv: {
+      PATH: `${foreignVenv}/bin:/custom/bin:/usr/bin`,
+      PYTHONHOME: '/tmp/foreign/python-home',
+      PYTHONPATH: `${foreignVenv}/lib/python3.11/site-packages`,
+      SAFE_PARENT_VALUE: 'preserved',
+      VIRTUAL_ENV: foreignVenv
+    },
+    env: { PYTHONPATH: '/repo/hermes-agent' }
+  })
+
+  assert.equal(env.VIRTUAL_ENV, undefined)
+  assert.equal(env.PYTHONHOME, undefined)
+  assert.equal(env.PYTHONPATH, '/repo/hermes-agent')
+  assert.equal(env.PATH.split(':').includes(`${foreignVenv}/bin`), false)
+  assert.equal(env.SAFE_PARENT_VALUE, 'preserved')
+})
 
 test('canImportHermesCli returns false when path is falsy', () => {
   assert.equal(canImportHermesCli(''), false)
@@ -99,6 +121,41 @@ test('verifyHermesCli returns true when --version exits 0', () => {
     } catch {
       void 0
     }
+  }
+})
+
+test.skipIf(process.platform === 'win32')('verifyHermesCli sanitizes inherited Python state before probing', () => {
+  const scriptPath = path.join(os.tmpdir(), `hermes-probes-env-${Date.now()}-${process.pid}`)
+  const foreignVenv = '/tmp/foreign/.venv'
+
+  fs.writeFileSync(
+    scriptPath,
+    `#!/usr/bin/env node
+const contaminated =
+  process.env.VIRTUAL_ENV ||
+  process.env.PYTHONHOME ||
+  process.env.PYTHONPATH !== '/expected/pythonpath' ||
+  process.env.PATH.split(':').includes('${foreignVenv}/bin')
+process.exit(contaminated ? 1 : 0)
+`
+  )
+  fs.chmodSync(scriptPath, 0o755)
+
+  try {
+    assert.equal(
+      verifyHermesCli(scriptPath, {
+        currentEnv: {
+          PATH: `${foreignVenv}/bin:${path.dirname(process.execPath)}:/usr/bin:/bin`,
+          PYTHONHOME: '/tmp/foreign/python-home',
+          PYTHONPATH: '/tmp/foreign/site-packages',
+          VIRTUAL_ENV: foreignVenv
+        },
+        env: { PYTHONPATH: '/expected/pythonpath' }
+      }),
+      true
+    )
+  } finally {
+    fs.unlinkSync(scriptPath)
   }
 })
 

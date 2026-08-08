@@ -2003,13 +2003,26 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             else:
                                 timed_out = True
                                 timeout_handled = True
-                                logger.warning(
-                                    "Job '%s': live adapter send to %s:%s timed out "
-                                    "after 60s; already dispatched (in flight), "
-                                    "assuming delivered (skipping standalone fallback "
-                                    "to avoid duplicate)",
-                                    job["id"], platform_name, chat_id,
+                                msg = (
+                                    f"live adapter send to {platform_name}:{chat_id} "
+                                    "timed out after 60s; already dispatched (in flight), "
+                                    "delivery status unknown (skipping standalone fallback "
+                                    "to avoid duplicate)"
                                 )
+                                logger.warning("Job '%s': %s", job["id"], msg)
+                                # Record the timeout as a delivery error so the
+                                # operator can audit — this is NOT a confirmed
+                                # delivery (#70945).  The message may have been
+                                # delivered (it's in flight on the wire) so we
+                                # must NOT retry, but we also cannot claim
+                                # success.  Add directly to delivery_errors
+                                # (not target_errors) so _deliver_result returns
+                                # an error string and the job's
+                                # last_delivery_error reflects the timeout,
+                                # while adapter_ok remains True so the live
+                                # send is NOT retried via the standalone path
+                                # (would cause duplicate delivery).
+                                delivery_errors.append(msg)
                         except Exception as ex:
                             # A real send error (not a slow confirmation) — fall
                             # through to the standalone path so the message is

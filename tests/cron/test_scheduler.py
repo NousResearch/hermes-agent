@@ -1348,11 +1348,12 @@ class TestDeliverResultTimeoutCancelsFuture:
     the message is silently dropped.  Regression for #38922.
     """
 
-    def test_live_adapter_timeout_assumes_delivered_no_duplicate(self):
+    def test_live_adapter_timeout_records_error_no_duplicate(self):
         """End-to-end: live adapter confirmation times out past the 60s budget.
-        The fix (#38922) treats the send as already-dispatched/delivered and
-        does NOT run the standalone fallback — otherwise the message is sent
-        twice."""
+        The fix (#70945) records the timeout as a delivery error instead of
+        assuming delivered, but does NOT run the standalone fallback — otherwise
+        the message is sent twice.  The operator can audit the timeout via
+        last_delivery_error on the job record."""
         from gateway.config import Platform
         from concurrent.futures import Future
 
@@ -1408,9 +1409,15 @@ class TestDeliverResultTimeoutCancelsFuture:
 
         # 1. cancel() was attempted (returned False = in flight).
         assert cancel_calls == [True], "future.cancel() should be attempted on TimeoutError"
-        # 2. Delivery is reported successful (no error string returned).
-        assert result is None, f"expected successful delivery, got error: {result!r}"
-        # 3. The standalone fallback must NOT run — that is the #38922 fix:
+        # 2. Delivery reports a timeout error — NOT assumed-delivered (#70945).
+        #    The message is in flight on the wire (must NOT retry) but receipt
+        #    is unconfirmed, so the error string preserves the conservative
+        #    status for operator audit.
+        assert result is not None, "expected a delivery timeout error, got None"
+        assert "timed out" in result, f"expected timeout error, got: {result!r}"
+        assert "in flight" in result, f"expected in-flight description, got: {result!r}"
+        assert "delivery status unknown" in result, f"expected unknown status, got: {result!r}"
+        # 3. The standalone fallback must NOT run — that is the #38922 invariant:
         #    an in-flight confirmation timeout is assume-delivered, not a resend.
         standalone_send.assert_not_awaited()
 

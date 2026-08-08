@@ -1061,6 +1061,47 @@ def _read_manifest_info(d: Path, prefix: str):
     return name, version, description, key
 
 
+def _is_portable_plugin_dir(dir_path) -> bool:
+    """True when *dir_path* is an Agent Plugins v1 package (``plugin.json``
+    only — a native ``plugin.yaml`` takes precedence, matching the loader)."""
+    try:
+        d = Path(dir_path)
+        if not d.is_dir():
+            return False
+        if (d / "plugin.yaml").exists() or (d / "plugin.yml").exists():
+            return False
+        portable_file = d / "plugin.json"
+        return portable_file.exists() or portable_file.is_symlink()
+    except OSError:
+        return False
+
+
+# Manifest kinds that are active-by-default when bundled: backends auto-load,
+# platforms register lazily but are available out of the box, model providers
+# run through providers/ discovery (see PluginManager.discover_and_load).
+_BUNDLED_DEFAULT_ON_KINDS = frozenset({"backend", "platform", "model-provider"})
+
+
+def _bundled_default_on(dir_path) -> bool:
+    """True when a bundled plugin at *dir_path* is active without an explicit
+    ``plugins.enabled`` entry. Standalone/exclusive kinds stay opt-in, and
+    portable packages (``plugin.json``) have no kind at all."""
+    manifest_file = Path(dir_path) / "plugin.yaml"
+    if not manifest_file.exists():
+        manifest_file = Path(dir_path) / "plugin.yml"
+    if not manifest_file.exists():
+        return False
+    try:
+        import yaml
+
+        with open(manifest_file, encoding="utf-8") as f:
+            manifest = yaml.safe_load(f) or {}
+        kind = str(manifest.get("kind", "standalone")).strip().lower()
+        return kind in _BUNDLED_DEFAULT_ON_KINDS
+    except Exception:
+        return False
+
+
 def _scan_level(
     base: Path,
     source: str,

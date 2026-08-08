@@ -846,6 +846,15 @@ class MattermostAdapter(BasePlatformAdapter):
         # For DMs, user_id is sufficient.  For channels, check for @mention.
         message_text = post.get("message", "")
 
+        mention_patterns = [
+            f"@{self._bot_username}",
+            f"@{self._bot_user_id}",
+        ]
+        has_mention = any(
+            pattern.lower() in message_text.lower()
+            for pattern in mention_patterns
+        )
+
         # Mention-gating for non-DM channels.
         # Config (config.yaml `mattermost.*` with env-var fallback):
         #   require_mention / MATTERMOST_REQUIRE_MENTION: Require @mention in channels (default: true)
@@ -879,15 +888,6 @@ class MattermostAdapter(BasePlatformAdapter):
             free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
             is_free_channel = channel_id in free_channels
 
-            mention_patterns = [
-                f"@{self._bot_username}",
-                f"@{self._bot_user_id}",
-            ]
-            has_mention = any(
-                pattern.lower() in message_text.lower()
-                for pattern in mention_patterns
-            )
-
             if require_mention and not is_free_channel and not has_mention:
                 logger.debug(
                     "Mattermost: skipping non-DM message without @mention (channel=%s)",
@@ -895,12 +895,15 @@ class MattermostAdapter(BasePlatformAdapter):
                 )
                 return
 
-            # Strip @mention from the message text so the agent sees clean input.
-            if has_mention:
-                for pattern in mention_patterns:
-                    message_text = re.sub(
-                        re.escape(pattern), "", message_text, flags=re.IGNORECASE
-                    ).strip()
+        # Strip a leading @mention from both channels and DMs so messages like
+        # "@alan-bot /status" are normalized to "/status" and can dispatch as
+        # Hermes slash commands. Only strip at the start; mentions in ordinary
+        # message bodies should remain intact.
+        if has_mention:
+            for pattern in mention_patterns:
+                message_text = re.sub(
+                    rf"^\s*{re.escape(pattern)}\s*", "", message_text, flags=re.IGNORECASE
+                ).strip()
 
         # Resolve sender info.
         sender_id = post.get("user_id", "")

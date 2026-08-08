@@ -34,12 +34,56 @@ def test_model_short_drops_vendor_prefix(model, expected):
     assert _model_short(model) == expected
 
 
+def _set_home(monkeypatch, path):
+    """Redirect the home directory on both platforms.
+
+    ``ntpath.expanduser`` ignores ``$HOME`` -- it reads ``USERPROFILE``, then
+    ``HOMEDRIVE``+``HOMEPATH``. Setting only ``HOME`` leaves the real profile
+    in place on Windows, so the assertions below would compare against the
+    developer's actual home directory instead of the tmp_path fixture.
+    """
+    monkeypatch.setenv("HOME", str(path))
+    monkeypatch.setenv("USERPROFILE", str(path))
+    drive, tail = os.path.splitdrive(str(path))
+    monkeypatch.setenv("HOMEDRIVE", drive)
+    monkeypatch.setenv("HOMEPATH", tail or str(path))
+
+
 def test_home_relative_cwd_collapses_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _set_home(monkeypatch, tmp_path)
     sub = tmp_path / "projects" / "hermes"
     sub.mkdir(parents=True)
     result = _home_relative_cwd(str(sub))
-    assert result == "~/projects/hermes"
+    # os.sep, not "/", so the expectation matches the platform's own joining.
+    assert result == "~" + os.sep + os.path.join("projects", "hermes")
+
+
+def test_home_relative_cwd_collapse_is_case_insensitive_on_windows(
+    tmp_path, monkeypatch
+):
+    r"""The home collapse must survive a case-differing cwd on Windows.
+
+    ``abspath`` normalizes separators but not case, so a case-sensitive prefix
+    test silently no-ops for a cwd like ``c:\users\me\src`` against a home of
+    ``C:\Users\me``. The footer would then publish the absolute path --
+    including the OS account name -- to whatever chat surface the reply
+    reaches, defeating the redaction this function exists to perform.
+    """
+    if os.path.normcase("A") != os.path.normcase("a"):
+        pytest.skip("case-insensitive filesystem semantics only (Windows)")
+
+    _set_home(monkeypatch, tmp_path)
+    sub = tmp_path / "projects" / "hermes"
+    sub.mkdir(parents=True)
+
+    result = _home_relative_cwd(str(sub).lower())
+
+    assert result.startswith("~"), (
+        f"home collapse no-opped for a case-differing cwd: {result!r}"
+    )
+    # The OS account name must not survive into the rendered footer.
+    account = os.path.basename(str(tmp_path))
+    assert account.lower() not in result.lower()
 
 
 # ---------------------------------------------------------------------------

@@ -42,13 +42,37 @@ _SEP = " · "
 
 
 def _home_relative_cwd(cwd: str) -> str:
-    """Return *cwd* with ``$HOME`` collapsed to ``~``.  Empty string if unset."""
+    r"""Return *cwd* with ``$HOME`` collapsed to ``~``.  Empty string if unset.
+
+    The prefix test is compared through ``os.path.normcase``, which folds case
+    on Windows and is a no-op everywhere else — so this is case-insensitive on
+    Windows and remains case-sensitive on POSIX, where two paths differing only
+    in case really are different paths. (macOS filesystems are usually
+    case-insensitive, but ``posixpath.normcase`` does not fold case, so the
+    comparison stays case-sensitive there too.)
+
+    ``abspath`` normalizes separators but NOT case — that is ``normcase``'s job
+    — so a case-sensitive comparison silently fails on Windows for any cwd
+    whose casing differs from the canonical profile path (``c:\users\me\src``
+    against a home of ``C:\Users\me``). The collapse then no-ops and the footer
+    publishes the absolute path, including the OS account name, to whatever
+    chat surface the reply is delivered to.
+
+    Only the comparison is normalized; the tail is sliced from the original
+    ``p`` so the displayed path keeps its real casing.
+    """
     if not cwd:
         return ""
     try:
         home = os.path.expanduser("~")
         p = os.path.abspath(cwd)
-        if home and (p == home or p.startswith(home + os.sep)):
+        # normcase folds case on Windows only; it is identity on POSIX
+        # (including macOS), so behaviour there is unchanged.
+        norm_p = os.path.normcase(p)
+        norm_home = os.path.normcase(home)
+        if home and (
+            norm_p == norm_home or norm_p.startswith(norm_home + os.sep)
+        ):
             return "~" + p[len(home):]
         return p
     except Exception:

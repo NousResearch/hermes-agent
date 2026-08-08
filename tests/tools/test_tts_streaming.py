@@ -208,6 +208,62 @@ def test_xai_available_uses_oauth_credential_resolver(monkeypatch):
 # ── Gemini SSE parsing ────────────────────────────────────────────────────
 
 
+def test_gemini_streamer_decodes_sse_pcm_chunks(monkeypatch):
+    import base64
+    import json as _json
+    import sys
+    import types
+
+    pcm1, pcm2 = b"\x01\x00" * 40, b"\x02\x00" * 40
+
+    def _event(pcm):
+        return "data: " + _json.dumps({
+            "candidates": [{"content": {"parts": [
+                {"inlineData": {"data": base64.b64encode(pcm).decode()}}
+            ]}}]
+        })
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        def iter_lines(self, decode_unicode=True):
+            yield _event(pcm1)
+            yield ""  # SSE separator
+            yield ": heartbeat"  # comment line
+            yield _event(pcm2)
+
+    captured = {}
+
+    def _post(url, **kwargs):
+        captured["url"] = url
+        captured["params"] = kwargs.get("params")
+        captured["headers"] = kwargs.get("headers")
+        captured["stream"] = kwargs.get("stream")
+        return _Resp()
+
+    fake_requests = types.ModuleType("requests")
+    fake_requests.post = _post
+    monkeypatch.setitem(sys.modules, "requests", fake_requests)
+    monkeypatch.setattr(ts, "_resolve_key", lambda env, pid: "g-key")
+
+    streamer = ts.GeminiStreamer({}, {"voice": "Kore"})
+    assert list(streamer.stream("Hello there.")) == [pcm1, pcm2]
+    assert captured["params"]["alt"] == "sse"
+    # The key must ride in the header: ``requests`` echoes the full URL
+    # (query string included) into HTTPError messages, so a ``key=`` param
+    # would land in logs on any 4xx/5xx.
+    assert "key" not in captured["params"]
+    assert captured["headers"]["x-goog-api-key"] == "g-key"
+    assert captured["stream"] is True, "Gemini SSE must use a bounded streamed body"
+
+
 # ── xAI WebSocket bridge ─────────────────────────────────────────────────
 
 

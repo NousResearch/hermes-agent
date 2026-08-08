@@ -2660,6 +2660,11 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     }
 
     headers = {"Content-Type": "application/json"}
+    # The key rides in the ``x-goog-api-key`` header, not the query string:
+    # ``requests`` puts the full URL into HTTPError messages, so a ``key=``
+    # param would land in logs on any 4xx/5xx (and the caller logs unexpected
+    # exception text).
+    headers["x-goog-api-key"] = api_key
     if urlparse(base_url).hostname == "generativelanguage.googleapis.com":
         try:
             import hermes_cli as _hermes_cli
@@ -2675,7 +2680,6 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     endpoint = f"{base_url}/models/{model}:generateContent"
     response = requests.post(
         endpoint,
-        params={"key": api_key},
         headers=headers,
         json=payload,
         timeout=60,

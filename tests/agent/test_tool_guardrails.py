@@ -111,6 +111,27 @@ def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution()
 
 
 
+def test_web_extract_null_error_is_success_in_after_call_fallback():
+    result = json.dumps({
+        "results": [{"url": "https://example.com", "content": "Example", "error": None}],
+    })
+
+    assert classify_tool_failure("web_extract", result) == (False, "")
+
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(exact_failure_warn_after=1, no_progress_warn_after=99)
+    )
+    decision = controller.after_call("web_extract", {"urls": ["https://example.com"]}, result)
+
+    assert decision.action == "allow"
+
+
+def test_web_extract_error_without_content_is_failure_in_after_call_fallback():
+    result = json.dumps({
+        "results": [{"url": "https://example.com/missing", "content": "", "error": "404"}],
+    })
+
+    assert classify_tool_failure("web_extract", result) == (True, " [404]")
 
 
 
@@ -167,7 +188,6 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
     assert decision.action == "block"
     assert decision.code == "loop_web_search_cap"
     assert decision.should_halt is True
-
 
 
 

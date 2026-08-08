@@ -38,3 +38,19 @@ def file_mutation_result_landed(tool_name: str, result: Any) -> bool:
     if tool_name == "patch":
         return data.get("success") is True
     return False
+
+
+def classify_web_extract_failure(data: Any) -> tuple[bool, str] | None:
+    """Classify a parsed web_extract envelope, or return None if not applicable."""
+    if not isinstance(data, dict) or not isinstance(data.get("results"), list):
+        return None
+
+    results = data["results"]
+    failed = [
+        item
+        for item in results
+        if isinstance(item, dict) and item.get("error") and not item.get("content")
+    ]
+    if results and len(failed) == len(results):
+        return True, str(failed[0]["error"])
+    return False, ""

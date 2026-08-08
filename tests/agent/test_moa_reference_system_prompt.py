@@ -71,3 +71,68 @@ def test_reference_system_prompt_structure():
     # Should contain the word "advisor" (defines role)
     assert "advisor" in _REFERENCE_SYSTEM_PROMPT.lower(), \
         "Prompt should clearly define the advisor role"
+
+
+def test_slot_ref_system_stock_then_hint_then_evidence_order():
+    """Composition order: stock framing, prompt_hint, then retrieved evidence."""
+    from agent.moa_loop import _slot_ref_system
+
+    slot = {
+        "prompt_hint": "act as the steelman",
+        "context_command": ["echo", "EVIDENCE_BLOCK"],
+    }
+    prompt = _slot_ref_system(slot, [{"role": "user", "content": "q"}])
+    assert prompt.startswith(_REFERENCE_SYSTEM_PROMPT)
+    assert prompt.index("act as the steelman") < prompt.index("EVIDENCE_BLOCK")
+    assert "Retrieved material for this turn" in prompt
+
+
+def test_slot_ref_system_failed_command_renders_sentinel_not_silence():
+    """A broken retriever renders as retrieval failure, never an empty record."""
+    from agent.moa_loop import _slot_ref_system
+
+    prompt = _slot_ref_system(
+        {"context_command": ["sh", "-c", "exit 3"]},
+        [{"role": "user", "content": "q"}],
+    )
+    assert "RETRIEVAL FAILED this turn" in prompt
+    assert "the tool broke, not the record" in prompt
+
+
+def test_slot_ref_system_prompt_replaces_stock_and_keeps_evidence():
+    """prompt replaces the stock framing; evidence is still appended last."""
+    from agent.moa_loop import _slot_ref_system
+
+    prompt = _slot_ref_system(
+        {"prompt": "FULL_REPLACEMENT", "context_command": ["echo", "EVIDENCE_BLOCK"]},
+        [{"role": "user", "content": "q"}],
+    )
+    assert prompt.startswith("FULL_REPLACEMENT")
+    assert "EVIDENCE_BLOCK" in prompt
+    assert _REFERENCE_SYSTEM_PROMPT not in prompt
+
+
+def test_slot_ref_system_reuses_precomputed_context_block(monkeypatch):
+    """A precomputed context_block must not re-run the slot command.
+
+    The context_command is a subprocess; resolving the same slot twice per
+    reference would double retrieval latency and side effects at fan-out.
+    """
+    from agent import moa_loop
+
+    calls = []
+    original = moa_loop._slot_context_block
+
+    def counting(slot, ref_messages=None):
+        calls.append(1)
+        return original(slot, ref_messages)
+
+    monkeypatch.setattr(moa_loop, "_slot_context_block", counting)
+
+    prompt = moa_loop._slot_ref_system(
+        {"context_command": ["echo", "EVIDENCE_BLOCK"]},
+        [{"role": "user", "content": "q"}],
+        context_block="PRECOMPUTED",
+    )
+    assert "PRECOMPUTED" in prompt
+    assert calls == []

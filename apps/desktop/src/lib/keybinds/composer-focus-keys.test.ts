@@ -115,6 +115,11 @@ describe('typeToFocusChar', () => {
 
   it('rejects non-printables and modified chords', () => {
     expect(typeToFocusChar(keydown({ key: 'Enter', code: 'Enter' }))).toBeNull()
+    expect(typeToFocusChar(keydown({ key: '0', code: 'Numpad0' }))).toBe('0')
+    expect(typeToFocusChar(keydown({ key: '0', code: 'Numpad0', repeat: true }))).toBeNull()
+    expect(typeToFocusChar(keydown({ key: '0', code: 'Digit0' }))).toBe('0')
+    expect(typeToFocusChar(keydown({ key: '0', code: 'Digit0', repeat: true }))).toBeNull()
+    expect(typeToFocusChar(keydown({ key: 'a', code: 'KeyA', repeat: true }))).toBeNull()
     expect(typeToFocusChar(keydown({ key: 'a', code: 'KeyA', metaKey: true }))).toBeNull()
     expect(typeToFocusChar(keydown({ key: 'a', code: 'KeyA', isComposing: true }))).toBeNull()
   })

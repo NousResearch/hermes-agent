@@ -116,7 +116,14 @@ export function composerFocusBlockedBySurface(): boolean {
 
 /** Printable `event.key` for type-to-focus, or null (modifiers / non-printables / IME). */
 export function typeToFocusChar(event: KeyboardEvent): string | null {
-  if (event.defaultPrevented || event.isComposing || event.metaKey || event.ctrlKey || event.altKey) {
+  if (
+    event.defaultPrevented ||
+    event.repeat ||
+    event.isComposing ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.altKey
+  ) {
     return null
   }
 

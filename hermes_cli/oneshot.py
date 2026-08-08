@@ -17,6 +17,16 @@ Model / provider selection mirrors `hermes chat`:
 
 Env var fallbacks (used when the corresponding arg is not passed):
     - HERMES_INFERENCE_MODEL
+
+Warm-backend reuse: when no explicit --toolsets was requested, this first
+tries the persistent `hermes serve` daemon (ws://127.0.0.1:9119/api/ws, see
+`hermes_cli/oneshot_warm.py`) before falling back to a cold, per-invocation
+AIAgent. The win is MCP servers already discovered on the warm daemon (e.g.
+`hostinger`, which takes ~4s to connect via npx) vs. the cold path racing a
+much shorter discovery bound from scratch every call. An explicit
+--toolsets/-t ALWAYS forces the cold path: `session.create` on the warm
+daemon has no per-session toolset-restriction equivalent, so a scoped call
+must never risk silently widening to the daemon's full default toolset.
 """
 
 from __future__ import annotations
@@ -216,6 +226,11 @@ def run_oneshot(
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
 
+    # Warm-backend path is only safe when the caller did NOT restrict
+    # toolsets explicitly — see oneshot_warm.py's docstring for why an
+    # explicit -t must always take the cold path.
+    warm_eligible = use_config_toolsets
+
     # Auto-approve any shell / tool approvals.  Non-interactive by
     # definition — a prompt would hang forever.
     os.environ["HERMES_YOLO_MODE"] = "1"
@@ -242,13 +257,16 @@ def run_oneshot(
     try:
         with redirect_stdout(devnull), redirect_stderr(devnull):
             try:
-                response, result = _run_agent(
-                    prompt,
-                    model=model,
-                    provider=provider,
-                    toolsets=explicit_toolsets,
-                    use_config_toolsets=use_config_toolsets,
-                )
+                if warm_eligible:
+                    response, result = _try_warm_agent(prompt, model=model, provider=provider)
+                if response is None:
+                    response, result = _run_agent(
+                        prompt,
+                        model=model,
+                        provider=provider,
+                        toolsets=explicit_toolsets,
+                        use_config_toolsets=use_config_toolsets,
+                    )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
                 # from prompt_toolkit/Vt100 when stdout is a non-TTY pipe,
@@ -292,6 +310,52 @@ def run_oneshot(
         return 1
 
     return 0
+
+
+def _try_warm_agent(
+    prompt: str,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+) -> tuple[Optional[str], dict]:
+    """Attempt the warm `hermes serve` backend (see ``oneshot_warm.py``).
+
+    Returns ``(None, {})`` when it's safe to fall back to the cold path —
+    nothing ran server-side (backend unreachable, no token, RPC error before
+    ``prompt.submit`` was acked). Raises when the warm daemon accepted the
+    turn but it didn't finish successfully: the caller must NOT fall back to
+    the cold path in that case (the turn may have already run real tools
+    server-side, and retrying risks double-executing side effects) — letting
+    this propagate surfaces it as a normal oneshot failure instead.
+    """
+    from hermes_cli.oneshot_warm import try_warm_oneshot
+
+    warm = try_warm_oneshot(prompt, cwd=os.getcwd(), model=model, provider=provider)
+
+    if not warm.submitted:
+        return None, {}
+
+    if not warm.ok:
+        raise RuntimeError(f"warm backend: {warm.error}")
+
+    usage = warm.usage or {}
+    result = {
+        "final_response": warm.text,
+        "input_tokens": usage.get("input"),
+        "output_tokens": usage.get("output"),
+        "reasoning_tokens": usage.get("reasoning"),
+        "total_tokens": usage.get("total"),
+        "api_calls": usage.get("calls"),
+        "cache_read_tokens": None,
+        "cache_write_tokens": None,
+        "estimated_cost_usd": None,
+        "cost_status": "unavailable",
+        "cost_source": "warm_backend",
+        "model": usage.get("model") or model or "",
+        "provider": provider or "",
+        "completed": True,
+        "failed": False,
+    }
+    return warm.text, result
 
 
 def _create_session_db_for_oneshot():

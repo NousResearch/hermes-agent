@@ -16,6 +16,7 @@ from typing import Any, Deque, Optional
 from urllib.parse import unquote, urlparse
 
 import acp
+from acp.exceptions import RequestError
 from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
@@ -696,8 +697,10 @@ class HermesACPAgent(acp.Agent):
             return raw_model
         return f"{raw_provider}:{raw_model}"
 
-    def _build_model_state(self, state: SessionState) -> SessionModelState | None:
-        """Return authenticated providers and their models for ACP clients.
+    def _build_model_inventory(
+        self, state: SessionState
+    ) -> tuple[SessionModelState | None, set[str]]:
+        """Return ACP model state and providers with authoritative catalogs.
 
         The shared Hermes inventory is also used by ``hermes model``, the TUI,
         and the dashboard. Keeping ACP on that substrate prevents its selector
@@ -705,6 +708,7 @@ class HermesACPAgent(acp.Agent):
         """
         model = str(state.model or getattr(state.agent, "model", "") or "").strip()
         provider = getattr(state.agent, "provider", None) or detect_provider() or "openrouter"
+        authoritative_providers: set[str] = set()
 
         try:
             from hermes_cli.inventory import build_models_payload, load_picker_context
@@ -739,7 +743,9 @@ class HermesACPAgent(acp.Agent):
                 provider_name = str(row.get("name") or "").strip() or provider_label(
                     row_provider
                 )
-                for model_entry in row.get("models") or []:
+                row_models = row.get("models") or []
+                row_has_models = False
+                for model_entry in row_models:
                     if isinstance(model_entry, dict):
                         rendered_model = str(
                             model_entry.get("id")
@@ -751,6 +757,7 @@ class HermesACPAgent(acp.Agent):
                         rendered_model = str(model_entry or "").strip()
                     if not rendered_model:
                         continue
+                    row_has_models = True
                     choice_id = self._encode_model_choice(row_provider, rendered_model)
                     if choice_id in seen_ids:
                         continue
@@ -769,18 +776,41 @@ class HermesACPAgent(acp.Agent):
                     )
                     seen_ids.add(choice_id)
 
+                row_source = str(row.get("source") or "").strip()
+                total_models = row.get("total_models")
+                row_is_exhaustive = (
+                    isinstance(row_models, list)
+                    and type(total_models) is int
+                    and total_models == len(row_models)
+                )
+                # These rows are fallbacks or non-exhaustive user catalogs.
+                # ACP caps populated canonical rows, so only an exhaustive row
+                # has enough provenance to treat an omitted selection as invalid.
+                if (
+                    row_has_models
+                    and row_is_exhaustive
+                    and not row.get("is_user_defined")
+                    and row_source not in {"configured-current", "model-config"}
+                ):
+                    authoritative_providers.add(row_provider)
+
             # Named user-defined endpoints (providers: / custom_providers:)
             # are invisible to canonical provider enumeration — append them
             # so editor clients can select them like the TUI /model picker.
+            # Their catalogs combine declared and best-effort discovered models
+            # without completeness provenance, so omission must remain fail-open.
             for named_slug, named_label, named_catalog in _named_custom_provider_catalogs():
+                named_provider = normalize_provider(named_slug)
                 for named_model, named_desc in named_catalog:
-                    named_choice = self._encode_model_choice(named_slug, named_model)
-                    if not named_choice or named_choice in seen_ids:
+                    named_choice = self._encode_model_choice(named_provider, named_model)
+                    if not named_choice:
+                        continue
+                    if named_choice in seen_ids:
                         continue
                     named_parts = [f"Provider: {named_label}"]
                     if named_desc:
                         named_parts.append(str(named_desc).strip())
-                    if named_slug == normalized_provider and named_model == model:
+                    if named_provider == normalized_provider and named_model == model:
                         named_parts.append("current")
                     available_models.append(
                         ModelInfo(
@@ -804,21 +834,32 @@ class HermesACPAgent(acp.Agent):
                 )
 
             if available_models:
-                return SessionModelState(
-                    available_models=available_models,
-                    current_model_id=current_model_id or available_models[0].model_id,
+                return (
+                    SessionModelState(
+                        available_models=available_models,
+                        current_model_id=current_model_id or available_models[0].model_id,
+                    ),
+                    authoritative_providers,
                 )
         except Exception:
             logger.debug("Could not build ACP model state", exc_info=True)
 
         if not model:
-            return None
+            return None, set()
 
         fallback_choice = self._encode_model_choice(provider, model)
-        return SessionModelState(
-            available_models=[ModelInfo(model_id=fallback_choice, name=model)],
-            current_model_id=fallback_choice,
+        return (
+            SessionModelState(
+                available_models=[ModelInfo(model_id=fallback_choice, name=model)],
+                current_model_id=fallback_choice,
+            ),
+            set(),
         )
+
+    def _build_model_state(self, state: SessionState) -> SessionModelState | None:
+        """Return authenticated providers and their models for ACP clients."""
+        model_state, _ = self._build_model_inventory(state)
+        return model_state
 
     @staticmethod
     def _resolve_model_selection(raw_model: str, current_provider: str) -> tuple[str, str]:
@@ -2448,11 +2489,37 @@ class HermesACPAgent(acp.Agent):
                 model_id,
                 current_provider or "openrouter",
             )
-            state.model = resolved_model
+            try:
+                from hermes_cli.models import normalize_provider
+
+                inventory_provider = normalize_provider(requested_provider)
+            except Exception:
+                inventory_provider = str(requested_provider or "").strip().lower()
+
+            requested_choice = self._encode_model_choice(
+                inventory_provider, resolved_model
+            )
+            model_state, authoritative_providers = self._build_model_inventory(state)
+            selectable_model_ids = (
+                {model.model_id for model in model_state.available_models}
+                if model_state
+                else set()
+            )
+            if (
+                inventory_provider in authoritative_providers
+                and requested_choice not in selectable_model_ids
+            ):
+                raise RequestError.invalid_params(
+                    {
+                        "modelId": model_id,
+                        "provider": inventory_provider,
+                    }
+                )
+
             provider_changed = bool(current_provider and requested_provider != current_provider)
             current_base_url = None if provider_changed else getattr(state.agent, "base_url", None)
             current_api_mode = None if provider_changed else getattr(state.agent, "api_mode", None)
-            state.agent = self.session_manager._make_agent(
+            replacement_agent = self.session_manager._make_agent(
                 session_id=session_id,
                 cwd=state.cwd,
                 model=resolved_model,
@@ -2460,6 +2527,8 @@ class HermesACPAgent(acp.Agent):
                 base_url=current_base_url,
                 api_mode=current_api_mode,
             )
+            state.model = resolved_model
+            state.agent = replacement_agent
             self.session_manager.save_session(session_id)
             logger.info(
                 "Session %s: model switched to %s via provider %s",

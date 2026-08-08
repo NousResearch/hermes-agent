@@ -1,6 +1,7 @@
 """Tests for acp_adapter.server — HermesACPAgent ACP server."""
 
 import asyncio
+import json
 import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
@@ -9,6 +10,7 @@ import pytest
 
 import acp
 from acp.agent.router import build_agent_router
+from acp.exceptions import RequestError
 from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
@@ -247,6 +249,57 @@ class TestSessionOps:
         )
 
 
+    @pytest.mark.asyncio
+    async def test_new_session_keeps_current_model_missing_from_inventory(self):
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(
+                model="claude-custom",
+                provider="anthropic",
+                base_url="https://api.anthropic.com",
+            )
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        picker_context = MagicMock()
+        picker_context.with_overrides.return_value = picker_context
+        payload = {
+            "providers": [
+                {
+                    "slug": "anthropic",
+                    "name": "Anthropic",
+                    "models": ["claude-sonnet-4-6"],
+                },
+                {
+                    "slug": "openai-codex",
+                    "name": "OpenAI Codex",
+                    "models": ["gpt-5.4"],
+                },
+            ],
+        }
+
+        with (
+            patch("hermes_cli.inventory.load_picker_context", return_value=picker_context),
+            patch("hermes_cli.inventory.build_models_payload", return_value=payload),
+            patch(
+                "acp_adapter.server._named_custom_provider_catalogs",
+                return_value=[],
+            ),
+        ):
+            resp = await acp_agent.new_session(cwd="/tmp")
+            assert resp.models is not None
+            switch_result = await acp_agent.set_session_model(
+                model_id=resp.models.current_model_id,
+                session_id=resp.session_id,
+            )
+
+        assert isinstance(switch_result, SetSessionModelResponse)
+        assert resp.models.current_model_id == "anthropic:claude-custom"
+        assert [model.model_id for model in resp.models.available_models] == [
+            "anthropic:claude-custom",
+            "anthropic:claude-sonnet-4-6",
+            "openai-codex:gpt-5.4",
+        ]
+        assert resp.models.available_models[0].name == "Anthropic · claude-custom"
+        assert resp.models.available_models[0].description == "Provider: Anthropic • current"
 
     @pytest.mark.asyncio
     async def test_available_commands_include_help(self, agent):
@@ -394,7 +447,414 @@ class TestSessionConfiguration:
 
 
 
+    @pytest.mark.asyncio
+    async def test_router_rejects_unadvertised_model_without_mutating_session(
+        self, tmp_path, monkeypatch
+    ):
+        db = SessionDB(tmp_path / "state.db")
+        try:
+            manager = SessionManager(
+                db=db,
+                agent_factory=lambda: SimpleNamespace(
+                    model="gpt-5.4",
+                    provider="openai-codex",
+                    base_url="https://api.openai.com/v1",
+                    api_mode="codex_responses",
+                ),
+            )
+            acp_agent = HermesACPAgent(session_manager=manager)
+            picker_context = MagicMock()
+            picker_context.with_overrides.return_value = picker_context
+            payload = {
+                "providers": [
+                    {
+                        "slug": "openai-codex",
+                        "name": "OpenAI Codex",
+                        "source": "built-in",
+                        "models": [{"id": "gpt-5.4"}],
+                        "total_models": 1,
+                    }
+                ]
+            }
 
+            with (
+                patch(
+                    "hermes_cli.inventory.load_picker_context",
+                    return_value=picker_context,
+                ),
+                patch(
+                    "hermes_cli.inventory.build_models_payload",
+                    return_value=payload,
+                ),
+                patch(
+                    "acp_adapter.server._named_custom_provider_catalogs",
+                    return_value=[],
+                ),
+            ):
+                new_resp = await acp_agent.new_session(cwd=str(tmp_path))
+                state = manager.get_session(new_resp.session_id)
+                assert state is not None
+                assert new_resp.models is not None
+                state.history = [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "hi"},
+                ]
+                manager.save_session(state.session_id)
+
+                advertised_ids = {
+                    model.model_id for model in new_resp.models.available_models
+                }
+                invalid_model = "totally-not-a-real-model-xyz"
+                assert invalid_model not in advertised_ids
+
+                original_agent = state.agent
+                original_model = state.model
+                original_route = (
+                    state.agent.provider,
+                    state.agent.base_url,
+                    state.agent.api_mode,
+                )
+                persisted_before = db.get_session(state.session_id)
+                assert persisted_before is not None
+                history_before = db.get_messages_as_conversation(state.session_id)
+
+                replacement_agent = SimpleNamespace(
+                    model=invalid_model,
+                    provider="openai-codex",
+                    base_url="https://api.openai.com/v1",
+                    api_mode="codex_responses",
+                )
+                make_agent = MagicMock(return_value=replacement_agent)
+                monkeypatch.setattr(manager, "_make_agent", make_agent)
+                save_session = MagicMock(wraps=manager.save_session)
+                monkeypatch.setattr(manager, "save_session", save_session)
+
+                router = build_agent_router(acp_agent, use_unstable_protocol=True)
+                with pytest.raises(RequestError) as exc_info:
+                    await router(
+                        "session/set_model",
+                        {
+                            "modelId": invalid_model,
+                            "sessionId": state.session_id,
+                        },
+                        False,
+                    )
+
+                assert exc_info.value.code == -32602
+                error_data = exc_info.value.data
+                assert isinstance(error_data, dict)
+                assert error_data["modelId"] == invalid_model
+                assert error_data["provider"] == "openai-codex"
+                assert state.model == original_model
+                assert state.agent is original_agent
+                assert (
+                    state.agent.provider,
+                    state.agent.base_url,
+                    state.agent.api_mode,
+                ) == original_route
+                make_agent.assert_not_called()
+                save_session.assert_not_called()
+
+                persisted_after = db.get_session(state.session_id)
+                assert persisted_after is not None
+                assert persisted_after["model"] == persisted_before["model"]
+                assert persisted_after["model_config"] == persisted_before["model_config"]
+                assert persisted_after["billing_provider"] == persisted_before["billing_provider"]
+                assert persisted_after["billing_base_url"] == persisted_before["billing_base_url"]
+                assert (
+                    db.get_messages_as_conversation(state.session_id)
+                    == history_before
+                )
+        finally:
+            db.close()
+
+    @pytest.mark.asyncio
+    async def test_set_session_model_allows_model_omitted_from_capped_canonical_catalog(
+        self, tmp_path, monkeypatch
+    ):
+        db = SessionDB(tmp_path / "state.db")
+        try:
+            manager = SessionManager(
+                db=db,
+                agent_factory=lambda: SimpleNamespace(
+                    model="gpt-5.4",
+                    provider="openai-codex",
+                    base_url="https://api.openai.com/v1",
+                    api_mode="codex_responses",
+                ),
+            )
+            acp_agent = HermesACPAgent(session_manager=manager)
+            picker_context = MagicMock()
+            picker_context.with_overrides.return_value = picker_context
+            payload = {
+                "providers": [
+                    {
+                        "slug": "openai-codex",
+                        "name": "OpenAI Codex",
+                        "source": "built-in",
+                        "models": [{"id": "gpt-5.4"}],
+                        "total_models": 2,
+                    }
+                ]
+            }
+
+            with (
+                patch(
+                    "hermes_cli.inventory.load_picker_context",
+                    return_value=picker_context,
+                ),
+                patch(
+                    "hermes_cli.inventory.build_models_payload",
+                    return_value=payload,
+                ),
+                patch(
+                    "acp_adapter.server._named_custom_provider_catalogs",
+                    return_value=[],
+                ),
+            ):
+                new_resp = await acp_agent.new_session(cwd=str(tmp_path))
+                state = manager.get_session(new_resp.session_id)
+                assert state is not None
+                assert new_resp.models is not None
+
+                requested_choice = "openai-codex:gpt-5.5"
+                advertised_ids = {
+                    model.model_id for model in new_resp.models.available_models
+                }
+                assert requested_choice not in advertised_ids
+
+                replacement_agent = SimpleNamespace(
+                    model="gpt-5.5",
+                    provider="openai-codex",
+                    base_url="https://api.openai.com/v1",
+                    api_mode="codex_responses",
+                )
+                make_agent = MagicMock(return_value=replacement_agent)
+                monkeypatch.setattr(manager, "_make_agent", make_agent)
+                save_session = MagicMock(wraps=manager.save_session)
+                monkeypatch.setattr(manager, "save_session", save_session)
+
+                result = await acp_agent.set_session_model(
+                    model_id=requested_choice,
+                    session_id=state.session_id,
+                )
+
+            assert isinstance(result, SetSessionModelResponse)
+            make_agent.assert_called_once_with(
+                session_id=state.session_id,
+                cwd=str(tmp_path),
+                model="gpt-5.5",
+                requested_provider="openai-codex",
+                base_url="https://api.openai.com/v1",
+                api_mode="codex_responses",
+            )
+            save_session.assert_called_once_with(state.session_id)
+            assert state.model == "gpt-5.5"
+            assert state.agent is replacement_agent
+
+            persisted = db.get_session(state.session_id)
+            assert persisted is not None
+            assert persisted["model"] == "gpt-5.5"
+            persisted_route = json.loads(persisted["model_config"])
+            assert persisted_route["provider"] == "openai-codex"
+            assert persisted_route["base_url"] == "https://api.openai.com/v1"
+            assert persisted_route["api_mode"] == "codex_responses"
+        finally:
+            db.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            pytest.param({"providers": []}, id="empty"),
+            pytest.param(
+                {
+                    "providers": [
+                        {
+                            "slug": "openrouter",
+                            "source": "configured-current",
+                            "models": ["old-model"],
+                        }
+                    ]
+                },
+                id="saved-current-only",
+            ),
+            pytest.param(
+                {
+                    "providers": [
+                        {
+                            "slug": "openrouter",
+                            "source": "user-config",
+                            "is_user_defined": True,
+                            "models": ["old-model"],
+                        }
+                    ]
+                },
+                id="custom-provider",
+            ),
+            pytest.param(
+                {
+                    "providers": [
+                        {
+                            "slug": "openrouter",
+                            "source": "built-in",
+                            "models": ["old-model"],
+                        }
+                    ]
+                },
+                id="missing-completeness",
+            ),
+            pytest.param(
+                {
+                    "providers": [
+                        {
+                            "slug": "openrouter",
+                            "source": "built-in",
+                            "models": ["old-model"],
+                            "total_models": "1",
+                        }
+                    ]
+                },
+                id="malformed-completeness",
+            ),
+        ],
+    )
+    async def test_set_session_model_allows_non_authoritative_inventory_choice(
+        self, tmp_path, monkeypatch, payload
+    ):
+        manager = SessionManager(
+            db=SessionDB(tmp_path / "state.db"),
+            agent_factory=lambda: SimpleNamespace(
+                model="old-model",
+                provider="openrouter",
+                base_url="https://openrouter.ai/api/v1",
+                api_mode="chat_completions",
+            ),
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        state = manager.create_session(cwd="/tmp")
+        replacement_agent = SimpleNamespace(
+            model="new-model",
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+        )
+        make_agent = MagicMock(return_value=replacement_agent)
+        monkeypatch.setattr(manager, "_make_agent", make_agent)
+        monkeypatch.setattr(
+            "hermes_cli.models.parse_model_input",
+            lambda raw, current: (current, raw),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.detect_provider_for_model",
+            lambda model, current: None,
+        )
+        picker_context = MagicMock()
+        picker_context.with_overrides.return_value = picker_context
+
+        with (
+            patch(
+                "hermes_cli.inventory.load_picker_context",
+                return_value=picker_context,
+            ),
+            patch(
+                "hermes_cli.inventory.build_models_payload",
+                return_value=payload,
+            ),
+            patch(
+                "acp_adapter.server._named_custom_provider_catalogs",
+                return_value=[],
+            ),
+        ):
+            result = await acp_agent.set_session_model(
+                model_id="new-model",
+                session_id=state.session_id,
+            )
+
+        assert isinstance(result, SetSessionModelResponse)
+        assert state.model == "new-model"
+        assert state.agent is replacement_agent
+        make_agent.assert_called_once_with(
+            session_id=state.session_id,
+            cwd="/tmp",
+            model="new-model",
+            requested_provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+        )
+
+    @pytest.mark.asyncio
+    async def test_set_session_model_agent_failure_preserves_session_state(
+        self, tmp_path, monkeypatch
+    ):
+        db = SessionDB(tmp_path / "state.db")
+        manager = SessionManager(
+            db=db,
+            agent_factory=lambda: SimpleNamespace(
+                model="old-model",
+                provider="openrouter",
+                base_url="https://openrouter.ai/api/v1",
+                api_mode="chat_completions",
+            ),
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        state = manager.create_session(cwd="/tmp")
+        original_agent = state.agent
+        persisted_before = db.get_session(state.session_id)
+        assert persisted_before is not None
+        make_agent = MagicMock(side_effect=RuntimeError("agent construction failed"))
+        save_session = MagicMock(wraps=manager.save_session)
+        monkeypatch.setattr(manager, "_make_agent", make_agent)
+        monkeypatch.setattr(manager, "save_session", save_session)
+        monkeypatch.setattr(
+            "hermes_cli.models.parse_model_input",
+            lambda raw, current: (current, raw),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.detect_provider_for_model",
+            lambda model, current: None,
+        )
+        picker_context = MagicMock()
+        picker_context.with_overrides.return_value = picker_context
+        payload = {
+            "providers": [
+                {
+                    "slug": "openrouter",
+                    "name": "OpenRouter",
+                    "source": "built-in",
+                    "models": ["old-model", "new-model"],
+                }
+            ]
+        }
+
+        with (
+            patch(
+                "hermes_cli.inventory.load_picker_context",
+                return_value=picker_context,
+            ),
+            patch(
+                "hermes_cli.inventory.build_models_payload",
+                return_value=payload,
+            ),
+            patch(
+                "acp_adapter.server._named_custom_provider_catalogs",
+                return_value=[],
+            ),
+            pytest.raises(RuntimeError, match="agent construction failed"),
+        ):
+            await acp_agent.set_session_model(
+                model_id="new-model",
+                session_id=state.session_id,
+            )
+
+        assert state.model == "old-model"
+        assert state.agent is original_agent
+        save_session.assert_not_called()
+        persisted_after = db.get_session(state.session_id)
+        assert persisted_after is not None
+        assert persisted_after["model"] == persisted_before["model"]
+        assert persisted_after["model_config"] == persisted_before["model_config"]
+        db.close()
 
 # ---------------------------------------------------------------------------
 # prompt

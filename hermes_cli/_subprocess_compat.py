@@ -140,17 +140,32 @@ def windows_batch_command(
 ) -> str:
     """Return a safely quoted command line for a Windows batch launcher.
 
-    ``cmd.exe`` reparses shell metacharacters even when Python receives an
-    argument list. Store each argument in the child-only environment and
-    expand it inside quotes so valid paths and arguments containing ``&``,
-    ``%``, spaces, or parentheses retain their identity.
+    ``shell=True`` adds an outer ``cmd.exe``. Keep argument values out of that
+    shell entirely: it only removes the carets from ``^%NAME^%`` and starts a
+    second, explicit command processor. The inner shell disables AutoRun and
+    delayed expansion before expanding the child-only placeholders, preserving
+    valid values containing ``&``, ``%``, ``!``, ``^``, pipes, redirection
+    characters, spaces, or parentheses. Quotes and control characters are
+    rejected because ``cmd.exe`` cannot transport them without reparsing.
     """
     placeholders = []
     for index, arg in enumerate(command):
+        value = str(arg)
+        if any(char in value for char in ('"', "\r", "\n", "\0")):
+            raise ValueError(
+                "Windows batch arguments cannot contain quotes or control characters"
+            )
         key = f"{prefix}_{index}"
-        env[key] = str(arg)
-        placeholders.append(f'"%{key}%"')
-    return " ".join(placeholders)
+        env[key] = value
+        # The outer shell removes the carets without expanding the variable.
+        # The inner /V:OFF shell then expands it while delayed expansion is off.
+        placeholders.append(f'"^%{key}^%"')
+
+    comspec = os.environ.get("COMSPEC") or os.path.join(
+        os.environ.get("SystemRoot", r"C:\Windows"), "System32", "cmd.exe"
+    )
+    inner = " ".join(placeholders)
+    return f'"{comspec}" /e:on /v:off /d /s /c "{inner}"'
 
 
 # -----------------------------------------------------------------------------

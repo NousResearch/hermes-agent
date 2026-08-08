@@ -210,11 +210,21 @@ def test_windows_npm_wrapper_uses_quoted_shell_placeholders():
     command = [r"C:\Hermes\lsp\node_modules\.bin\pyright-langserver.cmd", "--stdio"]
     env = {}
 
-    assert LSPClient._win_shell_command(command, env) == (
-        '"%HERMES_LSP_COMMAND_0%" "%HERMES_LSP_COMMAND_1%"'
-    )
+    command_line = LSPClient._win_shell_command(command, env)
+
+    assert "/v:off" in command_line.lower()
+    assert '"^%HERMES_LSP_COMMAND_0^%"' in command_line
+    assert '"^%HERMES_LSP_COMMAND_1^%"' in command_line
     assert env["HERMES_LSP_COMMAND_0"] == command[0]
     assert env["HERMES_LSP_COMMAND_1"] == command[1]
+
+
+@pytest.mark.parametrize("argument", ['unsafe\"quote', "unsafe\nline", "unsafe\0nul"])
+def test_windows_npm_wrapper_rejects_untransportable_arguments(argument):
+    from agent.lsp.client import LSPClient
+
+    with pytest.raises(ValueError, match="cannot contain quotes or control"):
+        LSPClient._win_shell_command([r"C:\Hermes\server.cmd", argument], {})
 
 
 @pytest.mark.asyncio
@@ -252,28 +262,33 @@ async def test_spawn_routes_windows_batch_launcher_through_shell(
     assert client._reader_task is not None
     await asyncio.gather(client._stderr_task, client._reader_task)
 
-    assert captured["command_line"] == (
-        '"%HERMES_LSP_COMMAND_0%" "%HERMES_LSP_COMMAND_1%"'
-    )
+    command_line = captured["command_line"]
+    assert "/v:off" in command_line.lower()
+    assert '"^%HERMES_LSP_COMMAND_0^%"' in command_line
+    assert '"^%HERMES_LSP_COMMAND_1^%"' in command_line
     assert captured["kwargs"]["env"]["HERMES_LSP_COMMAND_0"] == str(wrapper)
     assert captured["kwargs"]["env"]["HERMES_LSP_COMMAND_1"] == "--stdio"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe quoting")
 def test_windows_npm_wrapper_handles_shell_metacharacters(tmp_path):
-    """A valid wrapper path containing ``&`` must not be split by cmd.exe."""
+    """Batch launchers preserve metacharacters through both cmd.exe layers."""
     from agent.lsp.client import LSPClient
 
-    wrapper = tmp_path / "a&b%UNEXPANDED%" / "server.cmd"
+    wrapper = (
+        tmp_path
+        / "a&b%UNEXPANDED%!UNEXPANDED!(x)^caret"
+        / "server.cmd"
+    )
     wrapper.parent.mkdir()
     wrapper.write_text(
         "@echo off" + chr(13) + chr(10) + "echo READY [%1]" + chr(13) + chr(10)
     )
     env = dict(os.environ)
     env["UNEXPANDED"] = "wrong"
-    command_line = LSPClient._win_shell_command(
-        [str(wrapper), "hello&%UNEXPANDED%"], env
-    )
+    argument = "hello&%UNEXPANDED%!UNEXPANDED!()^caret|pipe<in>out"
+    command_line = LSPClient._win_shell_command([str(wrapper), argument], env)
+    assert argument not in command_line
 
     result = subprocess.run(
         command_line,
@@ -285,7 +300,7 @@ def test_windows_npm_wrapper_handles_shell_metacharacters(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert 'READY ["hello&%UNEXPANDED%"]' in result.stdout
+    assert f'READY ["{argument}"]' in result.stdout
 
 
 def test_install_npm_uses_native_windows_wrapper_in_place(tmp_path, monkeypatch):
@@ -318,7 +333,7 @@ def test_install_npm_uses_native_windows_wrapper_in_place(tmp_path, monkeypatch)
 @pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe quoting")
 def test_install_npm_handles_metacharacters_in_hermes_home(tmp_path, monkeypatch):
     """npm.cmd must receive the complete --prefix path through cmd.exe."""
-    home = tmp_path / "home&b%UNEXPANDED%"
+    home = tmp_path / "home&b%UNEXPANDED%!UNEXPANDED!(x)^caret"
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("UNEXPANDED", "wrong")
 

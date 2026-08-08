@@ -210,7 +210,7 @@ class TestHermesManagedNode:
 @pytest.mark.skipif(os.name != "nt", reason="Windows .cmd probe")
 def test_node_tool_runnable_handles_batch_path_metacharacters(tmp_path, monkeypatch):
     monkeypatch.setenv("UNEXPANDED", "wrong")
-    npm = tmp_path / "node&a%UNEXPANDED%" / "npm.cmd"
+    npm = tmp_path / "node&a%UNEXPANDED%!UNEXPANDED!(x)^caret" / "npm.cmd"
     npm.parent.mkdir()
     npm.write_text(
         os.linesep.join(["@echo off", "echo 11.10.0", "exit /b 0"])

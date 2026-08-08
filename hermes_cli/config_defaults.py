@@ -1281,6 +1281,14 @@ DEFAULT_CONFIG = {
         # responses and content messages are never touched.  Default 0
         # (disabled) preserves prior behavior.
         "ephemeral_system_ttl": 0,
+        # When true, Ctrl+Enter / Ctrl+J inserts a newline in the classic CLI
+        # instead of submitting. Default false; Hermes auto-enables this on
+        # terminals that are known to distinguish the keystroke (Windows
+        # Terminal, WSL, SSH, Ghostty). Set true to force the behavior on a
+        # local POSIX terminal where Ctrl+Enter would otherwise submit.
+        # See `cli.py::_preserve_ctrl_enter_newline()`.
+        "ctrl_enter_newline": False,
+
         # Per-platform display/streaming overrides. Each key is a gateway
         # platform ("telegram", "discord", "slack", …) mapping to a dict of
         # display settings that override the global value for that platform

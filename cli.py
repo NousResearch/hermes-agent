@@ -513,6 +513,13 @@ def load_cli_config() -> Dict[str, Any]:
             "busy_input_mode": "interrupt",
             "persistent_output": True,
             "persistent_output_max_lines": 200,
+            # When true, Ctrl+Enter / Ctrl+J inserts a newline in the classic CLI
+            # instead of submitting. Default false; Hermes auto-enables this on
+            # terminals that are known to distinguish the keystroke (Windows
+            # Terminal, WSL, SSH, Ghostty). Set true to force the behavior on a
+            # local POSIX terminal where Ctrl+Enter would otherwise submit.
+            # See `cli.py::_preserve_ctrl_enter_newline()`.
+            "ctrl_enter_newline": False,
             # Print a one-line summary of resolved modal prompts (approval /
             # clarify) into scrollback so the decision survives the repaint.
             "persist_prompts": True,
@@ -3627,11 +3634,13 @@ def _preserve_ctrl_enter_newline() -> bool:
 
     Windows Terminal, WSL, SSH sessions, Ghostty, and some modern terminals
     deliver Ctrl+Enter/Ctrl+J as bare LF (c-j). On those terminals c-j must
-    NOT be bound to submit;
-    binding it to submit makes Ctrl+Enter (intended as 'newline like Alt+Enter')
-    submit instead. Local POSIX TTYs that deliver Enter as LF (docker exec,
-    some thin PTYs without SSH) still need c-j bound to submit, so we keep
-    that binding for those.
+    NOT be bound to submit; binding it to submit makes Ctrl+Enter (intended
+    as 'newline like Alt+Enter') submit instead. Local POSIX TTYs that
+    deliver Enter as LF (docker exec, some thin PTYs without SSH) still need
+    c-j bound to submit, so we keep that binding for those.
+
+    A user can also force newline behavior on any terminal by setting
+    ``display.ctrl_enter_newline: true`` in ``config.yaml``.
 
     See issue #22379.
     """
@@ -3657,7 +3666,27 @@ def _preserve_ctrl_enter_newline() -> bool:
                     return True
         except OSError:
             continue
+
+    # Config override: user can force Ctrl+Enter/Ctrl+J to insert a newline
+    # on local POSIX terminals where it would otherwise submit.
+    if _ctrl_enter_newline_config():
+        return True
+
     return False
+
+
+def _ctrl_enter_newline_config() -> bool:
+    """Return the user-configured ``display.ctrl_enter_newline`` value.
+
+    Uses the CLI-specific config loader so ``--ignore-user-config`` is honored
+    (``HERMES_IGNORE_USER_CONFIG=1`` skips the user config.yaml). Falls back
+    to false if config is not yet available.
+    """
+    try:
+        cfg = CLI_CONFIG
+        return bool(cfg.get("display", {}).get("ctrl_enter_newline"))
+    except Exception:
+        return False
 
 
 def _bind_prompt_submit_keys(kb, handler) -> None:

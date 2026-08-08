@@ -286,6 +286,16 @@ Most terminals send the same byte sequence for `Enter` and `Shift+Enter` by defa
 
 Where the terminal cannot distinguish them, `Alt+Enter` and `Ctrl+J` continue to work everywhere. **On Windows Terminal specifically, `Alt+Enter` is captured by the terminal (toggles fullscreen) and never reaches Hermes — use `Ctrl+Enter` (delivered as `Ctrl+J`) or `Ctrl+J` directly for a newline.**
 
+On a local Linux terminal where `Ctrl+J` is bound to **submit** (so that thin PTYs that send `Enter` as LF still work), you can force newline behavior by setting:
+
+```yaml
+# ~/.hermes/config.yaml
+display:
+  ctrl_enter_newline: true
+```
+
+This makes `Ctrl+Enter` / `Ctrl+J` insert a newline even when Hermes would otherwise treat LF as Enter. It is applied automatically on Windows, WSL, SSH, Windows Terminal, and Ghostty, so the config is only needed for other local POSIX terminals.
+
 ## Redirecting the Agent Mid-Turn
 
 While the agent is working, you can send a correction without starting a new turn:

@@ -2,6 +2,9 @@
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
+This file is the canonical, exhaustive guide. `CLAUDE.md` (root) is a condensed
+orientation layer derived from it — keep the two in sync when conventions change.
+
 **Never give up on the right solution.**
 
 ## What Hermes Is

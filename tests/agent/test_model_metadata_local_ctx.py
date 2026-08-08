@@ -144,7 +144,6 @@ class TestQueryLocalContextLengthModelsList:
         """Finds context length for model in /v1/models list."""
         from agent.model_metadata import _query_local_context_length
 
-        detail_resp = self._make_resp(404, {})
         list_resp = self._make_resp(200, {
             "data": [
                 {"id": "other-model", "max_model_len": 4096},
@@ -155,9 +154,7 @@ class TestQueryLocalContextLengthModelsList:
         call_count = [0]
         def side_effect(url, **kwargs):
             call_count[0] += 1
-            if call_count[0] == 1:
-                return detail_resp  # /v1/models/omnicoder-9b
-            return list_resp  # /v1/models
+            return list_resp  # Only /v1/models is called when server_type is None
 
         client_mock = MagicMock()
         client_mock.__enter__ = lambda s: client_mock
@@ -170,6 +167,7 @@ class TestQueryLocalContextLengthModelsList:
             result = _query_local_context_length("omnicoder-9b", "http://localhost:1234")
 
         assert result == 131072
+        assert call_count[0] == 1  # Only the /v1/models list call, detail probe is gated
 
     def test_models_list_model_not_found_returns_none(self):
         """Returns None when the model is absent from a multi-model /v1/models
@@ -177,7 +175,6 @@ class TestQueryLocalContextLengthModelsList:
         doesn't match the reported id — see the llama.cpp tests below.)"""
         from agent.model_metadata import _query_local_context_length
 
-        detail_resp = self._make_resp(404, {})
         list_resp = self._make_resp(200, {
             "data": [
                 {"id": "other-model", "max_model_len": 4096},
@@ -188,9 +185,7 @@ class TestQueryLocalContextLengthModelsList:
         call_count = [0]
         def side_effect(url, **kwargs):
             call_count[0] += 1
-            if call_count[0] == 1:
-                return detail_resp
-            return list_resp
+            return list_resp  # Only /v1/models when server_type is None
 
         client_mock = MagicMock()
         client_mock.__enter__ = lambda s: client_mock

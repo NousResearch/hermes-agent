@@ -29,6 +29,7 @@ Hermes has several distinct pluggable interfaces — some use Python `register_*
 | A **dashboard OIDC/auth provider** | [Web Dashboard — custom providers](/user-guide/features/web-dashboard#custom-providers) — `ctx.register_dashboard_auth_provider()` |
 | A **TTS backend** (any CLI — Piper, VoxCPM, Kokoro, voice cloning, …) | [TTS custom command providers](/user-guide/features/tts#custom-command-providers) — config-driven, no Python needed |
 | An **STT backend** (custom whisper / ASR CLI) | [Voice Message Transcription](/user-guide/features/tts#voice-message-transcription-stt) — set `HERMES_LOCAL_STT_COMMAND` to an argv-tokenized template |
+| A long-lived **realtime voice provider** | [Register a realtime voice provider](#register-a-realtime-voice-provider) — typed Python provider seam via `ctx.register_realtime_voice_provider(provider)` |
 | **External tools via MCP** (filesystem, GitHub, Linear, any MCP server) | [MCP](/user-guide/features/mcp) — declare `mcp_servers.<name>` in `config.yaml` |
 | **Gateway event hooks** (fire on startup, session events, commands) | [Event Hooks](/user-guide/features/hooks#gateway-event-hooks) — drop `HOOK.yaml` + `handler.py` into `~/.hermes/hooks/<name>/` |
 | **Shell hooks** (run a shell command on events) | [Shell Hooks](/user-guide/features/hooks#shell-hooks) — declare under `hooks:` in `config.yaml` |
@@ -333,6 +334,7 @@ def register(ctx):
 - `ctx.register_hook()` subscribes to lifecycle events
 - `ctx.register_cli_command()` registers a CLI subcommand (e.g. `hermes my-plugin <subcommand>`)
 - `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below
+- `ctx.register_realtime_voice_provider(provider)` registers a typed, long-lived realtime voice provider — see [Register a realtime voice provider](#register-a-realtime-voice-provider) below
 - `ctx.dispatch_tool(name, arguments)` — call any other tool (built-in or from another plugin) with the parent agent's context (approvals, credentials, task_id) wired up automatically. Useful from slash-command handlers that need to invoke `terminal`, `read_file`, or any other tool as if the model had called it directly.
 - If this function crashes, the plugin is disabled but Hermes continues fine
 
@@ -431,6 +433,49 @@ Four files, clear separation:
 - **Registration** connects everything
 
 ## What else can plugins do?
+
+### Register a realtime voice provider
+
+Plugins can register a typed, long-lived realtime voice provider with
+`ctx.register_realtime_voice_provider(provider)`. The provider owns its SDK,
+credentials, wire protocol, audio I/O, transport lifecycle, and teardown.
+Hermes-owned surfaces retain tool authorization and approvals, session
+continuity, and memory.
+
+Providers declare their capabilities explicitly, and unsupported operations
+fail explicitly rather than being silently emulated.
+Vendor-specific providers ship as standalone plugins, not in the core tree.
+
+Tool results must be returned as the original provider tool call's output,
+bound to its `call_id`; do not settle a call as merely "queued" and inject the
+real result later as a side-channel conversation item. Hosts should await work
+for a bounded period and use `continue_response(batch_id)` for genuinely long
+work. A provider that declares `CONTINUATION` must emit the resulting
+`ResponseStarted` and `ResponseCompleted` with the same
+`continuation_of_batch_id`; the base session validates this linkage.
+Continuation responses may arrive out of request order, and ordinary responses
+may interleave with them. The base session matches by `batch_id`, retains a
+bounded response-identity history so duplicate ordinary responses cannot acquire
+continuation linkage, bounds outstanding continuation state, and rejects a
+clean event-stream EOF while a continuation request or response remains
+unresolved. Terminal session events resolve outstanding continuation state
+instead of being masked by an EOF error.
+
+The current draft provider API is version 2. Session implementations provide
+their raw normalized stream through `_events()`; the public `events()` method is
+owned by the base class so it can enforce capability and continuation
+invariants. Draft version 1 providers that implemented `events()` directly must
+rename that implementation to `_events()` and advertise API version 2.
+
+Providers may redeliver events after reconnects. Hosts must deduplicate tool
+work and result delivery by `batch_id` rather than dispatching it again.
+`Interruption` is a barge-in signal, not a `SessionFailure`: hosts may redeliver
+interrupted output under a separate bounded retry budget, but must not treat an
+interruption as terminal or spend the transport-failure budget on it.
+
+This is an integration seam only. Hermes does not currently include a built-in
+OpenAI or Gemini realtime transport, and registration alone does not provide a
+ready user-facing voice feature.
 
 ### Ship data files
 

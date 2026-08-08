@@ -16428,6 +16428,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             else:
                 message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+        elif (
+            getattr(event, "reply_to_message_id", None)
+            and source is not None
+            and getattr(source, "platform", None) == Platform.WHATSAPP
+        ):
+            # Baileys can retain the native stanza id while omitting the quoted
+            # payload. Keep the relation explicit rather than presenting a
+            # contextless approval such as "send it" to the agent.
+            reply_id = " ".join(str(event.reply_to_message_id).split())[:128]
+            message_text = (
+                f"[Replying to WhatsApp message {json.dumps(reply_id)}; "
+                f"quoted text unavailable]\n\n{message_text}"
+            )
 
         if "@" in message_text:
             try:

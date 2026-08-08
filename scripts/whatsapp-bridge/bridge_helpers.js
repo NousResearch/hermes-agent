@@ -305,6 +305,7 @@ export async function extractBridgeEvent({
   isGroup = false,
   downloadMedia,
   writeMediaFile,
+  messageStore,
   cacheDirs = {},
 }) {
   const messageContent = getMessageContent(msg);
@@ -313,8 +314,16 @@ export async function extractBridgeEvent({
   const quotedMessageId = contextInfo?.stanzaId || null;
   const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || '') || null;
   const quotedRemoteJid = normalizeWhatsAppId(contextInfo?.remoteJid || '') || null;
-  const hasQuotedMessage = !!contextInfo?.quotedMessage;
-  const quotedText = textFromQuotedMessage(contextInfo?.quotedMessage);
+  const storedQuotedMessage = quotedMessageId && !contextInfo?.quotedMessage
+    ? messageStore?.get(quotedMessageId)
+    : null;
+  const quotedMessage = contextInfo?.quotedMessage
+    || (storedQuotedMessage ? getMessageContent(storedQuotedMessage) : null);
+  // Baileys may omit the inline quoted payload while retaining stanzaId.
+  // The identifier alone still proves this is a reply and must survive the
+  // bridge even when the bounded store can no longer recover its text.
+  const hasQuotedMessage = !!(quotedMessageId || quotedMessage);
+  const quotedText = textFromQuotedMessage(quotedMessage);
 
   let body = '';
   let hasMedia = false;

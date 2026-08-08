@@ -726,6 +726,7 @@ async function startSocket() {
         senderNumber,
         botIds,
         isGroup,
+        messageStore,
         downloadMedia: async (mediaMsg) => downloadMediaMessage(mediaMsg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage }),
         cacheDirs: {
           image: IMAGE_CACHE_DIR,

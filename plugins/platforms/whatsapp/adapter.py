@@ -1566,8 +1566,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             reply_to_message_id = None
             reply_to_author_id = None
             reply_to_is_own_message = False
-            if data.get("hasQuotedMessage"):
-                raw_reply_id = data.get("quotedMessageId")
+            raw_reply_id = data.get("quotedMessageId")
+            if data.get("hasQuotedMessage") or raw_reply_id is not None:
                 if raw_reply_id is not None:
                     reply_to_message_id = str(raw_reply_id)
                 quoted_participant = self._normalize_whatsapp_id(data.get("quotedParticipant"))

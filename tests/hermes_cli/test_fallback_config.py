@@ -37,3 +37,28 @@ class TestResolveEntryApiKey:
         # secret scope installed, resolution still reads os.environ.
         monkeypatch.setenv("FB_KEY", "env-key")
         assert resolve_entry_api_key({"key_env": "FB_KEY"}) == "env-key"
+
+
+class TestFallbackConfigStringParsing:
+    """Regression: ``hermes config set fallback_providers '[{...}]'`` stores
+    the value as a JSON string in config.yaml. The parser must handle that."""
+
+    def test_json_string_input(self):
+        from hermes_cli.fallback_config import _iter_fallback_entries
+
+        raw = '[{"provider": "zai", "model": "glm-5.2"}]'
+        result = _iter_fallback_entries(raw)
+        assert len(result) == 1
+        assert result[0]["provider"] == "zai"
+        assert result[0]["model"] == "glm-5.2"
+
+    def test_invalid_string_returns_empty(self):
+        from hermes_cli.fallback_config import _iter_fallback_entries
+
+        assert _iter_fallback_entries("not json") == []
+        assert _iter_fallback_entries("") == []
+
+    def test_empty_json_string_returns_empty(self):
+        from hermes_cli.fallback_config import _iter_fallback_entries
+
+        assert _iter_fallback_entries("[]") == []

@@ -1567,11 +1567,40 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
-    # Inherit the parent's fallback provider chain so subagents can recover
-    # from rate-limits and credential exhaustion exactly like the top-level
-    # agent does.  _fallback_chain is a list accepted by AIAgent's
-    # fallback_model parameter (which handles both list and dict forms).
-    parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    # Resolve the child fallback chain. Supports three modes:
+    #
+    # 1. ``delegation.fallback_providers`` not set (or ``"inherit"``):
+    #    Child inherits the parent's fallback chain (default, backward compat).
+    # 2. ``delegation.fallback_providers: []``:
+    #    Explicitly disables fallback for children — they only use their
+    #    primary model and fail on rate-limit/exhaustion with no recovery.
+    # 3. ``delegation.fallback_providers: [{provider, model}, ...]``:
+    #    Custom per-child chain, independent of the parent's fallback order.
+    child_fallback = None
+    _child_fb_mode = "inherit"  # default
+    try:
+        # _load_config() already returns the delegation sub-dict directly.
+        _del_cfg = _load_config()
+        _del_fb_raw = _del_cfg.get("fallback_providers") if isinstance(_del_cfg, dict) else None
+        if _del_fb_raw is not None:
+            if isinstance(_del_fb_raw, str) and _del_fb_raw.strip().lower() in ("inherit", "parent"):
+                _child_fb_mode = "inherit"
+            elif isinstance(_del_fb_raw, list) and len(_del_fb_raw) == 0:
+                _child_fb_mode = "none"
+            elif isinstance(_del_fb_raw, (list, dict)):
+                from hermes_cli.fallback_config import _iter_fallback_entries
+                parsed = _iter_fallback_entries(_del_fb_raw)
+                if parsed:
+                    child_fallback = parsed
+                    _child_fb_mode = "custom"
+                else:
+                    # Had entries but none parsed → treat as none.
+                    _child_fb_mode = "none"
+    except Exception:
+        pass
+    if child_fallback is None and _child_fb_mode == "inherit":
+        child_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    parent_fallback = child_fallback  # None when mode == "none"
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -4099,7 +4128,10 @@ def _build_top_level_description() -> str:
         "memory, send_message, or cronjob; orchestrators regain only "
         "delegate_task.\n"
         "- Children inherit the parent model and fallback chain unless pinned "
-        "globally via delegation.provider / delegation.model in config.yaml. "
+        "globally via delegation.provider / delegation.model, or given a "
+        "separate chain via delegation.fallback_providers in config.yaml. "
+        "Set delegation.fallback_providers to [] to disable child fallback, "
+        "or \"inherit\" to explicitly use the parent's chain. "
         "Results are returned as an array, one entry per task."
     )
 

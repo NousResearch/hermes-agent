@@ -45,6 +45,16 @@ def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
         candidates = [raw]
     elif isinstance(raw, list):
         candidates = raw
+    elif isinstance(raw, str) and raw.strip():
+        # ``hermes config set fallback_providers '[{...}]'`` stores the value
+        # as a JSON string in config.yaml. Parse it back so the chain works.
+        import json
+
+        try:
+            parsed = json.loads(raw.strip())
+        except (json.JSONDecodeError, ValueError):
+            return []
+        return _iter_fallback_entries(parsed)
     else:
         return []
 

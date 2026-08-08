@@ -349,6 +349,7 @@ For **durable execution** that must survive session closure or process restart, 
 - **Cancellation follows ownership** — `/stop` or closing/resetting the owning session cancels its background children; synchronous descendants under orchestrators follow their parent's interrupt state
 - Only the final summary enters the parent's context, keeping token usage efficient
 - Subagents inherit the parent's **API key, provider configuration, and credential pool** (enabling key rotation on rate limits)
+- Subagents inherit the parent's **fallback chain** by default; override per-child with `delegation.fallback_providers`
 
 ## Delegation vs execute_code
 
@@ -386,6 +387,26 @@ delegation:
 ```
 
 When `base_url` points at an Anthropic-compatible endpoint — for example a path ending in `/anthropic`, an Azure Foundry Claude route, or a MiniMax `/anthropic` proxy — `api_mode` is auto-detected as `anthropic_messages` so the subagent uses the right wire format without you setting anything. Set `api_mode` explicitly when the auto-detection guess is wrong (rare).
+
+### Fallback Chain
+
+By default, subagents inherit the parent's `fallback_providers` chain — when the primary model fails (rate-limit, credential exhaustion, 5xx), the child recovers through the same fallback sequence as the top-level agent.
+
+You can override this per-child with `delegation.fallback_providers`:
+
+```yaml
+delegation:
+  # Not set / "inherit" → child uses parent's fallback chain (default)
+  # []                   → no fallback; child fails on primary error
+  # [{provider, model}]  → custom per-child chain
+  fallback_providers:
+    - provider: zai
+      model: glm-5.2
+    - provider: opencode-go
+      model: deepseek-v4-flash
+```
+
+This lets you route subagent failures to cheaper providers while keeping the primary conversation on a more expensive chain. Same entry shape as the top-level `fallback_providers`.
 
 :::tip
 The agent handles delegation automatically based on the task complexity. You don't need to explicitly ask it to delegate — it will do so when it makes sense.

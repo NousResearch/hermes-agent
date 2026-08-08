@@ -1718,6 +1718,15 @@ DEFAULT_CONFIG = {
                            # "codex_responses", or "anthropic_messages". Empty = auto-detect
                            # from URL (e.g. /anthropic suffix → anthropic_messages). Set this
                            # explicitly for non-standard endpoints the heuristic can't detect.
+        # Per-child fallback chain. Controls what happens when a subagent's
+        # primary model fails (rate-limit, credential exhaustion, 5xx):
+        #   Not set / "inherit"  → child inherits parent's fallback_providers
+        #   []                   → no fallback (child fails on primary error)
+        #   [{provider, model}]  → custom per-child chain
+        # Same entry shape as the top-level fallback_providers key.
+        # IMPORTANT: do NOT default to [] — that would disable fallback for
+        # all children. Leave unset so the inherit path is the default.
+        # "fallback_providers": [],  # uncomment to disable child fallback
         # When delegate_task narrows child toolsets explicitly, preserve any
         # MCP toolsets the parent already has enabled. On by default so
         # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these

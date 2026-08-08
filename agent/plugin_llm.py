@@ -65,6 +65,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Union
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -235,14 +236,14 @@ def _resolve_trust_policy(plugin_id: str) -> _TrustPolicy:
 
     return _TrustPolicy(
         plugin_id=plugin_id,
-        allow_provider_override=bool(llm_cfg.get("allow_provider_override", False)),
+        allow_provider_override=is_truthy_value(llm_cfg.get("allow_provider_override"), default=False),
         allowed_providers=allowed_providers,
         allow_any_provider=allow_any_provider,
-        allow_model_override=bool(llm_cfg.get("allow_model_override", False)),
+        allow_model_override=is_truthy_value(llm_cfg.get("allow_model_override"), default=False),
         allowed_models=allowed_models,
         allow_any_model=allow_any_model,
-        allow_agent_id_override=bool(llm_cfg.get("allow_agent_id_override", False)),
-        allow_profile_override=bool(llm_cfg.get("allow_profile_override", False)),
+        allow_agent_id_override=is_truthy_value(llm_cfg.get("allow_agent_id_override"), default=False),
+        allow_profile_override=is_truthy_value(llm_cfg.get("allow_profile_override"), default=False),
     )
 
 

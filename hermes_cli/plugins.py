@@ -38,14 +38,18 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import inspect
+import json
 import logging
 import os
+import re
 import sys
 import threading
 import types
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
+
 
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled, fast_safe_load
@@ -365,6 +369,187 @@ class LoadedPlugin:
 # PluginContext  – handed to each plugin's ``register()`` function
 # ---------------------------------------------------------------------------
 
+_PLUGIN_SETTING_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+_PLUGIN_SETTING_RESERVED_ROOTS = frozenset({"model", "plugins", "security", "settings"})
+_PLUGIN_STATE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_PLUGIN_STATE_QUOTA_BYTES = 10 * 1024 * 1024
+_PLUGIN_STATE_LOCKS: Dict[str, threading.RLock] = {}
+_PLUGIN_STATE_LOCKS_GUARD = threading.Lock()
+
+
+def _plugin_relative_segments(key: str) -> tuple[str, ...]:
+    """Validate and split a plugin-relative settings key.
+
+    The public API accepts only relative keys (``endpoint`` or
+    ``retry.policy``).  Full Hermes paths, traversal syntax, and the security-
+    sensitive core roots called out in #64227 are rejected before any config
+    read occurs.
+    """
+    if not isinstance(key, str):
+        raise ValueError("Expected a plugin-relative config key string")
+    segments = tuple(key.split("."))
+    if (
+        not key
+        or "/" in key
+        or "\\" in key
+        or any(
+            not _PLUGIN_SETTING_SEGMENT_RE.fullmatch(segment) for segment in segments
+        )
+        or segments[0].lower() in _PLUGIN_SETTING_RESERVED_ROOTS
+    ):
+        raise ValueError(
+            "Expected a plugin-relative config key such as 'endpoint' or "
+            "'retry.policy'; global, cross-plugin, and traversal paths are forbidden"
+        )
+    return segments
+
+
+def _nested_plugin_value(root: object, segments: tuple[str, ...], default: Any) -> Any:
+    current = root
+    for segment in segments:
+        if not isinstance(current, Mapping) or segment not in current:
+            return default
+        current = current[segment]
+    return current
+
+
+def _nested_plugin_mapping(segments: tuple[str, ...], value: Any) -> dict[str, Any]:
+    nested: Any = value
+    for segment in reversed(segments):
+        nested = {segment: nested}
+    return nested
+
+
+def _plugin_data_namespace(plugin_id: str, skill_namespace: str) -> str:
+    """Return one Windows-safe directory component for plugin-owned data."""
+    candidate = skill_namespace or plugin_id
+    if (
+        skill_namespace
+        and candidate.startswith("agent-plugin-")
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,191}", candidate)
+    ):
+        # Portable Agent Plugins already receive this exact PLUGIN_DATA path.
+        return candidate
+    # Reuse the portable namespace algorithm for native/nested ids too. Its
+    # fixed prefix avoids Windows reserved device names (CON, NUL, COM1...),
+    # while the digest prevents collisions after unsafe characters are folded.
+    return _portable_skill_namespace(candidate)
+
+
+def _state_thread_lock(path: Path) -> threading.RLock:
+    key = str(path.resolve(strict=False))
+    with _PLUGIN_STATE_LOCKS_GUARD:
+        return _PLUGIN_STATE_LOCKS.setdefault(key, threading.RLock())
+
+
+@contextmanager
+def _locked_plugin_state(path: Path):
+    """Serialize state read-modify-write across threads and processes.
+
+    ``fcntl`` is used on POSIX and ``msvcrt`` on native Windows.  The lock is
+    kept in a sibling file because atomic replacement changes the inode/file
+    handle of the target itself.
+    """
+    lock_path = path.with_name(f".{path.name}.lock")
+    thread_lock = _state_thread_lock(lock_path)
+    with thread_lock:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock_path, "a+b") as handle:
+            if os.name == "nt":  # pragma: no cover - exercised on Windows CI
+                import msvcrt
+
+                if handle.seek(0, os.SEEK_END) == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if os.name == "nt":  # pragma: no cover - exercised on Windows CI
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+class PluginState:
+    """Atomic, quota-bounded JSON key/value state owned by one plugin."""
+
+    def __init__(self, plugin_id: str, skill_namespace: str = "") -> None:
+        self._data_namespace = _plugin_data_namespace(plugin_id, skill_namespace)
+
+    @property
+    def data_dir(self) -> Path:
+        """Profile-scoped directory matching portable plugins' PLUGIN_DATA."""
+        return get_hermes_home() / "plugin-data" / self._data_namespace
+
+    @property
+    def path(self) -> Path:
+        return self.data_dir / "state.json"
+
+    @property
+    def quota_bytes(self) -> int:
+        return _PLUGIN_STATE_QUOTA_BYTES
+
+    @staticmethod
+    def _validate_key(key: str) -> None:
+        if (
+            not isinstance(key, str)
+            or not _PLUGIN_STATE_KEY_RE.fullmatch(key)
+            or ".." in key
+        ):
+            raise ValueError(
+                "Plugin state keys must be 1-128 characters using letters, "
+                "numbers, '_', '-', '.', or ':' (without '..')"
+            )
+
+    def _read_unlocked(self) -> dict[str, Any]:
+        try:
+            with open(self.path, encoding="utf-8") as handle:
+                data = json.load(handle)
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"Cannot parse plugin state {self.path}: {exc}") from exc
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                f"Cannot parse plugin state {self.path}: root must be an object"
+            )
+        return data
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Read a JSON value, returning *default* when the key is absent."""
+        self._validate_key(key)
+        with _locked_plugin_state(self.path):
+            return self._read_unlocked().get(key, default)
+
+    def set(self, key: str, value: Any) -> None:
+        """Atomically set one JSON value without dropping concurrent updates."""
+        self._validate_key(key)
+        with _locked_plugin_state(self.path):
+            data = self._read_unlocked()
+            data[key] = value
+            try:
+                encoded = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Plugin state value for {key!r} is not JSON-serializable"
+                ) from exc
+            if len(encoded) > self.quota_bytes:
+                raise ValueError(
+                    f"Plugin state quota exceeded: {len(encoded)} bytes is greater "
+                    f"than the {self.quota_bytes}-byte per-plugin quota"
+                )
+            from utils import atomic_json_write
+
+            atomic_json_write(self.path, data, mode=0o600)
+
+
 class PluginContext:
     """Facade given to plugins so they can register tools and hooks."""
 
@@ -374,6 +559,105 @@ class PluginContext:
         # Lazy-built host-owned LLM facade — see ctx.llm property below.
         self._llm: Any = None
         self._subagent_lifecycle: Any = None
+        self._state: PluginState | None = None
+
+    @property
+    def plugin_id(self) -> str:
+        """Return the effective registry id used for this plugin's namespaces."""
+        return self.manifest.key or self.manifest.name
+
+    # -- namespaced config and durable state --------------------------------
+
+    def get_config(self, key: str, default: Any = None) -> Any:
+        """Read ``plugins.entries.<plugin_id>.settings.<key>``.
+
+        ``key`` is always plugin-relative.  For migration compatibility, a
+        missing canonical value falls back to the former ``config`` subtree;
+        no global config paths are exposed.
+        """
+        try:
+            segments = _plugin_relative_segments(key)
+        except ValueError:
+            logger.warning(
+                "Rejected config path %r from plugin %s", key, self.plugin_id
+            )
+            raise
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly() or {}
+        plugins = config.get("plugins") if isinstance(config, Mapping) else None
+        entries = plugins.get("entries") if isinstance(plugins, Mapping) else None
+        entry = entries.get(self.plugin_id) if isinstance(entries, Mapping) else None
+        if not isinstance(entry, Mapping):
+            return default
+        missing = object()
+        value = _nested_plugin_value(entry.get("settings"), segments, missing)
+        if value is not missing:
+            return value
+        return _nested_plugin_value(entry.get("config"), segments, default)
+
+    def set_config(self, key: str, value: Any) -> None:
+        """Atomically write one value in this plugin's ``settings`` subtree."""
+        try:
+            segments = _plugin_relative_segments(key)
+        except ValueError:
+            logger.warning(
+                "Rejected config path %r from plugin %s", key, self.plugin_id
+            )
+            raise
+        from hermes_cli import config as config_mod
+
+        if config_mod.is_managed():
+            raise PermissionError(
+                "Plugin settings cannot be changed in a managed install"
+            )
+        from hermes_cli import managed_scope
+
+        dotted_path = ".".join((
+            "plugins",
+            "entries",
+            self.plugin_id,
+            "settings",
+            *segments,
+        ))
+        if managed_scope.is_key_managed(dotted_path):
+            raise PermissionError(
+                f"Plugin setting {dotted_path!r} is administrator-managed"
+            )
+        partial = {
+            "plugins": {
+                "entries": {
+                    self.plugin_id: {
+                        "settings": _nested_plugin_mapping(segments, value),
+                    }
+                }
+            }
+        }
+        full_path = ("plugins", "entries", self.plugin_id, "settings", *segments)
+        # The lock covers the merge read plus atomic save, preventing sibling
+        # plugin writes from racing between those two steps.
+        # Serialize bridge-to-bridge writes across processes as well as
+        # threads. Other Hermes config writers still retain their existing
+        # atomic-replace semantics; this lock specifically prevents two
+        # plugin read/merge/write transactions from dropping siblings.
+        with _locked_plugin_state(config_mod.get_config_path()):
+            with config_mod._CONFIG_LOCK:
+                # Fail closed on malformed YAML. save_config's raw-cache reader
+                # intentionally degrades parse failures to {}, which is safe for
+                # reads but destructive for read-modify-write.
+                config_mod.read_user_config_raw()
+                config_mod.save_config(
+                    partial,
+                    preserve_keys={full_path},
+                    merge_existing=True,
+                )
+
+    @property
+    def state(self) -> PluginState:
+        """Return this plugin's profile-scoped durable JSON state facade."""
+        if self._state is None:
+            self._state = PluginState(self.plugin_id, self.manifest.skill_namespace)
+        return self._state
 
     # -- host-owned LLM access ----------------------------------------------
 

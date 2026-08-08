@@ -1,308 +1,144 @@
-# Plugin Config & State Bridge — Design Proposal
+# Plugin Config & State Bridge
 
-**Branch:** `feat/plugin-config-state-bridge`
-**Target:** `hermes_cli/plugins.py` (PluginContext), `hermes_cli/config.py`, `cron/scheduler.py`
-**Concrete consumer:** kanban-advanced plugin (config overlay, cron provisioning, dashboard)
+**Status:** config + state slice implemented by #64227
 
----
+**Original design:** Topher Ross (@thebizfixer), RFC PR #58542
 
-## Summary
+**Concrete consumer:** kanban-advanced
 
-Today plugins that need to read/write Hermes configuration or manage cron jobs
-must shell out to CLI commands (`hermes config set`, `hermes cron create`) or
-manipulate YAML/config files directly. This is fragile across platform
-differences (Windows path separators, MSYS vs native Python), Hermes version
-bumps, and concurrent access.
+## Scope
 
-This proposal adds four capabilities to the `PluginContext` API so plugins can
-integrate with Hermes' config and cron systems through stable, typed interfaces
-without reaching into core internals.
+This slice adds two native `PluginContext` capabilities:
 
----
+- typed, namespace-jailed settings via `ctx.get_config()` and `ctx.set_config()`;
+- atomic, profile-scoped runtime data via `ctx.state`.
 
-## Proposal 1: `ctx.get_config()` / `ctx.set_config()`
+Config schema registration, config defaults, and the cron facade from the
+original RFC remain separate follow-up work. No core model tool is added.
 
-### Current state
-Plugins read `config.yaml` via `hermes_cli.config.load_config()`, parse it
-manually, and write back via direct file manipulation. This bypasses Hermes'
-own config manager — no schema validation, no atomic writes, no migration
-compatibility.
-
-### Proposed API
+## Config API
 
 ```python
-class PluginContext:
-    def get_config(self, key: str, default: Any = None) -> Any:
-        """Read a config value by dotted key (e.g. 'kanban.dispatch_stale_timeout_seconds').
+def register(ctx):
+    endpoint = ctx.get_config("api_url", default="https://example.invalid")
+    retries = ctx.get_config("retry.attempts", default=3)
 
-        Returns the default if the key is unset or the config file is missing.
-        Reads through Hermes' own config loader so layered configs (env overrides,
-        profile-specific merges) are respected.
-        """
-
-    def set_config(self, key: str, value: Any) -> None:
-        """Write a config value by dotted key.
-
-        Writes through Hermes' config manager — atomic file write, schema
-        validation for known keys, migration compatibility. Raises ValueError
-        if the key path is invalid or the value fails schema validation.
-        """
+    ctx.set_config("api_url", "https://api.example.com")
+    ctx.set_config("retry.attempts", 5)
 ```
 
-### Implementation sketch
+Keys are **relative to the calling plugin**. The example above reads and writes:
 
-```python
-# hermes_cli/plugins.py — PluginContext additions
-def get_config(self, key: str, default: Any = None) -> Any:
-    from hermes_cli.config import load_config, cfg_get
-    try:
-        config = load_config()
-        return cfg_get(config, key, default=default)
-    except Exception:
-        return default
-
-def set_config(self, key: str, value: Any) -> None:
-    # Deferred to #64227 implementation.
-    # When delivered, writes through the config manager with namespace jail
-    # enforcement (see § Namespace jail below).
-    raise NotImplementedError(
-        "ctx.set_config is pending implementation per #64227"
-    )
+```yaml
+plugins:
+  entries:
+    <effective-plugin-id>:
+      settings:
+        api_url: https://api.example.com
+        retry:
+          attempts: 5
 ```
 
-> **Note:** `cfg_set` does not exist in the current codebase. The read path
-> (`cfg_get` at `hermes_cli/config.py:6627`) is available. `set_config` will be
-> delivered by #64227's implementation with the namespace jail described below.
-
-### Concrete use case (kanban-advanced)
-Our `config_overlay.py` currently does:
-```python
-# Current: fragile YAML manipulation
-config = yaml.safe_load(Path(config_path).read_text())
-config["kanban"]["dispatch_stale_timeout_seconds"] = 14400
-Path(config_path).write_text(yaml.dump(config))
-```
-
-With this API:
-```python
-ctx.set_config("kanban.dispatch_stale_timeout_seconds", 14400)
-ctx.set_config("kanban.auto_decompose", False)
-```
-
-### Platform safety
-On Windows, our config writes hit `re.sub` backslash escape bugs because
-paths like `C:\Users\Owner` contain `\U` which Python interprets as a
-Unicode escape in replacement strings. Going through Hermes' own config
-manager eliminates this class of bug.
+`<effective-plugin-id>` is `manifest.key` when present, otherwise
+`manifest.name`. `settings` is the canonical namespace chosen after the issue
+discussion in #64227/#67531. For migration safety, reads fall back to the former
+`plugins.entries.<id>.config.*` subtree only when the canonical value is absent.
+Writes always target `settings`; they do not rewrite or delete legacy values.
 
 ### Namespace jail
 
-`set_config` keys are strictly namespaced to `plugins.entries.<id>.config.*`.
-A plugin may not read or write config outside its own entry. Enforcement rules:
+The API does not accept full config paths. A plugin can never use it to inspect
+or change arbitrary Hermes configuration.
 
-- **Key prefix:** all writes must start with `plugins.entries.<plugin_id>.config.`
-- **Cross-plugin rejection:** writing another plugin's config subtree is rejected
-  with a logged error
-- **Path-traversal rejection:** `../../security.approval_mode` and similar
-  escape attempts are rejected with a logged error
-- **Read allow-list:** `ctx.get_config` can only read from
-  `plugins.entries.<id>.config.*` plus a small read-only allow-list
-  (e.g. active profile name, already available via `ctx.profile_name`)
-
-Acceptance criteria (from #64227):
-- Fixture plugin round-trips config + state through the bridge on a temp
-  `HERMES_HOME` (real file I/O, no mocks)
-- Namespace-escape attempt (`../../security.*`, cross-plugin key, path
-  traversal) rejected with a logged error
-- `hermes doctor` reports a plugin config value violating its registered schema
-
----
-
-## Proposal 2: `ctx.register_config_schema()`
-
-### Current state
-Plugins with configuration (like kanban-advanced's `kanban-config.yaml`) have
-JSON Schemas that are invisible to `hermes doctor`, `hermes config check`, and
-the setup wizard. Users only discover configuration errors at runtime.
-
-### Proposed API
+Accepted:
 
 ```python
-class PluginContext:
-    def register_config_schema(self, schema: dict) -> None:
-        """Register a JSON Schema for this plugin's config namespace.
-
-        The schema validates keys under plugins.entries.<plugin_id>.config.
-        After registration, `hermes config check` validates the plugin's
-        config against this schema, and `hermes setup` can walk plugin
-        config interactively.
-        """
+ctx.get_config("endpoint")
+ctx.set_config("retry.policy", {"attempts": 3})
 ```
 
-### Manifest support (plugin.yaml)
-
-```yaml
-# plugin.yaml — optional schema declaration
-provides_config_schema: schema/kanban-config.schema.json
-```
-
-When present, the schema is loaded and registered automatically during plugin
-init — no explicit `register_config_schema()` call needed in `__init__.py`.
-
-### Concrete use case (kanban-advanced)
-Our kanban-config has 30+ keys with validation rules. Currently validation is
-done in our own scripts only. With this, `hermes doctor` would catch
-misconfigurations before they cause runtime failures.
-
----
-
-## Proposal 3: `ctx.cron` — Cron API access
-
-### Current state
-Plugins that manage cron jobs (kanban-advanced provisions 5+ crons for
-auto_unblock, board_keeper, lifecycle, dashboard keepalive) must shell out to
-`hermes cron create/list/remove` via `subprocess.run()`. This is fragile:
-- Platform-dependent (bash vs cmd, path resolution)
-- No structured error handling
-- No idempotency guarantees
-- Cannot inspect job state programmatically
-
-### Proposed API
+Rejected with `ValueError` and a warning log:
 
 ```python
-class PluginContext:
-    @property
-    def cron(self) -> "PluginCronFacade":
-        """Return a facade for managing cron jobs owned by this plugin.
-
-        All jobs created through this facade are tagged with the plugin's
-        name, enabling bulk operations (list plugin jobs, remove all on
-        uninstall).
-        """
-        if self._cron is None:
-            from hermes_cli.plugins import PluginCronFacade
-            self._cron = PluginCronFacade(
-                plugin_id=self.manifest.key or self.manifest.name
-            )
-        return self._cron
-
-
-class PluginCronFacade:
-    def create(self, name: str, schedule: str, *,
-               prompt: str | None = None,
-               script: str | None = None,
-               deliver: str = "local", skills: list[str] | None = None,
-               idempotency_key: str | None = None) -> str:
-        """Create a cron job. Returns the job ID.
-
-        Uses the live ``cron/jobs.py:create_job()`` API (L1039-1234).
-        Pass ``prompt`` for LLM-driven jobs, ``script`` for shell-script
-        watchdog jobs (``no_agent=True``). When idempotency_key is set,
-        returns existing job ID if a match exists.
-        """
-
-    def list(self, mine: bool = True) -> list[dict]:
-        """List cron jobs. When ``mine=True``, returns only jobs tagged
-        with this plugin's id."""
-
-    def remove(self, job_id: str) -> bool:
-        """Remove a cron job by ID."""
-
-    def get(self, job_id: str) -> dict | None:
-        """Get a single job's details."""
-
-    def pause(self, job_id: str) -> bool: ...
-    def resume(self, job_id: str) -> bool: ...
+ctx.get_config("security.approval_mode")
+ctx.set_config("model.provider", "attacker-proxy")
+ctx.set_config("plugins.entries.other.settings.token", "...")
+ctx.set_config("../../security.approval_mode", "always_allow")
+ctx.set_config(r"..\..\model.provider", "attacker-proxy")
 ```
 
-### Implementation sketch
+There is no global read allowlist: `ctx.profile_name` already exposes the only
+small host fact requested by the RFC. Settings writes use Hermes'
+profile-aware config loader/saver and atomic YAML replacement. The bridge
+validates the existing YAML before writing so malformed config is never
+silently replaced. Every operation resolves the active context-local
+`HERMES_HOME`, so one globally loaded plugin context follows multiplexed
+profile turns without crossing profile data.
 
-The `PluginCronFacade` delegates to `cron/jobs.py:create_job()` — the same
-function that powers `hermes cron create`. It adds plugin-namespacing via the
-`name` prefix convention (`{plugin_id}:job-name`) and bulk cleanup on uninstall.
+## Durable state API
 
-### Concrete use case (kanban-advanced)
-Our `kanban_handoff.py` currently does:
-```bash
-hermes cron create "30s" --name "auto_unblock" \
-  --script scripts/auto_unblock.sh --deliver local
-```
+Use state for plugin-owned runtime data such as cursors, dedupe sets, and
+caches. Do not put those values in user-owned config.
 
-With this API:
 ```python
-ctx.cron.create(
-    name="kanban-advanced:auto_unblock",
-    schedule="30s",
-    script="scripts/auto_unblock.sh",
-    deliver="local",
-    idempotency_key="kanban-advanced-auto_unblock",
-)
+def register(ctx):
+    cursor = ctx.state.get("cursor", default={"page": 0})
+    ctx.state.set("cursor", {"page": cursor["page"] + 1})
 ```
 
----
+The facade stores one JSON object at:
 
-## Proposal 4: Config defaults in `plugin.yaml`
-
-### Current state
-Plugins that need non-default Hermes config values (kanban-advanced needs
-`dispatch_stale_timeout_seconds: 14400`, `auto_decompose: false`,
-`BLOCK_RECURRENCE_LIMIT: 5`) must apply them via bootstrap scripts. If the
-user forgets to run bootstrap, the system runs with unsafe defaults.
-
-### Proposed manifest field
-
-```yaml
-# plugin.yaml
-provides_config_defaults:
-  kanban.dispatch_stale_timeout_seconds: 14400
-  kanban.auto_decompose: false
+```text
+<HERMES_HOME>/plugin-data/<plugin-data-namespace>/state.json
 ```
 
-On `hermes plugins install`, Hermes prompts the user with a diff of proposed
-config changes. On `hermes plugins update`, new defaults merge in (existing
-user overrides preserved). The prompt shows:
-```
-Plugin 'kanban-advanced' recommends these config changes:
+Portable Agent Plugins use their existing `PLUGIN_DATA` namespace exactly.
+Native and nested plugin ids use the same collision-resistant, Windows-safe
+namespace algorithm. `ctx.state.data_dir` exposes the directory and
+`ctx.state.path` exposes the JSON file when a plugin needs to inspect its own
+location.
 
-  kanban.dispatch_stale_timeout_seconds: 900 → 14400
-  kanban.auto_decompose: true → false
+### State guarantees
 
-Apply? [Y/n]
-```
+- **Profile isolation:** the data root resolves from the active context-local
+  Hermes home on every operation.
+- **Atomic replacement:** state writes use temp-file + `fsync` + `os.replace`.
+- **Concurrent updates:** a sibling lock file serializes read-modify-write across
+  threads and processes (`fcntl` on POSIX, `msvcrt` on Windows).
+- **Quota:** the complete serialized state is limited to 10 MiB per plugin. A
+  rejected update leaves the previous file untouched.
+- **Fail closed:** malformed/non-object JSON is reported and never overwritten.
+- **Typed values:** values must be JSON-serializable.
 
-### Design constraints
-- **Never silently override user config** — always prompt
-- **First-install vs update** — first install applies all defaults; update
-  only applies NEW keys that don't exist in user config
-- **Opt-out per key** — users can add keys to a `plugins.entries.<id>.config_defaults_skip`
-  list to reject specific defaults permanently
+State keys are 1–128 characters and may contain letters, numbers, `_`, `-`,
+`.`, or `:`. Path separators and `..` are rejected.
 
----
+## State vs. config
 
-## Cross-cutting concerns
+| Data | API | Ownership | Example |
+|---|---|---|---|
+| User-visible behavior | `ctx.get_config` / `ctx.set_config` | User/plugin settings in `config.yaml` | endpoint, timeout, feature mode |
+| Runtime bookkeeping | `ctx.state.get` / `ctx.state.set` | Plugin data under `plugin-data/` | cursor, cache, dedupe ids |
 
-### Why these belong in PluginContext and not as separate CLI commands
+Both APIs are additive. Existing plugins that perform their own file I/O keep
+working, but new plugins should use this bridge for stable profile and Windows
+semantics.
 
-1. **Atomicity** — config writes go through the same config manager that
-   handles migrations, schema validation, and concurrent access
-2. **Platform safety** — bypasses shell-level path issues on Windows
-3. **Plugin lifecycle** — cron jobs tagged by plugin can be bulk-removed on
-   `hermes plugins remove`
-4. **No new env vars** — follows the AGENTS.md rule: behavioral settings in
-   config.yaml, not env vars
+## Verification contract
 
-### Backward compatibility
+The implementation is covered with real temporary-Hermes-home tests for:
 
-All four additions are purely additive:
-- Existing plugins that shell out to CLI continue to work
-- New methods are opt-in
-- Config schema registration doesn't affect existing config validation
-
----
+- fixture-plugin discovery and config/state round trips;
+- canonical `settings` writes and legacy `config` read fallback;
+- direct global, cross-plugin, POSIX traversal, and Windows traversal rejection;
+- concurrent settings writes without lost siblings;
+- cross-thread and cross-process state updates;
+- atomic quota rejection and malformed-state/config preservation;
+- two-profile isolation after the ambient profile changes;
+- Unicode and Windows-style path values.
 
 ## Related
 
-- [#64227](https://github.com/NousResearch/hermes-agent/issues/64227) — upstream implementation issue adopting this RFC as its design basis
-- kanban-advanced planned features: `plugin/data/references/planned-features.md`
-- Hermes AGENTS.md: "The core is a narrow waist; capability lives at the edges"
-- Discord plugin interface expansion discussion
+- [Issue #64227](https://github.com/NousResearch/hermes-agent/issues/64227)
+- [RFC PR #58542](https://github.com/NousResearch/hermes-agent/pull/58542) by Topher Ross
+- #67531 — standalone plugin settings namespace discussion

@@ -2320,6 +2320,7 @@ export const ar = defineLocale({
       command: 'الأمر',
       moreOptions: 'خيارات إضافية',
       allowSession: 'السماح لهذه الجلسة',
+      sessionNote: 'حتى تنتهي هذه المحادثة (جلسة جديدة تمسحها)',
       alwaysAllowMenu: 'السماح دائما',
       jumpToApproval: 'الموافقة مطلوبة',
       reject: 'رفض',

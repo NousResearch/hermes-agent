@@ -152,6 +152,49 @@ class TestTelegramExecApproval:
 
 
     @pytest.mark.asyncio
+    async def test_session_duration_note_in_text_when_session_offered(self):
+        """The prompt text explains how long a "session" lasts when the
+        session-scoped button is offered (#75639)."""
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+        sent = {}
+
+        async def mock_send_message(**kwargs):
+            sent.update(kwargs)
+            return SimpleNamespace(message_id=42)
+
+        adapter._bot.send_message = AsyncMock(side_effect=mock_send_message)
+
+        await adapter.send_exec_approval(
+            chat_id="12345", command="rm -rf /important",
+            session_key="s", description="dangerous deletion",
+        )
+
+        assert "until this conversation ends" in sent["text"]
+        assert "starting a new session clears it" in sent["text"]
+
+    @pytest.mark.asyncio
+    async def test_no_session_duration_note_when_smart_denied(self):
+        """Smart DENY offers only once/deny — no session note in the text."""
+        adapter = _make_adapter()
+        sent = {}
+
+        async def mock_send_message(**kwargs):
+            sent.update(kwargs)
+            return SimpleNamespace(message_id=42)
+
+        adapter._bot.send_message = AsyncMock(side_effect=mock_send_message)
+
+        await adapter.send_exec_approval(
+            chat_id="12345", command="rm -rf /important",
+            session_key="s", description="dangerous deletion",
+            smart_denied=True,
+        )
+
+        assert "until this conversation ends" not in sent["text"]
+
+
+    @pytest.mark.asyncio
     async def test_smart_deny_two_buttons_share_one_row(self, monkeypatch):
         """smart_deny yields 2 buttons — they pair into a single readable row."""
         adapter = _make_adapter()

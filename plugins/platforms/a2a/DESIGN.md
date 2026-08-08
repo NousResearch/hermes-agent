@@ -100,7 +100,12 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
   its own credential; the matched name is the authenticated identity used
   for rate limiting, the trust gate, message framing, and audit. A shared
   `A2A_BEARER_TOKEN` authenticates as `ip:<addr>`. Nothing in the request
-  body can assert identity. Comparisons are constant-time.
+  body can assert identity. Comparisons are constant-time. Behind a reverse
+  proxy the socket peer is the proxy, so a shared token collapses every
+  caller to `ip:<proxy>`; `a2a.trusted_proxies` opts into deriving
+  `ip:<real_client>` from `X-Forwarded-For` (leftmost hop) *only* when the
+  immediate peer is a trusted proxy — X-Forwarded-For is never trusted
+  unconditionally (#80534).
 - **Trust gate:** `A2A_TRUSTED_PEERS` (or config `a2a.trusted_peers`)
   optionally restricts which authenticated identities may run tasks.
 - **Injection filters:** ALL inbound text (including `/`-prefixed — remote

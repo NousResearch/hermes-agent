@@ -171,6 +171,134 @@ def is_trusted_peer(identity: str) -> bool:
 
 
 # --------------------------------------------------------------------------
+# Trusted reverse-proxy identity resolution (Issue #80534)
+# --------------------------------------------------------------------------
+
+def get_trusted_proxies() -> set[str]:
+    """Return the configured trusted-proxy address/CIDR allow-list.
+
+    Empty means "do not trust any proxy" — identity stays derived from the
+    socket peer, the safe default. Configured via config.yaml under
+    ``a2a.trusted_proxies`` (list of IP addresses or CIDRs) or, as the
+    documented fallback, the ``A2A_TRUSTED_PROXIES`` env var (comma-separated).
+    Mirrors :func:`get_trusted_peers`.
+    """
+    env_proxies = os.getenv("A2A_TRUSTED_PROXIES", "").strip()
+    if env_proxies:
+        return {p.strip() for p in env_proxies.split(",") if p.strip()}
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        proxies_list = (cfg.get("a2a") or {}).get("trusted_proxies", [])
+        if isinstance(proxies_list, list):
+            return {str(p).strip() for p in proxies_list if p}
+    except Exception:
+        pass
+    return set()
+
+
+def _peer_in_proxies(peer_ip: str, proxies: set[str]) -> bool:
+    """True when ``peer_ip`` matches an entry in the proxy allow-list.
+
+    Entries may be a bare IP address or a CIDR (e.g. ``10.0.0.0/8``). A
+    non-IP ``peer_ip`` (e.g. ``"localhost"``) only matches a bare-string entry.
+    """
+    if not peer_ip or not proxies:
+        return False
+    try:
+        peer_addr = ipaddress.ip_address(peer_ip) if "/" not in peer_ip else None
+    except ValueError:
+        peer_addr = None
+    for entry in proxies:
+        entry = entry.strip()
+        if not entry:
+            continue
+        if "/" in entry:
+            if peer_addr is None:
+                continue
+            try:
+                network = ipaddress.ip_network(entry, strict=False)
+            except ValueError:
+                continue
+            if peer_addr in network:
+                return True
+        elif entry == peer_ip:
+            return True
+    return False
+
+
+def resolve_client_identity(headers, client_ip: str = "") -> str:
+    """Resolve the real client IP for identity, honoring trusted proxies only.
+
+    Default (safe): return the raw socket ``client_ip`` — spoofable headers
+    are never trusted unconditionally.
+
+    Opt-in: when ``a2a.trusted_proxies`` / ``A2A_TRUSTED_PROXIES`` is set AND
+    the immediate socket peer matches a trusted proxy, derive the client IP
+    from ``X-Forwarded-For``. Proxies append each hop to the *right*, so the
+    **leftmost** entry is the original client; we take the leftmost non-empty
+    hop. (This matches the comma-then-``[0]`` convention the adapter already
+    uses for ``X-Forwarded-Proto``.) If the header is absent, the socket peer
+    is used so a misconfigured proxy does not collapse to an empty identity.
+
+    ``headers`` is a mapping with a ``get`` method (e.g. ``http.client`` /
+    ``BaseHTTPRequestHandler`` headers).
+    """
+    proxies = get_trusted_proxies()
+    if proxies and _peer_in_proxies(client_ip, proxies):
+        forwarded = (headers.get("X-Forwarded-For", "") or "").strip() if headers else ""
+        if forwarded:
+            # Leftmost hop is the original client; later hops are appended by
+            # each proxy in the chain and are not attacker-controlled once the
+            # immediate peer is a trusted proxy.
+            for hop in forwarded.split(","):
+                hop = hop.strip()
+                if hop:
+                    return hop
+    return client_ip
+
+
+def warn_on_insecure_identity_config() -> None:
+    """Emit startup warnings for identity-degrading A2A config (Issue #80534).
+
+    Idempotent and side-effect-free apart from logging — intended to be called
+    once during adapter startup. Two cases:
+
+    1. A shared ``A2A_BEARER_TOKEN`` with a non-loopback ``A2A_HOST`` and no
+       trusted-proxy config: behind a reverse proxy every caller collapses to
+       ``ip:<proxy>`` (shared rate-limit bucket, allow-list authorizes every
+       token-holder, identical audit entries). Per-peer identity requires
+       ``a2a.trusted_proxies``.
+    2. ``A2A_ALLOW_ALL_USERS`` set together with ``A2A_TRUSTED_PEERS``: the
+       allow-all short-circuit in :func:`is_trusted_peer` silently overrides
+       the explicitly configured allow-list.
+    """
+    shared = get_bearer_token()
+    peer_tokens = get_peer_tokens()
+    host = os.getenv("A2A_HOST", "").strip() or "127.0.0.1"
+    loopback = {"127.0.0.1", "localhost", "::1"}
+    if shared and not peer_tokens and host not in loopback and not get_trusted_proxies():
+        logger.warning(
+            "A2A: shared A2A_BEARER_TOKEN with non-loopback A2A_HOST=%s and no "
+            "a2a.trusted_proxies configured — behind a reverse proxy every "
+            "authenticated peer resolves to the same ip:<proxy> identity, "
+            "collapsing rate limiting, the trusted-peer allow-list, and the "
+            "audit log. Set a2a.trusted_proxies (or A2A_TRUSTED_PROXIES) to "
+            "derive per-peer identity from X-Forwarded-For, or use "
+            "A2A_PEER_TOKENS for per-peer credentials.",
+            host,
+        )
+    allow_all = os.getenv("A2A_ALLOW_ALL_USERS", "").strip().lower() in ("1", "true", "yes")
+    if allow_all and get_trusted_peers():
+        logger.warning(
+            "A2A: A2A_ALLOW_ALL_USERS is set together with A2A_TRUSTED_PEERS — "
+            "the allow-all flag short-circuits is_trusted_peer() and silently "
+            "overrides the configured allow-list. Unset A2A_ALLOW_ALL_USERS to "
+            "enforce the allow-list.",
+        )
+
+
+# --------------------------------------------------------------------------
 # Inbound injection filtering
 # --------------------------------------------------------------------------
 

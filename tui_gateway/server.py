@@ -3111,7 +3111,12 @@ def _save_cfg(cfg: dict):
 
     from hermes_cli.config import atomic_config_write
 
-    path = _hermes_home / "config.yaml"
+    # Honour the per-session profile override so config writes land in the
+    # active profile, matching _load_cfg's resolution rather than always
+    # targeting the launch profile.
+    override = get_hermes_home_override()
+    home = override if isinstance(override, str) and override else _hermes_home
+    path = Path(home) / "config.yaml"
     atomic_config_write(path, cfg)
     with _cfg_lock:
         _cfg_cache = copy.deepcopy(cfg)

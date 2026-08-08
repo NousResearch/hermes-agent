@@ -58,3 +58,16 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # 401 no_cookie. The JWT — not this allowlist — is the security boundary.
     "/api/cron/fire",
 })
+
+# Routes that may ALSO authenticate via a ``?token=`` query param, for clients
+# that can't set an Authorization header or send cookies: OS-shell-opened
+# download links and media elements (<audio>/<video> in the desktop app over
+# remote gateways). Kept narrow and in lockstep between the two gates — the
+# legacy loopback gate compares the query token against ``_SESSION_TOKEN``,
+# while the OAuth gate verifies it as a native-app access token through the
+# provider stack (identical to the Bearer path). Every entry carries the same
+# query-string token tradeoff as the ``/api/pty`` WebSocket, so the list stays
+# minimal.
+QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({
+    "/api/files/download",
+})

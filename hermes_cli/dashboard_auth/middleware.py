@@ -37,7 +37,7 @@ from hermes_cli.dashboard_auth.cookies import (
     set_session_provider_cookie,
     set_sso_attempt_cookie,
 )
-from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
+from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS, QUERY_TOKEN_API_PATHS
 
 _log = logging.getLogger(__name__)
 
@@ -342,6 +342,32 @@ async def gated_auth_middleware(
     path = request.url.path
     if _path_is_public(path):
         return await call_next(request)
+
+    # Query-token escape for the narrow download/stream allowlist. Media
+    # elements (<audio>/<video> in the desktop app over remote gateways)
+    # cannot set an Authorization header or send cookies, so the desktop
+    # passes the native-app access token as ``?token=``. Verify it with the
+    # exact same provider stack as the Bearer path below. Mirror of the
+    # legacy loopback gate's query-token escape, kept in lockstep via
+    # ``QUERY_TOKEN_API_PATHS``.
+    if path in QUERY_TOKEN_API_PATHS:
+        query_token = request.query_params.get("token", "")
+        if query_token:
+            try:
+                query_session = _verify_bearer(request, access_token=query_token)
+            except ProviderError as e:
+                # At least one provider's IDP/JWKS was unreachable and none
+                # verified the token — transient outage, not bad credentials.
+                return JSONResponse(
+                    {"detail": f"Auth provider {str(e)!r} unreachable"},
+                    status_code=503,
+                )
+            if query_session is not None:
+                request.state.session = query_session
+                return await call_next(request)
+            # A query token was presented but didn't verify — same structured
+            # 401 as the Bearer path so the desktop knows to refresh/re-login.
+            return _unauth_response(request, reason="invalid_or_expired_session")
 
     # RFC 8252 native-app bearer path (goal: no session cookies). The desktop
     # authenticates REST with ``Authorization: Bearer <access_token>`` — the

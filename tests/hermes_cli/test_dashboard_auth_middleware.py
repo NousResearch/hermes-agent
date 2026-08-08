@@ -109,6 +109,67 @@ def test_other_public_api_paths_are_public_under_gate(gated_app, path):
 
 
 # ---------------------------------------------------------------------------
+# Query-token escape (media elements / OS-shell download links)
+# ---------------------------------------------------------------------------
+
+
+def _stub_access_token(exp: int) -> str:
+    from tests.hermes_cli.conftest_dashboard_auth import _sign
+
+    return _sign({
+        "sub": "stub-user-1",
+        "email": "stub@example.test",
+        "name": "Stub User",
+        "org_id": "stub-org-1",
+        "exp": exp,
+    })
+
+
+def test_query_token_authenticates_download_under_gate(gated_app):
+    """``/api/files/download`` accepts a valid access token via ``?token=``.
+
+    The desktop's media elements (<audio>/<video> over a remote gateway)
+    can't set an Authorization header or send cookies, so the src passes
+    the native-app access token as a query param. The OAuth gate must
+    verify it through the provider stack — otherwise inline playback 401s
+    before the handler ever runs.
+    """
+    import time
+
+    token = _stub_access_token(int(time.time()) + 3600)
+    r = gated_app.get(
+        "/api/files/download",
+        params={"path": "/definitely/missing.mp3", "token": token},
+    )
+    # Auth passed: the route itself runs and reports the missing file (4xx)
+    # instead of bouncing to 401 / /login.
+    assert r.status_code != 401, r.text
+    assert r.status_code != 302
+
+
+def test_invalid_query_token_rejected_under_gate(gated_app):
+    """Expired, garbage, or absent query tokens stay 401 on the allowlist."""
+    import time
+
+    expired = _stub_access_token(int(time.time()) - 60)
+    for bad in ("bogus", expired, ""):
+        params = {"path": "/definitely/missing.mp3"}
+        if bad:
+            params["token"] = bad
+        r = gated_app.get("/api/files/download", params=params)
+        assert r.status_code == 401, f"token={bad!r} -> {r.status_code}"
+
+
+def test_query_token_does_not_open_other_routes(gated_app):
+    """The query-token escape stays scoped to the download allowlist."""
+    import time
+
+    token = _stub_access_token(int(time.time()) + 3600)
+    r = gated_app.get("/api/files/read", params={"path": "/x", "token": token})
+    assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
 # OAuth round trip
 # ---------------------------------------------------------------------------
 

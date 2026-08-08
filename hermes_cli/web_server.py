@@ -392,6 +392,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 from hermes_cli.dashboard_auth.public_paths import (
     PUBLIC_API_PATHS as _PUBLIC_API_PATHS,
+    QUERY_TOKEN_API_PATHS as _QUERY_TOKEN_API_PATHS,
 )
 
 
@@ -418,9 +419,8 @@ def _has_valid_session_token(request: Request) -> bool:
 # Routes that may also authenticate via a ``?token=`` query param, for download
 # links opened by the OS shell or a new browser tab where the session header
 # can't be set. Kept narrow — same query-token tradeoff as the /api/pty WS.
-_QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download"})
-
-
+# Shared with the OAuth gate via dashboard_auth.public_paths to keep the two
+# middlewares in lockstep.
 def _has_valid_query_token(request: Request, path: str) -> bool:
     if path not in _QUERY_TOKEN_API_PATHS:
         return False
@@ -2451,11 +2451,19 @@ async def download_managed_file(request: Request, path: str):
 
     mime_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
 
+    # Media elements (desktop app audio/video playback over a remote
+    # gateway) always request with a Range header. Serve those inline so
+    # the browser treats the response as streamable media — an
+    # attachment disposition makes Chromium error the element instead of
+    # playing it. Plain user-initiated downloads (no Range) keep the
+    # attachment behavior unchanged.
+    wants_inline = request.headers.get("range") is not None
+
     return FileResponse(
         path=str(target),
         media_type=mime_type,
         filename=target.name,
-        content_disposition_type="attachment",
+        content_disposition_type="inline" if wants_inline else "attachment",
     )
 
 

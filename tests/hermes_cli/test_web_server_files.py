@@ -128,6 +128,36 @@ def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):
     assert leaked.status_code == 401
 
 
+def test_download_range_request_serves_inline_media(forced_files_client):
+    """A Range request (media-element playback) streams inline, not as attachment.
+
+    Chromium errors an <audio>/<video> element whose response carries
+    Content-Disposition: attachment — which broke inline playback of
+    gateway-local media in the desktop app over remote connections. Media
+    elements always request with a Range header; plain downloads don't, so
+    those keep the attachment behavior.
+    """
+    client, root = forced_files_client
+    file_path = _seed_file(client, root)
+
+    inline = client.get(
+        "/api/files/download",
+        params={"path": str(file_path)},
+        headers={"Range": "bytes=0-2"},
+    )
+    assert inline.status_code == 206
+    assert inline.headers["content-disposition"].startswith("inline")
+    assert inline.headers.get("content-range") == "bytes 0-2/5"
+
+    attachment = client.get(
+        "/api/files/download",
+        params={"path": str(file_path)},
+    )
+    assert attachment.status_code == 200
+    assert attachment.headers["content-disposition"].startswith("attachment")
+
+
+
 
 
 # ---------------------------------------------------------------------------

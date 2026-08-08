@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from agent.account_usage import (
     AccountUsageSnapshot,
     AccountUsageWindow,
@@ -89,10 +91,74 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot is not None
     assert snapshot.plan == "Pro"
     assert len(snapshot.windows) == 2
-    assert snapshot.windows[0].label == "Session"
+    assert [window.label for window in snapshot.windows] == ["Session", "Weekly"]
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
     assert "Credits balance: $12.50" in snapshot.details
+
+
+def test_fetch_account_usage_codex_labels_weekly_primary_window(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "access-token",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 25,
+                        "limit_window_seconds": 604800,
+                    },
+                },
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert [(window.label, window.used_percent) for window in snapshot.windows] == [
+        ("Weekly", 25.0)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("window", "expected_label"),
+    [
+        ({"used_percent": 10}, "Unknown"),
+        ({"used_percent": 20, "limit_window_seconds": 86400}, "Unknown"),
+    ],
+)
+def test_fetch_account_usage_codex_keeps_unknown_window_duration_visible(
+    monkeypatch, window, expected_label
+):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "access-token",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {"rate_limit": {"primary_window": window}}
+        ),
+    )
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert [(item.label, item.used_percent) for item in snapshot.windows] == [
+        (expected_label, float(window["used_percent"]))
+    ]
 
 
 def test_render_account_usage_lines_includes_reset_and_provider():

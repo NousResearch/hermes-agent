@@ -40,10 +40,12 @@ def codex_usage_payload():
             "primary_window": {
                 "used_percent": 21,
                 "reset_at": 1779846359,
+                "limit_window_seconds": 18000,
             },
             "secondary_window": {
                 "used_percent": 4,
                 "reset_at": 1780230796,
+                "limit_window_seconds": 604800,
             },
         },
         "credits": {"has_credits": False},

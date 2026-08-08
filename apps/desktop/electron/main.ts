@@ -6210,6 +6210,10 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
     win.webContents.on('did-navigate', () => void checkCookie())
     win.webContents.on('did-redirect-navigation', () => void checkCookie())
     win.webContents.on('did-frame-navigate', () => void checkCookie())
+    // Log-only lifecycle diagnostics: a crashed sign-in renderer is invisible
+    // to the window's promise path (it never settles), so without this the
+    // failure leaves no trace in desktop.log (#81290 follow-up).
+    installWindowRendererLifecycle(win, { kind: 'oauth', callbacks: { log: rememberLog } })
     pollTimer = setInterval(() => void checkCookie(), 750)
 
     // Silent-mode reveal fallback: if the cascade hasn't settled shortly, the
@@ -6703,6 +6707,11 @@ function openPortalLoginWindow() {
     win.webContents.on('did-navigate', () => void checkCookie())
     win.webContents.on('did-redirect-navigation', () => void checkCookie())
     win.webContents.on('did-frame-navigate', () => void checkCookie())
+    // Log-only lifecycle diagnostics, same rationale as the OAuth window:
+    // a crashed portal sign-in renderer never settles the promise, so the
+    // failure would otherwise leave no trace in desktop.log (#81290
+    // follow-up).
+    installWindowRendererLifecycle(win, { kind: 'portal', callbacks: { log: rememberLog } })
     pollTimer = setInterval(() => void checkCookie(), 750)
 
     win.on('closed', () => {

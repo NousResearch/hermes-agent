@@ -2771,6 +2771,15 @@ class BasePlatformAdapter(ABC):
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
+        # Set by GatewayRunner for secondary multiplexed profiles (None for the
+        # default profile). Must be known synchronously at construction time —
+        # NOT via the message-handler wrapper (_make_profile_message_handler),
+        # which only stamps event.source.profile *inside* self._message_handler,
+        # too late for handle_message()'s busy/approval/draining checks below,
+        # which run before self._message_handler is ever called and silently
+        # fall back to the default profile's adapter when source.profile is
+        # still unset. See gateway/platforms/base.py::handle_message.
+        self.profile_name: Optional[str] = None
         self._message_handler: Optional[MessageHandler] = None
         # Optional gateway-supplied fan-out for platform-native emoji
         # reaction events (see ``set_reaction_handler``).
@@ -5673,6 +5682,19 @@ class BasePlatformAdapter(ABC):
         if not self._message_handler:
             return
 
+        # Stamp the owning profile before any routing decision below reads
+        # it. _make_profile_message_handler() (gateway/run.py) also stamps
+        # this, but only inside self._message_handler — after the
+        # busy/approval/draining checks and session_key build that follow.
+        # Without this early stamp, those checks resolve source.profile as
+        # unset and _adapter_for_source() silently falls back to the default
+        # profile's adapter, misrouting secondary-profile replies.
+        # getattr(..., None): some tests construct adapters via
+        # object.__new__() and skip __init__, so profile_name may not be set.
+        _profile_name = getattr(self, "profile_name", None)
+        if getattr(event, "source", None) is not None and not event.source.profile:
+            event.source.profile = _profile_name
+
         coerce_plaintext_gateway_command(event)
 
         # Telegram topic recovery only applies to private DM topic lanes. Do
@@ -5690,6 +5712,7 @@ class BasePlatformAdapter(ABC):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=_profile_name,
         )
 
         # On-entry self-heal: if the adapter still has an _active_sessions

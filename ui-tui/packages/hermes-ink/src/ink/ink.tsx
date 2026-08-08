@@ -1134,7 +1134,12 @@ export default class Ink {
     const { bytes: writeBytes, backpressure } = writeDiffToTerminal(
       this.terminal,
       optimized,
-      this.altScreenActive && !SYNC_OUTPUT_SUPPORTED,
+      // Gate on the capability alone, not on the screen mode: a terminal that
+      // can't honor DEC 2026 gains nothing from BSU/ESU on the main screen
+      // either, and under a multiplexer the markers show up as repeated or
+      // garbled scrollback frames. This mirrors the capability the diff
+      // generator is already given above.
+      !SYNC_OUTPUT_SUPPORTED,
       trackDrain
         ? () => {
             // Callback fires once Node has flushed the chunk to the OS.
@@ -2430,7 +2435,10 @@ export default class Ink {
     // Non-TTY environments don't handle erasing ansi escapes well, so it's better to
     // only render last frame of non-static output
     const diff = this.log.renderPreviousOutput_DEPRECATED(this.frontFrame)
-    writeDiffToTerminal(this.terminal, optimize(diff))
+    // Same capability gate as the main render path — this final unmount frame
+    // lands in the visible scrollback, so it must not emit markers the
+    // terminal can't honor.
+    writeDiffToTerminal(this.terminal, optimize(diff), !SYNC_OUTPUT_SUPPORTED)
 
     // Clean up terminal modes synchronously before process exit.
     // React's componentWillUnmount won't run in time when process.exit() is called,

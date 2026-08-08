@@ -67,16 +67,20 @@ export function isProgressReportingAvailable(): boolean {
  * Checks if the terminal supports DEC mode 2026 (synchronized output).
  * When supported, BSU/ESU sequences prevent visible flicker during redraws.
  */
-export function isSynchronizedOutputSupported(): boolean {
-  // tmux parses and proxies every byte but doesn't implement DEC 2026.
-  // BSU/ESU pass through to the outer terminal but tmux has already
-  // broken atomicity by chunking. Skip to save 16 bytes/frame + parser work.
-  if (process.env.TMUX) {
+export function isSynchronizedOutputSupported(env: NodeJS.ProcessEnv = process.env): boolean {
+  // Terminal multiplexers parse and proxy every byte but don't implement
+  // DEC 2026. BSU/ESU pass through to the outer terminal, but the multiplexer
+  // has already broken atomicity by chunking — so the outer terminal's
+  // capability must not be trusted through one. Skip to save 16 bytes/frame
+  // + parser work. Same multiplexer set as termio/osc.ts (TMUX/STY), plus
+  // Zellij, which sets ZELLIJ to the session index ("0" for the first
+  // session) — so all three guard on presence, not value.
+  if (env.TMUX || env.STY || env.ZELLIJ) {
     return false
   }
 
-  const termProgram = process.env.TERM_PROGRAM
-  const term = process.env.TERM
+  const termProgram = env.TERM_PROGRAM
+  const term = env.TERM
 
   // Modern terminals with known DEC 2026 support
   if (
@@ -92,7 +96,7 @@ export function isSynchronizedOutputSupported(): boolean {
   }
 
   // kitty sets TERM=xterm-kitty or KITTY_WINDOW_ID
-  if (term?.includes('kitty') || process.env.KITTY_WINDOW_ID) {
+  if (term?.includes('kitty') || env.KITTY_WINDOW_ID) {
     return true
   }
 
@@ -112,17 +116,17 @@ export function isSynchronizedOutputSupported(): boolean {
   }
 
   // Zed uses the alacritty_terminal crate which supports DEC 2026
-  if (process.env.ZED_TERM) {
+  if (env.ZED_TERM) {
     return true
   }
 
   // Windows Terminal
-  if (process.env.WT_SESSION) {
+  if (env.WT_SESSION) {
     return true
   }
 
   // VTE-based terminals (GNOME Terminal, Tilix, etc.) since VTE 0.68
-  const vteVersion = process.env.VTE_VERSION
+  const vteVersion = env.VTE_VERSION
 
   if (vteVersion) {
     const version = parseInt(vteVersion, 10)
@@ -346,9 +350,11 @@ export function writeDiffToTerminal(
     return { bytes: 0, backpressure: false }
   }
 
-  // BSU/ESU wrapping is opt-out to keep main-screen behavior unchanged.
-  // Callers pass skipSyncMarkers=true when the terminal doesn't support
-  // DEC 2026 (e.g. tmux) AND the cost matters (high-frequency alt-screen).
+  // BSU/ESU wrapping is opt-out. Callers pass skipSyncMarkers=true whenever
+  // the terminal can't honor DEC 2026 (a multiplexer such as tmux, screen or
+  // Zellij), on the main screen as well as the alt screen — an unsupported
+  // terminal gains no atomicity from the markers and may render them as
+  // repeated or garbled frames in the visible scrollback.
   const useSync = !skipSyncMarkers
 
   // Buffer all writes into a single string to avoid multiple write calls

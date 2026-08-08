@@ -3644,6 +3644,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             target_clause = "WHERE id = ?"
             query_params = []
             if include_compression_ancestors:
+                # Marker-PRESENCE (IS NULL) misclassifies a real continuation
+                # as a delegate/branch child: compression continuations
+                # inherit the rotated agent's model_config verbatim
+                # (publish_compression_child callers pass
+                # agent._session_init_model_config), so a delegate subagent's
+                # continuation carries _delegate_from=<the delegate's own
+                # parent> — a marker that exists but does NOT point at the
+                # parent being walked here. Same bug class fixed in
+                # find_live_compression_child / reopen_orphaned_compression_session
+                # (see _NON_CONTINUATION_CHILD_FILTER_SQL) but this recursive
+                # walk evaluates a different "parent" at every step, so the
+                # exclusion is bound to the correlated parent.id column
+                # rather than a single top-level bound parameter.
                 lineage_cte = """
                     WITH RECURSIVE compression_lineage(id) AS (
                         SELECT ?
@@ -3653,14 +3666,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         JOIN sessions child ON child.id = lineage.id
                         JOIN sessions parent ON parent.id = child.parent_session_id
                         WHERE parent.end_reason = 'compression'
-                          AND json_extract(
+                          AND COALESCE(json_extract(
                               COALESCE(child.model_config, '{}'),
                               '$._branched_from'
-                          ) IS NULL
-                          AND json_extract(
+                          ), '') != parent.id
+                          AND COALESCE(json_extract(
                               COALESCE(child.model_config, '{}'),
                               '$._delegate_from'
-                          ) IS NULL
+                          ), '') != parent.id
                           AND COALESCE(child.source, '') != 'tool'
                     )
                 """

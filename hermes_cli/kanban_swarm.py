@@ -90,6 +90,7 @@ def create_swarm(
     workspace_path: Optional[str] = None,
     priority: int = 0,
     idempotency_key: Optional[str] = None,
+    max_runtime_seconds: Optional[int] = 600,
 ) -> SwarmCreated:
     """Create a durable Kanban swarm graph.
 
@@ -124,6 +125,7 @@ def create_swarm(
         idempotency_key=idempotency_key,
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
+        max_runtime_seconds=max_runtime_seconds,
     )
 
     # If idempotency returned an existing non-archived root, do not duplicate the
@@ -168,7 +170,7 @@ def create_swarm(
             workspace_kind=workspace_kind,
             workspace_path=workspace_path,
             skills=spec.skills or None,
-            max_runtime_seconds=spec.max_runtime_seconds,
+            max_runtime_seconds=spec.max_runtime_seconds or max_runtime_seconds,
         )
         worker_ids.append(worker_id)
 
@@ -190,6 +192,7 @@ def create_swarm(
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
         skills=["requesting-code-review"],
+        max_runtime_seconds=max_runtime_seconds,
     )
 
     synthesizer_body = (
@@ -209,6 +212,7 @@ def create_swarm(
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
         skills=["humanizer"],
+        max_runtime_seconds=max_runtime_seconds,
     )
 
     created = SwarmCreated(root, worker_ids, verifier, synthesizer)

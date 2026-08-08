@@ -20,6 +20,7 @@ import {
 import { cn } from '@/lib/utils'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 
+import { CwdPill } from './cwd-pill'
 import type { ConversationStatus } from './hooks/use-voice-conversation'
 import { ModelPill } from './model-pill'
 import type { ChatBarState, VoiceStatus } from './types'
@@ -57,6 +58,7 @@ export function ComposerControls({
   canSubmit,
   compactModelPill = false,
   conversation,
+  cwd,
   disabled,
   hasComposerPayload,
   state,
@@ -71,6 +73,7 @@ export function ComposerControls({
   canSubmit: boolean
   compactModelPill?: boolean
   conversation: ConversationProps
+  cwd?: null | string
   disabled: boolean
   hasComposerPayload: boolean
   state: ChatBarState
@@ -165,6 +168,7 @@ export function ComposerControls({
           </Button>
         </Tip>
       )}
+      <CwdPill cwd={cwd} />
     </div>
   )
 }

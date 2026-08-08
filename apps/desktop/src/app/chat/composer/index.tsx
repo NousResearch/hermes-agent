@@ -927,6 +927,7 @@ export function ChatBar({
         onToggleMute: conversation.toggleMute,
         status: conversation.status
       }}
+      cwd={cwd ?? null}
       disabled={disabled}
       hasComposerPayload={hasComposerPayload}
       onDictate={dictate}

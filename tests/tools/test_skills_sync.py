@@ -216,6 +216,10 @@ class TestExternalDirsIndexing:
         stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
         stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
         stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        stack.enter_context(patch(
+            "tools.skills_sync.TOMBSTONE_FILE",
+            skills_dir / ".bundled_tombstones",
+        ))
         return stack
 
     def test_shadowed_skill_skipped_and_not_manifested(self, tmp_path):
@@ -282,6 +286,10 @@ class TestRenamedBundledSkillRecovery:
         )
         stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
         stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        stack.enter_context(patch(
+            "tools.skills_sync.TOMBSTONE_FILE",
+            skills_dir / ".bundled_tombstones",
+        ))
         return stack
 
     def _skill(self, root, rel, body="# Body\n", name="moved-skill"):
@@ -369,12 +377,15 @@ class TestRenamedBundledSkillRecovery:
         assert "hub-skill" not in result.get("relocated", [])
 
     def test_genuine_user_deletion_still_respected(self, tmp_path):
-        """No copy anywhere on disk = a real deletion; must not be resurrected."""
+        """No copy anywhere on disk, plus an explicit tombstone = a real
+        deletion; must not be resurrected (#54085)."""
         bundled = tmp_path / "bundled"
         skills_dir = tmp_path / "user_skills"
         skills_dir.mkdir(parents=True, exist_ok=True)
         manifest_file = skills_dir / ".bundled_manifest"
         manifest_file.write_text("moved-skill:deadbeef\n")
+        # Explicit tombstone marks the genuine user deletion (#54085).
+        (skills_dir / ".bundled_tombstones").write_text("moved-skill\n")
 
         self._skill(bundled, "newcat/moved-skill")
 
@@ -398,7 +409,7 @@ class TestSyncSkills:
         (bundled / "old-skill" / "SKILL.md").write_text("# Old")
         return bundled
 
-    def _patches(self, bundled, skills_dir, manifest_file):
+    def _patches(self, bundled, skills_dir, manifest_file, tombstone_file=None):
         """Return context manager stack for patching sync globals."""
         from contextlib import ExitStack
         stack = ExitStack()
@@ -406,6 +417,10 @@ class TestSyncSkills:
         stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
         stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
         stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        stack.enter_context(patch(
+            "tools.skills_sync.TOMBSTONE_FILE",
+            tombstone_file or (skills_dir / ".bundled_tombstones"),
+        ))
         return stack
 
     def test_suppressed_builtin_not_reseeded(self, tmp_path):
@@ -449,26 +464,50 @@ class TestSyncSkills:
         assert len(manifest["new-skill"]) == 32
         assert len(manifest["old-skill"]) == 32
 
-    def test_user_deleted_skill_not_re_added_and_stale_entries_cleaned(self, tmp_path):
-        """In manifest but not on disk = user deleted it; don't re-add. And a
-        manifest entry no longer present in bundled gets cleaned out."""
+    def test_user_deleted_skill_tombstone_respected_and_stale_entries_cleaned(self, tmp_path):
+        """In manifest but not on disk, with a tombstone = respected as user
+        deletion; don't re-add. And a manifest entry no longer present in
+        bundled gets cleaned out."""
         bundled = self._setup_bundled(tmp_path)
         skills_dir = tmp_path / "user_skills"
         manifest_file = skills_dir / ".bundled_manifest"
+        tombstone_file = skills_dir / ".bundled_tombstones"
         skills_dir.mkdir(parents=True)
         old_hash = _dir_hash(bundled / "old-skill")
         manifest_file.write_text(f"old-skill:{old_hash}\nremoved-skill:def456\n")
+        # Explicit tombstone marks old-skill as intentionally deleted.
+        tombstone_file.write_text("old-skill\n")
 
         with self._patches(bundled, skills_dir, manifest_file):
             result = sync_skills(quiet=True)
             manifest = _read_manifest()
 
         assert "new-skill" in result["copied"]
+        assert "old-skill" in result["tombstoned"]
         assert "old-skill" not in result["copied"]
         assert "old-skill" not in result.get("updated", [])
         assert not (skills_dir / "old-skill").exists()
         assert "removed-skill" in result["cleaned"]
         assert "removed-skill" not in manifest
+
+    def test_untombstoned_missing_skill_restored(self, tmp_path):
+        """Skill in manifest, missing from disk, no tombstone = restored from bundled."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        skills_dir.mkdir(parents=True)
+        old_hash = _dir_hash(bundled / "old-skill")
+        manifest_file.write_text(f"old-skill:{old_hash}\n")
+        # No tombstone file at all — skill should be restored
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        assert "new-skill" in result["copied"]
+        assert "old-skill" in result["copied"], (
+            "Skill in manifest but missing from disk should be restored when no tombstone exists"
+        )
+        assert (skills_dir / "old-skill" / "SKILL.md").exists()
 
 
     def test_copy_failure_does_not_poison_manifest_or_destroy_user_copy(self, tmp_path):
@@ -541,6 +580,10 @@ class TestResetBundledSkill:
         stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
         stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
         stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        stack.enter_context(patch(
+            "tools.skills_sync.TOMBSTONE_FILE",
+            skills_dir / ".bundled_tombstones",
+        ))
         return stack
 
     def test_reset_clears_stuck_user_modified_flag(self, tmp_path):
@@ -718,6 +761,10 @@ class TestNoBundledSkillsOptOut:
             stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
             stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
             stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+            stack.enter_context(patch(
+                "tools.skills_sync.TOMBSTONE_FILE",
+                skills_dir / ".bundled_tombstones",
+            ))
             stack.enter_context(patch("tools.skills_sync.HERMES_HOME", hermes_home))
             return stack
 
@@ -830,6 +877,10 @@ class TestUpdateBackupRecovery:
         stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
         stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
         stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        stack.enter_context(patch(
+            "tools.skills_sync.TOMBSTONE_FILE",
+            skills_dir / ".bundled_tombstones",
+        ))
         return stack
 
     def _seed_synced_copy(self, skills_dir, manifest_file, text="# Old v1"):

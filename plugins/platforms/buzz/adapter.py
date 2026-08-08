@@ -46,7 +46,7 @@ import time
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
@@ -88,6 +88,10 @@ from gateway.config import Platform
 # returns housekeeping kinds (joins, canvas updates, …) — only kind 9 is
 # dispatched to the agent.
 _CHAT_KIND = 9
+_MENTION_RECOVERY_LIMIT = 5
+_REJECTED_MENTION_RE = re.compile(
+    r"mention ['\"](?P<token>@.+?)['\"] (?:does not match a current channel member|is ambiguous)"
+)
 # How many events to request per poll / seed call.
 _FETCH_LIMIT = 50
 # Bound on the per-channel de-dupe set (events, not bytes).
@@ -344,6 +348,46 @@ def _parse_json_list(stdout: str) -> List[dict]:
     return [item for item in data if isinstance(item, dict)]
 
 
+def _neutralize_rejected_mention(content: str, error: str) -> Optional[str]:
+    """Render one rejected ``@Name`` as prose so the next CLI preflight can proceed."""
+    match = _REJECTED_MENTION_RE.search(error or "")
+    if not match:
+        return None
+    token = match.group("token")
+    if token not in content:
+        return None
+    core = token.rstrip(".,!?;:")
+    suffix = token[len(core):]
+    if not core:
+        return None
+    return content.replace(token, f"`{core}`{suffix}")
+
+
+async def _send_with_mention_recovery(
+    execute: Callable[[str, Optional[str]], Awaitable[Tuple[int, str, str]]],
+    content: str,
+    *,
+    reply_author: Optional[str] = None,
+) -> Tuple[int, str, str]:
+    """Retry only CLI-rejected presentation mentions; publishing never occurred."""
+    current = content
+    explicit_mention: Optional[str] = None
+    for attempt in range(_MENTION_RECOVERY_LIMIT + 1):
+        code, out, err = await execute(current, explicit_mention)
+        if code == 0:
+            return code, out, err
+        revised = _neutralize_rejected_mention(current, err)
+        if revised is None or attempt == _MENTION_RECOVERY_LIMIT:
+            return code, out, err
+        if reply_author and explicit_mention is None:
+            explicit_mention = reply_author
+            logger.warning("Buzz: retrying rejected presentation mention with reply recipient")
+            continue
+        logger.warning("Buzz: neutralizing unresolved presentation mention before retry")
+        current = revised
+    raise AssertionError("unreachable")
+
+
 # ---------------------------------------------------------------------------
 # Buzz Adapter
 # ---------------------------------------------------------------------------
@@ -435,6 +479,10 @@ class BuzzAdapter(BasePlatformAdapter):
         # classification (see _may_reclassify_as_dm).
         self._channel_meta: Dict[str, dict] = {}
         self._user_names: Dict[str, str] = {}
+        # Inbound message id -> author pubkey. Outbound replies use this to
+        # supply the CLI's explicit mention identity, which both notifies the
+        # requester and permits unrelated @words in generated prose.
+        self._reply_authors: OrderedDict[str, str] = OrderedDict()
         self._poll_count = 0
 
     @property
@@ -595,6 +643,7 @@ class BuzzAdapter(BasePlatformAdapter):
                 pass
         self._poll_task = None
         self._channel_state = {}
+        self._reply_authors.clear()
         self._poll_count = 0
 
     # ── Sending ───────────────────────────────────────────────────────────
@@ -609,10 +658,21 @@ class BuzzAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
-        reply_target = reply_to or (metadata or {}).get("thread_id")
+        source_message_id = reply_to or (metadata or {}).get("thread_id")
+        reply_target = source_message_id
+        reply_author = (
+            self._reply_authors.get(str(source_message_id)) if source_message_id else None
+        )
         if reply_target:
             args += ["--reply-to", str(reply_target)]
-        code, out, err = await self._run_cli(args, input_text=content)
+        code, out, err = await _send_with_mention_recovery(
+            lambda revised, mention: self._run_cli(
+                args + (["--mention", mention] if mention else []),
+                input_text=revised,
+            ),
+            content,
+            reply_author=reply_author,
+        )
         if code != 0:
             return SendResult(
                 success=False,
@@ -681,9 +741,20 @@ class BuzzAdapter(BasePlatformAdapter):
                 "--file", str(local),
                 "--content", "-",
             ]
+            source_message_id = reply_to or (metadata or {}).get("thread_id")
+            reply_author = (
+                self._reply_authors.get(str(source_message_id)) if source_message_id else None
+            )
             if reply_to:
                 args += ["--reply-to", str(reply_to)]
-            code, out, err = await self._run_cli(args, input_text=caption or "")
+            code, out, err = await _send_with_mention_recovery(
+                lambda revised, mention: self._run_cli(
+                    args + (["--mention", mention] if mention else []),
+                    input_text=revised,
+                ),
+                caption or "",
+                reply_author=reply_author,
+            )
             if code != 0:
                 return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
             try:
@@ -1042,6 +1113,11 @@ class BuzzAdapter(BasePlatformAdapter):
             logger.debug("Buzz: ignoring message from unauthorized pubkey %s…", pubkey[:8])
             return
 
+        self._reply_authors[event_id] = pubkey
+        self._reply_authors.move_to_end(event_id)
+        while len(self._reply_authors) > _SEEN_CAP:
+            self._reply_authors.popitem(last=False)
+
         # Strip a leading @mention so slash commands (@Chip /whoami ->
         # /whoami) and clean prompts are recognized. DM messages often still
         # open with "@Chip" even though no mention is required there, so the
@@ -1391,8 +1467,15 @@ async def _standalone_send(
     for path in media_files or []:
         args += ["--file", str(path)]
     try:
-        code, out, err = await _exec_buzz(
-            cli_path, args, relay_url=relay, private_key=private_key, input_text=message
+        code, out, err = await _send_with_mention_recovery(
+            lambda revised, _mention: _exec_buzz(
+                cli_path,
+                args,
+                relay_url=relay,
+                private_key=private_key,
+                input_text=revised,
+            ),
+            message,
         )
     except asyncio.CancelledError:
         raise

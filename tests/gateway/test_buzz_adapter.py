@@ -104,6 +104,19 @@ class _ScriptedCli:
 # ── bech32 / identity helpers ─────────────────────────────────────────────
 
 
+def _rejected_mention_error(token="@mentioned."):
+    return json.dumps(
+        {
+            "error": "user_error",
+            "message": (
+                f"mention '{token}' does not match a current channel member; "
+                "retry with --mention <pubkey>"
+            ),
+            "retryable": False,
+        }
+    )
+
+
 class TestBech32Helpers:
 
     def test_hex_to_npub_known_pair(self):
@@ -407,6 +420,82 @@ class TestBuzzAdapterSend:
         # Our own event id is marked seen for echo suppression
         assert "evt123" in adapter._channel_state[CHANNEL]["seen"]
 
+    @pytest.mark.asyncio
+    async def test_reply_supplies_triggering_author_as_explicit_mention(self):
+        adapter = _make_adapter()
+        state = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        adapter._channel_state[CHANNEL] = state
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr=_rejected_mention_error(),
+        )
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt124", "message": ""})
+        adapter._run_cli = cli
+
+        await adapter._handle_event(
+            CHANNEL,
+            state,
+            _event("trigger", content="@Chip explain what happens when you are @mentioned"),
+        )
+        result = await adapter.send(
+            CHANNEL,
+            "You are notified when you are @mentioned.",
+            reply_to="trigger",
+        )
+
+        assert result.success is True
+        send_calls = [call for call in cli.calls if call[0][:2] == ["messages", "send"]]
+        assert "--mention" not in send_calls[0][0]
+        assert send_calls[1][0][send_calls[1][0].index("--mention") + 1] == OTHER_PUBKEY
+        assert [stdin for _args, stdin in send_calls] == [
+            "You are notified when you are @mentioned.",
+            "You are notified when you are @mentioned.",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_send_neutralizes_only_rejected_presentation_mention(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr=_rejected_mention_error(),
+        )
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt125", "message": ""})
+        adapter._run_cli = cli
+
+        result = await adapter.send(CHANNEL, "You are @mentioned. Ask @Chip for help.")
+
+        assert result.success is True
+        send_calls = [call for call in cli.calls if call[0][:2] == ["messages", "send"]]
+        assert len(send_calls) == 2
+        assert send_calls[0][1] == "You are @mentioned. Ask @Chip for help."
+        assert send_calls[1][1] == "You are `@mentioned`. Ask @Chip for help."
+
+    @pytest.mark.asyncio
+    async def test_send_does_not_retry_unrelated_cli_error(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr=json.dumps({"error": "relay_error", "message": "relay unavailable"}),
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send(CHANNEL, "You are @mentioned.")
+
+        assert result.success is False
+        assert len([call for call in cli.calls if call[0][:2] == ["messages", "send"]]) == 1
+
 
     @pytest.mark.asyncio
     async def test_send_image_local_file_uses_file_flag(self, tmp_path):
@@ -420,6 +509,41 @@ class TestBuzzAdapterSend:
         assert result.success is True
         args, _stdin = cli.calls[0]
         assert args[args.index("--file") + 1] == str(img)
+
+    @pytest.mark.asyncio
+    async def test_send_image_reply_supplies_triggering_author(self, tmp_path):
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG fake")
+        adapter = _make_adapter()
+        state = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        adapter._channel_state[CHANNEL] = state
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr=_rejected_mention_error(),
+        )
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt126", "message": ""})
+        adapter._run_cli = cli
+        await adapter._handle_event(CHANNEL, state, _event("image-trigger", content="@Chip show it"))
+
+        result = await adapter.send_image(
+            CHANNEL,
+            str(img),
+            caption="Diagram of being @mentioned.",
+            reply_to="image-trigger",
+        )
+
+        assert result.success is True
+        send_calls = [call for call in cli.calls if call[0][:2] == ["messages", "send"]]
+        assert "--mention" not in send_calls[0][0]
+        assert send_calls[1][0][send_calls[1][0].index("--mention") + 1] == OTHER_PUBKEY
+        assert [stdin for _args, stdin in send_calls] == [
+            "Diagram of being @mentioned.",
+            "Diagram of being @mentioned.",
+        ]
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -537,4 +661,39 @@ class TestStandaloneSend:
         # The private key must never be part of argv
         assert all("nsec1x" not in str(a) for a in captured["args"])
 
+    @pytest.mark.asyncio
+    async def test_standalone_send_recovers_rejected_presentation_mention(
+        self, monkeypatch, tmp_path
+    ):
+        from gateway.config import PlatformConfig
 
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://r")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1x")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+        calls = []
+
+        async def fake_exec(cli_path, args, *, relay_url, private_key, input_text=None, timeout=30.0):
+            calls.append((list(args), input_text))
+            if len(calls) == 1:
+                return (
+                    1,
+                    "",
+                    _rejected_mention_error(),
+                )
+            return 0, json.dumps({"accepted": True, "event_id": "evt-cron"}), ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            CHANNEL,
+            "Cron explains when you are @mentioned.",
+        )
+
+        assert result == {"success": True, "message_id": "evt-cron"}
+        assert [text for _args, text in calls] == [
+            "Cron explains when you are @mentioned.",
+            "Cron explains when you are `@mentioned`.",
+        ]

@@ -5027,7 +5027,13 @@ class YuanbaoAdapter(BasePlatformAdapter):
             if policy.dm_policy == "pairing":
                 from gateway.pairing import PairingStore
 
-                return PairingStore().is_approved(Platform.YUANBAO.value, sender)
+                # Multiplex gateways serve secondary profiles via a
+                # dedicated adapter instance per profile (GatewayRunner
+                # stamps self._own_profile on it); route to that profile's
+                # own PairingStore rather than the global default's.
+                profile = getattr(self, "_own_profile", None)
+                store = PairingStore(profile=profile) if profile else PairingStore()
+                return store.is_approved(Platform.YUANBAO.value, sender)
             return False
         if ctx.chat_type == "group":
             group_code = str(ctx.group_code or "").strip()

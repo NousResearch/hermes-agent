@@ -4587,14 +4587,25 @@ class DiscordAdapter(BasePlatformAdapter):
         return bool(channel_ids & allowed)
 
     def _is_pairing_approved_user(self, user_id: str) -> bool:
-        """True when the Discord user has an explicit Hermes pairing grant."""
+        """True when the Discord user has an explicit Hermes pairing grant.
+
+        Multiplex gateways serve secondary profiles via a dedicated
+        DiscordAdapter instance per profile (GatewayRunner stamps
+        ``self._own_profile`` on it); route to that profile's own
+        PairingStore so a user paired only on a routed profile isn't
+        rejected here before the pairing-aware gateway layer (which does
+        resolve per-profile, see authz_mixin._pairing_store_for) ever sees
+        the message. Falls back to the global store for the default profile.
+        """
         user_id = str(user_id or "").strip()
         if not user_id:
             return False
         try:
             from gateway.pairing import PairingStore
 
-            return bool(PairingStore().is_approved("discord", user_id))
+            profile = getattr(self, "_own_profile", None)
+            store = PairingStore(profile=profile) if profile else PairingStore()
+            return bool(store.is_approved("discord", user_id))
         except Exception:
             return False
 

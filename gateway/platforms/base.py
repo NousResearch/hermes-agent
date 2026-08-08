@@ -2837,6 +2837,13 @@ class BasePlatformAdapter(ABC):
         # mitigating indirect prompt injection from third parties in a shared
         # thread/channel.
         self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
+        # Multiplex profile this adapter instance serves, if any. Set by
+        # GatewayRunner alongside set_authorization_check() (None for the
+        # active/default profile's adapters). Adapters that resolve their own
+        # PairingStore for an early admission gate (rather than going through
+        # authz_mixin._is_user_authorized(), which already routes per-profile)
+        # need this to avoid checking the wrong profile's approved-user list.
+        self._own_profile: Optional[str] = None
         # Auto-TTS on voice input: ``_auto_tts_default`` is the global default
         # (``voice.auto_tts`` in config.yaml, pushed by GatewayRunner on connect).
         # Per-chat overrides live in two sets populated from ``_voice_mode``:

@@ -13639,6 +13639,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         adapter.set_authorization_check(
             self._make_adapter_auth_check(platform, profile_name=profile_name)
         )
+        # Adapters that resolve their own PairingStore for an early
+        # admission gate (e.g. DiscordAdapter._is_pairing_approved_user)
+        # need to know which profile they serve so they check that
+        # profile's approved-user list, not the global default's.
+        adapter._own_profile = profile_name
         adapter._busy_text_mode = self._busy_text_mode
 
     async def _run_secondary_profile_reconnect(

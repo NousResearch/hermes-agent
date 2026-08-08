@@ -1303,7 +1303,12 @@ def is_voice_stop_phrase(transcript: str, stop_phrases: Optional[tuple] = None) 
     """
     if not transcript:
         return False
-    cleaned = transcript.strip().lower().strip(".,!?;: \t\n\"'")
+    # Strip ASCII AND full-width/CJK punctuation: whisper transcribes
+    # Chinese with full-width marks (停止。 / 停止！ / “停止”), which the
+    # ASCII-only set left behind and silently broke exact-match phrases.
+    cleaned = transcript.strip().lower().strip(
+        ".,!?;: \t\n\"'。，！？；：、…“”‘’()（）「」『』—"
+    )
     if not cleaned:
         return False
     if stop_phrases is None:

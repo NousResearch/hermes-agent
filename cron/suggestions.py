@@ -42,6 +42,16 @@ from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
+# L2 enforcement (post-turn READONLY gate): refuse suggestion writes
+# from the background-review origin when HERMES_DISABLE_SELF_IMPROVEMENT
+# or HERMES_READ_ONLY_SESSION is activated. Read paths of
+# ``load_suggestions``/``list_pending`` stay unaffected.
+from agent.self_improvement_policy import (
+    BACKGROUND_REVIEW_ORIGIN as _POLICY_BG_REVIEW_ORIGIN,
+    evaluate as _policy_evaluate,
+)
+from tools.skill_provenance import is_background_review
+
 # Per-profile by design (issue #4707): suggestions live alongside the active
 # profile's cron store. Anchor on get_hermes_home() (profile home), not the
 # shared default root. See cron/jobs.py for the full rationale.
@@ -60,6 +70,46 @@ VALID_SOURCES = frozenset({"catalog", "blueprint", "usage", "integration"})
 _STATUS_PENDING = "pending"
 _STATUS_ACCEPTED = "accepted"
 _STATUS_DISMISSED = "dismissed"
+
+
+def _background_review_suggestions_guard(action: str, target: str = "") -> bool:
+    """Return True when a background-review suggestion mutation is denied."""
+    provenance_failed = False
+    try:
+        if not is_background_review():
+            return False
+    except Exception:
+        provenance_failed = True
+
+    try:
+        decision = _policy_evaluate(
+            environment_disabled=os.environ.get("HERMES_DISABLE_SELF_IMPROVEMENT", ""),
+            session_read_only=os.environ.get("HERMES_READ_ONLY_SESSION", ""),
+            operation_kind="suggestions_write",
+            origin=_POLICY_BG_REVIEW_ORIGIN,
+            target_path=target or None,
+        )
+    except Exception:
+        logger.exception(
+            "self_improvement_policy.evaluate raised in suggestions guard; defaulting to deny"
+        )
+        return True
+
+    if decision.result == "ALLOW":
+        return False
+
+    _session_id = os.environ.get("HERMES_SESSION_ID", "") or ""
+    logger.warning(
+        "self_improvement_policy deny decision=DENY reason=%r "
+        "operation_kind=suggestions_write origin=background_review "
+        "session_id=%s action=%s target=%s provenance_failed=%s",
+        decision.reason,
+        _session_id,
+        action,
+        target,
+        provenance_failed,
+    )
+    return True
 
 
 def _secure_file(path: Path) -> None:
@@ -145,6 +195,9 @@ def add_suggestion(
     if not title.strip() or not dedup_key.strip():
         raise ValueError("title and dedup_key are required")
 
+    if _background_review_suggestions_guard("add", dedup_key):
+        return None
+
     with _suggestions_lock:
         suggestions = _load_raw().get("suggestions", [])
 
@@ -198,6 +251,8 @@ def get_suggestion(ref: str) -> Optional[Dict[str, Any]]:
 
 
 def _set_status(suggestion_id: str, status: str) -> bool:
+    if _background_review_suggestions_guard("set_status", suggestion_id):
+        return False
     with _suggestions_lock:
         suggestions = _load_raw().get("suggestions", [])
         changed = False
@@ -231,6 +286,8 @@ def accept_suggestion(ref: str, *, origin: Optional[Dict[str, Any]] = None) -> O
     s = get_suggestion(ref)
     if not s or s.get("status") != _STATUS_PENDING:
         return None
+    if _background_review_suggestions_guard("accept", str(s.get("id", ref))):
+        return None
 
     from cron.scheduler import (
         CronSchedulerRegistrationError,
@@ -260,6 +317,8 @@ def clear_resolved() -> int:
     their dedup_key (so they aren't re-offered). This only prunes ACCEPTED
     records, which have served their purpose once the job exists.
     """
+    if _background_review_suggestions_guard("clear_resolved"):
+        return 0
     with _suggestions_lock:
         suggestions = _load_raw().get("suggestions", [])
         kept = [s for s in suggestions if s.get("status") != _STATUS_ACCEPTED]

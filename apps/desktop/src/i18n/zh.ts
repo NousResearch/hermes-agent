@@ -420,6 +420,7 @@ export const zh: Translations = {
       mcp: '搜索 MCP 服务器…',
       sessions: '搜索已归档会话…'
     },
+    searchPageResult: page => `设置: ${page}`,
     modeOptions: {
       light: { label: '明亮', description: '明亮的桌面界面' },
       dark: { label: '暗色', description: '低眩光工作区' },

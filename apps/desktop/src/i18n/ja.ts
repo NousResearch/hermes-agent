@@ -303,6 +303,7 @@ export const ja = defineLocale({
       mcp: 'MCP サーバーを検索…',
       sessions: 'アーカイブ済みセッションを検索…'
     },
+    searchPageResult: page => `設定: ${page}`,
     modeOptions: {
       light: { label: 'ライト', description: '明るいデスクトップ表示' },
       dark: { label: 'ダーク', description: 'まぶしさを抑えたワークスペース' },

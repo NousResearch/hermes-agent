@@ -296,6 +296,7 @@ export const zhHant = defineLocale({
       mcp: '搜尋 MCP 伺服器…',
       sessions: '搜尋已封存工作階段…'
     },
+    searchPageResult: page => `設定: ${page}`,
     modeOptions: {
       light: { label: '明亮', description: '明亮的桌面介面' },
       dark: { label: '深色', description: '降低眩光的工作區' },

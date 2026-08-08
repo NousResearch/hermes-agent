@@ -428,6 +428,7 @@ export const en: Translations = {
       mcp: 'Search MCP servers...',
       sessions: 'Search archived sessions...'
     },
+    searchPageResult: page => `Settings: ${page}`,
     modeOptions: {
       light: { label: 'Light', description: 'Bright desktop surfaces' },
       dark: { label: 'Dark', description: 'Low-glare workspace' },

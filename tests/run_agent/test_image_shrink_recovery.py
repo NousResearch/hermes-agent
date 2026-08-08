@@ -22,7 +22,7 @@ import sys
 from types import SimpleNamespace
 
 
-from agent.conversation_loop import _image_error_max_dimension
+from agent.conversation_loop import _image_error_max_dimension, _image_error_max_pixels
 from agent.error_classifier import FailoverReason, classify_api_error
 
 
@@ -53,6 +53,45 @@ class TestImageTooLargeClassification:
         assert result.reason == FailoverReason.image_too_large
         assert result.retryable is True
 
+    def test_qwen3vlprocessor_400_classified_image_too_large(self):
+        """vLLM's Qwen3VLProcessor rejection (#76505) must classify as
+        image_too_large so the shrink-retry loop fires instead of falling all
+        the way back to the text-mode ``vision_analyze`` path."""
+        err = _FakeApiError(
+            status_code=400,
+            message=(
+                "Failed to apply Qwen3VLProcessor on data={'text': '...', "
+                "'images': [<PIL.Image.Image image mode=RGB size=5120x1440 "
+                "at 0x7607095144D0>]} with kwargs={'return_tensors': 'pt'}"
+            ),
+        )
+        result = classify_api_error(err, provider="vllm", model="qwen3-vl-72b")
+        assert result.reason == FailoverReason.image_too_large
+        assert result.retryable is True
+
+
+class TestImageErrorMaxPixels:
+    """``_image_error_max_pixels`` derives the total-pixel budget from the error."""
+
+    def test_qwen3vlprocessor_error_yields_default_pixel_budget(self):
+        err = _FakeApiError(
+            status_code=400,
+            message="Failed to apply Qwen3VLProcessor on data={'text': '...'}",
+        )
+        assert _image_error_max_pixels(err) == 1_505_280
+
+    def test_qwen_wording_in_body_yields_budget(self):
+        err = _FakeApiError(
+            status_code=400,
+            message="vLLM error 400",
+            body={"error": {"message": "Failed to apply Qwen3VLProcessor on data=..."}},
+        )
+        assert _image_error_max_pixels(err) == 1_505_280
+
+    def test_non_qwen_error_returns_none(self):
+        err = _FakeApiError(status_code=400, message="image exceeds 5 MB maximum")
+        assert _image_error_max_pixels(err) is None
+
 
 
 
@@ -66,6 +105,34 @@ def _big_png_data_url(size_kb: int) -> str:
     # Use real PNG header so MIME detection works; fill to target size.
     raw = b"\x89PNG\r\n\x1a\n" + b"X" * (size_kb * 1024)
     return "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
+
+
+def _make_real_image_data_url(width: int, height: int, fmt: str) -> str:
+    """Build a real, Pillow-decodable data URL of the given size/format."""
+    import io as _io
+
+    from PIL import Image as _PILImage
+
+    buf = _io.BytesIO()
+    if fmt == "GIF":
+        img = _PILImage.new("P", (width, height), 0)
+    else:
+        img = _PILImage.new("RGB", (width, height), (120, 40, 200))
+    img.save(buf, format=fmt)
+    raw = buf.getvalue()
+    mime = {"PNG": "image/png", "GIF": "image/gif", "JPEG": "image/jpeg"}[fmt]
+    return f"data:{mime};base64," + base64.b64encode(raw).decode("ascii")
+
+
+def _decoded_dimensions(data_url: str) -> tuple:
+    """Return ``(width, height)`` decoded from a base64 data URL via Pillow."""
+    import io as _io
+
+    from PIL import Image as _PILImage
+
+    _, _, b64 = data_url.partition(",")
+    with _PILImage.open(_io.BytesIO(base64.b64decode(b64))) as im:
+        return im.size
 
 
 def _install_fake_pillow(
@@ -160,7 +227,7 @@ class TestShrinkImagePartsHelper:
         oversized_url = _big_png_data_url(5000)  # ~5 MB raw → ~6.7 MB b64
         shrunk = "data:image/jpeg;base64," + "A" * 1000  # small
 
-        def _fake_resize(path, mime_type=None, max_base64_bytes=None, max_dimension=None):
+        def _fake_resize(path, mime_type=None, max_base64_bytes=None, max_dimension=None, max_pixels=None):
             return shrunk
 
         monkeypatch.setattr(
@@ -190,7 +257,7 @@ class TestShrinkImagePartsHelper:
         shrunk = "data:image/jpeg;base64," + "N" * 1000
         seen = {}
 
-        def _fake_resize(path, mime_type=None, max_base64_bytes=None, max_dimension=None):
+        def _fake_resize(path, mime_type=None, max_base64_bytes=None, max_dimension=None, max_pixels=None):
             seen["mime_type"] = mime_type
             seen["max_dimension"] = max_dimension
             return shrunk
@@ -226,6 +293,103 @@ class TestShrinkImagePartsHelper:
         assert source["type"] == "base64"
         assert source["media_type"] == "image/jpeg"
         assert source["data"] == "N" * 1000
+
+
+    def test_max_pixels_forwarded_to_resizer(self, monkeypatch):
+        """The Qwen pixel budget must reach ``_resize_image_for_vision``."""
+        agent = _make_agent()
+        oversized = _big_png_data_url(5000)
+        seen = {}
+
+        def _fake_resize(path, mime_type=None, max_base64_bytes=None,
+                         max_dimension=None, max_pixels=None):
+            seen["max_pixels"] = max_pixels
+            return "data:image/jpeg;base64," + "Z" * 500
+
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            _fake_resize,
+            raising=False,
+        )
+
+        msgs = [{
+            "role": "user",
+            "content": [{"type": "image_url", "image_url": {"url": oversized}}],
+        }]
+        assert agent._try_shrink_image_parts_in_messages(
+            msgs, max_pixels=1_505_280,
+        ) is True
+        assert seen["max_pixels"] == 1_505_280
+
+    def test_pixel_budget_trigger_shrinks_reported_qwen_shape(self):
+        """The #76505 reported shape (5120x1440) is under the 4 MB byte budget
+        and under the 8000px per-side default, so the historical shrink never
+        fired for it.  With ``max_pixels=1_505_280`` (Qwen3VLProcessor's
+        budget) the pixel trigger fires and the re-encode lands within the
+        budget — validating the reactive retry against the reported shape."""
+        agent = _make_agent()
+        png_url = _make_real_image_data_url(5120, 1440, "PNG")
+        assert len(png_url) < 4 * 1024 * 1024  # byte budget is not binding
+        msgs = [{
+            "role": "user",
+            "content": [{"type": "image_url", "image_url": {"url": png_url}}],
+        }]
+        changed = agent._try_shrink_image_parts_in_messages(
+            msgs,
+            max_dimension=8000,
+            max_pixels=1_505_280,
+        )
+        assert changed is True
+        new_url = msgs[0]["content"][0]["image_url"]["url"]
+        w, h = _decoded_dimensions(new_url)
+        assert w * h <= 1_505_280
+        assert max(w, h) <= 8000
+
+    def test_pixel_budget_still_over_after_resize_blocks_retry(self, monkeypatch):
+        """A pixel-oversized image whose re-encode stays over the budget is
+        unshrinkable — retrying would re-send the same rejected payload."""
+        agent = _make_agent()
+        # Original AND re-encode both decode to 5120x1440 (over the budget).
+        _install_fake_pillow(monkeypatch, (5120, 1440))
+        url = _big_png_data_url(100)
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            lambda *a, **kw: url,  # echoes the still-oversized payload
+            raising=False,
+        )
+
+        msgs = [{
+            "role": "user",
+            "content": [{"type": "image_url", "image_url": {"url": url}}],
+        }]
+        assert agent._try_shrink_image_parts_in_messages(
+            msgs, max_pixels=1_505_280,
+        ) is False
+        # Original left in place — caller surfaces the provider's 400.
+        assert msgs[0]["content"][0]["image_url"]["url"] == url
+
+    def test_oversized_gif_mime_matches_decoded_format(self):
+        """Regression for the GIF MIME mismatch flagged in PR #76525 review:
+        an oversized GIF shrunk through the reactive path must declare a
+        data-URL MIME that matches the decoded output format (GIF → JPEG
+        normalization), never a stale ``image/gif`` label on JPEG bytes."""
+        agent = _make_agent()
+        gif_url = _make_real_image_data_url(5000, 2000, "GIF")
+        msgs = [{
+            "role": "user",
+            "content": [{"type": "image_url", "image_url": {"url": gif_url}}],
+        }]
+        changed = agent._try_shrink_image_parts_in_messages(
+            msgs,
+            max_dimension=2000,  # 5000px side trips the dimension trigger
+        )
+        assert changed is True
+        new_url = msgs[0]["content"][0]["image_url"]["url"]
+        header, _, b64 = new_url.partition(",")
+        declared_mime = header[len("data:"):].split(";", 1)[0]
+        assert declared_mime == "image/jpeg"  # normalized, not stale image/gif
+        decoded = base64.b64decode(b64)
+        assert decoded[:2] == b"\xff\xd8"  # actual JPEG magic — MIME matches bytes
 
 
     def test_multiple_images_all_shrunk(self, monkeypatch):
@@ -347,7 +511,7 @@ class TestShrinkImagePartsHelper:
         dimensionally_shrunk = "data:image/png;base64," + "G" * 200 * 1024
         seen = {}
 
-        def _fake_resize(path, mime_type=None, max_base64_bytes=None, max_dimension=None):
+        def _fake_resize(path, mime_type=None, max_base64_bytes=None, max_dimension=None, max_pixels=None):
             seen["max_dimension"] = max_dimension
             return dimensionally_shrunk
 
@@ -425,7 +589,7 @@ class TestShrinkImagePartsHelper:
         second = _big_png_data_url(90)
         calls = {"n": 0}
 
-        def _fake_resize(path, mime_type=None, max_base64_bytes=None, max_dimension=None):
+        def _fake_resize(path, mime_type=None, max_base64_bytes=None, max_dimension=None, max_pixels=None):
             calls["n"] += 1
             if calls["n"] == 1:
                 return "data:image/png;base64," + "G" * 200 * 1024  # in-cap

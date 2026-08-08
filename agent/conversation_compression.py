@@ -3741,9 +3741,10 @@ def try_shrink_image_parts_in_messages(
     api_messages: list,
     *,
     max_dimension: int = 8000,
+    max_pixels: Optional[int] = None,
 ) -> bool:
     """Re-encode all native image parts at a smaller size to recover from
-    image-too-large errors (Anthropic 5 MB, unknown other providers).
+    image-too-large errors (Anthropic 5 MB, Qwen VL max_pixels, others).
 
     Mutates ``api_messages`` in place. Returns True if any image part was
     actually replaced, False if there were no image parts to shrink or
@@ -3753,8 +3754,11 @@ def try_shrink_image_parts_in_messages(
     ``data:image/...;base64,...`` payload, plus Anthropic-native
     ``{"type": "image", "source": {"type": "base64", ...}}`` blocks.
     For each one whose encoded size exceeds 4 MB (a safe target that slides
-    under Anthropic's 5 MB ceiling with header overhead) or whose longest side
-    exceeds ``max_dimension``, write the base64 to a tempfile, call
+    under Anthropic's 5 MB ceiling with header overhead), whose longest side
+    exceeds ``max_dimension``, or whose total pixel count exceeds
+    ``max_pixels`` (Qwen2.5/3-VL processors reject images above their
+    ``max_pixels`` budget — default 1,505,280 px — even when bytes and the
+    per-side cap are fine), write the base64 to a tempfile, call
     ``vision_tools._resize_image_for_vision`` to produce a smaller data
     URL, and substitute it in place.
 
@@ -3829,16 +3833,20 @@ def try_shrink_image_parts_in_messages(
         triggered_by = "bytes" if needs_shrink else None
         if not needs_shrink:
             # Bytes are fine — check pixel dimensions against the provider's
-            # reported per-side cap.  A screenshot can be tiny in bytes yet
-            # too large in pixels.
+            # reported per-side cap AND (when present) its total-pixel budget.
+            # A screenshot can be tiny in bytes yet too large in pixels; a
+            # wide-but-short image can be under the per-side cap yet over the
+            # pixel budget (5120x1440: 7.4M px vs Qwen's 1,505,280).
             dims = _decode_pixels(url)
             if dims is None:
                 # Pillow missing or corrupt data — fall back to byte-only.
                 return None, False
-            if max(dims) <= max_dimension:
-                return None, False  # both bytes and pixels are within limits
+            within_dim = max(dims) <= max_dimension
+            within_pixels = max_pixels is None or dims[0] * dims[1] <= max_pixels
+            if within_dim and within_pixels:
+                return None, False  # bytes, per-side and pixel budget all OK
             needs_shrink = True
-            triggered_by = "dimension"
+            triggered_by = "dimension" if not within_dim else "pixels"
 
         try:
             header, _, data = url.partition(",")
@@ -3864,6 +3872,7 @@ def try_shrink_image_parts_in_messages(
                     mime_type=mime,
                     max_base64_bytes=target_bytes,
                     max_dimension=max_dimension,
+                    max_pixels=max_pixels,
                 )
             finally:
                 try:
@@ -3873,32 +3882,44 @@ def try_shrink_image_parts_in_messages(
             if not resized:
                 # Resize returned nothing — Pillow couldn't help.
                 return None, True
+
+            def _within_limits(dims: tuple) -> bool:
+                """True when a decoded (w, h) satisfies every active pixel constraint."""
+                w, h = dims
+                if max(w, h) > max_dimension:
+                    return False
+                if max_pixels is not None and w * h > max_pixels:
+                    return False
+                return True
+
             if triggered_by == "bytes":
                 # Byte budget is the binding constraint — bytes must shrink.
                 if len(resized) >= len(url):
                     return None, True  # re-encode made it bigger
-                # The per-side dimension cap is ALSO an active provider
-                # constraint on this request (the caller passes the parsed cap
-                # to both this helper and the resizer).  _resize_image_for_vision
-                # returns a best-effort, possibly-over-cap blob when it
-                # exhausts its halving budget — it freezes the long side once
-                # the short side hits its 64px floor, so a very-high-aspect
-                # image can stay over the cap even after bytes shrank.  If the
-                # output is still over the cap, retrying would re-400 on
-                # dimensions; treat it as unshrinkable.  (Skip when dims can't
-                # be decoded — preserves historical byte-only behaviour.)
+                # The per-side dimension cap and total-pixel budget are ALSO
+                # active provider constraints on this request (the caller
+                # passes them to both this helper and the resizer).
+                # _resize_image_for_vision returns a best-effort, possibly
+                # over-cap blob when it exhausts its halving budget — it
+                # freezes the long side once the short side hits its 64px
+                # floor, so a very-high-aspect image can stay over the cap
+                # even after bytes shrank.  If the output is still over any
+                # pixel constraint, retrying would re-400; treat it as
+                # unshrinkable.  (Skip when dims can't be decoded — preserves
+                # historical byte-only behaviour.)
                 new_dims = _decode_pixels(resized)
-                if new_dims is not None and max(new_dims) > max_dimension:
+                if new_dims is not None and not _within_limits(new_dims):
                     return None, True
                 return resized, False
-            # triggered_by == "dimension": the per-side cap is binding.  The
-            # re-encode may have grown in bytes; accept it as long as it is now
-            # within the dimension cap.  Verify the new dimensions when we can.
+            # triggered_by in {"dimension", "pixels"}: a pixel constraint is
+            # binding.  The re-encode may have grown in bytes; accept it as
+            # long as every pixel constraint is now satisfied.  Verify the
+            # new dimensions when we can.
             new_dims = _decode_pixels(resized)
             if new_dims is not None:
-                if max(new_dims) <= max_dimension:
+                if _within_limits(new_dims):
                     return resized, False
-                # Still over the per-side cap — the resize didn't satisfy it.
+                # Still over a pixel constraint — the resize didn't satisfy it.
                 return None, True
             # Couldn't verify the re-encode's dimensions (corrupt output or
             # Pillow gone mid-call).  Fall back to the historical "bytes must

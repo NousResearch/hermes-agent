@@ -744,7 +744,8 @@ def _crop_image_region(
 
 def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                               max_base64_bytes: int = _RESIZE_TARGET_BYTES,
-                              max_dimension: Optional[int] = None) -> str:
+                              max_dimension: Optional[int] = None,
+                              max_pixels: Optional[int] = None) -> str:
     """Convert an image to a base64 data URL, auto-resizing if too large.
 
     Tries Pillow first to progressively downscale oversized images.  If Pillow
@@ -756,6 +757,11 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
             count are forcibly downscaled even if they're under the byte
             budget.  Anthropic enforces an 8000 px per-side cap independently
             of the 5 MB byte cap.
+        max_pixels: If set, images whose total pixel count (width * height)
+            exceeds this budget are forcibly downscaled even when bytes and
+            the per-side cap are fine.  Qwen2.5/3-VL processors (incl. vLLM's
+            Qwen3VLProcessor) reject images above their ``max_pixels``
+            default (1,505,280) with a 400 (#76505).
 
     Returns the base64 data URL string.
     """
@@ -776,7 +782,20 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
         except Exception:
             pass  # can't check; Pillow path below will handle or skip
 
-    if not needs_resize_for_bytes and not needs_resize_for_dims:
+    # Total-pixel budget (e.g. Qwen VL max_pixels): a wide-but-short image can
+    # be under the per-side cap yet over the pixel budget (5120x1440 = 7.4M px).
+    needs_resize_for_pixels = False
+    if max_pixels is not None:
+        try:
+            from PIL import Image as _PILQuick
+            with _PILQuick.open(image_path) as _quick_img:
+                _qw, _qh = _quick_img.size
+                if _qw * _qh > max_pixels:
+                    needs_resize_for_pixels = True
+        except Exception:
+            pass  # can't check; Pillow path below will handle or skip
+
+    if not needs_resize_for_bytes and not needs_resize_for_dims and not needs_resize_for_pixels:
         # Small enough — just encode directly.
         data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
         if len(data_url) <= max_base64_bytes:
@@ -837,10 +856,12 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     candidate = None  # will be set on first loop iteration
 
     def _dims_ok(w: int, h: int) -> bool:
-        """True if both pixel dimensions are within the limit."""
-        if max_dimension is None:
-            return True
-        return max(w, h) <= max_dimension
+        """True if both pixel dimensions and the total-pixel budget are within the limit."""
+        if max_dimension is not None and max(w, h) > max_dimension:
+            return False
+        if max_pixels is not None and w * h > max_pixels:
+            return False
+        return True
 
     for attempt in range(5):
         if attempt > 0:

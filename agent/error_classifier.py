@@ -242,6 +242,13 @@ _IMAGE_TOO_LARGE_PATTERNS = [
     "image dimensions exceed",  # Anthropic: "image dimensions exceed max allowed size: 8000 pixels"
     "dimensions exceed max allowed size",  # Anthropic dimension-cap (wording variant)
     "max allowed size: 8000",  # Anthropic dimension-cap (explicit pixel ceiling)
+    # Qwen2.5/3-VL processors (incl. vLLM's Qwen3VLProcessor) hard-fail with
+    # a 400 when an image exceeds the processor's ``max_pixels`` budget
+    # (default 1920*28*28 = 1,505,280 px): "Failed to apply Qwen3VLProcessor
+    # on data=...".  Classifying it as image_too_large lets the shrink-retry
+    # loop fire instead of falling all the way back to the text-mode
+    # ``vision_analyze`` path (#76505).
+    "failed to apply qwen3vlprocessor",  # vLLM Qwen3-VL processor rejection
     # "request_too_large" on a request known to contain an image → image is
     # the likely culprit; we still try the shrink path before giving up.
 ]

@@ -350,6 +350,40 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
     return None
 
 
+# Qwen2.5/3-VL processor default ``max_pixels`` budget (1920*28*28).  vLLM's
+# Qwen3VLProcessor rejects images above this with a 400 that carries NO
+# dimension cap — only the "Failed to apply Qwen3VLProcessor" wording — so
+# the shrink retry needs an explicit total-pixel budget, not just a per-side
+# cap.  A 5120x1440 multi-monitor screenshot is 7.4M px: under the 8000px
+# per-side default but ~5x over the pixel budget (#76505).
+_QWEN_VL_MAX_PIXELS = 1_505_280
+
+
+def _image_error_max_pixels(error: Exception) -> Optional[int]:
+    """Extract a provider-reported total-pixel budget, if present.
+
+    Only Qwen-style processor rejections carry a pixel budget today; the
+    wording identifies the family ("Failed to apply Qwen3VLProcessor on
+    data=...").  Returns None for every other error shape — the shrink path
+    then falls back to its byte-size / per-side-dimension heuristics.
+    """
+    parts = []
+    for value in (
+        error,
+        getattr(error, "message", None),
+        getattr(error, "body", None),
+    ):
+        if value:
+            try:
+                parts.append(str(value))
+            except Exception:
+                pass
+    text = " ".join(parts).lower()
+    if "qwen3vlprocessor" not in text:
+        return None
+    return _QWEN_VL_MAX_PIXELS
+
+
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
     if not getattr(agent, "tools", None):
@@ -4103,9 +4137,14 @@ def run_conversation(
                 ):
                     _retry.image_shrink_retry_attempted = True
                     image_max_dimension = _image_error_max_dimension(api_error) or 8000
+                    # Qwen-style processor rejections also carry a total-pixel
+                    # budget (max_pixels) that the per-side cap alone can't
+                    # express — pass it through so the shrink can satisfy it.
+                    image_max_pixels = _image_error_max_pixels(api_error)
                     if agent._try_shrink_image_parts_in_messages(
                         api_messages,
                         max_dimension=image_max_dimension,
+                        max_pixels=image_max_pixels,
                     ):
                         agent._vprint(
                             f"{agent.log_prefix}📐 Image(s) exceeded provider size limit — "

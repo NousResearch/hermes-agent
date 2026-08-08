@@ -287,8 +287,8 @@ hermes config set OPENROUTER_API_KEY sk-or-v1-xxxxxxxxxxxx
 # 列出您的提供商可用的模型
 hermes model
 
-# 设置有效的模型
-hermes config set HERMES_MODEL anthropic/claude-opus-4.7
+# 设置有效的模型（写入 ~/.hermes/config.yaml 中的 model.default）
+hermes config set model.default anthropic/claude-opus-4.7
 
 # 或按会话指定
 hermes chat --model openrouter/meta-llama/llama-3.1-70b-instruct

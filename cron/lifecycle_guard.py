@@ -31,6 +31,11 @@ stop|restart`` separately refuse to self-target from inside the gateway.
 Blocking cron specs at creation time as well means the agent gets an immediate,
 informative rejection instead of scheduling a job that will only fail
 (silently) when it fires.
+
+The profile-flag form (``hermes -p <profile> gateway restart|stop``, #78028)
+is handled profile-aware: it is blocked only when the named profile is the
+profile running the guard. Sibling-profile restarts are legitimate fleet
+operations and stay allowed.
 """
 
 from __future__ import annotations
@@ -95,12 +100,85 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
 _SHELL_LINE_CONTINUATION = re.compile(r"\\\r?\n[ \t]*")
 
 
+# Branch A2 (#78028): the same foot-gun written with an explicit profile
+# selector — `hermes -p <profile> gateway restart|stop` / `--profile <name>`
+# / `--profile=<name>`. The selector token between `hermes` and `gateway`
+# breaks Branch A's literal adjacency. Unlike Branch A this form is NOT
+# unconditionally self-targeting: issued from inside gateway `zeus`,
+# `hermes -p venus gateway restart` operates on a sibling profile's gateway
+# and is a legitimate fleet operation. The pattern captures the named
+# profile so `contains_gateway_lifecycle_command` can block only the
+# self-targeting shape (named profile == the profile running the guard).
+# `start` stays excluded for the same reason as Branch A.
+_PROFILE_FLAG_LIFECYCLE_PATTERN = re.compile(
+    r"(?i)"
+    r"hermes\s+"
+    # Any global flags before the profile selector (each may carry a value).
+    r"(?:-{1,2}\S+(?:\s+\S+)?\s+)*"
+    # The selector itself: `--profile=<name>` or the space-separated
+    # `-p <name>` / `--profile <name>` — exactly the shapes the CLI's
+    # `_apply_profile_override` accepts.
+    r"(?:--profile=([^\s]+)|(?:-p|--profile)\s+([^\s]+))"
+    # Any global flags between the selector and the subcommand.
+    r"(?:\s+-{1,2}\S+(?:\s+\S+)?)*"
+    r"\s+gateway\s+(?:restart|stop)"
+)
+
+
+def _current_profile_name() -> Optional[str]:
+    """Return the name of the profile running the guard, if determinable.
+
+    Prefers the explicit ``HERMES_PROFILE_NAME`` / ``HERMES_PROFILE`` env
+    (set by the profile launcher and kanban worker spawns), falling back to
+    ``hermes_cli.profiles.get_active_profile_name`` (derived from
+    ``HERMES_HOME``, which the gateway process inherits from its launch
+    profile). Returns ``None`` when neither source yields a name.
+    """
+    for env_name in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
+        value = os.environ.get(env_name)
+        if value and value.strip():
+            return value.strip()
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        return get_active_profile_name() or None
+    except Exception:
+        return None
+
+
+def _named_profile_is_current(named: str) -> bool:
+    """True when *named* is the profile executing the guard (self-targeting)."""
+    current = _current_profile_name()
+    if not current:
+        # No profile identity available: cannot prove self-targeting, so do
+        # not block — sibling restarts must stay allowed (#78028).
+        return False
+    return named.strip().casefold() == current.strip().casefold()
+
+
 def contains_gateway_lifecycle_command(text: str) -> bool:
     """Return True if *text* contains a gateway lifecycle command pattern."""
     if not text:
         return False
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
-    return bool(_GATEWAY_LIFECYCLE_PATTERN.search(normalized))
+    if _GATEWAY_LIFECYCLE_PATTERN.search(normalized):
+        return True
+    # Profile-flag form (#78028): `hermes -p <profile> gateway restart|stop`
+    # bypasses Branch A because the selector sits between `hermes` and
+    # `gateway`. It is only the same foot-gun when the named profile IS the
+    # profile running the guard — sibling-profile restarts are legitimate
+    # fleet operations and stay allowed.
+    profile_match = _PROFILE_FLAG_LIFECYCLE_PATTERN.search(normalized)
+    if profile_match:
+        named = profile_match.group(1) or profile_match.group(2)
+        if named:
+            # Profile ids cannot contain quotes (hermes_cli.profiles
+            # enforces `^[a-z0-9][a-z0-9_-]{0,63}$`), so a shell-quoted
+            # `-p 'zeus'` compares equal to the bare name.
+            named = named.strip().strip("\"'")
+            if _named_profile_is_current(named):
+                return True
+    return False
 
 
 _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})

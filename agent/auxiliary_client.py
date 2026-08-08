@@ -1212,8 +1212,23 @@ class _CodexCompletionsAdapter:
         # build_kwargs, so they need the same guard applied independently.
         _host_for_input = str(getattr(self._client, "base_url", "") or "")
         _is_github_for_input = base_url_host_matches(_host_for_input, "githubcopilot.com")
+        _is_xai_for_input = (
+            base_url_host_matches(_host_for_input, "x.ai")
+            or base_url_host_matches(_host_for_input, "api.x.ai")
+        )
+        # Match main Codex transport issuer stamps so encrypted reasoning
+        # from a foreign Responses endpoint is not replayed here.
+        if _is_xai_for_input:
+            _issuer_kind = "xai_responses"
+        elif _is_github_for_input:
+            _issuer_kind = "github_responses"
+        else:
+            _issuer_kind = "codex_backend"
         input_items = _chat_messages_to_responses_input(
-            replay_messages, is_github_responses=_is_github_for_input,
+            replay_messages,
+            is_github_responses=_is_github_for_input,
+            is_xai_responses=_is_xai_for_input,
+            current_issuer_kind=_issuer_kind,
         )
 
         resp_kwargs: Dict[str, Any] = {
@@ -1256,8 +1271,17 @@ class _CodexCompletionsAdapter:
                     # Codex backend, which rejects e.g. {"effort": null}
                     # with a 400.
                     effort = reasoning_cfg.get("effort") or "medium"
-                    # Codex backend rejects "minimal"; clamp to "low" to
-                    # match the main-agent Codex transport behavior.
+                    # Match agent/transports/codex.py effort clamps.
+                    _effort_clamp = {"minimal": "low"}
+                    if "gpt-5.6" in (model or "").lower():
+                        # Ultra is Hermes' GPT-5.6 product label; wire is max.
+                        _effort_clamp["ultra"] = "max"
+                    if _is_xai_for_input:
+                        # xAI Responses tops out at high.
+                        _effort_clamp.update(
+                            {"xhigh": "high", "max": "high", "ultra": "high"}
+                        )
+                    effort = _effort_clamp.get(str(effort).strip().lower(), effort)
                     if effort == "minimal":
                         effort = "low"
                     resp_kwargs["reasoning"] = {

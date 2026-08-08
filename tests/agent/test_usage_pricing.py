@@ -187,6 +187,96 @@ def test_bedrock_current_gen_claude_rows_resolve():
             assert entry.output_cost_per_million == ref.output_cost_per_million, mid
 
 
+def test_anthropic_claude_5_rows_resolve_with_full_cache_pricing():
+    """Claude 5 models (claude-fable-5 at $10/$50, claude-opus-5 at $5/$25)
+    must have direct-Anthropic pricing rows carrying all four rate fields;
+    a missing cache rate makes every prompt-cached session price as
+    ``unknown`` (cost blindness on the default model)."""
+    from decimal import Decimal
+
+    expected = {
+        "claude-fable-5": (Decimal("10.00"), Decimal("50.00")),
+        "claude-opus-5": (Decimal("5.00"), Decimal("25.00")),
+    }
+    for model, (input_rate, output_rate) in expected.items():
+        entry = get_pricing_entry(model, provider="anthropic")
+        assert entry is not None, model
+        assert entry.input_cost_per_million == input_rate, model
+        assert entry.output_cost_per_million == output_rate, model
+        # Standard Anthropic cache multipliers: 0.10x read, 1.25x write.
+        assert entry.cache_read_cost_per_million == input_rate * Decimal("0.10"), model
+        assert entry.cache_write_cost_per_million == input_rate * Decimal("1.25"), model
+        assert entry.source == "official_docs_snapshot", model
+
+
+def test_kimi_first_party_slugs_resolve_to_moonshot_pricing():
+    """Every first-party Kimi provider slug (kimi-coding, kimi, kimi-cn,
+    kimi-coding-cn, moonshot) must normalize onto provider="kimi" and hit the
+    Moonshot pricing rows; without the normalization the kimi-k3 verification
+    children the SOUL.md routing doctrine spawns all price as ``unknown``.
+    HighSpeed rates are 2x the standard tier on ALL three rates (verified
+    2026-08-02 against platform.kimi.ai/docs/pricing/chat-k27-code)."""
+    from decimal import Decimal
+
+    expected = {
+        "kimi-k3": (Decimal("3.00"), Decimal("15.00"), Decimal("0.30")),
+        "kimi-k2.7-code": (Decimal("0.95"), Decimal("4.00"), Decimal("0.19")),
+        "kimi-k2.7-code-highspeed": (Decimal("1.90"), Decimal("8.00"), Decimal("0.38")),
+    }
+    for provider in ("kimi-coding", "kimi", "kimi-cn", "kimi-coding-cn", "moonshot"):
+        for model, (input_rate, output_rate, cache_read) in expected.items():
+            entry = get_pricing_entry(model, provider=provider)
+            key = f"{provider}/{model}"
+            assert entry is not None, key
+            assert entry.input_cost_per_million == input_rate, key
+            assert entry.output_cost_per_million == output_rate, key
+            assert entry.cache_read_cost_per_million == cache_read, key
+            # Moonshot publishes no cache-write rate; entry must leave it
+            # unset rather than inventing one.
+            assert entry.cache_write_cost_per_million is None, key
+
+
+def test_kimi_first_party_hosts_resolve_to_moonshot_pricing():
+    """Bare-host sessions (no explicit provider) on the first-party Moonshot
+    endpoints must still route onto provider="kimi": api.moonshot.ai (global),
+    api.moonshot.cn (China — bills CNY at FX-parity equivalents), and
+    api.kimi.com (the global coding endpoint sk-kimi- keys redirect to)."""
+    from decimal import Decimal
+
+    for base_url in (
+        "https://api.moonshot.ai/v1",
+        "https://api.moonshot.cn/v1",
+        "https://api.kimi.com/coding",
+    ):
+        entry = get_pricing_entry("kimi-k3", base_url=base_url)
+        assert entry is not None, base_url
+        assert entry.input_cost_per_million == Decimal("3.00"), base_url
+        assert entry.output_cost_per_million == Decimal("15.00"), base_url
+
+
+def test_bedrock_cross_region_profile_prefix_resolves_to_pricing():
+    """Cross-region inference profiles must resolve to the same pricing entry
+    as the bare foundation-model id.  Without prefix normalization a scoped
+    ``<region>.anthropic.claude-*`` session prices as unknown.
+
+    Asia-Pacific (``apac.``) and Australia (``au.``) are included because AWS
+    uses the full ``apac.`` prefix, not ``ap.`` — a bare ``ap.`` never matches
+    an ``apac.*`` id, so those geographies previously priced as unknown.
+    """
+    bedrock_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+    bare = get_pricing_entry(
+        "anthropic.claude-sonnet-4-5", provider="bedrock", base_url=bedrock_url
+    )
+    assert bare is not None
+    for prefix in ("us.", "global.", "eu.", "apac.", "au."):
+        scoped = get_pricing_entry(
+            f"{prefix}anthropic.claude-sonnet-4-5",
+            provider="bedrock",
+            base_url=bedrock_url,
+        )
+        assert scoped is not None, prefix
+        assert scoped.input_cost_per_million == bare.input_cost_per_million
+        assert scoped.cache_read_cost_per_million == bare.cache_read_cost_per_million
 
 
 def test_bedrock_versioned_inference_profile_resolves_to_bare_pricing():

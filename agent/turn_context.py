@@ -506,9 +506,20 @@ def build_turn_context(
     agent.iteration_budget = IterationBudget(agent.max_iterations)
 
     # Log conversation turn start for debugging/observability.
+    # Log a length and a checksum prefix instead of the message body, for
+    # the same reason as the gateway side: what a user writes must not
+    # accumulate in log files.  The digest is taken over the value this layer
+    # actually sees, which the gateway may have enriched, so the two logs are
+    # not expected to agree — each identifies its own input.
     _preview_text = summarize_user_message_for_log(user_message)
-    _msg_preview = (_preview_text[:80] + "...") if len(_preview_text) > 80 else _preview_text
-    _msg_preview = _msg_preview.replace("\n", " ")
+    if _preview_text:
+        import hashlib as _hashlib
+        _msg_preview = "<%d chars sha256:%s>" % (
+            len(_preview_text),
+            _hashlib.sha256(_preview_text.encode("utf-8")).hexdigest()[:12],
+        )
+    else:
+        _msg_preview = "<empty>"
     logger.info(
         "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r",
         agent.session_id or "none", agent.model, agent.provider or "unknown",

@@ -5804,6 +5804,24 @@ class TurnRunner:
 
 
 
+def _redact_message_text(value) -> str:
+    """Return a length and checksum prefix instead of the message body.
+
+    A raw preview means everything a user writes accumulates in the log file
+    for good. The digest still shows that a message arrived and how long it
+    was, without keeping what it said.
+    """
+    value = value or ""
+    if not value:
+        return "<empty>"
+    import hashlib as _hashlib
+
+    return "<%d chars sha256:%s>" % (
+        len(value),
+        _hashlib.sha256(value.encode("utf-8")).hexdigest()[:12],
+    )
+
+
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
     """
     Main gateway controller.
@@ -16695,9 +16713,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
-        _msg_preview = (event.text or "")[:80].replace("\n", " ")
+        # Log a length and a checksum prefix instead of the message body.
+        # A raw preview means everything a user writes accumulates in the log
+        # file for good.  The digest still lets you correlate the same message
+        # across log lines.  It is taken over the whole platform message, so it
+        # will not match a checksum computed over any extracted part of it.
+        _msg_preview = _redact_message_text(event.text)
         _reply_id = getattr(event, "reply_to_message_id", None)
-        _reply_txt = (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " ")
+        _reply_txt = _redact_message_text(getattr(event, "reply_to_text", None))
         logger.info(
             "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
             _platform_name, source.user_name or source.user_id or "unknown",
@@ -26145,7 +26168,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else:
                         pending = _pending_text or _build_media_placeholder(pending_event)
                     if pending:
-                        logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
+                        logger.debug("Processing queued message after agent completion: %s", _redact_message_text(pending))
 
             # Leftover /steer: if a steer arrived after the last tool batch
             # (e.g. during the final API call), the agent couldn't inject it
@@ -26155,7 +26178,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _leftover_steer = result.get("pending_steer")
                 if _leftover_steer:
                     pending = _leftover_steer
-                    logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
+                    logger.debug("Delivering leftover /steer as next turn: %s", _redact_message_text(pending))
 
             # Safety net: if the pending text is a slash command (e.g. "/stop",
             # "/new"), discard it — commands should never be passed to the agent
@@ -26189,7 +26212,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pending = None
 
             if pending_event or pending:
-                logger.debug("Processing pending message: '%s...'", pending[:40])
+                logger.debug("Processing pending message: %s", _redact_message_text(pending))
 
                 # Clear the adapter's interrupt event so the next _run_agent call
                 # doesn't immediately re-trigger the interrupt before the new agent

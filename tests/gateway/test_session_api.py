@@ -45,6 +45,10 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_patch("/api/sessions/{session_id}", adapter._handle_patch_session)
     app.router.add_delete("/api/sessions/{session_id}", adapter._handle_delete_session)
     app.router.add_get("/api/sessions/{session_id}/messages", adapter._handle_session_messages)
+    app.router.add_get(
+        "/api/sessions/{session_id}/delegations",
+        adapter._handle_session_delegations,
+    )
     app.router.add_post("/api/sessions/{session_id}/fork", adapter._handle_fork_session)
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
@@ -64,11 +68,16 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["session_chat"] is True
     assert features["session_chat_streaming"] is True
     assert features["session_fork"] is True
+    assert features["session_delegations"] is True
     assert features["admin_config_rw"] is False
     assert features["memory_write_api"] is False
     assert features["skills_api"] is True
     assert features["realtime_voice"] is False
     assert data["endpoints"]["sessions"] == {"method": "GET", "path": "/api/sessions"}
+    assert data["endpoints"]["session_delegations"] == {
+        "method": "GET",
+        "path": "/api/sessions/{session_id}/delegations",
+    }
     assert data["endpoints"]["session_chat_stream"] == {
         "method": "POST",
         "path": "/api/sessions/{session_id}/chat/stream",
@@ -695,3 +704,109 @@ async def test_patch_session_still_rejects_unknown_fields(adapter, session_db):
         resp = await cli.patch(f"/api/sessions/{session_id}", json={"nonsense": 1})
         assert resp.status == 400, await resp.text()
         assert (await resp.json())["error"]["code"] == "unsupported_session_field"
+
+
+@pytest.mark.asyncio
+async def test_session_delegations_lists_active_for_origin_session(
+    adapter, session_db, monkeypatch
+):
+    """/v1/runs orchestrators poll this after run.completed (#81754).
+
+    api_server background dispatch stamps origin_session_id with the raw
+    session id while session_key is often the per-run approval key — the
+    endpoint must match on origin_session_id.
+    """
+    import threading
+    import time
+
+    from tools import async_delegation as ad
+
+    monkeypatch.setattr(ad, "_STALE_CHECK_INTERVAL", 60.0)
+    ad._reset_for_tests()
+    session_id = session_db.create_session("deleg-origin-session", "api_server")
+    gate = threading.Event()
+
+    try:
+        res = ad.dispatch_async_delegation(
+            goal="bg for api orchestrator",
+            context="secret-context-must-not-leak",
+            toolsets=["terminal"],
+            role="leaf",
+            model="m",
+            session_key="run_approval_key_not_session",
+            parent_session_id=None,
+            origin_session_id=session_id,
+            max_async_children=1,
+            runner=lambda: {} if gate.wait(timeout=10) else {},
+        )
+        assert res["status"] == "dispatched"
+
+        # Foreign session must not appear in this listing.
+        ad.dispatch_async_delegation(
+            goal="other session work",
+            context=None,
+            toolsets=None,
+            role="leaf",
+            model="m",
+            session_key="other",
+            origin_session_id="someone-else",
+            max_async_children=2,
+            runner=lambda: {"status": "completed"},
+        )
+
+        app = _create_session_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            missing = await cli.get("/api/sessions/does-not-exist/delegations")
+            assert missing.status == 404
+
+            resp = await cli.get(f"/api/sessions/{session_id}/delegations")
+            assert resp.status == 200, await resp.text()
+            payload = await resp.json()
+
+            recent = await cli.get(
+                f"/api/sessions/{session_id}/delegations?include_recent=1"
+            )
+            assert recent.status == 200
+            recent_payload = await recent.json()
+
+        assert payload["object"] == "hermes.session.delegations"
+        assert payload["session_id"] == session_id
+        assert payload["active_count"] == 1
+        assert len(payload["delegations"]) == 1
+        row = payload["delegations"][0]
+        assert row["delegation_id"] == res["delegation_id"]
+        assert row["status"] == "running"
+        assert row["goal"] == "bg for api orchestrator"
+        assert row["origin_session_id"] == session_id
+        assert "context" not in row
+        assert "interrupt_fn" not in row
+        assert "progress_fn" not in row
+        # Still active — include_recent does not change active_count.
+        assert recent_payload["active_count"] == 1
+        assert any(
+            d["delegation_id"] == res["delegation_id"]
+            for d in recent_payload["delegations"]
+        )
+    finally:
+        gate.set()
+        deadline = time.monotonic() + 2.0
+        while ad.active_count() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        ad._reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_session_delegations_requires_auth(auth_adapter, session_db):
+    session_id = session_db.create_session("deleg-auth-session", "api_server")
+    app = _create_session_app(auth_adapter)
+    async with TestClient(TestServer(app)) as cli:
+        unauth = await cli.get(f"/api/sessions/{session_id}/delegations")
+        assert unauth.status == 401
+        ok = await cli.get(
+            f"/api/sessions/{session_id}/delegations",
+            headers={"Authorization": "Bearer sk-test"},
+        )
+        assert ok.status == 200
+        payload = await ok.json()
+        assert payload["active_count"] == 0
+        assert payload["delegations"] == []

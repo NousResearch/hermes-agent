@@ -3658,25 +3658,53 @@ class SessionStore:
         self._clear_dirty_transcript(session_id)
         if n < 1:
             n = 1
+        from agent.context_compressor import (
+            split_user_originated_turn,
+            user_originated_turn_view,
+        )
+
         try:
-            recents = self._db.list_recent_user_messages(session_id, limit=max(n, 10))
+            durable, expected_active_revision = (
+                self._db.get_active_conversation_snapshot(
+                    session_id,
+                    include_row_ids=True,
+                )
+            )
+            user_indices = [
+                index
+                for index, message in enumerate(durable)
+                if user_originated_turn_view(message) is not None
+            ]
+            if not user_indices:
+                return None
+            turns_undone = min(n, len(user_indices))
+            target = durable[user_indices[-turns_undone]]
+            target_id = target.get("_row_id")
+            if not isinstance(target_id, int):
+                return None
+            handoff, target_view = split_user_originated_turn(target)
+            if target_view is None:
+                return None
         except Exception as e:
-            logger.debug("rewind_session: failed to list user messages: %s", e)
+            logger.debug("rewind_session: failed to resolve canonical target: %s", e)
             return None
-        if not recents:
-            return None
-        target_idx = min(n - 1, len(recents) - 1)
-        target_id = recents[target_idx]["id"]
         try:
-            result = self._db.rewind_to_message(session_id, target_id)
+            result = self._db.rewind_to_message(
+                session_id,
+                target_id,
+                preserve_compaction_handoff=handoff is not None,
+                expected_active_revision=expected_active_revision,
+            )
         except ValueError as e:
             logger.debug("rewind_session: %s", e)
             return None
         except Exception as e:
             logger.debug("rewind_session: rewind_to_message failed: %s", e)
             return None
-        target_msg = result.get("target_message") or {}
-        content = target_msg.get("content") or ""
+        # ``target_view`` is the canonical live projection of the physical DB
+        # row. For a composite carrier, the raw target contains the historical
+        # summary wrapper and must never be echoed back as the editable prompt.
+        content = target_view.get("content") or ""
         if isinstance(content, list):
             parts = [
                 p.get("text", "")
@@ -3690,7 +3718,7 @@ class SessionStore:
             target_text = ""
         return {
             "rewound_count": result.get("rewound_count", 0),
-            "turns_undone": target_idx + 1,
+            "turns_undone": turns_undone,
             "target_text": target_text,
         }
 

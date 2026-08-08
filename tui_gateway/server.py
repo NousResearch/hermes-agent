@@ -2889,6 +2889,197 @@ def _session_db(session: dict):
                 db.close()
 
 
+def _rewind_active_session_history(
+    session: dict, user_ordinal: int
+) -> tuple[list[dict], dict, int]:
+    """Rewind one canonical user turn while retaining carrier scaffolding.
+
+    The caller holds ``history_lock``.  Persistent sessions archive the target
+    and tail; a composite carrier's own hidden handoff is inserted in that same
+    transaction.  Memory is installed only after the durable commit and is
+    built from the already-validated prefix plus the returned scaffold row id,
+    so there is no fallible post-commit reload.
+    """
+    from agent.context_compressor import (
+        history_before_user_originated_turn,
+        summary_carrier_persistence_display,
+        split_user_originated_turn,
+        user_originated_turn_view,
+    )
+    from agent.memory_manager import sanitize_context
+    from agent.tool_dispatch_helpers import (
+        _is_multimodal_tool_result,
+        _multimodal_text_summary,
+    )
+
+    def _comparison_content(message: dict) -> Any:
+        content = message.get("content")
+        if _is_multimodal_tool_result(content):
+            content = _multimodal_text_summary(content)
+        elif isinstance(content, list):
+            text_parts = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text_parts.append(str(part.get("text", "")))
+                elif (
+                    isinstance(part, dict)
+                    and part.get("type") in {"image", "image_url", "input_image"}
+                ):
+                    text_parts.append("[screenshot]")
+            content = "\n".join(text_parts) if text_parts else None
+        if message.get("role") in {"user", "assistant"} and isinstance(content, str):
+            return sanitize_context(content).strip()
+        return content
+
+    def _effective_api_content(message: dict) -> Any:
+        content = message.get("api_content")
+        if content is None:
+            content = message.get("content")
+        if message.get("role") in {"user", "assistant"} and isinstance(content, str):
+            # Outgoing message strings are stripped at the provider boundary;
+            # the durable sidecar exists only when the effective wire differs
+            # from the sanitized transcript content.
+            return content.strip()
+        return _comparison_content(message)
+
+    def _structured(value: Any) -> Any:
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                return value
+        return value
+
+    def _comparison_message(message: dict) -> dict:
+        display_kind, display_metadata = summary_carrier_persistence_display(message)
+        # Match the durable conversation projection, excluding physical row
+        # identity, auto-generated timestamps, and in-process summary markers.
+        # The remaining fields all affect model replay or canonical display.
+        return {
+            "role": message.get("role"),
+            "content": _comparison_content(message),
+            "tool_call_id": message.get("tool_call_id") or None,
+            "tool_calls": _structured(message.get("tool_calls")) or None,
+            "tool_name": message.get("tool_name") or None,
+            "effect_disposition": message.get("effect_disposition") or None,
+            "finish_reason": message.get("finish_reason") or None,
+            "reasoning": message.get("reasoning") or None,
+            "reasoning_content": message.get("reasoning_content"),
+            "reasoning_details": _structured(message.get("reasoning_details")) or None,
+            "codex_reasoning_items": _structured(
+                message.get("codex_reasoning_items")
+            )
+            or None,
+            "codex_message_items": _structured(message.get("codex_message_items"))
+            or None,
+            "message_id": message.get("message_id")
+            or message.get("platform_message_id")
+            or None,
+            "observed": bool(message.get("observed")),
+            "effective_api_content": _effective_api_content(message),
+            "display_kind": display_kind or None,
+            "display_metadata": display_metadata,
+        }
+
+    history = _history_without_ephemeral_scaffolding(session.get("history", []))
+    user_indices = [
+        index
+        for index, message in enumerate(history)
+        if user_originated_turn_view(message) is not None
+    ]
+    if user_ordinal < 0 or user_ordinal >= len(user_indices):
+        raise ValueError("target user message is no longer in session history")
+    target_index = user_indices[user_ordinal]
+    installed, live_view = history_before_user_originated_turn(history, target_index)
+    rewound_count = len(history) - target_index
+
+    session_key = str(session.get("session_key") or "").strip()
+    persisted = False
+    if session_key:
+        with _session_db(session) as db:
+            if db is None:
+                raise RuntimeError("session database is unavailable")
+            durable, expected_active_revision = db.get_active_conversation_snapshot(
+                session_key, repair_alternation=True, include_row_ids=True
+            )
+            if [
+                _comparison_message(message) for message in durable
+            ] != [_comparison_message(message) for message in history]:
+                raise RuntimeError(
+                    "session history changed before the rewind could be persisted"
+                )
+            durable_user_indices = [
+                index
+                for index, message in enumerate(durable)
+                if user_originated_turn_view(message) is not None
+            ]
+            if len(durable_user_indices) != len(user_indices):
+                raise RuntimeError(
+                    "session history changed before the rewind could be persisted"
+                )
+            durable_target_index = durable_user_indices[user_ordinal]
+            durable_target = durable[durable_target_index]
+            durable_prefix, durable_live_view = history_before_user_originated_turn(
+                durable, durable_target_index
+            )
+            if _comparison_content(durable_live_view) != _comparison_content(live_view):
+                raise RuntimeError(
+                    "session history changed before the rewind could be persisted"
+                )
+            target_row_id = durable_target.get("_row_id")
+            if not isinstance(target_row_id, int):
+                raise RuntimeError("rewind target has no durable row identity")
+            scaffold, _ = split_user_originated_turn(durable_target)
+            result = db.rewind_to_message(
+                session_key,
+                target_row_id,
+                preserve_compaction_handoff=scaffold is not None,
+                expected_active_revision=expected_active_revision,
+            )
+            installed = durable_prefix
+            if scaffold is not None:
+                replacement_id = result.get("replacement_message_id")
+                if not isinstance(replacement_id, int):
+                    raise RuntimeError(
+                        "rewind commit did not return the replacement scaffold id"
+                    )
+                installed[-1]["_row_id"] = replacement_id
+                installed[-1]["_db_persisted"] = True
+            live_view = durable_live_view
+            rewound_count = int(result.get("rewound_count", 0))
+            persisted = True
+
+    installed = [message.copy() for message in installed]
+    session["history"] = installed
+    session["history_version"] = int(session.get("history_version", 0)) + 1
+    agent = session.get("agent")
+    if agent is not None:
+        agent._session_messages = installed
+        if hasattr(agent, "_last_flushed_db_idx"):
+            agent._last_flushed_db_idx = len(installed) if persisted else 0
+        if hasattr(agent, "_db_flush_scan_prefix"):
+            agent._db_flush_scan_prefix = installed[:] if persisted else None
+    return installed, live_view, rewound_count
+
+
+def _history_without_ephemeral_scaffolding(history: list[dict]) -> list[dict]:
+    """Return the repaired transcript shape eligible for durable persistence."""
+    from agent.agent_runtime_helpers import repair_message_sequence
+    from run_agent import _is_ephemeral_scaffolding
+
+    projected = [
+        message.copy()
+        for message in history
+        if not _is_ephemeral_scaffolding(message)
+    ]
+    # ``get_messages_as_conversation(..., repair_alternation=True)`` applies
+    # this same provider-facing repair.  Filtering a buried recovery nudge can
+    # expose adjacent real assistant turns; compare/select their repaired copy
+    # rather than false-rejecting an otherwise identical durable transcript.
+    repair_message_sequence(None, projected)
+    return projected
+
+
 def _persist_session_git_meta(session: dict, cwd: str) -> None:
     """Resolve + persist a session's git branch / repo root WITHOUT blocking.
 
@@ -7052,6 +7243,17 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         role = m.get("role")
         if role not in {"user", "assistant", "tool", "system"}:
             continue
+        if role == "user":
+            from agent.context_compressor import (
+                is_compaction_summary_message,
+                user_originated_turn_view,
+            )
+
+            if is_compaction_summary_message(m):
+                live_view = user_originated_turn_view(m)
+                if live_view is None:
+                    continue
+                m = live_view
         # An explicit display_kind="hidden" row is model-facing scaffolding
         # (compaction references, interrupted-turn checkpoints). The string
         # sniff below only catches the "[System:" convention; honor the

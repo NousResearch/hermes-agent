@@ -2570,34 +2570,45 @@ class GatewaySlashCommandsMixin:
         # auto_continue / hidden); clients never count them as user turns.
         # Without this filter /retry rewrote the transcript around a marker
         # and re-sent opaque bookkeeping text (same class as the TUI ordinal).
-        last_user_msg = None
         last_user_idx = None
-        # is_user_originated_turn: excludes display_kind bookkeeping AND
-        # compaction handoffs (durable role=user, sometimes without
-        # display_kind on legacy sessions; #80622) — /retry must never
-        # re-send a reference-only summary as if the user asked it.
-        from agent.context_compressor import is_user_originated_turn
+        # The canonical projection excludes bookkeeping and pure handoffs while
+        # still recognizing a real ask embedded in a compaction carrier.
+        from agent.context_compressor import (
+            history_before_user_originated_turn,
+            retryable_user_text,
+            user_originated_turn_view,
+        )
 
         for i in range(len(history) - 1, -1, -1):
             msg = history[i]
-            if is_user_originated_turn(msg):
-                last_user_msg = msg.get("content", "")
+            if user_originated_turn_view(msg) is not None:
                 last_user_idx = i
                 break
-        
-        if not last_user_msg:
+
+        if last_user_idx is None:
             return t("gateway.retry.no_previous")
-        
+
+        # Resolve the live text and the scaffold-preserving prefix before any
+        # transcript write. Messaging retries cannot reconstruct attachments;
+        # reject media/unknown content without truncating the session.
+        try:
+            truncated, live_view = history_before_user_originated_turn(
+                history, last_user_idx
+            )
+            last_user_msg = retryable_user_text(live_view.get("content"))
+        except ValueError as exc:
+            return f"Cannot retry that message safely: {exc}"
+
         # Truncate history to before the last user message and persist only the
         # live view. After in-place compaction the pre-compaction transcript
         # lives on as active=0/compacted=1 rows under this same session id, and
         # a bare rewrite (active_only=False) would DELETE them (same class as
         # #61145). /retry never intends to purge archived history, so avoid a
         # separate existence probe: it could fail open or race with the write.
-        truncated = history[:last_user_idx]
-        await self.async_session_store.rewrite_transcript(
+        if not await self.async_session_store.rewrite_transcript(
             session_entry.session_id, truncated, active_only=True
-        )
+        ):
+            return "Retry failed; transcript was not changed."
         # Reset stored token count — transcript was truncated
         session_entry.last_prompt_tokens = 0
 

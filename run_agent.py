@@ -162,6 +162,7 @@ from agent.usage_pricing import normalize_usage
 from agent.context_compressor import (  # noqa: F401
     COMPRESSED_SUMMARY_METADATA_KEY,
     ContextCompressor,
+    summary_carrier_persistence_display,
 )
 from agent.retry_utils import jittered_backoff  # noqa: F401
 from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock.patch("run_agent.<name>") / from run_agent import <name>
@@ -2231,6 +2232,10 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
+                (
+                    _persistence_display_kind,
+                    _persistence_display_metadata,
+                ) = summary_carrier_persistence_display(msg)
                 _batch_rows.append({
                     "role": role,
                     "content": content,
@@ -2247,29 +2252,11 @@ class AIAgent:
                     "codex_message_items": msg.get("codex_message_items"),
                     "timestamp": _row_timestamp,
                     "api_content": _row_api_content,
-                    # Standalone reference handoffs are always hidden, even
-                    # when the summarized transcript contained a user turn —
-                    # otherwise they occupy the active user slot in
-                    # retry/undo/session dispatch (#80622). Merge-into-tail
-                    # carriers keep prior visibility rules so preserved tail
-                    # content stays readable.
-                    "display_kind": (
-                        "hidden"
-                        if (
-                            msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
-                            and (
-                                ContextCompressor.classify_summary_content(
-                                    msg.get("content")
-                                )
-                                == "standalone"
-                                or not msg.get(
-                                    "_compressed_summary_has_user_turn"
-                                )
-                            )
-                        )
-                        else msg.get("display_kind")
-                    ),
-                    "display_metadata": msg.get("display_metadata"),
+                    # A pure reference handoff is hidden; a composite carrier
+                    # whose wrapper still contains a live user ask retains its
+                    # ordinary display policy so cold clients can recover it.
+                    "display_kind": _persistence_display_kind,
+                    "display_metadata": _persistence_display_metadata,
                 })
                 _batch_msgs.append(msg)
             # One transaction for the whole turn's new rows (typically 3-8

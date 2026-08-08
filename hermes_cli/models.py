@@ -302,23 +302,27 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "copilot-acp",
     ],
     "copilot": [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5-mini",
         "gpt-5.3-codex",
-        "gpt-5.2-codex",
-        "gpt-4.1",
-        "gpt-4o",
-        "gpt-4o-mini",
-        "claude-sonnet-4.6",
         "claude-sonnet-5",
-        "claude-sonnet-4",
+        "claude-opus-4.8",
+        "claude-opus-4.8-fast",
+        "claude-opus-4.7",
+        "claude-opus-4.6",
+        "claude-opus-4.5",
+        "claude-sonnet-4.6",
         "claude-sonnet-4.5",
         "claude-haiku-4.5",
+        "gemini-3.5-flash",
         "gemini-3.1-pro-preview",
-        "gemini-3-pro-preview",
-        "gemini-3-flash-preview",
-        "gemini-2.5-pro",
+        "kimi-k2.7-code",
+        "mai-code-1-flash-picker",
     ],
     "gemini": [
         "gemini-3.1-pro-preview",
@@ -3977,6 +3981,38 @@ _COPILOT_MODEL_ALIASES = {
     "anthropic/claude-sonnet-4-0": "claude-sonnet-4",
     "anthropic/claude-sonnet-4-5": "claude-sonnet-4.5",
     "anthropic/claude-haiku-4-5": "claude-haiku-4.5",
+    # Newer Claude Opus models (Copilot catalog uses anthropic/ prefix)
+    "anthropic/claude-opus-4.8": "claude-opus-4.8",
+    "anthropic/claude-opus-4.8-fast": "claude-opus-4.8-fast",
+    "anthropic/claude-opus-4.7": "claude-opus-4.7",
+    "claude-opus-4.8": "claude-opus-4.8",
+    "claude-opus-4.8-fast": "claude-opus-4.8-fast",
+    "claude-opus-4.7": "claude-opus-4.7",
+    # Dash-notation for newer Opus models
+    "claude-opus-4-8": "claude-opus-4.8",
+    "claude-opus-4-8-fast": "claude-opus-4.8-fast",
+    "claude-opus-4-7": "claude-opus-4.7",
+    "anthropic/claude-opus-4-8": "claude-opus-4.8",
+    "anthropic/claude-opus-4-8-fast": "claude-opus-4.8-fast",
+    "anthropic/claude-opus-4-7": "claude-opus-4.7",
+    # Claude Opus 4.5
+    "anthropic/claude-opus-4.5": "claude-opus-4.5",
+    "anthropic/claude-opus-4-5": "claude-opus-4.5",
+    "claude-opus-4.5": "claude-opus-4.5",
+    "claude-opus-4-5": "claude-opus-4.5",
+    # Dash-notation for Sonnet models
+    "claude-sonnet-5": "claude-sonnet-5",
+    "anthropic/claude-sonnet-5": "claude-sonnet-5",
+    # Google Gemini models (Copilot catalog uses google/ prefix)
+    "google/gemini-3.5-flash": "gemini-3.5-flash",
+    "google/gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
+    "gemini-3.5": "gemini-3.5-flash",
+    "google/gemini-3.5": "gemini-3.5-flash",
+    "gemini-3.5-flash": "gemini-3.5-flash",
+    "gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
+    # Kimi and MAI models
+    "kimi-k2.7-code": "kimi-k2.7-code",
+    "mai-code-1-flash-picker": "mai-code-1-flash-picker",
 }
 
 
@@ -5068,6 +5104,61 @@ def validate_requested_model(
             "recognized": False,
             "message": message,
         }
+
+    # Copilot: validate using the alias-aware catalog so vendor-prefixed IDs
+    # (e.g. anthropic/claude-opus-4.8 → claude-opus-4.8) compare correctly
+    # against the bare names users type.  Without this, the generic
+    # fetch_api_models path returns raw prefixed IDs, the bare name misses,
+    # and fuzzy matching silently downgrades to an older model.
+    if normalized in {"copilot", "copilot-acp"}:
+        try:
+            catalog_models = provider_model_ids(normalized)
+        except Exception:
+            catalog_models = []
+        if catalog_models:
+            # Copilot catalogs may contain vendor-prefixed IDs
+            # (e.g. ``anthropic/claude-opus-4.8``) while users commonly type
+            # the bare model slug (``claude-opus-4.8``). Normalize catalog
+            # entries to canonical forms before exact/close-match checks.
+            normalized_catalog: list[str] = []
+            seen_catalog: set[str] = set()
+            for model_id in catalog_models:
+                canonical = normalize_copilot_model_id(model_id) or str(model_id or "").strip()
+                if not canonical or canonical in seen_catalog:
+                    continue
+                seen_catalog.add(canonical)
+                normalized_catalog.append(canonical)
+
+            if requested_for_lookup in set(normalized_catalog):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            auto = get_close_matches(requested_for_lookup, normalized_catalog, n=1, cutoff=0.9)
+            if auto:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": auto[0],
+                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                }
+            suggestions = get_close_matches(requested_for_lookup, normalized_catalog, n=3, cutoff=0.5)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in the Copilot model listing. "
+                    "It may still work if your account has access to a newer or gated model."
+                    f"{suggestion_text}"
+                ),
+            }
 
     # Providers with non-standard catalog validation — /v1/models probing is not the right path.
     if normalized in {"openai-codex", "xai-oauth"}:

@@ -17685,13 +17685,20 @@ def start_server(
     # the hermes-0day MCP-persistence campaign abused unauthenticated public
     # dashboards). If a caller still passes it, warn that it is now a no-op
     # rather than silently changing their expectation of an open bind.
-    if allow_public and host not in _LOOPBACK_HOST_VALUES:
+    if allow_public and app.state.auth_required:
         _log.warning(
-            "--insecure no longer bypasses dashboard authentication. A "
+            "--insecure no longer bypasses Hermes server authentication. A "
             "non-loopback bind (%s) now ALWAYS requires an auth provider "
             "(OAuth or the bundled password provider). Configure one — see "
             "below — or bind to 127.0.0.1 and reach it over an SSH tunnel / "
             "Tailscale.", host,
+        )
+
+    if app.state.auth_required:
+        _log.warning(
+            "A non-loopback Hermes server exposes authenticated agent and "
+            "command execution with the same operating-system privileges as "
+            "the Hermes process; never run an exposed server as root."
         )
 
     if app.state.auth_required:

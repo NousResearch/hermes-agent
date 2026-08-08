@@ -1145,14 +1145,16 @@ hermes claw migrate --source /home/user/old-openclaw
 hermes dashboard [options]
 ```
 
-启动 Web 控制台——基于浏览器的界面，用于管理配置、API 密钥和监控会话。需要 `cd ~/.hermes/hermes-agent && uv pip install -e ".[web]"`（FastAPI + Uvicorn）。内嵌浏览器 Chat 标签页始终可用，但额外需要 `pty` extra（`cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"`）以及 POSIX PTY 环境（如 Linux、macOS 或 WSL2）。完整文档请参阅 [Web 控制台](/user-guide/features/web-dashboard)。
+启动 Web 控制台——基于浏览器的界面，用于管理配置、API 密钥和监控会话。Dashboard 是高权限执行入口：它包含 agent 和终端，并以 Hermes 进程相同的操作系统权限运行。需要 `cd ~/.hermes/hermes-agent && uv pip install -e ".[web]"`（FastAPI + Uvicorn）。内嵌浏览器 Chat 标签页始终可用，但额外需要 `pty` extra（`cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"`）以及 POSIX PTY 环境（如 Linux、macOS 或 WSL2）。完整文档请参阅 [Web 控制台](/user-guide/features/web-dashboard)。
 
 | 选项 | 默认值 | 说明 |
 |--------|---------|-------------|
 | `--port` | `9119` | Web 服务器运行端口 |
 | `--host` | `127.0.0.1` | 绑定地址 |
 | `--no-open` | — | 不自动打开浏览器 |
-| `--insecure` | 关闭 | 允许绑定到非 localhost 主机。会在网络上暴露控制台凭据；仅在受信任的网络控制下使用。 |
+| `--insecure` | 关闭 | **已弃用 / 空操作。** 不再绕过非回环绑定的鉴权；公网绑定始终需要鉴权提供方（密码或 OAuth）。Dashboard 会以 Hermes 进程的操作系统权限执行 agent 和终端命令。 |
+| `--skip-build` | 关闭 | 跳过 Web UI 构建步骤，直接提供现有的 `dist`。适用于 npm 不可用的非交互式环境（Windows 计划任务、CI）。请先使用 `cd web && npm run build` 进行构建。 |
+| `--isolated` | 关闭 | 从命名配置文件（`worker dashboard`）启动时，运行专用的单配置文件服务器，而不是路由到机器级 Dashboard。 |
 | `--stop` | — | 停止正在运行的 `hermes dashboard` 进程并退出。 |
 | `--status` | — | 列出正在运行的 `hermes dashboard` 进程并退出。 |
 

@@ -20,6 +20,16 @@ hermes dashboard
 
 This starts a local web server and opens `http://127.0.0.1:9119` in your browser. The dashboard runs entirely on your machine — no data leaves localhost.
 
+:::danger Treat the dashboard as a privileged remote shell
+The dashboard is not a read-only status page. It includes the full agent and
+terminal, tool execution, configuration and secret management, and
+installation-wide operations. Anyone who gains dashboard access can act with
+the same operating-system privileges as the Hermes process — including full
+host control when Hermes runs as `root`. Keep it on loopback or a trusted
+private network, require authentication for every remote bind, and do not run
+an exposed dashboard as `root`.
+:::
+
 ### Options
 
 | Flag | Default | Description |
@@ -383,7 +393,7 @@ Creating a shell hook (note the consent checkbox and the run-arbitrary-commands 
 ![New shell hook modal](/img/dashboard/admin-hook-create.png)
 
 :::warning Security
-The web dashboard reads and writes your `.env` file, which contains API keys and secrets. It binds to `127.0.0.1` by default — only accessible from your local machine, with no login required. Binding to any non-loopback address (including `0.0.0.0`) engages the [auth gate](#authentication-gated-mode): the server refuses to start until an auth provider (username/password or OAuth) is configured.
+The web dashboard reads and writes your `.env` file, runs agent tools and terminal commands, and performs installation-wide operations with the Hermes process's operating-system privileges. It binds to `127.0.0.1` by default — only accessible from your local machine, with no login required. Binding to any non-loopback address (including `0.0.0.0`) engages the [auth gate](#authentication-gated-mode): the server refuses to start until an auth provider (username/password or OAuth) is configured. Authentication is mandatory but does not reduce the privileges granted after login; never run an exposed dashboard as `root`.
 :::
 
 ## `/reload` Slash Command

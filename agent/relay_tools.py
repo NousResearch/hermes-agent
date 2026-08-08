@@ -7,6 +7,7 @@ import contextvars
 import inspect
 import json
 import logging
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -111,12 +112,39 @@ def _json_equal(left: Any, right: Any) -> bool:
         return left == right
 
 
+def _tool_execution_ceiling_seconds() -> float:
+    """Upper bound for one synchronous tool execution, in seconds.
+
+    The concurrent tool path is bounded by HERMES_CONCURRENT_TOOL_TIMEOUT_S,
+    but the sequential path has no deadline at all: a tool whose awaitable
+    never resolves wedges the conversation turn forever with no log output
+    (observed in production with a stuck skill_view; the turn thread parks in
+    the event-loop selector and the session's ended_at/end_reason stay NULL).
+    The default sits above every stock per-tool budget (web_extract 360s,
+    typical terminal timeouts) so it only fires on genuinely wedged tools.
+    Set HERMES_TOOL_EXECUTION_CEILING_S=0 to disable.
+    """
+    raw = os.getenv("HERMES_TOOL_EXECUTION_CEILING_S", "").strip()
+    if not raw:
+        return 420.0
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            "invalid HERMES_TOOL_EXECUTION_CEILING_S=%r; using 420s", raw
+        )
+        return 420.0
+
+
 def _run_awaitable(value: Any) -> Any:
     if not inspect.isawaitable(value):
         return value
     try:
         asyncio.get_running_loop()
     except RuntimeError:
+        ceiling = _tool_execution_ceiling_seconds()
+        if ceiling > 0:
+            return asyncio.run(asyncio.wait_for(value, timeout=ceiling))
         return asyncio.run(value)
     raise RuntimeError(
         "Synchronous Hermes Relay tool execution cannot run on an active event-loop thread"

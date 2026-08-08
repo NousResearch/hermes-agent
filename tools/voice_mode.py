@@ -1175,7 +1175,10 @@ def listen_for_speech(
 
     from collections import deque
 
-    block = int(SAMPLE_RATE * 0.03)  # 30ms blocks
+    # Native device rate (some devices reject a bare 16 kHz stream, PaErrorCode -9997); the
+    # block is sized off it so every *_blocks count still spans 30 ms of wall clock.
+    capture_rate = _default_input_samplerate(sd)
+    block = int(capture_rate * 0.03)  # 30ms blocks
     calib_blocks = max(1, calibration_ms // 30)
     trip_blocks = max(1, sustained_ms // 30)
     endpoint_blocks = max(1, endpoint_silence_ms // 30)
@@ -1194,7 +1197,7 @@ def listen_for_speech(
     block_idx = 0  # block counter for diagnostic logging
 
     try:
-        with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=block) as stream:
+        with sd.InputStream(samplerate=capture_rate, channels=1, dtype="int16", blocksize=block) as stream:
             while not should_stop():
                 data, _ = stream.read(block)
                 rms = float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
@@ -1292,7 +1295,7 @@ def listen_for_speech(
                     quiet = quiet + 1 if rms < SILENCE_RMS_THRESHOLD else 0
                     if quiet >= endpoint_blocks:
                         break
-                return AudioRecorder._write_wav(np.concatenate(frames, axis=0))
+                return AudioRecorder._write_wav(np.concatenate(frames, axis=0), sample_rate=capture_rate)
     except Exception as e:
         logger.debug("Barge-in listener failed: %s", e)
     return None if capture else False
@@ -1318,7 +1321,8 @@ def _vad_log(msg: str) -> None:
             print(f"[voice-vad] {msg}", file=sys.stderr, flush=True)
 
 
-def _capture_until_quiet(stream, np, block: int, pre_roll, *, endpoint_blocks: int, max_blocks: int) -> str:
+def _capture_until_quiet(stream, np, block: int, pre_roll, *, endpoint_blocks: int, max_blocks: int,
+                         sample_rate: int) -> str:
     """After a trip, read until *endpoint_blocks* of quiet (or *max_blocks*) and write
     pre-roll + capture to a WAV. Playback was cut by the trigger, so silence endpointing works."""
     frames: list[Any] = list(pre_roll)
@@ -1329,7 +1333,7 @@ def _capture_until_quiet(stream, np, block: int, pre_roll, *, endpoint_blocks: i
         quiet = quiet + 1 if _rms(np, data) < SILENCE_RMS_THRESHOLD else 0
         if quiet >= endpoint_blocks:
             break
-    return AudioRecorder._write_wav(np.concatenate(frames, axis=0))
+    return AudioRecorder._write_wav(np.concatenate(frames, axis=0), sample_rate=sample_rate)
 
 
 class _BargeDetector:
@@ -1428,7 +1432,8 @@ def full_duplex_listen(
         sd, np = _import_audio()
     except (ImportError, OSError):
         return None
-    block = int(SAMPLE_RATE * 0.03)  # 30ms blocks
+    capture_rate = _default_input_samplerate(sd)  # see listen_for_speech
+    block = int(capture_rate * 0.03)  # 30ms blocks
     endpoint_blocks = max(1, endpoint_silence_ms // 30)
     detector = _BargeDetector(
         np, mult=float(multiplier) if multiplier else DEFAULT_BARGE_MULTIPLIER,
@@ -1436,7 +1441,7 @@ def full_duplex_listen(
         grace_blocks=max(0, grace_ms // 30))
     pre_roll: deque = deque(maxlen=max(1, pre_roll_ms // 30))
     try:
-        with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=block) as stream:
+        with sd.InputStream(samplerate=capture_rate, channels=1, dtype="int16", blocksize=block) as stream:
             while not should_stop():
                 data, _ = stream.read(block)
                 pre_roll.append(data.copy())
@@ -1450,7 +1455,7 @@ def full_duplex_listen(
                     except Exception as e:
                         logger.debug("full-duplex trigger callback failed: %s", e)
                 return _capture_until_quiet(stream, np, block, pre_roll, endpoint_blocks=endpoint_blocks,
-                                            max_blocks=max(1, max_utterance_ms // 30))
+                                            max_blocks=max(1, max_utterance_ms // 30), sample_rate=capture_rate)
     except Exception as e:
         logger.debug("Full-duplex listener failed: %s", e)
     return None

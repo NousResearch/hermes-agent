@@ -209,13 +209,14 @@ class TestBundleHashFilenameSensitivity:
         install as drifted."""
         skill_dir = tmp_path / "skill"
         skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text("hello")
-        (skill_dir / "scripts").mkdir()
-        (skill_dir / "scripts" / "run.sh").write_text("world")
+        (skill_dir / "references").mkdir()
+        (skill_dir / "references" / "styles.md").write_text("styles")
+        (skill_dir / "references" / "styles").mkdir()
+        (skill_dir / "references" / "styles" / "blueprint.md").write_text("blueprint")
 
         bundle = self._make_bundle({
-            "SKILL.md": "hello",
-            "scripts/run.sh": "world",
+            "references/styles.md": "styles",
+            "references/styles/blueprint.md": "blueprint",
         })
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)

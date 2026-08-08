@@ -14,12 +14,26 @@ from typing import Any, Dict, List, Optional, Tuple
 
 @dataclass
 class UIElement:
-    """One interactable element on the current screen."""
+    """One interactable element on the current screen.
 
+    ``bounds`` carries (x, y, w, h) in logical pixels when the source provides
+    them. ``bounds_known`` distinguishes "we got real geometry" (``True``)
+    from "the backend didn't expose geometry, so this is a sentinel"
+    (``False``). The default of ``False`` is deliberate: cua-driver's
+    ``get_window_state`` markdown tree (``[index] role (id) "label"``) does
+    NOT include spatial coordinates, and silently returning ``(0, 0, 0, 0)``
+    made downstream consumers (the LLM, the test suite, the formatter) think
+    every element sat at the screen origin — see #44763. Callers that
+    construct ``UIElement`` from a geometry-bearing source (future
+    cua-driver structured output, a different backend, test fixtures) must
+    set ``bounds_known=True`` explicitly so the formatter and the dict
+    serializer can be honest about it.
+    """
     index: int                       # 1-based SOM index
     role: str                        # AX role (AXButton, AXTextField, ...)
     label: str = ""                  # AXTitle / AXDescription / AXValue snippet
     bounds: Tuple[int, int, int, int] = (0, 0, 0, 0)  # x, y, w, h (logical px)
+    bounds_known: bool = False       # False → ``bounds`` is a sentinel, not geometry
     app: str = ""                    # owning bundle ID or app name
     pid: int = 0                     # owning process PID
     window_id: int = 0               # SkyLight / CG window ID

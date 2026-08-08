@@ -128,12 +128,52 @@ def _release_singleton_lock(handle) -> None:
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
+    async def _mark_kanban_gateway_shutdown(self) -> list[str]:
+        """Mark workers owned by this embedded dispatcher before shutdown."""
+        if not getattr(self, "_kanban_dispatcher_active", False):
+            return []
+
+        def _mark() -> list[str]:
+            from hermes_cli import kanban_db as _kb
+
+            try:
+                boards = _kb.list_boards(include_archived=False)
+            except Exception:
+                boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            marked: list[str] = []
+            seen_paths: set[str] = set()
+            for board_meta in boards:
+                slug = board_meta.get("slug") or _kb.DEFAULT_BOARD
+                try:
+                    db_path = str(_kb.kanban_db_path(slug).resolve())
+                except Exception:
+                    db_path = f"slug:{slug}"
+                if db_path in seen_paths:
+                    continue
+                seen_paths.add(db_path)
+                conn = None
+                try:
+                    conn = _kb.connect(board=slug)
+                    marked.extend(_kb.mark_gateway_shutdown_workers(conn))
+                except Exception:
+                    logger.exception(
+                        "kanban dispatcher: failed to mark shutdown workers on board %s",
+                        slug,
+                    )
+                finally:
+                    if conn is not None:
+                        conn.close()
+            return marked
+
+        return await asyncio.to_thread(_mark)
+
     def _owns_kanban_dispatcher_lock(self) -> bool:
         """Return whether this gateway currently owns the singleton lock."""
         return getattr(self, "_kanban_dispatcher_lock_handle", None) is not None
 
     def _release_kanban_dispatcher_lock(self) -> None:
         """Clear notifier-visible ownership before releasing the OS lock."""
+        self._kanban_dispatcher_active = False
         handle = getattr(self, "_kanban_dispatcher_lock_handle", None)
         self._kanban_dispatcher_lock_handle = None
         _release_singleton_lock(handle)
@@ -1040,6 +1080,7 @@ class GatewayKanbanWatchersMixin:
                 "kanban dispatcher: advisory lock unavailable at %s; proceeding "
                 "on config control alone.", _lock_path,
             )
+        self._kanban_dispatcher_active = True
 
         try:
             interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)

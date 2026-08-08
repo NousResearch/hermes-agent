@@ -95,6 +95,30 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
 
 
 @pytest.mark.asyncio
+async def test_gateway_stop_marks_kanban_workers_before_adapter_disconnect():
+    runner, adapter = make_restart_runner()
+    runner._kanban_dispatcher_active = True
+    call_order: list[str] = []
+
+    async def _mark():
+        call_order.append("mark_kanban")
+        return ["t_one"]
+
+    async def _disconnect():
+        call_order.append("disconnect")
+
+    runner._mark_kanban_gateway_shutdown = _mark
+    adapter.disconnect = _disconnect
+
+    with patch("gateway.status.remove_pid_file"), patch(
+        "gateway.status.write_runtime_status"
+    ):
+        await runner.stop()
+
+    assert call_order.index("mark_kanban") < call_order.index("disconnect")
+
+
+@pytest.mark.asyncio
 async def test_in_chat_restart_skips_home_shutdown_even_with_active_session():
     runner, adapter = make_restart_runner()
     source = make_restart_source(thread_id="42")
@@ -269,5 +293,4 @@ def test_pid_exists_zombie_via_psutil_returns_false(monkeypatch):
     monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
     assert status._pid_exists(4242) is False
-
 

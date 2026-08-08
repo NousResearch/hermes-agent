@@ -47,7 +47,9 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
     refreshRoot,
     rootError,
     rootLoading,
-    setNodeOpen
+    setNodeOpen,
+    showIgnored,
+    toggleShowIgnored
   } = useProjectTree(hasWorkspace ? currentCwd : '')
 
   const cwdName =
@@ -98,7 +100,9 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
         onNodeOpenChange={setNodeOpen}
         onPreviewFile={previewFile}
         onRefresh={() => void refreshRoot()}
+        onToggleShowIgnored={toggleShowIgnored}
         openState={openState}
+        showIgnored={showIgnored}
       />
     </aside>
   )
@@ -110,6 +114,8 @@ interface FilesystemTabProps extends FileTreeBodyProps {
   hasWorkspace: boolean
   onCollapseAll: () => void
   onRefresh: () => void
+  onToggleShowIgnored: () => void
+  showIgnored: boolean
 }
 
 // Sidebar palette + hover-reveal: header actions stay reachable while moving
@@ -135,7 +141,9 @@ function FilesystemTab({
   onNodeOpenChange,
   onPreviewFile,
   onRefresh,
-  openState
+  onToggleShowIgnored,
+  openState,
+  showIgnored
 }: FilesystemTabProps) {
   const { t } = useI18n()
   const r = t.rightSidebar
@@ -174,6 +182,18 @@ function FilesystemTab({
             variant="ghost"
           >
             <Codicon name="collapse-all" size="0.8125rem" />
+          </Button>
+        </Tip>
+        <Tip label={showIgnored ? r.hideIgnoredFiles : r.showIgnoredFiles}>
+          <Button
+            aria-label={showIgnored ? r.hideIgnoredFiles : r.showIgnoredFiles}
+            className={cn(HEADER_ACTION_CLASS, showIgnored && 'text-foreground opacity-100')}
+            disabled={!hasWorkspace}
+            onClick={onToggleShowIgnored}
+            size="icon-xs"
+            variant="ghost"
+          >
+            <Codicon name={showIgnored ? 'eye' : 'eye-closed'} size="0.8125rem" />
           </Button>
         </Tip>
       </RightSidebarSectionHeader>

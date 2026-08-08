@@ -190,6 +190,115 @@ async def test_send_group():
     assert result.success is True
 
 
+@pytest.fixture
+def animated_gif(tmp_path):
+    """Create a GIF that opens in Pillow's palette mode."""
+    from PIL import Image
+
+    path = tmp_path / "animated.gif"
+    first = Image.new("RGB", (16, 16), "blue")
+    second = Image.new("RGB", (16, 16), "green")
+    first.save(
+        path,
+        save_all=True,
+        append_images=[second],
+        duration=[100, 100],
+        loop=0,
+        optimize=False,
+    )
+    return path, path.read_bytes()
+
+
+@pytest.mark.asyncio
+async def test_send_image_preserves_animated_gif_in_payload(animated_gif):
+    import base64
+    import io
+
+    from PIL import Image
+
+    gif_path, original_bytes = animated_gif
+    adapter = _adapter_with_ws()
+    commands = []
+
+    async def capture_command(command, timeout=30.0):
+        commands.append(command)
+        return {"ok": True}
+
+    adapter._send_command = capture_command
+
+    result = await adapter.send_image_file(
+        "alice",
+        str(gif_path),
+    )
+
+    assert result.success is True
+    assert len(commands) == 1
+    command = commands[0]
+    prefix = "/_send @alice json "
+    assert command.startswith(prefix)
+
+    messages = json.loads(command.removeprefix(prefix))
+    assert len(messages) == 1
+    message = messages[0]
+    assert message["filePath"] == str(gif_path)
+
+    thumbnail_uri = message["msgContent"]["image"]
+    uri_prefix = "data:image/jpg;base64,"
+    assert thumbnail_uri.startswith(uri_prefix)
+    thumbnail_bytes = base64.b64decode(
+        thumbnail_uri.removeprefix(uri_prefix),
+        validate=True,
+    )
+    with Image.open(io.BytesIO(thumbnail_bytes)) as thumbnail:
+        assert thumbnail.format == "JPEG"
+
+    assert gif_path.read_bytes() == original_bytes
+    with Image.open(gif_path) as image:
+        assert image.n_frames == 2
+
+
+def test_prepare_image_imagemagick_preserves_gif_frame_zero(
+    animated_gif,
+    monkeypatch,
+):
+    import base64
+    import io
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from PIL import Image
+
+    gif_path, _ = animated_gif
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), "blue").save(buffer, "JPEG")
+    jpeg_bytes = buffer.getvalue()
+
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        output_path = Path(command[-1])
+        output_path.write_bytes(jpeg_bytes)
+        return subprocess.CompletedProcess(command, 0)
+
+    with monkeypatch.context() as patcher:
+        patcher.setitem(sys.modules, "PIL", None)
+        patcher.setattr(subprocess, "run", fake_run)
+        attachment_path, thumbnail_uri = SimplexAdapter._prepare_image(
+            str(gif_path)
+        )
+
+    assert attachment_path == str(gif_path)
+    assert len(calls) == 1
+    assert calls[0][1] == f"{gif_path}[0]"
+    assert base64.b64decode(
+        thumbnail_uri.removeprefix("data:image/jpg;base64,"),
+        validate=True,
+    ) == jpeg_bytes
+
+
 # ---------------------------------------------------------------------------
 # 7b. Channel directory enumeration (list_channels)
 # ---------------------------------------------------------------------------
@@ -386,5 +495,4 @@ def _make_file_chat_item(file_path: str, file_name: str) -> dict:
             },
         },
     }
-
 

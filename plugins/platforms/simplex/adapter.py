@@ -930,30 +930,35 @@ class SimplexAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _prepare_image(file_path: str) -> tuple[str, str]:
-        """Ensure *file_path* is a PNG and return ``(png_path, thumb_data_uri)``.
+        """Return ``(prepared_path, thumb_data_uri)`` for an inline image.
 
-        SimpleX clients can't display WebP and a few other formats inline.
-        This converts to PNG when needed and generates a small JPEG thumbnail
-        for the ``image`` field in the ``/_send`` payload so the chat shows
-        an inline preview. Uses Pillow when available, falls back to
-        ImageMagick ``convert``.
+        PNG, JPEG, and GIF attachments are sent unchanged; other
+        formats are converted to PNG because SimpleX clients cannot display
+        formats such as WebP inline. A static JPEG thumbnail is generated for
+        the ``image`` field in the ``/_send`` payload. Uses Pillow when
+        available and falls back to ImageMagick ``convert``.
         """
         import subprocess
         import tempfile
 
         p = Path(file_path)
-        png_path = file_path
+        suffix = p.suffix.lower()
+        needs_conversion = suffix not in (".png", ".jpg", ".jpeg", ".gif")
+        prepared_path = file_path
         thumb_uri = ""
 
         try:
             from PIL import Image
 
-            img = Image.open(file_path)
-            if p.suffix.lower() not in (".png", ".jpg", ".jpeg"):
-                png_path = str(p.with_suffix(".png"))
-                img.save(png_path, "PNG")
-            thumb = img.copy()
+            with Image.open(file_path) as img:
+                img.seek(0)
+                if needs_conversion:
+                    prepared_path = str(p.with_suffix(".png"))
+                    img.save(prepared_path, "PNG")
+                thumb = img.copy()
             thumb.thumbnail((128, 128))
+            if thumb.mode not in ("RGB", "L"):
+                thumb = thumb.convert("RGB")
             import io
 
             buf = io.BytesIO()
@@ -964,10 +969,10 @@ class SimplexAdapter(BasePlatformAdapter):
             )
         except ImportError:
             try:
-                if p.suffix.lower() not in (".png", ".jpg", ".jpeg"):
-                    png_path = str(p.with_suffix(".png"))
+                if needs_conversion:
+                    prepared_path = str(p.with_suffix(".png"))
                     subprocess.run(
-                        ["convert", file_path, png_path],
+                        ["convert", file_path, prepared_path],
                         check=True,
                         capture_output=True,
                         timeout=30,
@@ -977,7 +982,7 @@ class SimplexAdapter(BasePlatformAdapter):
                 subprocess.run(
                     [
                         "convert",
-                        file_path,
+                        f"{file_path}[0]" if suffix == ".gif" else file_path,
                         "-resize",
                         "128x128",
                         "-quality",
@@ -996,7 +1001,7 @@ class SimplexAdapter(BasePlatformAdapter):
             except (FileNotFoundError, subprocess.SubprocessError) as exc:
                 logger.warning("SimpleX: image conversion unavailable: %s", exc)
 
-        return png_path, thumb_uri
+        return prepared_path, thumb_uri
 
     async def send_image(
         self,
@@ -1022,14 +1027,14 @@ class SimplexAdapter(BasePlatformAdapter):
         if not file_path or not Path(file_path).exists():
             return SendResult(success=False, error="Image file not found")
 
-        png_path, thumb_uri = self._prepare_image(file_path)
+        prepared_path, thumb_uri = self._prepare_image(file_path)
 
         # /_send addresses by numeric ID; /f only accepts display names which
         # breaks for group IDs.
         composed = json.dumps(
             [
                 {
-                    "filePath": png_path,
+                    "filePath": prepared_path,
                     "msgContent": {
                         "type": "image",
                         "image": thumb_uri,

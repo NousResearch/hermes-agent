@@ -4448,13 +4448,25 @@ class BasePlatformAdapter(ABC):
 
     @staticmethod
     def filter_media_delivery_paths(media_files) -> List[Tuple[str, bool]]:
-        """Drop unsafe MEDIA paths and normalize accepted paths."""
+        """Drop unsafe MEDIA paths and normalize accepted paths.
+
+        Deduplicates by resolved path: the same file can reach this filter
+        through two different raw paths (e.g. an orchestrator plugin's
+        absolute-path injection and the agent's hand-written ``MEDIA:`` tag
+        pointing at the same file). Without the guard the file would be
+        delivered twice. Duplicates are skipped with an info-level log; the
+        unsafe-path warning below is unchanged.
+        """
         safe_media: List[Tuple[str, bool]] = []
+        seen: set = set()
         for media_path, is_voice in media_files or []:
             raw = str(media_path)
             safe_path = validate_media_delivery_path(raw)
-            if safe_path:
+            if safe_path and safe_path not in seen:
+                seen.add(safe_path)
                 safe_media.append((safe_path, bool(is_voice)))
+            elif safe_path:
+                logger.info("Skipping duplicate MEDIA path: %s", _log_safe_path(safe_path))
             else:
                 logger.warning("Skipping unsafe MEDIA directive path: %s", _log_safe_path(raw))
         return safe_media

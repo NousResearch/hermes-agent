@@ -343,6 +343,85 @@ class TestSlashCommandCompleter:
         assert "help" in texts
 
 
+# ── Two-pass prefix-then-substring matching ────────────────────────────
+
+
+class TestSubstringFallbackCompletion:
+    """Prefix matches come first, then substring matches as fallback.
+
+    See issue #33822 — typing ``/pdf`` should match ``nano-pdf`` even
+    though it doesn't start with ``pdf``.
+    """
+
+    def test_substring_match_when_no_prefix(self):
+        """``/pdf`` matches ``nano-pdf`` via substring fallback."""
+        completer = SlashCommandCompleter(
+            skill_commands_provider=lambda: {
+                "/nano-pdf": {"description": "Nano PDF skill"},
+            }
+        )
+        completions = _completions(completer, "/pdf")
+        texts = [c.text for c in completions]
+        assert "nano-pdf" in texts
+
+    def test_prefix_match_when_substring_also_matches(self):
+        """``/ocr`` matches ``ocr-and-documents`` via prefix (not substring)."""
+        completer = SlashCommandCompleter(
+            skill_commands_provider=lambda: {
+                "/ocr-and-documents": {"description": "OCR skill"},
+            }
+        )
+        completions = _completions(completer, "/ocr")
+        assert len(completions) == 1
+        assert completions[0].text == "ocr-and-documents"
+
+    def test_prefix_ranked_before_substring(self):
+        """When both prefix and substring candidates exist, prefix wins."""
+        completer = SlashCommandCompleter(
+            skill_commands_provider=lambda: {
+                "/pdf-tool": {"description": "PDF tool (prefix match)"},
+                "/nano-pdf": {"description": "Nano PDF (substring match)"},
+            }
+        )
+        completions = _completions(completer, "/pdf")
+        texts = [c.text for c in completions]
+        # prefix match must come before substring match
+        assert texts.index("pdf-tool") < texts.index("nano-pdf")
+
+    def test_empty_word_does_not_trigger_substring(self):
+        """Empty query (bare ``/``) must not match everything as substring."""
+        completer = SlashCommandCompleter(
+            skill_commands_provider=lambda: {
+                "/skill-a": {"description": "A"},
+            }
+        )
+        completions = _completions(completer, "/")
+        texts = {c.text for c in completions}
+        # skill-a should appear (prefix match on empty string), but
+        # nothing should match via "empty string is substring of everything"
+        assert "skill-a" in texts
+
+    def test_substring_match_for_skill_bundle(self):
+        """Substring fallback also applies to skill bundles."""
+        completer = SlashCommandCompleter(
+            skill_bundles_provider=lambda: {
+                "/my-bundle": {"description": "My bundle", "skills": ["a", "b"]},
+            }
+        )
+        completions = _completions(completer, "/bundle")
+        texts = [c.text for c in completions]
+        assert "my-bundle" in texts
+
+    def test_substring_match_for_builtin_command(self):
+        """Substring fallback also applies to built-in slash commands."""
+        completer = SlashCommandCompleter()
+        # /skills contains "kill" as a substring — previously only prefix
+        # matched, so /ski would work but /kill would not
+        completions = _completions(completer, "/kill")
+        texts = {c.text for c in completions}
+        assert "skills" in texts
+
+
 
 
 # ── Stacked slash-skill completion ──────────────────────────────────────

@@ -2116,58 +2116,59 @@ class SlashCommandCompleter(Completer):
 
         word = text[1:]
 
+        # Two-pass matching: prefix matches first (preserving source
+        # ordering), then substring matches as a fallback.  This lets
+        # ``/pdf`` match ``nano-pdf`` or ``/ocr`` match
+        # ``ocr-and-documents`` while keeping prefix matches at the top
+        # of the dropdown.  See issue #33822.
+        prefix_matches: list = []
+        substring_matches: list = []
+
+        def _stage(cmd_name: str, display: str, meta: str) -> None:
+            """Stage a completion into the prefix or substring bucket."""
+            if cmd_name.startswith(word):
+                prefix_matches.append(Completion(
+                    self._completion_text(cmd_name, word),
+                    start_position=-len(word),
+                    display=display,
+                    display_meta=meta,
+                ))
+            elif word and word in cmd_name:
+                substring_matches.append(Completion(
+                    self._completion_text(cmd_name, word),
+                    start_position=-len(word),
+                    display=display,
+                    display_meta=meta,
+                ))
+
         for cmd, desc in COMMANDS.items():
             if not self._command_allowed(cmd):
                 continue
-            cmd_name = cmd[1:]
-            if cmd_name.startswith(word):
-                yield Completion(
-                    self._completion_text(cmd_name, word),
-                    start_position=-len(word),
-                    display=cmd,
-                    display_meta=desc,
-                )
+            _stage(cmd[1:], cmd, desc)
 
         for cmd, info in self._iter_skill_bundles().items():
-            cmd_name = cmd[1:]
-            if cmd_name.startswith(word):
-                description = str(info.get("description", "Skill bundle"))
-                short_desc = description[:50] + ("..." if len(description) > 50 else "")
-                skill_count = len(info.get("skills", []))
-                yield Completion(
-                    self._completion_text(cmd_name, word),
-                    start_position=-len(word),
-                    display=cmd,
-                    display_meta=f"▣ {short_desc} ({skill_count} skills)",
-                )
+            description = str(info.get("description", "Skill bundle"))
+            short_desc = description[:50] + ("..." if len(description) > 50 else "")
+            skill_count = len(info.get("skills", []))
+            _stage(cmd[1:], cmd, f"▣ {short_desc} ({skill_count} skills)")
 
         for cmd, info in self._iter_skill_commands().items():
-            cmd_name = cmd[1:]
-            if cmd_name.startswith(word):
-                description = str(info.get("description", "Skill command"))
-                short_desc = description[:50] + ("..." if len(description) > 50 else "")
-                yield Completion(
-                    self._completion_text(cmd_name, word),
-                    start_position=-len(word),
-                    display=cmd,
-                    display_meta=f"⚡ {short_desc}",
-                )
+            description = str(info.get("description", "Skill command"))
+            short_desc = description[:50] + ("..." if len(description) > 50 else "")
+            _stage(cmd[1:], cmd, f"⚡ {short_desc}")
 
         # Plugin-registered slash commands
         try:
             from hermes_cli.plugins import get_plugin_commands
             for cmd_name, cmd_info in get_plugin_commands().items():
-                if cmd_name.startswith(word):
-                    desc = str(cmd_info.get("description", "Plugin command"))
-                    short_desc = desc[:50] + ("..." if len(desc) > 50 else "")
-                    yield Completion(
-                        self._completion_text(cmd_name, word),
-                        start_position=-len(word),
-                        display=f"/{cmd_name}",
-                        display_meta=f"🔌 {short_desc}",
-                    )
+                desc = str(cmd_info.get("description", "Plugin command"))
+                short_desc = desc[:50] + ("..." if len(desc) > 50 else "")
+                _stage(cmd_name, f"/{cmd_name}", f"🔌 {short_desc}")
         except Exception:
             pass
+
+        yield from prefix_matches
+        yield from substring_matches
 
 
 # ---------------------------------------------------------------------------

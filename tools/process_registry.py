@@ -248,21 +248,25 @@ def _systemd_run_user_scope_available() -> bool:
 def _is_supervised_gateway_process() -> bool:
     """Return whether this process is in a supervised Hermes gateway runtime.
 
-    Supervisor markers such as systemd's ``INVOCATION_ID`` are inherited by
-    every descendant. An interactive CLI launched from a supervised terminal
-    manager therefore cannot use that marker alone: its login-shell workers
-    would stay in the CLI's session and could take ownership of the controlling
-    tty. ``gateway.run`` adds ``_HERMES_GATEWAY`` to the gateway process tree;
-    unrelated supervised terminal managers do not.
+    Both supervisor markers and ``_HERMES_GATEWAY`` are inherited by every
+    descendant, and importing ``gateway.run`` also sets the latter. Require
+    this process to own the live gateway PID file as well. That keeps transient
+    systemd scopes limited to the gateway itself instead of terminal children
+    or unrelated interactive CLIs in the same supervised process tree.
     """
     if os.environ.get("_HERMES_GATEWAY") != "1":
         return False
 
     try:
         from gateway.restart import is_gateway_supervisor_process
+        from gateway.status import get_running_pid
 
-        return is_gateway_supervisor_process()
-    except Exception:
+        return (
+            is_gateway_supervisor_process()
+            and get_running_pid(cleanup_stale=False) == os.getpid()
+        )
+    except Exception as exc:
+        logger.debug("Could not verify supervised gateway process identity: %s", exc)
         return False
 
 
@@ -1012,30 +1016,26 @@ class ProcessRegistry:
                 # Cgroup isolation for PTY mode (#70716, reviewer gap #1):
                 # Wrap the PTY command in a systemd scope so interactive
                 # executors get their own cgroup, same as pipe mode.
-                pty_under_supervisor = _is_supervised_gateway_process()
+                pty_in_supervised_gateway = (
+                    not _IS_WINDOWS and _is_supervised_gateway_process()
+                )
                 pty_use_systemd_scope = (
-                    not _IS_WINDOWS
-                    and pty_under_supervisor
-                    and _systemd_run_user_scope_available()
+                    pty_in_supervised_gateway and _systemd_run_user_scope_available()
                 )
 
                 if pty_use_systemd_scope:
                     pty_argv = _build_systemd_scope_argv(
-                        pty_argv, unit_suffix=session.id,
+                        pty_argv,
+                        unit_suffix=session.id,
                     )
                     session.systemd_unit = f"hermes-worker-{session.id}.scope"
                     pty_scope_attempted = True
-                elif not _IS_WINDOWS:
-                    try:
-                        from gateway.restart import is_gateway_supervisor_process as _sup
-                        if _sup():
-                            logger.debug(
-                                "PTY background executor not isolated in a "
-                                "systemd scope (systemd-run --user unavailable); "
-                                "worker shares the gateway cgroup."
-                            )
-                    except Exception:
-                        pass
+                elif pty_in_supervised_gateway:
+                    logger.debug(
+                        "PTY background executor not isolated in a "
+                        "systemd scope (systemd-run --user unavailable); "
+                        "worker shares the gateway cgroup."
+                    )
 
                 pty_proc = _PtyProcessCls.spawn(
                     pty_argv,
@@ -1088,29 +1088,26 @@ class ProcessRegistry:
         bg_env["PYTHONUNBUFFERED"] = "1"
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
-        # Cgroup isolation (#70716): when running under a service manager
-        # (systemd gateway), wrap the worker in its own transient systemd
+        # Cgroup isolation (#70716): when running in the live, supervised
+        # systemd gateway, wrap the worker in its own transient systemd
         # scope so it gets a separate cgroup.  An OOM in the worker then
         # kills only the worker instead of taking down the whole gateway
-        # cgroup (and the messaging control plane with it).  We only do this
-        # for both pipe mode and the PTY path above.
+        # cgroup (and the messaging control plane with it). This applies to
+        # both pipe mode and the PTY path above.
         shell_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
         use_systemd_scope = False
-        under_supervisor = _is_supervised_gateway_process()
+        in_supervised_gateway = not _IS_WINDOWS and _is_supervised_gateway_process()
         use_systemd_scope = (
-            not _IS_WINDOWS
-            and under_supervisor
-            and _systemd_run_user_scope_available()
+            in_supervised_gateway and _systemd_run_user_scope_available()
         )
 
         if use_systemd_scope:
             unit_suffix = (
-                f"{session.id}-pipe-fallback"
-                if pty_scope_attempted
-                else session.id
+                f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
             )
             spawn_argv = _build_systemd_scope_argv(
-                shell_argv, unit_suffix=unit_suffix,
+                shell_argv,
+                unit_suffix=unit_suffix,
             )
             session.systemd_unit = f"hermes-worker-{unit_suffix}.scope"
             # CRITICAL (#70716 regression): systemd-run --scope does NOT give
@@ -1127,7 +1124,7 @@ class ProcessRegistry:
         else:
             spawn_argv = shell_argv
             popen_start_new_session = True
-            if not _IS_WINDOWS and under_supervisor:
+            if in_supervised_gateway:
                 # Running under a supervisor but could not get a private
                 # cgroup — the worker shares the gateway cgroup, so an OOM
                 # in the worker can still kill the whole gateway (#70716).
@@ -1135,7 +1132,7 @@ class ProcessRegistry:
                     "Local background executor not isolated in a systemd scope "
                     "(supervisor=%s, systemd-run --user available=%s); "
                     "worker shares the gateway cgroup.",
-                    under_supervisor,
+                    in_supervised_gateway,
                     _systemd_run_user_scope_available(),
                 )
 

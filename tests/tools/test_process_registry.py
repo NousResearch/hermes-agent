@@ -1652,6 +1652,10 @@ class TestSystemdCgroupIsolation:
     @pytest.fixture(autouse=True)
     def _mark_gateway_process(self, monkeypatch):
         monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid",
+            lambda *, cleanup_stale=False: os.getpid(),
+        )
 
     def _fake_popen_capture(self):
         """Return (fake_popen, captured) where captured["argv"] gets the
@@ -1689,20 +1693,26 @@ class TestSystemdCgroupIsolation:
         # _build_systemd_scope_argv calls shutil.which — point it at a stub.
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
-        with patch("subprocess.Popen", side_effect=fake_popen), \
-            patch("threading.Thread", return_value=MagicMock()), \
-            patch.object(registry, "_write_checkpoint"):
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
             session = registry.spawn_local("echo hello", cwd="/tmp")
 
         argv = captured["argv"]
         assert argv[0] == "/usr/bin/systemd-run", argv
         assert "--user" in argv
         assert "--scope" in argv
-        assert "--quiet" in argv, "systemd-run argv must include --quiet (#70716 gap #3)"
+        assert "--quiet" in argv, (
+            "systemd-run argv must include --quiet (#70716 gap #3)"
+        )
         assert "--unit" in argv
         unit_idx = argv.index("--unit")
         assert argv[unit_idx + 1].startswith("hermes-worker-"), argv
-        assert argv[unit_idx + 1] == f"hermes-worker-{session.id}", argv  # _build_systemd_scope_argv uses bare name
+        assert argv[unit_idx + 1] == f"hermes-worker-{session.id}", (
+            argv
+        )  # _build_systemd_scope_argv uses bare name
         properties = [
             argv[index + 1]
             for index, value in enumerate(argv[:-1])
@@ -1730,9 +1740,7 @@ class TestSystemdCgroupIsolation:
         # The session must record the unit name so kill_process can stop it.
         assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
 
-    def test_falls_back_when_systemd_run_unavailable(
-        self, registry, monkeypatch
-    ):
+    def test_falls_back_when_systemd_run_unavailable(self, registry, monkeypatch):
         """Under a supervisor but without systemd-run, fall back to the
         legacy ``start_new_session=True`` path (worker shares the gateway
         cgroup)."""
@@ -1748,9 +1756,11 @@ class TestSystemdCgroupIsolation:
             lambda: True,
         )
 
-        with patch("subprocess.Popen", side_effect=fake_popen), \
-            patch("threading.Thread", return_value=MagicMock()), \
-            patch.object(registry, "_write_checkpoint"):
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
             registry.spawn_local("echo hello", cwd="/tmp")
 
         argv = captured["argv"]
@@ -1758,9 +1768,7 @@ class TestSystemdCgroupIsolation:
         assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
         assert captured["start_new_session"] is True
 
-    def test_falls_back_when_not_under_supervisor(
-        self, registry, monkeypatch
-    ):
+    def test_falls_back_when_not_under_supervisor(self, registry, monkeypatch):
         """CLI mode (no supervisor) must NOT wrap in a systemd scope even if
         systemd-run is available — isolation is a gateway concern."""
         fake_popen, captured = self._fake_popen_capture()
@@ -1775,9 +1783,11 @@ class TestSystemdCgroupIsolation:
             lambda: False,
         )
 
-        with patch("subprocess.Popen", side_effect=fake_popen), \
-            patch("threading.Thread", return_value=MagicMock()), \
-            patch.object(registry, "_write_checkpoint"):
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
             registry.spawn_local("echo hello", cwd="/tmp")
 
         argv = captured["argv"]
@@ -1799,9 +1809,11 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
-        with patch("subprocess.Popen", side_effect=fake_popen), \
-            patch("threading.Thread", return_value=MagicMock()), \
-            patch.object(registry, "_write_checkpoint"):
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
             registry.spawn_local("echo hello", cwd="/tmp")
 
         assert captured["argv"] == [
@@ -1829,9 +1841,79 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
-        with patch.object(PtyProcess, "spawn", return_value=fake_pty) as pty_spawn, \
-            patch("threading.Thread", return_value=MagicMock()), \
-            patch.object(registry, "_write_checkpoint"):
+        with (
+            patch.object(PtyProcess, "spawn", return_value=fake_pty) as pty_spawn,
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
+
+        assert pty_spawn.call_args.args[0] == [
+            "/bin/bash",
+            "-lic",
+            "set +m; codex",
+        ]
+        assert session.systemd_unit == ""
+
+    def test_inherited_gateway_tree_markers_do_not_scope_child_cli(
+        self, registry, monkeypatch
+    ):
+        """Gateway descendants are not the gateway process that owns the PID file."""
+        fake_popen, captured = self._fake_popen_capture()
+
+        monkeypatch.setenv("INVOCATION_ID", "inherited-systemd-marker")
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid",
+            lambda *, cleanup_stale=False: os.getpid() + 1,
+        )
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            registry.spawn_local("echo hello", cwd="/tmp")
+
+        assert captured["argv"] == [
+            "/bin/bash",
+            "-lic",
+            "set +m; echo hello",
+        ]
+        assert captured["start_new_session"] is True
+
+    def test_inherited_gateway_tree_markers_do_not_scope_child_cli_pty(
+        self, registry, monkeypatch
+    ):
+        """The PID-bound gateway identity gate also protects PTY-backed children."""
+        from ptyprocess import PtyProcess
+
+        fake_pty = MagicMock(pid=4321)
+
+        monkeypatch.setenv("INVOCATION_ID", "inherited-systemd-marker")
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid",
+            lambda *, cleanup_stale=False: os.getpid() + 1,
+        )
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with (
+            patch.object(PtyProcess, "spawn", return_value=fake_pty) as pty_spawn,
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
             session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
 
         assert pty_spawn.call_args.args[0] == [

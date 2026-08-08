@@ -397,6 +397,7 @@ def register(ctx):
 - `ctx.register_cli_command()` registers a CLI subcommand (e.g. `hermes my-plugin <subcommand>`)
 - `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below
 - `ctx.dispatch_tool(name, arguments)` — call any other tool (built-in or from another plugin) with the parent agent's context (approvals, credentials, task_id) wired up automatically. Useful from slash-command handlers that need to invoke `terminal`, `read_file`, or any other tool as if the model had called it directly.
+- `ctx.get_config()` / `ctx.set_config()` access only this plugin's settings namespace; `ctx.state` stores plugin-owned runtime data under the active profile.
 - If this function crashes, the plugin is disabled but Hermes continues fine
 
 **`dispatch_tool` example — a slash command that runs a tool:**
@@ -417,6 +418,39 @@ def register(ctx):
 ```
 
 The dispatched tool goes through the normal approval, redaction, and budget pipelines — it's a real tool invocation, not a shortcut around them.
+
+### Store settings and runtime state
+
+Use plugin-relative config keys for user-visible behavior. Hermes resolves them
+under `plugins.entries.<plugin-id>.settings` and rejects global, cross-plugin,
+and traversal paths:
+
+```python
+def register(ctx):
+    endpoint = ctx.get_config("endpoint", default="https://example.invalid")
+    retries = ctx.get_config("retry.attempts", default=3)
+
+    ctx.set_config("endpoint", endpoint)
+    ctx.set_config("retry.attempts", retries)
+```
+
+Use `ctx.state` for plugin-owned cursors, caches, and deduplication data rather
+than placing runtime bookkeeping in `config.yaml`:
+
+```python
+def register(ctx):
+    cursor = ctx.state.get("cursor", default={"page": 0})
+    ctx.state.set("cursor", {"page": cursor["page"] + 1})
+```
+
+State is profile-scoped, atomically replaced, safe across concurrent writers,
+and limited to 10 MiB per plugin. Portable packages share the same directory as
+their `PLUGIN_DATA`; native plugins receive a collision-resistant,
+Windows-safe namespace. Malformed existing state is reported and preserved.
+
+Config and state have different owners: settings are user-visible behavior in
+`config.yaml`, while state is plugin-owned runtime data under
+`<HERMES_HOME>/plugin-data/`. Neither API exposes another plugin's namespace.
 
 ## Step 6: Test it
 

@@ -1167,11 +1167,11 @@ def _(rid, params: dict) -> dict:
     configured auxiliary ``task`` backend. Never mutates session history, so
     prompt caching is untouched.
     """
-    template = (params.get("template") or "").strip() or None
+    template = str(params.get("template") or "").strip() or None
     instructions = params.get("instructions") or ""
     user_input = params.get("input") or ""
     variables = params.get("variables") if isinstance(params.get("variables"), dict) else {}
-    task = (params.get("task") or "title_generation").strip() or "title_generation"
+    task = str(params.get("task") or "title_generation").strip() or "title_generation"
 
     try:
         max_tokens = int(params.get("max_tokens") or 1024)
@@ -1236,7 +1236,7 @@ def _(rid, params: dict) -> dict:
             "session busy — wait for the current turn to finish, then retry the handoff",
         )
 
-    platform_name = (params.get("platform", "") or "").strip().lower()
+    platform_name = str(params.get("platform") or "").strip().lower()
     if not platform_name:
         return _err(rid, 4023, "platform required")
 
@@ -3213,7 +3213,9 @@ def _(rid, params: dict) -> dict:
     it on its next iteration. No interrupt, no new user turn, no role
     alternation violation.
     """
-    text = (params.get("text") or "").strip()
+    # Inline RPC: non-string text (JSON null already falsy; list/int is truthy)
+    # must not AttributeError on .strip() and tear down the reader thread.
+    text = str(params.get("text") or "").strip()
     if not text:
         return _err(rid, 4002, "text is required")
     session, err = _sess_nowait(params, rid)
@@ -3240,7 +3242,7 @@ def _(rid, params: dict) -> dict:
 @method("session.redirect")
 def _(rid, params: dict) -> dict:
     """Redirect the active model turn while preserving valid work/context."""
-    text = (params.get("text") or "").strip()
+    text = str(params.get("text") or "").strip()
     if not text:
         return _err(rid, 4002, "text is required")
     session, err = _sess_nowait(params, rid)

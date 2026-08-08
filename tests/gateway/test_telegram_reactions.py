@@ -124,10 +124,13 @@ async def test_clear_reactions_handles_api_error_gracefully(monkeypatch):
     """API errors during clear should not propagate."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
     adapter = _make_adapter()
+    adapter._processing_reactions = {("123", "456"): "👀"}
     adapter._bot.set_message_reaction = AsyncMock(side_effect=RuntimeError("no perms"))
 
     result = await adapter._clear_reactions("123", "456")
+
     assert result is False
+    assert adapter._processing_reactions == {}
 
 
 # ── config.py bridging ───────────────────────────────────────────────

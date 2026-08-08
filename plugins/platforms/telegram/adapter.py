@@ -9897,20 +9897,48 @@ class TelegramAdapter(BasePlatformAdapter):
         """Check if message reactions are enabled via config/env."""
         return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in {"false", "0", "no"}
 
-    async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
-        """Set a single emoji reaction on a Telegram message."""
-        if not self._bot:
-            return False
-        try:
-            await self._bot.set_message_reaction(
-                chat_id=normalize_telegram_chat_id(chat_id),
-                message_id=int(message_id),
-                reaction=emoji,
-            )
-            return True
-        except Exception as e:
-            logger.debug("[%s] set_message_reaction failed (%s): %s", self.name, emoji, _redact_telegram_error_text(e))
-            return False
+    def _reaction_update_lock(self) -> asyncio.Lock:
+        """Serialize reaction updates so cache and Telegram stay in sync."""
+        lock = getattr(self, "_processing_reactions_lock", None)
+        if lock is None:
+            lock = self._processing_reactions_lock = asyncio.Lock()
+        return lock
+
+    async def _set_reaction(
+        self,
+        chat_id: str,
+        message_id: str,
+        emoji: str,
+        *,
+        retain_state: bool = True,
+    ) -> bool:
+        """Set one reaction, skipping duplicate state updates."""
+        key = (str(chat_id), str(message_id))
+        async with self._reaction_update_lock():
+            states = getattr(self, "_processing_reactions", None)
+            if states is None:
+                states = self._processing_reactions = {}
+            if states.get(key) == emoji:
+                if not retain_state:
+                    states.pop(key, None)
+                return True
+            try:
+                if not self._bot:
+                    return False
+                await self._bot.set_message_reaction(
+                    chat_id=normalize_telegram_chat_id(chat_id),
+                    message_id=int(message_id),
+                    reaction=emoji,
+                )
+                if retain_state:
+                    states[key] = emoji
+                return True
+            except Exception as e:
+                logger.debug("[%s] set_message_reaction failed (%s): %s", self.name, emoji, _redact_telegram_error_text(e))
+                return False
+            finally:
+                if not retain_state:
+                    states.pop(key, None)
 
     async def _clear_reactions(self, chat_id: str, message_id: str) -> bool:
         """Clear all reactions from a Telegram message.
@@ -9920,18 +9948,53 @@ class TelegramAdapter(BasePlatformAdapter):
         reactions on a message — equivalent to Bot API 10.0's
         ``deleteMessageReaction`` but supported in PTB 22.6 already.
         """
-        if not self._bot:
-            return False
-        try:
-            await self._bot.set_message_reaction(
-                chat_id=normalize_telegram_chat_id(chat_id),
-                message_id=int(message_id),
-                reaction=None,
-            )
-            return True
-        except Exception as e:
-            logger.debug("[%s] clear reactions failed: %s", self.name, _redact_telegram_error_text(e))
-            return False
+        key = (str(chat_id), str(message_id))
+        async with self._reaction_update_lock():
+            try:
+                if not self._bot:
+                    return False
+                await self._bot.set_message_reaction(
+                    chat_id=normalize_telegram_chat_id(chat_id),
+                    message_id=int(message_id),
+                    reaction=None,
+                )
+                return True
+            except Exception as e:
+                logger.debug("[%s] clear reactions failed: %s", self.name, _redact_telegram_error_text(e))
+                return False
+            finally:
+                states = getattr(self, "_processing_reactions", None)
+                if states is not None:
+                    states.pop(key, None)
+
+    async def on_processing_activity(
+        self,
+        source: "SessionSource",
+        message_id: str,
+        event_type: str,
+        tool_name: str | None = None,
+    ) -> None:
+        """Reflect thinking/tool state with Telegram-supported reactions."""
+        chat_id = source.chat_id
+        if not self._reactions_enabled() or not (chat_id and message_id):
+            return
+        if event_type in {"reasoning.available", "_thinking", "tool.completed", "tool.failed"}:
+            emoji = "🤔"
+        elif event_type == "tool.started":
+            name = (tool_name or "").lower()
+            if any(part in name for part in ("terminal", "browser", "computer", "code", "process")):
+                emoji = "👨‍💻"
+            elif any(part in name for part in ("file", "patch", "todo", "memory")):
+                emoji = "✍"
+            elif any(part in name for part in ("web", "search", "vision")):
+                emoji = "🤓"
+            elif any(part in name for part in ("delegate", "advisor", "clarify", "message")):
+                emoji = "🤝"
+            else:
+                emoji = "⚡"
+        else:
+            return
+        await self._set_reaction(chat_id, message_id, emoji)
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""
@@ -9968,6 +10031,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 chat_id,
                 message_id,
                 "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
+                retain_state=False,
             )
 
 

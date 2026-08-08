@@ -212,3 +212,38 @@ def test_main_desktop_serve_backend_still_blocks(monkeypatch, capsys):
     assert data["blocked"] is True
     assert [p["pid"] for p in data["processes"]] == [78]
     assert data["pausable_gateways"] == 0
+
+
+def test_main_classifies_gateway_from_live_cmdline_when_capture_is_truncated(
+    monkeypatch, capsys
+):
+    """Long managed-runtime paths must not hide the trailing gateway command."""
+    executable = (
+        "C:/Users/u/.hermes/hermes-agent/.hermes-runtime/python/"
+        "generation-1785179197-21284-2ba3099e/"
+        "cpython-3.11-windows-x86_64-none/python.exe"
+    )
+    argv = [executable, "-m", "hermes_cli.main", "gateway", "run"]
+    full_cmdline = " ".join(argv)
+    captured = full_cmdline[:120]
+    assert "gateway" not in captured
+
+    process = types.SimpleNamespace(cmdline=lambda: argv)
+    fake_psutil = types.SimpleNamespace(Process=lambda pid: process)
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    import hermes_cli.main as cli_main
+
+    monkeypatch.setattr(
+        cli_main,
+        "_detect_venv_python_processes",
+        lambda: [(42, "python.exe", captured)],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+    data = json.loads(capsys.readouterr().out)
+
+    assert excinfo.value.code == 0
+    assert data["blocked"] is False
+    assert data["processes"] == []
+    assert data["pausable_gateways"] == 1

@@ -126,6 +126,29 @@ def _is_pausable_gateway(cmdline: str) -> bool:
     return looks_like_gateway_command_line(cmdline)
 
 
+def _is_pausable_gateway_process(pid: int, captured_cmdline: str) -> bool:
+    """Classify a holder using its live argv when the capture is incomplete.
+
+    ``_detect_venv_python_processes`` caps captured command lines at 120
+    characters for display. Managed-runtime interpreter paths can exceed that
+    limit before the trailing ``gateway run`` tokens, so the captured prefix
+    alone is not sufficient for the Desktop preflight exemption. Re-read the
+    argv only for classification and keep the captured prefix for output.
+
+    If the process exits or cannot be inspected, fail closed by retaining the
+    captured-prefix verdict: the holder remains a blocker.
+    """
+    if _is_pausable_gateway(captured_cmdline):
+        return True
+    try:
+        import psutil  # noqa: PLC0415
+
+        live_cmdline = " ".join(psutil.Process(int(pid)).cmdline())
+    except Exception:
+        return False
+    return bool(live_cmdline) and _is_pausable_gateway(live_cmdline)
+
+
 def main() -> None:
     """Entry point.  Prints one JSON doc to stdout.  Exits 0 for valid scan."""
     try:
@@ -140,6 +163,11 @@ def main() -> None:
     except Exception as exc:
         _emit_probe_fail(f"scan aborted: {exc}")
 
+    pausable_gateway_pids = {
+        pid
+        for pid, _name, cmdline in matches
+        if _is_pausable_gateway_process(pid, cmdline)
+    }
     processes = [
         {
             "pid": pid,
@@ -147,16 +175,15 @@ def main() -> None:
             "cmdline": _redact_sensitive_cmdline(cmdline),
         }
         for pid, name, cmdline in matches
-        if not _is_pausable_gateway(cmdline)
+        if pid not in pausable_gateway_pids
     ]
-    exempted = sum(1 for _pid, _name, cmdline in matches if _is_pausable_gateway(cmdline))
     data = {
         "ok": True,
         "blocked": bool(processes),
         "processes": processes,
         # Diagnostic only: gateway processes present but not counted as
         # blockers because the downstream updater pauses them itself.
-        "pausable_gateways": exempted,
+        "pausable_gateways": len(pausable_gateway_pids),
     }
     print(json.dumps(data))
     sys.exit(0)

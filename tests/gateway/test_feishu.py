@@ -5,6 +5,7 @@ import json
 import os
 import socket
 import tempfile
+import threading
 import time
 import unittest
 from collections import OrderedDict
@@ -1655,6 +1656,278 @@ class TestDedupTTL(unittest.TestCase):
                 assert "om_good" in adapter._seen_message_ids
                 assert "om_bad_str" not in adapter._seen_message_ids
                 assert "om_bad_null" not in adapter._seen_message_ids
+
+
+class TestSharedDedupAcrossProfiles(unittest.TestCase):
+    """Redelivered messages must dedup across multiplexed profiles (#78514).
+
+    Under ``multiplex_profiles`` each profile runs its own Feishu adapter
+    against the same bot, each with a cache in its own profile home. Feishu
+    redelivery can land on a sibling adapter, which used to see the message as
+    brand new — re-answering old questions and re-running side effects.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        # Passes only because the store holds no open handle on the db file —
+        # Windows cannot remove a directory containing one.
+        self._tmp.cleanup()
+
+    def _adapter_for(self, profile, *, app_id="cli_shared", prime=True):
+        """An adapter whose HERMES_HOME is <root>/profiles/<profile>.
+
+        That layout is what makes get_default_hermes_root() resolve to the
+        shared <root> while get_hermes_home() stays per-profile — exactly the
+        production shape this fix targets.
+        """
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        home = self.root / "profiles" / profile
+        home.mkdir(parents=True, exist_ok=True)
+        env = {
+            "HERMES_HOME": str(home),
+            "FEISHU_APP_ID": app_id,
+            "FEISHU_APP_SECRET": "secret",
+        }
+        with patch.dict(os.environ, env):
+            adapter = FeishuAdapter(
+                PlatformConfig(extra={"app_id": app_id, "app_secret": "secret"})
+            )
+        # The adapter resolves both dedup paths in __init__, so opening the
+        # store afterwards needs no env. `prime=False` leaves that to the code
+        # under test — connect(), or the lazy fallback in _is_duplicate.
+        if prime:
+            adapter._shared_dedup_store()
+        return adapter
+
+    def test_sibling_profile_adapter_rejects_redelivered_message(self):
+        """The reported bug: profile A processes it, the redelivery routed to
+        profile B's adapter must be dropped, not processed a second time."""
+        profile_a = self._adapter_for("fitness")
+        profile_b = self._adapter_for("llm-wiki")
+
+        self.assertFalse(profile_a._is_duplicate("om_replayed"))
+        self.assertTrue(profile_b._is_duplicate("om_replayed"))
+
+    def test_each_profile_still_keeps_its_own_legacy_cache_file(self):
+        """The per-profile JSON stays the local fast path — the shared store
+        is an added gate, not a replacement that strands existing state."""
+        profile_a = self._adapter_for("fitness")
+
+        self.assertFalse(profile_a._is_duplicate("om_local"))
+        self.assertIn("om_local", profile_a._seen_message_ids)
+        self.assertTrue(
+            (self.root / "profiles" / "fitness" / "feishu_seen_message_ids.json").exists()
+        )
+
+    def test_distinct_app_ids_do_not_shadow_each_other(self):
+        """Two different bots share the file but not the id space."""
+        bot_one = self._adapter_for("fitness", app_id="cli_one")
+        bot_two = self._adapter_for("llm-wiki", app_id="cli_two")
+
+        self.assertFalse(bot_one._is_duplicate("om_same_id"))
+        self.assertFalse(bot_two._is_duplicate("om_same_id"))
+
+    def test_per_profile_cache_is_carried_into_the_shared_store(self):
+        """Upgrading mid-window must not reopen the replay hole the old
+        per-profile cache was still covering."""
+        home = self.root / "profiles" / "fitness"
+        home.mkdir(parents=True)
+        (home / "feishu_seen_message_ids.json").write_text(
+            json.dumps({"message_ids": {"om_pre_upgrade": time.time()}}),
+            encoding="utf-8",
+        )
+
+        legacy = self._adapter_for("fitness")
+        self.assertIn("om_pre_upgrade", legacy._seen_message_ids)
+
+        # A sibling profile that never saw the message still knows it.
+        sibling = self._adapter_for("llm-wiki")
+        self.assertTrue(sibling._is_duplicate("om_pre_upgrade"))
+
+    def test_unusable_shared_store_degrades_to_delivery(self):
+        """A broken store must not raise or swallow messages — the adapter
+        falls back to its previous per-instance behaviour."""
+        adapter = self._adapter_for("fitness")
+        adapter._shared_dedup = None
+        adapter._shared_dedup_ready = True
+
+        # No store → first sighting delivers, second is caught locally.
+        self.assertFalse(adapter._is_duplicate("om_local_only"))
+        self.assertTrue(adapter._is_duplicate("om_local_only"))
+
+    def test_legacy_window_publishes_even_when_the_first_message_is_a_local_hit(self):
+        """The seed must not be gated on a dedup MISS.
+
+        Priming lazily off the first inbound message meant a profile whose
+        first post-upgrade message was a redelivery of an id already in its
+        own cache returned early and never published that id — leaving the
+        sibling free to reprocess exactly the ids the seed exists to protect.
+        """
+        home = self.root / "profiles" / "fitness"
+        home.mkdir(parents=True)
+        (home / "feishu_seen_message_ids.json").write_text(
+            json.dumps({"message_ids": {"om_pre_upgrade": time.time()}}),
+            encoding="utf-8",
+        )
+
+        # Built WITHOUT priming, so the only thing that can publish the seed
+        # is the code path under test.
+        fitness = self._adapter_for("fitness", prime=False)
+
+        # Its first message is a local hit — the early-return case.
+        self.assertTrue(fitness._is_duplicate("om_pre_upgrade"))
+
+        sibling = self._adapter_for("llm-wiki")
+        self.assertTrue(sibling._is_duplicate("om_pre_upgrade"))
+
+    def test_connect_primes_the_shared_dedup_store(self):
+        """Priming happens at connect, before any transport can deliver."""
+        home = self.root / "profiles" / "fitness"
+        home.mkdir(parents=True)
+        (home / "feishu_seen_message_ids.json").write_text(
+            json.dumps({"message_ids": {"om_pre_upgrade": time.time()}}),
+            encoding="utf-8",
+        )
+
+        fitness = self._adapter_for("fitness", prime=False)
+        self.assertIsNone(fitness._shared_dedup)
+
+        # connect() bails at the lark-oapi import, which is *after* the prime
+        # — so a False return still proves the store was opened and seeded.
+        with patch("plugins.platforms.feishu.adapter._load_lark_oapi", return_value=False):
+            self.assertFalse(asyncio.run(fitness.connect()))
+
+        self.assertIsNotNone(fitness._shared_dedup)
+        self.assertTrue(fitness._shared_dedup.seen("om_pre_upgrade"))
+
+    def test_policy_rejection_does_not_suppress_a_sibling_profile(self):
+        """One profile's admission policy must not speak for another.
+
+        The dedup gate claims the id before `_admit` runs, so a rejection
+        would otherwise leave a shared claim standing for a message this
+        profile never handled — and a sibling whose group_rules would have
+        accepted it sees a duplicate.
+        """
+        fitness = self._adapter_for("fitness")
+        sibling = self._adapter_for("llm-wiki")
+
+        # Claim, then decline for a reason local to this profile.
+        self.assertFalse(fitness._is_duplicate("om_rejected"))
+        fitness._release_shared_dedup_claim("om_rejected")
+
+        # The sibling can still take it...
+        self.assertFalse(sibling._is_duplicate("om_rejected"))
+        # ...while a redelivery to the rejecting profile is still dropped,
+        # exactly as it was before the shared store existed.
+        self.assertTrue(fitness._is_duplicate("om_rejected"))
+
+
+class TestSharedMessageDedupStore(unittest.TestCase):
+    """Direct tests for the store's test-and-set contract."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _store(self, *, ttl=3600.0, max_entries=100, namespace="feishu:app"):
+        from plugins.platforms.feishu.dedup_store import SharedMessageDedupStore
+
+        return SharedMessageDedupStore(
+            self.root / "feishu_seen_messages.db",
+            namespace=namespace,
+            ttl_seconds=ttl,
+            max_entries=max_entries,
+        )
+
+    def test_first_call_records_and_only_later_calls_report_duplicate(self):
+        store = self._store()
+        self.assertFalse(store.seen("om_1"))
+        self.assertTrue(store.seen("om_1"))
+        self.assertTrue(store.seen("om_1"))
+
+    def test_two_connections_to_one_file_share_state(self):
+        """The cross-process guarantee: a second connection (a sibling
+        adapter, or a separate gateway process) sees the first one's write."""
+        first = self._store()
+        second = self._store()
+        self.assertFalse(first.seen("om_shared"))
+        self.assertTrue(second.seen("om_shared"))
+
+    def test_entry_past_ttl_is_not_a_duplicate(self):
+        # Driven off a fake clock rather than sleeping: a real-time margin
+        # small enough to keep the test fast is also small enough for a loaded
+        # runner to blow through between two calls.
+        store = self._store(ttl=3600.0)
+        clock = {"now": 1_000_000.0}
+
+        with patch("plugins.platforms.feishu.dedup_store.time.time", lambda: clock["now"]):
+            self.assertFalse(store.seen("om_expiring"))
+            self.assertTrue(store.seen("om_expiring"))
+
+            clock["now"] += 3601.0
+            self.assertFalse(store.seen("om_expiring"))
+            # ...and the re-record restarts the window.
+            self.assertTrue(store.seen("om_expiring"))
+
+    def test_namespaces_are_isolated(self):
+        one = self._store(namespace="feishu:a")
+        two = self._store(namespace="feishu:b")
+        self.assertFalse(one.seen("om_x"))
+        self.assertFalse(two.seen("om_x"))
+
+    def test_empty_message_id_is_never_recorded(self):
+        store = self._store()
+        self.assertFalse(store.seen(""))
+        self.assertFalse(store.seen(""))
+
+    def test_concurrent_callers_elect_exactly_one_processor(self):
+        """The property a JSON read-modify-write cannot provide: under a race
+        exactly one caller is told to process the message."""
+        stores = [self._store() for _ in range(8)]
+        barrier = threading.Barrier(len(stores))
+        verdicts: list[bool] = []
+        verdict_lock = threading.Lock()
+
+        def race(store):
+            # Bounded so a stuck worker fails the test instead of hanging it.
+            barrier.wait(timeout=60)
+            duplicate = store.seen("om_contended")
+            with verdict_lock:
+                verdicts.append(duplicate)
+
+        threads = [threading.Thread(target=race, args=(s,)) for s in stores]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(verdicts.count(False), 1, verdicts)
+
+    def test_prune_keeps_the_namespace_bounded(self):
+        store = self._store(max_entries=10)
+        for index in range(500):
+            store.seen(f"om_{index}")
+        # Pruning is amortized, so the cap is an upper bound per sweep rather
+        # than an exact ceiling after every insert.
+        self.assertLessEqual(store.count(), 10 + 200)
+        # The most recent ids must survive the trim — those are the ones a
+        # redelivery is actually likely to repeat.
+        self.assertTrue(store.seen("om_499"))
+
+    def test_disabled_store_reports_everything_as_new(self):
+        """Fail-open: dedup breaking must not drop real messages."""
+        store = self._store()
+        self.assertFalse(store.seen("om_a"))
+        store._disabled = True
+        self.assertFalse(store.seen("om_a"))
 
 
 class TestGroupMentionAtAll(unittest.TestCase):

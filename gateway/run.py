@@ -12144,6 +12144,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 for key, entry in list(self.session_store._entries.items()):
                     if entry.expiry_finalized:
                         continue
+                    if self._is_session_running(key):
+                        # Don't finalize a session whose agent turn is running.
+                        continue
                     if not await self.async_session_store._is_session_expired(entry):
                         continue
                     _expired_entries.append((key, entry))

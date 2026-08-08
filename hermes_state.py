@@ -8311,6 +8311,24 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 return False
         return False
 
+    def _refresh_session_message_counts(self, conn, session_id: str) -> None:
+        """Recompute message_count / tool_call_count from the active rows."""
+        msg_count = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 1",
+            (session_id,),
+        ).fetchone()[0]
+        tool_count = conn.execute(
+            "SELECT COALESCE(SUM(CASE WHEN tool_calls IS NULL THEN 0 "
+            "WHEN json_valid(tool_calls) AND json_type(tool_calls) = 'array' "
+            "THEN json_array_length(tool_calls) ELSE 1 END), 0) "
+            "FROM messages WHERE session_id = ? AND active = 1",
+            (session_id,),
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+            (msg_count, tool_count, session_id),
+        )
+
     # =========================================================================
     # Rewind (soft-delete) — see /rewind slash command + issue #21910
     # =========================================================================
@@ -8384,6 +8402,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 "WHERE id = ?",
                 (session_id,),
             )
+            self._refresh_session_message_counts(conn, session_id)
             return ids
 
         rewound = self._execute_write(_do)
@@ -8422,6 +8441,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     f"UPDATE messages SET active = 1 WHERE id IN ({placeholders})",
                     ids,
                 )
+            self._refresh_session_message_counts(conn, session_id)
             return len(ids)
 
         return self._execute_write(_do)

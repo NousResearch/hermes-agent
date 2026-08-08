@@ -232,6 +232,11 @@ try:
         _MCP_NEW_HTTP = True
     except ImportError:
         _MCP_NEW_HTTP = False
+    # HTTP transport is available if EITHER entry point imports. mcp >= 1.24.0
+    # removed the deprecated ``streamablehttp_client``, so gating only on it
+    # disables HTTP MCP servers on a current SDK even though ``_run_http`` has a
+    # working ``_MCP_NEW_HTTP`` branch it can never reach.
+    _MCP_HTTP_AVAILABLE = _MCP_HTTP_AVAILABLE or _MCP_NEW_HTTP
     try:
         from mcp.types import LATEST_PROTOCOL_VERSION
     except ImportError:
@@ -3013,9 +3018,15 @@ class MCPServerTask:
             # http_client is provided, so we wrap in async-with.
             try:
                 async with httpx.AsyncClient(**client_kwargs) as http_client:
-                    async with streamable_http_client(url, http_client=http_client) as (
-                        read_stream, write_stream, _get_session_id,
-                    ):
+                    # Take the streams positionally instead of unpacking a fixed
+                    # arity. The deprecated ``streamablehttp_client`` yields
+                    # (read, write, get_session_id); ``streamable_http_client``
+                    # yields (read, write) -- its annotation is
+                    # ``AsyncGenerator[TransportStreams, None]``. Unpacking three
+                    # raises "not enough values to unpack (expected 3, got 2)"
+                    # as soon as the transport is entered.
+                    async with streamable_http_client(url, http_client=http_client) as _streams:
+                        read_stream, write_stream = _streams[0], _streams[1]
                         async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
                             # Bound the handshake (#59349) — see stdio path.
                             self.initialize_result = await asyncio.wait_for(

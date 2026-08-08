@@ -67,6 +67,86 @@ describe('collectArtifactsForSession', () => {
     })
   })
 
+  it('normalizes session-level unix-second timestamps to epoch milliseconds', () => {
+    const session = makeSession({ last_active: 1_700_000_000, started_at: 1_699_000_000 })
+    const artifacts = collectArtifactsForSession(session, [
+      {
+        content: 'Reference: https://example.com/status',
+        role: 'assistant'
+      }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]?.timestamp).toBe(1_700_000_000_000)
+  })
+
+  it('keeps message timestamps that are already in milliseconds', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ last_active: 1_700_000_000 }), [
+      {
+        content: 'Reference: https://example.com/docs',
+        role: 'assistant',
+        timestamp: 1_700_000_123_456
+      }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]?.timestamp).toBe(1_700_000_123_456)
+  })
+
+  it('converts fractional unix-second message timestamps to milliseconds', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'Reference: https://example.com/fractional',
+        role: 'assistant',
+        timestamp: 1_700_000_000.125
+      }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]?.timestamp).toBe(1_700_000_000_125)
+  })
+
+  it('falls back to the session timestamp when a message timestamp is non-finite', () => {
+    const session = makeSession({ last_active: 1_700_000_000 })
+
+    for (const timestamp of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      const artifacts = collectArtifactsForSession(session, [
+        {
+          content: 'Reference: https://example.com/fallback',
+          role: 'assistant',
+          timestamp
+        }
+      ])
+
+      expect(artifacts).toHaveLength(1)
+      expect(artifacts[0]?.timestamp).toBe(1_700_000_000_000)
+    }
+  })
+
+  it('treats numeric epochs before 1973 as seconds at the unit boundary', () => {
+    const before1973 = 94_694_399
+    const millisecondsAt1973 = 94_694_400_000
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'Reference: https://example.com/boundary',
+        role: 'assistant',
+        timestamp: before1973
+      }
+    ])
+
+    expect(artifacts[0]?.timestamp).toBe(before1973 * 1000)
+
+    const boundaryArtifacts = collectArtifactsForSession(makeSession({ id: 'session-boundary' }), [
+      {
+        content: 'Reference: https://example.com/boundary-ms',
+        role: 'assistant',
+        timestamp: millisecondsAt1973
+      }
+    ])
+
+    expect(boundaryArtifacts[0]?.timestamp).toBe(millisecondsAt1973)
+  })
+
   it('resolves remote image artifact thumbnails through the desktop fs bridge', async () => {
     const api = vi.fn(async ({ path }: { path: string }) => {
       if (path.startsWith('/api/fs/read-data-url?')) {

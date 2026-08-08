@@ -17,6 +17,23 @@ export interface ArtifactRecord {
   timestamp: number
 }
 
+// Numeric epoch timestamps before 1973 are treated as Unix seconds. This is
+// the supported contract for the ambiguous range: millisecond timestamps that
+// far in the past are not realistic for these use cases. A number alone cannot
+// distinguish them from later second timestamps.
+const EPOCH_MILLISECONDS_CUTOFF = Date.UTC(1973, 0, 1)
+
+function toEpochMs(value: null | number | undefined): null | number {
+  if (!Number.isFinite(value)) {
+    return null
+  }
+
+  const ts = Number(value)
+
+  // Session DB values are often Unix seconds while JS Date expects ms.
+  return ts < EPOCH_MILLISECONDS_CUTOFF ? ts * 1000 : ts
+}
+
 const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
 const URL_RE = /https?:\/\/[^\s<>"')]+/g
@@ -273,7 +290,11 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         label: artifactLabel(value),
         sessionId: session.id,
         sessionTitle: title,
-        timestamp: message.timestamp || session.last_active || session.started_at || Date.now()
+        timestamp:
+          toEpochMs(message.timestamp) ??
+          toEpochMs(session.last_active) ??
+          toEpochMs(session.started_at) ??
+          Date.now()
       })
     })
   }

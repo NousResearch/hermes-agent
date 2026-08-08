@@ -1213,20 +1213,43 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             _tg_proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
         except Exception:
             _tg_proxy = None
+        # Honour the gateway adapter's HTTP timeout knobs here too
+        # (HERMES_TELEGRAM_HTTP_*, see plugins/platforms/telegram/adapter.py).
+        # PTB's HTTPXRequest defaults every timeout to 5s, but Telegram can
+        # hold sendDocument/sendPhoto responses for 30s+ when a bot is under
+        # flood control, so standalone media sends time out even though the
+        # upload itself succeeds. Matching the adapter defaults (and letting
+        # the same env vars raise them) keeps the two send paths consistent.
+        def _tg_env_float(name: str, default: float) -> float:
+            try:
+                return float(os.environ.get(name, str(default)))
+            except (TypeError, ValueError):
+                return default
+
+        _tg_request_kwargs = {
+            "pool_timeout": _tg_env_float("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0),
+            "connect_timeout": _tg_env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
+            "read_timeout": _tg_env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
+            "write_timeout": _tg_env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
+        }
         if _tg_proxy:
             try:
                 from telegram.request import HTTPXRequest
                 logger.info("send_message: standalone Telegram send routed through proxy %s", _tg_proxy)
                 bot = Bot(
                     token=token,
-                    request=HTTPXRequest(proxy=_tg_proxy),
-                    get_updates_request=HTTPXRequest(proxy=_tg_proxy),
+                    request=HTTPXRequest(proxy=_tg_proxy, **_tg_request_kwargs),
+                    get_updates_request=HTTPXRequest(proxy=_tg_proxy, **_tg_request_kwargs),
                 )
             except Exception as _proxy_err:
                 logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", _proxy_err)
                 bot = Bot(token=token)
         else:
-            bot = Bot(token=token)
+            try:
+                from telegram.request import HTTPXRequest
+                bot = Bot(token=token, request=HTTPXRequest(**_tg_request_kwargs))
+            except Exception:
+                bot = Bot(token=token)
         from plugins.platforms.telegram.telegram_ids import (
             normalize_telegram_chat_id,
         )

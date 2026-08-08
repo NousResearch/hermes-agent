@@ -113,8 +113,9 @@ class TestSendTelegramStandaloneProxy:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Without TELEGRAM_PROXY (and no inherited HTTPS_PROXY/etc), Bot()
-        is constructed plainly — no ``request``/``get_updates_request``
-        kwargs, and HTTPXRequest is not invoked at all.
+        is constructed without a proxy: ``request=`` carries only the
+        timeout-tuned HTTPXRequest (no ``proxy=`` kwarg), and no
+        ``get_updates_request`` is passed (the standalone path never polls).
         """
         from tools.send_message_tool import _send_telegram
 
@@ -151,7 +152,8 @@ class TestSendTelegramStandaloneProxy:
         call_args = bot_factory.call_args.args
         # token may be passed positionally or as a kwarg; either is fine.
         assert call_kwargs.get("token", call_args[0] if call_args else None) == "tok"
-        assert "request" not in call_kwargs
         assert "get_updates_request" not in call_kwargs
-        httpx_request_factory.assert_not_called()
+        # The direct branch still tunes timeouts, but must not attach a proxy.
+        assert httpx_request_factory.call_count == 1
+        assert "proxy" not in httpx_request_factory.call_args.kwargs
         bot.send_message.assert_awaited_once()

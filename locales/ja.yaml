@@ -366,6 +366,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ `hermes` コマンドが見つかりません。Hermes は実行中ですが、更新コマンドは PATH 上にも現在の Python インタープリタ経由でも実行可能ファイルを見つけられませんでした。ターミナルで `hermes update` を手動で実行してみてください。"
     start_failed:            "✗ 更新の開始に失敗しました: {error}"
     starting:                "⚕ Hermes の更新を開始しています… 進捗をここにストリーミングします。"
+    already_running:         "⚕ このプロファイルでは Hermes の更新がすでに実行中です。結果は更新を開始したチャットに報告します。"
 
   usage:
     rate_limits:              "⏱️ **レート制限:** {state}"

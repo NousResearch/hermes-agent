@@ -366,6 +366,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ Der Befehl `hermes` konnte nicht gefunden werden. Hermes läuft, aber der Update-Befehl konnte das ausführbare Programm weder im PATH noch über den aktuellen Python-Interpreter finden. Versuchen Sie, `hermes update` manuell im Terminal auszuführen."
     start_failed:            "✗ Update konnte nicht gestartet werden: {error}"
     starting:                "⚕ Hermes-Update wird gestartet… Ich streame den Fortschritt hier."
+    already_running:         "⚕ Für dieses Profil läuft bereits ein Hermes-Update. Ich melde das Ergebnis in dem Chat, der es gestartet hat."
 
   usage:
     rate_limits:              "⏱️ **Ratenlimits:** {state}"

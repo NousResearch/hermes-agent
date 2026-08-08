@@ -366,6 +366,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ Не удалось найти команду `hermes`. Hermes запущен, но команда обновления не нашла исполняемый файл в PATH или через текущий интерпретатор Python. Попробуйте выполнить `hermes update` вручную в терминале."
     start_failed:            "✗ Не удалось запустить обновление: {error}"
     starting:                "⚕ Запуск обновления Hermes… Я буду транслировать прогресс сюда."
+    already_running:         "⚕ Для этого профиля уже выполняется обновление Hermes. Я сообщу результат в чат, из которого оно было запущено."
 
   usage:
     rate_limits:              "⏱️ **Ограничения скорости:** {state}"

@@ -55,6 +55,14 @@ logger = logging.getLogger("gateway.run")
 # its worker thread. (#35994)
 _RESET_CLEANUP_TIMEOUT_S = 30.0
 
+# How long a /update reservation stays valid before another /update may take it
+# over (see _claim_update_slot). An updater that is killed without writing its
+# exit code — host reboot, OOM kill — leaves its marker behind forever, so the
+# reservation needs a ceiling or /update wedges for the lifetime of the profile.
+# Sized above _watch_update_progress's own 1800s watch timeout so a live update
+# that is still being watched is never stolen.
+_UPDATE_RESERVATION_TTL_S = 3600.0
+
 
 def _clean_str(value: Any) -> str:
     """Strip and return a non-empty string value, or empty string."""
@@ -96,6 +104,78 @@ def _model_switch_skew_guard() -> Optional[str]:
             f"crash — restart the gateway to load the new code: hermes gateway restart"
         ),
     )
+
+
+def _claim_update_slot(pending_path: Path, ttl_seconds: float) -> bool:
+    """Atomically reserve the profile-wide ``/update`` slot.
+
+    ``/update`` is profile-global: it rewrites the checkout and the virtualenv
+    every session on the host shares, and the ``.update_*`` marker files are a
+    single-slot mailbox holding one requester's routing metadata. Two updaters
+    must therefore never run at once.
+
+    A ``if pending_path.exists(): return`` guard cannot provide that. Two
+    handlers can both observe the marker missing and both go on to create it,
+    so the second one's metadata silently replaces the first one's and a second
+    updater is spawned against the same checkout. ``os.open`` with
+    ``O_CREAT | O_EXCL`` collapses the observe-and-create into a single atomic
+    syscall, so exactly one caller can ever win.
+
+    Returns ``True`` when this caller now owns the slot (the marker exists and
+    is empty, ready for the caller to fill in with its routing metadata), and
+    ``False`` when another update already holds it.
+    """
+    def _create_exclusive() -> bool:
+        try:
+            fd = os.open(pending_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            return False
+        os.close(fd)
+        return True
+
+    if _create_exclusive():
+        return True
+
+    # The slot is held. Take it over only when it is provably abandoned: a host
+    # reboot or a SIGKILLed updater leaves a marker that nothing will ever
+    # clean up, and a permanently wedged /update would be a worse bug than the
+    # collision this guard exists to close.
+    try:
+        age = time.time() - pending_path.stat().st_mtime
+    except OSError:
+        # Vanished between the failed create and the stat — the previous update
+        # finished in that window. Retry once; if we lose again, the loser path
+        # is still correct.
+        return _create_exclusive()
+
+    if age < ttl_seconds:
+        return False
+
+    logger.warning(
+        "Reclaiming abandoned /update reservation %s (age %.0fs > %.0fs)",
+        pending_path, age, ttl_seconds,
+    )
+    try:
+        pending_path.unlink()
+    except OSError:
+        return False
+    return _create_exclusive()
+
+
+def _release_update_slot(pending_path: Path) -> None:
+    """Give back a reservation taken by :func:`_claim_update_slot`.
+
+    Only removes the marker while it is still the empty file the claim created.
+    A non-empty marker means somebody else's routing metadata is now there —
+    the notifier restoring a live update's marker via
+    ``claimed_path.replace(pending_path)`` — and deleting that would lose their
+    completion notice.
+    """
+    try:
+        if pending_path.stat().st_size == 0:
+            pending_path.unlink()
+    except OSError:
+        pass
 
 
 class GatewaySlashCommandsMixin:
@@ -5593,8 +5673,37 @@ class GatewaySlashCommandsMixin:
             return t("gateway.update.hermes_cmd_not_found")
 
         pending_path = _hermes_home / ".update_pending.json"
+        claimed_path = _hermes_home / ".update_pending.claimed.json"
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
+
+        # Admission control. Reserve the profile-wide update slot BEFORE any
+        # routing metadata is written and BEFORE the updater is spawned, so two
+        # concurrent /update invocations (a double tap while the minutes-long
+        # update runs without an ack, or two platforms on one multiplexed
+        # gateway) cannot both start an updater against the same checkout and
+        # venv, with the second one's metadata clobbering the first requester's
+        # so they never learn their update finished.
+        #
+        # `.update_pending.claimed.json` is the notifier's transient rename of
+        # the marker (see _send_update_notification); while it exists an update
+        # is in flight. It is checked both BEFORE and AFTER the exclusive
+        # create, because the notifier can rename pending -> claimed between
+        # the two: that leaves pending momentarily absent, so the create would
+        # otherwise succeed and admit a second updater against a live one.
+        admitted = not claimed_path.exists() and _claim_update_slot(
+            pending_path, _UPDATE_RESERVATION_TTL_S
+        )
+        if admitted and claimed_path.exists():
+            _release_update_slot(pending_path)
+            admitted = False
+
+        if not admitted:
+            # The loser still gets the outcome: the watcher is profile-wide and
+            # reports the result into the chat that started the update.
+            self._schedule_update_notification_watch()
+            return t("gateway.update.already_running")
+
         session_key = self._session_key_for_source(event.source)
         pending = {
             "platform": event.source.platform.value,
@@ -5608,10 +5717,6 @@ class GatewaySlashCommandsMixin:
             pending["thread_id"] = event.source.thread_id
         if event.message_id:
             pending["message_id"] = event.message_id
-        _tmp_pending = pending_path.with_suffix(".tmp")
-        _tmp_pending.write_text(json.dumps(pending), encoding="utf-8")
-        _tmp_pending.replace(pending_path)
-        exit_code_path.unlink(missing_ok=True)
 
         # Spawn `hermes update --gateway` detached so it survives gateway restart.
         # --gateway enables file-based IPC for interactive prompts (stash
@@ -5638,6 +5743,17 @@ class GatewaySlashCommandsMixin:
         # so the simplest correct thing is: launch an inline Python helper
         # that runs the command and writes both outputs.
         try:
+            # Fill the reservation in with this requester's routing metadata.
+            # Write-to-temp + rename keeps the marker a complete JSON document
+            # for the readers in gateway/run.py, which poll it concurrently.
+            # Everything from the claim onwards must release the slot on
+            # failure, or a /update that never actually started would block the
+            # next one until the reservation TTL expires.
+            _tmp_pending = pending_path.with_suffix(".tmp")
+            _tmp_pending.write_text(json.dumps(pending), encoding="utf-8")
+            _tmp_pending.replace(pending_path)
+            exit_code_path.unlink(missing_ok=True)
+
             if sys.platform == "win32":
                 import textwrap
                 from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
@@ -5698,6 +5814,8 @@ class GatewaySlashCommandsMixin:
                         start_new_session=True,
                     )
         except Exception as e:
+            # Release the reservation so the user can retry immediately.
+            pending_path.with_suffix(".tmp").unlink(missing_ok=True)
             pending_path.unlink(missing_ok=True)
             exit_code_path.unlink(missing_ok=True)
             return t("gateway.update.start_failed", error=e)

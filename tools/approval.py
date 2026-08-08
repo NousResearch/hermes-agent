@@ -51,6 +51,96 @@ _approval_tool_call_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_tool_call_id",
     default="",
 )
+_goal_authorization: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
+    "goal_authorization", default=None
+)
+
+AUTO_EXECUTE = "AUTO_EXECUTE"
+OWNER_APPROVAL = "OWNER_APPROVAL"
+DENY = "DENY"
+
+# Material risk increases remain owner-gated even inside an approved goal.
+# Reasons are categorical and secret-free because they are audit logged.
+_OWNER_APPROVAL_COMMAND_RULES = (
+    (re.compile(r"\bgit\s+push\b[^\n]*(?:--force(?:-with-lease)?|-f\b)", re.I), "history rewrite or force push"),
+    (re.compile(r"\bgh\s+pr\s+merge\b[^\n]*--admin\b", re.I), "protected branch bypass"),
+    (re.compile(r"\bgit\s+(?:reset\s+--hard|filter-branch|rebase\b)", re.I), "destructive history rewrite"),
+    (re.compile(r"\b(?:reboot|shutdown|poweroff|halt)\b", re.I), "host availability disruption"),
+    (re.compile(r"\b(?:iptables|nft|ufw|firewall-cmd)\b[^\n]*(?:delete|remove|reset|flush|default|deny|disable)", re.I), "network or firewall lockout risk"),
+    (re.compile(r"\b(?:rotate|revoke|invalidate|delete)\b[^\n]*(?:credential|token|password|secret|key)\b", re.I), "credential lifecycle change"),
+    (re.compile(r"\b(?:place\s+(?:a\s+)?bet|bet|wager|withdraw|payment|purchase|buy|sell|transfer)\b", re.I), "real-money or payment action"),
+    (re.compile(r"\b(?:rm\s+-[^\n]*r|drop\s+(?:database|table)|truncate\s+table|kubectl\s+delete)\b", re.I), "destructive or irreversible change"),
+)
+
+
+def set_goal_authorization(envelope: Optional[dict]) -> contextvars.Token:
+    """Bind a persisted /goal authorization envelope to this execution tree."""
+    return _goal_authorization.set(dict(envelope) if envelope else None)
+
+
+def reset_goal_authorization(token: contextvars.Token) -> None:
+    _goal_authorization.reset(token)
+
+
+def get_goal_authorization() -> Optional[dict]:
+    envelope = _goal_authorization.get()
+    if not envelope or envelope.get("goal_status") != "active":
+        return None
+    if envelope.get("scope") != AUTO_EXECUTE:
+        return None
+    return dict(envelope)
+
+
+def classify_goal_action(target: str, description: str = "") -> tuple[str, str]:
+    """Classify an action under the active goal authorization envelope."""
+    if get_goal_authorization() is None:
+        return OWNER_APPROVAL, "no active goal authorization"
+    material = f"{target or ''}\n{description or ''}"
+    for pattern, reason in _OWNER_APPROVAL_COMMAND_RULES:
+        if pattern.search(material):
+            return OWNER_APPROVAL, reason
+    return AUTO_EXECUTE, "routine reversible action covered by active goal"
+
+
+def _audit_risk_decision(risk_class: str, reason: str) -> None:
+    # Never include command/tool payloads here: they may contain secrets.
+    logger.info("%s reason=%s", risk_class, reason)
+
+
+_GOAL_PYTHONPATH_ROOTS = (
+    "/home/ubuntu/OddsEdge",
+    "/home/ubuntu/worktrees",
+    "/home/ubuntu/projects",
+    "/home/ubuntu/.hermes/workspace/hermes-agent-updated",
+)
+_PYTHONPATH_ASSIGNMENT_RE = re.compile(
+    r"(?:^|[;&|\n]\s*|\b(?:env|export)\s+)PYTHONPATH=(?:\"([^\"]*)\"|'([^']*)'|([^\s;&|]+))"
+)
+
+
+def _goal_tirith_warnings_auto_execute(command: str, warnings: list[tuple]) -> bool:
+    """Allow only a bounded, absolute workspace PYTHONPATH Tirith finding."""
+    tirith_keys = [key for key, _, is_tirith in warnings if is_tirith]
+    if not tirith_keys:
+        return True
+    if any(key != "tirith:interpreter_hijack_env" for key in tirith_keys):
+        return False
+    assignments = _PYTHONPATH_ASSIGNMENT_RE.findall(command or "")
+    if not assignments:
+        return False
+    for groups in assignments:
+        value = next((part for part in groups if part != ""), "")
+        entries = value.split(":")
+        if not entries or any(not entry or not os.path.isabs(entry) for entry in entries):
+            return False
+        for entry in entries:
+            normalized = os.path.normpath(entry)
+            if not any(
+                normalized == root or normalized.startswith(root + os.sep)
+                for root in _GOAL_PYTHONPATH_ROOTS
+            ):
+                return False
+    return True
 
 # Interactive-CLI flag. Concurrent ACP sessions run on a shared
 # ThreadPoolExecutor (acp_adapter/server.py), so mutating the process-global
@@ -573,6 +663,7 @@ def _match_user_deny_rule(command: str) -> str | None:
 
 def _user_deny_block_result(pattern: str) -> dict:
     """Build the standard block result for an ``approvals.deny`` match."""
+    _audit_risk_decision(DENY, "user-defined deny policy")
     return {
         "approved": False,
         "user_deny": True,
@@ -633,6 +724,7 @@ def _save_blocked_payload(command: str) -> Optional[str]:
 
 def _hardline_block_result(description: str, command: str = "") -> dict:
     """Build the standard block result for a hardline match."""
+    _audit_risk_decision(DENY, "existing hardline safety policy")
     message = (
         f"BLOCKED (hardline): {description}. "
         "This command is on the unconditional blocklist and cannot "
@@ -674,6 +766,7 @@ def _hardline_block_result(description: str, command: str = "") -> dict:
 
 def _sudo_stdin_block_result(description: str) -> dict:
     """Build the standard block result for sudo stdin guard."""
+    _audit_risk_decision(DENY, "sudo credential injection policy")
     return {
         "approved": False,
         "message": (
@@ -3201,6 +3294,19 @@ def _run_approval_gate(
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
         return {"approved": True, "message": None}
 
+    risk_class, risk_reason = classify_goal_action(display_target, description)
+    if risk_class == AUTO_EXECUTE:
+        _audit_risk_decision(risk_class, risk_reason)
+        return {
+            "approved": True,
+            "message": None,
+            "goal_authorized": True,
+            "risk_class": risk_class,
+            "description": description,
+        }
+    if get_goal_authorization() is not None:
+        _audit_risk_decision(OWNER_APPROVAL, risk_reason)
+
     session_key = get_current_session_key()
     if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
@@ -3938,6 +4044,24 @@ def check_all_command_guards(command: str, env_type: str,
     # When approvals.mode=smart, ask the aux LLM before prompting the user.
     # Inspired by OpenAI Codex's Smart Approvals guardian subagent
     # (openai/codex#13860).
+    combined_desc_for_goal = "; ".join(desc for _, desc, _ in warnings)
+    goal_risk_class, goal_risk_reason = classify_goal_action(command, combined_desc_for_goal)
+    # Tirith findings are content-level security signals, not merely broad
+    # shell-pattern matches. An active goal must never silently bypass them.
+    if goal_risk_class == AUTO_EXECUTE and _goal_tirith_warnings_auto_execute(
+        command, warnings
+    ):
+        _audit_risk_decision(goal_risk_class, goal_risk_reason)
+        return {
+            "approved": True,
+            "message": None,
+            "goal_authorized": True,
+            "risk_class": goal_risk_class,
+            "description": combined_desc_for_goal,
+        }
+    if get_goal_authorization() is not None:
+        _audit_risk_decision(OWNER_APPROVAL, goal_risk_reason)
+
     smart_denied_for_owner = False
     if approval_mode == "smart":
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
@@ -4261,6 +4385,19 @@ def check_execute_code_guard(code: str, env_type: str,
     approval_mode = _get_approval_mode()
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
         return {"approved": True, "message": None}
+
+    goal_risk_class, goal_risk_reason = classify_goal_action(code, description)
+    if goal_risk_class == AUTO_EXECUTE:
+        _audit_risk_decision(goal_risk_class, goal_risk_reason)
+        return {
+            "approved": True,
+            "message": None,
+            "goal_authorized": True,
+            "risk_class": goal_risk_class,
+            "description": description,
+        }
+    if get_goal_authorization() is not None:
+        _audit_risk_decision(OWNER_APPROVAL, goal_risk_reason)
 
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")

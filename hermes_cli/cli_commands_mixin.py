@@ -2671,6 +2671,17 @@ class CLICommandsMixin:
         except Exception:
             pass
 
+    def _handle_approval_status_command(self, cmd: str = "") -> None:
+        """Show the active /goal authorization envelope and risk classes."""
+        from cli import _cprint
+
+        parts = (cmd or "").strip().split(None, 1)
+        if len(parts) > 1 and parts[1].strip().lower() not in {"", "status"}:
+            _cprint("  Usage: /approval status")
+            return
+        mgr = self._get_goal_manager()
+        _cprint(f"  {mgr.approval_status_line() if mgr else 'Approval status unavailable.'}")
+
     def _handle_goal_draft(self, objective: str) -> None:
         """Draft a structured completion contract from a plain objective and
         set it as the active goal. Falls back to a bare goal if the aux model

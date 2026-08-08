@@ -587,6 +587,12 @@ class GoalState:
     # must ALL pass before the judge may declare the goal done. Empty by
     # default — a goal with no gates behaves exactly as before.
     gates: List[GoalGate] = field(default_factory=list)
+    # A user-created /goal is also the durable authorization envelope for
+    # routine, reversible work needed to complete that goal. It deliberately
+    # does not authorize OWNER_APPROVAL or DENY actions.
+    authorization_id: str = ""
+    authorization_scope: str = "AUTO_EXECUTE"
+    authorization_created_at: float = 0.0
 
     def to_json(self) -> str:
         data = asdict(self)
@@ -624,7 +630,20 @@ class GoalState:
                 for g in (data.get("gates") or [])
                 if isinstance(g, dict) and str(g.get("command") or "").strip()
             ],
+            authorization_id=str(data.get("authorization_id") or ""),
+            authorization_scope=str(data.get("authorization_scope") or "AUTO_EXECUTE"),
+            authorization_created_at=float(data.get("authorization_created_at", 0.0) or 0.0),
         )
+
+    def authorization_envelope(self) -> Dict[str, Any]:
+        """Return the secret-free authorization context inherited by tools."""
+        return {
+            "authorization_id": self.authorization_id,
+            "goal": self.goal,
+            "goal_status": self.status,
+            "scope": self.authorization_scope,
+            "created_at": self.authorization_created_at,
+        }
 
     # --- contract helpers -------------------------------------------------
 
@@ -1291,6 +1310,21 @@ class GoalManager:
             return f"✓ Goal done ({meta}): {s.goal}"
         return f"Goal ({s.status}, {meta}): {s.goal}"
 
+    def approval_status_line(self) -> str:
+        """Render the active goal's authorization envelope without secrets."""
+        s = self._state
+        if s is None or s.status not in {"active", "paused"}:
+            return (
+                "Approval status: no active goal authorization. "
+                "AUTO_EXECUTE requires a user-approved /goal."
+            )
+        return (
+            f"Approval status: goal={s.goal!r}; authorization={s.authorization_id}; "
+            "AUTO_EXECUTE=authorized (routine/reversible goal work); "
+            "OWNER_APPROVAL=required on material risk increase; "
+            "DENY=always blocked by safety policy; delegation=inherited."
+        )
+
     # --- mutation -----------------------------------------------------
 
     def set(self, goal: str, *, max_turns: Optional[int] = None, contract: Optional[GoalContract] = None) -> GoalState:
@@ -1305,6 +1339,11 @@ class GoalManager:
             created_at=time.time(),
             last_turn_at=0.0,
             contract=contract if contract is not None else GoalContract(),
+            authorization_id=hashlib.sha256(
+                f"{self.session_id}\0{goal}\0{time.time_ns()}".encode("utf-8")
+            ).hexdigest()[:16],
+            authorization_scope="AUTO_EXECUTE",
+            authorization_created_at=time.time(),
         )
         self._state = state
         save_goal(self.session_id, state)

@@ -127,6 +127,23 @@ def test_pending_input_commands_includes_goal(server):
     assert "goal" in server._PENDING_INPUT_COMMANDS
 
 
+def test_approval_status_reports_goal_envelope(server, session):
+    sid, session_key, _ = session
+    from hermes_cli.goals import GoalManager
+
+    GoalManager(session_id=session_key).set("ship the routine repair")
+    r = _call(
+        server,
+        "command.dispatch",
+        name="approval",
+        arg="status",
+        session_id=sid,
+    )
+    assert r["result"]["type"] == "exec"
+    assert "AUTO_EXECUTE=authorized" in r["result"]["output"]
+    assert "OWNER_APPROVAL=required" in r["result"]["output"]
+
+
 # ── command.dispatch /moa ────────────────────────────────────────────
 
 def _write_moa_config(home, text):
@@ -152,5 +169,4 @@ moa:
     # Bare /moa is usage-only now; switching to a preset is via the model picker.
     assert "error" in r
     assert "model_override" not in s
-
 

@@ -5190,7 +5190,9 @@ class TurnRunner:
         # to the user immediately.
         from tools.approval import (
             register_gateway_notify,
+            reset_goal_authorization,
             reset_current_session_key,
+            set_goal_authorization,
             set_current_session_key,
             unregister_gateway_notify,
         )
@@ -5431,6 +5433,17 @@ class TurnRunner:
 
         _approval_session_key = ctx.session_key or ""
         _approval_session_token = set_current_session_key(_approval_session_key)
+        _goal_authorization_token = None
+        try:
+            from hermes_cli.goals import GoalManager
+
+            _goal_mgr = GoalManager(session_id=ctx.session_id)
+            _goal_state = _goal_mgr.state if _goal_mgr.is_active() else None
+            _goal_authorization_token = set_goal_authorization(
+                _goal_state.authorization_envelope() if _goal_state else None
+            )
+        except Exception:
+            logger.debug("goal authorization binding failed", exc_info=True)
         register_gateway_notify(_approval_session_key, _approval_notify_sync)
         try:
             # If _prepare_inbound_message_text buffered image paths for native
@@ -5491,6 +5504,8 @@ class TurnRunner:
                 _clear_clarify_session(_approval_session_key)
             except Exception:
                 pass
+            if _goal_authorization_token is not None:
+                reset_goal_authorization(_goal_authorization_token)
             reset_current_session_key(_approval_session_token)
         ctx.result_holder[0] = result
 
@@ -15621,6 +15636,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "approve":
             return await self._handle_approve_command(event)
 
+        if canonical == "approval":
+            return await self._handle_approval_status_command(event)
+
         if canonical == "deny":
             return await self._handle_deny_command(event)
 
@@ -15680,6 +15698,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "goal":
             return await self._handle_goal_command(event)
+
+        if canonical == "approval":
+            return await self._handle_approval_status_command(event)
 
         if canonical == "heartbeat":
             return await self._handle_heartbeat_command(event)

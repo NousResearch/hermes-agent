@@ -803,6 +803,7 @@ def _(rid, params: dict) -> dict:
                     ),
                 },
             )
+
         if lower in {"clear", "stop", "done"}:
             had = mgr.has_goal()
             mgr.clear()
@@ -833,6 +834,29 @@ def _(rid, params: dict) -> dict:
             rid,
             {"type": "send", "notice": notice, "message": state.goal},
         )
+
+    if name == "approval":
+        if not session:
+            return _err(rid, 4001, "no active session")
+        if arg.strip().lower() not in {"", "status"}:
+            return _err(rid, 4004, "usage: /approval status")
+        try:
+            from hermes_cli.goals import GoalManager
+
+            sid_key = session.get("session_key") or ""
+            if not sid_key:
+                return _err(rid, 4001, "no session key")
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": GoalManager(
+                        session_id=sid_key
+                    ).approval_status_line(),
+                },
+            )
+        except Exception as exc:
+            return _err(rid, 5030, f"approval status unavailable: {exc}")
 
     if name == "undo":
         # /undo [N]: back up N user turns (default 1), soft-delete the

@@ -2785,6 +2785,14 @@ class GatewaySlashCommandsMixin:
             return f"{base}\n(Couldn't draft a contract — running as a free-form goal.)"
         return base
 
+    async def _handle_approval_status_command(self, event: "MessageEvent") -> str:
+        """Handle /approval status for gateway platforms."""
+        args = (event.get_command_args() or "").strip().lower()
+        if args not in {"", "status"}:
+            return "Usage: /approval status"
+        mgr, _ = await self._get_goal_manager_for_event(event)
+        return mgr.approval_status_line() if mgr else "Approval status unavailable."
+
     async def _handle_heartbeat_command(self, event: "MessageEvent") -> str:
         """Handle /heartbeat for gateway platforms (mirror of CLI handler).
 

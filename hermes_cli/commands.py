@@ -144,6 +144,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch"),
     CommandDef("approve", "Approve a pending dangerous command", "Session",
                gateway_only=True, args_hint="[session|always]", busy_policy="dispatch"),
+    CommandDef("approval", "Show goal-scoped authorization status", "Session",
+               args_hint="[status]", busy_policy="dispatch"),
     CommandDef("deny", "Deny a pending dangerous command (optionally with a reason)", "Session",
                gateway_only=True, args_hint="[all] [reason]", busy_policy="dispatch"),
     CommandDef("background", "Run a prompt in the background", "Session",

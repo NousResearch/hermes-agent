@@ -652,6 +652,44 @@ def run_codex_app_server_turn(
         except Exception:
             approval_callback = None
 
+        # A Telegram / gateway turn has no CLI callback, but an active /goal
+        # carries its own persisted authorization envelope. Route Codex's
+        # server-initiated approvals through the same classifier instead of
+        # creating an independent fail-closed/prompt surface. OWNER_APPROVAL
+        # still enters the gateway's human queue and DENY remains blocked by
+        # the canonical guards.
+        if approval_callback is None:
+            try:
+                from tools.approval import (
+                    check_all_command_guards,
+                    get_goal_authorization,
+                    request_tool_approval,
+                )
+
+                if get_goal_authorization() is not None:
+                    def _goal_scoped_codex_approval(
+                        command, description, *, allow_permanent=False, **_kwargs
+                    ):
+                        if str(command).startswith("apply_patch"):
+                            result = request_tool_approval(
+                                "apply_patch",
+                                description,
+                                rule_key="codex_app_server_apply_patch",
+                            )
+                        else:
+                            result = check_all_command_guards(
+                                command,
+                                cwd,
+                            )
+                        return "once" if result.get("approved") else "deny"
+
+                    approval_callback = _goal_scoped_codex_approval
+            except Exception:
+                logger.debug(
+                    "codex app-server: goal authorization bridge unavailable",
+                    exc_info=True,
+                )
+
         # Gateway / cron contexts have no UI to surface codex's approval
         # requests through, so codex app-server exec / apply_patch requests
         # fail closed (silently decline) by default. When the user has

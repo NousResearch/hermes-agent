@@ -10329,6 +10329,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
+        elif canonical == "approval":
+            self._handle_approval_status_command(cmd_original)
         elif canonical == "heartbeat":
             self._handle_heartbeat_command(cmd_original)
         elif canonical == "refine":
@@ -14046,15 +14048,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # bind the same contextvar before invoking the agent.
                 try:
                     from tools.approval import (
+                        reset_goal_authorization,
                         reset_current_session_key,
+                        set_goal_authorization,
                         set_current_session_key,
                     )
                     _approval_session_token = set_current_session_key(
                         self.session_id or "default"
                     )
+                    _goal_mgr = self._get_goal_manager()
+                    _goal_state = _goal_mgr.state if _goal_mgr and _goal_mgr.is_active() else None
+                    _goal_authorization_token = set_goal_authorization(
+                        _goal_state.authorization_envelope() if _goal_state else None
+                    )
                 except Exception:
                     reset_current_session_key = None  # type: ignore[assignment]
                     _approval_session_token = None
+                    reset_goal_authorization = None  # type: ignore[assignment]
+                    _goal_authorization_token = None
                 agent_message = _voice_prefix + message if _voice_prefix else message
                 # Prepend pending notes via _prepend_note_to_message, which
                 # handles both plain-string and multimodal content-parts list
@@ -14143,6 +14154,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     if _approval_session_token is not None and reset_current_session_key is not None:
                         try:
                             reset_current_session_key(_approval_session_token)
+                        except Exception:
+                            pass
+                    if _goal_authorization_token is not None and reset_goal_authorization is not None:
+                        try:
+                            reset_goal_authorization(_goal_authorization_token)
                         except Exception:
                             pass
 

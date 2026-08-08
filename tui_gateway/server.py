@@ -9545,6 +9545,7 @@ def _run_prompt_submit(
         transport_token = bind_transport(session.get("transport"))
         runtime_session_token = _current_runtime_session_record.set(session)
         approval_token = None
+        goal_authorization_token = None
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         secret_token = None
@@ -9571,10 +9572,25 @@ def _run_prompt_submit(
         try:
             from tools.approval import (
                 reset_current_session_key,
+                reset_goal_authorization,
                 set_current_session_key,
+                set_goal_authorization,
             )
 
             approval_token = set_current_session_key(session["session_key"])
+            try:
+                from hermes_cli.goals import GoalManager
+
+                goal_authorization_token = set_goal_authorization(
+                    GoalManager(
+                        session_id=session["session_key"]
+                    ).state.authorization_envelope()
+                )
+            except Exception:
+                logger.debug(
+                    "TUI goal authorization binding unavailable",
+                    exc_info=True,
+                )
             session_tokens = _set_session_context(
                 session["session_key"],
                 ui_session_id=sid,
@@ -10244,6 +10260,8 @@ def _run_prompt_submit(
                 except Exception:
                     logger.debug("TUI one-turn model restore failed", exc_info=True)
             try:
+                if goal_authorization_token is not None:
+                    reset_goal_authorization(goal_authorization_token)
                 if approval_token is not None:
                     reset_current_session_key(approval_token)
             except Exception:

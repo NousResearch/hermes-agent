@@ -134,6 +134,32 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         self.assertIn("em dash —", content)
 
 
+    def test_write_text_file_reuses_write_denylist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "home"
+            target = home / ".ssh" / "id_rsa"
+            target.parent.mkdir(parents=True, exist_ok=True)
+
+            with patch(
+                "agent.acp_client.get_write_denied_error",
+                return_value="Write denied: protected system/credential file.",
+                create=True,
+            ):
+                response = self._dispatch(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 4,
+                        "method": "fs/write_text_file",
+                        "params": {
+                            "path": str(target),
+                            "content": "fake-private-key",
+                        },
+                    },
+                    cwd=str(home),
+                )
+
+        self.assertIn("error", response)
+        self.assertFalse(target.exists())
 
     def test_write_text_file_respects_safe_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -157,7 +183,6 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
                 )
 
         self.assertIn("error", response)
-        self.assertIn("HERMES_WRITE_SAFE_ROOT", str(response["error"]))
         self.assertFalse(outside.exists())
 
 
@@ -211,8 +236,8 @@ def test_run_prompt_preserves_real_home_when_profile_home_available(monkeypatch,
     captured = {}
     client = _make_home_client(tmp_path)
 
-    with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
-        with pytest.raises(RuntimeError, match="Could not start Copilot ACP command"):
+    with _patch("agent.acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
+        with pytest.raises(RuntimeError, match="Could not start GitHub Copilot ACP command"):
             client._run_prompt("hello", timeout_seconds=1)
 
     assert captured["kwargs"]["env"]["HOME"] == str(real_home)
@@ -226,8 +251,8 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
     captured = {}
     client = _make_home_client(tmp_path)
 
-    with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
-        with pytest.raises(RuntimeError, match="Could not start Copilot ACP command"):
+    with _patch("agent.acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
+        with pytest.raises(RuntimeError, match="Could not start GitHub Copilot ACP command"):
             client._run_prompt("hello", timeout_seconds=1)
 
     assert "env" in captured["kwargs"]

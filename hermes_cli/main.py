@@ -795,6 +795,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_named_custom,
     _model_flow_copilot,
     _model_flow_copilot_acp,
+    _model_flow_acp_agent,
     _model_flow_kimi,
     _model_flow_stepfun,
     _model_flow_bedrock_api_key,
@@ -3095,6 +3096,7 @@ def select_provider_and_model(args=None):
         resolve_provider,
         AuthError,
         format_auth_error,
+        is_acp_agent_provider as _is_acp_agent_provider,
     )
     from hermes_cli.config import (
         get_compatible_custom_providers,
@@ -3468,6 +3470,8 @@ def select_provider_and_model(args=None):
         _model_flow_minimax_oauth(config, current_model, args=args)
     elif selected_provider == "copilot-acp":
         _model_flow_copilot_acp(config, current_model)
+    elif _is_acp_agent_provider(selected_provider):
+        _model_flow_acp_agent(config, current_model, provider_id=selected_provider)
     elif selected_provider == "copilot":
         _model_flow_copilot(config, current_model)
     elif selected_provider == "custom":

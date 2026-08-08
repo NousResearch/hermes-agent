@@ -87,6 +87,13 @@ class ProviderProfile:
     # e.g. "api.gmi-serving.com". Derived from base_url when empty.
     hostname: str = ""
 
+    # picker_group: id of a hermes_cli.models.PROVIDER_GROUPS entry this
+    # provider folds under in interactive pickers (hermes model / setup
+    # wizard / Telegram), e.g. "anthropic" for claude-acp. Empty = ungrouped,
+    # shown as its own top-level row. Display only — see
+    # hermes_cli.models.provider_group_for_slug / group_providers.
+    picker_group: str = ""
+
     # ── Client-level quirks (set once at client construction) ─
     default_headers: dict[str, str] = field(default_factory=dict)
 

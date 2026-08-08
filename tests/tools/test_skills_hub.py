@@ -524,6 +524,26 @@ class TestTapsManager:
         assert mgr.load() == []
 
 # ---------------------------------------------------------------------------
+# LobeHubSource._fetch_agent
+# ---------------------------------------------------------------------------
+
+
+class TestFetchAgent:
+    @patch("tools.skills_hub._guarded_http_get")
+    def test_valid_id_uses_guarded_fetch_with_agent_url_and_timeout(self, mock_get):
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"identifier": "test-agent"}
+        mock_get.return_value = response
+
+        result = LobeHubSource()._fetch_agent("test-agent")
+
+        assert result == {"identifier": "test-agent"}
+        mock_get.assert_called_once_with(
+            "https://chat-agents.lobehub.com/test-agent.json", timeout=15
+        )
+
+
+# ---------------------------------------------------------------------------
 # LobeHubSource._convert_to_skill_md
 # ---------------------------------------------------------------------------
 

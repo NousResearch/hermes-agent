@@ -133,6 +133,12 @@ class TestShouldExclude:
         # The .db itself is still included (and safe-copied separately)
         assert not _should_exclude(Path("state.db"))
 
+    def test_excludes_cron_runtime_locks(self):
+        from hermes_cli.backup import _should_exclude
+
+        assert _should_exclude(Path("cron/.jobs.lock"))
+        assert _should_exclude(Path("cron/.jobs.commit.lock"))
+
 
 # ---------------------------------------------------------------------------
 # Backup tests
@@ -303,7 +309,9 @@ class TestImport:
     def test_preserves_runtime_pid_and_process_files(self, tmp_path, monkeypatch):
         """gateway.pid / cron.pid / gateway.lock / processes.json from a backup
         reference the source machine's process namespace and must never be
-        written over the target's."""
+        written over the target's. Cron lock files are likewise runtime state;
+        replacing them would split the target's live lock domain.
+        """
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -320,6 +328,8 @@ class TestImport:
             "cron.pid": "8888",
             "gateway.lock": "7777",
             "processes.json": '{"stale": true}',
+            "cron/.jobs.lock": "stale",
+            "cron/.jobs.commit.lock": "stale",
         })
 
         args = Namespace(zipfile=str(zip_path), force=True)
@@ -333,6 +343,8 @@ class TestImport:
         # cron.pid / gateway.lock had no live copy and were not seeded.
         assert not (hermes_home / "cron.pid").exists()
         assert not (hermes_home / "gateway.lock").exists()
+        assert not (hermes_home / "cron" / ".jobs.lock").exists()
+        assert not (hermes_home / "cron" / ".jobs.commit.lock").exists()
 
 
 
@@ -1242,7 +1254,6 @@ class TestMemoryProviderExternalPaths:
         assert (restored.stat().st_mode & 0o777) == 0o600
         # External state did NOT leak into HERMES_HOME.
         assert not (hermes_home / "_external").exists()
-
 
 
 

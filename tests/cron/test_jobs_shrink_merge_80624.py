@@ -139,7 +139,7 @@ def test_jobs_json_on_disk_matches_merge(hermes_env):
 
 def test_stamp_fast_path_skips_merge_when_file_unchanged(hermes_env, monkeypatch):
     """Inside a critical section whose load stamp still matches, the save
-    must not re-read jobs.json at all (#80703's single-stat fast path)."""
+    must not re-read jobs.json at all (#80703's no-parse fast path)."""
     import cron.jobs as jobs
     from cron.jobs import create_job
 

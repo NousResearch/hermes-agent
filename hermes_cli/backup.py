@@ -91,6 +91,8 @@ _EXCLUDED_SUFFIXES = (
 # File names to skip (runtime state that's meaningless on another machine)
 _EXCLUDED_NAMES = {
     ".backup.lock",
+    ".jobs.commit.lock",
+    ".jobs.lock",
     "gateway.pid",
     "cron.pid",
 }
@@ -121,6 +123,8 @@ _EXCLUDED_NAMES = {
 # Older backups predate the backup-side exclusions, so we filter on import too
 # rather than trusting the archive's contents.
 _IMPORT_SKIP_NAMES = {
+    ".jobs.commit.lock",
+    ".jobs.lock",
     "gateway_state.json",
     "gateway.pid",
     "cron.pid",

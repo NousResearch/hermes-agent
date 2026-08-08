@@ -9,9 +9,11 @@ import contextlib
 import copy
 from contextvars import ContextVar
 from dataclasses import dataclass
+import errno
 import json
 import logging
 import shutil
+import stat
 import tempfile
 import threading
 import time
@@ -112,6 +114,13 @@ _jobs_lock_state = threading.local()
 # legitimate critical section (field updates only) while keeping the ticker's
 # worst-case stall well under one status-alarm threshold.
 _JOBS_LOCK_TIMEOUT_SECONDS = 30.0
+_JOBS_COMMIT_LOCK_TIMEOUT_SECONDS = 5.0
+_JOBS_GENERATION_MAX_ATTEMPTS = 3
+_UNSUPPORTED_LOCK_ERRNOS = frozenset(
+    value
+    for name in ("ENOSYS", "ENOTSUP", "EOPNOTSUPP")
+    if (value := getattr(errno, name, None)) is not None
+)
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
@@ -121,6 +130,14 @@ class _CronStorePaths:
     cron_dir: Path
     jobs_file: Path
     output_dir: Path
+
+
+@dataclass
+class _LoadedJobsSnapshot:
+    owner: List[Dict[str, Any]]
+    base: List[Dict[str, Any]]
+    stamp: Optional[Tuple[int, int, int]]
+    stamp_trusted: bool = True
 
 
 _cron_store_override: ContextVar[Optional[_CronStorePaths]] = ContextVar(
@@ -267,6 +284,126 @@ def _jobs_lock_file() -> Path:
     return _current_cron_store().cron_dir / ".jobs.lock"
 
 
+def _jobs_commit_lock_file() -> Path:
+    return _current_cron_store().cron_dir / ".jobs.commit.lock"
+
+
+def _prepare_commit_lock_file(handle, owner_source: Optional[os.stat_result]) -> None:
+    """Keep the shared lock writable by the cron-directory owner."""
+    try:
+        os.fchmod(handle.fileno(), 0o600)
+    except (AttributeError, OSError, NotImplementedError):
+        pass
+
+    try:
+        geteuid = getattr(os, "geteuid", None)
+        if (
+            owner_source is not None
+            and os.name == "posix"
+            and geteuid is not None
+            and geteuid() == 0
+        ):
+            os.fchown(handle.fileno(), owner_source.st_uid, owner_source.st_gid)
+    except (AttributeError, OSError) as exc:
+        logger.warning(
+            "Could not restore ownership of %s to the cron directory owner: %s",
+            _jobs_commit_lock_file(),
+            exc,
+        )
+
+
+@contextlib.contextmanager
+def _jobs_commit_lock():
+    """Serialize the final read, reconcile, and publication of jobs.json."""
+    if fcntl is None and msvcrt is None:
+        yield
+        return
+
+    ensure_dirs()
+    lock_path = _jobs_commit_lock_file()
+    try:
+        owner_source = os.stat(lock_path.parent)
+    except OSError:
+        owner_source = None
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0)
+    if os.name == "posix":
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = None
+    try:
+        fd = os.open(lock_path, flags, 0o600)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise RuntimeError("Cron jobs commit lock is not a regular file")
+        handle = os.fdopen(fd, "r+b")
+        fd = None
+    except OSError as exc:
+        raise RuntimeError("Unable to open the cron jobs commit lock") from exc
+    finally:
+        if fd is not None:
+            os.close(fd)
+    try:
+        _prepare_commit_lock_file(handle, owner_source)
+    except BaseException:
+        handle.close()
+        raise
+    acquired = False
+    try:
+        if fcntl is None and msvcrt is not None:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b" ")
+                handle.flush()
+            handle.seek(0)
+
+        deadline = time.monotonic() + _JOBS_COMMIT_LOCK_TIMEOUT_SECONDS
+        backend_error = None
+        while True:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                else:
+                    handle.seek(0)
+                    getattr(msvcrt, "locking")(
+                        handle.fileno(), getattr(msvcrt, "LK_NBLCK"), 1
+                    )
+                acquired = True
+                break
+            except (BlockingIOError, OSError) as exc:
+                if getattr(exc, "errno", None) in _UNSUPPORTED_LOCK_ERRNOS:
+                    backend_error = exc
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        "Timed out waiting for the cron jobs commit lock; "
+                        "refusing to publish a potentially stale snapshot"
+                    )
+                time.sleep(0.01)
+
+        if backend_error is not None:
+            logger.warning(
+                "Cron jobs commit lock is unavailable (%s); proceeding without "
+                "cross-process publication locking",
+                backend_error,
+            )
+            yield
+            return
+        yield
+    finally:
+        try:
+            if acquired:
+                try:
+                    if fcntl is not None:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                    else:
+                        handle.seek(0)
+                        getattr(msvcrt, "locking")(
+                            handle.fileno(), getattr(msvcrt, "LK_UNLCK"), 1
+                        )
+                except OSError:
+                    pass
+        finally:
+            handle.close()
+
+
 @contextlib.contextmanager
 def _jobs_lock():
     """Serialize a load_jobs→modify→save_jobs critical section.
@@ -298,12 +435,10 @@ def _jobs_lock():
 
     with _jobs_file_lock:
         _jobs_lock_state.depth = 1
-        # Stamp of jobs.json as of this section's load_jobs() (#80703's
-        # fast-path, credit @JoaoMarcos44): lets _save_jobs_unlocked skip the
-        # shrink-merge parse when the file provably hasn't changed since this
-        # section read it. Reset on entry/exit so stale stamps from unlocked
-        # loads or prior sections can never suppress a needed merge.
-        _jobs_lock_state.load_stamp = None
+        # Keep a bounded base snapshot for each list returned by load_jobs()
+        # during this outer mutation section. Object identity keeps nested
+        # load/modify/save callers from overwriting one another's provenance.
+        _jobs_lock_state.load_snapshots = []
         lock_fd = None
         try:
             try:
@@ -369,7 +504,7 @@ def _jobs_lock():
                         lock_fd.close()
         finally:
             _jobs_lock_state.depth = 0
-            _jobs_lock_state.load_stamp = None
+            _jobs_lock_state.load_snapshots = []
 
 # Fields on a cron job that must never change after creation. ``id`` is used
 # as a filesystem path component under ``OUTPUT_DIR``; allowing it to be
@@ -1079,13 +1214,13 @@ def load_jobs() -> List[Dict[str, Any]]:
     """Load all jobs from storage."""
     jobs_file = _current_cron_store().jobs_file
     ensure_dirs()
-    # Stamp BEFORE reading (fail-safe direction — see _record_load_stamp):
-    # a sibling write racing this load leaves the stamp older than disk, so
-    # the save-path merge runs instead of being wrongly skipped.
+    # Stamp BEFORE reading (fail-safe direction): a sibling write racing this
+    # load leaves the stamp older than disk, so the save path reconciles it.
     pre_read_stamp = _jobs_file_stamp(jobs_file)
     if not jobs_file.exists():
-        _record_load_stamp(None)
-        return []
+        jobs = []
+        _record_loaded_jobs(jobs, None)
+        return jobs
 
     try:
         data, _strict_retry = _parse_jobs_file(jobs_file)
@@ -1102,19 +1237,19 @@ def load_jobs() -> List[Dict[str, Any]]:
     # down the whole cron subsystem.
     if isinstance(data, dict):
         jobs = data.get("jobs", [])
+        _record_loaded_jobs(jobs, pre_read_stamp)
         if _strict_retry and jobs:
             # Hit control-character corruption — rewrite with proper escaping.
             save_jobs(jobs)
             logger.warning("Auto-repaired jobs.json (had invalid control characters)")
-        _record_load_stamp(pre_read_stamp)
         return jobs
     if isinstance(data, list):
+        _record_loaded_jobs(data, pre_read_stamp)
         # Bare array — likely saved/edited outside save_jobs(). Wrap it back
         # into the expected {"jobs": [...]} structure.
         if data:
             save_jobs(data)
             logger.warning("Auto-repaired jobs.json (bare list wrapped as dict)")
-        _record_load_stamp(pre_read_stamp)
         return data
 
     raise RuntimeError(
@@ -1127,7 +1262,7 @@ def _peek_jobs_unlocked() -> Optional[List[Dict[str, Any]]]:
 
     Caller must hold ``_jobs_lock()``. Returns ``[]`` when the file is
     missing, ``None`` when the payload is unreadable/corrupt (caller should
-    not attempt a shrink-merge against an unknown baseline). Never calls
+    not attempt reconciliation against an unknown baseline). Never calls
     ``save_jobs`` — the repair-free property is what keeps the save path
     re-entrancy-safe (a repairing read here would recurse through
     ``_save_jobs_unlocked``).
@@ -1151,13 +1286,12 @@ def _jobs_file_stamp(jobs_file: Path) -> Optional[Tuple[int, int, int]]:
     """Cheap change-detection stamp for jobs.json: ``(mtime_ns, size, ino)``.
 
     ``None`` means the file is missing/unstatable. Used as a fast-path gate
-    in front of the shrink-merge so the healthy no-race save costs one
-    ``stat()`` instead of a full read+parse (the ``advance_next_runs``
-    batching exists because this path is hot — see its docstring).
-    ``st_ino`` is included because every legitimate writer goes through
-    mkstemp+rename (new inode), so even a same-size write inside one mtime
-    quantum on a coarse-clock filesystem (ext4 jiffies, network mounts)
-    cannot false-match.
+    before reconciliation so the healthy no-race save uses stat checks instead
+    of a full read+parse (the ``advance_next_runs`` batching exists because
+    this path is hot — see its docstring). ``st_ino`` is included because
+    every legitimate writer goes through mkstemp+rename (new inode), so even a
+    same-size write inside one mtime quantum on a coarse-clock filesystem
+    (ext4 jiffies, network mounts) cannot false-match.
     """
     try:
         st = jobs_file.stat()
@@ -1166,84 +1300,170 @@ def _jobs_file_stamp(jobs_file: Path) -> Optional[Tuple[int, int, int]]:
         return None
 
 
-def _record_load_stamp(stamp: Optional[Tuple[int, int, int]]) -> None:
-    """Remember jobs.json's stamp for the enclosing _jobs_lock() section.
-
-    No-op outside a critical section. Lets the save path skip the
-    shrink-merge parse when the file provably hasn't changed since this
-    section loaded it (#80703's fast-path). The caller must capture the
-    stamp BEFORE reading the file: a sibling landing mid-read then leaves
-    the recorded stamp OLDER than disk — a mismatch, so the merge runs
-    (fail-safe direction). Stamping after the read would let that sibling's
-    write be certified as "seen" without being in the loaded payload,
-    wrongly suppressing the recovery.
-    """
+def _record_loaded_jobs(
+    owner: List[Dict[str, Any]],
+    stamp: Optional[Tuple[int, int, int]],
+) -> None:
     if not getattr(_jobs_lock_state, "depth", 0):
         return
-    _jobs_lock_state.load_stamp = stamp
+    _jobs_lock_state.load_snapshots.append(
+        _LoadedJobsSnapshot(owner, copy.deepcopy(owner), stamp)
+    )
 
 
-def _merge_unexpected_disk_jobs(
+def _loaded_jobs_snapshot(
+    owner: List[Dict[str, Any]],
+) -> Optional[_LoadedJobsSnapshot]:
+    for snapshot in reversed(getattr(_jobs_lock_state, "load_snapshots", ())):
+        if snapshot.owner is owner:
+            return snapshot
+    return None
+
+
+_MISSING_JOB = object()
+
+
+def _valid_job_id(job: Any) -> Optional[str]:
+    if not isinstance(job, dict) or not job.get("id"):
+        return None
+    return str(job["id"])
+
+
+def _index_unique_jobs(
     jobs: List[Dict[str, Any]],
-    *,
-    removed_ids: Optional[Collection[str]] = None,
-) -> List[Dict[str, Any]]:
-    """Return *jobs* plus any on-disk jobs missing from the save payload (#80624).
-
-    Under ``_jobs_lock()``'s degraded flock-timeout path (#60703), two
-    processes can both believe they own the store. A writer that loaded an
-    older/smaller snapshot then calls ``save_jobs`` and would otherwise
-    clobber concurrent creates (the filed ``no_agent`` watchdog pattern:
-    CLI/tool create succeeds, then a gateway tick/remove rewrites
-    ``jobs.json`` empty or without the new id).
-
-    Intentional deletes pass ``removed_ids``. Any other id present on disk
-    but absent from *jobs* is treated as a concurrent create and merged
-    back before the atomic write. The caller's list is never mutated — a
-    new list is returned when anything was recovered.
-
-    Fast path: when the enclosing critical section recorded a load stamp
-    and the file's ``(mtime_ns, size)`` still matches, nothing can have
-    changed underneath us, so the read+parse is skipped entirely — one
-    ``stat()`` on the healthy no-race save.
-    """
-    stamp = getattr(_jobs_lock_state, "load_stamp", None)
-    if stamp is not None and _jobs_file_stamp(_current_cron_store().jobs_file) == stamp:
-        return jobs
-
-    disk_jobs = _peek_jobs_unlocked()
-    if disk_jobs is None:
-        return jobs
-
-    intended_remove = {str(i) for i in (removed_ids or ()) if i}
-    new_ids: Set[str] = set()
+) -> Optional[Tuple[List[str], Dict[str, Dict[str, Any]]]]:
+    order = []
+    by_id = {}
     for job in jobs:
-        if isinstance(job, dict) and job.get("id"):
-            new_ids.add(str(job["id"]))
+        job_id = _valid_job_id(job)
+        if job_id is None or job_id in by_id:
+            return None
+        order.append(job_id)
+        by_id[job_id] = job
+    return order, by_id
 
-    recovered: List[Dict[str, Any]] = []
-    for disk_job in disk_jobs:
-        if not isinstance(disk_job, dict):
-            continue
-        disk_id = disk_job.get("id")
-        if not disk_id:
-            continue
-        disk_id = str(disk_id)
-        if disk_id in new_ids or disk_id in intended_remove:
-            continue
-        recovered.append(disk_job)
-        new_ids.add(disk_id)
 
+def _warn_recovered_job_ids(job_ids: Collection[str]) -> None:
+    recovered = list(job_ids)
     if not recovered:
-        return jobs
+        return
     logger.warning(
         "Preserved %d cron job(s) present on disk but missing from the "
         "in-memory save payload (concurrent create under degraded lock "
         "or stale writer) (#80624): %s",
         len(recovered),
-        [j.get("id") for j in recovered],
+        recovered,
     )
-    return jobs + recovered
+
+
+def _merge_jobs_three_way(
+    base: List[Dict[str, Any]],
+    desired: List[Dict[str, Any]],
+    current: List[Dict[str, Any]],
+    *,
+    removed_ids: Optional[Collection[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Merge desired and current snapshots against one loaded base."""
+    intended_remove = {str(job_id) for job_id in (removed_ids or ()) if job_id}
+    base_ids = {
+        job_id for job in base if (job_id := _valid_job_id(job)) is not None
+    }
+    desired_ids = {
+        job_id for job in desired if (job_id := _valid_job_id(job)) is not None
+    }
+    external_removals = intended_remove - base_ids - desired_ids
+    if external_removals:
+        current = [
+            job for job in current if _valid_job_id(job) not in external_removals
+        ]
+    recovered_ids = list(
+        dict.fromkeys(
+            job_id
+            for job in current
+            if (job_id := _valid_job_id(job)) is not None
+            and job_id not in base_ids
+            and job_id not in desired_ids
+        )
+    )
+
+    if desired == base:
+        _warn_recovered_job_ids(recovered_ids)
+        return copy.deepcopy(current)
+    if current == base:
+        return copy.deepcopy(desired)
+    if desired == current:
+        return copy.deepcopy(desired)
+
+    base_index = _index_unique_jobs(base)
+    desired_index = _index_unique_jobs(desired)
+    current_index = _index_unique_jobs(current)
+    if base_index is None or desired_index is None or current_index is None:
+        raise RuntimeError(
+            "Refusing to merge concurrent cron changes with missing or duplicate ids"
+        )
+    base_order, base_by_id = base_index
+    desired_order, desired_by_id = desired_index
+    current_order, current_by_id = current_index
+
+    chosen = {}
+    for job_id in dict.fromkeys(base_order + desired_order + current_order):
+        base_job = base_by_id.get(job_id, _MISSING_JOB)
+        desired_job = desired_by_id.get(job_id, _MISSING_JOB)
+        current_job = current_by_id.get(job_id, _MISSING_JOB)
+        if desired_job == base_job:
+            merged = current_job
+        elif current_job == base_job:
+            merged = desired_job
+        elif desired_job == current_job:
+            merged = desired_job
+        else:
+            raise RuntimeError(
+                "Refusing to save conflicting concurrent cron job change for "
+                f"id {job_id!r}"
+            )
+        chosen[job_id] = merged
+
+    result = []
+    emitted = set()
+    for job in base:
+        job_id = _valid_job_id(job)
+        assert job_id is not None
+        emitted.add(job_id)
+        merged = chosen[job_id]
+        if merged is not _MISSING_JOB:
+            result.append(copy.deepcopy(merged))
+    for job_id in desired_order + current_order:
+        if job_id in emitted:
+            continue
+        emitted.add(job_id)
+        merged = chosen[job_id]
+        if merged is not _MISSING_JOB:
+            result.append(copy.deepcopy(merged))
+    _warn_recovered_job_ids(recovered_ids)
+    return result
+
+
+def _merge_jobs_without_base(
+    desired: List[Dict[str, Any]],
+    current: List[Dict[str, Any]],
+    removed_ids: Optional[Collection[str]],
+) -> List[Dict[str, Any]]:
+    """Preserve on-disk jobs for callers without a loaded base."""
+    if desired == current:
+        return copy.deepcopy(desired)
+    intended_remove = {str(job_id) for job_id in (removed_ids or ()) if job_id}
+    desired_ids = {
+        job_id for job in desired if (job_id := _valid_job_id(job)) is not None
+    }
+    result = copy.deepcopy(desired)
+    recovered = []
+    for job in current:
+        job_id = _valid_job_id(job)
+        if job_id is not None and job_id not in desired_ids and job_id not in intended_remove:
+            recovered.append(copy.deepcopy(job))
+            desired_ids.add(job_id)
+    _warn_recovered_job_ids([job["id"] for job in recovered])
+    return result + recovered
 
 
 def _save_jobs_unlocked(
@@ -1255,127 +1475,95 @@ def _save_jobs_unlocked(
     """Save all jobs to storage. Caller must hold _jobs_lock().
 
     ``removed_ids`` lists job ids this mutation intentionally deleted.
-    ``replace=True`` skips the shrink-merge guard (tests / disaster recovery
+    ``replace=True`` skips the reconciliation guard (tests / disaster recovery
     that mean to rewrite the store wholesale).
     """
     jobs_file = _current_cron_store().jobs_file
     ensure_dirs()
-    # Snapshot the current owner BEFORE the atomic replace so a privileged
-    # writer (root CLI in Docker) can hand ownership back to the gateway user
-    # afterwards instead of locking its ticker out (#68483). When the file is
-    # being created for the first time, inherit the cron dir's owner — in the
-    # Docker image that is the PUID/PGID gateway user who must be able to
-    # read the store on the next tick.
-    try:
-        _stat_before = os.stat(jobs_file)
-    except OSError:
-        try:
-            _stat_before = os.stat(jobs_file.parent)
-        except OSError:
-            _stat_before = None
+    desired = copy.deepcopy(jobs)
+    loaded = _loaded_jobs_snapshot(jobs)
+    base = copy.deepcopy(loaded.base) if loaded is not None else None
+    base_stamp = loaded.stamp if loaded is not None else None
 
-    # Shrink-merge + rewrite loop (#80624): under the degraded flock-timeout
-    # path another process can create a job between our load and our write.
-    # Merge unexpected disk ids into the payload, stage the write, then
-    # re-peek; if new ids appeared, merge again and restage before replace.
-    # The merge itself fast-paths to a single stat() when the enclosing
-    # section's load stamp still matches (see _merge_unexpected_disk_jobs).
-    tmp_path = None
-    try:
-        for _attempt in range(5):
-            if not replace:
-                jobs = _merge_unexpected_disk_jobs(jobs, removed_ids=removed_ids)
+    with _jobs_commit_lock():
+        for _attempt in range(_JOBS_GENERATION_MAX_ATTEMPTS):
+            if replace:
+                observed_stamp = None
+                reconciled = copy.deepcopy(desired)
+            elif (
+                base is not None
+                and loaded is not None
+                and loaded.stamp_trusted
+                and base_stamp is not None
+                and _jobs_file_stamp(jobs_file) == base_stamp
+            ):
+                observed_stamp = base_stamp
+                reconciled = copy.deepcopy(desired)
+            else:
+                observed_stamp = _jobs_file_stamp(jobs_file)
+                current = _peek_jobs_unlocked()
+                if current is None:
+                    if base is not None:
+                        raise RuntimeError(
+                            "Cron database changed to an unreadable generation"
+                        )
+                    reconciled = copy.deepcopy(desired)
+                elif base is not None:
+                    reconciled = _merge_jobs_three_way(
+                        base, desired, current, removed_ids=removed_ids
+                    )
+                else:
+                    reconciled = _merge_jobs_without_base(
+                        desired, current, removed_ids
+                    )
+
+            # Snapshot the current owner before atomic replace so a privileged
+            # writer can hand ownership back to the gateway user afterwards.
+            try:
+                stat_before = os.stat(jobs_file)
+            except OSError:
+                try:
+                    stat_before = os.stat(jobs_file.parent)
+                except OSError:
+                    stat_before = None
+
             fd, tmp_path = tempfile.mkstemp(
                 dir=str(jobs_file.parent), suffix=".tmp", prefix=".jobs_"
             )
+            published = False
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
                     json.dump(
-                        {"jobs": jobs, "updated_at": _hermes_now().isoformat()},
-                        f,
+                        {"jobs": reconciled, "updated_at": _hermes_now().isoformat()},
+                        handle,
                         indent=2,
                     )
-                    f.flush()
-                    os.fsync(f.fileno())
-            except BaseException:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                tmp_path = None
-                raise
+                    handle.flush()
+                    os.fsync(handle.fileno())
 
-            if not replace:
-                # Verify-after-stage: a sibling landing while we serialized
-                # the payload must trigger another merge round. Same stamp
-                # fast path as the merge — an unchanged stamp proves nothing
-                # was written, so the full parse is skipped.
-                _stamp = getattr(_jobs_lock_state, "load_stamp", None)
-                _unchanged = (
-                    _stamp is not None and _jobs_file_stamp(jobs_file) == _stamp
-                )
-                disk_jobs = None if _unchanged else _peek_jobs_unlocked()
-                if disk_jobs is not None:
-                    payload_ids = {
-                        str(j["id"])
-                        for j in jobs
-                        if isinstance(j, dict) and j.get("id")
-                    }
-                    intended = {str(i) for i in (removed_ids or ()) if i}
-                    if any(
-                        isinstance(dj, dict)
-                        and dj.get("id")
-                        and str(dj["id"]) not in payload_ids
-                        and str(dj["id"]) not in intended
-                        for dj in disk_jobs
-                    ):
-                        try:
-                            os.unlink(tmp_path)
-                        except OSError:
-                            pass
-                        tmp_path = None
-                        continue
+                if not replace and _jobs_file_stamp(jobs_file) != observed_stamp:
+                    continue
 
-            atomic_replace(tmp_path, jobs_file)
-            tmp_path = None
-            _secure_file(jobs_file)
-            _preserve_file_ownership(jobs_file, _stat_before)
-            # Invalidate (never refresh) the stamp after writing: the stamp
-            # certifies "this section's loaded payload still matches disk",
-            # which stops being provable the moment anyone writes. A refresh
-            # here would let a nested save (e.g. create_job inside a broader
-            # section) certify disk against an OUTER caller's stale payload
-            # and deterministically clobber the nested create; it also races
-            # a degraded sibling landing between replace and stat. Later
-            # saves in this section simply take the full merge (fail-safe).
-            _record_load_stamp(None)
-            return
+                published_path = Path(atomic_replace(tmp_path, jobs_file))
+                published = True
+                _secure_file(published_path)
+                _preserve_file_ownership(published_path, stat_before)
+                if loaded is not None:
+                    loaded.base = copy.deepcopy(desired)
+                    loaded.stamp = None
+                    loaded.stamp_trusted = False
+                return
+            finally:
+                if not published:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
 
-        # Exhausted retries — last merge + write without another re-peek.
-        if not replace:
-            jobs = _merge_unexpected_disk_jobs(jobs, removed_ids=removed_ids)
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(jobs_file.parent), suffix=".tmp", prefix=".jobs_"
-        )
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(
-                {"jobs": jobs, "updated_at": _hermes_now().isoformat()},
-                f,
-                indent=2,
-            )
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, jobs_file)
-        tmp_path = None
-        _secure_file(jobs_file)
-        _preserve_file_ownership(jobs_file, _stat_before)
-    except BaseException:
-        if tmp_path is not None:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-        raise
+    raise RuntimeError(
+        "jobs.json kept changing while this process prepared a save; "
+        "refusing to overwrite concurrent updates"
+    )
 
 
 def save_jobs(
@@ -1387,7 +1575,7 @@ def save_jobs(
     """Save all jobs to storage.
 
     See ``_save_jobs_unlocked`` for ``removed_ids`` / ``replace`` semantics
-    (shrink-merge guard against concurrent-create clobber, #80624).
+    (reconciliation guard against concurrent-update clobber).
     """
     with _jobs_lock():
         _save_jobs_unlocked(jobs, removed_ids=removed_ids, replace=replace)
@@ -2046,7 +2234,7 @@ def remove_job(job_id: str) -> bool:
     with _jobs_lock():
         jobs = load_jobs()
         original_len = len(jobs)
-        jobs = [j for j in jobs if j["id"] != canonical_id]
+        jobs[:] = [j for j in jobs if j["id"] != canonical_id]
         if len(jobs) < original_len:
             # Resolve the output dir BEFORE saving so a legacy unsafe ID (e.g.
             # left over from before the create-time guard) fails closed without

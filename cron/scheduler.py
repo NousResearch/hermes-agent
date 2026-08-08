@@ -2230,8 +2230,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 continue
 
             if result and result.get("error"):
-                msg = f"delivery error: {result['error']}"
-                logger.error("Job '%s': %s", job["id"], msg)
+                # Include target context (platform/chat) so a bare error string
+                # like "Discord send failed: TimeoutError: " is attributable;
+                # no active exception here (error comes from the send result),
+                # so exc_info is only attached when one is in flight.
+                msg = f"delivery error: {result['error']} (target {platform_name}:{chat_id})"
+                logger.error("Job '%s': %s", job["id"], msg, exc_info=sys.exc_info()[0] is not None)
                 target_errors.extend([msg])
                 delivery_errors.extend(target_errors)
                 continue

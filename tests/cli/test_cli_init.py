@@ -364,6 +364,50 @@ class TestHistoryDisplay:
 
 
 
+class TestClarifyTimeoutConfig:
+    """The classic CLI must not turn its old default into an override."""
+
+    def test_canonical_timeout_reaches_cli_when_legacy_key_is_unset(
+        self, tmp_path, monkeypatch
+    ):
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump({
+            "agent": {"clarify_timeout": 5000},
+        }))
+
+        import cli
+        from tools.clarify_gateway import resolve_clarify_timeout
+
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        config = cli.load_cli_config()
+
+        assert "clarify" not in config
+        assert resolve_clarify_timeout(config) == 5000
+
+    def test_explicit_legacy_timeout_still_wins_in_cli_config(
+        self, tmp_path, monkeypatch
+    ):
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump({
+            "agent": {"clarify_timeout": 5000},
+            "clarify": {"timeout": 90},
+        }))
+
+        import cli
+        from tools.clarify_gateway import resolve_clarify_timeout
+
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        config = cli.load_cli_config()
+
+        assert resolve_clarify_timeout(config) == 90
+
+
 class TestRootLevelProviderOverride:
     """Root-level provider/base_url in config.yaml must NOT override model.provider."""
 
@@ -521,7 +565,5 @@ class TestRootLevelProviderOverride:
         result = _normalize_root_model_keys({"model": {"model": "m-key", "name": "n-key"}})
         assert result["model"]["default"] == "m-key"
         assert "model" not in result["model"] and "name" not in result["model"]
-
-
 
 

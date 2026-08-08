@@ -38,6 +38,34 @@ def test_probe_config_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert a._probe_enabled is True
 
 
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), float("-inf"), -5.0])
+def test_probe_interval_rejects_non_finite_and_negative(
+    monkeypatch: pytest.MonkeyPatch, bad_value: float
+) -> None:
+    """float() parses nan/inf without raising (YAML 1.1 even has bare .nan/
+    .inf literals). Unguarded, nan/negative would silently defeat the
+    ``_probe_interval > 0`` enabled check -- disabling the zombie-stream
+    watchdog with no error and no log -- instead of falling back to the
+    documented default like any other malformed value."""
+    a = _make_adapter(monkeypatch, probe_interval_seconds=bad_value)
+
+    assert a._probe_interval == 600.0
+    assert a._probe_enabled is True
+
+
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), float("-inf"), -5.0])
+def test_probe_timeout_rejects_non_finite_and_negative(
+    monkeypatch: pytest.MonkeyPatch, bad_value: float
+) -> None:
+    """A bad probe_timeout isn't gated by _probe_enabled: it reaches the
+    sidecar HTTP call's ``timeout=`` kwarg directly. Falling back to the
+    default here avoids a permanently "inconclusive" probe (or a raised
+    timeout construction error) masking a genuinely hung sidecar."""
+    a = _make_adapter(monkeypatch, probe_timeout_seconds=bad_value)
+
+    assert a._probe_timeout == 10.0
+
+
 def test_note_activity_resets_failures(monkeypatch: pytest.MonkeyPatch) -> None:
     a = _make_adapter(monkeypatch)
     a._probe_failures = 2

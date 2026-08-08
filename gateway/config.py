@@ -9,6 +9,7 @@ Handles loading and validating configuration for:
 """
 
 import logging
+import math
 import os
 import json
 from pathlib import Path
@@ -96,9 +97,16 @@ def _coerce_float(value: Any, default: float) -> float:
     if value is None:
         return default
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return default
+    # nan/inf parse without raising (YAML 1.1 even has bare .nan/.inf
+    # literals), but a nan then compares False against everything -- silently
+    # defeating threshold checks (e.g. `elapsed >= edit_interval` never
+    # firing) instead of falling back like any other malformed value.
+    if not math.isfinite(parsed):
+        return default
+    return parsed
 
 
 def _coerce_int(value: Any, default: int) -> int:

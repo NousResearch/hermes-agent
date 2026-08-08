@@ -37,9 +37,13 @@ import json
 import logging
 import os
 import queue
+import signal
+import subprocess
 import sys
+import tempfile
 import threading
 import time
+import uuid
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -51,6 +55,8 @@ from hermes_constants import get_hermes_home
 from tools.registry import tool_error
 from hermes_cli.config import cfg_get
 
+from .hermes_llm_bridge import HermesLlmBridge
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
@@ -58,7 +64,9 @@ _DEFAULT_LOCAL_URL = "http://localhost:8888"
 # Keep in sync with tools/lazy_deps.py ("memory.hindsight") and plugin.yaml.
 _MIN_CLIENT_VERSION = "0.6.1"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
+_DEFAULT_PREFETCH_TIMEOUT = 30.0  # local embedded recall may need cold-start time
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
+_PROFILE_ENV_LOCK = threading.RLock()
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
 # `update_mode='append'` semantics on retain (vectorize-io/hindsight#932).
 # Without it, reusing a stable session-scoped document_id silently
@@ -76,6 +84,9 @@ _PROVIDER_DEFAULT_MODELS = {
     "ollama": "gemma3:12b",
     "lmstudio": "local-model",
     "openai_compatible": "your-model-name",
+    # Descriptive only: inherit mode resolves the active model through the
+    # host-owned ctx.llm facade rather than this placeholder.
+    "hermes": "hermes-active-model",
 }
 
 
@@ -88,6 +99,21 @@ def _parse_int_setting(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         logger.warning("Invalid integer Hindsight setting %r; using default %s", value, default)
         return default
+
+
+def _parse_float_setting(value: Any, default: float) -> float:
+    """Parse a positive float config value, falling back when invalid."""
+    if value is None or value == "":
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        logger.warning("Invalid float Hindsight setting %r; using default %s", value, default)
+        return default
+    if parsed <= 0:
+        logger.warning("Non-positive Hindsight setting %r; using default %s", value, default)
+        return default
+    return parsed
 
 
 # Env var the embedded daemon manager reads (at import time, as a module-level
@@ -150,6 +176,34 @@ def _check_local_runtime() -> tuple[bool, str | None]:
         return True, None
     except Exception as exc:
         return False, str(exc)
+
+
+_EMBEDDED_RUNTIME_WARNING_LOCK = threading.Lock()
+_EMBEDDED_RUNTIME_WARNING_KEYS: set[str] = set()
+
+
+def _warn_embedded_runtime_unavailable(reason: str | None) -> None:
+    """Emit one actionable warning for a disabled embedded runtime.
+
+    ``agent_init`` checks ``is_available()`` before ``initialize()``, so a
+    warning emitted only from ``initialize()`` is often never reached. Keep
+    the warning here, where both paths can call it, and deduplicate repeated
+    availability probes in long-lived gateway processes.
+    """
+    detail = str(reason or "unknown import/runtime error").strip()
+    key = detail or "unknown"
+    with _EMBEDDED_RUNTIME_WARNING_LOCK:
+        if key in _EMBEDDED_RUNTIME_WARNING_KEYS:
+            return
+        _EMBEDDED_RUNTIME_WARNING_KEYS.add(key)
+    logger.warning(
+        "Hindsight local_embedded is unavailable: %s. The embedded mode "
+        "requires the full `hindsight-all` runtime. Run `hermes memory setup` "
+        "and select Local Embedded, or install `hindsight-all` in the Hermes "
+        "environment; cloud and local_external modes only need "
+        "`hindsight-client`.",
+        detail,
+    )
 
 
 def _ensure_cloud_client_dependency() -> None:
@@ -496,9 +550,12 @@ def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def _embedded_profile_name(config: dict[str, Any]) -> str:
+def _embedded_profile_name(
+    config: dict[str, Any],
+    profile_name: str | None = None,
+) -> str:
     """Return the Hindsight embedded profile name for this Hermes config."""
-    profile = config.get("profile", "hermes")
+    profile = profile_name if profile_name is not None else config.get("profile", "hermes")
     return str(profile or "hermes")
 
 
@@ -518,7 +575,14 @@ def _load_simple_env(path) -> dict[str, str]:
     return values
 
 
-def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
+def _build_embedded_profile_env(
+    config: dict[str, Any],
+    *,
+    llm_api_key: str | None = None,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
+    llm_base_url: str | None = None,
+) -> dict[str, str]:
     """Build the profile-scoped env file that standalone hindsight-embed consumes."""
     current_key = llm_api_key
     if current_key is None:
@@ -528,9 +592,13 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
             or get_secret("HINDSIGHT_LLM_API_KEY", "")
         )
 
-    current_provider = config.get("llm_provider", "")
-    current_model = config.get("llm_model", "")
-    current_base_url = config.get("llm_base_url") or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
+    current_provider = config.get("llm_provider", "") if llm_provider is None else llm_provider
+    current_model = config.get("llm_model", "") if llm_model is None else llm_model
+    current_base_url = (
+        config.get("llm_base_url") or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
+        if llm_base_url is None
+        else llm_base_url
+    )
 
     # The embedded daemon expects OpenAI wire format for these providers.
     daemon_provider = "openai" if current_provider in {"openai_compatible", "openrouter"} else current_provider
@@ -556,10 +624,13 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     return env_values
 
 
-def _embedded_profile_env_path(config: dict[str, Any]):
+def _embedded_profile_env_path(
+    config: dict[str, Any],
+    profile_name: str | None = None,
+):
     from pathlib import Path
 
-    return Path.home() / ".hindsight" / "profiles" / f"{_embedded_profile_name(config)}.env"
+    return Path.home() / ".hindsight" / "profiles" / f"{_embedded_profile_name(config, profile_name)}.env"
 
 
 def _secure_write_profile_env(profile_env, content: str) -> None:
@@ -570,14 +641,30 @@ def _secure_write_profile_env(profile_env, content: str) -> None:
     default umask-derived mode. A pre-existing file is tightened *before*
     the new secret bytes are written.
     """
-    if profile_env.exists():
+    profile_env.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = None
+    with _PROFILE_ENV_LOCK:
         try:
+            fd, temporary_path = tempfile.mkstemp(
+                prefix=f".{profile_env.name}.",
+                dir=str(profile_env.parent),
+                text=True,
+            )
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(content)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(temporary_path, profile_env)
+            temporary_path = None
             os.chmod(profile_env, 0o600)
-        except OSError:
-            pass
-    fd = os.open(str(profile_env), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(content)
+        finally:
+            if temporary_path is not None:
+                try:
+                    os.unlink(temporary_path)
+                except OSError:
+                    pass
 
 
 def _validate_profile_env_permissions(profile_env) -> None:
@@ -600,11 +687,29 @@ def _validate_profile_env_permissions(profile_env) -> None:
             )
 
 
-def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None):
+def _materialize_embedded_profile_env(
+    config: dict[str, Any],
+    *,
+    llm_api_key: str | None = None,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
+    llm_base_url: str | None = None,
+    profile_name: str | None = None,
+):
     """Write the profile-scoped env file that standalone hindsight-embed uses."""
-    profile_env = _embedded_profile_env_path(config)
+    profile_env = (
+        _embedded_profile_env_path(config)
+        if profile_name is None
+        else _embedded_profile_env_path(config, profile_name)
+    )
     profile_env.parent.mkdir(parents=True, exist_ok=True)
-    env_values = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
+    env_values = _build_embedded_profile_env(
+        config,
+        llm_api_key=llm_api_key,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        llm_base_url=llm_base_url,
+    )
     content = "".join(f"{key}={value}\n" for key, value in env_values.items())
     try:
         _secure_write_profile_env(profile_env, content)
@@ -691,7 +796,13 @@ class HindsightMemoryProvider(MemoryProvider):
         except Exception:
             return []
 
-    def __init__(self):
+    def __init__(self, host_context=None):
+        # Duck-typed to avoid importing the plugin loader during discovery.
+        # Used only when the explicit `llm_provider: hermes` mode is selected.
+        self._host_context = host_context
+        self._llm_bridge: HermesLlmBridge | None = None
+        self._embedded_profile_override: str | None = None
+        self._embedded_profile_env_path = None
         self._config = None
         self._api_key = None
         self._api_url = _DEFAULT_API_URL
@@ -716,7 +827,11 @@ class HindsightMemoryProvider(MemoryProvider):
         self._agent_workspace = ""
         self._turn_index = 0
         self._client = None
+        self._client_lock = threading.RLock()
+        self._daemon_thread: threading.Thread | None = None
         self._timeout = _DEFAULT_TIMEOUT
+        self._prefetch_timeout = _DEFAULT_PREFETCH_TIMEOUT
+        self._retain_shutdown_timeout = _DEFAULT_PREFETCH_TIMEOUT
         self._idle_timeout = _DEFAULT_IDLE_TIMEOUT
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
@@ -803,12 +918,22 @@ class HindsightMemoryProvider(MemoryProvider):
     def name(self) -> str:
         return "hindsight"
 
+    @property
+    def prefetch_timeout(self) -> float:
+        """Allow MemoryManager to wait for embedded cold-start recall."""
+        return self._prefetch_timeout
+
     def is_available(self) -> bool:
         try:
             cfg = _load_config()
             mode = cfg.get("mode", "cloud")
             if mode in {"local", "local_embedded"}:
-                available, _ = _check_local_runtime()
+                if str(cfg.get("llm_provider", "")).strip().lower() == "hermes":
+                    if self._host_context is None or getattr(self._host_context, "llm", None) is None:
+                        return False
+                available, reason = _check_local_runtime()
+                if not available:
+                    _warn_embedded_runtime_unavailable(reason)
                 return available
             if mode == "local_external":
                 return True
@@ -861,7 +986,7 @@ class HindsightMemoryProvider(MemoryProvider):
         mode_values = ["cloud", "local_embedded", "local_external"]
         mode_items = [
             ("Cloud", "Hindsight Cloud API (lightweight, just needs an API key)"),
-            ("Local Embedded", "Run Hindsight locally (downloads ~200MB, needs LLM key)"),
+            ("Local Embedded", "Run Hindsight locally (downloads ~200MB, needs an LLM key or Hermes facade)"),
             ("Local External", "Connect to an existing Hindsight instance"),
         ]
         existing_mode = existing_config.get("mode")
@@ -964,26 +1089,32 @@ class HindsightMemoryProvider(MemoryProvider):
             elif llm_provider == "openrouter":
                 provider_config["llm_base_url"] = "https://openrouter.ai/api/v1"
 
-            provider_default_model = _PROVIDER_DEFAULT_MODELS.get(llm_provider, "gpt-4o-mini")
-            current_model = provider_config.get("llm_model") or provider_default_model
-            val = input(f"  LLM model [{current_model}]: ").strip()
-            provider_config["llm_model"] = val or current_model
-
-            sys.stdout.write("  LLM API key: ")
-            sys.stdout.flush()
-            llm_key = masked_secret_prompt("") if sys.stdin.isatty() else sys.stdin.readline().strip()
-            if llm_key:
-                env_writes["HINDSIGHT_LLM_API_KEY"] = llm_key
+            if llm_provider == "hermes":
+                provider_config["llm_model"] = "hermes-inherited"
             else:
-                env_path = Path(hermes_home) / ".env"
-                existing_llm_key = ""
-                if env_path.exists():
-                    # utf-8-sig: a Notepad BOM must not hide the first key.
-                    for line in env_path.read_text(encoding="utf-8-sig").splitlines():
-                        if line.startswith("HINDSIGHT_LLM_API_KEY="):
-                            existing_llm_key = line.split("=", 1)[1]
-                            break
-                env_writes["HINDSIGHT_LLM_API_KEY"] = existing_llm_key
+                provider_default_model = _PROVIDER_DEFAULT_MODELS.get(llm_provider, "gpt-4o-mini")
+                current_model = provider_config.get("llm_model") or provider_default_model
+                val = input(f"  LLM model [{current_model}]: ").strip()
+                provider_config["llm_model"] = val or current_model
+
+            if llm_provider == "hermes":
+                print("  Using the active Hermes LLM facade; no Hindsight LLM API key is required.")
+            else:
+                sys.stdout.write("  LLM API key: ")
+                sys.stdout.flush()
+                llm_key = masked_secret_prompt("") if sys.stdin.isatty() else sys.stdin.readline().strip()
+                if llm_key:
+                    env_writes["HINDSIGHT_LLM_API_KEY"] = llm_key
+                else:
+                    env_path = Path(hermes_home) / ".env"
+                    existing_llm_key = ""
+                    if env_path.exists():
+                        # utf-8-sig: a Notepad BOM must not hide the first key.
+                        for line in env_path.read_text(encoding="utf-8-sig").splitlines():
+                            if line.startswith("HINDSIGHT_LLM_API_KEY="):
+                                existing_llm_key = line.split("=", 1)[1]
+                                break
+                    env_writes["HINDSIGHT_LLM_API_KEY"] = existing_llm_key
 
         # Step 4: Save everything
         provider_config.setdefault("bank_id", "hermes")
@@ -1035,19 +1166,20 @@ class HindsightMemoryProvider(MemoryProvider):
             except Exception:
                 pass
 
-            llm_api_key = env_writes.get("HINDSIGHT_LLM_API_KEY", "")
-            if not llm_api_key:
-                llm_api_key = _load_simple_env(Path(hermes_home) / ".env").get("HINDSIGHT_LLM_API_KEY", "")
-            if not llm_api_key:
-                llm_api_key = _load_simple_env(_embedded_profile_env_path(materialized_config)).get(
-                    "HINDSIGHT_API_LLM_API_KEY",
-                    "",
-                )
+            if llm_provider != "hermes":
+                llm_api_key = env_writes.get("HINDSIGHT_LLM_API_KEY", "")
+                if not llm_api_key:
+                    llm_api_key = _load_simple_env(Path(hermes_home) / ".env").get("HINDSIGHT_LLM_API_KEY", "")
+                if not llm_api_key:
+                    llm_api_key = _load_simple_env(_embedded_profile_env_path(materialized_config)).get(
+                        "HINDSIGHT_API_LLM_API_KEY",
+                        "",
+                    )
 
-            _materialize_embedded_profile_env(
-                materialized_config,
-                llm_api_key=llm_api_key or None,
-            )
+                _materialize_embedded_profile_env(
+                    materialized_config,
+                    llm_api_key=llm_api_key or None,
+                )
 
         print(f"\n  ✓ Hindsight memory configured ({mode} mode)")
         if env_writes:
@@ -1064,7 +1196,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "api_url", "description": "Hindsight API URL", "default": _DEFAULT_LOCAL_URL, "when": {"mode": "local_external"}},
             {"key": "api_key", "description": "API key (optional)", "secret": True, "env_var": "HINDSIGHT_API_KEY", "when": {"mode": "local_external"}},
             # Local embedded mode
-            {"key": "llm_provider", "description": "LLM provider", "default": "openai", "choices": ["openai", "anthropic", "gemini", "groq", "openrouter", "minimax", "ollama", "lmstudio", "openai_compatible"], "when": {"mode": "local_embedded"}},
+            {"key": "llm_provider", "description": "LLM provider (hermes inherits the active Hermes ctx.llm facade)", "default": "openai", "choices": ["openai", "anthropic", "gemini", "groq", "openrouter", "minimax", "ollama", "lmstudio", "openai_compatible", "hermes"], "when": {"mode": "local_embedded"}},
             {"key": "llm_base_url", "description": "Endpoint URL (e.g. http://192.168.1.10:8080/v1)", "default": "", "when": {"mode": "local_embedded", "llm_provider": "openai_compatible"}},
             {"key": "llm_api_key", "description": "LLM API key (optional for openai_compatible)", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY", "when": {"mode": "local_embedded"}},
             {"key": "llm_model", "description": "LLM model", "default": "gpt-4o-mini", "default_from": {"field": "llm_provider", "map": _PROVIDER_DEFAULT_MODELS}, "when": {"mode": "local_embedded"}},
@@ -1094,16 +1226,76 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
+            {"key": "prefetch_timeout", "description": "Maximum seconds to wait for automatic recall before a turn (local embedded cold-start may need more than the generic provider timeout)", "default": _DEFAULT_PREFETCH_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
             {"key": "port_health_grace_timeout", "description": "Seconds to wait for a slow daemon /health before treating it as stale (raise on busy/low-resource hosts; blank uses the 30s default)", "default": "", "when": {"mode": "local_embedded"}},
         ]
 
+    def _effective_embedded_profile_name(
+        self,
+        config: dict[str, Any],
+        *,
+        inherit_hermes_llm: bool,
+    ) -> str:
+        """Resolve the daemon profile without sharing Hermes bridge state.
+
+        Direct-provider mode keeps the configured profile for compatibility.
+        Hermes inheritance gets a per-provider profile because each provider
+        owns a distinct loopback bridge credential and endpoint.
+        """
+        configured = _embedded_profile_name(config)
+        if not inherit_hermes_llm:
+            return configured
+        if self._embedded_profile_override is None:
+            base = _sanitize_bank_segment(configured) or "hermes"
+            self._embedded_profile_override = f"{base}-hermes-{uuid.uuid4().hex[:12]}"
+        return self._embedded_profile_override
+
+    def _effective_embedded_database_url(
+        self,
+        config: dict[str, Any],
+        *,
+        inherit_hermes_llm: bool,
+    ) -> str | None:
+        """Resolve the persistent database independently from daemon profile.
+
+        Hermes inheritance uses a per-instance daemon profile so its loopback
+        bridge credentials and port cannot race with another provider instance.
+        Hindsight also uses that profile as the default pg0 database name,
+        though, so using it directly would make memories disappear after a
+        provider restart. Keep the daemon/profile identity ephemeral while
+        deriving a stable database name from the configured logical profile.
+        An explicit ``database_url`` remains an escape hatch for deployments
+        that manage their own Hindsight database.
+        """
+        configured = config.get("database_url") or config.get("hindsight_database_url")
+        if configured:
+            return str(configured)
+        if not inherit_hermes_llm:
+            return None
+        logical_profile = _sanitize_bank_segment(_embedded_profile_name(config)) or "hermes"
+        return f"pg0://hindsight-embed-{logical_profile}"
+
     def _get_client(self):
+        with self._client_lock:
+            client = self._get_client_unlocked()
+        daemon_thread = self._daemon_thread
+        if (
+            daemon_thread is not None
+            and daemon_thread is not threading.current_thread()
+            and daemon_thread.is_alive()
+        ):
+            daemon_thread.join(timeout=float(self._timeout or _DEFAULT_TIMEOUT))
+        return client
+
+    def _get_client_unlocked(self):
         """Return the cached Hindsight client (created once, reused)."""
         if self._client is None:
+            config = self._config or {}
             if self._mode == "local_embedded":
                 available, reason = _check_local_runtime()
                 if not available:
+                    _warn_embedded_runtime_unavailable(reason)
                     raise RuntimeError(
                         "Hindsight local runtime is unavailable"
                         + (f": {reason}" if reason else "")
@@ -1118,18 +1310,57 @@ class HindsightMemoryProvider(MemoryProvider):
                 from hindsight import HindsightEmbedded
                 HindsightEmbedded.__del__ = lambda self: None
                 llm_provider = self._config.get("llm_provider", "")
+                inherit_hermes_llm = str(llm_provider).strip().lower() == "hermes"
                 if llm_provider in {"openai_compatible", "openrouter"}:
                     llm_provider = "openai"
+                if inherit_hermes_llm:
+                    if self._host_context is None:
+                        raise RuntimeError(
+                            "Hindsight llm_provider=hermes requires the Hermes PluginContext"
+                        )
+                    host_llm = getattr(self._host_context, "llm", None)
+                    if host_llm is None:
+                        raise RuntimeError(
+                            "Hindsight llm_provider=hermes requires ctx.llm"
+                        )
+                    if self._llm_bridge is None:
+                        self._llm_bridge = HermesLlmBridge(host_llm)
+                        self._llm_bridge.start()
+                    llm_provider = "openai"
+                configured_llm_api_key = ""
+                if not inherit_hermes_llm:
+                    configured_llm_api_key = (
+                        config.get("llmApiKey")
+                        or config.get("llm_api_key")
+                        or get_secret("HINDSIGHT_LLM_API_KEY", "")
+                    )
+                effective_profile = self._effective_embedded_profile_name(
+                    config,
+                    inherit_hermes_llm=inherit_hermes_llm,
+                )
                 logger.debug("Creating HindsightEmbedded client (profile=%s, provider=%s)",
-                             self._config.get("profile", "hermes"), llm_provider)
+                             effective_profile, llm_provider)
                 kwargs = dict(
-                    profile=self._config.get("profile", "hermes"),
+                    profile=effective_profile,
                     llm_provider=llm_provider,
-                    llm_api_key=self._config.get("llmApiKey") or self._config.get("llm_api_key") or get_secret("HINDSIGHT_LLM_API_KEY", ""),
+                    llm_api_key=configured_llm_api_key,
                     llm_model=self._config.get("llm_model", ""),
                 )
-                if self._llm_base_url:
+                if inherit_hermes_llm:
+                    bridge = self._llm_bridge
+                    if bridge is None:  # pragma: no cover - defensive narrowing
+                        raise RuntimeError("Failed to initialize the Hermes LLM bridge")
+                    kwargs["llm_api_key"] = bridge.api_key
+                    kwargs["llm_base_url"] = bridge.base_url
+                    kwargs["llm_model"] = "hermes-inherited"
+                elif self._llm_base_url:
                     kwargs["llm_base_url"] = self._llm_base_url
+                database_url = self._effective_embedded_database_url(
+                    config,
+                    inherit_hermes_llm=inherit_hermes_llm,
+                )
+                if database_url:
+                    kwargs["database_url"] = database_url
                 idle_timeout = _parse_int_setting(
                     self._config.get("idle_timeout")
                     if self._config.get("idle_timeout") is not None
@@ -1150,6 +1381,20 @@ class HindsightMemoryProvider(MemoryProvider):
                              self._api_url, bool(self._api_key), kwargs["timeout"])
                 self._client = Hindsight(**kwargs)
         return self._client
+
+    def _embedded_llm_env_overrides(self) -> dict[str, str]:
+        """Return daemon env overrides for the host-owned Hermes bridge."""
+        if str((self._config or {}).get("llm_provider", "")).strip().lower() != "hermes":
+            return {}
+        bridge = self._llm_bridge
+        if bridge is None:
+            raise RuntimeError("Hermes LLM bridge must start before the embedded daemon")
+        return {
+            "llm_provider": "openai",
+            "llm_api_key": bridge.api_key,
+            "llm_model": "hermes-inherited",
+            "llm_base_url": bridge.base_url,
+        }
 
     def _run_sync(self, coro):
         """Schedule *coro* on the shared loop using the configured timeout."""
@@ -1193,13 +1438,19 @@ class HindsightMemoryProvider(MemoryProvider):
         self._sync_thread = thread
         thread.start()
 
-    def _track_retain_ops(self, retain_response, bank_id: str) -> None:
+    def _track_retain_ops(
+        self,
+        retain_response,
+        bank_id: str,
+        document_id: str = "",
+    ) -> None:
         """Record server-side async operation id(s) from an aretain_batch reply.
 
         Async retains return ``operation_id`` / ``operation_ids`` that stay
         ``pending`` on the server until the write is durable and recall-visible.
-        The bank_id is captured alongside so completion can be polled with the
-        same bank the write targeted.
+        Some Hindsight batch responses create a parent operation without
+        returning its id through the client wrapper. In that case, discover the
+        active operation by document_id before declaring the write untracked.
         """
         ids: list[str] = []
         single = getattr(retain_response, "operation_id", None)
@@ -1208,9 +1459,44 @@ class HindsightMemoryProvider(MemoryProvider):
         multiple = getattr(retain_response, "operation_ids", None)
         if multiple:
             ids.extend(str(op) for op in multiple if op)
+
+        if not ids and document_id:
+            try:
+                operations_response = self._run_hindsight_operation(
+                    lambda client: client.operations.list_operations(
+                        bank_id=bank_id,
+                        limit=100,
+                    )
+                )
+                operations = getattr(operations_response, "operations", None) or []
+                terminal_statuses = {"completed", "failed", "cancelled"}
+                for operation in operations:
+                    if isinstance(operation, dict):
+                        operation_id = operation.get("id") or operation.get("operation_id")
+                        operation_document_id = operation.get("document_id")
+                        status = operation.get("status")
+                    else:
+                        operation_id = getattr(operation, "id", None) or getattr(
+                            operation, "operation_id", None
+                        )
+                        operation_document_id = getattr(operation, "document_id", None)
+                        status = getattr(operation, "status", None)
+                    if (
+                        operation_id
+                        and str(operation_document_id or "") == str(document_id)
+                        and str(status or "").lower() not in terminal_statuses
+                    ):
+                        ids.append(str(operation_id))
+            except Exception as exc:
+                logger.debug(
+                    "Hindsight retain operation discovery failed for doc=%s: %s",
+                    document_id,
+                    exc,
+                )
+
         if not ids:
-            # Server didn't hand back an op id (older API, or it completed
-            # synchronously). Nothing to poll — local queue drain is the only
+            # Server didn't hand back an op id and discovery found none (older
+            # API, or it completed synchronously). Local queue drain is the only
             # available signal in that case.
             return
         self._retain_ops_bank_id = bank_id
@@ -1283,7 +1569,13 @@ class HindsightMemoryProvider(MemoryProvider):
         # Barrier 2: server-side async retain completion (read-after-write).
         return self._wait_for_server_retain_ops(deadline, timeout)
 
-    def _wait_for_server_retain_ops(self, deadline: float | None, timeout: float) -> bool:
+    def _wait_for_server_retain_ops(
+        self,
+        deadline: float | None,
+        timeout: float,
+        *,
+        allow_shutdown: bool = False,
+    ) -> bool:
         """Poll tracked async retain ops until complete or the deadline passes.
 
         *deadline* is a ``time.monotonic()`` value (None = no bound). Completed
@@ -1311,13 +1603,13 @@ class HindsightMemoryProvider(MemoryProvider):
                 pending = list(self._pending_retain_ops)
             if not pending:
                 return True
-            if self._shutting_down.is_set():
+            if self._shutting_down.is_set() and not allow_shutdown:
                 return False
 
             done: set[str] = set()
             expired = False
             for op_id in pending:
-                if self._shutting_down.is_set():
+                if self._shutting_down.is_set() and not allow_shutdown:
                     return False
                 if deadline is not None and time.monotonic() >= deadline:
                     expired = True
@@ -1505,6 +1797,14 @@ class HindsightMemoryProvider(MemoryProvider):
             self._config.get("timeout") if self._config.get("timeout") is not None else os.environ.get("HINDSIGHT_TIMEOUT"),
             _DEFAULT_TIMEOUT,
         )
+        self._prefetch_timeout = _parse_float_setting(
+            self._config.get("prefetch_timeout"),
+            _DEFAULT_PREFETCH_TIMEOUT,
+        )
+        self._retain_shutdown_timeout = max(
+            _DEFAULT_PREFETCH_TIMEOUT,
+            self._prefetch_timeout,
+        )
         self._idle_timeout = _parse_int_setting(
             self._config.get("idle_timeout") if self._config.get("idle_timeout") is not None else os.environ.get("HINDSIGHT_IDLE_TIMEOUT"),
             _DEFAULT_IDLE_TIMEOUT,
@@ -1518,6 +1818,7 @@ class HindsightMemoryProvider(MemoryProvider):
             _export_port_health_grace_timeout(self._config)
             available, reason = _check_local_runtime()
             if not available:
+                _warn_embedded_runtime_unavailable(reason)
                 logger.warning(
                     "Hindsight local mode disabled because its runtime could not be imported: %s",
                     reason,
@@ -1663,18 +1964,32 @@ class HindsightMemoryProvider(MemoryProvider):
                     dem.console = Console(file=open(log_path, "a", encoding="utf-8"), force_terminal=False)
 
                     client = self._get_client()
-                    profile = self._config.get("profile", "hermes")
+                    config = self._config or {}
+                    inherit_hermes_llm = str(config.get("llm_provider", "")).strip().lower() == "hermes"
+                    profile = self._effective_embedded_profile_name(
+                        config,
+                        inherit_hermes_llm=inherit_hermes_llm,
+                    )
+                    llm_env_overrides = self._embedded_llm_env_overrides()
 
                     # Update the profile .env to match our current config so
                     # the daemon always starts with the right settings.
                     # If the config changed and the daemon is running, stop it.
-                    profile_env = _embedded_profile_env_path(self._config)
-                    expected_env = _build_embedded_profile_env(self._config)
+                    profile_env = _embedded_profile_env_path(config, profile)
+                    self._embedded_profile_env_path = profile_env
+                    expected_env = _build_embedded_profile_env(
+                        config,
+                        **llm_env_overrides,
+                    )
                     saved = _load_simple_env(profile_env)
                     config_changed = saved != expected_env
 
                     if config_changed:
-                        profile_env = _materialize_embedded_profile_env(self._config)
+                        profile_env = _materialize_embedded_profile_env(
+                            config,
+                            **llm_env_overrides,
+                            profile_name=profile,
+                        )
                         if client._manager.is_running(profile):
                             with open(log_path, "a", encoding="utf-8") as f:
                                 f.write("\n=== Config changed, restarting daemon ===\n")
@@ -1689,6 +2004,7 @@ class HindsightMemoryProvider(MemoryProvider):
                         traceback.print_exc(file=f)
 
             t = threading.Thread(target=_start_daemon, daemon=True, name="hindsight-daemon-start")
+            self._daemon_thread = t
             t.start()
 
     def system_prompt_block(self) -> str:
@@ -1720,6 +2036,64 @@ class HindsightMemoryProvider(MemoryProvider):
         with self._prefetch_lock:
             result = self._prefetch_result
             self._prefetch_result = ""
+
+        # A newly-created agent has no background-prefetched result yet. Run
+        # one bounded synchronous recall for its first turn so cross-session
+        # memory is available immediately; subsequent turns use the existing
+        # background prefetch path and do not pay this fallback cost.
+        if (
+            not result
+            and self._auto_recall
+            and self._memory_mode != "tools"
+            and not self._shutting_down.is_set()
+            and not (self._prefetch_thread and self._prefetch_thread.is_alive())
+        ):
+            if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
+                query = query[:self._recall_max_input_chars]
+            try:
+                logger.debug(
+                    "Prefetch: no warm result; running synchronous first-turn recall "
+                    "(bank=%s, query_len=%d, budget=%s)",
+                    self._bank_id,
+                    len(query),
+                    self._budget,
+                )
+                if self._prefetch_method == "reflect":
+                    resp = self._run_hindsight_operation(
+                        lambda client: client.areflect(
+                            bank_id=self._bank_id,
+                            query=query,
+                            budget=self._budget,
+                        )
+                    )
+                    result = resp.text or ""
+                else:
+                    recall_kwargs: dict = {
+                        "bank_id": self._bank_id,
+                        "query": query,
+                        "budget": self._budget,
+                        "max_tokens": self._recall_max_tokens,
+                    }
+                    if self._recall_tags:
+                        recall_kwargs["tags"] = self._recall_tags
+                        recall_kwargs["tags_match"] = self._recall_tags_match
+                    if self._recall_types:
+                        recall_kwargs["types"] = self._recall_types
+                    resp = self._run_hindsight_operation(
+                        lambda client: client.arecall(**recall_kwargs)
+                    )
+                    result = "\n".join(
+                        f"- {item.text}"
+                        for item in (resp.results or [])
+                        if item.text
+                    )
+                logger.debug(
+                    "Prefetch: synchronous first-turn recall returned %d chars",
+                    len(result),
+                )
+            except Exception as exc:
+                logger.debug("Hindsight first-turn prefetch failed: %s", exc, exc_info=True)
+
         if not result:
             logger.debug("Prefetch: no results available")
             return ""
@@ -1948,7 +2322,7 @@ class HindsightMemoryProvider(MemoryProvider):
             # returned operation id(s) so the next-turn prefetch can wait for
             # true server-side completion (read-after-write) before recalling.
             if retain_async_flag:
-                self._track_retain_ops(resp, bank_id)
+                self._track_retain_ops(resp, bank_id, document_id)
             logger.debug("Hindsight retain succeeded")
 
         self._ensure_writer()
@@ -2166,6 +2540,55 @@ class HindsightMemoryProvider(MemoryProvider):
             self._session_id, self._parent_session_id, reset, self._document_id,
         )
 
+    @staticmethod
+    def _find_owned_daemon_pids(manager: Any, profile: str) -> list[int]:
+        """Find detached daemon PIDs when the port health probe is already down."""
+        if os.name == "nt":
+            return []
+        try:
+            paths = manager._profile_manager.resolve_profile_paths(profile)
+            port = int(paths.port)
+            result = subprocess.run(
+                ["ps", "-axo", "pid=,command="],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            needle = "hindsight-api --daemon --idle-timeout"
+            port_needle = f"--port {port}"
+            pids = []
+            for line in result.stdout.splitlines():
+                fields = line.strip().split(None, 1)
+                if len(fields) != 2 or needle not in fields[1] or port_needle not in fields[1]:
+                    continue
+                try:
+                    pids.append(int(fields[0]))
+                except ValueError:
+                    continue
+            return pids
+        except (OSError, ValueError, subprocess.SubprocessError, AttributeError):
+            return []
+
+    def _force_stop_embedded_daemon(self) -> None:
+        """Stop an owned embedded daemon if the wrapper close left it alive."""
+        client = self._client
+        profile = self._embedded_profile_override
+        manager = getattr(client, "_manager", None) if client is not None else None
+        if manager is None or not profile:
+            return
+        try:
+            if manager.is_running(profile):
+                manager.stop(profile)
+            for pid in self._find_owned_daemon_pids(manager, profile):
+                if not manager._kill_process(pid):
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+        except Exception as exc:
+            logger.debug("Hindsight embedded manager stop fallback failed: %s", type(exc).__name__)
+
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
         # Stop accepting new retain jobs first so anyone still calling
@@ -2180,15 +2603,37 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._retain_queue.put(_WRITER_SENTINEL)
             except Exception:
                 pass
-            writer.join(timeout=10.0)
+            writer.join(timeout=self._retain_shutdown_timeout)
             if writer.is_alive():
                 logger.warning(
-                    "Hindsight writer did not stop within 10s; "
+                    "Hindsight writer did not stop within %.1fs; "
                     "abandoning %d pending retain(s)",
+                    self._retain_shutdown_timeout,
                     self._retain_queue.qsize(),
+                )
+        with self._pending_retain_ops_lock:
+            pending_server_ops = bool(self._pending_retain_ops)
+        if pending_server_ops:
+            retain_deadline = time.monotonic() + self._retain_shutdown_timeout
+            if not self._wait_for_server_retain_ops(
+                retain_deadline,
+                self._retain_shutdown_timeout,
+                allow_shutdown=True,
+            ):
+                logger.warning(
+                    "Hindsight shutdown retain visibility wait expired after %.1fs",
+                    self._retain_shutdown_timeout,
                 )
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=5.0)
+        daemon_thread = self._daemon_thread
+        if (
+            daemon_thread is not None
+            and daemon_thread is not threading.current_thread()
+            and daemon_thread.is_alive()
+        ):
+            daemon_thread.join(timeout=5.0)
+        self._daemon_thread = None
         if self._client is not None:
             try:
                 if self._mode == "local_embedded":
@@ -2206,14 +2651,46 @@ class HindsightMemoryProvider(MemoryProvider):
                         except Exception:
                             pass
                     try:
-                        self._client.close()
+                        # Hermes-inherited clients own an ephemeral daemon
+                        # profile and its loopback bridge. Stop that daemon
+                        # with the bridge; leaving it alive after bridge
+                        # shutdown creates orphaned consolidation retries
+                        # against a dead localhost endpoint. Direct-provider
+                        # clients retain the upstream idle-timeout behavior.
+                        stop_daemon = self._embedded_profile_override is not None
+                        if stop_daemon:
+                            close_embedded = getattr(self._client, "close")
+                            try:
+                                close_embedded(stop_daemon=True)
+                            except TypeError:
+                                # Older embedded clients may not expose the
+                                # explicit stop_daemon keyword.
+                                close_embedded()
+                        else:
+                            self._client.close()
                     except RuntimeError:
                         pass
                 else:
                     self._run_sync(self._client.aclose())
             except Exception:
                 pass
+            if self._embedded_profile_override is not None:
+                self._force_stop_embedded_daemon()
             self._client = None
+        if self._llm_bridge is not None:
+            self._llm_bridge.close()
+            self._llm_bridge = None
+        # Hermes inheritance uses a per-provider profile env so its bridge
+        # endpoint/token cannot collide with a sibling provider. Remove that
+        # ephemeral secret file after the daemon/client has been stopped.
+        profile_env = self._embedded_profile_env_path
+        if self._embedded_profile_override is not None and profile_env is not None:
+            with _PROFILE_ENV_LOCK:
+                try:
+                    profile_env.unlink()
+                except OSError:
+                    pass
+            self._embedded_profile_env_path = None
         # The module-global background event loop (_loop / _loop_thread)
         # is intentionally NOT stopped here. It is shared across every
         # HindsightMemoryProvider instance in the process — the plugin
@@ -2229,4 +2706,4 @@ class HindsightMemoryProvider(MemoryProvider):
 
 def register(ctx) -> None:
     """Register Hindsight as a memory provider plugin."""
-    ctx.register_memory_provider(HindsightMemoryProvider())
+    ctx.register_memory_provider(HindsightMemoryProvider(ctx))

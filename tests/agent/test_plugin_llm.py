@@ -328,6 +328,59 @@ class TestPluginLlmFacade:
         assert captured["max_tokens"] == 128
         assert captured["timeout"] == 10.0
 
+    def test_complete_forwards_native_tools_and_returns_tool_calls(self):
+        captured: dict = {}
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "recall",
+                    "description": "Search durable memory",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                },
+            }
+        ]
+
+        def fake_caller(**kwargs):
+            captured.update(kwargs)
+            response = _fake_response("")
+            response.choices[0].message.tool_calls = [
+                SimpleNamespace(
+                    id="call-memory-1",
+                    type="function",
+                    function=SimpleNamespace(name="recall", arguments='{"query":"timezone"}'),
+                )
+            ]
+            response.choices[0].finish_reason = "tool_calls"
+            return "openai-codex", "gpt-5.6-sol", response
+
+        llm = make_plugin_llm_for_test(
+            plugin_id="my-plugin",
+            policy=_TrustPolicy(plugin_id="my-plugin"),
+            sync_caller=fake_caller,
+        )
+        result = llm.complete(
+            [{"role": "user", "content": "Use memory"}],
+            tools=tools,
+            tool_choice="auto",
+            purpose="hindsight",
+        )
+
+        assert captured["tools"] == tools
+        assert captured["extra_body"] == {"tool_choice": "auto"}
+        assert result.text == ""
+        assert result.tool_calls == [
+            {
+                "id": "call-memory-1",
+                "type": "function",
+                "function": {"name": "recall", "arguments": '{"query":"timezone"}'},
+            }
+        ]
+
     def test_complete_structured_returns_parsed_json(self):
         def fake_caller(**_kwargs):
             return "openai", "gpt-4o", _fake_response(

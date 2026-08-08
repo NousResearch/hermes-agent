@@ -80,6 +80,11 @@ class ProviderField:
     group: str = ""
     # Longer help text surfaced as an info tooltip next to the field label.
     info: str = ""
+    # Optional declarative visibility conditions, expressed as field/value pairs.
+    # A pipe-separated value (e.g. "cloud|local_external") is an OR choice.
+    # The generic desktop renderer uses these to hide mode-specific settings;
+    # storage validation remains server-side and unconditional.
+    when: tuple[tuple[str, str], ...] = ()
     # Host-block placement: "host" (per-profile) or "root"; flat-json ignores it.
     scope: str = "host"
 

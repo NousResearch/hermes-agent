@@ -50,6 +50,17 @@ def _rotated_body(n=1):
     }
 
 
+@pytest.fixture(autouse=True)
+def _reset_oauth_module_state():
+    """Module-level oauth dicts persist across tests in one process; reset so
+    dead grants / cooldowns / memoized verdicts can't leak between tests."""
+    yield
+    oauth._dead_grants.clear()
+    oauth._refresh_failure_at.clear()
+    oauth._reauth_check_cache.clear()
+    oauth._expiry_cache.clear()
+
+
 # ---------------------------------------------------------------------------
 # oauth: transient vs permanent exchange failures
 # ---------------------------------------------------------------------------
@@ -1139,10 +1150,17 @@ class TestClientGenerationGuard:
 
         oauth._dead_grants.clear()
 
-        def _fail():
-            raise AssertionError("resolve_config_path must not run on the fast path")
+        # Recording spy, not a raising stub: _reauth_required swallows all
+        # exceptions, so a raise would be silently converted to False and the
+        # test would pass even without the fast path.
+        calls = []
 
-        monkeypatch.setattr(client_mod, "resolve_config_path", _fail)
+        def _spy():
+            calls.append(1)
+            return Path("/nonexistent/honcho.json")
+
+        monkeypatch.setattr(client_mod, "resolve_config_path", _spy)
         cfg = HonchoClientConfig(host="hermes", api_key="hch-at-x", enabled=True)
         mgr = HonchoSessionManager(config=cfg)
         assert mgr._reauth_required() is False
+        assert calls == [], "resolve_config_path must not run on the fast path"

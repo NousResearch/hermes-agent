@@ -883,7 +883,10 @@ class HonchoMemoryProvider(MemoryProvider):
 
     def _pop_auth_notice(self) -> str:
         """One-time model-facing notice that Honcho auth expired and memory is paused."""
-        msg = self._manager.pop_auth_notice() if self._manager else None
+        # getattr (not a direct call): test fakes install minimal managers
+        # without pop_auth_notice; exceptions still propagate.
+        pop = getattr(self._manager, "pop_auth_notice", None)
+        msg = pop() if callable(pop) else None
         if not isinstance(msg, str) or not msg:
             # Init failures discard the manager; the provider kept the detail.
             if self._init_auth_failure is None or self._init_auth_notice_emitted:

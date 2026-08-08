@@ -36,7 +36,7 @@ import {
   toggleReviewTreeMode,
   unstageReviewFile
 } from './review'
-import { $currentCwd } from './session'
+import { $connection, $currentCwd } from './session'
 
 // requestOneShot is the only cross-module dependency that must be faked (it
 // reaches the gateway); everything else routes through window.hermesDesktop.git,
@@ -171,6 +171,101 @@ describe('refreshReview', () => {
     expect($reviewFiles.get()).toEqual([])
     expect($reviewIsRepo.get()).toBe(true)
     expect($reviewLoading.get()).toBe(false)
+  })
+})
+
+describe('refreshReview on a remote gateway', () => {
+  // The file-browser diff tab fetches over the dashboard REST API and works on
+  // a remote backend; the review pane must use the SAME remote surface (backend
+  // git, not the local filesystem). The review store reaches it via
+  // desktopGit() → remoteGit, which mirrors the Electron bridge over
+  // /api/git/* — so with a remote connection the review ops must arrive as
+  // REST calls and never touch the local Electron git bridge.
+  const api = vi.fn(async (_request: { path: string }): Promise<Record<string, unknown>> => ({
+    files: [],
+    diff: '',
+    ok: true
+  }))
+  const localReview = {
+    list: vi.fn(async () => ({ files: [] })),
+    stage: vi.fn(async () => undefined)
+  }
+
+  beforeEach(() => {
+    // A remote connection (mode: 'remote') switches desktopGit() to the REST
+    // mirror. The VPS path can never exist on the local machine.
+    $connection.set({ mode: 'remote' } as never)
+    ;(window as unknown as { hermesDesktop?: unknown }).hermesDesktop = {
+      api,
+      git: { review: localReview }
+    }
+    $currentCwd.set('/srv/work')
+    api.mockClear()
+    localReview.list.mockClear()
+    localReview.stage.mockClear()
+  })
+
+  afterEach(() => {
+    $connection.set(null)
+    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  })
+
+  it('lists changed files via the backend REST mirror, not local git', async () => {
+    api.mockResolvedValue({ files: [file('a.ts', { added: 3, removed: 1 })], base: null })
+    $reviewOpen.set(true)
+
+    await refreshReview()
+
+    const call = api.mock.calls[0]?.[0] as { path: string }
+
+    expect(call.path).toContain('/api/git/review/list?')
+    expect(call.path).toContain('path=%2Fsrv%2Fwork')
+    expect(call.path).toContain('scope=uncommitted')
+    expect($reviewFiles.get().map(f => f.path)).toEqual(['a.ts'])
+    expect(localReview.list).not.toHaveBeenCalled()
+    expect($reviewIsRepo.get()).toBe(true)
+  })
+
+  it('fetches a file diff via the backend REST mirror', async () => {
+    api.mockImplementation(async ({ path }: { path: string }) =>
+      path.startsWith('/api/git/review/diff') ? { diff: 'remote diff' } : { files: [], base: null }
+    )
+    $reviewOpen.set(true)
+
+    await selectReviewFile(file('a.ts'))
+
+    const call = api.mock.calls[0]?.[0] as { path: string }
+
+    expect(call.path).toContain('/api/git/review/diff?')
+    expect(call.path).toContain('path=%2Fsrv%2Fwork')
+    expect(call.path).toContain('file=a.ts')
+    expect(call.path).toContain('scope=uncommitted')
+    expect(call.path).toContain('staged=false')
+    expect($reviewDiff.get()).toBe('remote diff')
+    expect(localReview.list).not.toHaveBeenCalled()
+  })
+
+  it('sends mutations as POST bodies to the backend REST mirror', async () => {
+    $reviewOpen.set(true)
+
+    await stageReviewFile('a.ts')
+
+    expect(api).toHaveBeenCalledWith({
+      body: { file: 'a.ts', path: '/srv/work' },
+      method: 'POST',
+      path: '/api/git/review/stage'
+    })
+    expect(localReview.stage).not.toHaveBeenCalled()
+  })
+
+  it('flags not-a-repo when the remote cwd is missing', async () => {
+    $currentCwd.set('')
+    $reviewOpen.set(true)
+
+    await refreshReview()
+
+    expect($reviewIsRepo.get()).toBe(false)
+    expect(api).not.toHaveBeenCalled()
   })
 })
 

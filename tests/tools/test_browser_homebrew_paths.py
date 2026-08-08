@@ -177,9 +177,11 @@ class TestRunBrowserCommandPathConstruction:
 
         assert captured_cmd is not None
         assert captured_cmd[0] == browser_path
-        assert captured_cmd[1:5] == [
+        assert captured_cmd[1:7] == [
             "--session",
             "test-session",
+            "--profile",
+            str(tmp_path / "agent-browser-test-session" / "agent-browser-chrome-test-session"),
             "--json",
             "navigate",
         ]

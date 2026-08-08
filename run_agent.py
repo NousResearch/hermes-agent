@@ -34,6 +34,7 @@ except ModuleNotFoundError:
 import asyncio
 import base64
 import copy
+import gc
 import hashlib
 import json
 import logging
@@ -4931,6 +4932,16 @@ class AIAgent:
                 shutdown_count,
                 self._client_log_context(),
             )
+            # Force synchronous reclamation of the retired client's FDs.
+            # Refcounting drops the old client's refcount to zero here
+            # (absent a borrower), but Python may defer the actual
+            # ``close()`` if a GC cycle hasn't run yet. In long sessions
+            # with repeated provider fallbacks this accumulates FDs until
+            # the process hits EMFILE (#80792). A synchronous collection
+            # reaps the shutdown sockets immediately without regressing
+            # #29507/#70773 — we still never ``close()`` from an
+            # unknown thread.
+            gc.collect()
         except Exception as exc:
             logger.debug(
                 "Shared OpenAI client retire failed (%s) %s error=%s",

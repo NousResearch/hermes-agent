@@ -458,6 +458,38 @@ hermes sessions rename 20250305_091523_a1b2c3d4 debugging auth flow
 
 If the title is already in use by another session, an error is shown.
 
+### Re-point a Session's Endpoint
+
+Sessions pin their provider endpoint in the durable session row
+(`sessions.model_config` JSON plus the `billing_provider` /
+`billing_base_url` / `billing_mode` columns). The runtime resolves the
+endpoint from that snapshot on every resume — not from live `config.yaml` —
+so when a model server's address changes (e.g. an in-house server reachable
+via `model-host.local:8355` on one network and `203.0.113.7:8355` on
+another), an already-open session keeps retrying the dead address, even
+across restarts. New sessions pick up the new endpoint; existing ones need
+re-pointing:
+
+```bash
+# Re-point a session to a new endpoint (rewrites model_config + billing route)
+hermes sessions set-endpoint 20250305_091523_a1b2c3d4 http://203.0.113.7:8355/v1
+
+# Unique prefixes work too
+hermes sessions set-endpoint 20250305_091523 http://203.0.113.7:8355/v1
+
+# Force a specific provider id (built-in, bare 'custom', or configured custom:<name>)
+hermes sessions set-endpoint 20250305_091523_a1b2c3d4 http://203.0.113.7:8355/v1 --provider custom:local
+```
+
+The provider id is validated so the rewritten row is immediately routable.
+Without `--provider`, the command stores the configured `custom:<name>` entry
+that owns the new URL, keeps the session's existing provider when it is still
+routable (built-in or configured entry), or falls back to bare `custom` (the
+endpoint URL drives routing). It never writes a `custom:<name>` slug with no
+matching config entry — the runtime refuses those with
+`Unknown provider 'custom:<...>'`. The next resumed turn in the session uses
+the new endpoint.
+
 ### Prune Old Sessions
 
 ```bash

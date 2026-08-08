@@ -12407,6 +12407,42 @@ def main():
         help="Maximum sessions to examine (default: 200)",
     )
 
+    sessions_set_endpoint = sessions_subparsers.add_parser(
+        "set-endpoint",
+        help="Re-point a session to a new provider endpoint (rewrites the stored model_config + billing route)",
+        description=(
+            "Sessions pin their provider endpoint in the durable session row "
+            "(model_config JSON + billing_provider/billing_base_url columns); "
+            "the runtime resolves it from that snapshot on every resume, so a "
+            "moved model server keeps stranding open sessions even across "
+            "restarts. This rewrites the row to target the new URL: model_config "
+            "provider/base_url plus the billing_* columns, preserving every "
+            "other stored knob. The provider id is validated so the rewritten "
+            "row is immediately routable."
+        ),
+    )
+    sessions_set_endpoint.add_argument(
+        "session_id",
+        metavar="ID",
+        help="Session ID (or unique prefix) to re-point",
+    )
+    sessions_set_endpoint.add_argument(
+        "url",
+        metavar="URL",
+        help="New endpoint base URL (http/https, e.g. http://203.0.113.7:8355/v1)",
+    )
+    sessions_set_endpoint.add_argument(
+        "--provider",
+        metavar="PROVIDER",
+        default=None,
+        help=(
+            "Provider id to store: a built-in provider, bare 'custom', or a "
+            "configured custom:<name>. Defaults to the configured entry that "
+            "owns URL, the session's existing provider when still routable, "
+            "or bare 'custom'."
+        ),
+    )
+
     sessions_browse = sessions_subparsers.add_parser(
         "browse",
         help="Interactive session picker — browse, search, and resume sessions",

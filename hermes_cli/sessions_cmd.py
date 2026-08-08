@@ -1173,6 +1173,95 @@ def cmd_sessions(args, sessions_parser=None):
             size_mb = os.path.getsize(db_path) / (1024 * 1024)
             print(f"Database size: {size_mb:.1f} MB")
 
+    elif action == "set-endpoint":
+        # Re-point a session to a new provider endpoint (issue #77831).
+        # Sessions pin their endpoint in the durable row (model_config +
+        # billing_* columns); the runtime resolves from that snapshot on every
+        # resume, so a moved server strands open sessions even across
+        # restarts. This rewrites the row so the next resume targets the new
+        # URL, deriving a routable provider id (never a custom:<name> slug
+        # with no matching config entry).
+        from hermes_cli.session_endpoint import (
+            billing_provider_id,
+            normalize_endpoint_url,
+            resolve_endpoint_provider_id,
+        )
+
+        resolved_session_id = db.resolve_session_id(args.session_id)
+        if not resolved_session_id:
+            print(f"Session '{args.session_id}' not found.")
+            return
+        try:
+            new_url = normalize_endpoint_url(args.url)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            return
+        row = db.get_session(resolved_session_id)
+        if not row:
+            print(f"Session '{args.session_id}' not found.")
+            return
+
+        raw_mc = row.get("model_config")
+        model_config: dict = {}
+        if isinstance(raw_mc, dict):
+            model_config = dict(raw_mc)
+        elif isinstance(raw_mc, str) and raw_mc.strip():
+            try:
+                parsed = _json.loads(raw_mc)
+                if isinstance(parsed, dict):
+                    model_config = parsed
+            except Exception:
+                pass
+
+        old_provider = str(
+            model_config.get("provider") or row.get("billing_provider") or ""
+        ).strip()
+        old_base_url = str(
+            model_config.get("base_url") or row.get("billing_base_url") or ""
+        ).strip()
+
+        try:
+            new_provider, source = resolve_endpoint_provider_id(
+                new_url,
+                existing_provider=old_provider,
+                requested_provider=getattr(args, "provider", None),
+            )
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            return
+
+        model_config["provider"] = new_provider
+        model_config["base_url"] = new_url
+        db.update_session_meta(
+            resolved_session_id, _json.dumps(model_config, ensure_ascii=False)
+        )
+        db.update_session_billing_route(
+            resolved_session_id,
+            provider=billing_provider_id(new_provider),
+            base_url=new_url,
+        )
+
+        print(f"Session '{resolved_session_id}' re-pointed to {new_url}.")
+        if old_provider != new_provider:
+            print(f"  provider: {new_provider} (was {old_provider or '(none)'})")
+        else:
+            print(f"  provider: {new_provider}")
+        if old_base_url != new_url:
+            print(f"  base_url: {new_url} (was {old_base_url or '(none)'})")
+        else:
+            print(f"  base_url: {new_url}")
+        if source == "custom-fallback":
+            print(
+                "  note: no configured provider owns this URL — stored bare "
+                "'custom' (the endpoint URL drives routing)."
+            )
+        elif source == "config-entry":
+            print(
+                f"  note: provider id derived from the configured entry that "
+                f"serves this URL ({new_provider})."
+            )
+        print("  The next resumed turn in this session uses the new endpoint.")
+
     else:
         sessions_parser.print_help()
 

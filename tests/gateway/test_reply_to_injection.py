@@ -36,6 +36,17 @@ def _source() -> SessionSource:
     )
 
 
+def _slack_source() -> SessionSource:
+    return SessionSource(
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_name="reel-review",
+        chat_type="group",
+        user_id="U123",
+        thread_id="1712345000.000100",
+    )
+
+
 @pytest.mark.asyncio
 async def test_reply_prefix_injected_when_text_absent_from_history():
     runner = _make_runner()
@@ -99,3 +110,47 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     assert result.endswith("What's the best time to go?")
 
 
+@pytest.mark.asyncio
+async def test_slack_thread_reply_exposes_triggering_message_id_separately_from_thread():
+    """A thread root is not a safe idempotency key for each reply in it."""
+    runner = _make_runner()
+    source = _slack_source()
+    event = MessageEvent(
+        text="reels skip R0001",
+        source=source,
+        message_id="1712345678.000200",
+        reply_to_message_id="1712345000.000100",
+        reply_to_text="Reel R0001 is ready for review.",
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert "triggering message id: `1712345678.000200`" in result
+    assert "thread id: `1712345000.000100`" in result
+    assert result.startswith('[Replying to: "Reel R0001 is ready for review."]')
+    assert result.endswith("reels skip R0001")
+
+
+@pytest.mark.asyncio
+async def test_slack_top_level_message_does_not_duplicate_its_thread_id():
+    runner = _make_runner()
+    source = _slack_source()
+    source.thread_id = "1712345678.000200"
+    event = MessageEvent(
+        text="reels ingest R0003",
+        source=source,
+        message_id="1712345678.000200",
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result == "reels ingest R0003"

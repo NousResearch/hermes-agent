@@ -16413,6 +16413,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"{message_text}"
                 )
 
+        # Slack event timestamps are also message IDs, and threaded replies
+        # have a different ID from their thread root. Surface both per turn so
+        # skills can use the triggering ID as a stable idempotency/source
+        # reference without confusing it with the thread ID. Like the Discord
+        # note above, this belongs in volatile user content rather than the
+        # cached session prompt.
+        if (
+            source is not None
+            and getattr(source, "platform", None) == Platform.SLACK
+            and getattr(event, "message_id", None)
+            and source.thread_id
+            and source.thread_id != event.message_id
+        ):
+            message_text = (
+                f"[Slack event metadata — triggering message id: `{event.message_id}`; "
+                f"thread id: `{source.thread_id}`. Use the triggering message id as "
+                f"the unique event/source reference for this message.]\n\n"
+                f"{message_text}"
+            )
+
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer — even when the quoted text
             # already appears in history. The prefix isn't deduplication, it's

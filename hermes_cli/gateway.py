@@ -148,6 +148,7 @@ def _get_service_pids() -> set:
     if is_macos():
         try:
             label = get_launchd_label()
+            found_launchd_pid = False
             result = subprocess.run(
                 ["launchctl", "list", label],
                 capture_output=True,
@@ -159,6 +160,7 @@ def _get_service_pids() -> set:
                 pid = _parse_launchd_pid_from_list_output(result.stdout)
                 if pid is not None and pid > 0:
                     pids.add(pid)
+                    found_launchd_pid = True
                 else:
                     # Fall back to legacy tab-separated format:
                     # "PID\tStatus\tLabel"
@@ -169,8 +171,26 @@ def _get_service_pids() -> set:
                                 pid = int(parts[0])
                                 if pid > 0:
                                     pids.add(pid)
+                                    found_launchd_pid = True
                             except ValueError:
                                 pass
+            if not found_launchd_pid:
+                # `launchctl list <label>` is session-scoped: it can exit
+                # non-zero (or omit the PID) while the job is alive in its
+                # gui/user domain. Confirm with a domain-qualified `print`
+                # before concluding no launchd-owned PID exists — otherwise
+                # the post-update manual-gateway sweep treats the launchd
+                # child as a stray and kills it.
+                result = subprocess.run(
+                    ["launchctl", "print", f"{_launchd_domain()}/{label}"],
+                    capture_output=True,
+                    text=True, encoding='utf-8', errors='replace',
+                    timeout=5,
+                )
+                if result.returncode == 0:
+                    pid = _parse_launchd_pid_from_print_output(result.stdout)
+                    if pid is not None:
+                        pids.add(pid)
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
@@ -1289,6 +1309,27 @@ def _parse_launchd_pid_from_list_output(output: str) -> int | None:
                 val = parts[1].strip().rstrip(";").strip('"')
                 try:
                     pid = int(val)
+                    return pid if pid > 0 else None
+                except ValueError:
+                    return None
+    return None
+
+
+def _parse_launchd_pid_from_print_output(output: str) -> int | None:
+    """Extract the PID from ``launchctl print <domain>/<label>`` output.
+
+    A running service prints a ``pid = <number>`` line (lowercase, unlike the
+    ``"PID" = <N>;`` form in ``launchctl list`` output). The line is absent
+    when the job is registered but not running. Returns ``None`` when no
+    positive PID is found.
+    """
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("pid ") or stripped.startswith("pid="):
+            parts = stripped.split("=", 1)
+            if len(parts) == 2:
+                try:
+                    pid = int(parts[1].strip())
                     return pid if pid > 0 else None
                 except ValueError:
                     return None

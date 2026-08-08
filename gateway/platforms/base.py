@@ -2010,6 +2010,17 @@ def _match_extensionless_path(scan_text: str, match: "re.Match") -> Optional[Tup
     return None
 
 
+def _norm_for_dedup(path: str) -> str:
+    """Normalize a file path for dedup comparison.
+
+    On Windows, ``os.path.normcase(os.path.normpath(p))`` lowercases and
+    converts forward slashes to backslashes, so the same on-disk file
+    referenced with different slash styles or casing compares equal.
+    On POSIX this is a no-op (normcase is identity).
+    """
+    return os.path.normcase(os.path.normpath(path))
+
+
 def _merge_spans(spans: list) -> list:
     """Merge overlapping/nested (start, end) spans so multi-pattern matches
     over the same tag never double-delete adjacent text."""
@@ -4850,8 +4861,9 @@ class BasePlatformAdapter(ABC):
                     # Skip a crafted ~\x00 path rather than aborting extraction
                     # and dropping every other attachment in the response.
                     continue
-                if expanded not in seen_paths:
-                    seen_paths.add(expanded)
+                norm = _norm_for_dedup(expanded)
+                if norm not in seen_paths:
+                    seen_paths.add(norm)
                     media.append((expanded, is_voice))
 
         for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(scan_content):
@@ -4862,10 +4874,11 @@ class BasePlatformAdapter(ABC):
             if resolved is None:
                 continue
             safe = resolved[0]
-            if safe not in seen_paths:
+            norm = _norm_for_dedup(safe)
+            if norm not in seen_paths:
                 _safe_ext = os.path.splitext(safe)[1].lower()
                 media.append((safe, has_voice_tag and _safe_ext in _AUDIO_EXTS))
-                seen_paths.add(safe)
+                seen_paths.add(norm)
 
         # Remove the delivered MEDIA tags from the user-visible text. Mask a
         # length-equal copy of ``cleaned`` (same union of protected regions) to

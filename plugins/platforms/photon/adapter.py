@@ -546,7 +546,67 @@ def validate_config(cfg: PlatformConfig) -> bool:
 
 
 def is_connected(cfg: PlatformConfig) -> bool:
-    return validate_config(cfg)
+    if validate_config(cfg):
+        return True
+
+    # The gateway setup menu checks plugin status with a synthetic config,
+    # before load_gateway_config() has copied plugin YAML into ``extra``.
+    # Consult the canonical behavior setting so a completed local setup is
+    # immediately shown as configured and the wizard offers to start/install
+    # the gateway.
+    if not cfg.extra:
+        try:
+            from hermes_cli.config import load_config
+
+            photon = load_config().get("photon")
+            if isinstance(photon, dict) and photon.get("imessage_mode") == "local":
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _imessage_mode(extra: Optional[dict] = None) -> str:
+    """Return the configured iMessage connection mode.
+
+    ``cloud`` is the managed Photon/Spectrum default. ``local`` uses
+    spectrum-ts' open-source macOS Messages path, so the Apple ID signed in
+    on this Mac owns delivery.
+    """
+    raw = (extra or {}).get("imessage_mode") or os.getenv("PHOTON_IMESSAGE_MODE")
+    mode = str(raw or "cloud").strip().lower()
+    if mode == "local":
+        return "local"
+    return "cloud"
+
+
+def _apply_yaml_config(_yaml_cfg: dict, photon_cfg: dict) -> Optional[dict]:
+    """Bridge Photon behavior settings from config.yaml into PlatformConfig.extra.
+
+    Runtime credentials still live in .env/auth.json, but the iMessage delivery
+    mode is behavioral configuration.  Support the concise top-level form:
+
+        photon:
+          imessage_mode: local
+
+    and the standard platform-extra form:
+
+        platforms:
+          photon:
+            extra:
+              imessage_mode: local
+    """
+    if not isinstance(photon_cfg, dict):
+        return None
+
+    raw_mode = photon_cfg.get("imessage_mode")
+    if raw_mode is None and isinstance(photon_cfg.get("extra"), dict):
+        raw_mode = photon_cfg["extra"].get("imessage_mode")
+    if raw_mode is None:
+        return None
+
+    mode = _imessage_mode({"imessage_mode": raw_mode})
+    return {"imessage_mode": mode}
 
 
 def _imessage_mode(extra: Optional[dict] = None) -> str:
@@ -1310,6 +1370,19 @@ class PhotonAdapter(BasePlatformAdapter):
             )
 
         ctype = content.get("type")
+        reply_to_message_id: Optional[str] = None
+        reply_to_text: Optional[str] = None
+        reply_to_is_own_message = False
+        if ctype == "reply":
+            reply_to_message_id = content.get("targetMessageId") or None
+            reply_to_text = content.get("targetText") or None
+            reply_to_is_own_message = content.get("targetDirection") == "outbound" or bool(
+                reply_to_message_id and reply_to_message_id in self._sent_message_ids
+            )
+            inner_content = content.get("content")
+            content = inner_content if isinstance(inner_content, dict) else {}
+            ctype = content.get("type")
+
         if ctype == "reaction":
             # Route only tapbacks on messages WE sent — those are implicitly
             # addressed to the bot (feishu precedent: synthetic text event).
@@ -1499,6 +1572,9 @@ class PhotonAdapter(BasePlatformAdapter):
             timestamp=timestamp,
             media_urls=media_urls,
             media_types=media_types,
+            reply_to_message_id=reply_to_message_id,
+            reply_to_text=reply_to_text,
+            reply_to_is_own_message=reply_to_is_own_message,
         )
         await self.handle_message(message_event)
 
@@ -1630,10 +1706,9 @@ class PhotonAdapter(BasePlatformAdapter):
                 )
         # A `hermes update` that bumps the spectrum-ts pin rewrites
         # package-lock.json but never reinstalls node_modules, so the sidecar
-        # spawns against stale deps and dies on every reconnect (the v8 patch
-        # script can't find @spectrum-ts/imessage/dist that only v8 ships).
+        # may spawn against stale dependencies and die on every reconnect.
         # Self-heal by reinstalling when the lockfile is newer than npm's
-        # install marker. Runs off the event loop so a cold install can't
+        # install marker. The install runs off the event loop so it cannot
         # freeze every other platform's traffic.
         if _sidecar_deps_stale():
             logger.warning(
@@ -1645,9 +1720,11 @@ class PhotonAdapter(BasePlatformAdapter):
 
         env = os.environ.copy()
         env["PHOTON_IMESSAGE_MODE"] = self._imessage_mode
-        if self._project_id:
+        if self._imessage_mode == "local":
+            env.pop("PHOTON_PROJECT_ID", None)
+            env.pop("PHOTON_PROJECT_SECRET", None)
+        else:
             env["PHOTON_PROJECT_ID"] = self._project_id
-        if self._project_secret:
             env["PHOTON_PROJECT_SECRET"] = self._project_secret
         env["PHOTON_SIDECAR_PORT"] = str(self._sidecar_port)
         env["PHOTON_SIDECAR_BIND"] = self._sidecar_bind
@@ -1660,33 +1737,6 @@ class PhotonAdapter(BasePlatformAdapter):
         # Windows: hide the child console (0 elsewhere). Same helper the
         # discord/whatsapp adapters use for their sidecar spawns.
         from hermes_cli._subprocess_compat import windows_hide_flags
-
-        if self._imessage_mode != "local":
-            try:
-                patch = await asyncio.to_thread(
-                    subprocess.run,  # noqa: S603
-                    [
-                        self._node_bin,
-                        str(_sidecar_dir() / "patch-spectrum-mixed-attachments.mjs"),
-                        str(_sidecar_dir()),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=10,
-                    check=False,
-                    creationflags=windows_hide_flags(),
-                )
-                if patch.returncode != 0:
-                    raise RuntimeError((patch.stderr or patch.stdout or "").strip())
-                if patch.stderr.strip():
-                    logger.debug("[photon] %s", patch.stderr.strip())
-            except Exception as exc:
-                logger.warning(
-                    "[photon] failed to apply Spectrum mixed attachment patch: %s",
-                    exc,
-                )
 
         self._sidecar_proc = subprocess.Popen(  # noqa: S603
             [self._node_bin, str(_sidecar_dir() / "index.mjs")],

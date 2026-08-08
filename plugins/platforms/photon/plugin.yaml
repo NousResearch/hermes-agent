@@ -38,7 +38,7 @@ requires_env:
 optional_env:
   - name: PHOTON_IMESSAGE_MODE
     config_key: photon.imessage_mode
-    description: "Use managed Photon cloud delivery or this Mac's signed-in Messages account"
+    description: "Use managed Photon cloud delivery or this Mac's signed-in Messages account. Local mode needs Messages sign-in and may require Full Disk Access to read ~/Library/Messages/chat.db."
     prompt: "iMessage connection"
     password: false
     default: cloud

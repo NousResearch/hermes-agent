@@ -67,11 +67,11 @@ photon:
   imessage_mode: local
 ```
 
-Local mode uses Spectrum's open-source macOS Messages path
-(`imessage.config({ local: true })`). It does not use Photon dashboard
-login, `PHOTON_PROJECT_ID`, or `PHOTON_PROJECT_SECRET`. Grant Full Disk
-Access to the process that starts Hermes so the sidecar can read the
-Messages database.
+Local mode uses Spectrum's dedicated open-source macOS provider
+(`@spectrum-ts/imessage-local`). It does not use Photon dashboard login,
+`PHOTON_PROJECT_ID`, or `PHOTON_PROJECT_SECRET`. The host must be signed into
+Messages. The process that starts Hermes may need Full Disk Access to read
+`~/Library/Messages/chat.db`.
 
 Spectrum local mode can start a DM from a bare E.164 number and rehydrate an
 existing DM or group from its chat GUID. That means cold cron delivery works
@@ -87,7 +87,8 @@ hermes gateway start
 
 Cloud mode remains the default when `photon.imessage_mode` is unset.
 
-Either run the unified gateway wizard and pick **Photon iMessage**:
+Either run the unified gateway wizard, pick **iMessage via Photon**, and
+choose **local** or **cloud**:
 
 ```bash
 hermes gateway setup
@@ -96,11 +97,18 @@ hermes gateway setup
 …or run the Photon setup directly (the wizard calls the same flow):
 
 ```bash
-# Device-code login + project + user + sidecar deps, all in one
-hermes photon setup --phone +15551234567
+# Local Mac: no Photon login or project credentials
+hermes photon setup --mode local --phone +15551234567
+
+# Managed cloud: device login + project + user + sidecar deps
+hermes photon setup --mode cloud --phone +15551234567
 ```
 
-The setup, in order:
+For local mode, setup saves `photon.imessage_mode: local`, configures the
+optional phone allowlist/home channel, explains the Messages and Full Disk
+Access requirements, and installs the sidecar dependencies.
+
+Managed cloud setup, in order:
 
 1. **Device login** (`client_id=photon-cli`) — opens
    `https://app.photon.codes/` for approval and stores the bearer token.

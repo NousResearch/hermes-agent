@@ -8244,9 +8244,11 @@ def _catalog_lookup(platform_id: str) -> dict[str, Any] | None:
     return None
 
 
-def _messaging_env_info(key: str) -> dict[str, Any]:
+def _messaging_env_info(
+    key: str, *, include_internal: bool = False
+) -> dict[str, Any]:
     info = OPTIONAL_ENV_VARS.get(key) or _MESSAGING_ENV_FALLBACKS.get(key) or {}
-    return {
+    result = {
         "description": info.get("description", ""),
         "prompt": info.get("prompt", key),
         "help": info.get("help", ""),
@@ -8256,8 +8258,81 @@ def _messaging_env_info(key: str) -> dict[str, Any]:
         "default_value": info.get("default"),
         "options": info.get("options") or [],
         "visible_when": info.get("visible_when"),
-        "config_key": info.get("config_key"),
     }
+    if include_internal:
+        result["config_key"] = info.get("config_key")
+    return result
+
+
+def _messaging_config_path(key: str) -> tuple[str, ...]:
+    raw_path = _messaging_env_info(key, include_internal=True).get("config_key")
+    if not isinstance(raw_path, str):
+        return ()
+    return tuple(part for part in raw_path.split(".") if part)
+
+
+def _messaging_config_value(key: str) -> str | None:
+    path = _messaging_config_path(key)
+    if not path:
+        return None
+    try:
+        value: Any = load_config()
+        for part in path:
+            if not isinstance(value, dict) or part not in value:
+                return None
+            value = value[part]
+        return str(value) if value is not None else None
+    except Exception:
+        return None
+
+
+def _write_messaging_config_value(key: str, value: str) -> bool:
+    """Persist a manifest-declared behavior field to config.yaml."""
+    path = _messaging_config_path(key)
+    if not path:
+        return False
+
+    config = load_config()
+    current = config
+    for part in path[:-1]:
+        child = current.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            current[part] = child
+        current = child
+    current[path[-1]] = value
+    save_config(config)
+    return True
+
+
+def _clear_messaging_config_value(key: str) -> bool:
+    """Clear a manifest-declared config.yaml field."""
+    path = _messaging_config_path(key)
+    if not path:
+        return False
+
+    config = load_config()
+    current: Any = config
+    for part in path[:-1]:
+        if not isinstance(current, dict) or not isinstance(current.get(part), dict):
+            return True
+        current = current[part]
+    if isinstance(current, dict) and path[-1] in current:
+        current.pop(path[-1])
+        save_config(config)
+    return True
+
+
+def _messaging_field_visible(key: str, values: dict[str, str]) -> bool:
+    condition = _messaging_env_info(key).get("visible_when")
+    if not isinstance(condition, dict) or not condition.get("key"):
+        return True
+    dependency = str(condition["key"])
+    actual = values.get(dependency) or str(
+        _messaging_env_info(dependency).get("default_value") or ""
+    )
+    expected = {str(value) for value in condition.get("values") or []}
+    return not expected or actual in expected
 
 
 def _messaging_config_path(key: str) -> tuple[str, ...]:

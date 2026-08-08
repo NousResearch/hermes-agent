@@ -127,6 +127,14 @@ All env vars are documented in `plugin.yaml`. The most important:
 | `PHOTON_MARKDOWN`         | true                       | Send agent replies as markdown (iMessage renders natively). `false` strips formatting to plain text |
 | `PHOTON_REACTIONS`        | false                      | Tapback 👀/👍/👎 as processing status; tapbacks on bot messages reach the agent as `reaction:added:<emoji>` |
 
+Behavioral settings live in `~/.hermes/config.yaml`. Set
+`photon.imessage_mode: local` to use Spectrum's open-source macOS Messages
+path; the adapter exports `PHOTON_IMESSAGE_MODE` only to the sidecar process.
+The unified `hermes gateway setup` wizard exposes both modes. Local setup does
+not use Spectrum project credentials; the Mac must be signed into Messages,
+and the process that starts Hermes may need Full Disk Access to read
+`~/Library/Messages/chat.db`.
+
 ## Attachments & limitations
 
 - **Inbound attachments and voice notes are downloaded.** The sidecar reads
@@ -162,7 +170,11 @@ All env vars are documented in `plugin.yaml`. The most important:
   as a synthetic `reaction:added:<emoji>` event. Removal after a sidecar
   restart is best-effort — the live reaction handle is lost, so a stale
   tapback heals when the next reaction replaces it. Group spaces stay
-  reachable across restarts via spectrum-ts' `space.get(id)`.
+  reachable across restarts via spectrum-ts' `space.get(id)`. Local iMessage
+  currently reports `react` as unsupported.
+- **Local cold sends support DMs and existing groups.** Use a bare E.164 number
+  to start a DM, or an existing chat GUID to rehydrate a group. Local mode
+  cannot create a new group from a list of recipients.
 - **Native polls are supported.** Hermes posts poll content through
   `spectrum-ts`' `poll(...)` builder via the sidecar's `/send-poll` endpoint.
 - **Message effects are supported.** Text can be sent with native iMessage
@@ -192,17 +204,14 @@ deliberate:
    for every version between the current pin and the target.
 2. Bump the exact pin in `sidecar/package.json`, then run `npm install`
    inside `sidecar/` to regenerate `package-lock.json`. Commit both.
-3. Migrate `sidecar/index.mjs` against the new typings. `spectrum-ts` re-exports
-   `@spectrum-ts/core` (the framework: `Spectrum`, content builders,
-   `Space`/`Message`) and `@spectrum-ts/imessage` (the provider), so the source
-   of truth is `sidecar/node_modules/@spectrum-ts/{core,imessage}/dist/*.d.ts`
-   (the hosted docs can lag).
-4. Re-validate `sidecar/patch-spectrum-mixed-attachments.mjs`. It rewrites the
-   compiled iMessage inbound mappers in `@spectrum-ts/imessage/dist/index.js`
-   so a bubble with both text and attachments keeps its typed text; the anchors
-   are tied to that build's output. `npm install` runs it via `postinstall` and
-   fails loudly if the anchors no longer match — update them to the new output
-   (`test_spectrum_patch.py` covers the patch).
+3. Migrate `sidecar/spectrum-runtime.mjs` against the new typings. The sidecar
+   imports framework primitives from `@spectrum-ts/core`, managed iMessage from
+   `spectrum-ts/providers/imessage`, and local macOS iMessage from
+   `@spectrum-ts/imessage-local`.
+4. Run `npm test` in `sidecar/`. The tests verify installed provider exports,
+   executable local/cloud selection, and native mixed-message ordering through
+   both real Spectrum provider pipelines. `npm run smoke:spectrum` runs only
+   that compatibility check.
 5. Run `pytest tests/plugins/platforms/photon/`.
 6. Verify end-to-end: `hermes photon status`, a DM and a group roundtrip,
    and an agent reply into a group right after a gateway restart (exercises

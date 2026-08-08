@@ -4042,7 +4042,10 @@ class SlackAdapter(BasePlatformAdapter):
             text = "⚠️ Couldn't deliver the image attachment."
             if caption:
                 text = f"{caption}\n{text}"
-            return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+            # Post the notice, but report the upload failure: the caller must
+            # not record this as a delivered attachment.
+            await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+            return SendResult(success=False, error=str(e))
 
     async def send_image(
         self,
@@ -4203,7 +4206,10 @@ class SlackAdapter(BasePlatformAdapter):
             text = "⚠️ Couldn't deliver the video attachment."
             if caption:
                 text = f"{caption}\n{text}"
-            return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+            # Post the notice, but report the upload failure: the caller must
+            # not record this as a delivered attachment.
+            await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+            return SendResult(success=False, error=str(e))
 
     async def send_document(
         self,
@@ -4271,7 +4277,10 @@ class SlackAdapter(BasePlatformAdapter):
             text = f"⚠️ Couldn't deliver the file attachment ({display_name})."
             if caption:
                 text = f"{caption}\n{text}"
-            return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+            # Post the notice, but report the upload failure: the caller must
+            # not record this as a delivered attachment.
+            await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+            return SendResult(success=False, error=str(e))
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Slack channel."""

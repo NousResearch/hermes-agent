@@ -302,3 +302,137 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
 
 
+# ---------------------------------------------------------------------------
+# Sibling coverage: a credential basename and its on-disk siblings
+# ---------------------------------------------------------------------------
+
+# Suffixes that routinely appear beside a credential file on a real install:
+# editor/tool backups, interrupted atomic writes, and manual copies made
+# before an edit. Each carries the *same plaintext* as the file it shadows.
+_SIBLING_SUFFIXES = (".bak", ".tmp", ".orig", ".save", ".1", ".bak.1")
+
+
+def _assert_not_exposed(client, path, label):
+    """A path must be invisible to all three managed-files read routes."""
+    listing = client.get("/api/files", params={"path": str(path.parent)})
+    assert listing.status_code == 200, label
+    names = [e["name"] for e in listing.json()["entries"]]
+    assert path.name not in names, f"{label}: listed by /api/files"
+
+    read = client.get("/api/files/read", params={"path": str(path)})
+    assert read.status_code == 403, f"{label}: readable via /api/files/read"
+
+    download = client.get("/api/files/download", params={"path": str(path)})
+    assert download.status_code == 403, f"{label}: downloadable via /api/files/download"
+
+
+def _assert_visible(client, path, label):
+    """An ordinary file must stay fully usable in the browser."""
+    listing = client.get("/api/files", params={"path": str(path.parent)})
+    assert listing.status_code == 200, label
+    names = [e["name"] for e in listing.json()["entries"]]
+    assert path.name in names, f"{label}: over-blocked, missing from /api/files"
+
+    read = client.get("/api/files/read", params={"path": str(path)})
+    assert read.status_code == 200, f"{label}: over-blocked on /api/files/read"
+
+    download = client.get("/api/files/download", params={"path": str(path)})
+    assert download.status_code == 200, f"{label}: over-blocked on /api/files/download"
+
+
+def test_credential_basename_siblings_are_never_exposed(forced_files_client):
+    """Contract: if a basename is credential material, so are its siblings.
+
+    Asserts the RELATION rather than a frozen list literal — the cases are
+    generated from the guard's own declaration
+    (``_SENSITIVE_MANAGED_FILE_BASENAMES``), so a future entry added there is
+    covered by this test automatically.
+
+    ``.env`` already got this treatment (``.env.bak`` / ``.env.local`` are
+    denied by the prefix branch), but every other credential basename was
+    matched *exactly*. So ``auth.json`` was denied while ``auth.json.bak`` —
+    byte-identical provider keys, written by any editor or interrupted atomic
+    save — was listed, readable, and downloadable through the dashboard.
+    """
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    for basename in sorted(web_server._SENSITIVE_MANAGED_FILE_BASENAMES):
+        for suffix in _SIBLING_SUFFIXES:
+            sibling = root / f"{basename}{suffix}"
+            sibling.write_text("SECRET_KEY=abc123\n")
+            try:
+                _assert_not_exposed(client, sibling, sibling.name)
+            finally:
+                sibling.unlink()
+
+
+def test_session_transcript_stores_are_never_exposed(forced_files_client):
+    """Contract: the application history stores are credential material.
+
+    ``state.db`` is the session transcript store — every message, every tool
+    payload, and therefore every secret that ever passed through a tool result.
+    The project already classifies it as a secret elsewhere
+    (``hermes_cli.backup._SECRET_FILE_NAMES`` and the write-side deny in
+    ``agent.file_safety``), and ``response_store.db`` is chmod-0600 on creation
+    for exactly this reason (``gateway/platforms/api_server.py``), but the
+    managed-files read guard listed and served them.
+
+    The SQLite sidecars are covered too: in WAL mode ``-wal`` holds
+    transactions not yet checkpointed into the main DB, and both ``-wal`` and
+    ``-shm`` are real files on disk that the rest of the codebase enumerates
+    explicitly (``hermes_cli/profiles.py``, ``docker/stage2-hook.sh``).
+    """
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    for stem in ("state.db", "response_store.db", "kanban.db"):
+        for suffix in ("", "-wal", "-shm", "-journal", ".bak", "-wal.bak"):
+            store = root / f"{stem}{suffix}"
+            store.write_bytes(b"SQLite format 3\x00secret-transcript")
+            try:
+                _assert_not_exposed(client, store, store.name)
+            finally:
+                store.unlink()
+
+
+def test_ordinary_files_stay_visible(forced_files_client):
+    """Negative controls: widening the guard must not break the browser.
+
+    Over-blocking the managed-files browser is a regression, not a fix. These
+    names deliberately sit near the denied ones — a user's own ``.db``, a
+    longer word that merely starts with a credential basename, and a file whose
+    stem extends one without a separator — and must all stay listable,
+    readable, and downloadable.
+    """
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    for name in (
+        "notes.txt",
+        "README.md",
+        # A user's own SQLite DB that is NOT an application history store.
+        "mydata.db",
+        "mydata.db-wal",
+        # Extends a credential basename with no separator: a distinct file.
+        "state.dbf",
+        "authentication.md",
+        "environment.md",
+        "configuration.yaml",
+        # Dash suffixes are only sensitive for the SQLite sidecars, so an
+        # ordinary dash-suffixed name near a credential basename stays visible.
+        "credentials-howto.md",
+        "config.yaml-template",
+        ".environment",
+        # Suffix-only match must not be enough: these end in a sidecar suffix
+        # but their stem is not a credential basename.
+        "notes.db-wal",
+    ):
+        ordinary = root / name
+        ordinary.write_text("ordinary content\n")
+        try:
+            _assert_visible(client, ordinary, name)
+        finally:
+            ordinary.unlink()
+
+

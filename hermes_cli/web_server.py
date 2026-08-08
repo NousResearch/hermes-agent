@@ -1770,6 +1770,10 @@ _FS_READDIR_HIDDEN = {
 # doesn't lag behind them — an operator can point the managed root at
 # HERMES_HOME itself, at which point every one of these basenames is a live
 # secret store sitting in the browsable tree.
+#
+# This is the single declaration for this module: the sibling rule in
+# _is_sensitive_filename is DERIVED from these names rather than restated, so
+# adding an entry here automatically covers its backup/temp/sidecar siblings.
 _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
     "auth.json",
     "auth.lock",
@@ -1784,7 +1788,46 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
     "bws_cache.enc.json",
     # git's credential-store helper cache (agent.file_safety blocks this too).
     ".git-credentials",
+    # Environment files. Listed here rather than special-cased so the shared
+    # sibling rule below covers .env.local / .env.production / .env.bak the
+    # same way it covers every other entry.
+    ".env",
+    ".envrc",
+    # Application history stores. These are not credential *files*, but they
+    # transitively contain every secret that ever appeared in a conversation
+    # or a tool result, which makes downloading one a bigger prize than any
+    # single .env. The project already classifies them as secrets elsewhere:
+    #   * hermes_cli.backup._SECRET_FILE_NAMES = {".env", "auth.json", "state.db"}
+    #   * agent.file_safety denies generic file-tool WRITES to state.db
+    #   * gateway/platforms/api_server.py chmods response_store.db to 0600 on
+    #     creation, citing "conversation history (tool payloads, prompts,
+    #     results)"
+    # Only this read guard omitted them.
+    "state.db",
+    "response_store.db",
+    "kanban.db",
 })
+
+# Separators that introduce a *sibling* of a sensitive basename — a file that
+# carries the same plaintext as the one it shadows, and so must be denied with
+# it. Two distinct rules, deliberately narrow:
+#
+#   1. A dot suffix: ``<sensitive>.<anything>``. This is the backup/temp/copy
+#      convention — auth.json.bak (editor or manual backup), auth.json.tmp
+#      (interrupted atomic write), .env.local / .env.production. The .env
+#      prefix rule this replaces already worked exactly this way; the change
+#      is that every entry gets it, not just .env.
+#
+#   2. A SQLite sidecar suffix, and ONLY these three. In WAL mode ``-wal``
+#      holds committed transactions not yet checkpointed into the main DB, and
+#      ``-shm`` / ``-journal`` are likewise real files on disk that the rest
+#      of the codebase enumerates explicitly (hermes_cli/session_recovery.py
+#      _SIDECAR_SUFFIXES, hermes_cli/profiles.py, docker/stage2-hook.sh).
+#
+# Rule 2 is a fixed list rather than "any dash suffix" on purpose: a bare dash
+# rule would also swallow ordinary files like credentials-howto.md, and
+# over-blocking the file browser is its own regression.
+_SENSITIVE_SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 
 # Directory names whose entire subtree is credential material. Both canonical
 # guards deny these as directory trees, not basenames:
@@ -1804,9 +1847,16 @@ _SENSITIVE_MANAGED_DIR_NAMES = frozenset({
 def _is_sensitive_filename(name: str) -> bool:
     """Return True for a basename the managed-files API must never expose.
 
-    Covers ``.env`` / ``.env.<suffix>`` / ``.envrc`` variants plus the
-    canonical Hermes credential-store basenames (see
-    ``_SENSITIVE_MANAGED_FILE_BASENAMES`` above).
+    Matches a name in ``_SENSITIVE_MANAGED_FILE_BASENAMES`` exactly, or a
+    *sibling* of one — the same name plus a dot suffix (``auth.json.bak``,
+    ``auth.json.tmp``, ``.env.local``) or a SQLite sidecar suffix
+    (``state.db-wal``). A sibling holds the same plaintext as the file it
+    shadows, so exposing it exposes the secret.
+
+    Matching is anchored on the full basename, which keeps the guard off
+    unrelated names that merely share a prefix: ``state.dbf``,
+    ``configuration.yaml``, ``credentials-howto.md``, and ``.environment``
+    are ordinary files and stay listable.
 
     Case-insensitive so ``.ENV`` / ``.Env.local`` / ``Auth.JSON`` on
     case-insensitive filesystems (macOS/Windows mounts) can't slip past
@@ -1817,9 +1867,22 @@ def _is_sensitive_filename(name: str) -> bool:
     use :func:`_is_sensitive_path`, which the API call sites route through.
     """
     lowered = name.lower()
-    if lowered == ".env" or lowered.startswith(".env.") or lowered == ".envrc":
-        return True
-    return lowered in _SENSITIVE_MANAGED_FILE_BASENAMES
+
+    # Progressively strip trailing ``.<suffix>`` components so multi-suffix
+    # backups (``auth.json.bak``, ``auth.json.bak.1``) reduce to the name they
+    # shadow. At each step, also try removing a SQLite sidecar suffix, which
+    # covers ``state.db-wal`` and ``state.db-wal.bak`` alike.
+    candidate = lowered
+    while True:
+        if candidate in _SENSITIVE_MANAGED_FILE_BASENAMES:
+            return True
+        for suffix in _SENSITIVE_SQLITE_SIDECAR_SUFFIXES:
+            if candidate.endswith(suffix):
+                if candidate[: -len(suffix)] in _SENSITIVE_MANAGED_FILE_BASENAMES:
+                    return True
+        if "." not in candidate:
+            return False
+        candidate = candidate.rsplit(".", 1)[0]
 
 
 def _is_sensitive_path(path: Path) -> bool:

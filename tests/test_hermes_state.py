@@ -3847,15 +3847,16 @@ class TestGetMessagesPagination:
         with pytest.raises(hermes_state.SessionExportTooLargeError):
             db.assert_export_safe("big", max_messages=2)
 
-        # ...but a config-resolved limit of 0 disables both guards and
-        # returns the true count without raising.
+        # ...but a config-resolved limit of 0 disables both guards: no raise,
+        # and no counting work at all (returns 0 — callers use the raise side
+        # effect only).
         monkeypatch.setattr(hermes_state, "resolved_max_resume_messages", lambda: 0)
         monkeypatch.setattr(hermes_state, "resolved_max_export_messages", lambda: 0)
-        assert db.assert_resume_safe("big") == 5
-        assert db.assert_export_safe("big") == 5
+        assert db.assert_resume_safe("big") == 0
+        assert db.assert_export_safe("big") == 0
         # An explicit 0 disables too, independent of config.
-        assert db.assert_resume_safe("big", max_messages=0) == 5
-        assert db.assert_export_safe("big", max_messages=0) == 5
+        assert db.assert_resume_safe("big", max_messages=0) == 0
+        assert db.assert_export_safe("big", max_messages=0) == 0
 
     def test_guard_limits_resolve_from_config_at_call_time(self, db, monkeypatch):
         db.create_session(session_id="cfg", source="cli")

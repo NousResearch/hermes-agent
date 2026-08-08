@@ -7929,9 +7929,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if max_messages < 0:
             raise ValueError("max_messages must be non-negative")
         if max_messages == 0:
-            # Guard disabled by config — never materialize an unbounded
-            # COUNT here; callers only need "safe", not an exact figure.
-            return self.get_resume_message_count(session_id)
+            # Guard disabled by config — skip counting entirely. Every live
+            # caller invokes this for its raise side effect and ignores the
+            # return value, and an unbounded lineage COUNT here would do the
+            # exact pathological work the disable exists to avoid.
+            return 0
         session_ids = self._session_lineage_root_to_tip(session_id)
         placeholders = ",".join("?" for _ in session_ids)
         with self._read_ctx() as conn:
@@ -7966,14 +7968,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             max_messages = resolved_max_export_messages()
         if max_messages < 0:
             raise ValueError("max_messages must be non-negative")
+        if max_messages == 0:
+            # Guard disabled by config — skip the COUNT; live callers use
+            # this for its raise side effect only (and skip calling it
+            # entirely when the limit is 0).
+            return 0
         with self._read_ctx() as conn:
-            if max_messages == 0:
-                row = conn.execute(
-                    "SELECT COUNT(*) FROM messages "
-                    "WHERE session_id = ? AND active = 1",
-                    (session_id,),
-                ).fetchone()
-                return int(row[0] if row else 0)
             row = conn.execute(
                 "SELECT COUNT(*) FROM ("
                 "SELECT 1 FROM messages WHERE session_id = ? AND active = 1 LIMIT ?"

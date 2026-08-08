@@ -174,9 +174,31 @@ export function HudShell() {
       // Written straight to the element rather than through state: it changes on
       // every stream flush, and the sheet resizing must not re-render the tree.
       const rows = el?.querySelectorAll<HTMLElement>('[data-slot="aui_thread-content"] > *:not([data-slot])')
-      const top = rows?.length ? rows[0].getBoundingClientRect().top : null
-      const height = top === null || !el ? 0 : Math.max(0, el.getBoundingClientRect().bottom - top)
-      root.style.setProperty('--hud-band-height', `${Math.round(height)}px`)
+      const box = el?.getBoundingClientRect()
+
+      // Measured from the bar outward, so it flips with the layout: parked at
+      // the bottom the transcript grows up from the bar, parked at the top it
+      // hangs down from it.
+      const span =
+        !rows?.length || !box
+          ? 0
+          : root.dataset.hudEdge === 'top'
+            ? rows[rows.length - 1].getBoundingClientRect().bottom - box.top
+            : box.bottom - rows[0].getBoundingClientRect().top
+
+      root.style.setProperty('--hud-band-height', `${Math.max(0, Math.round(span))}px`)
+
+      // …and the bar's real height, which is what the thread has to clear.
+      // --composer-measured-height would be the obvious source, but it is a
+      // surface var that never lands here, so the clearance silently fell back
+      // to the root estimate and reserved ~20px more than the bar occupies —
+      // a visible hole under the last message.
+      const bar = root.querySelector<HTMLElement>('[data-slot="composer-dock"]')
+
+      if (bar) {
+        ro.observe(bar)
+        root.style.setProperty('--hud-bar-height', `${Math.round(bar.getBoundingClientRect().height)}px`)
+      }
     }
 
     // The viewport mounts async (lazy chat surface); poll briefly until it

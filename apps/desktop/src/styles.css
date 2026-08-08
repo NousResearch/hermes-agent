@@ -2392,6 +2392,10 @@ button[data-slot='aui_msg-reactions'] svg {
    getNativeWindowHandle() and buys a cross-dissolve between frosted and sharp
    rather than a true blur-radius ramp. Its own change, not this one. */
 [data-hud-shell] [data-hud-glass] {
+  /* The exit chip rides this box, not the band — the band is the whole window,
+     so anchoring there left the chip stranded in empty space above a short
+     transcript. */
+  anchor-name: --hud-band;
   position: absolute;
   right: 0;
   bottom: 0;
@@ -2399,8 +2403,8 @@ button[data-slot='aui_msg-reactions'] svg {
   /* Grows up from the bar to fit the transcript, capped at the window. An empty
      session measures 0 and the sheet collapses behind the bar, rather than
      painting a full-height slab with nothing in it. The extra is breathing room
-     above the first row so the fade has somewhere to happen. */
-  height: min(100%, calc(var(--hud-band-height, 0px) + 2rem));
+     above the first row so the fade has somewhere to land. */
+  height: min(100%, calc(var(--hud-band-height, 0px) + 0.75rem));
   z-index: 0;
   pointer-events: none;
   border-radius: 0.75rem 0.75rem 0 0;
@@ -2430,6 +2434,7 @@ button[data-slot='aui_msg-reactions'] svg {
    interpolates. Blown up and pinned to the bottom, the band only ever shows the
    gradient's solid end. Reveal-speed both ways, so letting go of the composer
    brings the ramp straight back instead of waiting out the fade's hold. */
+[data-hud-shell]:focus-within [data-hud-glass],
 [data-hud-shell]:focus-within [data-slot='aui_thread-viewport'] {
   -webkit-mask-size: 100% 600%;
   mask-size: 100% 600%;
@@ -2441,6 +2446,8 @@ button[data-slot='aui_msg-reactions'] svg {
 }
 
 [data-hud-shell][data-hud-edge='top'] [data-hud-glass] {
+  top: 0;
+  bottom: auto;
   border-radius: 0 0 0.75rem 0.75rem;
 }
 
@@ -2457,11 +2464,6 @@ button[data-slot='aui_msg-reactions'] svg {
   opacity: 1;
   transition-duration: var(--hud-reveal);
   transition-delay: 0s;
-}
-
-/* Typing: the band goes fully solid — viz2d's focus step, taken to its end. */
-[data-hud-shell]:focus-within [data-slot='composer-bounds'] {
-  background: var(--dt-background) !important;
 }
 
 /* User messages ride the band like every other line. In the app each sticky
@@ -2574,7 +2576,7 @@ button[data-slot='aui_msg-reactions'] svg {
 }
 
 [data-hud-shell][data-hud-edge='top'] [data-slot='aui_thread-content'] {
-  padding-block-start: calc(var(--composer-measured-height) + 0.25rem) !important;
+  padding-block-start: calc(var(--hud-bar-height, var(--composer-fallback-height)) + 0.25rem) !important;
 }
 
 [data-hud-shell][data-hud-edge='top'] [data-slot='aui_thread-viewport'] {
@@ -2641,7 +2643,7 @@ button[data-slot='aui_msg-reactions'] svg {
    gap between the last message and the composer. */
 [data-hud-shell] [data-slot='aui_thread-content'] {
   padding-inline: 0.6rem !important;
-  padding-block: 0.8rem 0.25rem !important;
+  padding-block: 0.35rem 0.25rem !important;
   /* A chat frame fills from the bottom. The docked thread hangs from the top
      because it is always taller than its content is short; the band is a few
      lines tall, so a two-message conversation left a dead gap between the last
@@ -2662,7 +2664,7 @@ button[data-slot='aui_msg-reactions'] svg {
    measured from the live dock, so it tracks the composer growing to two, three,
    ten rows with no hairline and no hole. */
 [data-hud-shell] [data-chat-surface] {
-  --thread-last-message-clearance: var(--composer-measured-height);
+  --thread-last-message-clearance: var(--hud-bar-height, var(--composer-fallback-height));
 }
 
 /* Same for the dock's own bottom pad — this var also feeds
@@ -2808,9 +2810,6 @@ button[data-slot='aui_msg-reactions'] svg {
    the corner with its own margin reads as intentional. anchor() to the band:
    calc()-based attempts drifted because the composer's measured vars are
    inline-scoped and stale outside [data-chat-surface]. */
-[data-hud-shell] [data-slot='composer-bounds'] {
-  anchor-name: --hud-band;
-}
 
 [data-hud-shell] [data-hud-exit] {
   position-anchor: --hud-band;
@@ -2837,6 +2836,12 @@ button[data-slot='aui_msg-reactions'] svg {
 
 [data-hud-shell]:focus-within [data-hud-exit] {
   pointer-events: auto;
+}
+
+/* Flipped, the sheet's top corner is behind the bar — drop the chip clear of
+   it so it stays in the transcript rather than under the composer. */
+[data-hud-shell][data-hud-edge='top'] [data-hud-exit] {
+  top: calc(anchor(top) + var(--hud-bar-height, var(--composer-fallback-height)) + 0.5rem);
 }
 
 [data-hud-shell][data-hud-recent] [data-hud-exit],

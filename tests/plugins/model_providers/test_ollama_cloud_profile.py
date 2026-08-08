@@ -216,6 +216,103 @@ class TestOllamaModelSupportsThinking:
             ollama_model_supports_thinking("x", "https://ollama.com/v1", "key") is None
         )
 
+    def test_cloud_suffix_model_is_probed_under_its_full_tag(self, monkeypatch):
+        """A :cloud model must not be probed by its stripped name only.
+
+        Ollama registers a Cloud model under the full tag, so asking for the
+        bare name makes the daemon look up "<model>:latest" and answer 404 —
+        indistinguishable from "no thinking capability". That silently
+        disabled reasoning for every glm-*/kimi-*:cloud model even though
+        they advertise ["thinking", "completion", "tools"].
+        """
+        import httpx
+
+        from hermes_cli.models import ollama_model_supports_thinking
+
+        asked = []
+
+        class _Resp:
+            def __init__(self, status, payload):
+                self.status_code = status
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def post(self, url, json=None, **k):
+                name = (json or {}).get("name")
+                asked.append(name)
+                if name == "glm-5.2:cloud":
+                    return _Resp(200, {"capabilities": ["thinking", "completion", "tools"]})
+                return _Resp(404, {"error": "model 'glm-5.2:latest' not found"})
+
+        monkeypatch.setattr(httpx, "Client", _Client)
+
+        assert (
+            ollama_model_supports_thinking(
+                "glm-5.2:cloud", "https://ollama.com/v1", "key"
+            )
+            is True
+        )
+        assert "glm-5.2:cloud" in asked
+
+    def test_stripped_name_still_probed_when_full_tag_unknown(self, monkeypatch):
+        """models.dev ids can carry a :cloud suffix the server does not know.
+
+        The stripped form must stay in the candidate list, otherwise this
+        fix would trade one blind spot for another.
+        """
+        import httpx
+
+        from hermes_cli.models import ollama_model_supports_thinking
+
+        asked = []
+
+        class _Resp:
+            def __init__(self, status, payload):
+                self.status_code = status
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def post(self, url, json=None, **k):
+                name = (json or {}).get("name")
+                asked.append(name)
+                if name == "kimi-k2.6":
+                    return _Resp(200, {"capabilities": ["thinking", "completion"]})
+                return _Resp(404, {"error": "not found"})
+
+        monkeypatch.setattr(httpx, "Client", _Client)
+
+        assert (
+            ollama_model_supports_thinking(
+                "kimi-k2.6:cloud", "https://ollama.com/v1", "key"
+            )
+            is True
+        )
+        assert asked == ["kimi-k2.6:cloud", "kimi-k2.6"]
+
     def test_exception_returns_none(self, monkeypatch):
         from hermes_cli.models import ollama_model_supports_thinking
 

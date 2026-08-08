@@ -13,6 +13,8 @@ Hermes has two slash-command surfaces, both driven by a central `COMMAND_REGISTR
 
 Installed skills are also exposed as dynamic slash commands on both surfaces. That includes bundled skills like `/plan`, which opens plan mode and saves markdown plans under `.hermes/plans/` relative to the active workspace/backend working directory.
 
+Some messaging command menus display argument-taking commands with a trailing ellipsis, such as `/steer…`. If the client submits that display token verbatim, Hermes treats the Unicode ellipsis as a UI hint rather than part of the command name.
+
 ## Permissions and admin/user split
 
 Every messaging platform that supports a per-user allowlist (Telegram, Discord, Slack, Matrix, Mattermost, Signal, …) also supports a two-tier slash command split: **admins** get every registered command, **regular users** only get the names you list in `user_allowed_commands` (plus the always-allowed floor `/help` and `/whoami`). Configure `allow_admin_from` and `user_allowed_commands` (and the per-group equivalents `group_allow_admin_from` / `group_user_allowed_commands`) inside the platform's `extra:` block in `~/.hermes/gateway-config.yaml`.

@@ -47,8 +47,10 @@ def _reset_plugin_cache(monkeypatch):
     mask a regression — and so the production cache the import-time
     ``_mount_plugin_api_routes()`` populated doesn't bleed in."""
     web_server._dashboard_plugins_cache = None
+    web_server._dashboard_plugins_cache_fingerprint = None
     yield
     web_server._dashboard_plugins_cache = None
+    web_server._dashboard_plugins_cache_fingerprint = None
 
 
 def _write_plugin_manifest(root: Path, name: str, manifest: dict) -> Path:

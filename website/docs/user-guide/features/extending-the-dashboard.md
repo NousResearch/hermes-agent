@@ -813,14 +813,15 @@ The dashboard scans three directories for `dashboard/manifest.json`:
 | 2 | `<repo>/plugins/<name>/dashboard/` | `bundled` |
 | 3 | `./.hermes/plugins/<name>/dashboard/` | `project` — only when `HERMES_ENABLE_PROJECT_PLUGINS` is set |
 
-Discovery results are cached per dashboard process. After adding a new plugin, either:
+Discovery results are cached per dashboard process, but the cache fingerprints every discoverable `manifest.json` on each plugin-list request. Adding, editing, or removing a frontend dashboard extension is picked up automatically the next time the dashboard fetches `GET /api/dashboard/plugins` (the browser also refreshes its session cache in the background).
+
+You can still force an immediate manifest rescan:
 
 ```bash
-# Force a rescan without restart
 curl http://127.0.0.1:9119/api/dashboard/plugins/rescan
 ```
 
-…or restart `hermes dashboard`.
+Backend plugin API routes are different: they are mounted when the dashboard backend process starts. If you add, remove, or change a plugin's `api` module, restart `hermes dashboard` so the FastAPI routes are remounted.
 
 #### Plugin load lifecycle
 

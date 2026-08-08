@@ -611,6 +611,7 @@ _CONTEXT_LENGTH_KEYS = (
     "context_window",
     "context_size",
     "max_context_length",
+    "max_context",
     "max_position_embeddings",
     "max_model_len",
     "max_input_tokens",

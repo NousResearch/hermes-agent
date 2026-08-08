@@ -13,8 +13,10 @@ import {
   getHermesConfig,
   getHermesConfigDefaults,
   getProfiles,
+  getSkills,
   getSessionMessages,
   getStatus,
+  getToolsets,
   listAllProfileSessions,
   listSessions,
   listSidebarSessions,
@@ -291,7 +293,7 @@ describe('Hermes REST helpers', () => {
     )
   })
 
-  it('gives the whole startup data burst the long timeout, not just profiles', async () => {
+  it('gives startup and capability discovery the long timeout', async () => {
     api.mockResolvedValue({})
 
     const bootCalls: [() => Promise<unknown>, string][] = [
@@ -299,7 +301,9 @@ describe('Hermes REST helpers', () => {
       [getHermesConfigDefaults, '/api/config/defaults'],
       [getGlobalModelInfo, '/api/model/info'],
       [() => getGlobalModelOptions(), '/api/model/options?explicit_only=1'],
-      [getCronJobs, '/api/cron/jobs']
+      [getCronJobs, '/api/cron/jobs'],
+      [getSkills, '/api/skills'],
+      [getToolsets, '/api/tools/toolsets']
     ]
 
     for (const [call, path] of bootCalls) {

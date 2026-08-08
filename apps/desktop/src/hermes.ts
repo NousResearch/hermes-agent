@@ -71,8 +71,8 @@ import type {
   WebhooksResponse
 } from '@/types/hermes'
 
-// Desktop startup fires a burst of read-only data calls (config, profiles,
-// model info/options, cron) the moment the backend passes readiness. On a
+// Desktop startup and the Capabilities screen fire read-only data calls
+// (config, profiles, model info/options, cron, skills, toolsets). On a
 // profile-heavy or remote install these can each take tens of seconds — e.g.
 // /api/profiles runs list_profiles(), which does a recursive skill-tree walk
 // per profile — so the 15s default (DEFAULT_FETCH_TIMEOUT_MS in hardening.ts)
@@ -944,7 +944,8 @@ export function getMemoryProviderOAuthStatus(provider: string): Promise<MemoryPr
 export function getSkills(): Promise<SkillInfo[]> {
   return window.hermesDesktop.api<SkillInfo[]>({
     ...profileScoped(),
-    path: '/api/skills'
+    path: '/api/skills',
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 
@@ -1062,7 +1063,8 @@ export function getMcpOAuthFlow(flowId: string): Promise<McpOAuthFlow> {
 export function getToolsets(): Promise<ToolsetInfo[]> {
   return window.hermesDesktop.api<ToolsetInfo[]>({
     ...profileScoped(),
-    path: '/api/tools/toolsets'
+    path: '/api/tools/toolsets',
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 

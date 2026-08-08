@@ -444,6 +444,47 @@ class TestProfileScopedAudio:
         assert resp.json()["transcript"] == "hi"
         assert seen["home"] == str(isolated_profiles["worker_beta"])
 
+    def test_speak_text_times_out_stalled_provider(self, client, monkeypatch, tmp_path):
+        import json
+        import threading
+        import time
+        from pathlib import Path
+
+        import hermes_cli.web_server as web_server
+        import tools.tts_tool as tts_tool
+
+        captured = {}
+        finished = threading.Event()
+
+        def stalled_tts(text, output_path=None):
+            time.sleep(0.05)
+            audio_file = Path(output_path)
+            captured["audio_file"] = audio_file
+            audio_file.parent.mkdir(parents=True, exist_ok=True)
+            audio_file.write_bytes(b"ID3late-audio-bytes")
+            finished.set()
+            return json.dumps({
+                "success": True,
+                "file_path": str(audio_file),
+                "provider": "test",
+            })
+
+        monkeypatch.setattr(tts_tool, "text_to_speech_tool", stalled_tts)
+        monkeypatch.setattr(web_server, "DESKTOP_TTS_TIMEOUT_SECONDS", 0.01)
+
+        resp = client.post("/api/audio/speak", json={"text": "hello there"})
+
+        assert resp.status_code == 504
+        assert "timed out" in resp.json()["detail"].lower()
+        assert finished.wait(timeout=1.0)
+
+        audio_file = captured["audio_file"]
+        for _ in range(20):
+            if not audio_file.exists():
+                break
+            time.sleep(0.01)
+        assert not audio_file.exists()
+
     def test_audio_endpoints_unknown_profile_404(self, client, isolated_profiles):
         resp = client.get("/api/audio/elevenlabs/voices?profile=ghost")
         assert resp.status_code == 404

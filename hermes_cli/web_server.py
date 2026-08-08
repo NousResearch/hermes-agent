@@ -4551,6 +4551,35 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
     return {"available": True, "voices": voices}
 
 
+DESKTOP_TTS_TIMEOUT_SECONDS = 75.0
+
+
+def _unlink_desktop_tts_path(file_path: Any) -> None:
+    if not file_path:
+        return
+    try:
+        Path(file_path).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _cleanup_timed_out_desktop_tts(future: "asyncio.Future", output_path: Path) -> None:
+    """Remove audio files produced after the desktop speak request timed out."""
+    _unlink_desktop_tts_path(output_path)
+    try:
+        result_json = future.result()
+    except Exception:
+        return
+    try:
+        result = json.loads(result_json) if isinstance(result_json, str) else result_json
+    except Exception:
+        return
+    if isinstance(result, dict):
+        returned_path = result.get("file_path")
+        if returned_path and Path(returned_path) != output_path:
+            _unlink_desktop_tts_path(returned_path)
+
+
 @app.post("/api/audio/speak")
 async def speak_text(payload: TTSSpeakRequest, profile: Optional[str] = None):
     """Synthesize speech and return audio as base64 data URL.
@@ -4564,6 +4593,8 @@ async def speak_text(payload: TTSSpeakRequest, profile: Optional[str] = None):
     if not text:
         raise HTTPException(status_code=400, detail="Text is required")
 
+    output_path = Path(get_hermes_home()) / "audio_cache" / f"desktop_speak_{secrets.token_hex(8)}.mp3"
+
     try:
         from tools.tts_tool import text_to_speech_tool
 
@@ -4573,14 +4604,28 @@ async def speak_text(payload: TTSSpeakRequest, profile: Optional[str] = None):
             # resolution, so the task-local override inside this worker
             # thread is sufficient (same reasoning as the MCP probe scope).
             with _config_profile_scope(profile):
-                return text_to_speech_tool(text)
+                return text_to_speech_tool(text, output_path=str(output_path))
 
         loop = asyncio.get_running_loop()
-        result_json = await loop.run_in_executor(None, _speak_scoped)
+        speak_future = loop.run_in_executor(None, _speak_scoped)
+        result_json = await asyncio.wait_for(
+            asyncio.shield(speak_future),
+            timeout=DESKTOP_TTS_TIMEOUT_SECONDS,
+        )
     except HTTPException:
         # _config_profile_scope raises 400/404 for a bad profile — pass it
         # through instead of masking it as a 500 synthesis failure.
         raise
+    except (asyncio.TimeoutError, TimeoutError) as exc:
+        _log.warning(
+            "Desktop voice TTS timed out after %.1fs (text_len=%d)",
+            DESKTOP_TTS_TIMEOUT_SECONDS,
+            len(text),
+        )
+        speak_future.add_done_callback(
+            lambda future: _cleanup_timed_out_desktop_tts(future, output_path)
+        )
+        raise HTTPException(status_code=504, detail="Speech synthesis timed out") from exc
     except Exception as exc:
         _log.exception("Desktop voice TTS failed")
         raise HTTPException(status_code=500, detail=f"Speech synthesis failed: {exc}")

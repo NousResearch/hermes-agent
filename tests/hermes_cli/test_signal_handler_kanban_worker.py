@@ -79,11 +79,12 @@ def _synthetic_worker_script() -> str:
 
 
 def _is_alive_like_dispatcher(pid: int) -> bool:
-    """Mirrors hermes_cli/kanban_db.py:_pid_alive on Linux.
+    """Mirrors hermes_cli/kanban_db.py:_pid_alive on Linux and macOS.
 
     A zombie is treated as dead — the dispatcher's _pid_alive checks
-    /proc/<pid>/status for State: Z. We replicate that here so a clean
-    os._exit followed by zombie-state is correctly counted as dead.
+    /proc/<pid>/status for State: Z on Linux and `ps -o stat=` on macOS.
+    We replicate both here so a clean os._exit followed by zombie-state
+    (the child is unreaped until _cleanup) is correctly counted as dead.
     """
     if pid <= 0:
         return False

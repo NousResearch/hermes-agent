@@ -36,6 +36,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
 import { latchChatActivation } from "@/lib/chat-activation";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
@@ -558,11 +559,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         const binary = atob(payload);
         const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
         const text = new TextDecoder("utf-8").decode(bytes);
-        navigator.clipboard.writeText(text).catch((err) => {
-          // Most common reason: the Clipboard API requires a user gesture.
-          // This can fail when the OSC 52 response arrives outside the
-          // original keydown event's activation. Log to aid debugging.
-          console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
+        // copyTextToClipboard falls back to a selection-based copy when the
+        // Clipboard API is unavailable (plain-HTTP deployments) or when the
+        // write is rejected — e.g. the OSC 52 response arriving outside the
+        // original keydown event's activation ("user gesture" requirement).
+        void copyTextToClipboard(text).then((copied) => {
+          if (!copied) {
+            console.warn("[dashboard clipboard] OSC 52 write failed");
+          }
         });
       } catch {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
@@ -655,11 +659,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (copyModifier && ev.key.toLowerCase() === "c") {
         const sel = term.getSelection();
         if (sel) {
-          // Direct writeText inside the keydown handler preserves the user
+          // Direct copy inside the keydown handler preserves the user
           // gesture — async round-trips through OSC 52 can lose activation
-          // and fail with "Document is not focused".
-          navigator.clipboard.writeText(sel).catch((err) => {
-            console.warn("[dashboard clipboard] direct copy failed:", err.message);
+          // and fail with "Document is not focused". copyTextToClipboard
+          // additionally covers insecure (plain-HTTP) contexts where the
+          // Clipboard API is unavailable.
+          void copyTextToClipboard(sel).then((copied) => {
+            if (!copied) {
+              console.warn("[dashboard clipboard] direct copy failed");
+            }
           });
           // Clear xterm.js's highlight after copy (matches gnome-terminal).
           term.clearSelection();

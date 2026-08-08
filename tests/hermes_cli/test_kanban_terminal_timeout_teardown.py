@@ -23,6 +23,7 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+@pytest.mark.live_system_guard_bypass
 def test_terminal_timeout_kills_previous_worker_before_retry_spawn(kanban_home):
     """A worker-side timeout must not release a live writer into a retry race."""
     previous_worker = subprocess.Popen(
@@ -130,6 +131,7 @@ def test_terminal_timeout_without_process_fingerprint_fails_closed(
         conn.close()
 
 
+@pytest.mark.live_system_guard_bypass
 def test_direct_claim_reaps_terminal_timeout_worker_first(kanban_home):
     """Manual/control-plane claims must use the same teardown boundary."""
     previous_worker = subprocess.Popen(
@@ -208,6 +210,7 @@ def test_stale_timeout_report_cannot_close_a_newer_run(kanban_home):
         conn.close()
 
 
+@pytest.mark.live_system_guard_bypass
 def test_unblocked_gave_up_timeout_reaps_worker_before_claim(kanban_home):
     """A breaker outcome must retain the timeout teardown requirement."""
     previous_worker = subprocess.Popen(

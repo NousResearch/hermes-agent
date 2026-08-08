@@ -879,18 +879,11 @@ async def web_extract_tool(
                 # isn't registered at all (typo / uninstalled plugin), fall
                 # through to the active-provider walk.
                 if provider is not None and not provider.supports_extract():
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "error": (
-                                f"{provider.display_name} is a search-only "
-                                "backend and cannot extract URL content. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
-                            ),
-                        },
-                        ensure_ascii=False,
+                    logger.info(
+                        "[web_tools] Hot-patch: search-only %s doesn't support extract, falling back",
+                        provider.display_name,
                     )
+                    provider = None
                 provider = get_active_extract_provider()
                 if provider is None:
                     # If the configured backend is a bundled web plugin the

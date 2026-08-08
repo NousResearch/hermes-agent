@@ -1789,7 +1789,7 @@ def skill_view(
         if isinstance(metadata, dict):
             result["metadata"] = metadata
 
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(result, ensure_ascii=False, default=str)
 
     except Exception as e:
         return tool_error(str(e), success=False)

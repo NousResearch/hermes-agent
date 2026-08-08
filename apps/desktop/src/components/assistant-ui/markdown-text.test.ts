@@ -306,4 +306,59 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('\\$5')
     expect(output).toContain('\\$10')
   })
+
+  it('escapes bare shell env vars in prose so they are not parsed as math', () => {
+    const input = [
+      'echo $RESULTS into $REPORT_FILE under $TEST_ROOT',
+      'progress: $VERIFIED_COUNT/$TOTAL_COUNT'
+    ].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('\\$RESULTS')
+    expect(output).toContain('\\$REPORT_FILE')
+    expect(output).toContain('\\$TEST_ROOT')
+    expect(output).toContain('\\$VERIFIED_COUNT/\\$TOTAL_COUNT')
+    // Must not leave a live `$…$` pair that remark-math would treat as math.
+    expect(output).not.toMatch(/(?<!\\)\$[A-Z][A-Z0-9_]*\//)
+  })
+
+  it('escapes ${braced} shell vars in prose', () => {
+    expect(preprocessMarkdown('export PATH="${HOME}/bin:$PATH"')).toBe(
+      'export PATH="\\${HOME}/bin:\\$PATH"'
+    )
+  })
+
+  it('leaves real math intact while escaping shell vars nearby', () => {
+    const input = 'Set $x$ then write $RESULTS; also $E=mc^2$ and $P(A)$.'
+
+    expect(preprocessMarkdown(input)).toBe('Set $x$ then write \\$RESULTS; also $E=mc^2$ and $P(A)$.')
+  })
+
+  it('does not escape short math tokens or subscripts as shell vars', () => {
+    expect(preprocessMarkdown('events $A$ and $B$, index $x_i$, product $AB$')).toBe(
+      'events $A$ and $B$, index $x_i$, product $AB$'
+    )
+  })
+
+  it('does not escape shell-looking dollars inside inline code', () => {
+    const input = 'Use `$RESULTS` and `${HOME}` literally.'
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it('does not escape shell vars inside fenced code blocks', () => {
+    const fence = '```'
+    const input = [`${fence}bash`, 'echo $RESULTS > "$REPORT_FILE"', 'echo $VERIFIED_COUNT/$TOTAL_COUNT', fence].join(
+      '\n'
+    )
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it('escapes snake_case multi-part shell vars outside fences', () => {
+    expect(preprocessMarkdown('read $report_file from $test_root')).toBe(
+      'read \\$report_file from \\$test_root'
+    )
+  })
 })

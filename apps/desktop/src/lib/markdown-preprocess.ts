@@ -271,6 +271,148 @@ function escapeCurrencyDollarsPreservingMath(text: string): string {
   return out + text.slice(copiedThrough)
 }
 
+/**
+ * Shell/env identifiers that models dump as bare `$VAR` outside code fences.
+ * remark-math with `singleDollarTextMath` pairs consecutive `$` on a line, so
+ * `$VERIFIED_COUNT/$TOTAL_COUNT` becomes italic KaTeX garbage. We escape those
+ * openers in prose while leaving real math (`$x$`, `$E=mc^2$`, `$P(A)$`) alone.
+ *
+ * Heuristic (intentionally conservative):
+ * - `${name}` — math never uses brace-expansion form
+ * - bare `NAME` that is ALL_CAPS env style: multi-segment (`REPORT_FILE`) or
+ *   single segment length ≥ 3 (`PATH`, `RESULTS`)
+ * - skip when the balanced `$…$` body is unambiguously math
+ */
+function isShellStyleIdentifier(name: string): boolean {
+  if (/^[A-Z][A-Z0-9]*(_[A-Z][A-Z0-9]*)+$/.test(name)) {
+    return true
+  }
+
+  if (/^[A-Z][A-Z0-9]{2,}$/.test(name)) {
+    return true
+  }
+
+  // Common shell snake_case multi-part vars (`report_file`, `test_root`).
+  if (/^[a-z][a-z0-9]*(_[a-z0-9]+)+$/.test(name) && name.length >= 5) {
+    return true
+  }
+
+  return false
+}
+
+function isLikelyMathBody(body: string): boolean {
+  const value = body.trim()
+
+  if (!value) {
+    return false
+  }
+
+  // TeX commands, relations, grouping — strong math signals.
+  if (/\\[A-Za-z]+/.test(value)) {
+    return true
+  }
+
+  if (/[\^&=<>]/.test(value)) {
+    return true
+  }
+
+  if (/[{}]/.test(value)) {
+    return true
+  }
+
+  // Short symbol / multi-letter math tokens: $x$, $n$, $AB$, $sin$
+  if (/^[\p{L}\p{N}]{1,3}$/u.test(value)) {
+    return true
+  }
+
+  // Subscripts: $x_i$, $x_1$, $x_{i}$
+  if (/^[\p{L}\p{N}]+_\{?[\p{L}\p{N}]+\}?$/u.test(value) && value.length <= 8) {
+    return true
+  }
+
+  // Compact fractions: $a/b$, $2/3$
+  if (/^[\p{L}\p{N}]{1,3}\s*\/\s*[\p{L}\p{N}]{1,3}$/u.test(value)) {
+    return true
+  }
+
+  // Function-like: $P(A)$, $f(x)$
+  if (/^[\p{L}]{1,4}\([^)]{0,24}\)$/u.test(value)) {
+    return true
+  }
+
+  return false
+}
+
+function mapOutsideInlineCode(text: string, transform: (segment: string) => string): string {
+  return text
+    .split(INLINE_CODE_SPLIT_RE)
+    .map(part => (part.startsWith('`') ? part : transform(part)))
+    .join('')
+}
+
+/**
+ * Escape `$VAR` / `${VAR}` shell-style dollars in prose so remark-math does
+ * not treat consecutive shell variables as a single inline math span.
+ * Inline code spans and `$$` display delimiters are left untouched.
+ */
+function escapeShellVariableDollars(text: string): string {
+  let out = ''
+  let copiedThrough = 0
+
+  for (let cursor = 0; cursor < text.length; cursor += 1) {
+    if (text[cursor] !== '$' || isEscapedAt(text, cursor)) {
+      continue
+    }
+
+    // Display-math `$$` — never treat either dollar as a shell opener.
+    if (text[cursor + 1] === '$') {
+      cursor += 1
+
+      continue
+    }
+
+    const next = text[cursor + 1] || ''
+
+    // `${var}` brace form — not used by math; always escape the opener.
+    if (next === '{') {
+      const closeBrace = text.indexOf('}', cursor + 2)
+
+      if (closeBrace === -1) {
+        continue
+      }
+
+      const name = text.slice(cursor + 2, closeBrace)
+
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+        continue
+      }
+
+      out += `${text.slice(copiedThrough, cursor)}\\$`
+      copiedThrough = cursor + 1
+
+      continue
+    }
+
+    // Bare identifier after `$`.
+    const nameMatch = text.slice(cursor + 1).match(/^([A-Za-z_][A-Za-z0-9_]*)/)
+
+    if (!nameMatch || !isShellStyleIdentifier(nameMatch[1])) {
+      continue
+    }
+
+    const closingIndex = findClosingSingleDollar(text, cursor)
+
+    if (closingIndex !== -1 && isLikelyMathBody(text.slice(cursor + 1, closingIndex))) {
+      continue
+    }
+
+    out += `${text.slice(copiedThrough, cursor)}\\$`
+    copiedThrough = cursor + 1
+  }
+
+  return out + text.slice(copiedThrough)
+}
+
 function normalizeDisplayMathForMarkdown(text: string): string {
   const lines = text.split('\n')
 
@@ -314,8 +456,11 @@ function normalizeProseMath(text: string): string {
   // its compact `$$body$$` rewrite makes the first equation line metadata
   // and leaks the trailing `$$` into KaTeX's error fallback.
   const normalized = normalizeMathDelimiters(normalizeDisplayMathForMarkdown(text))
+  const withCurrency = escapeCurrencyDollarsPreservingMath(normalized)
 
-  return escapeCurrencyDollarsPreservingMath(normalized)
+  // Shell vars only in non-code prose — inside `` `$HOME` `` the dollar must
+  // stay literal so the rendered inline code still shows `$HOME`, not `\$HOME`.
+  return mapOutsideInlineCode(withCurrency, escapeShellVariableDollars)
 }
 
 function extend(out: string[], lines: string[]) {

@@ -26,6 +26,7 @@ import { FocusManager } from './focus.js'
 import { emptyFrame, type Frame, type FrameEvent } from './frame.js'
 import { dispatchClick, dispatchHover, dispatchMouse } from './hit-test.js'
 import { applyHyperlinkHoverHighlight } from './hyperlinkHover.js'
+import { type InlineMouseTarget, resolveInlineMouseTarget } from './inline-mouse.js'
 import instances from './instances.js'
 import { LogUpdate } from './log-update.js'
 import { nodeCache } from './node-cache.js'
@@ -278,6 +279,16 @@ export default class Ink {
   // tracking, and tmux users routinely opt into the hover-free 'wheel'
   // subset to silence prompt-row clipboard probes).
   private altScreenMouseTracking: MouseTrackingMode = 'off'
+  // Set by <InlineMouse> via setInlineMouseActive(). True when the inline
+  // (non-alt-screen) TUI has armed mouse tracking and wants mouse events
+  // routed through hit-testing. Unlike altScreenActive it does NOT change
+  // rendering — the frame still flows in the primary buffer — it only
+  // opens the mouse-dispatch path with bottom-anchored coordinate
+  // translation (see resolveMouseTarget / inline-mouse.ts).
+  private inlineMouseActive = false
+  // Which preset inline mouse tracking armed, for resize/stdin-gap
+  // re-assertion (mirrors altScreenMouseTracking for the inline path).
+  private inlineMouseTracking: MouseTrackingMode = 'off'
   // True when the previous frame's screen buffer cannot be trusted for
   // blit — selection overlay mutated it, resetFramesForAltScreen()
   // replaced it with blanks, or forceRedraw() reset it to 0×0. Forces
@@ -1320,6 +1331,19 @@ export default class Ink {
   }
 
   /**
+   * Enable/disable inline (non-alt-screen) mouse dispatch. Called by
+   * <InlineMouse> once it has armed SGR mouse tracking in the primary
+   * buffer. Unlike setAltScreenActive this does NOT touch altScreenActive
+   * or the renderer — the frame keeps flowing inline — it only opens the
+   * mouse-dispatch path (resolveMouseTarget) and records the preset so
+   * reassertTerminalModes can re-arm tracking after a resize/stdin gap.
+   */
+  setInlineMouseActive(active: boolean, mouseTracking: MouseTrackingMode = 'off'): void {
+    this.inlineMouseActive = active && mouseTracking !== 'off'
+    this.inlineMouseTracking = this.inlineMouseActive ? mouseTracking : 'off'
+  }
+
+  /**
    * Switch mouse tracking preset at runtime while the alt screen is
    * active. Always issues DISABLE first so switching between subsets (e.g.
    * 'all' → 'wheel') clears mode 1003 instead of leaving it asserted —
@@ -1396,6 +1420,13 @@ export default class Ink {
     }
 
     if (!this.altScreenActive) {
+      // Inline mode arms mouse tracking without the alt screen. Re-assert
+      // its preset on the same stdin-gap/resize triggers so a terminal
+      // reset can't silently kill inline composer click-to-position.
+      if (this.inlineMouseActive) {
+        this.options.stdout.write(DISABLE_MOUSE_TRACKING + enableMouseTrackingFor(this.inlineMouseTracking))
+      }
+
       return
     }
 
@@ -1871,23 +1902,65 @@ export default class Ink {
   }
 
   /**
+   * Resolve an incoming absolute terminal (col, row) into frame-local screen
+   * coordinates for hit-testing, or null when the event must be ignored.
+   *
+   * Alt-screen: the frame fills the viewport, so a terminal cell maps 1:1 to
+   * a screen cell and coordinates pass through untranslated.
+   *
+   * Inline: the frame is bottom-anchored in the primary buffer. When mouse
+   * tracking is armed (<InlineMouse> → setInlineMouseActive), translate the
+   * absolute row into a frame-local row so nodeCache rects — recorded in
+   * screen coordinates — still hit-test correctly. `clamp` keeps a captured
+   * drag/release alive past the frame edges (see resolveInlineMouseTarget).
+   *
+   * Returns null (event dropped) when neither mode is active or, for a
+   * non-clamped press/click, when the point falls in committed scrollback.
+   */
+  private resolveMouseTarget(col: number, row: number, clamp = false): InlineMouseTarget | null {
+    if (this.altScreenActive) {
+      return { col, row }
+    }
+
+    if (!this.inlineMouseActive) {
+      return null
+    }
+
+    return resolveInlineMouseTarget(
+      col,
+      row,
+      {
+        frameHeight: this.frontFrame.screen.height,
+        frameWidth: this.frontFrame.screen.width,
+        terminalRows: this.terminalRows
+      },
+      clamp
+    )
+  }
+
+  /**
    * Hit-test the rendered DOM tree at (col, row) and bubble a ClickEvent
    * from the deepest hit node up through ancestors with onClick handlers.
-   * Returns true if a DOM handler consumed the click. Gated on
-   * altScreenActive — clicks only make sense with a fixed viewport where
-   * nodeCache rects map 1:1 to terminal cells (no scrollback offset).
+   * Returns true if a DOM handler consumed the click. In alt-screen the
+   * viewport maps 1:1 to terminal cells; in inline mode the bottom-anchored
+   * frame is translated first (resolveMouseTarget) so both paths hit-test in
+   * screen coordinates.
    */
   dispatchClick(col: number, row: number): boolean {
-    if (!this.altScreenActive) {
+    const target = this.resolveMouseTarget(col, row)
+
+    if (!target) {
       return false
     }
 
-    const blank = isEmptyCellAt(this.frontFrame.screen, col, row)
+    const blank = isEmptyCellAt(this.frontFrame.screen, target.col, target.row)
 
-    return dispatchClick(this.rootNode, col, row, blank)
+    return dispatchClick(this.rootNode, target.col, target.row, blank)
   }
   dispatchMouseDown(col: number, row: number, button: number): dom.DOMElement | undefined {
-    if (!this.altScreenActive) {
+    const target = this.resolveMouseTarget(col, row)
+
+    if (!target) {
       return undefined
     }
 
@@ -1895,33 +1968,45 @@ export default class Ink {
 
     return dispatchMouse(
       this.rootNode,
-      col,
-      row,
+      target.col,
+      target.row,
       'onMouseDown',
       button,
-      isEmptyCellAt(this.frontFrame.screen, col, row)
+      isEmptyCellAt(this.frontFrame.screen, target.col, target.row)
     )
   }
   dispatchMouseUp(target: dom.DOMElement, col: number, row: number, button: number): void {
-    if (!this.altScreenActive) {
+    const at = this.resolveMouseTarget(col, row, true)
+
+    if (!at) {
       return
     }
 
     this.stopSelectionAutoScroll()
-    dispatchMouse(this.rootNode, col, row, 'onMouseUp', button, isEmptyCellAt(this.frontFrame.screen, col, row), target)
+    dispatchMouse(
+      this.rootNode,
+      at.col,
+      at.row,
+      'onMouseUp',
+      button,
+      isEmptyCellAt(this.frontFrame.screen, at.col, at.row),
+      target
+    )
   }
   dispatchMouseDrag(target: dom.DOMElement, col: number, row: number, button: number): void {
-    if (!this.altScreenActive) {
+    const at = this.resolveMouseTarget(col, row, true)
+
+    if (!at) {
       return
     }
 
     dispatchMouse(
       this.rootNode,
-      col,
-      row,
+      at.col,
+      at.row,
       'onMouseDrag',
       button,
-      isEmptyCellAt(this.frontFrame.screen, col, row),
+      isEmptyCellAt(this.frontFrame.screen, at.col, at.row),
       target
     )
   }

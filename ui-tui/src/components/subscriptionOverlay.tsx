@@ -455,7 +455,7 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
 
   rows.push({ label: 'Close', run: onClose })
 
-  const sel = useMenu(rows, onClose)
+  const { sel, select, activate } = useMenu(rows, onClose)
 
   return (
     <Box flexDirection="column">
@@ -504,7 +504,16 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
 
       <Text />
       {rows.map((row, i) => (
-        <MenuRow active={sel === i} index={i + 1} key={row.label} label={row.label} t={t} />
+        <MenuRow
+          active={sel === i}
+          index={i + 1}
+          index0={i}
+          key={row.label}
+          label={row.label}
+          onActivate={activate}
+          onSelect={select}
+          t={t}
+        />
       ))}
 
       <Text />
@@ -550,7 +559,7 @@ function PickerScreen({ onPatch, overlay, t }: ScreenProps) {
 
   rows.push({ label: 'Back', run: back })
 
-  const sel = useMenu(rows, back)
+  const { sel, select, activate } = useMenu(rows, back)
 
   return (
     <Box flexDirection="column">
@@ -563,7 +572,16 @@ function PickerScreen({ onPatch, overlay, t }: ScreenProps) {
       <Text />
       {choices.length === 0 && <Text color={t.color.muted}>No other plans are available to switch to right now.</Text>}
       {rows.map((row, i) => (
-        <MenuRow active={sel === i} index={i + 1} key={row.label} label={row.label} t={t} />
+        <MenuRow
+          active={sel === i}
+          index={i + 1}
+          index0={i}
+          key={row.label}
+          label={row.label}
+          onActivate={activate}
+          onSelect={select}
+          t={t}
+        />
       ))}
       <Text />
       {footer('↑/↓ select · Enter preview · Esc back', t)}
@@ -658,7 +676,7 @@ function ConfirmScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
   }
 
   const rows: MenuRowSpec[] = primary ? [primary, { label: 'Back', run: back }] : [{ label: 'Back', run: back }]
-  const sel = useMenu(rows, back)
+  const { sel, select, activate } = useMenu(rows, back)
 
   // Chip contrasts an immediate charge vs a period-end schedule at a glance.
   const chip =
@@ -731,7 +749,16 @@ function ConfirmScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
 
       <Text />
       {rows.map((row, i) => (
-        <ActionRow active={sel === i} color={row.color} key={row.label} label={row.label} t={t} />
+        <ActionRow
+          active={sel === i}
+          color={row.color}
+          index0={i}
+          key={row.label}
+          label={row.label}
+          onActivate={activate}
+          onSelect={select}
+          t={t}
+        />
       ))}
       <Text />
       {footer('↑/↓ select · Enter confirm · Esc back', t)}
@@ -827,7 +854,7 @@ function ResultScreen({ onClose, overlay, t }: Omit<ScreenProps, 'onPatch'>) {
       ]
     : [{ label: 'Close', run: onClose }]
 
-  const sel = useMenu(rows, onClose)
+  const { sel, select, activate } = useMenu(rows, onClose)
 
   return (
     <Box flexDirection="column">
@@ -840,7 +867,16 @@ function ResultScreen({ onClose, overlay, t }: Omit<ScreenProps, 'onPatch'>) {
       )}
       <Text />
       {rows.map((row, i) => (
-        <ActionRow active={sel === i} color={row.color} key={row.label} label={row.label} t={t} />
+        <ActionRow
+          active={sel === i}
+          color={row.color}
+          index0={i}
+          key={row.label}
+          label={row.label}
+          onActivate={activate}
+          onSelect={select}
+          t={t}
+        />
       ))}
       <Text />
       {footer('↑/↓ select · Enter · Esc close', t)}
@@ -943,7 +979,7 @@ function StepUpScreen({ onPatch, overlay, t }: ScreenProps) {
           ]
         : []
 
-  const sel = useMenu(rows, back)
+  const { sel, select, activate } = useMenu(rows, back)
 
   return (
     <Box flexDirection="column">
@@ -969,7 +1005,16 @@ function StepUpScreen({ onPatch, overlay, t }: ScreenProps) {
       {phase === 'resuming' && <Text color={t.color.muted}>Applying your change…</Text>}
       <Text />
       {rows.map((row, i) => (
-        <ActionRow active={sel === i} color={row.color} key={row.label} label={row.label} t={t} />
+        <ActionRow
+          active={sel === i}
+          color={row.color}
+          index0={i}
+          key={row.label}
+          label={row.label}
+          onActivate={activate}
+          onSelect={select}
+          t={t}
+        />
       ))}
       <Text />
       {footer(

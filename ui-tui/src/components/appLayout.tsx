@@ -1,9 +1,9 @@
 // Importing the apps barrel registers the reference widget apps at startup.
 import '../sdk/apps/index.js'
 
-import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
+import { AlternateScreen, Box, InlineMouse, NoSelect, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { Fragment, memo, useEffect, useMemo, useRef } from 'react'
+import { memo, useEffect, useMemo, useRef } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
@@ -11,11 +11,12 @@ import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStor
 import { $petBox } from '../app/petFlashStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
-import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
+import { INLINE_MODE, MOUSE_TRACKING, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
+  composerLocalPoint,
   composerPromptWidth,
   inputVisualHeight,
   stableComposerColumns
@@ -293,36 +294,51 @@ const ComposerPane = memo(function ComposerPane({
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
 
-  const captureInputDrag = (e: GutterMouseEvent) => {
+  // Presses that land on the composer row but OUTSIDE the TextInput box — the
+  // prompt gutter, the trailing gap right of the input — bubble up to here.
+  // Seed the caret at the clicked cell rather than at offset 0: the parent row
+  // shares the input's origin, so composerLocalPoint's 'shared' mapping lands
+  // the caret on the row/column actually clicked (#30536).
+  const captureFromPromptRow = (e: GutterMouseEvent) => {
     if (e.button !== 0) {
       return
     }
 
     e.stopImmediatePropagation?.()
-    inputMouseRef.current?.startAtBeginning()
+    const at = composerLocalPoint(e, promptWidth, 'shared')
+    inputMouseRef.current?.startAt(at.row, at.col)
   }
 
-  // Drag origin matches the input box's top-left, so localRow / localCol
-  // map directly into TextInput coords (after backing out the prompt cell).
+  // Same, for a press on the blank spacer row above the composer: only the
+  // column is parent-aligned, so the row is pinned to 0.
+  const captureFromSpacer = (e: GutterMouseEvent) => {
+    if (e.button !== 0) {
+      return
+    }
+
+    e.stopImmediatePropagation?.()
+    const at = composerLocalPoint(e, promptWidth, 'row-zero')
+    inputMouseRef.current?.startAt(at.row, at.col)
+  }
+
   const dragFromPromptRow = (e: GutterMouseEvent) => {
     if (e.button !== 0) {
       return
     }
 
     e.stopImmediatePropagation?.()
-    inputMouseRef.current?.dragAt(e.localRow ?? 0, (e.localCol ?? 0) - promptWidth)
+    const at = composerLocalPoint(e, promptWidth, 'shared')
+    inputMouseRef.current?.dragAt(at.row, at.col)
   }
 
-  // Spacer rows live on a different vertical origin; only the column is
-  // parent-aligned with the input. Force row=0 so vertical drags can't
-  // jump the cursor to the wrong wrapped line.
   const dragFromSpacer = (e: GutterMouseEvent) => {
     if (e.button !== 0) {
       return
     }
 
     e.stopImmediatePropagation?.()
-    inputMouseRef.current?.dragAt(0, (e.localCol ?? 0) - promptWidth)
+    const at = composerLocalPoint(e, promptWidth, 'row-zero')
+    inputMouseRef.current?.dragAt(at.row, at.col)
   }
 
   const endInputDrag = () => inputMouseRef.current?.end()
@@ -359,7 +375,7 @@ const ComposerPane = memo(function ComposerPane({
           {status.stickyPrompt}
         </Text>
       ) : (
-        <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag} />
+        <Box height={1} onMouseDown={captureFromSpacer} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag} />
       )}
 
       <StatusRulePane at="top" composer={composer} status={status} />
@@ -398,7 +414,7 @@ const ComposerPane = memo(function ComposerPane({
             ))}
 
             <Box
-              onMouseDown={captureInputDrag}
+              onMouseDown={captureFromPromptRow}
               onMouseDrag={dragFromPromptRow}
               onMouseUp={endInputDrag}
               position="relative"
@@ -526,9 +542,19 @@ export const AppLayout = memo(function AppLayout({
 
   // Inline mode skips AlternateScreen so the host terminal's native
   // scrollback captures rows scrolled off the top; composer + progress
-  // stay anchored via normal flex-column flow.
-  const Shell = INLINE_MODE ? Fragment : AlternateScreen
-  const shellProps = INLINE_MODE ? {} : { mouseTracking }
+  // stay anchored via normal flex-column flow. It still arms mouse tracking
+  // via <InlineMouse> (a Fragment with the DEC side effect) so composer
+  // click-to-position works in the primary buffer too (issue #30536).
+  //
+  // Termux keeps its mouse-off default (native touch selection must not be
+  // intercepted): fall back to the boot MOUSE_TRACKING preset there, which
+  // is 'off' unless the user explicitly set HERMES_TUI_MOUSE_TRACKING. Every
+  // other inline host honors the runtime `display.mouse_tracking` config.
+  const Shell = INLINE_MODE ? InlineMouse : AlternateScreen
+
+  const shellProps = {
+    mouseTracking: INLINE_MODE && TERMUX_TUI_MODE ? MOUSE_TRACKING : mouseTracking
+  }
 
   return (
     <Shell {...shellProps}>

@@ -1087,7 +1087,7 @@ export function TextInput({
     mouseApiRef.current = {
       dragAt: (row, col) => dragMouseSelection(offsetFromPosition(display, row, col, columns)),
       end: endMouseSelection,
-      startAtBeginning: () => startMouseSelection(0)
+      startAt: (row, col) => startMouseSelection(offsetFromPosition(display, row, col, columns))
     }
   }
 
@@ -1551,5 +1551,12 @@ export const shouldPassThroughToGlobalHandler = (
 export interface TextInputMouseApi {
   dragAt: (row: number, col: number) => void
   end: () => void
-  startAtBeginning: () => void
+  /**
+   * Seed a mouse selection at a TextInput-local (row, col) — the press twin of
+   * `dragAt`. Coordinates are input-box relative, so callers on the parent
+   * composer row must back out the prompt gutter before calling. Out-of-range
+   * values are clamped by `offsetFromPosition`, so a press on the prompt cell
+   * lands at column 0 of that visual row rather than at offset 0 of the buffer.
+   */
+  startAt: (row: number, col: number) => void
 }

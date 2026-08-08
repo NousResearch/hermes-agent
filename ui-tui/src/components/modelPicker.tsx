@@ -12,6 +12,7 @@ import type { Theme } from '../theme.js'
 
 import { OverlayHint, useOverlayKeys, windowItems } from './overlayControls.js'
 import { chipRowProps, clampOverlayWidth } from './overlayPrimitives.js'
+import { SelectableRow } from './selectableRow.js'
 
 const VISIBLE = 12
 const MIN_WIDTH = 40
@@ -599,15 +600,58 @@ export function ModelPicker({
             const dimmed = p?.authenticated === false
 
             return row ? (
-              <Text
-                color={dimmed ? t.color.label : t.color.muted}
-                {...chipRowProps(t, providerIdx === idx)}
+              <SelectableRow
+                index={idx}
+                isActive={providerIdx === idx}
                 key={p?.slug ?? `row-${idx}`}
-                wrap="truncate-end"
+                onActivate={n => {
+                  const target = filteredProviderRows[n]?.provider
+
+                  if (!target) {
+                    return
+                  }
+
+                  if (target.authenticated === false) {
+                    // api_key providers: prompt for key inline (mirror Enter).
+                    if (target.auth_type === 'api_key' && target.key_env) {
+                      const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, target)
+
+                      if (fullProviderIdx >= 0) {
+                        setProviderIdx(fullProviderIdx)
+                      }
+
+                      setStage('key')
+                      setKeyInput('')
+                      setKeyError('')
+                      setFilter('')
+                    }
+
+                    // Other auth types: no-op (warning tells them to run hermes model)
+                    return
+                  }
+
+                  const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, target)
+
+                  if (fullProviderIdx >= 0) {
+                    setProviderIdx(fullProviderIdx)
+                  }
+
+                  setStage('model')
+                  setModelIdx(0)
+                  setFilter('')
+                }}
+                onSelect={setProviderIdx}
+                width={width}
               >
-                {providerIdx === idx ? '▸ ' : '  '}
-                {idx + 1}. {row}
-              </Text>
+                <Text
+                  color={dimmed ? t.color.label : t.color.muted}
+                  {...chipRowProps(t, providerIdx === idx)}
+                  wrap="truncate-end"
+                >
+                  {providerIdx === idx ? '▸ ' : '  '}
+                  {idx + 1}. {row}
+                </Text>
+              </SelectableRow>
             ) : (
               <Text color={t.color.muted} key={`pad-${i}`} wrap="truncate-end">
                 {' '}
@@ -671,15 +715,29 @@ export function ModelPicker({
         const prefix = modelIdx === idx ? '▸ ' : row === currentModel ? '* ' : '  '
 
         return (
-          <Text
-            color={t.color.muted}
-            {...chipRowProps(t, modelIdx === idx)}
+          <SelectableRow
+            index={idx}
+            isActive={modelIdx === idx}
             key={`${provider?.slug ?? 'prov'}:${idx}:${row}`}
-            wrap="truncate-end"
+            onActivate={n => {
+              const model = models[n]
+
+              if (provider && model) {
+                onSelect(
+                  `${model} --provider ${provider.slug}${allowPersistGlobal && persistGlobal ? ' --global' : ` ${TUI_SESSION_MODEL_FLAG}`}`
+                )
+              } else {
+                setStage('provider')
+              }
+            }}
+            onSelect={setModelIdx}
+            width={width}
           >
-            {prefix}
-            {idx + 1}. {row}
-          </Text>
+            <Text color={t.color.muted} {...chipRowProps(t, modelIdx === idx)} wrap="truncate-end">
+              {prefix}
+              {idx + 1}. {row}
+            </Text>
+          </SelectableRow>
         )
       })}
 

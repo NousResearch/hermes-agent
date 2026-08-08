@@ -131,7 +131,7 @@ function OverviewScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
   }
 
   const rows: MenuRowSpec[] = items.map((label, i) => ({ label, run: () => choose(i) }))
-  const sel = useMenu(rows, onClose)
+  const { activate, sel, select } = useMenu(rows, onClose)
 
   const auto = autoReloadLine(s)
   // Balance leads, in the title — the first thing seen (review feedback).
@@ -170,7 +170,16 @@ function OverviewScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
 
       <Text />
       {items.map((label, i) => (
-        <MenuRow active={sel === i} index={i + 1} key={label} label={label} t={t} />
+        <MenuRow
+          active={sel === i}
+          index={i + 1}
+          index0={i}
+          key={label}
+          label={label}
+          onActivate={activate}
+          onSelect={select}
+          t={t}
+        />
       ))}
 
       <Text />
@@ -361,7 +370,16 @@ function BuyScreen({ ctx, onPatch, s, t }: ScreenProps) {
         </Text>
         <Text />
         {rows.map((label, i) => (
-          <MenuRow active={cSel === i} index={i + 1} key={label} label={label} t={t} />
+          <MenuRow
+            active={cSel === i}
+            index={i + 1}
+            index0={i}
+            key={label}
+            label={label}
+            onActivate={choose}
+            onSelect={setSel}
+            t={t}
+          />
         ))}
         {error && <Text color={t.color.error}>{error}</Text>}
         <Text />
@@ -381,7 +399,16 @@ function BuyScreen({ ctx, onPatch, s, t }: ScreenProps) {
       <Text color={t.color.muted}>{payLine}</Text>
       <Text />
       {rows.map((label, i) => (
-        <MenuRow active={cSel === i} index={i + 1} key={label} label={label} t={t} />
+        <MenuRow
+          active={cSel === i}
+          index={i + 1}
+          index0={i}
+          key={label}
+          label={label}
+          onActivate={choose}
+          onSelect={setSel}
+          t={t}
+        />
       ))}
       {error && <Text color={t.color.error}>{error}</Text>}
       <Text />
@@ -487,8 +514,23 @@ function ConfirmScreen({
       )}
       <Text color={t.color.muted}>By confirming, you allow Nous Research to charge your card.</Text>
       <Text />
-      <ActionRow active={sel === 0} color={t.color.ok} label={`Pay $${amount} now`} t={t} />
-      <ActionRow active={sel === 1} label="Cancel" t={t} />
+      <ActionRow
+        active={sel === 0}
+        color={t.color.ok}
+        index0={0}
+        label={`Pay $${amount} now`}
+        onActivate={n => (n === 0 ? pay() : back())}
+        onSelect={setSel}
+        t={t}
+      />
+      <ActionRow
+        active={sel === 1}
+        index0={1}
+        label="Cancel"
+        onActivate={n => (n === 0 ? pay() : back())}
+        onSelect={setSel}
+        t={t}
+      />
       <Text />
       {footer('↑/↓ select · Enter confirm · Y/N quick · Esc back', t)}
     </Box>
@@ -641,7 +683,15 @@ function StepUpScreen({
         </Text>
         <Text color={t.color.text}>Your ${amount} top-up is ready to finish.</Text>
         <Text />
-        <ActionRow active color={t.color.ok} label="Press Enter to resume" t={t} />
+        <ActionRow
+          active
+          color={t.color.ok}
+          index0={0}
+          label="Press Enter to resume"
+          onActivate={() => resume()}
+          onSelect={() => {}}
+          t={t}
+        />
         <Text />
         {footer('Enter resume · Esc cancel', t)}
       </Box>
@@ -672,8 +722,23 @@ function StepUpScreen({
         It opens your browser to authorize, then your ${amount} top-up picks up right here.
       </Text>
       <Text />
-      <ActionRow active={sel === 0} color={t.color.ok} label="Allow Remote Spending" t={t} />
-      <ActionRow active={sel === 1} label="Not now" t={t} />
+      <ActionRow
+        active={sel === 0}
+        color={t.color.ok}
+        index0={0}
+        label="Allow Remote Spending"
+        onActivate={n => (n === 0 ? allow() : decline())}
+        onSelect={setSel}
+        t={t}
+      />
+      <ActionRow
+        active={sel === 1}
+        index0={1}
+        label="Not now"
+        onActivate={n => (n === 0 ? allow() : decline())}
+        onSelect={setSel}
+        t={t}
+      />
       <Text />
       {footer('↑/↓ select · Enter confirm · Y/N quick · Esc cancel', t)}
     </Box>
@@ -896,8 +961,11 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
         <ActionRow
           active={!editingField && row - FIELD_ROWS === i}
           color={actionColors[label] ?? t.color.text}
+          index0={i}
           key={label}
           label={label}
+          onActivate={n => onAction(actionRows[n] ?? 'Cancel')}
+          onSelect={n => setRow(n + FIELD_ROWS)}
           t={t}
         />
       ))}
@@ -923,7 +991,7 @@ function LimitScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
   }
 
   const rows: MenuRowSpec[] = labels.map((label, i) => ({ label, run: () => choose(i) }))
-  const sel = useMenu(rows, () => onPatch({ screen: 'overview' }))
+  const { activate, sel, select } = useMenu(rows, () => onPatch({ screen: 'overview' }))
 
   const cap = s.monthly_cap
 
@@ -941,7 +1009,16 @@ function LimitScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
       <Text color={t.color.muted}>The monthly limit is set on the portal — shown here read-only.</Text>
       <Text />
       {labels.map((label, i) => (
-        <MenuRow active={sel === i} index={i + 1} key={label} label={label} t={t} />
+        <MenuRow
+          active={sel === i}
+          index={i + 1}
+          index0={i}
+          key={label}
+          label={label}
+          onActivate={activate}
+          onSelect={select}
+          t={t}
+        />
       ))}
       <Text />
       {footer(`↑/↓ select · 1-${labels.length} quick pick · Enter confirm · Esc back`, t)}

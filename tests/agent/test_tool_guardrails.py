@@ -177,3 +177,144 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
 
 
 
+
+# ── guardrail lifecycle hook emission ───────────────────────────────────────
+
+import pytest  # noqa: E402
+
+from hermes_cli.plugins import VALID_HOOKS, get_plugin_manager  # noqa: E402
+
+
+@pytest.fixture()
+def captured_guardrail_hooks():
+    """Capture guardrail_block/guardrail_halt firings; restore the manager."""
+    manager = get_plugin_manager()
+    fired = []
+
+    def _capture(event):
+        def _cb(**kwargs):
+            fired.append((event, kwargs))
+        return _cb
+
+    for event in ("guardrail_block", "guardrail_halt"):
+        manager._hooks.setdefault(event, []).append(_capture(event))
+    try:
+        yield fired
+    finally:
+        for event in ("guardrail_block", "guardrail_halt"):
+            manager._hooks[event] = [
+                cb for cb in manager._hooks.get(event, [])
+                if not getattr(cb, "__name__", "") == "_cb"
+            ]
+
+
+def _hard_stop_controller(**overrides):
+    return ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, **overrides)
+    )
+
+
+def test_guardrail_events_registered_as_valid_hooks():
+    assert "guardrail_block" in VALID_HOOKS
+    assert "guardrail_halt" in VALID_HOOKS
+
+
+def test_exact_failure_block_fires_guardrail_block_hook(captured_guardrail_hooks):
+    controller = _hard_stop_controller()
+    args = {"command": "false"}
+    for _ in range(5):
+        controller.before_call("terminal", args)
+        controller.after_call("terminal", args, '{"exit_code": 1}', failed=True)
+
+    assert captured_guardrail_hooks == []  # nothing below the block threshold
+    decision = controller.before_call("terminal", args)
+    assert decision.action == "block"
+    assert decision.code == "repeated_exact_failure_block"
+    assert len(captured_guardrail_hooks) == 1
+    event, kwargs = captured_guardrail_hooks[0]
+    assert event == "guardrail_block"
+    assert kwargs["tool_name"] == "terminal"
+    assert kwargs["code"] == "repeated_exact_failure_block"
+    assert kwargs["count"] == 5
+    assert kwargs["action"] == "block"
+    assert kwargs["message"] == decision.message
+
+
+def test_no_progress_block_fires_guardrail_block_hook(captured_guardrail_hooks):
+    controller = _hard_stop_controller()
+    args = {"query": "same"}
+    for _ in range(5):
+        controller.before_call("web_search", args)
+        controller.after_call("web_search", args, "same result", failed=False)
+
+    decision = controller.before_call("web_search", args)
+    assert decision.action == "block"
+    assert decision.code == "idempotent_no_progress_block"
+    assert [event for event, _ in captured_guardrail_hooks] == ["guardrail_block"]
+    assert captured_guardrail_hooks[0][1]["count"] == 5
+
+
+def test_same_tool_failure_halt_fires_guardrail_halt_hook(captured_guardrail_hooks):
+    controller = _hard_stop_controller()
+    decision = None
+    for i in range(8):  # distinct args: streak counts the tool, not the args
+        decision = controller.after_call(
+            "terminal", {"command": f"cmd-{i}"}, "Error: boom", failed=True
+        )
+    assert decision is not None
+    assert decision.action == "halt"
+    assert decision.code == "same_tool_failure_halt"
+    assert [event for event, _ in captured_guardrail_hooks] == ["guardrail_halt"]
+    kwargs = captured_guardrail_hooks[0][1]
+    assert kwargs["tool_name"] == "terminal"
+    assert kwargs["code"] == "same_tool_failure_halt"
+    assert kwargs["count"] == 8
+    assert kwargs["action"] == "halt"
+
+
+def test_allow_and_warn_decisions_do_not_fire_hooks(captured_guardrail_hooks):
+    controller = _hard_stop_controller()
+    args = {"query": "same"}
+    for _ in range(4):  # warns from the 2nd on; below every block/halt threshold
+        assert controller.before_call("web_search", args).action == "allow"
+        decision = controller.after_call("web_search", args, "x", failed=True)
+    assert decision.action == "warn"
+    assert controller.halt_decision is None
+    assert captured_guardrail_hooks == []
+
+
+def test_loop_cap_block_fires_guardrail_block_hook(captured_guardrail_hooks):
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=False,
+            loop_caps=LoopCapConfig(max_web_searches=3),
+        )
+    )
+    for i in range(3):
+        controller.before_call("web_search", {"query": f"q{i}"})
+    decision = controller.before_call("web_search", {"query": "q4"})
+    assert decision.code == "loop_web_search_cap"
+    assert [event for event, _ in captured_guardrail_hooks] == ["guardrail_block"]
+
+
+def test_raising_hook_does_not_break_decisions():
+    manager = get_plugin_manager()
+
+    def _boom(**kwargs):
+        raise RuntimeError("hook exploded")
+
+    manager._hooks.setdefault("guardrail_block", []).append(_boom)
+    try:
+        controller = _hard_stop_controller()
+        args = {"command": "false"}
+        for _ in range(5):
+            controller.before_call("terminal", args)
+            controller.after_call("terminal", args, "x", failed=True)
+        # The block decision must still be made and returned.
+        decision = controller.before_call("terminal", args)
+        assert decision.action == "block"
+        assert controller.halt_decision is decision
+    finally:
+        manager._hooks["guardrail_block"] = [
+            cb for cb in manager._hooks["guardrail_block"] if cb is not _boom
+        ]

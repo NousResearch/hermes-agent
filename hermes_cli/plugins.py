@@ -158,6 +158,14 @@ VALID_HOOKS: Set[str] = {
     "pre_api_request",
     "post_api_request",
     "api_request_error",
+    # Tool-guardrail stops. Fired by agent.tool_guardrails when the per-turn
+    # controller records a turn-stopping decision: "guardrail_block" for
+    # action="block" (repeated exact failure, idempotent no-progress, loop
+    # caps) and "guardrail_halt" for action="halt" (same-tool failure
+    # streak). Observer-only.
+    # Kwargs: tool_name, code, count, action, message.
+    "guardrail_block",
+    "guardrail_halt",
     "on_session_start",
     "on_session_end",
     "on_session_finalize",

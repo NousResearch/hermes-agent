@@ -18,13 +18,19 @@
 #   if [ "$HERMES_NODE_AVAILABLE" = true ]; then ...; fi
 #
 # Env inputs (set before sourcing to override defaults):
-#   HERMES_NODE_MIN_VERSION   (default: 20)   — accepted on PATH
-#   HERMES_NODE_TARGET_MAJOR  (default: 22)   — installed when we install
-#   HERMES_HOME               (default: $HOME/.hermes)
+#   HERMES_NODE_MIN_VERSION        (default: 20)       — accepted on PATH
+#   HERMES_NODE_TARGET_MAJOR       (default: 22)       — installed when we install
+#   HERMES_NODE_TARGET_MIN_VERSION (default: 22.22.0)  — floor a managed tree
+#                                                        must clear; keep in
+#                                                        sync with the root
+#                                                        package.json's
+#                                                        engines.node
+#   HERMES_HOME                    (default: $HOME/.hermes)
 # ============================================================================
 
 HERMES_NODE_MIN_VERSION="${HERMES_NODE_MIN_VERSION:-20}"
 HERMES_NODE_TARGET_MAJOR="${HERMES_NODE_TARGET_MAJOR:-22}"
+HERMES_NODE_TARGET_MIN_VERSION="${HERMES_NODE_TARGET_MIN_VERSION:-22.22.0}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 HERMES_NODE_AVAILABLE=false
 
@@ -42,6 +48,44 @@ _nb_warn() { declare -F log_warn    >/dev/null 2>&1 && log_warn    "$*" || print
 
 _nb_is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
+}
+
+# Echo "<major> <minor> <patch>" for a dotted version ("v22.21.1", "22.22.0",
+# "22"). Drops the `v` prefix and any prerelease suffix, pads missing
+# components with 0. Returns non-zero (and echoes nothing) when a component is
+# not a plain integer.
+_nb_version_triple() {
+    local ver rest major minor patch part
+    ver="${1#v}"
+    ver="${ver%%-*}"
+
+    major="${ver%%.*}"
+    case "$ver"  in *.*) rest="${ver#*.}"  ;; *) rest="" ;; esac
+    minor="${rest%%.*}"
+    case "$rest" in *.*) rest="${rest#*.}" ;; *) rest="" ;; esac
+    patch="${rest%%.*}"
+
+    [ -n "$minor" ] || minor=0
+    [ -n "$patch" ] || patch=0
+    for part in "$major" "$minor" "$patch"; do
+        case "$part" in ''|*[!0-9]*) return 1 ;; esac
+    done
+    printf '%s %s %s\n' "$major" "$minor" "$patch"
+}
+
+# True when version $1 is strictly older than version $2. Fails closed: an
+# unreadable version is never reported as older, so we don't redownload a tree
+# just because we couldn't parse its `--version`.
+_nb_version_lt() {
+    local lhs rhs
+    lhs="$(_nb_version_triple "$1")" || return 1
+    rhs="$(_nb_version_triple "$2")" || return 1
+    # Intentional word splitting: each side is exactly three integer fields.
+    # shellcheck disable=SC2086
+    set -- $lhs $rhs
+    if [ "$1" -ne "$4" ]; then [ "$1" -lt "$4" ]; return; fi
+    if [ "$2" -ne "$5" ]; then [ "$2" -lt "$5" ]; return; fi
+    [ "$3" -lt "$6" ]
 }
 
 # Where to symlink node/npm/npx so they land on PATH.
@@ -345,11 +389,15 @@ _nb_managed_tool_broken() {
     return 1
 }
 
-# The managed node runs but is below HERMES_NODE_TARGET_MAJOR — an old tree
-# from a previous install (e.g. 22). Outdated heals the same way broken does,
-# so existing users get upgraded on the next heal probe, not just on a full
-# installer re-run. Mirrors _managed_node_tree_outdated() in
-# hermes_constants.py.
+# The managed node runs but is below the target — either below
+# HERMES_NODE_TARGET_MAJOR (an old tree from a previous major) or below the
+# full HERMES_NODE_TARGET_MIN_VERSION floor within the current major. The
+# second case is the one that bites: a 22.21.x tree looks current by major but
+# `.npmrc`'s engine-strict=true makes every `npm ci` reject it with
+# EBADENGINE, so `hermes update` dies while the heal declines to fire.
+# Outdated heals the same way broken does, so existing users get upgraded on
+# the next heal probe, not just on a full installer re-run. Mirrors
+# _managed_node_tree_outdated() in hermes_constants.py.
 _nb_managed_node_outdated() {
     local probe ver major
     for probe in "$HERMES_HOME/node/bin/node" "$HERMES_HOME/node/node"; do
@@ -358,6 +406,7 @@ _nb_managed_node_outdated() {
         major="${ver#v}"; major="${major%%.*}"
         case "$major" in ''|*[!0-9]*) return 1 ;; esac
         [ "$major" -lt "$HERMES_NODE_TARGET_MAJOR" ] && return 0
+        _nb_version_lt "$ver" "$HERMES_NODE_TARGET_MIN_VERSION" && return 0
         return 1
     done
     return 1

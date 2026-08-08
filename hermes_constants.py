@@ -317,7 +317,34 @@ def _candidate_node_command_names(command: str) -> list[str]:
     return [f"{base}.cmd", f"{base}.exe", base]
 
 
+def _parse_node_version(raw: str) -> tuple[int, int, int]:
+    """Parse a ``node --version`` string into a ``(major, minor, patch)`` tuple.
+
+    Tolerates the ``v`` prefix, a prerelease suffix (``v23.0.0-nightly...``)
+    and short forms (``22`` -> ``(22, 0, 0)``). Raises ``ValueError`` on
+    anything else; callers treat that as "unreadable", never as "outdated".
+    """
+    parts = raw.strip().lstrip("v").split("-", 1)[0].split(".")
+    nums = [int(part) for part in parts[:3]]
+    while len(nums) < 3:
+        nums.append(0)
+    return nums[0], nums[1], nums[2]
+
+
+# Which Node major we download when we install ("latest-v{major}.x").
 _HERMES_NODE_TARGET_MAJOR = int(os.environ.get("HERMES_NODE_TARGET_MAJOR", "22"))
+# The full floor a managed tree must clear. Keep in sync with the root
+# package.json's ``engines.node`` (and the mirror in
+# scripts/lib/node-bootstrap.sh): `.npmrc` sets `engine-strict=true`, so a tree
+# below this floor is rejected by every `npm ci` / `npm install` even though
+# its major looks current.
+_HERMES_NODE_TARGET_MIN_VERSION = os.environ.get(
+    "HERMES_NODE_TARGET_MIN_VERSION", "22.22.0"
+)
+try:
+    _HERMES_NODE_TARGET_MIN = _parse_node_version(_HERMES_NODE_TARGET_MIN_VERSION)
+except ValueError:
+    _HERMES_NODE_TARGET_MIN = (_HERMES_NODE_TARGET_MAJOR, 0, 0)
 _managed_node_heal_attempted = False
 _NODE_BOOTSTRAP_SCRIPT = Path(__file__).resolve().parent / "scripts" / "lib" / "node-bootstrap.sh"
 
@@ -552,13 +579,22 @@ def heal_hermes_managed_node() -> bool:
 
 
 def _managed_node_tree_outdated(home: Path | None = None) -> bool:
-    """Return True when the managed tree's node runs but is below the target major.
+    """Return True when the managed tree's node runs but is below the target.
 
-    An outdated managed Node (e.g. a 22 tree from an older install) heals the
-    same way a broken one does: :func:`find_hermes_node_executable` triggers
-    the once-per-process heal, which redownloads
-    ``latest-v{_HERMES_NODE_TARGET_MAJOR}.x`` — so existing users are upgraded
-    on next launch, not just on the next installer re-run. Mirrors
+    "Below the target" is two conditions, and BOTH matter:
+
+    * below ``_HERMES_NODE_TARGET_MAJOR`` — a tree from an older major.
+    * below ``_HERMES_NODE_TARGET_MIN`` — the full ``engines.node`` floor.
+      A 22.21.x tree has a current-looking major but is rejected by every
+      ``npm ci`` with ``EBADENGINE`` because `.npmrc` sets
+      ``engine-strict=true``. Comparing only the major left those users with
+      a broken ``hermes update`` and a heal that declined to fire.
+
+    An outdated managed Node heals the same way a broken one does:
+    :func:`find_hermes_node_executable` triggers the once-per-process heal,
+    which redownloads ``latest-v{_HERMES_NODE_TARGET_MAJOR}.x`` — the newest
+    release in the major, which clears the floor — so existing users are
+    upgraded on next launch, not just on the next installer re-run. Mirrors
     ``_nb_managed_node_outdated`` in ``scripts/lib/node-bootstrap.sh``.
     """
     import subprocess
@@ -579,18 +615,19 @@ def _managed_node_tree_outdated(home: Path | None = None) -> bool:
                     timeout=10,
                     creationflags=windows_hide_flags(),
                 )
-                major = int(result.stdout.decode().strip().lstrip("v").split(".")[0])
+                version = _parse_node_version(result.stdout.decode())
             except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
                 return False  # broken, not outdated — the runnable probe handles it
-            return major < _HERMES_NODE_TARGET_MAJOR
+            return version[0] < _HERMES_NODE_TARGET_MAJOR or version < _HERMES_NODE_TARGET_MIN
     return False
 
 
 def find_hermes_node_executable(command: str) -> str | None:
     """Return a Hermes-managed Node/npm executable path, healing broken trees.
 
-    Outdated trees (node major below ``_HERMES_NODE_TARGET_MAJOR``) heal the
-    same way broken ones do — the once-per-process heal redownloads the target
+    Outdated trees — below ``_HERMES_NODE_TARGET_MAJOR``, or below the full
+    ``_HERMES_NODE_TARGET_MIN`` floor within the target major — heal the same
+    way broken ones do: the once-per-process heal redownloads the target
     major, upgrading existing users on next launch rather than next reinstall.
     When the heal fails (offline, download error), an outdated-but-runnable
     tree is still returned: old Node beats no Node.

@@ -24,6 +24,8 @@ from pathlib import Path
 
 import pytest
 
+import hermes_constants
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # npm releases bundled with a Node major, newest-per-major. Not a catalog
@@ -183,3 +185,69 @@ class TestManifestMirrors:
         manifest = _root_manifest()["engines"]
         lock = json.loads((REPO_ROOT / "package-lock.json").read_text())
         assert lock["packages"][""]["engines"] == manifest
+
+
+def _manifest_node_floor() -> tuple[int, int, int]:
+    """The loosest `>=` floor `engines.node` declares."""
+    node_range = _root_manifest()["engines"]["node"]
+    floors = [
+        _parse_major_minor_patch(m.group(1))
+        for m in re.finditer(r">=\s*v?(\d+(?:\.\d+){0,2})", node_range)
+    ]
+    assert floors, f"cannot read a floor out of {node_range!r}"
+    return min(floors)
+
+
+class TestRuntimeStalenessGatesCoverTheManifest:
+    """No tree `engines.node` rejects may be judged "current" by the runtime.
+
+    The installers gate on the full floor, but the two *runtime* staleness
+    mirrors — `_managed_node_tree_outdated()` and `_nb_managed_node_outdated()`
+    — compared only the major. A Hermes-managed 22.21.x tree therefore looked
+    current, so `find_hermes_node_executable`'s self-heal declined to fire,
+    while `npm ci` rejected that same tree with EBADENGINE and `hermes update`
+    aborted with no recovery path (`required_npm_range()` returns None for a
+    node-side mismatch by design).
+
+    Behavioral, like the rest of this file: these assert the *relationship*
+    between the declared floor and the gates that have to enforce it, so the
+    next `engines.node` bump fails CI here instead of in users' installs.
+    """
+
+    def test_python_staleness_floor_covers_engines_node(self):
+        assert hermes_constants._HERMES_NODE_TARGET_MIN >= _manifest_node_floor(), (
+            f"hermes_constants._HERMES_NODE_TARGET_MIN is "
+            f"{hermes_constants._HERMES_NODE_TARGET_MIN}, below engines.node "
+            f"{_root_manifest()['engines']['node']!r}. Managed trees in the gap "
+            "are judged current but rejected by every `npm ci`."
+        )
+
+    def test_shell_mirror_declares_a_floor_covering_engines_node(self):
+        bootstrap = (REPO_ROOT / "scripts" / "lib" / "node-bootstrap.sh").read_text()
+        match = re.search(
+            r'HERMES_NODE_TARGET_MIN_VERSION="\$\{HERMES_NODE_TARGET_MIN_VERSION:-'
+            r'([^}"]+)\}"',
+            bootstrap,
+        )
+        assert match, (
+            "scripts/lib/node-bootstrap.sh does not declare a default "
+            "HERMES_NODE_TARGET_MIN_VERSION"
+        )
+        assert _parse_major_minor_patch(match.group(1)) >= _manifest_node_floor()
+
+    def test_the_two_runtime_mirrors_agree(self):
+        """Drift between the mirrors is the bug this class exists to catch."""
+        bootstrap = (REPO_ROOT / "scripts" / "lib" / "node-bootstrap.sh").read_text()
+        match = re.search(
+            r'HERMES_NODE_TARGET_MIN_VERSION="\$\{HERMES_NODE_TARGET_MIN_VERSION:-'
+            r'([^}"]+)\}"',
+            bootstrap,
+        )
+        assert match, "node-bootstrap.sh does not declare the floor"
+        assert (
+            _parse_major_minor_patch(match.group(1))
+            == hermes_constants._HERMES_NODE_TARGET_MIN
+        ), (
+            "node-bootstrap.sh and hermes_constants.py declare different Node "
+            "floors; they gate the same managed tree and must stay mirrored."
+        )

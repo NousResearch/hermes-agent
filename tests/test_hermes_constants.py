@@ -30,6 +30,17 @@ from hermes_constants import (
 )
 
 
+def _current_node_version() -> str:
+    """A ``node --version`` string that clears every managed-tree staleness gate.
+
+    Derived from the constants rather than pinned, so raising the target major
+    or the ``engines.node`` floor does not silently turn these fixtures into
+    "outdated" trees.
+    """
+    major, minor, patch = hermes_constants._HERMES_NODE_TARGET_MIN
+    return f"v{max(major, hermes_constants._HERMES_NODE_TARGET_MAJOR)}.{minor}.{patch}"
+
+
 class TestGetDefaultHermesRoot:
     """Tests for get_default_hermes_root() — Docker/custom deployment awareness."""
 
@@ -230,7 +241,7 @@ class TestNodeToolRunnable:
 
         def _heal():
             heal_called["value"] = True
-            old_node.write_text(f"#!/bin/sh\necho 'v{target}.5.1'\nexit 0\n")
+            old_node.write_text(f"#!/bin/sh\necho '{_current_node_version()}'\nexit 0\n")
             old_node.chmod(0o755)
             return True
 
@@ -257,14 +268,17 @@ class TestNodeToolRunnable:
 
         assert hermes_constants.find_hermes_node_executable("node") == str(old_node)
 
-    def test_target_major_managed_node_does_not_heal(self, tmp_path, monkeypatch):
-        """A tree already at the target major never triggers the heal."""
-        target = hermes_constants._HERMES_NODE_TARGET_MAJOR
+    def test_up_to_date_managed_node_does_not_heal(self, tmp_path, monkeypatch):
+        """A tree clearing the full floor never triggers the heal.
+
+        Being at the target *major* is not sufficient — see
+        :meth:`test_managed_tree_outdated_honors_the_full_floor`.
+        """
         profile_home = tmp_path / "profiles" / "assistant"
         managed_bin = profile_home / "node" / "bin"
         managed_bin.mkdir(parents=True)
         node = self._stub(
-            managed_bin, "node", f"#!/bin/sh\necho 'v{target}.5.1'\nexit 0\n"
+            managed_bin, "node", f"#!/bin/sh\necho '{_current_node_version()}'\nexit 0\n"
         )
 
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
@@ -277,6 +291,52 @@ class TestNodeToolRunnable:
         monkeypatch.setattr(hermes_constants, "heal_hermes_managed_node", _heal)
 
         assert hermes_constants.find_hermes_node_executable("node") == str(node)
+
+    @pytest.mark.parametrize(
+        ("version", "outdated"),
+        [
+            # The regression: a current-looking major, below engines.node.
+            ("v22.21.1", True),
+            ("v22.0.0", True),
+            # The pre-existing major gate must keep working.
+            ("v21.99.99", True),
+            # Exactly the floor, and above it, are current.
+            ("v22.22.0", False),
+            ("v22.23.4", False),
+            ("v24.1.0", False),
+            # A prerelease suffix must not make the probe unreadable.
+            ("v22.23.0-nightly20240101abcdef", False),
+            # An unreadable probe is broken, not outdated — node_tool_runnable
+            # owns that case, and redownloading on a parse failure would be a
+            # surprise network fetch.
+            ("not-a-version", False),
+        ],
+    )
+    def test_managed_tree_outdated_honors_the_full_floor(
+        self, tmp_path, monkeypatch, version, outdated
+    ):
+        """A tree `engines.node` rejects must not be judged current.
+
+        `.npmrc` sets `engine-strict=true`, so a 22.21.x managed tree fails
+        every `npm ci` with EBADENGINE. Comparing only the major called that
+        tree current, so the self-heal built to replace it never fired and
+        `hermes update` had no recovery path.
+
+        Constants are pinned here so the comparator is tested directly; that
+        they stay in sync with `package.json` is asserted separately in
+        `tests/test_engines_satisfiable.py`.
+        """
+        monkeypatch.setattr(hermes_constants, "_HERMES_NODE_TARGET_MAJOR", 22)
+        monkeypatch.setattr(hermes_constants, "_HERMES_NODE_TARGET_MIN", (22, 22, 0))
+        profile_home = tmp_path / "profiles" / "assistant"
+        managed_bin = profile_home / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        self._stub(managed_bin, "node", f"#!/bin/sh\necho '{version}'\nexit 0\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("PATH", "")
+
+        assert hermes_constants._managed_node_tree_outdated() is outdated
 
 
 

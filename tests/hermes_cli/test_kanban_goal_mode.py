@@ -99,14 +99,18 @@ def test_legacy_db_migrates_goal_columns(tmp_path, monkeypatch):
 # Goal loop logic (callback-injected, no live model)
 # ---------------------------------------------------------------------------
 
-def _patch_judge(monkeypatch, verdicts):
-    """Make judge_goal return a scripted sequence of verdicts."""
+def _patch_judge(monkeypatch, verdicts, transport_failed=False):
+    """Make judge_goal return a scripted sequence of verdicts.
+
+    ``transport_failed`` sets the 5th tuple element for every call — during a
+    real outage the judge cannot reach its own API either.
+    """
     seq = list(verdicts)
 
     def _fake_judge(goal, response, subgoals=None, background_processes=None, **_kw):
         v = seq.pop(0) if seq else "done"
         # 5-tuple contract: verdict, reason, parse failure, wait, transport failure.
-        return v, f"scripted:{v}", False, None, False
+        return v, f"scripted:{v}", False, None, transport_failed
 
     monkeypatch.setattr(goals, "judge_goal", _fake_judge)
 
@@ -126,6 +130,94 @@ def test_loop_stops_when_worker_already_completed(monkeypatch):
     )
     assert res["outcome"] == "completed_by_worker"
     assert turns == []  # no extra turns
+
+
+# ---------------------------------------------------------------------------
+# Transport circuit breaker
+#
+# A worker whose provider is unreachable used to spend its entire turn budget
+# re-running calls that could not succeed, printing the same "API call failed
+# after 3 retries" paragraph once per turn. run_conversation does not raise on
+# exhausted retries — it returns the error text as final_response — so the loop
+# has to be told, and the judge's own transport_failed flag was being discarded.
+# ---------------------------------------------------------------------------
+
+_DEAD = ("API call failed after 3 retries: Connection error.", True)
+
+
+def test_loop_blocks_early_when_api_unreachable(monkeypatch):
+    # Judge cannot reach its API either — that is what an outage looks like.
+    _patch_judge(monkeypatch, ["continue"] * 30, transport_failed=True)
+    turns = []
+    blocks = []
+
+    res = goals.run_kanban_goal_loop(
+        task_id="t1",
+        goal_text="do the thing",
+        run_turn=lambda p: (turns.append(p), _DEAD)[1],
+        task_status_fn=lambda: "running",
+        block_fn=blocks.append,
+        max_turns=20,
+        first_response=_DEAD[0],
+        first_turn_transport_failed=True,
+    )
+
+    limit = goals.DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES
+    assert res["outcome"] == "blocked_transport"
+    # The already-spent first turn counts, so the loop runs `limit` turns total
+    # rather than the full 20-turn budget.
+    assert res["turns_used"] == limit
+    assert len(turns) == limit - 1
+    assert len(blocks) == 1
+    # The card must say it was the transport, not the work.
+    assert "could not reach the model API" in blocks[0]
+    assert "Connection error" in blocks[0]
+
+
+def test_transport_failure_counter_resets_after_a_good_turn(monkeypatch):
+    """A recovered provider must not carry its old failures into the budget."""
+    _patch_judge(monkeypatch, ["continue"] * 30)  # judge itself is healthy
+    turns = []
+    blocks = []
+
+    def _run_turn(prompt):
+        turns.append(prompt)
+        # Fails right up to the edge of the breaker, then recovers.
+        return _DEAD if len(turns) <= 3 else ("made progress", False)
+
+    res = goals.run_kanban_goal_loop(
+        task_id="t1",
+        goal_text="do the thing",
+        run_turn=_run_turn,
+        task_status_fn=lambda: "running",
+        block_fn=blocks.append,
+        max_turns=8,
+        first_response=_DEAD[0],
+        first_turn_transport_failed=True,
+    )
+
+    # Without the reset this would have tripped the breaker on the 5th turn.
+    assert res["outcome"] == "blocked_budget"
+    assert res["turns_used"] == 8
+
+
+def test_run_turn_may_still_return_a_plain_string(monkeypatch):
+    """Back-compat: the callback contract is documented as str -> str."""
+    _patch_judge(monkeypatch, ["continue", "continue"])
+    turns = []
+
+    res = goals.run_kanban_goal_loop(
+        task_id="t1",
+        goal_text="do the thing",
+        run_turn=lambda p: turns.append(p) or "plain string reply",
+        task_status_fn=lambda: "running",
+        block_fn=lambda r: None,
+        max_turns=3,
+        first_response="first",
+    )
+
+    assert res["outcome"] == "blocked_budget"  # ran to budget, never tripped
+    assert turns  # and the plain string was accepted as a real reply
 
 
 

@@ -1981,6 +1981,35 @@ KANBAN_GOAL_FINALIZE_TEMPLATE = (
     "kanban_block with the reason instead."
 )
 
+# Failure reasons that mean "the API was never reached", not "the model gave a
+# bad answer". Mirrors the transport bucket in agent/error_classifier.py:
+# APIConnectionError, connect/read timeouts and TLS record errors all classify
+# as ``timeout``; ``ssl_cert_verification``, ``auth_permanent`` and ``billing``
+# are the deterministic config/quota walls that retrying cannot clear. A turn
+# that ends in one of these produced no work, so it must not be charged to the
+# turn budget as if the worker had actually replied.
+TRANSPORT_FAILURE_REASONS = frozenset({
+    "timeout",
+    "ssl_cert_verification",
+    "auth_permanent",
+    "billing",
+})
+
+
+def _split_turn_result(result) -> Tuple[str, bool]:
+    """Normalise a ``run_turn`` return into ``(text, transport_failed)``.
+
+    ``run_turn`` is documented as ``str -> str``. Callers that can tell a dead
+    transport from a real reply may return ``(text, transport_failed)`` instead
+    (the CLI adapter does — ``run_conversation`` hands back ``failed`` /
+    ``failure_reason``). Both shapes are accepted so injected test doubles and
+    any other caller keep working unchanged.
+    """
+    if isinstance(result, tuple) and len(result) == 2:
+        text, failed = result
+        return (text or ""), bool(failed)
+    return (result or ""), False
+
 
 def run_kanban_goal_loop(
     *,
@@ -1991,6 +2020,7 @@ def run_kanban_goal_loop(
     block_fn,
     max_turns: int = DEFAULT_MAX_TURNS,
     first_response: str = "",
+    first_turn_transport_failed: bool = False,
     log=None,
 ) -> Dict[str, Any]:
     """Drive a kanban worker through a Ralph-style goal loop.
@@ -2009,16 +2039,29 @@ def run_kanban_goal_loop(
     3. When the turn budget is exhausted and the worker still hasn't
        terminated the task, ``block_fn`` is invoked so the card lands in a
        sticky ``blocked`` state for human review (NOT a silent exit).
+    4. When the model API cannot be reached at all for
+       ``DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES`` turns in a row, block
+       immediately rather than spending the rest of the budget on calls that
+       cannot succeed. Both signals count: a turn the CLI reports as a
+       transport failure, and a judge that could not reach its own API.
+       Without this the loop spends every slot re-running a doomed call and
+       pastes the same "API call failed after 3 retries" paragraph into the
+       card once per turn — the interactive ``/goal`` loop has had this guard
+       (see ``DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES`` above); this is the
+       kanban counterpart.
 
     This function performs NO SessionDB persistence — a worker process is
     ephemeral, so the turn budget lives in a local counter. It is fully
     decoupled from the CLI for testability: callers inject ``run_turn``
-    (str -> str), ``task_status_fn`` (() -> str|None), and ``block_fn``
-    (reason: str -> None).
+    (str -> str, or str -> (str, transport_failed) — see
+    ``_split_turn_result``), ``task_status_fn`` (() -> str|None), and
+    ``block_fn`` (reason: str -> None). ``first_turn_transport_failed`` says
+    whether the already-completed first turn died at the transport, so a
+    provider that is down before the loop starts counts from turn one.
 
     Returns a decision dict: ``{"outcome", "turns_used", "reason"}`` where
     outcome is one of ``"completed_by_worker"``, ``"blocked_budget"``,
-    ``"blocked_by_worker"``, or ``"stopped"``.
+    ``"blocked_transport"``, ``"blocked_by_worker"``, or ``"stopped"``.
     """
 
     def _log(msg: str) -> None:
@@ -2036,6 +2079,9 @@ def run_kanban_goal_loop(
     # The first turn already consumed one unit of budget.
     turns_used = 1
     nudged_to_finalize = False
+    # Did the most recent turn die at the transport (no API contact at all)?
+    last_turn_transport_failed = bool(first_turn_transport_failed)
+    consecutive_transport_failures = 0
 
     while True:
         # Did the worker terminate the task itself this turn?
@@ -2060,10 +2106,41 @@ def run_kanban_goal_loop(
         # The kanban worker loop has no wait-barrier concept (workers finish
         # via kanban_complete / kanban_block, not by parking), so a WAIT
         # verdict is treated as CONTINUE here.
-        verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
+        verdict, reason, _parse_failed, _wait, judge_transport_failed = judge_goal(goal_text, last_response)
         if verdict == "wait":
             verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
+
+        # Transport circuit breaker. One iteration counts once, whether the
+        # worker's own turn or the judge (or both) failed to reach an API —
+        # during a real outage they die together, and this is a "was anything
+        # reachable this turn" counter, not an error tally.
+        if last_turn_transport_failed or judge_transport_failed:
+            consecutive_transport_failures += 1
+        else:
+            consecutive_transport_failures = 0
+
+        if consecutive_transport_failures >= DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES:
+            _log(
+                f"kanban goal loop: task {task_id} — model API unreachable for "
+                f"{consecutive_transport_failures} turns in a row; blocking"
+            )
+            try:
+                block_fn(
+                    f"Goal-mode worker could not reach the model API for "
+                    f"{consecutive_transport_failures} consecutive turns "
+                    f"({turns_used}/{max_turns} of the turn budget used). This is a "
+                    f"transport/config problem (network, base_url, or credentials), "
+                    f"not a problem with the card. Last error: "
+                    f"{_truncate(last_response or reason, 300)}"
+                )
+            except Exception as exc:
+                _log(f"kanban goal loop: block_fn failed ({exc})")
+            return {
+                "outcome": "blocked_transport",
+                "turns_used": turns_used,
+                "reason": "model API unreachable",
+            }
 
         if verdict == "done":
             if nudged_to_finalize:
@@ -2098,7 +2175,7 @@ def run_kanban_goal_loop(
 
         # Run another turn in the same session.
         try:
-            last_response = run_turn(prompt) or ""
+            last_response, last_turn_transport_failed = _split_turn_result(run_turn(prompt))
         except Exception as exc:
             _log(f"kanban goal loop: run_turn failed ({exc}); stopping")
             return {"outcome": "stopped", "turns_used": turns_used, "reason": f"run_turn error: {type(exc).__name__}"}
@@ -2123,7 +2200,9 @@ __all__ = [
     "DRAFT_CONTRACT_SYSTEM_PROMPT",
     "KANBAN_GOAL_CONTINUATION_TEMPLATE",
     "KANBAN_GOAL_FINALIZE_TEMPLATE",
+    "TRANSPORT_FAILURE_REASONS",
     "DEFAULT_MAX_TURNS",
+    "DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES",
     "load_goal",
     "save_goal",
     "clear_goal",

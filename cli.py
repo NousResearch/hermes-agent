@@ -17990,7 +17990,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 # Main Entry Point
 # ============================================================================
 
-def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
+def _turn_failed_at_transport(result) -> bool:
+    """Did this ``run_conversation`` result never reach the model API?
+
+    ``conversation_loop`` does not raise when it exhausts its retries — it
+    returns ``{"failed": True, "error": ..., "failure_reason": ...}`` with the
+    error text as ``final_response`` (see the max_retries_exhausted return in
+    agent/conversation_loop.py). Callers that treat that string as the model's
+    answer cannot tell "the provider is unreachable" from "the model replied",
+    which is exactly how a DNS blip burned a whole goal-mode turn budget.
+    """
+    if not isinstance(result, dict) or not result.get("failed"):
+        return False
+    from hermes_cli.goals import TRANSPORT_FAILURE_REASONS
+    return result.get("failure_reason") in TRANSPORT_FAILURE_REASONS
+
+
+def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str, first_result=None) -> None:
     """Drive a kanban goal_mode worker through the Ralph-style goal loop.
 
     Called from the quiet single-query path AFTER the worker's first turn,
@@ -17999,6 +18015,10 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     DB into ``goals.run_kanban_goal_loop``. All errors are swallowed by the
     caller — a broken goal loop must never wedge a worker, the dispatcher's
     claim TTL / crash detection is the backstop.
+
+    ``first_result`` is that first turn's raw ``run_conversation`` result, so a
+    provider that was already down before the loop started counts toward the
+    transport breaker from turn one instead of turn two.
     """
     import os as _os
 
@@ -18031,7 +18051,7 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
 
     max_turns = task.goal_max_turns or _DEF_TURNS
 
-    def _run_turn(prompt: str) -> str:
+    def _run_turn(prompt: str) -> "tuple[str, bool]":
         result = cli.agent.run_conversation(
             user_message=prompt,
             conversation_history=cli.conversation_history,
@@ -18043,9 +18063,19 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
         ):
             cli.session_id = cli.agent.session_id
         resp = result.get("final_response", "") if isinstance(result, dict) else str(result)
-        if resp:
+        transport_failed = _turn_failed_at_transport(result)
+        # A dead transport hands back the same "API call failed after N
+        # retries" paragraph every turn. Printing it once per turn is what
+        # turned a single outage into a wall of identical text on the card, so
+        # log it instead — the loop's breaker ends the run within a few turns.
+        if resp and not transport_failed:
             print(resp)
-        return resp or ""
+        elif transport_failed:
+            logger.warning(
+                "kanban goal loop: turn did not reach the API (%s)",
+                (result.get("error") if isinstance(result, dict) else None) or resp,
+            )
+        return resp or "", transport_failed
 
     def _task_status() -> "str | None":
         c = _kb.connect()
@@ -18076,6 +18106,7 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
         block_fn=_block,
         max_turns=max_turns,
         first_response=first_response or "",
+        first_turn_transport_failed=_turn_failed_at_transport(first_result),
         log=lambda m: logger.info("%s", m),
     )
 
@@ -18540,7 +18571,7 @@ def main(
                         # normal worker and every non-kanban `-q` run.
                         if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1":
                             try:
-                                _run_kanban_goal_loop_q(cli, response)
+                                _run_kanban_goal_loop_q(cli, response, first_result=result)
                             except Exception as _goal_exc:
                                 logger.debug("kanban goal loop failed: %s", _goal_exc)
 

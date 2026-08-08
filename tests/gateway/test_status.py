@@ -21,6 +21,8 @@ class TestGatewayPidState:
         assert payload["kind"] == "hermes-gateway"
         assert isinstance(payload["argv"], list)
         assert payload["argv"]
+        assert payload["hermes_home"] == str(tmp_path.resolve())
+        assert payload["hermes_profile"] is None
 
     def test_write_pid_file_is_atomic_against_concurrent_writers(self, tmp_path, monkeypatch):
         """Regression: two concurrent --replace invocations must not both win.
@@ -45,6 +47,50 @@ class TestGatewayPidState:
         # Original record is preserved.
         payload = json.loads((tmp_path / "gateway.pid").read_text())
         assert payload["pid"] == os.getpid()
+
+    def test_get_running_pid_scopes_bare_gateway_by_profile_identity(
+        self, tmp_path, monkeypatch
+    ):
+        """A shared-home sibling is preserved, while its owner can resolve it."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_PROFILE", "beta")
+        record = {
+            "pid": 4242,
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run", "--replace"],
+            "start_time": 123,
+            "hermes_home": str(tmp_path),
+            "hermes_profile": "alpha",
+        }
+        pid_path = tmp_path / "gateway.pid"
+        lock_path = tmp_path / "gateway.lock"
+        pid_path.write_text(json.dumps(record))
+        lock_path.write_text(json.dumps(record))
+        cleanup_calls = []
+
+        monkeypatch.setattr(
+            status, "is_gateway_runtime_lock_active", lambda lock_path=None: True
+        )
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda pid: "hermes gateway run --replace",
+        )
+        monkeypatch.setattr(
+            status,
+            "_cleanup_invalid_pid_path",
+            lambda *args, **kwargs: cleanup_calls.append((args, kwargs)),
+        )
+
+        assert status.get_running_pid() is None
+        assert cleanup_calls == []
+        assert pid_path.exists()
+        assert lock_path.exists()
+
+        monkeypatch.setenv("HERMES_PROFILE", "alpha")
+        assert status.get_running_pid() == 4242
 
 
     def test_runtime_lock_claims_and_releases_liveness(self, tmp_path, monkeypatch):
@@ -94,6 +140,42 @@ class TestGatewayPidState:
 
         assert status.get_running_pid_cached(ttl_seconds=60) == 2222
         assert calls["lock_active"] == 2
+
+    def test_get_running_pid_cache_is_scoped_by_profile(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_PROFILE", "alpha")
+        status._clear_running_pid_cache()
+        record = {
+            "pid": 4242,
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run", "--replace"],
+            "start_time": 123,
+            "hermes_home": str(tmp_path),
+            "hermes_profile": "alpha",
+        }
+        (tmp_path / "gateway.pid").write_text(json.dumps(record))
+        (tmp_path / "gateway.lock").write_text(json.dumps(record))
+        lock_probes = []
+
+        monkeypatch.setattr(
+            status,
+            "is_gateway_runtime_lock_active",
+            lambda lock_path=None: lock_probes.append(lock_path) or True,
+        )
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda pid: "hermes gateway run --replace",
+        )
+
+        assert status.get_running_pid_cached(ttl_seconds=60) == 4242
+        monkeypatch.setenv("HERMES_PROFILE", "beta")
+        assert status.get_running_pid_cached(ttl_seconds=60) is None
+        assert len(lock_probes) == 2
 
 
     def test_get_running_pid_falls_back_to_live_lock_record(self, tmp_path, monkeypatch):
@@ -189,6 +271,45 @@ class TestGatewayRuntimeStatus:
         payload = status.read_runtime_status()
         assert payload["pid"] == os.getpid(), "PID should be overwritten, not preserved via setdefault"
         assert payload["start_time"] != 1000.0, "start_time should be overwritten on restart"
+
+    def test_runtime_status_scopes_bare_gateway_by_profile_identity(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_PROFILE", "beta")
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "gateway_state": "running",
+                    "pid": 4242,
+                    "kind": "hermes-gateway",
+                    "argv": ["hermes", "gateway", "run", "--replace"],
+                    "start_time": 123,
+                    "hermes_home": str(tmp_path),
+                    "hermes_profile": "alpha",
+                }
+            )
+        )
+
+        monkeypatch.setattr(
+            status, "is_gateway_runtime_lock_active", lambda lock_path=None: False
+        )
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda pid: "hermes gateway run --replace",
+        )
+
+        assert status.get_running_pid() is None
+        assert state_path.exists()
+
+        status.write_runtime_status(gateway_state="running")
+        payload = status.read_runtime_status()
+        assert payload["hermes_home"] == str(tmp_path.resolve())
+        assert payload["hermes_profile"] == "beta"
 
 
     def test_runtime_status_running_pid_rejects_pid_reused_by_other_profile(self, monkeypatch):
@@ -1214,4 +1335,3 @@ class TestResolveGatewayLiveness:
         # expected_home is what stops a recycled PID belonging to another
         # profile's live gateway from being reported as this profile's.
         assert seen["expected_home"] == profile_dir
-

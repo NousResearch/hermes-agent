@@ -133,6 +133,153 @@ def chrome_debug_data_dir() -> str:
     return str(get_hermes_home() / "chrome-debug")
 
 
+def _managed_install() -> bool:
+    """True when a package manager (NixOS) owns this install's modes.
+
+    Read once per creation so the *creation* mode honours the same carve-out
+    ``hermes_cli.config._secure_dir`` applies to reconciliation. Import is
+    local and failure means "not managed": an unimportable config module is
+    the single-user source-install case, where 0700 is the right default.
+    """
+    try:
+        from hermes_cli.config import is_managed
+
+        return bool(is_managed())
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def _ensure_chrome_debug_data_dir(data_dir: str) -> None:
+    """Create the Chromium user-data-dir owner-only (0700), except managed.
+
+    ``chrome-debug`` is a real Chromium profile: Cookies, Login Data, and
+    Local Storage live here. Created with a bare ``os.makedirs`` it inherited
+    the umask and landed 0755, so every other local account could list and
+    read those stores. ``HERMES_HOME`` is 0700 by default, which contains the
+    damage — but the documented ``HERMES_HOME_MODE=0701`` hatch (so nginx can
+    traverse to a served subdirectory) makes a 0755 child genuinely
+    world-readable. Defence in depth, at the one directory where the payoff
+    for reading it is a logged-in session.
+
+    The mode is passed to ``os.makedirs`` so it is set *at creation* — no
+    window where the profile sits world-readable before a follow-up chmod.
+    Policy is then reconciled by ``hermes_cli.config._secure_dir``, the house
+    helper, rather than a hand-rolled chmod: it skips managed/NixOS installs,
+    honours ``HERMES_HOME_MODE``, and applies ``HERMES_UID``/``HERMES_GID``
+    ownership so a root-created dir does not lock out uid-mapped Docker
+    workers (#34107).
+
+    **Managed installs are skipped at creation too, not just at
+    reconciliation.** ``_secure_dir`` returns early under ``is_managed()``
+    because the NixOS module deliberately shares state group-wise, and
+    ``chrome-debug`` is *not* one of the directories its ``systemd.tmpfiles``
+    rules pre-create — it is made lazily at runtime, so a hardcoded 0700 here
+    would be the only thing setting its mode and would silently override that
+    design. The module pins ``stateDir/.hermes`` to ``2770`` (setgid,
+    group-rwx), runs the gateway with ``UMask = "0007"`` precisely so "files
+    created by the gateway should be group-writable so interactive users in
+    the hermes group can read/write them", and avoids ``chown -R`` to keep
+    the setgid bit alive. On such a host the gateway and a hostUsers CLI share
+    one ``$HERMES_HOME`` through the hermes group, so a 0700 profile created
+    by whichever ran first locks the other out of the browser entirely.
+    Omitting the explicit mode there lets the inherited setgid + umask land
+    2770, matching ``ensure_hermes_home``'s managed branch and the
+    ``logs/curator`` lazy-mkdir precedent in ``hermes_cli.config``.
+
+    Reconciling unconditionally also heals a profile an older Hermes left at
+    0755, which is the whole point — the exposure is on disk already. It is
+    safe against a *running* browser: only group/other bits are dropped, the
+    owner keeps ``rwx``, and POSIX checks the mode at ``open()`` rather than
+    on already-open descriptors, so an attached Chromium keeps reading and
+    writing its profile. On Windows POSIX mode bits are advisory (``chmod``
+    only toggles the read-only flag), so this is best-effort there and the
+    directory keeps its inherited ACLs.
+    """
+    if _managed_install():
+        # Managed mode: let the NixOS-configured umask/setgid decide, and
+        # skip _secure_dir (which no-ops here anyway).
+        os.makedirs(data_dir, exist_ok=True)
+        return
+    os.makedirs(data_dir, mode=0o700, exist_ok=True)
+    try:
+        from hermes_cli.config import _secure_dir
+
+        _secure_dir(data_dir)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("browser debug launch: profile dir chmod skipped: %s", exc)
+
+
+def _open_launch_stderr_log(path: str):
+    """Open the launch stderr log owner-only (0600), truncating as before.
+
+    Opened with a plain ``open(path, "wb")`` this landed 0644 under a default
+    umask — a fixed, guessable name inside the profile dir hardened just
+    above. Under ``HERMES_HOME_MODE=0701`` the directory is traversable but
+    unlistable, so a predictable filename is exactly the case that stays
+    reachable; the uuid-named files elsewhere in the profile do not.
+
+    Two halves, covering different installs:
+
+    * **At creation** the mode is passed to ``os.open``, so the file is never
+      briefly group/other-readable. ``O_TRUNC`` keeps the existing
+      per-candidate overwrite semantics.
+    * **On an already-existing log** ``O_CREAT`` applies ``mode`` only to a
+      file it actually creates, so the inode keeps whatever it had. An older
+      Hermes left this file at 0644 on disk, so creation-time hardening alone
+      would leave every *upgrading* install exposed at the one path in this
+      change with a guessable name — the exposure this is meant to close is
+      already on disk. ``hermes_cli.config._secure_file`` reconciles it, for
+      the same reason ``_ensure_chrome_debug_data_dir`` delegates to
+      ``_secure_dir``: that helper is the single owner of the owner-only file
+      policy. It skips managed/NixOS installs and containers, where broader
+      modes are deliberate, and it is where Windows ACL enforcement lands
+      (#77527) — so delegating inherits that instead of needing a second
+      implementation here. A hand-rolled ``os.chmod(path, 0o600)`` would
+      fight all three.
+
+    Ordering matters: the reconcile runs *after* the truncating open and
+    *before* any bytes are written, so the tighten lands while the file is
+    empty and no fresh Chromium stderr ever sits in a widely-readable file.
+    It is safe against a *running* browser for the same reason the directory
+    tighten is — only group/other bits drop, the owner keeps ``rw``, and POSIX
+    checks the mode at ``open()`` rather than on already-open descriptors.
+
+    **The managed/NixOS carve-out applies at creation here too**, not only at
+    reconciliation — the same defect the profile directory had. This log is
+    created lazily at runtime and is not covered by the module's
+    ``systemd.tmpfiles`` rules, so on a managed host a hardcoded 0600 would be
+    the only thing setting its mode. There the gateway and an interactive
+    ``hostUsers`` CLI share one ``$HERMES_HOME`` at two uids through the hermes
+    group; a 0600 log created by whichever ran first makes the other's
+    truncating open fail with ``EACCES`` — and because every candidate binary
+    reuses this one path, that fails *the whole launch*, not merely the
+    diagnostic. Omitting the explicit mode lets the service's
+    ``UMask = "0007"`` land 0660, which is what the merge base produced.
+    """
+    managed = _managed_install()
+    # 0o666 rather than 0o600 on managed installs so the configured umask
+    # decides, matching the merge base's plain open() and the carve-out
+    # _ensure_chrome_debug_data_dir applies to the directory.
+    create_mode = 0o666 if managed else 0o600
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    try:
+        fd = os.open(path, flags, create_mode)
+    except OSError:
+        # Same fallback the pre-fix code had: let a genuinely unopenable path
+        # surface to launch_chrome_debug's per-candidate handler.
+        handle = open(path, "wb")
+    else:
+        handle = os.fdopen(fd, "wb")
+    if not managed:
+        try:
+            from hermes_cli.config import _secure_file
+
+            _secure_file(path)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("browser debug launch: stderr log chmod skipped: %s", exc)
+    return handle
+
+
 def _chrome_debug_args(port: int) -> list[str]:
     return [
         f"--remote-debugging-port={port}",
@@ -375,12 +522,12 @@ def launch_chrome_debug(
         return result
 
     data_dir = chrome_debug_data_dir()
-    os.makedirs(data_dir, exist_ok=True)
+    _ensure_chrome_debug_data_dir(data_dir)
     stderr_path = os.path.join(data_dir, _LAUNCH_STDERR_LOG)
 
     for candidate in candidates:
         try:
-            with open(stderr_path, "wb") as stderr_file:
+            with _open_launch_stderr_log(stderr_path) as stderr_file:
                 proc = subprocess.Popen(
                     [candidate, *_chrome_debug_args(port)],
                     stdout=subprocess.DEVNULL,

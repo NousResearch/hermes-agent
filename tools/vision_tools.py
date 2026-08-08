@@ -71,6 +71,131 @@ logger = logging.getLogger(__name__)
 
 _debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")
 
+
+def _managed_install() -> bool:
+    """True when a package manager (NixOS) owns this install's modes.
+
+    Mirrors the check ``hermes_cli.config._secure_dir`` makes internally, read
+    here so the *creation* mode honours the same carve-out as reconciliation.
+    Import is local and failure means "not managed": an unimportable config
+    module is the single-user source-install case, where 0700 is correct.
+    """
+    try:
+        from hermes_cli.config import is_managed
+
+        return bool(is_managed())
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def _secure_cache_dir(new_subpath: str, old_name: str) -> Path:
+    """Resolve a Hermes media cache dir, creating it owner-only (0700).
+
+    A downloaded image or video is as sensitive as whatever the user pointed
+    the agent at — a private attachment, an internal screenshot, a document
+    scan. Created with a bare ``mkdir(parents=True, exist_ok=True)`` these
+    inherited the umask and landed 0755, readable by every other local
+    account. ``HERMES_HOME`` is 0700 by default so default-config exposure is
+    narrow; the concrete scenario is the documented ``HERMES_HOME_MODE=0701``
+    hatch (letting nginx/caddy traverse to a served subdirectory), where a
+    0755 child really is world-readable.
+
+    The mode is passed to ``mkdir`` so it is set *at creation*, leaving no
+    window where the directory sits world-readable before a follow-up chmod.
+    Policy is then reconciled through ``hermes_cli.config._secure_dir`` — the
+    house helper — rather than a hand-rolled chmod, which is what keeps this
+    correct off a single-user desktop: managed/NixOS installs are skipped,
+    ``HERMES_HOME_MODE`` stays honoured, and ``HERMES_UID``/``HERMES_GID``
+    ownership is applied so a root-created dir does not lock out uid-mapped
+    Docker workers (#34107).
+
+    The managed/NixOS carve-out applies to **creation as well as
+    reconciliation**. ``cache/vision`` and ``cache/video`` are not among the
+    directories the NixOS module's ``systemd.tmpfiles`` rules pre-create, so
+    they are made lazily at runtime; a hardcoded 0700 here would be the only
+    thing setting their mode and would silently override a design that pins
+    ``stateDir/.hermes`` to ``2770`` and runs the gateway with
+    ``UMask = "0007"`` so "interactive users in the hermes group can read/write"
+    gateway-created state. On such a host the gateway and a hostUsers CLI
+    share one ``$HERMES_HOME``, so a 0700 cache created by whichever ran
+    first makes vision fail with EACCES for the other. Skipping the explicit
+    mode there lets the inherited setgid + umask land 2770, matching
+    ``ensure_hermes_home``'s managed branch and its ``logs/curator``
+    lazy-mkdir precedent.
+
+    Running it unconditionally also heals a directory an older Hermes left at
+    0755. That retroactive tighten is safe *here* because this is
+    Hermes-private scratch that the same user re-reads in the same call —
+    there is no user-shared content to strand. Note ``parents=True`` applies
+    the mode to the leaf only, so an intermediate ``cache/`` keeps its default
+    mode; it is shared with other subsystems and holds only directory names.
+
+    This deliberately mirrors ``tools.computer_use.tool._vision_cache_dir``,
+    which hardens the same ``cache/vision`` directory. See the module note in
+    that function; the two are kept behaviourally identical so the pair can be
+    collapsed into one shared helper next to ``_secure_dir``.
+    """
+    cache_dir = get_hermes_dir(new_subpath, old_name)
+    if _managed_install():
+        # Managed mode: the NixOS-configured umask/setgid owns the mode, and
+        # _secure_dir would no-op anyway.
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir
+    # mode= is honored only for the leaf and is not further masked by umask
+    # for the bits we care about; _secure_dir reconciles anything unusual.
+    cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        from hermes_cli.config import _secure_dir
+
+        _secure_dir(cache_dir)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("vision: cache dir chmod skipped: %s", exc)
+    return cache_dir
+
+
+def _write_private_bytes(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` with owner-only (0600) permissions.
+
+    ``Path.write_bytes`` lands 0644 under a default umask. The enclosing cache
+    dir is 0700, so this matters only under ``HERMES_HOME_MODE=0701`` — but
+    ``tools.computer_use.tool`` already writes 0600 into this very directory,
+    and one directory with two different file-mode conventions is the kind of
+    inconsistency that rots. 0600 keeps the write bit set, so it does not trip
+    the Windows read-only flag; POSIX mode bits are advisory there anyway, so
+    this degrades to a plain write rather than failing the download.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    try:
+        fd = os.open(str(path), flags, 0o600)
+    except OSError:
+        path.write_bytes(data)
+        return
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
+
+
+def _precreate_private_file(path: Path) -> None:
+    """Create ``path`` empty and owner-only (0600) if it does not exist yet.
+
+    For byte paths Hermes does not write itself: ``_download_video`` finishes
+    with ``destination.write_bytes()``, and writing to an existing file
+    preserves that inode's mode rather than re-deriving one from the umask.
+    Creating the file 0600 up front therefore hands the download a private
+    target without changing the helper's caller-supplied-destination
+    contract, and without a chmod-after-write window.
+
+    Best-effort by design: a failure here must not fail the download, and on
+    Windows POSIX mode bits are advisory anyway (``os.chmod`` only toggles
+    the read-only flag), so this degrades to a plain download.
+    """
+    try:
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError as exc:
+        logger.debug("vision: private pre-create skipped for %s: %s", path, exc)
+        return
+    os.close(fd)
+
+
 # Configurable HTTP download timeout for _download_image().
 # Separate from auxiliary.vision.timeout which governs the LLM API call.
 # Resolution: config.yaml auxiliary.vision.download_timeout → env var → 30s default.
@@ -340,8 +465,7 @@ def _normalize_to_supported_image(
     if detected_mime in _ANTHROPIC_SUPPORTED_MEDIA_TYPES:
         return image_path, detected_mime, None
 
-    out_dir = get_hermes_dir("cache/vision", "temp_vision_images")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = _secure_cache_dir("cache/vision", "temp_vision_images")
     out_path = out_dir / f"converted_{uuid.uuid4()}.png"
 
     # SVG: needs a rasterizer (Pillow cannot render SVG).
@@ -491,7 +615,11 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
     """
     import asyncio
     
-    # Create parent directories if they don't exist
+    # Create parent directories if they don't exist. Deliberately NOT hardened
+    # to 0700: ``destination`` is caller-supplied and often outside
+    # HERMES_HOME (tools/image_source.py passes a NamedTemporaryFile under
+    # /tmp, mode 1777). Callers that download into a Hermes-owned cache get
+    # the tightened dir from _secure_cache_dir() before calling in.
     destination.parent.mkdir(parents=True, exist_ok=True)
     
     async def _ssrf_redirect_guard(response):
@@ -1118,10 +1246,9 @@ async def _vision_analyze_native(
 
         detected_mime_type = resolved.mime
         image_size_bytes = len(resolved.data)
-        temp_dir = get_hermes_dir("cache/vision", "temp_vision_images")
-        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_dir = _secure_cache_dir("cache/vision", "temp_vision_images")
         temp_image_path = temp_dir / f"temp_image_{uuid.uuid4()}.img"
-        await asyncio.to_thread(temp_image_path.write_bytes, resolved.data)
+        await asyncio.to_thread(_write_private_bytes, temp_image_path, resolved.data)
         should_cleanup = True
 
         # Normalize unsupported formats (SVG, BMP, ...) to PNG BEFORE embedding.
@@ -1307,10 +1434,9 @@ async def vision_analyze_tool(
             raise ValueError(str(exc))
 
         detected_mime_type = resolved.mime
-        temp_dir = get_hermes_dir("cache/vision", "temp_vision_images")
-        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_dir = _secure_cache_dir("cache/vision", "temp_vision_images")
         temp_image_path = temp_dir / f"temp_image_{uuid.uuid4()}.img"
-        await asyncio.to_thread(temp_image_path.write_bytes, resolved.data)
+        await asyncio.to_thread(_write_private_bytes, temp_image_path, resolved.data)
         should_cleanup = True
 
         # Get image file size for logging
@@ -1804,6 +1930,7 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
     """Download video from URL with SSRF protection and retry."""
     import asyncio
 
+    # Caller-supplied destination — see the note in _download_image().
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     async def _ssrf_redirect_guard(response):
@@ -1913,8 +2040,21 @@ async def video_analyze_tool(
             blocked = check_website_access(video_url)
             if blocked:
                 raise PermissionError(blocked["message"])
-            temp_dir = get_hermes_dir("cache/video", "temp_video_files")
+            # Hardened here rather than in _download_video: that helper takes a
+            # caller-supplied destination (tools/image_source.py hands it a
+            # NamedTemporaryFile under /tmp), and chmod-ing an arbitrary
+            # caller's parent directory to 0700 would be a destructive side
+            # effect on a path Hermes does not own.
+            temp_dir = _secure_cache_dir("cache/video", "temp_video_files")
             temp_video_path = temp_dir / f"temp_video_{uuid.uuid4()}.mp4"
+            # Pre-create owner-only so the downloaded bytes land 0600 like the
+            # image path's _write_private_bytes: _download_video finishes with
+            # ``destination.write_bytes()``, which preserves an existing
+            # inode's mode instead of re-applying the umask. Doing it here
+            # rather than inside _download_video keeps that helper's
+            # caller-supplied destination contract intact (tools/image_source
+            # hands its sibling a /tmp NamedTemporaryFile it owns the mode of).
+            _precreate_private_file(temp_video_path)
             await _download_video(video_url, temp_video_path)
             should_cleanup = True
         else:

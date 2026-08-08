@@ -73,6 +73,59 @@ def test_notifies_remove_with_old_text_after_success():
 
 
 
+def test_mirrors_patch_as_replace_with_full_rewritten_entry():
+    """``patch`` reaches providers as a ``replace`` carrying the whole entry.
+
+    Providers filter on the documented action names, so mirroring the literal
+    "patch" would be silently dropped by every one of them — a successful patch
+    would never reach an external backend at all.
+    """
+    mgr, provider = _manager_with_provider()
+    mgr.notify_memory_tool_write(
+        json.dumps({
+            "success": True,
+            "patched_entry": "Deploy target is prod.example.com (rebuild nightly)",
+        }),
+        {
+            "action": "patch",
+            "target": "memory",
+            "pattern": r"staging\.example\.com",
+            "content": "prod.example.com",
+        },
+    )
+    assert provider.calls == [
+        {
+            "action": "replace",
+            "target": "memory",
+            "content": "Deploy target is prod.example.com (rebuild nightly)",
+            "metadata": {
+                "source_action": "patch",
+                "pattern": r"staging\.example\.com",
+            },
+        }
+    ]
+
+
+def test_patch_without_patched_entry_falls_back_to_replacement_span():
+    mgr, provider = _manager_with_provider()
+    mgr.notify_memory_tool_write(
+        json.dumps({"success": True}),
+        {"action": "patch", "target": "user", "pattern": "dark mode", "content": "light mode"},
+    )
+    assert provider.calls[0]["action"] == "replace"
+    assert provider.calls[0]["content"] == "light mode"
+    assert provider.calls[0]["metadata"]["source_action"] == "patch"
+
+
+def test_staged_patch_is_not_mirrored():
+    mgr, provider = _manager_with_provider()
+    mgr.notify_memory_tool_write(
+        json.dumps({"success": True, "staged": True, "pending_id": "abc123"}),
+        {"action": "patch", "target": "memory", "pattern": "x", "content": "y"},
+    )
+    assert provider.calls == []
+
+
 @pytest.mark.parametrize("tool_result", [None, [], object(), "not-json"])
 def test_skips_unrecognized_tool_result_shape(tool_result):
     mgr, provider = _manager_with_provider()

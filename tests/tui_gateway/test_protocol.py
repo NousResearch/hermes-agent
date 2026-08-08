@@ -174,6 +174,43 @@ def test_write_json(capture):
     assert json.loads(buf.getvalue()) == {"test": True}
 
 
+def test_live_session_payload_replays_pending_approval(server, monkeypatch):
+    """A reattached client receives the approval that was emitted while detached."""
+    from tools import approval
+
+    session = {
+        "agent": types.SimpleNamespace(),
+        "cols": 80,
+        "created_at": 1.0,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "running": True,
+        "session_key": "stored-session",
+    }
+    first = {
+        "choices": ["once", "deny"],
+        "command": "rm -rf /tmp/example",
+        "description": "recursive delete",
+    }
+    second = {"command": "rm -rf /tmp/later", "description": "later"}
+    saved_queue = approval._gateway_queues.pop("stored-session", None)
+    approval._gateway_queues["stored-session"] = [
+        approval._ApprovalEntry(first),
+        approval._ApprovalEntry(second),
+    ]
+    monkeypatch.setattr(server, "_approval_request_payload", lambda data: dict(data or {}))
+
+    try:
+        payload = server._live_session_payload("runtime-session", session)
+    finally:
+        approval._gateway_queues.pop("stored-session", None)
+        if saved_queue is not None:
+            approval._gateway_queues["stored-session"] = saved_queue
+
+    assert payload["pending_approval"] == first
+    assert payload["pending_approval"] is not first
+
+
 def test_disable_flush_env_var_actually_wires_to_module_constant(monkeypatch):
     """End-to-end: setting `HERMES_TUI_GATEWAY_NO_FLUSH=1` and importing
     `tui_gateway.transport` fresh actually flips `_DISABLE_FLUSH` true.
@@ -821,4 +858,3 @@ def test_unregister_live_transport_stops_delivery(capture):
     assert a.frames == []
     # No live transports left → fell back to stdio.
     assert json.loads(buf.getvalue())["params"]["type"] == "skin.changed"
-

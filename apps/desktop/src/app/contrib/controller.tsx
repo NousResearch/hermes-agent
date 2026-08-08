@@ -58,6 +58,7 @@ import { $reviewOpen, closeReview, openReview, REVIEW_PANE_ID } from '@/store/re
 import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
 import { watchSessionPins } from '@/store/session-pin-sync'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
+import { isHudWindow } from '@/store/windows'
 
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
 import { watchPreviewTiles } from '../chat/preview-tile'
@@ -69,6 +70,7 @@ import {
   watchSessionTiles,
   WorkspaceTabMenu
 } from '../chat/session-tile'
+import { HudShell } from '../hud/hud-shell'
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { $workspaceIsPage } from '../routes'
 
@@ -687,6 +689,18 @@ function TitlebarSlot({ area, className, style }: TitlebarSlotProps) {
 export function ContribController() {
   const sidebarOpen = useStore($sidebarOpen)
   const statusbarVisible = useStore($statusbarVisible)
+
+  // HUD mode is the SAME app with its frame removed: the wiring (gateway,
+  // sessions, streams, submit) mounts identically, and only the shell around
+  // the chat surface differs. Branching here rather than at the window entry
+  // is what keeps the HUD's composer the real composer.
+  if (isHudWindow()) {
+    return (
+      <ContribWiring>
+        <HudShell />
+      </ContribWiring>
+    )
+  }
 
   return (
     <SidebarProvider

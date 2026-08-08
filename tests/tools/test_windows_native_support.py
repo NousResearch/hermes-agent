@@ -543,7 +543,9 @@ class TestKanbanWaitpidWindowsGuard:
 
     def test_source_gates_waitpid_loop(self):
         root = Path(__file__).resolve().parents[2]
-        source = (root / "hermes_cli" / "kanban_db.py").read_text(encoding="utf-8")
+        # The waitpid loop lives in the worker-process module extracted from
+        # kanban_db.py (godfile-kill extraction PR); grep the moved module.
+        source = (root / "hermes_cli" / "worker_process.py").read_text(encoding="utf-8")
         # Find the waitpid call and confirm it's inside a POSIX gate.
         idx = source.find("os.waitpid(-1, os.WNOHANG)")
         assert idx > 0, "waitpid call must exist"

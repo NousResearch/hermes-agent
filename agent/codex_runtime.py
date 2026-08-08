@@ -27,6 +27,19 @@ from agent.stream_single_writer import claim_stream_writer, stream_writer_is_cur
 logger = logging.getLogger(__name__)
 
 
+def resolve_codex_app_server_timeouts() -> tuple[float, float]:
+    """Return configured app-server deadlines; non-positive values disable them."""
+    from hermes_cli.config import load_config_readonly
+
+    agent_config = load_config_readonly()["agent"]
+    turn_timeout = float(agent_config["codex_app_server_turn_timeout"])
+    quiet_timeout = float(agent_config["codex_app_server_post_tool_quiet_timeout"])
+    return (
+        float("inf") if turn_timeout <= 0 else turn_timeout,
+        float("inf") if quiet_timeout <= 0 else quiet_timeout,
+    )
+
+
 def _coerce_usage_int(value: Any) -> int:
     if isinstance(value, bool):
         return 0
@@ -695,7 +708,12 @@ def run_codex_app_server_turn(
     # return reaches us. Do NOT append again — that would duplicate.
 
     try:
-        turn = agent._codex_session.run_turn(user_input=user_message)
+        turn_timeout, quiet_timeout = resolve_codex_app_server_timeouts()
+        turn = agent._codex_session.run_turn(
+            user_input=user_message,
+            turn_timeout=turn_timeout,
+            post_tool_quiet_timeout=quiet_timeout,
+        )
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         # Crash → unconditionally drop the session so the next turn

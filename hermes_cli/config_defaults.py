@@ -30,6 +30,11 @@ DEFAULT_CONFIG = {
     "max_live_sessions": 16,
     "agent": {
         "max_turns": 500,
+        # Codex app-server wall-clock turn deadline (seconds). 0 disables it.
+        "codex_app_server_turn_timeout": 600,
+        # Silence deadline after a completed Codex tool call (seconds).
+        # 0 disables it.
+        "codex_app_server_post_tool_quiet_timeout": 90,
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has

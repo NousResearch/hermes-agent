@@ -3664,7 +3664,10 @@ def _compress_context_via_codex_app_server(
     _activity_heartbeat: Optional[_CompressionActivityHeartbeat] = None
     try:
         _activity_heartbeat = _CompressionActivityHeartbeat(agent).start()
-        result = codex_session.compact_thread()
+        from agent.codex_runtime import resolve_codex_app_server_timeouts
+
+        turn_timeout, _ = resolve_codex_app_server_timeouts()
+        result = codex_session.compact_thread(turn_timeout=turn_timeout)
     except BaseException:
         if _activity_heartbeat is not None:
             _activity_heartbeat.stop("context compression failed")

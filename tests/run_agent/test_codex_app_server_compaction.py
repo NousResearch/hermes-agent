@@ -1,5 +1,7 @@
+import math
 import time
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -13,9 +15,11 @@ class FakeCodexSession:
         self.result = result
         self.calls = 0
         self.closed = False
+        self.turn_timeout = None
 
-    def compact_thread(self):
+    def compact_thread(self, *, turn_timeout=600.0):
         self.calls += 1
+        self.turn_timeout = turn_timeout
         return self.result
 
     def close(self):
@@ -27,8 +31,9 @@ class SlowCodexSession(FakeCodexSession):
         super().__init__(result)
         self.touch_calls = touch_calls
 
-    def compact_thread(self):
+    def compact_thread(self, *, turn_timeout=600.0):
         self.calls += 1
+        self.turn_timeout = turn_timeout
         _wait_for_touch(self.touch_calls, "context compression in progress")
         return self.result
 
@@ -111,6 +116,30 @@ def test_codex_app_server_native_auto_mode_leaves_thread_compaction_to_codex():
     assert agent._codex_session.calls == 0
     assert agent.context_compressor.compression_count == 0
     assert agent.events == []
+
+
+@patch(
+    "hermes_cli.config.load_config_readonly",
+    return_value={
+        "agent": {
+            "codex_app_server_turn_timeout": 0,
+            "codex_app_server_post_tool_quiet_timeout": 90,
+        }
+    },
+)
+def test_codex_app_server_compaction_uses_configured_turn_timeout(_load_config):
+    agent = DummyAgent(TurnResult(thread_id="thread-1", turn_id="compact-turn-1"))
+
+    compress_context(
+        agent,
+        [{"role": "user", "content": "hi"}],
+        "system",
+        approx_tokens=100000,
+        task_id="test",
+        force=True,
+    )
+
+    assert math.isinf(agent._codex_session.turn_timeout)
 
 
 def test_codex_app_server_compaction_heartbeat_refreshes_activity_while_waiting():

@@ -837,6 +837,13 @@ agent:
   # Set to 0 to disable the warning.
   # gateway_timeout_warning: 900
 
+  # Codex app-server wall-clock turn deadline (seconds, 0 = unlimited).
+  # codex_app_server_turn_timeout: 600
+
+  # Stop a Codex app-server turn when it stays silent this long after a
+  # completed tool call (seconds, 0 = unlimited).
+  # codex_app_server_post_tool_quiet_timeout: 90
+
   # Session stall watchdog (seconds). When a busy session has a pending
   # inbound follow-up and the agent activity clock is idle this long, the
   # gateway logs a WARNING and notifies the user to try /new. Does not kill

@@ -96,4 +96,29 @@ describe('gateway event routing', () => {
       sessionId: 'session-a'
     })
   })
+
+  it('drops late unscoped stream events after the pin clears (no active fallback)', () => {
+    const lateDelta = resolveGatewayEventSessionId({
+      activeSessionId: 'session-b',
+      eventType: 'message.delta',
+      explicitSessionId: '',
+      unscopedStreamSessionId: null
+    })
+
+    expect(lateDelta).toEqual({
+      drop: true,
+      nextUnscopedStreamSessionId: null,
+      sessionId: null
+    })
+
+    const lateTool = resolveGatewayEventSessionId({
+      activeSessionId: 'session-b',
+      eventType: 'tool.start',
+      explicitSessionId: '',
+      unscopedStreamSessionId: null
+    })
+
+    expect(lateTool.drop).toBe(true)
+    expect(lateTool.sessionId).toBeNull()
+  })
 })

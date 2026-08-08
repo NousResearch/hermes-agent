@@ -1571,6 +1571,22 @@ def get_context_length_from_provider_error(
     return None
 
 
+# Signals that the error ALSO clearly describes an oversized INPUT, even when
+# it mentions max_tokens / a completion-token ceiling.  Shared by
+# parse_available_output_tokens_from_error (Azure extraction guard) and
+# is_output_cap_error (input-overflow exclusion) so genuine input overflows
+# keep routing to compression.
+_OUTPUT_CAP_INPUT_OVERFLOW_SIGNALS = (
+    "prompt is too long",
+    "prompt too long",
+    "input is too long",
+    "input token",
+    "prompt length",
+    "prompt contains",
+    "reduce the length",
+)
+
+
 def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     """Detect an "output cap too large" error and return how many output tokens are available.
 
@@ -1616,6 +1632,15 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         # The input itself fits — this is purely an output-cap error, so reduce
         # max_tokens and retry; do NOT compress.
         "range of max_tokens should be" in error_lower
+    ) or (
+        # Azure OpenAI phrasing:
+        #   "max_tokens is too large: 65536. This model supports at most
+        #    32768 completion tokens."
+        # The rejection names the OUTPUT parameter and the model's advertised
+        # completion-token ceiling — the input itself fits, so reduce
+        # max_tokens and retry; do NOT compress.
+        "max_tokens is too large" in error_lower
+        and "supports at most" in error_lower
     )
     if not is_output_cap_error:
         return None
@@ -1629,6 +1654,23 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     if _m_range:
         _cap = int(_m_range.group(1))
         if _cap >= 1:
+            return _cap
+
+    # Azure form: "max_tokens is too large: 65536. This model supports at
+    # most 32768 completion tokens."  The advertised completion-token
+    # ceiling is the available output cap for the failed request.
+    _m_azure = re.search(
+        r'supports at most\s+(\d+)\s*(?:completion\s+)?tokens',
+        error_lower,
+    )
+    if _m_azure:
+        _cap = int(_m_azure.group(1))
+        if _cap >= 1:
+            # If the message ALSO clearly describes an oversized INPUT, it is
+            # a genuine context overflow that happens to name the ceiling —
+            # return None so the caller falls through to compression.
+            if any(p in error_lower for p in _OUTPUT_CAP_INPUT_OVERFLOW_SIGNALS):
+                return None
             return _cap
 
     # Extract the available_tokens figure.
@@ -1739,6 +1781,10 @@ def is_output_cap_error(error_msg: str) -> bool:
         or "should be" in error_lower                       # generic "max_tokens should be <= N"
         or "less than or equal" in error_lower
         or "must be" in error_lower
+        or (
+            "max_tokens is too large" in error_lower        # Azure: "max_tokens is too large: 65536. This model supports at most 32768 completion tokens."
+            and ("completion tokens" in error_lower or "supports at most" in error_lower)
+        )
     )
     if not output_cap_signal:
         return False
@@ -1746,16 +1792,7 @@ def is_output_cap_error(error_msg: str) -> bool:
     # If the error ALSO clearly describes an oversized INPUT, it is a genuine
     # context overflow that happens to mention max_tokens — let the
     # context-overflow path handle it (it can compress the input).
-    input_overflow_signal = (
-        "prompt is too long" in error_lower
-        or "prompt too long" in error_lower
-        or "input is too long" in error_lower
-        or "input token" in error_lower
-        or "prompt length" in error_lower
-        or "prompt contains" in error_lower
-        or "reduce the length" in error_lower
-    )
-    return not input_overflow_signal
+    return not any(p in error_lower for p in _OUTPUT_CAP_INPUT_OVERFLOW_SIGNALS)
 
 
 def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:

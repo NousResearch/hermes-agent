@@ -1963,6 +1963,90 @@ class TestBuildSchemaFromConfig:
         # Fallback path: never returns an empty list.
         assert len(_timezone_options()) >= 1
 
+    def test_all_buzz_controls_are_exposed_with_compatible_defaults(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+        from hermes_cli.web_server import CONFIG_SCHEMA, _CATEGORY_ORDER
+
+        buzz_defaults = DEFAULT_CONFIG["gateway"]["platforms"]["buzz"]["extra"]
+        assert buzz_defaults["allowed_users"] == []
+        assert buzz_defaults["allow_all_users"] is False
+        assert buzz_defaults["require_mention"] is True
+        assert buzz_defaults["thread_require_mention"] is True
+
+        prefix = "gateway.platforms.buzz.extra"
+        allowed = CONFIG_SCHEMA[f"{prefix}.allowed_users"]
+        allow_all = CONFIG_SCHEMA[f"{prefix}.allow_all_users"]
+        require_mention = CONFIG_SCHEMA[f"{prefix}.require_mention"]
+        thread_require_mention = CONFIG_SCHEMA[f"{prefix}.thread_require_mention"]
+        assert allowed["type"] == "list"
+        assert allow_all["type"] == "boolean"
+        assert require_mention["type"] == "boolean"
+        assert thread_require_mention["type"] == "boolean"
+        assert allowed["category"] == "buzz"
+        assert allow_all["category"] == "buzz"
+        assert require_mention["category"] == "buzz"
+        assert thread_require_mention["category"] == "buzz"
+        assert "inbound" in allowed["description"].lower()
+        assert "inbound" in allow_all["description"].lower()
+        assert "mention" in require_mention["description"].lower()
+        assert "thread" in thread_require_mention["description"].lower()
+
+        discord_index = _CATEGORY_ORDER.index("discord")
+        assert _CATEGORY_ORDER[discord_index:discord_index + 3] == [
+            "discord", "slack", "buzz",
+        ]
+
+    def test_existing_nested_buzz_access_policy_is_the_dashboard_value(self):
+        from hermes_cli.config import get_config_path, load_config
+
+        path = get_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    buzz:\n"
+            "      extra:\n"
+            "        allowed_users: [npub1legacy]\n"
+            "        allow_all_users: true\n",
+            encoding="utf-8",
+        )
+
+        config = load_config()
+        extra = config["gateway"]["platforms"]["buzz"]["extra"]
+        assert extra["allowed_users"] == ["npub1legacy"]
+        assert extra["allow_all_users"] is True
+
+    def test_dashboard_can_close_existing_nested_buzz_allow_all(self, monkeypatch):
+        from hermes_cli.config import (
+            get_config_path,
+            load_config,
+            read_raw_config,
+            save_config,
+        )
+
+        path = get_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    buzz:\n"
+            "      extra:\n"
+            "        allow_all_users: true\n",
+            encoding="utf-8",
+        )
+
+        config = load_config()
+        config["gateway"]["platforms"]["buzz"]["extra"]["allow_all_users"] = False
+        save_config(config)
+
+        raw_extra = read_raw_config()["gateway"]["platforms"]["buzz"]["extra"]
+        assert raw_extra["allow_all_users"] is False
+
+        monkeypatch.delenv("BUZZ_ALLOW_ALL_USERS", raising=False)
+        from gateway.config import load_gateway_config
+        load_gateway_config()
+        assert os.environ["BUZZ_ALLOW_ALL_USERS"] == "false"
+
     def test_dynamic_merge_recomputes_memory_provider_options(self, monkeypatch):
         """The per-request schema merge re-discovers memory providers.
 
@@ -2019,6 +2103,34 @@ class TestConfigRoundTrip:
         self.client = TestClient(app)
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
+    def test_buzz_canonical_save_removes_only_legacy_access_overrides(self):
+        from hermes_cli.config import load_config, read_raw_config, save_config
+
+        save_config({
+            "buzz": {
+                "extra": {
+                    "allowed_users": "legacy-invalid-scalar",
+                    "allow_all_users": True,
+                    "require_mention": False,
+                },
+            },
+        })
+
+        web_config = self.client.get("/api/config").json()
+        canonical = web_config["gateway"]["platforms"]["buzz"]["extra"]
+        canonical["allowed_users"] = ["b" * 64]
+        canonical["allow_all_users"] = False
+
+        response = self.client.put("/api/config", json={"config": web_config})
+        assert response.status_code == 200
+
+        raw = read_raw_config()
+        raw_canonical = raw["gateway"]["platforms"]["buzz"]["extra"]
+        assert raw_canonical["allowed_users"] == ["b" * 64]
+        effective = load_config()["gateway"]["platforms"]["buzz"]["extra"]
+        assert effective["allow_all_users"] is False
+        assert raw["buzz"]["extra"] == {"require_mention": False}
+
 
 
 
@@ -2057,6 +2169,32 @@ class TestConfigRoundTrip:
             == {"nested": "value"}, \
             "Shallow-merge regression: agent.x_dashboard_invisible_test_key " \
             "was wiped when the frontend sent a partial agent dict."
+
+    def test_rejects_invalid_buzz_allowed_user(self):
+        config = self.client.get("/api/config").json()
+        extra = (
+            config.setdefault("gateway", {})
+            .setdefault("platforms", {})
+            .setdefault("buzz", {})
+            .setdefault("extra", {})
+        )
+        extra["allowed_users"] = ["npub1first npub1second"]
+
+        resp = self.client.put("/api/config", json={"config": config})
+
+        assert resp.status_code == 422
+        assert "Invalid Buzz public key" in resp.json()["detail"]
+
+    def test_rejects_invalid_top_level_buzz_allowed_user(self):
+        config = self.client.get("/api/config").json()
+        config["buzz"] = {
+            "extra": {"allowed_users": ["a" * 128]},
+        }
+
+        resp = self.client.put("/api/config", json={"config": config})
+
+        assert resp.status_code == 422
+        assert "Invalid Buzz public key" in resp.json()["detail"]
 
     def test_schema_types_match_config_values(self):
         """Every schema field should have a matching-type value in the config."""

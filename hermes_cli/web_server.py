@@ -852,6 +852,28 @@ def _timezone_options() -> List[str]:
 
 
 _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    "gateway.platforms.buzz.extra.require_mention": {
+        "category": "buzz",
+        "description": "Require Mention",
+    },
+    "gateway.platforms.buzz.extra.thread_require_mention": {
+        "category": "buzz",
+        "description": "Require Mention in Active Threads",
+    },
+    "gateway.platforms.buzz.extra.allowed_users": {
+        "category": "buzz",
+        "description": (
+            "Public Nostr npubs or hex pubkeys allowed to send inbound "
+            "instructions to this Hermes agent"
+        ),
+    },
+    "gateway.platforms.buzz.extra.allow_all_users": {
+        "category": "buzz",
+        "description": (
+            "Allow any Buzz community member to send inbound instructions "
+            "to this Hermes agent"
+        ),
+    },
     "timezone": {
         "type": "select",
         "description": "IANA timezone (e.g. America/New_York). Blank uses the system timezone.",
@@ -1058,7 +1080,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
 _CATEGORY_ORDER = [
     "general", "agent", "terminal", "display", "delegation",
     "memory", "compression", "security", "browser", "voice",
-    "tts", "stt", "logging", "discord", "auxiliary",
+    "tts", "stt", "logging", "discord", "slack", "buzz", "auxiliary",
 ]
 
 
@@ -6959,6 +6981,110 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
+def _validate_buzz_allowed_users(config: Dict[str, Any]) -> None:
+    """Reject malformed Buzz identities at either supported config path."""
+    from plugins.platforms.buzz.adapter import normalize_user_ref
+
+    paths = (
+        ("gateway", "platforms", "buzz", "extra", "allowed_users"),
+        ("buzz", "extra", "allowed_users"),
+    )
+    for path in paths:
+        current: Any = config
+        for key in path:
+            if not isinstance(current, dict) or key not in current:
+                break
+            current = current[key]
+        else:
+            if not isinstance(current, list):
+                raise HTTPException(
+                    status_code=422,
+                    detail="Buzz Allowed Users must be a list",
+                )
+            for index, value in enumerate(current, start=1):
+                if not isinstance(value, str) or normalize_user_ref(value) is None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"Invalid Buzz public key at Allowed Users item {index}; "
+                            "use one npub or 64-character hex public key per item"
+                        ),
+                    )
+
+
+def _config_extra_at(config: Dict[str, Any], *path: str) -> Optional[Dict[str, Any]]:
+    current: Any = config
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current if isinstance(current, dict) else None
+
+
+def _validation_config_for_buzz_access(
+    existing: Dict[str, Any], incoming: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Ignore only unchanged legacy access values superseded by canonical input.
+
+    This lets an operator migrate a malformed legacy value already on disk,
+    while a newly supplied or modified malformed legacy value is still
+    rejected by ``_validate_buzz_allowed_users``.
+    """
+    validation = _deep_merge({}, incoming)
+    canonical = _config_extra_at(incoming, "gateway", "platforms", "buzz", "extra")
+    old_legacy = _config_extra_at(existing, "buzz", "extra")
+    new_legacy = _config_extra_at(incoming, "buzz", "extra")
+    validation_legacy = _config_extra_at(validation, "buzz", "extra")
+    if (
+        canonical is None
+        or old_legacy is None
+        or new_legacy is None
+        or validation_legacy is None
+    ):
+        return validation
+
+    for key in {"allowed_users", "allow_all_users"}.intersection(canonical):
+        if key in new_legacy and key in old_legacy and new_legacy[key] == old_legacy[key]:
+            validation_legacy.pop(key, None)
+    return validation
+
+
+def _remove_shadowed_legacy_buzz_access(
+    merged: Dict[str, Any], incoming: Dict[str, Any]
+) -> None:
+    """Remove legacy access keys superseded by a canonical Dashboard save.
+
+    ``buzz.extra`` remains supported for unrelated legacy Buzz settings, but
+    its access keys otherwise override the Dashboard-owned canonical path at
+    gateway startup.  Remove only canonical keys explicitly supplied by the
+    caller so a successful Dashboard save cannot leave an invisible policy in
+    force.
+    """
+    try:
+        canonical_extra = incoming["gateway"]["platforms"]["buzz"]["extra"]
+    except (KeyError, TypeError):
+        return
+    if not isinstance(canonical_extra, dict):
+        return
+
+    supplied = {"allowed_users", "allow_all_users"}.intersection(canonical_extra)
+    if not supplied:
+        return
+
+    legacy_buzz = merged.get("buzz")
+    if not isinstance(legacy_buzz, dict):
+        return
+    legacy_extra = legacy_buzz.get("extra")
+    if not isinstance(legacy_extra, dict):
+        return
+    for key in supplied:
+        legacy_extra.pop(key, None)
+    if not legacy_extra:
+        legacy_buzz.pop("extra", None)
+    if not legacy_buzz:
+        merged.pop("buzz", None)
+
+
 @app.put("/api/config")
 async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
     def _run():
@@ -6972,7 +7098,12 @@ async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
             with _CONFIG_MUTATION_LOCK:
                 existing = read_raw_config()
                 incoming = _denormalize_config_from_web(body.config)
-                save_config(_deep_merge(existing, incoming))
+                validation_config = _validation_config_for_buzz_access(existing, incoming)
+                _validate_buzz_allowed_users(validation_config)
+                merged = _deep_merge(existing, incoming)
+                _remove_shadowed_legacy_buzz_access(merged, incoming)
+                _validate_buzz_allowed_users(merged)
+                save_config(merged)
         return {"ok": True}
 
     try:

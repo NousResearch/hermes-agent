@@ -33,7 +33,8 @@ gateway:
         poll_interval: 4           # seconds between inbound poll sweeps
         cli_path: ""               # buzz binary (default: PATH, then ~/bin/buzz)
         credentials_file: ""       # JSON file with the nsec (BUZZ_PRIVATE_KEY fallback)
-        allowed_users: []          # empty = allow all; hex pubkeys or npubs
+        allowed_users: []          # public hex pubkeys or npubs
+        allow_all_users: false     # secure default: deny unlisted senders
 ```
 
 Plus, in `~/.hermes/.env`:
@@ -103,7 +104,9 @@ gateway:
 
 ## Access control
 
-By default the allow-list is empty, which means every community member who mentions the agent gets a response only if `BUZZ_ALLOW_ALL_USERS=true`; otherwise restrict access by listing npubs or hex pubkeys in `BUZZ_ALLOWED_USERS` (or `allowed_users` in config.yaml). Community membership itself is enforced by the relay — only members can post.
+The Dashboard exposes these controls in its **Buzz** section. They govern messages sent inbound to this Hermes agent; they do not change the separate “Who can talk to this agent” policy on Buzz-managed agents.
+
+By default the allow-list is empty and `allow_all_users` is false, so no unlisted community member is authorized. Add public npubs or hex pubkeys to `allowed_users`, or explicitly enable `allow_all_users` for community-wide access. Legacy `BUZZ_ALLOWED_USERS` and `BUZZ_ALLOW_ALL_USERS` environment values override `config.yaml`. Community membership itself is enforced by the relay — only members can post.
 
 Cron jobs and notifications (`deliver=buzz`) are delivered to the **home channel** — `BUZZ_HOME_CHANNEL` if set, otherwise the first watched channel — and work even when cron runs outside the gateway process.
 

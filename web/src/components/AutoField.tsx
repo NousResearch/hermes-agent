@@ -1,10 +1,18 @@
+import { useEffect, useRef, useState } from "react";
+
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 
+import {
+  updateListInputDraft,
+  validateBuzzAllowedUsers,
+} from "./autoFieldListInput";
+
 function FieldHint({ schema, schemaKey }: { schema: Record<string, unknown>; schemaKey: string }) {
-  const keyPath = schemaKey.includes(".") ? schemaKey : "";
+  const isDedicatedBuzzField = schemaKey.startsWith("gateway.platforms.buzz.extra.");
+  const keyPath = schemaKey.includes(".") && !isDedicatedBuzzField ? schemaKey : "";
   const description = schema.description ? String(schema.description) : "";
 
   if (!keyPath && !description) return null;
@@ -26,6 +34,54 @@ function formatScalar(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return JSON.stringify(value);
+}
+
+function formatListValue(value: unknown): string {
+  return Array.isArray(value) ? value.join(", ") : String(value ?? "");
+}
+
+function ListFieldInput({
+  label,
+  value,
+  onChange,
+  error,
+}: {
+  label: string;
+  value: unknown;
+  onChange: (v: unknown) => void;
+  error?: string | null;
+}) {
+  const externalValue = formatListValue(value);
+  const [draft, setDraft] = useState(externalValue);
+  const editing = useRef(false);
+
+  useEffect(() => {
+    if (!editing.current) {
+      // External config/profile changes should replace an idle draft.
+      setDraft(externalValue);
+    }
+  }, [externalValue]);
+
+  return (
+    <Input
+      aria-label={label}
+      aria-invalid={!!error}
+      aria-describedby={error ? `${label.replace(/\s+/g, "-").toLowerCase()}-error` : undefined}
+      value={draft}
+      onFocus={() => {
+        editing.current = true;
+      }}
+      onBlur={() => {
+        editing.current = false;
+      }}
+      onChange={(e) => {
+        const update = updateListInputDraft(e.target.value);
+        setDraft(update.draft);
+        onChange(update.value);
+      }}
+      placeholder="comma-separated values"
+    />
+  );
 }
 
 function NestedValueEditor({
@@ -108,7 +164,11 @@ export function AutoField({
           <Label className="text-sm">{label}</Label>
           <FieldHint schema={schema} schemaKey={schemaKey} />
         </div>
-        <Switch checked={!!value} onCheckedChange={onChange} />
+        <Switch
+          aria-label={label}
+          checked={!!value}
+          onCheckedChange={onChange}
+        />
       </div>
     );
   }
@@ -169,22 +229,27 @@ export function AutoField({
   }
 
   if (schema.type === "list") {
+    const validationError =
+      schemaKey === "gateway.platforms.buzz.extra.allowed_users" ||
+      schemaKey === "buzz.extra.allowed_users"
+        ? validateBuzzAllowedUsers(value)
+        : null;
+    const errorId = `${label.replace(/\s+/g, "-").toLowerCase()}-error`;
     return (
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
         <FieldHint schema={schema} schemaKey={schemaKey} />
-        <Input
-          value={Array.isArray(value) ? value.join(", ") : String(value ?? "")}
-          onChange={(e) =>
-            onChange(
-              e.target.value
-                .split(",")
-                .map((s) => s.trim())
-                .filter(Boolean),
-            )
-          }
-          placeholder="comma-separated values"
+        <ListFieldInput
+          label={label}
+          value={value}
+          onChange={onChange}
+          error={validationError}
         />
+        {validationError && (
+          <p id={errorId} className="text-xs text-destructive" role="alert">
+            {validationError}
+          </p>
+        )}
       </div>
     );
   }

@@ -72,6 +72,21 @@ def _platform_gate_env(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
 
 
+def _platform_gate_env_is_set(name: str) -> bool:
+    """Whether a gate has an authoritative scoped/process env override."""
+    if not name:
+        return False
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        scope = current_secret_scope()
+        if scope is not None and is_multiplex_active():
+            return name in scope
+    except Exception:
+        pass
+    return name in os.environ
+
+
 def _coerce_allow_set(raw) -> set[str]:
     """Parse allowlist values from config or env var into a set of strings.
 
@@ -552,7 +567,10 @@ class GatewayAuthorizationMixin:
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
         }
 
-        # Plugin platforms: check the registry for auth env var names
+        # Plugin platforms: check the registry for auth env var names and any
+        # platform-specific identity canonicalizer (e.g. Buzz npub -> hex).
+        auth_identity_normalizer = None
+        plugin_auth_extra = None
         if source.platform not in platform_env_map:
             try:
                 from gateway.platform_registry import platform_registry
@@ -562,12 +580,27 @@ class GatewayAuthorizationMixin:
                         platform_env_map[source.platform] = entry.allowed_users_env
                     if entry.allow_all_env:
                         platform_allow_all_map[source.platform] = entry.allow_all_env
+                    auth_identity_normalizer = entry.auth_identity_normalizer
+                    adapter = self._adapter_for_source(source)
+                    plugin_auth_extra = (
+                        getattr(getattr(adapter, "config", None), "extra", None) or {}
+                    )
             except Exception:
                 pass
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
-        if platform_allow_all_var and _auth_env(platform_allow_all_var).lower() in {"true", "1", "yes"}:
+        platform_allow_all = (
+            _platform_gate_env(platform_allow_all_var)
+            if plugin_auth_extra is not None
+            else _auth_env(platform_allow_all_var)
+        )
+        if (
+            plugin_auth_extra is not None
+            and not _platform_gate_env_is_set(platform_allow_all_var)
+        ):
+            platform_allow_all = str(plugin_auth_extra.get("allow_all_users", ""))
+        if platform_allow_all_var and platform_allow_all.lower() in {"true", "1", "yes"}:
             return True
 
         # Adapter-verified role auth: the Discord adapter already confirmed the
@@ -598,7 +631,21 @@ class GatewayAuthorizationMixin:
             return True
 
         # Check platform-specific and global allowlists
-        platform_allowlist = _auth_env(platform_env_map.get(source.platform, ""))
+        platform_allowlist_var = platform_env_map.get(source.platform, "")
+        platform_allowlist = (
+            _platform_gate_env(platform_allowlist_var)
+            if plugin_auth_extra is not None
+            else _auth_env(platform_allowlist_var)
+        )
+        if (
+            plugin_auth_extra is not None
+            and not _platform_gate_env_is_set(platform_allowlist_var)
+        ):
+            plugin_allowed_users = plugin_auth_extra.get("allowed_users", [])
+            if isinstance(plugin_allowed_users, str):
+                platform_allowlist = plugin_allowed_users
+            elif isinstance(plugin_allowed_users, (list, tuple, set)):
+                platform_allowlist = ",".join(str(value) for value in plugin_allowed_users)
         group_user_allowlist = ""
         group_chat_allowlist = ""
         if source.chat_type in {"group", "forum"}:
@@ -736,7 +783,23 @@ class GatewayAuthorizationMixin:
         # allowlist and still works everywhere for backward compatibility.
         allowed_ids = set()
         if platform_allowlist:
-            allowed_ids.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
+            platform_allowed_ids = {
+                uid.strip() for uid in platform_allowlist.split(",") if uid.strip()
+            }
+            if auth_identity_normalizer:
+                normalized_platform_ids = set()
+                for allowed_id in platform_allowed_ids:
+                    if allowed_id == "*":
+                        normalized_platform_ids.add(allowed_id)
+                        continue
+                    try:
+                        normalized = auth_identity_normalizer(allowed_id)
+                    except Exception:
+                        normalized = None
+                    if normalized:
+                        normalized_platform_ids.add(normalized)
+                platform_allowed_ids = normalized_platform_ids
+            allowed_ids.update(platform_allowed_ids)
         if group_user_allowlist:
             allowed_ids.update(uid.strip() for uid in group_user_allowlist.split(",") if uid.strip())
         if global_allowlist:
@@ -748,6 +811,13 @@ class GatewayAuthorizationMixin:
             return True
 
         check_ids = {user_id}
+        if auth_identity_normalizer:
+            try:
+                normalized_user_id = auth_identity_normalizer(user_id)
+            except Exception:
+                normalized_user_id = None
+            if normalized_user_id:
+                check_ids.add(normalized_user_id)
         if "@" in user_id:
             check_ids.add(user_id.split("@")[0])
 

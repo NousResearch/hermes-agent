@@ -1948,6 +1948,7 @@ DEFAULT_CONFIG = {
         "channel_prompts": {},         # Per-channel ephemeral system prompts
     },
 
+
     # Discord platform settings (gateway mode)
     "discord": {
         "require_mention": True,       # Require @mention to respond in server channels
@@ -2516,6 +2517,24 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Platform plugin settings use the canonical gateway.platforms path.
+        # Schema overrides render these Buzz fields as their own Dashboard
+        # section rather than burying them under general gateway controls.
+        "platforms": {
+            "buzz": {
+                "extra": {
+                    # Public Nostr npubs or hex pubkeys allowed to instruct this agent.
+                    "allowed_users": [],
+                    # Secure default: do not admit every community member implicitly.
+                    "allow_all_users": False,
+                    # Require @mention in shared channels.
+                    "require_mention": True,
+                    # Preserve strict historical behavior for thread replies.
+                    "thread_require_mention": True,
+                },
+            },
+        },
+
         # Durable delivery-obligation ledger: final agent responses are
         # recorded in state.db around the platform send, and a gateway that
         # died between finalize and platform ACK redelivers the stored

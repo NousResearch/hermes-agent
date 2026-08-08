@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
@@ -23,6 +24,7 @@ check_requirements = _buzz_mod.check_requirements
 validate_config = _buzz_mod.validate_config
 register = _buzz_mod.register
 _env_enablement = _buzz_mod._env_enablement
+_apply_yaml_config = _buzz_mod._apply_yaml_config
 _standalone_send = _buzz_mod._standalone_send
 
 # Real key pair (Chip's public identity — public information, not a secret)
@@ -42,6 +44,7 @@ _ENV_VARS = (
     "BUZZ_HOME_CHANNEL",
     "BUZZ_ALLOWED_USERS",
     "BUZZ_ALLOW_ALL_USERS",
+    "BUZZ_REQUIRE_MENTION",
     "BUZZ_POLL_INTERVAL",
     "BUZZ_CLI_PATH",
     "BUZZ_CREDENTIALS_FILE",
@@ -141,6 +144,141 @@ class TestBuzzAdapterInit:
         from gateway.config import PlatformConfig
         adapter = BuzzAdapter(PlatformConfig(enabled=True, extra={"relay_url": "https://cfg.relay"}))
         assert adapter.relay_url == "https://env.relay"
+
+    def test_dashboard_access_config_bridges_to_gateway_auth_env(self, monkeypatch):
+        _apply_yaml_config({}, {
+            "extra": {
+                "allowed_users": [SELF_NPUB, OTHER_PUBKEY],
+                "allow_all_users": False,
+            },
+        })
+
+        assert os.environ["BUZZ_ALLOWED_USERS"] == f"{SELF_NPUB},{OTHER_PUBKEY}"
+        assert os.environ["BUZZ_ALLOW_ALL_USERS"] == "false"
+
+    def test_explicit_empty_access_env_overrides_yaml(self, monkeypatch):
+        monkeypatch.setenv("BUZZ_ALLOWED_USERS", "")
+        monkeypatch.setenv("BUZZ_ALLOW_ALL_USERS", "")
+
+        _apply_yaml_config({}, {
+            "extra": {
+                "allowed_users": [OTHER_PUBKEY],
+                "allow_all_users": True,
+            },
+        })
+        from gateway.config import PlatformConfig
+        adapter = BuzzAdapter(PlatformConfig(
+            enabled=True,
+            extra={"allowed_users": [OTHER_PUBKEY]},
+        ))
+
+        assert os.environ["BUZZ_ALLOWED_USERS"] == ""
+        assert os.environ["BUZZ_ALLOW_ALL_USERS"] == ""
+        assert adapter._allowed_pubkeys == set()
+
+    def test_multiplex_profile_extra_isolated_from_process_allowlist(self, monkeypatch):
+        from agent import secret_scope as ss
+
+        monkeypatch.setenv("BUZZ_ALLOWED_USERS", OTHER_PUBKEY)
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({})
+        try:
+            adapter = _make_adapter({"allowed_users": [SELF_NPUB]})
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+        assert adapter._allowed_pubkeys == {SELF_PUBKEY}
+
+    def test_multiplex_explicit_empty_scope_overrides_profile_extra(self, monkeypatch):
+        from agent import secret_scope as ss
+
+        monkeypatch.setenv("BUZZ_ALLOWED_USERS", OTHER_PUBKEY)
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"BUZZ_ALLOWED_USERS": ""})
+        try:
+            adapter = _make_adapter({"allowed_users": [SELF_NPUB]})
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+        assert adapter._allowed_pubkeys == set()
+
+    def test_scoped_multiplex_yaml_load_does_not_write_process_env(self):
+        from agent import secret_scope as ss
+
+        legacy_extra = {
+            "relay_url": "https://profile.relay",
+            "allowed_users": [SELF_NPUB],
+            "allow_all_users": True,
+            "require_mention": False,
+        }
+        yaml_cfg = {"buzz": {"extra": legacy_extra}}
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({})
+        try:
+            seeded = _apply_yaml_config(yaml_cfg, yaml_cfg["buzz"])
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+        assert seeded == legacy_extra
+        assert "BUZZ_RELAY_URL" not in os.environ
+        assert "BUZZ_ALLOWED_USERS" not in os.environ
+        assert "BUZZ_ALLOW_ALL_USERS" not in os.environ
+
+    def test_scoped_gateway_loader_seeds_legacy_extra(self, monkeypatch, tmp_path):
+        from agent import secret_scope as ss
+        from gateway.config import Platform, load_gateway_config
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "buzz:\n"
+            "  extra:\n"
+            "    relay_url: https://profile.relay\n"
+            f"    allowed_users:\n      - {SELF_NPUB}\n"
+            "    allow_all_users: false\n"
+            "    require_mention: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({})
+        try:
+            config = load_gateway_config()
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+        buzz = config.platforms[Platform("buzz")]
+        assert buzz.extra["relay_url"] == "https://profile.relay"
+        assert buzz.extra["allowed_users"] == [SELF_NPUB]
+        assert buzz.extra["allow_all_users"] is False
+        assert buzz.extra["require_mention"] is False
+        assert "BUZZ_RELAY_URL" not in os.environ
+        assert "BUZZ_ALLOWED_USERS" not in os.environ
+        assert "BUZZ_ALLOW_ALL_USERS" not in os.environ
+
+    def test_nested_access_config_survives_unrelated_top_level_buzz_config(self):
+        yaml_cfg = {
+            "buzz": {"extra": {"require_mention": False}},
+            "gateway": {
+                "platforms": {
+                    "buzz": {
+                        "extra": {
+                            "allowed_users": [SELF_NPUB],
+                            "allow_all_users": False,
+                        },
+                    },
+                },
+            },
+        }
+
+        _apply_yaml_config(yaml_cfg, yaml_cfg["buzz"])
+
+        assert os.environ["BUZZ_ALLOWED_USERS"] == SELF_NPUB
+        assert os.environ["BUZZ_ALLOW_ALL_USERS"] == "false"
 
 
 # ── CLI error contract ────────────────────────────────────────────────────
@@ -249,6 +387,13 @@ class TestMentionGating:
         adapter._allowed_pubkeys = {"b" * 64}
         await self._poll_with(adapter, _event("e1", content="@Chip hello", created_at=10))
         assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_allow_all_bypasses_existing_allowlist(self, adapter):
+        adapter._allowed_pubkeys = {"b" * 64}
+        adapter._allow_all_users = True
+        await self._poll_with(adapter, _event("e1", content="@Chip hello", created_at=10))
+        assert len(adapter._dispatched) == 1
 
 
 # ── DM classification via p-tags (issue #68871) ──────────────────────────
@@ -505,6 +650,7 @@ class TestBuzzPluginRegistration:
         assert kwargs["cron_deliver_env_var"] == "BUZZ_HOME_CHANNEL"
         assert kwargs["allowed_users_env"] == "BUZZ_ALLOWED_USERS"
         assert kwargs["allow_all_env"] == "BUZZ_ALLOW_ALL_USERS"
+        assert kwargs["auth_identity_normalizer"] is _normalize_user_ref
         assert callable(kwargs["standalone_sender_fn"])
         assert callable(kwargs["env_enablement_fn"])
         assert set(kwargs["required_env"]) == {"BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY"}

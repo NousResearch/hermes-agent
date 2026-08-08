@@ -109,6 +109,9 @@ class PlatformEntry:
     allowed_users_env: str = ""
     # E.g. "IRC_ALLOW_ALL_USERS" — if truthy, all users authorized.
     allow_all_env: str = ""
+    # Optional canonicalizer for platform identities in central authorization.
+    # Applied to both platform allowlist entries and inbound sender IDs.
+    auth_identity_normalizer: Optional[Callable[[str], Optional[str]]] = None
 
     # ── Message limits ──
     # Max message length for smart-chunking.  0 = no limit.

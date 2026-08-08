@@ -21,7 +21,7 @@ from tui_gateway._stdin_recovery import handle_spurious_eof
 
 from tui_gateway import server
 from tui_gateway.server import _CRASH_LOG, dispatch, resolve_skin, write_json
-from tui_gateway.transport import TeeTransport
+from tui_gateway.transport import BufferedStreamWriter, TeeTransport
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,22 @@ def _install_sidecar_publisher() -> None:
     server._stdio_transport = TeeTransport(
         server._stdio_transport, WsPublisherTransport(url)
     )
+
+
+def _install_stream_writer() -> None:
+    """Wrap the stdio transport in a bounded, non-blocking writer.
+
+    The provider streaming thread emits ``message.delta`` frames from inside
+    the model-read loop; a synchronous write to a full stdout pipe (the Ink
+    client is mid-render or frozen) would block that thread and freeze the
+    turn — the interrupt check never fires and the TUI looks hung with no
+    way to cancel.  :class:`~tui_gateway.transport.BufferedStreamWriter`
+    decouples producers from the sink (bounded queue + dedicated writer
+    thread, coalesced deltas, ordered control frames).  TUI-only: the
+    WebSocket/desktop surfaces already coalesce on their own transport
+    (``tui_gateway.ws``).
+    """
+    server._stdio_transport = BufferedStreamWriter(server._stdio_transport)
 
 
 # How long to wait for orderly shutdown (atexit + finalisers) before
@@ -420,6 +436,11 @@ def ensure_mcp_discovery_started() -> None:
 
 def main():
     _install_sidecar_publisher()
+    # Capture the transport BEFORE the writer wrap so main() can restore it
+    # on the way out — in-process callers (the entry-point test harness)
+    # must not observe a closed BufferedStreamWriter afterwards.
+    _pre_writer_transport = server._stdio_transport
+    _install_stream_writer()
 
     # MCP tool discovery — backgrounded so a slow or unreachable MCP server
     # can't freeze TUI startup (a dead stdio/http server burns 1+2+4s of
@@ -484,6 +505,19 @@ def main():
             if not write_json(resp):
                 _log_exit(f"response write failed for method={method!r} (broken stdout pipe)")
                 sys.exit(0)
+
+    # Best-effort drain of the non-blocking writer before interpreter
+    # shutdown (bounded join; the thread is daemon and cannot strand exit).
+    try:
+        server._stdio_transport.close()
+    except Exception:
+        logger.debug("stdio stream writer close failed at exit", exc_info=True)
+    # Restore the pre-writer transport: the writer's bounded drain belongs to
+    # the process lifetime, not to module state.  In-process callers of
+    # main() (entry-point tests with stubbed I/O) get the pristine transport
+    # back; the real TUI process exits right after, so the restore is a
+    # no-op there.
+    server._stdio_transport = _pre_writer_transport
 
 
 if __name__ == "__main__":

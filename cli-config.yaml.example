@@ -1437,6 +1437,12 @@ display:
   #   false: Hide reasoning (default)
   show_reasoning: false
 
+  # Show the Desktop composer's Git branch and working-tree summary.
+  #   true:  Show the coding status row (default)
+  #   false: Hide the row while keeping Git status probes available to other UI
+  #          surfaces
+  show_coding_status: true
+
   # Stream tokens to the terminal as they arrive instead of waiting for the
   # full response. The response box opens on first token and text appears
   # line-by-line. Tool calls are still captured silently.

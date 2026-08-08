@@ -2,6 +2,7 @@ import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef } from 'react'
 
+import { useHermesConfigRecord } from '@/app/hooks/use-config-record'
 import { composerFill, composerFloatingStrip, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
@@ -23,6 +24,7 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
+import { CodingStatusVisibility } from './coding-status-visibility'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
@@ -144,6 +146,7 @@ export function ChatBar({
   const compacting = useStore(useMemo(() => sessionCompacting(sessionId ?? null), [sessionId]))
   const scrolledUp = useStore($threadScrolledUp)
   const autoSpeak = useStore($autoSpeakReplies)
+  const { data: config } = useHermesConfigRecord()
   // The turn is parked on the user (clarify / approval / sudo / secret). Esc must
   // not interrupt it — there's nothing actively running to stop, and stopping
   // would discard a question the user may want to come back to. The blocking
@@ -1189,18 +1192,20 @@ export function ChatBar({
                     composerSurfaceGlass
                   )}
                 />
-                <CodingStatusRow
-                  onBranchOff={handleBranchOff}
-                  onConvertBranch={handleConvertBranch}
-                  onListBranches={handleListBranches}
-                  // A tile's rail reviews ITS worktree: pin the pane's scope to
-                  // this surface's cwd. Main keeps the classic follow-the-
-                  // active-session scope (null).
-                  onOpen={() => toggleReview(scope.target === 'main' ? null : (cwd ?? null))}
-                  onOpenWorktree={openInWorktree}
-                  onSwitchBranch={handleSwitchBranch}
-                  repoPath={cwd}
-                />
+                <CodingStatusVisibility config={config}>
+                  <CodingStatusRow
+                    onBranchOff={handleBranchOff}
+                    onConvertBranch={handleConvertBranch}
+                    onListBranches={handleListBranches}
+                    // A tile's rail reviews ITS worktree: pin the pane's scope to
+                    // this surface's cwd. Main keeps the classic follow-the-
+                    // active-session scope (null).
+                    onOpen={() => toggleReview(scope.target === 'main' ? null : (cwd ?? null))}
+                    onOpenWorktree={openInWorktree}
+                    onSwitchBranch={handleSwitchBranch}
+                    repoPath={cwd}
+                  />
+                </CodingStatusVisibility>
                 <div
                   className={cn(
                     'relative z-1 flex min-h-0 w-full flex-col gap-(--composer-row-gap) overflow-hidden rounded-[inherit] px-(--composer-surface-pad-x) py-(--composer-surface-pad-y) transition-opacity duration-200 ease-out',

@@ -1147,6 +1147,10 @@ DEFAULT_CONFIG = {
         # seconds, and with this off the user stares at a spinner the whole
         # time even though tokens are streaming. Set false for quiet output.
         "show_reasoning": True,
+        # Show the branch and working-tree summary above the Desktop composer.
+        # Keep this enabled by default for coding workflows; Desktop users can
+        # hide the visual row from Settings -> Chat without disabling Git probes.
+        "show_coding_status": True,
         # When reasoning display is on, the post-response "Reasoning" recap box
         # collapses long thinking to the first 10 lines. Set true to print the
         # complete thinking text uncollapsed (live streaming is always full).

@@ -47,6 +47,38 @@ def test_cli_completion_drain_uses_visible_session_identity(monkeypatch):
     assert completed == [(event, "claim-token")]
 
 
+def test_cli_claim_conflict_defers_pending_durable_event(monkeypatch):
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id = "visible-session"
+    cli._pending_input = queue.Queue()
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_live_lease",
+        "session_key": "visible-session",
+    }
+    deferred = []
+
+    class FakeRegistry:
+        def drain_notifications(self, *, session_key="", owns_event=None):
+            assert session_key == "visible-session"
+            assert owns_event is not None and owns_event(event)
+            return [(event, "completion payload")]
+
+        def defer_unclaimed_delivery(self, evt):
+            deferred.append(evt)
+            return True
+
+    monkeypatch.setattr("tools.process_registry.process_registry", FakeRegistry())
+    monkeypatch.setattr(
+        "tools.async_delegation.claim_event_delivery", lambda *_args: None
+    )
+
+    cli._drain_process_notifications("cli-idle")
+
+    assert deferred == [event]
+    assert cli._pending_input.empty()
+
+
 def test_cli_completion_ownership_rejects_foreign_session():
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = "visible-session"

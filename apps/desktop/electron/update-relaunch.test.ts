@@ -2,7 +2,7 @@
  * Tests for electron/update-relaunch.ts — the pure decision + script helpers
  * behind the Linux in-app update relaunch (#45205).
  *
- * Run with: node --test electron/update-relaunch.test.ts
+ * Run with: npx vitest run --project electron electron/update-relaunch.test.ts
  * (Wired into npm test:desktop:platforms in package.json.)
  *
  * What this locks (review acceptance criteria for PR #45205):
@@ -173,11 +173,11 @@ test('collectRelaunchEnv preserves HERMES_HOME + HERMES_DESKTOP_* + sandbox opt-
   assert.deepEqual(collectRelaunchEnv(env), {
     HERMES_HOME: '/home/u/.hermes',
     HERMES_DESKTOP_REMOTE_URL: 'http://box:9119',
-    HERMES_DESKTOP_REMOTE_TOKEN: 'secret',
     HERMES_DESKTOP_HERMES_ROOT: '/home/u/dev/hermes',
     HERMES_DESKTOP_APP_NAME: 'HermesSandbox',
     ELECTRON_DISABLE_SANDBOX: '1'
   })
+  assert.equal('HERMES_DESKTOP_REMOTE_TOKEN' in collectRelaunchEnv(env), false)
   assert.deepEqual(collectRelaunchEnv(null), {})
 })
 

@@ -233,6 +233,13 @@ function collectRelaunchArgs(argv) {
 // the SUID sandbox, the relaunched instance must inherit that opt-out too.
 const PRESERVED_ENV_KEYS = ['HERMES_HOME', 'ELECTRON_DISABLE_SANDBOX']
 const PRESERVED_ENV_PREFIXES = ['HERMES_DESKTOP_']
+// HERMES_DESKTOP_* is snapshotted into a world-readable temp relaunch script.
+// Never export credential-shaped values (remote tokens, passwords, API keys).
+const RELAUNCH_ENV_SECRET_SUFFIXES = ['_TOKEN', '_SECRET', '_PASSWORD', '_API_KEY', '_CREDENTIALS']
+
+function isRelaunchEnvSecretKey(key) {
+  return RELAUNCH_ENV_SECRET_SUFFIXES.some(suffix => key.endsWith(suffix))
+}
 
 function collectRelaunchEnv(env) {
   const out = {}
@@ -243,6 +250,10 @@ function collectRelaunchEnv(env) {
 
   for (const [key, value] of Object.entries(env)) {
     if (value == null) {
+      continue
+    }
+
+    if (isRelaunchEnvSecretKey(key)) {
       continue
     }
 

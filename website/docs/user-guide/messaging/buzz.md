@@ -34,6 +34,7 @@ gateway:
         cli_path: ""               # buzz binary (default: PATH, then ~/bin/buzz)
         credentials_file: ""       # JSON file with the nsec (BUZZ_PRIVATE_KEY fallback)
         allowed_users: []          # empty = allow all; hex pubkeys or npubs
+        observe_unmentioned_group_messages: false # opt-in context for allowed channel members
 ```
 
 Plus, in `~/.hermes/.env`:
@@ -55,6 +56,7 @@ BUZZ_PRIVATE_KEY=nsec1...
 | `BUZZ_POLL_INTERVAL` | — | Seconds between inbound poll sweeps (default: 4) |
 | `BUZZ_CLI_PATH` | — | Path to the `buzz` binary (default: `buzz` on PATH, then `~/bin/buzz`) |
 | `BUZZ_CREDENTIALS_FILE` | — | JSON credentials file holding the nsec, used when `BUZZ_PRIVATE_KEY` is unset |
+| `BUZZ_OBSERVE_UNMENTIONED_GROUP_MESSAGES` | — | Opt in to retaining unmentioned, allow-listed channel messages as context |
 
 ## Recommended default settings
 
@@ -100,6 +102,7 @@ gateway:
 - In shared channels the agent only responds when **addressed** — by `@name`, its npub, or its hex pubkey. Everything else is ignored.
 - Direct messages always reach the agent, no mention needed.
 - The agent's own messages are never dispatched back to it (self-echo suppression by pubkey), and every event is de-duplicated by event id against a per-channel high-water mark.
+- To let a later mention refer to ordinary channel discussion, set `observe_unmentioned_group_messages: true`. This is intentionally restricted to channels with a non-empty `allowed_users` list; each observed message is stored as context only and never triggers an agent response. This prevents unrestricted community traffic from silently entering a prompt.
 
 ## Access control
 

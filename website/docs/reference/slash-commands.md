@@ -309,4 +309,4 @@ For each of these the CLI opens a three-choice modal: **Approve Once** (proceed 
 
 **Inline skip:** append `now`, `--yes`, or `-y` to bypass the modal for a single invocation — e.g. `/reset now`, `/new --yes my-session`, `/clear -y`, `/undo -y`. Useful when the modal doesn't render correctly on your terminal (see [issue #30768](https://github.com/NousResearch/hermes-agent/issues/30768) for native Windows PowerShell) or when scripting against the CLI.
 
-Set `approvals.destructive_slash_confirm: false` in `~/.hermes/config.yaml` to disable the prompts globally; set it back to `true` to re-enable. See [Security — Destructive slash command confirmation](../user-guide/security.md#dangerous-command-approval) for context.
+Set `approvals.destructive_slash_confirm: false` in `~/.hermes/config.yaml` to disable the prompts globally (CLI, messaging, and the TUI `/clear` / `/new` / `/reset` modal); set it back to `true` to re-enable. In the TUI, `HERMES_TUI_NO_CONFIRM=1` still force-skips that modal regardless of the config value. See [Security — Destructive slash command confirmation](../user-guide/security.md#dangerous-command-approval) for context.

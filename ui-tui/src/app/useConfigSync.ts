@@ -253,6 +253,7 @@ export const applyDisplay = (
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
 ) => {
   const d = cfg?.config?.display ?? {}
+  const approvals = cfg?.config?.approvals
 
   setBell(!!d.bell_on_complete)
 
@@ -273,6 +274,10 @@ export const applyDisplay = (
     battery: !!d.battery,
     busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
     compact: !!d.tui_compact,
+    // Fail safe: only YAML boolean false disables the prompt. A transient
+    // config RPC failure (cfg=null) preserves the last known policy instead
+    // of silently changing approval behavior until the next successful poll.
+    ...(cfg ? { destructiveSlashConfirm: approvals?.destructive_slash_confirm !== false } : {}),
     detailsMode: resolveDetailsMode(d),
     detailsModeCommandOverride: false,
     focusView: !!d.focus_view,

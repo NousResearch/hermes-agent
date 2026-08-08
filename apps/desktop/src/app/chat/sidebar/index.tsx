@@ -63,7 +63,15 @@ import {
   toggleSidebarMessagingOpen,
   unpinSession
 } from '@/store/layout'
-import { $newChatProfile, $profiles, $profileScope, ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
+import {
+  $newChatProfile,
+  $profiles,
+  $profileScope,
+  ALL_PROFILES,
+  messagingProfileFor,
+  messagingTotalsKey,
+  normalizeProfileKey
+} from '@/store/profile'
 import {
   $activeProjectId,
   $projects,
@@ -905,12 +913,25 @@ export function ChatSidebar({
 
   // Each messaging platform is its own self-managed section: split the
   // separately-fetched messaging slice by source, newest platform first, rows
-  // within a platform by recency. Per-platform totals (when a "load more" has
-  // resolved them) drive the count + whether more remain on disk.
+  // within a platform by recency. Per-platform totals for the active profile
+  // (when a "load more" has resolved them) drive the count + whether more
+  // remain on disk.
   const messagingGroups = useMemo<MessagingSection[]>(() => {
     if (!messagingSessions.length) {
       return []
     }
+
+    // The fetch is already profile-scoped, but a profile switch doesn't wipe
+    // $messagingSessions (only a gateway-mode switch does), so the previous
+    // profile's rows would linger until the next refresh lands. Filtering here
+    // makes the switch instant; it's a no-op once the scoped rows arrive.
+    const visibleMessaging = showAllProfiles
+      ? messagingSessions
+      : messagingSessions.filter(s => normalizeProfileKey(s.profile) === profileScope)
+
+    // Totals are cached per (profile, source), so read the slot belonging to the
+    // scope this render is showing rather than whichever profile resolved it last.
+    const messagingProfile = messagingProfileFor(profileScope)
 
     const bySource = new Map<string, SessionInfo[]>()
     // Rows this platform owns that the Pinned section is showing instead. The
@@ -918,7 +939,7 @@ export function ChatSidebar({
     // promises rows that will never appear.
     const pinnedBySource = new Map<string, number>()
 
-    for (const session of messagingSessions) {
+    for (const session of visibleMessaging) {
       const sourceId = normalizeSessionSource(session.source)
 
       if (!sourceId) {
@@ -939,7 +960,7 @@ export function ChatSidebar({
     return [...bySource.entries()]
       .map(([sourceId, list]) => {
         const ordered = [...list].sort((a, b) => sessionTime(b) - sessionTime(a))
-        const known = messagingPlatformTotals[sourceId]
+        const known = messagingPlatformTotals[messagingTotalsKey(messagingProfile, sourceId)]
         const unpinnedKnown = known == null ? null : Math.max(0, known - (pinnedBySource.get(sourceId) ?? 0))
         const total = Math.max(ordered.length, unpinnedKnown ?? 0)
 
@@ -955,7 +976,7 @@ export function ChatSidebar({
         }
       })
       .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
-  }, [messagingSessions, messagingPlatformTotals, messagingTruncated, isPinnedSession])
+  }, [messagingSessions, messagingPlatformTotals, messagingTruncated, isPinnedSession, profileScope, showAllProfiles])
 
   // ALL-profiles view: one collapsible group per profile, color on the header
   // (not on every row). Default profile floats to the top, the rest alpha.

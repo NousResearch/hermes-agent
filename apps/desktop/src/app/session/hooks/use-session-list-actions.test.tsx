@@ -4,11 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionInfo, SidebarSessionsResponse } from '@/hermes'
 import {
   $cronSessions,
+  $messagingPlatformTotals,
   $messagingSessions,
   $sessions,
   $sessionsLoading,
   setCronSessions,
+  setMessagingPlatformTotals,
   setMessagingSessions,
+  setMessagingTruncated,
   setSessions,
   setSessionsLoading
 } from '@/store/session'
@@ -70,21 +73,27 @@ vi.mock('@/store/projects', () => ({
   $removedSessionIds: { get: () => removed.ids }
 }))
 
+// $messagingPlatformTotals / $messagingTruncated are module-level atoms that
+// nothing in the app clears on a profile switch, so leaving them dirty between
+// tests makes the profile-scope assertions below order-dependent.
+const resetSessionStores = () => {
+  setSessions([])
+  setCronSessions([])
+  setMessagingSessions([])
+  setMessagingPlatformTotals({})
+  setMessagingTruncated(false)
+  setSessionsLoading(false)
+}
+
 beforeEach(() => {
   listSidebarSessions.mockReset()
   listAllProfileSessions.mockReset()
   removed.ids = new Set()
-  setSessions([])
-  setCronSessions([])
-  setMessagingSessions([])
-  setSessionsLoading(false)
+  resetSessionStores()
 })
 
 afterEach(() => {
-  setSessions([])
-  setCronSessions([])
-  setMessagingSessions([])
-  setSessionsLoading(false)
+  resetSessionStores()
 })
 
 describe('refreshSessions identity + loading hygiene', () => {
@@ -223,7 +232,8 @@ describe('refreshSessions batches slices into one request', () => {
       expect.objectContaining({
         recentsProfile: 'work',
         recentsExclude: expect.arrayContaining(['cron']),
-        messagingExclude: expect.arrayContaining(['cron'])
+        messagingExclude: expect.arrayContaining(['cron']),
+        messagingProfile: 'work'
       })
     )
   })
@@ -247,5 +257,88 @@ describe('refreshSessions batches slices into one request', () => {
     })
 
     expect(getCronJobs).toHaveBeenLastCalledWith('all')
+  })
+
+  // Messaging conversations live in the owning profile's state.db and every
+  // messaging read windows a shared row budget, so an unscoped fetch let a busy
+  // profile crowd the quieter ones out of the window — the sidebar's WeChat /
+  // Telegram sections showed a truncated union no matter which profile was
+  // selected.
+  it('scopes the messaging slices to the active profile (all → unified view)', async () => {
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
+    listAllProfileSessions.mockResolvedValue({ sessions: [], total: 0 })
+
+    const scoped = renderHook(() => useSessionListActions({ profileScope: 'work' }))
+
+    await act(async () => {
+      await scoped.result.current.refreshMessagingSessions()
+    })
+
+    // 5th positional arg of listAllProfileSessions is the profile.
+    expect(listAllProfileSessions.mock.calls.at(-1)?.[4]).toBe('work')
+
+    await act(async () => {
+      await scoped.result.current.loadMoreMessagingForPlatform('weixin')
+    })
+
+    expect(listAllProfileSessions.mock.calls.at(-1)?.[4]).toBe('work')
+
+    const unified = renderHook(() => useSessionListActions({ profileScope: '__all__' }))
+
+    await act(async () => {
+      await unified.result.current.refreshMessagingSessions()
+    })
+
+    expect(listAllProfileSessions.mock.calls.at(-1)?.[4]).toBe('all')
+
+    await act(async () => {
+      await unified.result.current.refreshSessions()
+    })
+
+    expect(listSidebarSessions).toHaveBeenLastCalledWith(expect.objectContaining({ messagingProfile: 'all' }))
+  })
+
+  // Regression: per-platform totals are what drive a section's count and its
+  // "load more" affordance, and scoping the fetch made each total profile-
+  // specific. Keyed by source alone they leaked across a profile switch — too
+  // high showed a phantom "load more", too low SUPPRESSED a real one (a known
+  // total overrides the coarse truncation flag, and nothing re-fetches to
+  // correct it). Nothing clears these on a profile switch, so the key has to
+  // carry the profile.
+  it('keeps per-platform totals separate across a profile switch', async () => {
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
+    listAllProfileSessions.mockResolvedValue({
+      sessions: [row('wx-1', { profile: 'work', source: 'weixin' })],
+      total: 42
+    })
+
+    const { rerender, result } = renderHook(({ profileScope }) => useSessionListActions({ profileScope }), {
+      initialProps: { profileScope: 'work' }
+    })
+
+    await act(async () => {
+      await result.current.loadMoreMessagingForPlatform('weixin')
+    })
+
+    expect($messagingPlatformTotals.get()['work:weixin']).toBe(42)
+
+    // Switch profiles: the quieter profile must not inherit work's count, and
+    // work's resolved total must survive so switching back doesn't re-fetch.
+    rerender({ profileScope: 'other' })
+
+    expect($messagingPlatformTotals.get()['other:weixin']).toBeUndefined()
+    expect($messagingPlatformTotals.get()['work:weixin']).toBe(42)
+
+    // The next profile resolves its own slot, side by side with work's.
+    listAllProfileSessions.mockResolvedValue({
+      sessions: [row('wx-2', { profile: 'other', source: 'weixin' })],
+      total: 3
+    })
+
+    await act(async () => {
+      await result.current.loadMoreMessagingForPlatform('weixin')
+    })
+
+    expect($messagingPlatformTotals.get()).toMatchObject({ 'other:weixin': 3, 'work:weixin': 42 })
   })
 })

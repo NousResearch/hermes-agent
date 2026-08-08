@@ -330,6 +330,23 @@ export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile],
   showAll ? ALL_PROFILES : normalizeProfileKey(gateway)
 )
 
+// The wire value for a profile-scoped session read: a concrete profile key
+// windows just that profile's rows, ALL_PROFILES becomes the backend's 'all'.
+// Shared so the fetcher and the sidebar can't disagree about which profile a
+// cached per-profile value belongs to — derive it from $profileScope, never
+// from the `multiProfile && …` display flag, which diverges on a
+// single-profile install.
+export const messagingProfileFor = (profileScope: string): string =>
+  profileScope === ALL_PROFILES ? 'all' : normalizeProfileKey(profileScope)
+
+// Per-platform conversation totals are per (profile, source): the same platform
+// holds a different number of conversations in every profile, so a source-only
+// key hands the next profile the previous one's count — a phantom "load more"
+// when it reads high, and a *suppressed* one when it reads low (a known total
+// overrides the coarse truncation flag, and nothing re-fetches to correct it).
+export const messagingTotalsKey = (messagingProfile: string, sourceId: string): string =>
+  `${messagingProfile}:${sourceId}`
+
 // Switch the active context to `name`: leave "All profiles" mode, point new
 // chats at it, and swap the single live gateway onto its backend (which moves
 // $activeGatewayProfile → name, so $profileScope follows).

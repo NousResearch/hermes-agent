@@ -82,17 +82,37 @@ describe('Hermes REST helpers', () => {
       recentsExclude: ['cron', 'tool'],
       cronLimit: 50,
       messagingLimit: 100,
-      messagingExclude: ['cron', 'desktop']
+      messagingExclude: ['cron', 'desktop'],
+      messagingProfile: 'work'
     })
 
     expect(api).toHaveBeenCalledWith(
       expect.objectContaining({
         path:
           '/api/profiles/sessions/sidebar?recents_profile=work&recents_limit=30&cron_limit=50' +
-          '&messaging_limit=100&recents_exclude=cron%2Ctool&messaging_exclude=cron%2Cdesktop',
+          '&messaging_limit=100&messaging_profile=work&recents_exclude=cron%2Ctool' +
+          '&messaging_exclude=cron%2Cdesktop',
         timeoutMs: 60_000
       })
     )
+  })
+
+  // messagingProfile is optional so existing callers keep the cross-profile
+  // default; omitting it must still send an explicit messaging_profile=all
+  // rather than dropping the param.
+  it('defaults the messaging slice to all profiles when no messagingProfile is given', async () => {
+    api.mockResolvedValue({ recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] } })
+
+    await listSidebarSessions({
+      recentsProfile: 'work',
+      recentsLimit: 30,
+      recentsExclude: [],
+      cronLimit: 50,
+      messagingLimit: 100,
+      messagingExclude: []
+    })
+
+    expect(api.mock.calls.at(-1)?.[0].path).toContain('messaging_profile=all')
   })
 
   it('defaults missing sidebar slices to empty session arrays', async () => {

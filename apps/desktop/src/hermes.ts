@@ -452,11 +452,12 @@ export async function listAllProfileSessions(
   }
 }
 
-// Batched sidebar slices in one request: recents (scoped to the active profile),
-// cron, and messaging. The backend opens each profile's state.db once and runs
-// all three filtered queries, replacing three separate listAllProfileSessions
-// calls that each reopened + re-counted every profile DB per refresh. Electron
-// splices remote profiles per slice (see interceptSessionRequestForRemote).
+// Batched sidebar slices in one request: recents and messaging (each scoped to
+// the active profile) plus cron. The backend opens each profile's state.db
+// once and runs all three filtered queries, replacing three separate
+// listAllProfileSessions calls that each reopened + re-counted every profile
+// DB per refresh. Electron splices remote profiles per slice (see
+// interceptSessionRequestForRemote).
 export interface SidebarSessionSlice {
   sessions: SessionInfo[]
   /** Per-profile "the window came back full, more rows exist on disk" flags —
@@ -495,6 +496,11 @@ export interface SidebarSessionsRequest {
   cronLimit: number
   messagingLimit: number
   messagingExclude: string[]
+  // Messaging conversations live in the owning profile's state.db, so the
+  // per-platform sections scope like recents does: a concrete profile key
+  // windows just that profile's rows, 'all' keeps the unified view. Optional
+  // so callers that don't care about scoping keep the cross-profile default.
+  messagingProfile?: 'all' | (string & {})
 }
 
 // The batched /sidebar endpoint shipped later than the per-slice route, so a
@@ -534,8 +540,8 @@ function isEndpointMissingError(err: unknown): boolean {
 
 // Compatibility fallback: reassemble the three sidebar slices from the
 // per-slice endpoint, mirroring the batched route's semantics (min_messages=1,
-// archived excluded, recency order; recents scoped to the caller's profile,
-// cron + messaging cross-profile). Rides the same Electron remote-splice
+// archived excluded, recency order; recents + messaging scoped to the caller's
+// profiles, cron cross-profile). Rides the same Electron remote-splice
 // interception as the pre-batching desktop, so remote profiles stay correct.
 async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<SidebarSessionsResponse> {
   const [recents, cron, messaging] = await Promise.all([
@@ -543,7 +549,7 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
       excludeSources: req.recentsExclude
     }),
     listAllProfileSessions(req.cronLimit, 1, 'exclude', 'recent', 'all', { source: 'cron' }),
-    listAllProfileSessions(req.messagingLimit, 1, 'exclude', 'recent', 'all', {
+    listAllProfileSessions(req.messagingLimit, 1, 'exclude', 'recent', req.messagingProfile ?? 'all', {
       excludeSources: req.messagingExclude
     })
   ])
@@ -570,7 +576,8 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
     recents_profile: req.recentsProfile,
     recents_limit: String(Math.max(1, req.recentsLimit)),
     cron_limit: String(Math.max(1, req.cronLimit)),
-    messaging_limit: String(Math.max(1, req.messagingLimit))
+    messaging_limit: String(Math.max(1, req.messagingLimit)),
+    messaging_profile: req.messagingProfile ?? 'all'
   })
 
   if (req.recentsExclude.length) {

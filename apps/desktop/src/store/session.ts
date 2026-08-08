@@ -436,9 +436,13 @@ export const CRON_SECTION_LIMIT = 50
 // platform that exceeds this cap gets its own per-platform "load more".
 export const $messagingSessions = atom<SessionInfo[]>([])
 export const MESSAGING_SECTION_LIMIT = 100
-// Exact per-platform conversation totals, keyed by source id. Empty until a
-// per-platform "load more" fetch resolves it (the combined seed fetch only
-// knows the aggregate), so sections fall back to their loaded count.
+// Exact per-platform conversation totals, keyed `profile:source` (build the key
+// with messagingTotalsKey). Empty until a per-platform "load more" fetch
+// resolves one (the combined seed fetch only knows the aggregate), so sections
+// fall back to their loaded count. The profile has to be part of the key
+// because the messaging reads are profile-scoped: a source-only key hands the
+// next profile the previous one's count, and a profile switch has no other
+// eraser (wipeSessionListsForGatewaySwitch fires on gateway mode, not profile).
 export const $messagingPlatformTotals = atom<Record<string, number>>({})
 // True when the combined seed fetch hit MESSAGING_SECTION_LIMIT, so at least
 // one platform may have more rows on disk than were loaded.

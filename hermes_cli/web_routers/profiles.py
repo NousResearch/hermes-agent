@@ -234,17 +234,18 @@ def get_profiles_sessions_sidebar(
     cron_limit: int = 50,
     messaging_limit: int = 100,
     messaging_exclude: str = None,
+    messaging_profile: str = "all",
 ):
     """Batched sidebar session slices — one profile-DB open per refresh.
 
     The desktop sidebar needs three source-scoped windows per refresh: recents
-    (local chats, scoped to the active profile), cron sessions (all profiles),
-    and messaging-platform sessions (all profiles). Served as three separate
-    ``/api/profiles/sessions`` calls they reopened every profile's ``state.db``
-    three times and re-counted each refresh. This opens each DB once and runs
-    the three filtered queries together, returning the three windows in one
-    payload. Read-only and process-light, same row projection and 300s active
-    heuristic as ``/api/profiles/sessions``.
+    (local chats, scoped to ``recents_profile``), cron sessions (all profiles),
+    and messaging-platform sessions (scoped to ``messaging_profile``). Served
+    as three separate ``/api/profiles/sessions`` calls they reopened every
+    profile's ``state.db`` three times and re-counted each refresh. This opens
+    each DB once and runs the three filtered queries together, returning the
+    three windows in one payload. Read-only and process-light, same row
+    projection and 300s active heuristic as ``/api/profiles/sessions``.
 
     The caller passes the source taxonomy (``recents_exclude`` /
     ``messaging_exclude`` CSV, ``source=cron`` is implicit) so this stays
@@ -254,7 +255,8 @@ def get_profiles_sessions_sidebar(
     """
     from hermes_cli import profiles as profiles_mod
 
-    # cron + messaging are cross-profile; recents is scoped to recents_profile.
+    # cron is cross-profile; recents and messaging are scoped to their own
+    # profile params.
     # Scan every profile once regardless (each DB opened a single time).
     try:
         infos = profiles_mod.list_profiles()
@@ -266,6 +268,13 @@ def get_profiles_sessions_sidebar(
         targets.append(("default", profiles_mod.get_profile_dir("default")))
 
     recents_scope = (recents_profile or "all").strip() or "all"
+    # Messaging-platform conversations (WeChat/Telegram/…) live in the owning
+    # profile's state.db like everything else, so the sidebar's per-platform
+    # sections must window ONE profile's rows — not the union. Unscoped, a
+    # profile with more conversations crowds the others out of the shared
+    # `messaging_limit` window, so the quieter profile's sections looked
+    # truncated (or empty) no matter which profile was selected.
+    messaging_scope = (messaging_profile or "all").strip() or "all"
     recents_exclude_list = [s for s in (recents_exclude or "").split(",") if s.strip()]
     messaging_exclude_list = [s for s in (messaging_exclude or "").split(",") if s.strip()]
 
@@ -335,9 +344,10 @@ def get_profiles_sessions_sidebar(
                 recents_truncated[name] = unpinned_count >= recents_cap
                 recents_rows.extend(_tag(profile_rows, name))
             cron_rows.extend(_tag(_slice(db, source="cron", cap=cron_cap), name))
-            messaging_rows.extend(
-                _tag(_slice(db, exclude=messaging_exclude_list, cap=messaging_cap), name)
-            )
+            if messaging_scope == "all" or name == messaging_scope:
+                messaging_rows.extend(
+                    _tag(_slice(db, exclude=messaging_exclude_list, cap=messaging_cap), name)
+                )
         except Exception as exc:
             _warn_profile_read_error(name, exc)
             errors.append({"profile": name, "error": str(exc)})

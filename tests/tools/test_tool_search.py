@@ -278,6 +278,42 @@ class TestBridgeDispatch:
         assert err is not None
         assert "bridge tool" in err.lower()
 
+    def test_resolve_underlying_call_tolerates_extra_trailing_json(self, monkeypatch):
+        """A second JSON value after the first object must not break parsing."""
+        from tools.tool_search import resolve_underlying_call
+        monkeypatch.setattr("tools.tool_search.is_deferrable_tool_name", lambda _name: True)
+        name, args, err = resolve_underlying_call({
+            "name": "some_mcp_tool",
+            "arguments": '{"foo": "bar"} {"baz": 2}',
+        })
+        assert err is None
+        assert name == "some_mcp_tool"
+        assert args == {"foo": "bar"}
+
+    def test_resolve_underlying_call_tolerates_long_args_with_trailing_noise(self, monkeypatch):
+        """Long argument strings (>120 chars) followed by prose must parse."""
+        from tools.tool_search import resolve_underlying_call
+        monkeypatch.setattr("tools.tool_search.is_deferrable_tool_name", lambda _name: True)
+        long_value = "x" * 200
+        raw = json.dumps({"query": long_value}) + " Is this enough context?"
+        name, args, err = resolve_underlying_call({
+            "name": "some_mcp_tool",
+            "arguments": raw,
+        })
+        assert err is None
+        assert name == "some_mcp_tool"
+        assert args == {"query": long_value}
+
+    def test_resolve_underlying_call_still_rejects_invalid_json(self):
+        """Plain broken JSON must still fail with a JSON error."""
+        from tools.tool_search import resolve_underlying_call
+        name, args, err = resolve_underlying_call({
+            "name": "some_mcp_tool",
+            "arguments": '{"foo": "bar"',
+        })
+        assert err is not None
+        assert "is not valid JSON" in err
+
 
 # ---------------------------------------------------------------------------
 # End-to-end via the real handle_function_call (smoke test).

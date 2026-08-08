@@ -2458,6 +2458,68 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] Failed to get chat info for %s", chat_id, exc_info=True)
             return fallback
 
+    async def _resolve_forwarded_source_message_id(self, message_id: str) -> Optional[str]:
+        """For forwarded messages, find the original source message_id.
+
+        Feishu creates a new message when a user forwards content; the new
+        message's file_key/image_key points to the original message's resource.
+        Downloading via the new message_id fails — we need the original.
+        """
+        if not self._client or not message_id:
+            return None
+        try:
+            request = self._build_get_message_request(message_id)
+            response = await self._run_blocking(self._client.im.v1.message.get, request)
+            if not response or getattr(response, "success", lambda: False)() is False:
+                return None
+            items = getattr(getattr(response, "data", None), "items", None) or []
+            if not items:
+                return None
+            msg = items[0]
+            alt_id = (
+                getattr(msg, "root_id", None)
+                or getattr(msg, "parent_id", None)
+                or getattr(msg, "upper_message_id", None)
+            )
+            if alt_id and str(alt_id).strip() and str(alt_id).strip() != message_id:
+                return str(alt_id).strip()
+        except Exception:
+            logger.debug("[Feishu] Failed to resolve forwarded source for %s", message_id, exc_info=True)
+        return None
+
+    async def _retry_with_forwarded_source(
+        self,
+        resource_type: str,
+        message_id: str,
+        *,
+        file_key: Optional[str] = None,
+        image_key: Optional[str] = None,
+        fallback_filename: str = "",
+    ) -> tuple[str, str]:
+        """Try resolving a forwarded message's source and retry the download.
+
+        Called when a direct resource download fails — may be a forwarded
+        message whose resource belongs to the original.  Returns the same
+        shape as the downloaders: (cached_path, media_type) or ("", "").
+        """
+        alt_id = await self._resolve_forwarded_source_message_id(message_id)
+        if not alt_id or alt_id == message_id:
+            return "", ""
+        logger.info(
+            "[Feishu] Retrying forwarded resource %s via source message %s (forwarded %s)",
+            file_key or image_key or "?", alt_id, message_id,
+        )
+        if image_key:
+            return await self._download_feishu_image(
+                message_id=alt_id, image_key=image_key,
+            )
+        return await self._download_feishu_message_resource(
+            message_id=alt_id,
+            file_key=file_key or "",
+            resource_type=resource_type,
+            fallback_filename=fallback_filename,
+        )
+
     def format_message(self, content: str) -> str:
         """Feishu text messages are plain text by default."""
         return content.strip()
@@ -3973,7 +4035,9 @@ class FeishuAdapter(BasePlatformAdapter):
                     getattr(response, "code", "unknown"),
                     getattr(response, "msg", "request failed"),
                 )
-                return "", ""
+                return await self._retry_with_forwarded_source(
+                    "image", message_id, image_key=image_key,
+                )
             raw_bytes = self._read_binary_response(response)
             if not raw_bytes:
                 return "", ""
@@ -3985,7 +4049,10 @@ class FeishuAdapter(BasePlatformAdapter):
             return cached_path, media_type
         except Exception:
             logger.warning("[Feishu] Failed to cache image resource %s", image_key, exc_info=True)
-            return "", ""
+        # ── Forwarded message fallback ──────────────────────────────────
+        return await self._retry_with_forwarded_source(
+            "image", message_id, image_key=image_key,
+        )
 
     async def _download_feishu_message_resource(
         self,
@@ -4063,7 +4130,11 @@ class FeishuAdapter(BasePlatformAdapter):
                     file_key,
                     exc_info=True,
                 )
-        return "", ""
+        # ── Forwarded message fallback ──────────────────────────────────
+        return await self._retry_with_forwarded_source(
+            resource_type, message_id,
+            file_key=file_key, fallback_filename=fallback_filename,
+        )
 
     # =========================================================================
     # Static helpers — extension / media-type guessing

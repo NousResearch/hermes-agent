@@ -27,6 +27,9 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
 
+_DEFAULT_THROTTLE_FLOOR_SECONDS = 1.0
+
+
 @dataclass
 class RateLimitBucket:
     """One rate-limit window (e.g. requests per minute)."""
@@ -51,6 +54,11 @@ class RateLimitBucket:
         """Estimated seconds remaining until reset, adjusted for elapsed time."""
         elapsed = time.time() - self.captured_at
         return max(0.0, self.reset_seconds - elapsed)
+
+    @property
+    def is_exhausted(self) -> bool:
+        """Whether this bucket has a known zero/negative remaining quota."""
+        return self.limit > 0 and self.remaining <= 0
 
 
 @dataclass
@@ -127,6 +135,36 @@ def parse_rate_limit_headers(
         captured_at=now,
         provider=provider,
     )
+
+
+def throttle_seconds_from_state(
+    state: Optional[RateLimitState],
+    *,
+    floor_seconds: float = _DEFAULT_THROTTLE_FLOOR_SECONDS,
+) -> Optional[float]:
+    """Return a pre-call throttle delay derived from captured rate-limit state.
+
+    Providers can return ``x-ratelimit-*`` headers on successful responses where
+    the just-finished call consumed the last request/token in a bucket.  A next
+    immediate request would predictably 429.  Treat exhausted buckets as a local
+    circuit breaker until the longest exhausted reset window expires.
+    """
+    if state is None or not state.has_data:
+        return None
+
+    waits = [
+        bucket.remaining_seconds_now
+        for bucket in (
+            state.requests_min,
+            state.requests_hour,
+            state.tokens_min,
+            state.tokens_hour,
+        )
+        if bucket.is_exhausted and bucket.remaining_seconds_now > 0
+    ]
+    if not waits:
+        return None
+    return max(floor_seconds, max(waits))
 
 
 # ── Formatting ──────────────────────────────────────────────────────────

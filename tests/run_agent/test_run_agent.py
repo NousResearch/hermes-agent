@@ -3542,14 +3542,18 @@ class TestRunConversation:
             "assistant",
             "user",
         ]
-        checkpoint = replay[-2]["content"]
-        assert "interrupted by a user correction" in checkpoint
+        # Scaffold rides on the user correction (api_content → content), never
+        # as the assistant placeholder's own reply (#81841).
+        placeholder = replay[-2]["content"]
+        correction = replay[-1]["content"]
+        assert "interrupted by a user correction" not in (placeholder or "")
+        assert "interrupted by a user correction" in correction
+        assert correction.endswith("No, use Postgres instead.")
         # Displayed chain-of-thought must NOT be replayed: an assistant turn
         # inlining its own reasoning trips Anthropic's output classifier and
         # bricks the session with deterministic empty responses (July 2026).
-        assert "I should implement this with SQLite." not in checkpoint
-        assert "Reasoning shown before the interruption" not in checkpoint
-        assert replay[-1]["content"] == "No, use Postgres instead."
+        assert "I should implement this with SQLite." not in correction
+        assert "Reasoning shown before the interruption" not in correction
         assert agent._pending_redirect is None
         assert any(
             snapshot[-1].get("content") == "No, use Postgres instead."
@@ -3629,14 +3633,21 @@ class TestRunConversation:
         assert calls == 2
         assert results["result"]["completed"] is True
         assert results["result"]["final_response"] == "Corrected answer."
-        checkpoint = results["result"]["messages"][-3]
-        assert "interrupted by a user correction" in checkpoint["content"]
+        placeholder = results["result"]["messages"][-3]
+        correction = results["result"]["messages"][-2]
+        assert placeholder["role"] == "assistant"
+        assert "interrupted by a user correction" not in (
+            placeholder.get("content") or ""
+        )
+        assert "interrupted by a user correction" in (
+            correction.get("api_content") or ""
+        )
         # Displayed reasoning is display-only — replaying it as assistant
         # content trips Anthropic's output classifier (July 2026 brickings).
-        assert "Following the original approach." not in checkpoint["content"]
-        assert results["result"]["messages"][-2]["content"] == (
-            "Use the corrected approach."
+        assert "Following the original approach." not in (
+            correction.get("api_content") or ""
         )
+        assert correction["content"] == "Use the corrected approach."
 
 
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):

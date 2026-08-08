@@ -185,3 +185,25 @@ class TestMarkdownBlockMode:
         assert kwargs["blocks"][0]["text"] == RICH_TABLE_MD
 
 
+class TestFinalizeAppliesExtraContentFlag:
+    """FINALIZE_APPLIES_EXTRA_CONTENT signals the stream consumer that the
+    finalize edit carries Block Kit payload (#77805).
+
+    When the flag is True the consumer must not no-op-skip a finalize edit
+    even when the text is identical to the last streamed frame, so blocks
+    are never silently dropped on single-chunk messages.
+    """
+
+    def test_disabled_by_default(self):
+        adapter, _ = _make_adapter()
+        assert adapter.FINALIZE_APPLIES_EXTRA_CONTENT is False
+
+    def test_enabled_with_rich_blocks(self):
+        adapter, _ = _make_adapter({"rich_blocks": "true"})
+        assert adapter.FINALIZE_APPLIES_EXTRA_CONTENT is True
+
+    def test_enabled_with_markdown_blocks(self):
+        adapter, _ = _make_adapter({"markdown_blocks": True})
+        assert adapter.FINALIZE_APPLIES_EXTRA_CONTENT is True
+
+

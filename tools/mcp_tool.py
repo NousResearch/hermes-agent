@@ -208,6 +208,8 @@ def _write_stderr_log_header(server_name: str) -> None:
 
 _MCP_AVAILABLE = False
 _MCP_HTTP_AVAILABLE = False
+_MCP_NEW_HTTP = False
+_MCP_LEGACY_HTTP = False
 _MCP_SAMPLING_TYPES = False
 _MCP_NOTIFICATION_TYPES = False
 _MCP_ELICITATION_TYPES = False
@@ -216,15 +218,17 @@ _MCP_MESSAGE_HANDLER_SUPPORTED = False
 # Streamable HTTP was introduced by 2025-03-26, so this remains valid for the
 # HTTP transport path even on older-but-supported SDK versions.
 LATEST_PROTOCOL_VERSION = "2025-03-26"
+# The newest revision reachable through `ClientSession.initialize()`, which is
+# NOT the newest revision the SDK knows about: from 2026-07-28 onward the
+# handshake is replaced by a per-request envelope, so `initialize()` keeps
+# sending `LATEST_HANDSHAKE_VERSION`. Seeding the MCP-Protocol-Version header
+# from LATEST_PROTOCOL_VERSION would advertise a revision the body does not
+# speak. Defaults to the handshake fallback for SDKs predating the split.
+LATEST_HANDSHAKE_VERSION = LATEST_PROTOCOL_VERSION
 try:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
     _MCP_AVAILABLE = True
-    try:
-        from mcp.client.streamable_http import streamablehttp_client
-        _MCP_HTTP_AVAILABLE = True
-    except ImportError:
-        _MCP_HTTP_AVAILABLE = False
     # Prefer the non-deprecated API (mcp >= 1.24.0); fall back to the
     # deprecated wrapper for older SDK versions.
     try:
@@ -233,9 +237,31 @@ try:
     except ImportError:
         _MCP_NEW_HTTP = False
     try:
+        from mcp.client.streamable_http import streamablehttp_client
+        _MCP_LEGACY_HTTP = True
+    except ImportError:
+        _MCP_LEGACY_HTTP = False
+    # HTTP support requires EITHER entry point. mcp 2.0 dropped the
+    # deprecated `streamablehttp_client` alias, so gating on that name alone
+    # made _run_http raise ImportError for every HTTP and SSE server on 2.x
+    # before it could reach the `streamable_http_client` path.
+    #
+    # Reaching it was necessary and not sufficient: that path also unpacked the
+    # transport as a fixed 3-tuple, which is 1.x's shape. On 2.x it raised
+    # "not enough values to unpack (expected 3, got 2)" and every HTTP/SSE
+    # server parked after its retry ladder. Only stdio servers kept working,
+    # which is why this survived review - the common configs are all stdio.
+    _MCP_HTTP_AVAILABLE = _MCP_NEW_HTTP or _MCP_LEGACY_HTTP
+    try:
         from mcp.types import LATEST_PROTOCOL_VERSION
     except ImportError:
         logger.debug("mcp.types.LATEST_PROTOCOL_VERSION not available -- using fallback protocol version")
+    try:
+        from mcp.client.session import LATEST_HANDSHAKE_VERSION
+    except ImportError:
+        # Pre-2.x SDKs make no distinction: the newest revision IS the newest
+        # handshake revision, so the header and the body agree either way.
+        LATEST_HANDSHAKE_VERSION = LATEST_PROTOCOL_VERSION
     # SSE transport client (for MCP servers using SSE transport instead of Streamable HTTP)
     try:
         from mcp.client.sse import sse_client
@@ -279,6 +305,72 @@ try:
         logger.debug("MCP notification types not available -- dynamic tool discovery disabled")
 except ImportError:
     logger.debug("mcp package not installed -- MCP tool support disabled")
+
+
+_SDK_HTTPX_MOD = None
+
+
+def sdk_httpx():
+    """Return the httpx module the *installed* MCP SDK is built against.
+
+    mcp 2.0 moved its HTTP transports and OAuth stack from ``httpx`` to
+    ``httpx2`` — a separate distribution with the same public API, importable
+    side by side with Hermes' own pinned ``httpx``. Every object that crosses
+    the SDK boundary has to come from the module the SDK itself imports:
+    the ``AsyncClient`` handed to ``streamable_http_client``, the client the
+    ``sse_client`` factory returns, the ``Request`` built by the SDK's OAuth
+    metadata helpers, and the exception classes those raise. Mixing the two
+    fails at the transport layer rather than at import, so resolve it from the
+    SDK's own transport module instead of inferring it from a version number.
+
+    Returns ``None`` only when neither module is importable, which also means
+    the SDK import above failed and no caller here can run.
+    """
+    global _SDK_HTTPX_MOD
+    if _SDK_HTTPX_MOD is not None:
+        return _SDK_HTTPX_MOD
+    try:
+        from mcp.client import streamable_http as _transport
+        _SDK_HTTPX_MOD = getattr(_transport, "httpx2", None) or getattr(
+            _transport, "httpx", None
+        )
+    except ImportError:
+        _SDK_HTTPX_MOD = None
+    if _SDK_HTTPX_MOD is None:
+        # SDK transport module unavailable (or it stopped importing the
+        # module under a predictable name). Fall back to whichever is
+        # present, newest first.
+        try:
+            import httpx2 as _fallback
+        except ImportError:
+            try:
+                import httpx as _fallback  # type: ignore[no-redef]
+            except ImportError:
+                return None
+        _SDK_HTTPX_MOD = _fallback
+    return _SDK_HTTPX_MOD
+
+
+_MISSING = object()
+
+
+def mcp_field(obj, snake: str, camel: str, default=None):
+    """Read an MCP model field across the 1.x -> 2.x field rename.
+
+    mcp 2.0 renamed every model field to snake_case and kept the camelCase
+    spelling only as a *serialization* alias — pydantic aliases do not apply
+    to attribute access, so ``getattr(result, "isError", False)`` returns the
+    default on 2.x rather than raising. That turns a rename into silent wrong
+    behaviour: failed tool calls read as successful, tool schemas read as
+    empty, paginated lists stop after page one. Asking for both spellings
+    keeps the read correct on either SDK generation, which matters because
+    ``mcp`` is an optional extra users can install at their own version.
+    """
+    value = getattr(obj, snake, _MISSING)
+    if value is not _MISSING:
+        return value
+    value = getattr(obj, camel, _MISSING)
+    return default if value is _MISSING else value
 
 
 def _check_message_handler_support() -> bool:
@@ -559,7 +651,7 @@ def _is_method_not_found_error(exc: BaseException) -> bool:
 
     ``ping`` is an *optional* MCP utility (spec: "optional ping mechanism").
     A server that doesn't implement it answers a ping with -32601 rather than
-    an empty result. Structurally inspect ``McpError.error.code`` first, then
+    an empty result. Structurally inspect ``MCPError.error.code`` first, then
     fall back to a substring match so detection survives SDK version drift and
     servers that surface the condition as a plain message.
 
@@ -570,7 +662,7 @@ def _is_method_not_found_error(exc: BaseException) -> bool:
     server is one such case (#50028). Without matching that phrasing the
     ping→list_tools fallback never latches and the keepalive reconnect-loops.
     """
-    # Structural: mcp.shared.exceptions.McpError carries ErrorData.code.
+    # Structural: mcp.shared.exceptions.MCPError carries ErrorData.code.
     err = getattr(exc, "error", None)
     code = getattr(err, "code", None)
     if code == _JSONRPC_METHOD_NOT_FOUND:
@@ -685,7 +777,7 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str):
     for _ in range(_MCP_LIST_MAX_PAGES):
         result = await (list_method(cursor=cursor) if cursor else list_method())
         items.extend(getattr(result, items_attr, None) or [])
-        cursor = getattr(result, "nextCursor", None)
+        cursor = mcp_field(result, "next_cursor", "nextCursor")
         # Per the MCP spec the cursor is an opaque string; anything else
         # (including mock objects in tests) means "no more pages".
         if not isinstance(cursor, str) or not cursor:
@@ -801,7 +893,7 @@ def _cache_mcp_image_block(block) -> str:
     import base64
 
     data = getattr(block, "data", None)
-    mime_type = getattr(block, "mimeType", None)
+    mime_type = mcp_field(block, "mime_type", "mimeType")
     normalized_mime = str(mime_type or "").split(";", 1)[0].strip().lower()
     if data is None or not normalized_mime.startswith("image/"):
         return ""
@@ -889,7 +981,7 @@ def _cache_mcp_audio_block(block) -> str:
     import base64
 
     data = getattr(block, "data", None)
-    mime_type = str(getattr(block, "mimeType", None) or "").split(";", 1)[0].strip().lower()
+    mime_type = str(mcp_field(block, "mime_type", "mimeType") or "").split(";", 1)[0].strip().lower()
     if data is None or not mime_type.startswith("audio/"):
         return ""
     if len(data) > _MCP_RESOURCE_MAX_B64_CHARS:
@@ -943,7 +1035,7 @@ def _render_mcp_resource_block(block, server_name: str = "") -> str:
         if not uri:
             return ""
         name = getattr(block, "name", "") or ""
-        mime = getattr(block, "mimeType", "") or ""
+        mime = mcp_field(block, "mime_type", "mimeType", "") or ""
         details = f"uri={uri}"
         if name:
             details += f", name={name}"
@@ -971,7 +1063,7 @@ def _render_mcp_resource_block(block, server_name: str = "") -> str:
     import base64
 
     uri = str(getattr(resource, "uri", "") or "")
-    mime = str(getattr(resource, "mimeType", "") or "")
+    mime = str(mcp_field(resource, "mime_type", "mimeType", "") or "")
     if len(blob) > _MCP_RESOURCE_MAX_B64_CHARS:
         return f"[MCP embedded resource too large to cache: ~{len(blob) * 3 // 4} bytes, uri={uri}]"
     try:
@@ -1460,22 +1552,40 @@ class SamplingHandler:
         with ``isinstance`` on real SDK types when available, falling back
         to duck-typing via ``hasattr`` for compatibility.
         """
+        # The presence of a tool-use id is the discriminator for a tool
+        # *result* block, so it has to be read under both spellings (see
+        # mcp_field) — on mcp 2.x a bare ``hasattr(b, "toolUseId")`` is False
+        # for every block, which silently drops tool results out of the
+        # conversation and pushes them down the "unsupported block type" path
+        # below.
+        def _tool_use_id(block):
+            return mcp_field(block, "tool_use_id", "toolUseId", _MISSING)
+
+        def _is_tool_use(block):
+            return hasattr(block, "name") and hasattr(block, "input")
+
         messages: List[dict] = []
         for msg in params.messages:
             blocks = msg.content_as_list if hasattr(msg, "content_as_list") else (
                 msg.content if isinstance(msg.content, list) else [msg.content]
             )
 
-            # Separate blocks by kind
-            tool_results = [b for b in blocks if hasattr(b, "toolUseId")]
-            tool_uses = [b for b in blocks if hasattr(b, "name") and hasattr(b, "input") and not hasattr(b, "toolUseId")]
-            content_blocks = [b for b in blocks if not hasattr(b, "toolUseId") and not (hasattr(b, "name") and hasattr(b, "input"))]
+            # Separate blocks by kind.
+            tool_results = [b for b in blocks if _tool_use_id(b) is not _MISSING]
+            tool_uses = [
+                b for b in blocks
+                if _is_tool_use(b) and _tool_use_id(b) is _MISSING
+            ]
+            content_blocks = [
+                b for b in blocks
+                if _tool_use_id(b) is _MISSING and not _is_tool_use(b)
+            ]
 
             # Emit tool result messages (role: tool)
             for tr in tool_results:
                 messages.append({
                     "role": "tool",
-                    "tool_call_id": tr.toolUseId,
+                    "tool_call_id": _tool_use_id(tr),
                     "content": self._extract_tool_result_text(tr),
                 })
 
@@ -1504,12 +1614,15 @@ class SamplingHandler:
                 else:
                     parts = []
                     for block in content_blocks:
+                        block_mime = mcp_field(
+                            block, "mime_type", "mimeType", _MISSING
+                        )
                         if hasattr(block, "text"):
                             parts.append({"type": "text", "text": block.text})
-                        elif hasattr(block, "data") and hasattr(block, "mimeType"):
+                        elif hasattr(block, "data") and block_mime is not _MISSING:
                             parts.append({
                                 "type": "image_url",
-                                "image_url": {"url": f"data:{block.mimeType};base64,{block.data}"},
+                                "image_url": {"url": f"data:{block_mime};base64,{block.data}"},
                             })
                         else:
                             logger.warning(
@@ -1641,7 +1754,9 @@ class SamplingHandler:
             )
 
         # Resolve model
-        model = self._resolve_model(getattr(params, "modelPreferences", None))
+        model = self._resolve_model(
+            mcp_field(params, "model_preferences", "modelPreferences")
+        )
 
         # Get auxiliary LLM client via centralized router
         from agent.auxiliary_client import call_llm
@@ -1662,11 +1777,15 @@ class SamplingHandler:
 
         # Convert messages
         messages = self._convert_messages(params)
-        if hasattr(params, "systemPrompt") and params.systemPrompt:
-            messages.insert(0, {"role": "system", "content": params.systemPrompt})
+        system_prompt = mcp_field(params, "system_prompt", "systemPrompt")
+        if system_prompt:
+            messages.insert(0, {"role": "system", "content": system_prompt})
 
         # Build LLM call kwargs
-        max_tokens = min(params.maxTokens, self.max_tokens_cap)
+        max_tokens = min(
+            mcp_field(params, "max_tokens", "maxTokens", self.max_tokens_cap),
+            self.max_tokens_cap,
+        )
         call_temperature = None
         if hasattr(params, "temperature") and params.temperature is not None:
             call_temperature = params.temperature
@@ -1682,7 +1801,7 @@ class SamplingHandler:
                         "name": getattr(t, "name", ""),
                         "description": getattr(t, "description", "") or "",
                         "parameters": _normalize_mcp_input_schema(
-                            getattr(t, "inputSchema", None)
+                            mcp_field(t, "input_schema", "inputSchema")
                         ),
                     },
                 }
@@ -2045,7 +2164,7 @@ class MCPServerTask:
         Per the MCP spec, ``InitializeResult.capabilities.tools`` is non-None
         iff the server implements the ``tools/*`` request family. Prompt-only
         or resource-only servers omit it, and calling ``tools/list`` against
-        them raises ``McpError(-32601 Method not found)`` — which previously
+        them raises ``MCPError(-32601 Method not found)`` — which previously
         killed the connection during discovery and made every keepalive fail.
         (Ported from anomalyco/opencode#31271.)
 
@@ -2171,7 +2290,15 @@ class MCPServerTask:
                     logger.debug("MCP message handler (%s): exception: %s", self.name, message)
                     return
                 if _MCP_NOTIFICATION_TYPES and isinstance(message, ServerNotification):
-                    match message.root:
+                    # mcp 2.0 turned ServerNotification from a RootModel into
+                    # a plain union of the concrete notification types, so the
+                    # payload IS the message instead of living under ``.root``.
+                    # ``isinstance`` accepts a union, so the guard above still
+                    # holds on both generations; only the unwrap changes.
+                    # Without this, ``message.root`` raises AttributeError into
+                    # the catch-all below and tools/list_changed refreshes stop
+                    # firing silently.
+                    match getattr(message, "root", message):
                         case ToolListChangedNotification():
                             logger.info(
                                 "MCP server '%s': received tools/list_changed notification",
@@ -2214,7 +2341,7 @@ class MCPServerTask:
         if not self._advertises_tools():
             # A server that doesn't implement tools/* should never send
             # tools/list_changed, but guard anyway — calling tools/list
-            # would raise McpError(-32601).
+            # would raise MCPError(-32601).
             return
 
         async with self._refresh_lock:
@@ -2897,8 +3024,16 @@ class MCPServerTask:
         # initialize request and reject session-less POSTs otherwise.
         # Seed it as a client-level default, but treat user overrides as
         # case-insensitive so conventional casing is preserved.
+        #
+        # Seeded from the HANDSHAKE version, not the latest one: this transport
+        # connects via `ClientSession.initialize()`, which sends
+        # LATEST_HANDSHAKE_VERSION (2025-11-25) in the body. Advertising
+        # 2026-07-28 in the header routes the request onto the server's
+        # per-request-envelope ladder, which then rejects the legacy body for
+        # missing its required `params._meta` envelope keys. The header has to
+        # agree with what the body actually speaks.
         if not any(key.lower() == "mcp-protocol-version" for key in headers):
-            headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION
+            headers["mcp-protocol-version"] = LATEST_HANDSHAKE_VERSION
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
         ssl_verify = config.get("ssl_verify", True)
         client_cert = _resolve_client_cert(self.name, config)
@@ -2963,7 +3098,9 @@ class MCPServerTask:
                 # defaults (follow_redirects=True) and adds our TLS settings.
                 # The SDK calls the factory with (headers, auth, timeout); we
                 # forward all of those and layer verify/cert on top.
-                import httpx as _httpx_mod
+                # The client MUST come from the SDK's own httpx module
+                # (httpx2 on mcp >= 2.0) — see sdk_httpx().
+                _httpx_mod = sdk_httpx()
 
                 _cert_for_factory = client_cert
                 _verify_for_factory = ssl_verify
@@ -3022,9 +3159,12 @@ class MCPServerTask:
             return reason
 
         if _MCP_NEW_HTTP:
-            # New API (mcp >= 1.24.0): build an explicit httpx.AsyncClient
-            # matching the SDK's own create_mcp_http_client defaults.
-            import httpx
+            # New API (mcp >= 1.24.0): build an explicit AsyncClient matching
+            # the SDK's own create_mcp_http_client defaults. It has to come
+            # from the SDK's httpx module (httpx2 on mcp >= 2.0), because the
+            # SDK sends its own Request objects through this client — see
+            # sdk_httpx().
+            httpx = sdk_httpx()
 
             _original_url = httpx.URL(url)
 
@@ -3055,9 +3195,12 @@ class MCPServerTask:
             # http_client is provided, so we wrap in async-with.
             try:
                 async with httpx.AsyncClient(**client_kwargs) as http_client:
-                    async with streamable_http_client(url, http_client=http_client) as (
-                        read_stream, write_stream, _get_session_id,
-                    ):
+                    # Unpacked positionally rather than by fixed arity: mcp
+                    # 1.x yields (read, write, get_session_id) and 2.x yields
+                    # (read, write). This file supports both SDK generations,
+                    # and get_session_id was never used here.
+                    async with streamable_http_client(url, http_client=http_client) as _streams:
+                        read_stream, write_stream = _streams[0], _streams[1]
                         async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
                             # Bound the handshake (#59349) — see stdio path.
                             self.initialize_result = await asyncio.wait_for(
@@ -3126,7 +3269,7 @@ class MCPServerTask:
         """Discover tools from the connected session.
 
         Capability-gated: prompt-only / resource-only MCP servers don't
-        implement ``tools/list``, and calling it raises ``McpError(-32601)``,
+        implement ``tools/list``, and calling it raises ``MCPError(-32601)``,
         which previously aborted the connection — those servers could never
         stay connected for their prompts/resources. Skip the call when the
         server doesn't advertise the ``tools`` capability.
@@ -4059,6 +4202,32 @@ def _signal_reconnect_and_wait(
 # Cached tuple of auth-related exception types. Lazy so this module
 # imports cleanly when the MCP SDK OAuth module is missing.
 _AUTH_ERROR_TYPES: tuple = ()
+_HTTP_STATUS_ERROR_TYPES: Optional[tuple] = None
+
+
+def _http_status_error_types() -> tuple:
+    """``HTTPStatusError`` classes that can reach us, from both httpx flavours.
+
+    A 401 can be raised either by the MCP SDK's own HTTP stack (``httpx2`` on
+    mcp >= 2.0) or by Hermes' pinned ``httpx``, and the two define unrelated
+    exception classes. Both go in the tuple so ``isinstance`` covers whichever
+    layer raised.
+    """
+    global _HTTP_STATUS_ERROR_TYPES
+    if _HTTP_STATUS_ERROR_TYPES is not None:
+        return _HTTP_STATUS_ERROR_TYPES
+    found: list = []
+    sdk_mod = sdk_httpx()
+    if sdk_mod is not None:
+        found.append(sdk_mod.HTTPStatusError)
+    try:
+        import httpx
+        if httpx.HTTPStatusError not in found:
+            found.append(httpx.HTTPStatusError)
+    except ImportError:
+        pass
+    _HTTP_STATUS_ERROR_TYPES = tuple(found)
+    return _HTTP_STATUS_ERROR_TYPES
 
 
 def _get_auth_error_types() -> tuple:
@@ -4071,8 +4240,8 @@ def _get_auth_error_types() -> tuple:
         optional import for forward/backward compatibility.
       - ``tools.mcp_oauth.OAuthNonInteractiveError`` — raised by our callback
         handler when no user is present to complete a browser flow.
-      - ``httpx.HTTPStatusError`` — caller must additionally check
-        ``status_code == 401`` via :func:`_is_auth_error`.
+      - ``HTTPStatusError`` from both httpx flavours — caller must
+        additionally check ``status_code == 401`` via :func:`_is_auth_error`.
     """
     global _AUTH_ERROR_TYPES
     if _AUTH_ERROR_TYPES:
@@ -4094,11 +4263,7 @@ def _get_auth_error_types() -> tuple:
         types.append(OAuthNonInteractiveError)
     except ImportError:
         pass
-    try:
-        import httpx
-        types.append(httpx.HTTPStatusError)
-    except ImportError:
-        pass
+    types.extend(_http_status_error_types())
     _AUTH_ERROR_TYPES = tuple(types)
     return _AUTH_ERROR_TYPES
 
@@ -4106,19 +4271,16 @@ def _get_auth_error_types() -> tuple:
 def _is_auth_error(exc: BaseException) -> bool:
     """Return True if ``exc`` indicates an MCP OAuth failure.
 
-    ``httpx.HTTPStatusError`` is only treated as auth-related when the
-    response status code is 401. Other HTTP errors fall through to the
-    generic error path in the tool handlers.
+    ``HTTPStatusError`` is only treated as auth-related when the response
+    status code is 401. Other HTTP errors fall through to the generic error
+    path in the tool handlers.
     """
     types = _get_auth_error_types()
     if not types or not isinstance(exc, types):
         return False
-    try:
-        import httpx
-        if isinstance(exc, httpx.HTTPStatusError):
-            return getattr(exc.response, "status_code", None) == 401
-    except ImportError:
-        pass
+    status_error_types = _http_status_error_types()
+    if status_error_types and isinstance(exc, status_error_types):
+        return getattr(exc.response, "status_code", None) == 401
     return True
 
 
@@ -5276,8 +5438,9 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             _mark_proven = getattr(server, "_mark_session_proven", None)
             if _mark_proven is not None:
                 _mark_proven()
-            # MCP CallToolResult has .content (list of content blocks) and .isError
-            if result.isError:
+            # MCP CallToolResult has .content (list of content blocks) and
+            # .is_error (.isError before mcp 2.0)
+            if mcp_field(result, "is_error", "isError", False):
                 error_text = ""
                 for block in (result.content or []):
                     if getattr(block, "text", None):
@@ -5346,7 +5509,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # MCP spec: content is model-oriented (text), structuredContent
             # is machine-oriented (JSON metadata).  For an AI agent, content
             # is the primary payload; structuredContent supplements it.
-            structured = getattr(result, "structuredContent", None)
+            structured = mcp_field(result, "structured_content", "structuredContent")
             if structured is not None:
                 if text_result:
                     return json.dumps({
@@ -5429,8 +5592,11 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
                     entry["name"] = r.name
                 if hasattr(r, "description") and r.description:
                     entry["description"] = r.description
-                if hasattr(r, "mimeType") and r.mimeType:
-                    entry["mimeType"] = r.mimeType
+                # Key stays camelCase — this dict is the tool's own JSON
+                # output shape, not an SDK model.
+                _mime = mcp_field(r, "mime_type", "mimeType")
+                if _mime:
+                    entry["mimeType"] = _mime
                 resources.append(entry)
             return json.dumps({"resources": resources}, ensure_ascii=False)
 
@@ -5862,7 +6028,7 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     Args:
         server_name: The logical server name for prefixing.
         mcp_tool:    An MCP ``Tool`` object with ``.name``, ``.description``,
-                     and ``.inputSchema``.
+                     and ``.input_schema`` (``.inputSchema`` before mcp 2.0).
 
     Returns:
         A dict suitable for ``registry.register(schema=...)``.
@@ -5871,7 +6037,9 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     return {
         "name": prefixed_name,
         "description": mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}",
-        "parameters": _normalize_mcp_input_schema(getattr(mcp_tool, "inputSchema", None)),
+        "parameters": _normalize_mcp_input_schema(
+            mcp_field(mcp_tool, "input_schema", "inputSchema")
+        ),
     }
 
 

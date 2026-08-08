@@ -86,6 +86,39 @@ class TestElicitationHandlerFormMode:
         assert handler.metrics["declined"] == 0
 
 
+    def test_schema_read_from_real_sdk_params_reaches_the_summary(self):
+        """The requested schema must be read off the *real* SDK model.
+
+        Every other test here builds a duck-typed ``SimpleNamespace``, which
+        cannot catch a field rename in the SDK — and 2.0 renamed this field
+        (``requestedSchema`` -> ``requested_schema``). Pinning one case to the
+        actual model is what proves the elicitation path still reads the
+        schema after the migration, rather than silently summarising an empty
+        one.
+        """
+        from mcp.types import ElicitRequestFormParams
+
+        params = ElicitRequestFormParams(
+            message="authorize a payment of $0.50",
+            requested_schema={
+                "type": "object",
+                "properties": {"card_number": {"type": "string"}},
+            },
+        )
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        captured: dict = {}
+
+        def _capture(*args, **kwargs):
+            captured["description"] = kwargs.get("description") or (
+                args[1] if len(args) > 1 else ""
+            )
+            return "decline"
+
+        with patch("tools.approval.request_elicitation_consent", _capture):
+            asyncio.run(handler(context=None, params=params))
+
+        assert "card_number" in (captured.get("description") or ""), captured
+
     def test_cancel_propagates_through(self):
         """request_elicitation_consent returns 'cancel' when the gateway
         wait times out (resolved=False). The handler should propagate

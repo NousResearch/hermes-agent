@@ -172,7 +172,7 @@ modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
 hindsight = ["hindsight-client==0.6.1"]
-dev = ["debugpy==1.8.20", "pytest==9.1.1", "pytest-asyncio==1.3.0", "mcp==1.28.1", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==83.0.0"]  # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
+dev = ["debugpy==1.8.20", "pytest==9.1.1", "pytest-asyncio==1.3.0", "mcp==2.0.0", "httpx2==2.7.0", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==83.0.0"]  # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
 messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.14.1", "brotlicffi==1.2.0.1", "slack-bolt==1.29.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.1: CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.29.0", "slack-sdk==3.43.0", "aiohttp==3.14.1"]
@@ -237,7 +237,15 @@ pty = []
 # `request.url` can be bypassed. We pin a patched Starlette directly in every
 # extra that exposes a Starlette-backed server surface so pip/uv can't resolve
 # a vulnerable pre-1.0.1 transitive. Bump in lockstep with uv.lock.
-mcp = ["mcp==1.28.1", "starlette==1.3.1"]  # starlette: CVE-2026-48710
+#
+# mcp 2.0.0 implements MCP revision 2026-07-28 and moved its own HTTP stack
+# from `httpx` to `httpx2`. httpx2 arrives transitively, but tools/mcp_tool.py
+# and tools/mcp_oauth_manager.py import it by name to build the client objects
+# they hand to the SDK, so it is pinned here explicitly rather than left to
+# resolution. Hermes' own `httpx[socks]==0.28.1` in [dependencies] is
+# unaffected — the two distributions install side by side under different
+# module names.
+mcp = ["mcp==2.0.0", "httpx2==2.7.0", "starlette==1.3.1"]  # starlette: CVE-2026-48710
 # Backwards-compatible no-op alias. Relay is a core dependency on supported
 # wheel targets and intentionally unavailable on other platforms.
 nemo-relay = []
@@ -248,7 +256,7 @@ teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.1"]  # aiohttp 3.14.1:
 # The cua-driver binary itself is installed via `hermes tools` post-setup
 # (curl install script); this extra just pins the MCP client used to talk
 # to it, which is already provided by the `mcp` extra.
-computer-use = ["mcp==1.28.1", "starlette==1.3.1"]  # starlette: CVE-2026-48710
+computer-use = ["mcp==2.0.0", "httpx2==2.7.0", "starlette==1.3.1"]  # starlette: CVE-2026-48710
 acp = ["agent-client-protocol==0.9.0"]
 # mistral: Voxtral STT + TTS. Pinned to an exact verified-clean version.
 # The `mistralai` PyPI project was quarantined 2026-05-12 after the malicious
@@ -369,7 +377,17 @@ override-dependencies = [
   "pynacl>=1.6,<1.7",
 ]
 exclude-newer = "14 days"
-exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false }
+# `mcp` / `mcp-types` 2.0.0 were published 2026-07-28 and are still inside the
+# 14-day cooling-off window, so `uv lock` cannot see them without an opt-out.
+# This is the one deliberate policy exception in the MCP 2.x migration: the
+# 2026-07-28 protocol revision only exists in 2.0.0, and every alternative
+# (staying on 1.28.1, vendoring the SDK) forfeits the revision entirely.
+# `httpx2` deliberately does NOT get an exemption — 2.7.0 (2026-07-14) is
+# already outside the window and satisfies mcp's `httpx2>=2.5.0` floor.
+#
+# REMOVE these two entries on or after 2026-08-11, when 2.0.0 ages out of the
+# window and resolves normally. They exist only to unblock the lock today.
+exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, mcp = false, mcp-types = false }
 
 [tool.setuptools]
 # Top-level single-file modules (not packages). Without this, uv2nix's

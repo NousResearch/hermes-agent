@@ -3558,7 +3558,7 @@ def _normalize_managed_eol(git_cmd, repo_root):
         # Never let line-ending cleanup block an update.
         pass
 
-def _cmd_update_impl(args, gateway_mode: bool):
+def _cmd_update_impl(args, gateway_mode: bool, *, branch_explicit: bool = False):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
     # In gateway mode, use file-based IPC for prompts instead of stdin
@@ -3856,7 +3856,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     prompt_user=prompt_for_restore,
                     input_fn=gw_input_fn,
                 )
-            if current_branch not in {branch, "HEAD"}:
+            # An explicit --branch must be retained: don't silently switch
+            # back to the previous branch when there is nothing to pull.
+            if not branch_explicit and current_branch not in {branch, "HEAD"}:
                 subprocess.run(
                     git_cmd + ["checkout", current_branch],
                     cwd=_m().PROJECT_ROOT,

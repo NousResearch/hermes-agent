@@ -504,6 +504,34 @@ class TestCmdUpdateBranchFlag:
         assert "nonexistent" in out
 
 
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_branch_flag_retains_requested_branch_when_up_to_date(
+        self, mock_run, _mock_which, capsys
+    ):
+        """Regression #80412: an explicit ``--branch`` is retained on the
+        no-new-commits path instead of being overridden by a restore to the
+        branch the user was on before the update."""
+        mock_run.side_effect = self._branch_side_effect(
+            current_branch="main", target_branch="bb/gui", commit_count="0"
+        )
+        args = SimpleNamespace(branch="bb/gui")
+
+        cmd_update(args)
+
+        commands = [
+            " ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list
+        ]
+        checkout_cmds = [c for c in commands if "checkout" in c and "-B" not in c]
+        # We switched to the requested branch...
+        assert any("bb/gui" in c for c in checkout_cmds), checkout_cmds
+        # ...and never restored the previous branch.
+        assert not any("main" in c for c in checkout_cmds), checkout_cmds
+
+        out = capsys.readouterr().out
+        assert "Already up to date!" in out
+
+
 class TestCmdUpdateCheckBranchFlag:
     """``hermes update --check --branch <name>`` honors the branch override.
 

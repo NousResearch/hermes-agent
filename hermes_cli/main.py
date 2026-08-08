@@ -9171,7 +9171,11 @@ def cmd_update(args):
         sys.exit(UPDATE_EXIT_CONCURRENT)
 
     try:
-        _cmd_update_impl(args, gateway_mode=gateway_mode)
+        _cmd_update_impl(
+            args,
+            gateway_mode=gateway_mode,
+            branch_explicit=bool(getattr(args, "branch", None)),
+        )
     finally:
         _update_lock.release()
         _finalize_update_output(_update_io_state)

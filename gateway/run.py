@@ -2621,6 +2621,7 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "model": runtime.get("model"),
     }
 
 
@@ -18745,10 +18746,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
-                return self._format_session_info()
-        return self._format_session_info()
+                return self._format_session_info(source)
+        return self._format_session_info(source)
 
-    def _format_session_info(self) -> str:
+    def _format_session_info(self, source: Optional[SessionSource] = None) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
@@ -18757,7 +18758,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
-        model = _resolve_gateway_model()
+        # #72838: when a source is available, resolve the model through
+        # channel_overrides (falling back to the global default) so /new and
+        # other session-info callers show the model the channel actually runs
+        # — not the global default. The actual turn dispatch already does this
+        # via _resolve_session_agent_runtime; these display paths used to bypass
+        # it. We also resolve provider-runtime data (base_url, provider-default
+        # model) through _resolve_runtime_agent_kwargs_for_provider so the
+        # displayed base_url matches the channel's provider, and so a
+        # provider-only override (no explicit model) still surfaces the
+        # provider's default model.
+        _channel_override = None
+        if source is not None:
+            _cfg = getattr(self, "config", None)
+            if _cfg:
+                try:
+                    _channel_override = _get_channel_override(
+                        _cfg,
+                        source.platform,
+                        source.chat_id,
+                        thread_id=(
+                            str(source.thread_id)
+                            if getattr(source, "thread_id", None)
+                            else None
+                        ),
+                        parent_id=(
+                            str(source.parent_chat_id)
+                            if getattr(source, "parent_chat_id", None)
+                            else None
+                        ),
+                    )
+                except Exception:
+                    _channel_override = None
+        if _channel_override and _channel_override.model:
+            model = _channel_override.model
+        else:
+            model = _resolve_gateway_model()
         config_context_length = None
         provider = None
         base_url = None
@@ -18792,14 +18828,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
-        # Resolve runtime credentials for probing
+        # Resolve runtime credentials for probing. If a channel override set a
+        # provider (with or without an explicit model), prefer the canonical
+        # provider-runtime resolution so the displayed base_url matches the
+        # channel's provider — and so a provider-only fallback adopts the
+        # provider's default model when no explicit channel model is set.
         try:
-            runtime = _resolve_runtime_agent_kwargs()
+            if _channel_override and _channel_override.provider:
+                runtime = _resolve_runtime_agent_kwargs_for_provider(
+                    _channel_override.provider
+                )
+                # Only adopt the provider's bundled model when the override
+                # did not specify an explicit model — mirroring the live turn
+                # dispatch at gateway/run.py's _resolve_session_agent_runtime.
+                _runtime_default_model = runtime.get("model")
+                if _runtime_default_model and not _channel_override.model:
+                    model = _runtime_default_model
+            else:
+                runtime = _resolve_runtime_agent_kwargs()
             provider = runtime.get("provider") or provider
             base_url = runtime.get("base_url") or base_url
             api_key = runtime.get("api_key")
         except Exception:
             pass
+
+        # #72838 (cont.): keep configured_model/provider in sync with the
+        # channel override so the context-pin logic (should_clear_context_pin)
+        # and display reflect the effective model for this channel, not the
+        # global default.
+        if _channel_override:
+            if _channel_override.model:
+                configured_model = _channel_override.model
+            if _channel_override.provider:
+                provider = _channel_override.provider
+                configured_provider = provider
 
         if config_context_length is not None:
             try:

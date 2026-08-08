@@ -1761,6 +1761,62 @@ class GatewaySlashCommandsMixin:
         source = await asyncio.to_thread(self._normalize_source_for_session_key, source)
         session_key = self._session_key_for_source(source)
         override = self._session_model_overrides.get(session_key, {})
+
+        # #72838: Apply channel_overrides (lower priority than a session /model
+        # override, higher than the global default) so the "Current model"
+        # shown in the picker and text-list reflects what the channel actually
+        # runs — mirroring the priority the turn dispatch uses
+        # (session /model > channel_overrides > global default). Use the
+        # canonical _resolve_runtime_agent_kwargs_for_provider so the picker's
+        # base_url matches the channel's provider (including the provider's
+        # default model on a provider-only override without an explicit model).
+        _co_cfg = getattr(self, "config", None)
+        if _co_cfg:
+            try:
+                from gateway.run import (
+                    _get_channel_override,
+                    _resolve_runtime_agent_kwargs_for_provider,
+                )
+
+                _co = _get_channel_override(
+                    _co_cfg,
+                    source.platform,
+                    source.chat_id,
+                    thread_id=(
+                        str(source.thread_id)
+                        if getattr(source, "thread_id", None)
+                        else None
+                    ),
+                    parent_id=(
+                        str(source.parent_chat_id)
+                        if getattr(source, "parent_chat_id", None)
+                        else None
+                    ),
+                )
+                if _co:
+                    if _co.model:
+                        current_model = _co.model
+                    if _co.provider:
+                        current_provider = _co.provider
+                        # Adopt the canonical provider-runtime credentials so the
+                        # picker's base_url/api_key match the channel's provider
+                        # — and so a provider-only override surfaces the
+                        # provider's bundled default model when no explicit
+                        # channel model is set.
+                        try:
+                            _runtime = _resolve_runtime_agent_kwargs_for_provider(_co.provider)
+                            _runtime_default_model = _runtime.get("model")
+                            if _runtime_default_model and not _co.model:
+                                current_model = _runtime_default_model
+                            current_base_url = _runtime.get("base_url") or current_base_url
+                            _runtime_api_key = _runtime.get("api_key")
+                            if _runtime_api_key:
+                                current_api_key = _runtime_api_key
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
         restore_snapshot = (
             self._snapshot_session_model_override(session_key) if one_turn else None
         )

@@ -3,7 +3,9 @@
 import pytest
 from unittest.mock import patch
 
+from gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
+from gateway.session import SessionSource
 
 
 @pytest.fixture()
@@ -153,4 +155,178 @@ class TestResetNoticeSessionInfo:
         assert "profile-model" in info
         assert "anthropic" in info
         assert "base-model" not in info
+
+
+class TestFormatSessionInfoChannelOverride:
+    """#72838: /new and /model display must reflect channel_overrides, not
+    just the global default. The actual turn dispatch already resolves
+    channel_overrides — these display paths used to bypass that resolution."""
+
+    _RUNTIME = {"provider": "", "base_url": "", "api_key": ""}
+
+    def _config_with_override(self):
+        return GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "123": ChannelOverride(model="channel-override-model"),
+                    },
+                ),
+            },
+        )
+
+    def _source(self):
+        return SessionSource(
+            platform=Platform.TELEGRAM, chat_id="123", user_id="u1",
+        )
+
+    def test_format_session_info_shows_channel_override_model(self, runner, tmp_path):
+        """Layer 1: _format_session_info(source) must resolve the channel
+        override model, not the global default."""
+        runner.config = self._config_with_override()
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: global-default-model\n",
+            "global-default-model",
+            self._RUNTIME,
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info(self._source())
+        assert "channel-override-model" in info
+        assert "global-default-model" not in info
+
+    def test_format_session_info_shows_channel_override_provider(self, runner, tmp_path):
+        """When the channel override sets a provider, the session info block
+        must show it (not the global config provider)."""
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "123": ChannelOverride(
+                            model="channel-override-model",
+                            provider="anthropic",
+                        ),
+                    },
+                ),
+            },
+        )
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: global-default-model\n  provider: openrouter\n",
+            "global-default-model",
+            self._RUNTIME,
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info(self._source())
+        assert "anthropic" in info
+        assert "channel-override-model" in info
+
+    def test_format_session_info_provider_only_uses_resolver_model(self, runner, tmp_path):
+        """Provider-only channel override (no explicit model) must adopt the
+        provider's bundled/default model returned by
+        _resolve_runtime_agent_kwargs_for_provider, not the global default."""
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "123": ChannelOverride(provider="custom:channel"),
+                    },
+                ),
+            },
+        )
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: global-default-model\n  provider: openrouter\n",
+            "global-default-model",
+            self._RUNTIME,
+        )
+        with p1, p2, p3, patch(
+            "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+            return_value={
+                "provider": "custom:channel",
+                "base_url": "http://channel.example.com",
+                "model": "provider-default-model",
+                "api_key": "",
+            },
+        ):
+            info = runner._format_session_info(self._source())
+        assert "provider-default-model" in info
+        assert "global-default-model" not in info
+
+    def test_format_session_info_falls_back_when_no_override(self, runner, tmp_path):
+        """When the source's channel has no override, the global default is
+        shown — same as the no-source path."""
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True, channel_overrides={},
+                ),
+            },
+        )
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: global-default-model\n",
+            "global-default-model",
+            self._RUNTIME,
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info(self._source())
+        assert "global-default-model" in info
+
+    def test_format_session_info_falls_back_when_wrong_channel(self, runner, tmp_path):
+        """A source whose chat_id doesn't match any override falls back to
+        the global default."""
+        runner.config = self._config_with_override()
+        wrong_source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="999", user_id="u2",
+        )
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: global-default-model\n",
+            "global-default-model",
+            self._RUNTIME,
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info(wrong_source)
+        assert "global-default-model" in info
+        assert "channel-override-model" not in info
+
+    def test_format_session_info_no_source_uses_global(self, runner, tmp_path):
+        """Backward-compat: calling without a source still uses the global
+        default (existing callers that don't have a source in scope)."""
+        runner.config = self._config_with_override()
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: global-default-model\n",
+            "global-default-model",
+            self._RUNTIME,
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert "global-default-model" in info
+
+    def test_reset_notice_shows_channel_override_model(self, runner, tmp_path):
+        """Layer 1 (via the /new entry point): _reset_notice_session_info
+        must thread source through to _format_session_info so the auto-reset
+        banner shows the channel override model."""
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "123": ChannelOverride(model="channel-override-model"),
+                    },
+                ),
+            },
+            multiplex_profiles=False,
+        )
+        with patch("gateway.run._hermes_home", tmp_path), \
+             patch("gateway.run._resolve_gateway_model", return_value="global-default-model"), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value=self._RUNTIME):
+            info = runner._reset_notice_session_info(self._source())
+        assert "channel-override-model" in info
+        assert "global-default-model" not in info
 

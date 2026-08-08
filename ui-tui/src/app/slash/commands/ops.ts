@@ -66,6 +66,10 @@ export const opsCommands: SlashCommand[] = [
     help: 'stop background processes',
     name: 'stop',
     run: (_arg, ctx) => {
+      if (ctx.ui.busy && ctx.sid) {
+        ctx.turn.interrupt(ctx.sid)
+      }
+
       ctx.gateway
         .rpc<ProcessStopResponse>('process.stop', {})
         .then(

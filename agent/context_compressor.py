@@ -4409,10 +4409,13 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     def _find_tail_cut_by_tokens(
         self, messages: List[Dict[str, Any]], head_end: int, token_budget: int | None = None,
+        *, allow_split_turn: bool = True,
     ) -> int:
         """Walk backward accumulating tokens until the budget; return the tail start index.
         Optional rows are bounded by a 1.5x soft ceiling. Required last-user/last-assistant (and
-        multi-user) anchors and their atomic tool groups may exceed it; tool groups are never split."""
+        multi-user) anchors and their atomic tool groups may exceed it; tool groups are never split.
+        ``allow_split_turn`` is disabled by rolling micro-compaction, which consumes complete
+        exchanges only; batch/manual compaction enables it so an oversized active turn can progress."""
         if token_budget is None:
             token_budget = self.tail_token_budget
         n = len(messages)
@@ -4445,14 +4448,52 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Latest user message must stay in the tail (active task). Latest assistant reply must stay too;
         # anchors only walk backward, so chaining is monotonic.
         # Ensure the most recent user message is always in the tail so the active task is never lost to
-        # compression (fixes #10896).
-        cut_idx = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
-        cut_idx = self._ensure_last_assistant_message_in_tail(messages, cut_idx, head_end)
+        # compression (fixes #10896) — EXCEPT when one in-progress turn alone exceeds the soft ceiling:
+        # then the anchor would retain the entire oversized turn and blow the budget by design, so the
+        # clean tool-group boundary above wins and the turn-opening request rides the handoff (#80449).
+        last_user_idx = self._find_last_user_message_idx(messages, head_end)
+        user_anchored_cut = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
+        split_oversized_turn = False
+        if (
+            allow_split_turn
+            and last_user_idx >= head_end
+            and last_user_idx < cut_idx
+            and user_anchored_cut < cut_idx
+            # A single oversized user message is indivisible and must stay verbatim in the tail; this
+            # exception is only for aggregate turn growth after a normally sized opening request.
+            and _estimate_msg_budget_tokens(messages[last_user_idx]) <= soft_ceiling
+            and len(_content_text_for_contains(messages[last_user_idx].get("content")).strip())
+            <= _ACTIVE_TASK_MAX_CHARS
+            and sum(
+                _estimate_msg_budget_tokens(message) for message in messages[user_anchored_cut:]
+            ) > soft_ceiling
+        ):
+            split_oversized_turn = True
+            if not self.quiet_mode:
+                logger.info(
+                    "Active turn exceeds protected-tail soft ceiling; keeping tool-group-aligned "
+                    "mid-turn cut at index %d instead of anchoring user message %d (#80449)",
+                    cut_idx, last_user_idx,
+                )
+        else:
+            cut_idx = user_anchored_cut
+        # An older visible assistant reply can precede the active user turn; when the active turn was
+        # deliberately split above, pulling back to it would undo the bounded exception. A latest
+        # assistant already inside the chosen tail is unchanged.
+        assistant_anchored_cut = self._ensure_last_assistant_message_in_tail(messages, cut_idx, head_end)
+        if not split_oversized_turn or assistant_anchored_cut == cut_idx:
+            cut_idx = assistant_anchored_cut
 
         # Optional multi-user anchor; n<=1 is gated here (not delegated): re-running the single-user anchor after
         # the assistant anchor could re-trigger its forward turn-pair push. getattr: __new__ doubles skip __init__.
+        # Skipped entirely under the split exception, which would otherwise undo the bounded cut.
         _min_tail_users = getattr(self, "min_tail_user_messages", 1)
-        if isinstance(_min_tail_users, int) and not isinstance(_min_tail_users, bool) and _min_tail_users > 1:
+        if (
+            not split_oversized_turn
+            and isinstance(_min_tail_users, int)
+            and not isinstance(_min_tail_users, bool)
+            and _min_tail_users > 1
+        ):
             cut_idx = self._ensure_last_n_user_messages_in_tail(messages, cut_idx, head_end, _min_tail_users)
 
         # Floor guarantees progress (>= 1 message claimed); re-align FORWARD only so a raised cut

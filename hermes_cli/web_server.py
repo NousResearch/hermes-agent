@@ -16526,17 +16526,35 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
 
 def _ws_public_origin_matches(origin: urllib.parse.ParseResult, public_url: str) -> bool:
     """Return True only for an exact configured public scheme/host/port."""
-    public = urllib.parse.urlparse(public_url)
+    # ``urlparse`` deliberately accepts some non-browser forms (notably
+    # backslashes). A configured public URL is an explicit trust exception,
+    # so malformed or non-serialized Origins must fail closed rather than
+    # matching another malformed value.
+    if "\\" in origin.geturl() or "\\" in public_url:
+        return False
+    try:
+        public = urllib.parse.urlparse(public_url)
+    except ValueError:
+        return False
     if public.scheme not in {"http", "https"} or not public.hostname:
+        return False
+    if origin.username or origin.password or origin.path or origin.params or origin.query or origin.fragment:
         return False
     if origin.scheme != public.scheme or origin.hostname != public.hostname:
         return False
+
     def _port(parsed: urllib.parse.ParseResult) -> Optional[int]:
         try:
-            return parsed.port or (443 if parsed.scheme == "https" else 80)
+            port = parsed.port
         except ValueError:
             return None
-    return _port(origin) == _port(public)
+        if port == 0:
+            return None
+        return port if port is not None else (443 if parsed.scheme == "https" else 80)
+
+    origin_port = _port(origin)
+    public_port = _port(public)
+    return origin_port is not None and origin_port == public_port
 
 
 def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
@@ -16564,7 +16582,10 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not origin:
         return None
 
-    parsed = urllib.parse.urlparse(origin)
+    try:
+        parsed = urllib.parse.urlparse(origin)
+    except ValueError:
+        return f"origin_mismatch origin={origin} bound={bound_host}"
     if parsed.scheme not in {"http", "https"}:
         # Non-web origin (packaged Electron: file://, null, app://). The
         # upstream credential check is the real auth boundary; trust it.

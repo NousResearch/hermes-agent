@@ -1352,6 +1352,20 @@ class PluginManager:
             self._discovered = True
             return
         if force:
+            try:
+                from tools.registry import registry
+            except Exception:
+                registry = None
+            if registry is not None:
+                for tool_name in list(self._plugin_tool_names):
+                    try:
+                        registry.deregister(tool_name)
+                    except Exception:
+                        logger.debug(
+                            "Failed to deregister stale plugin tool during rediscovery: %s",
+                            tool_name,
+                            exc_info=True,
+                        )
             self._plugins.clear()
             self._hooks.clear()
             self._middleware.clear()

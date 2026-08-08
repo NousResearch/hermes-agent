@@ -46,12 +46,27 @@ import threading
 import atexit
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
+
+
+def _windows_hide_kwargs() -> dict:
+    """Return subprocess kwargs that hide the spawned console window on Windows.
+
+    Used by short-lived probe subprocess calls so they do not flash a
+    black conhost window on the user's desktop. On non-Windows this is a
+    no-op (returns ``{}``) so callers can splat it unconditionally. See
+    #81039.
+    """
+    if sys.platform != "win32":
+        return {}
+    from hermes_cli._subprocess_compat import windows_hide_flags
+    return {"creationflags": windows_hide_flags()}
 
 
 # ---------------------------------------------------------------------------
@@ -1063,7 +1078,6 @@ from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
-import sys
 
 
 # Tool description for LLM
@@ -3359,13 +3373,13 @@ def check_terminal_requirements() -> bool:
             if not docker:
                 logger.error("Docker executable not found in PATH or common install locations")
                 return False
-            result = subprocess.run([docker, "version"], capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+            result = subprocess.run([docker, "version"], capture_output=True, timeout=5, stdin=subprocess.DEVNULL, **_windows_hide_kwargs())
             return result.returncode == 0
 
         elif env_type == "singularity":
             executable = shutil.which("apptainer") or shutil.which("singularity")
             if executable:
-                result = subprocess.run([executable, "--version"], capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+                result = subprocess.run([executable, "--version"], capture_output=True, timeout=5, stdin=subprocess.DEVNULL, **_windows_hide_kwargs())
                 return result.returncode == 0
             return False
 

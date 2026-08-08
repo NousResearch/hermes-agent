@@ -8721,6 +8721,13 @@ class AIAgent:
                     # outer finally: a refresher firing between stop and join
                     # would otherwise set an interrupt that survives the clear.
             terminal = result if isinstance(result, dict) else {}
+            # Surface the turn's own task_id in the returned dict so
+            # task-id-less delivery paths (gateway/run.py's post-stream
+            # media rescan, cron's job-scoped delivery, etc.) can resolve
+            # the exact Docker environment that produced a MEDIA: path
+            # instead of falling back to the shared "default" sandbox (#64889).
+            if isinstance(result, dict):
+                result["task_id"] = effective_task_id
             if terminal.get("interrupted") is True:
                 relay_outcome = "cancelled"
             elif terminal.get("failed") is True:

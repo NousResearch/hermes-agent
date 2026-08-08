@@ -2365,7 +2365,13 @@ def _send_media_via_adapter(
 
     errors: list = []
     requested = [(str(p), v) for p, v in (media_files or [])]
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    # job["id"] is the same task_id run_job() now passes into
+    # agent.run_conversation(), so this resolves the run's own Docker
+    # environment directly instead of falling back to the shared "default"
+    # sandbox (#64889).
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(
+        media_files, str(job.get("id") or "") or None
+    )
     # Report paths the safety filter dropped: the model referenced them in
     # MEDIA: tags but they will never be sent (missing file, denied prefix,
     # or strict-mode policy miss).
@@ -2583,7 +2589,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
     requested_media = [(str(p), v) for p, v in media_files]
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    # Pass the job's own id as task_id at this FIRST translation (before the
+    # filter drops anything unresolved) so the job's own Docker environment
+    # is resolved directly instead of the shared "default" sandbox (#64889) —
+    # the downstream call inside _send_media_via_adapter is an idempotent
+    # no-op on an already-translated (host) path, so this doesn't skip it,
+    # it just makes sure a container-only path survives the filter below.
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(
+        media_files, str(job.get("id") or "") or None
+    )
     # Attachments the policy filter dropped will never be sent on ANY lane —
     # record them up front so the run status says so (previously one
     # stderr WARNING was the only trace: text delivered, file vanished).
@@ -5644,7 +5658,13 @@ def run_job(
         # Tag this fire and time the run_conversation call for the usage_audit.jsonl entry.
         _audit_fire_id = uuid.uuid4().hex
         _audit_t_start = time.monotonic()
-        _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
+        # A deterministic task_id (the job's own id, not a random one) lets
+        # this run's own Docker terminal environment be looked up directly by
+        # _send_media_via_adapter/_deliver_result below instead of degrading
+        # to the shared "default" sandbox (#64889).
+        _cron_future = _cron_pool.submit(
+            _cron_context.run, agent.run_conversation, prompt, task_id=str(job_id)
+        )
         _inactivity_timeout = False
         try:
             if _cron_inactivity_limit is None:

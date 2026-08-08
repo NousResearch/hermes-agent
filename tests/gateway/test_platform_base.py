@@ -859,6 +859,36 @@ class TestDockerContainerMediaPathTranslation:
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         assert BasePlatformAdapter.validate_media_delivery_path("/workspace/nope.png") is None
 
+    def test_task_id_resolves_isolated_task_sandbox_not_default(self, tmp_path, monkeypatch):
+        """#64889: with a real task_id, an isolated task's own sandbox is
+        resolved directly instead of degrading to the shared "default" one —
+        which fails outright (or worse, silently matches an unrelated file
+        of the same name) whenever any other Docker environment is active."""
+        sandbox = tmp_path / "sandboxes"
+        default_ws = sandbox / "docker" / "default" / "workspace"
+        isolated_ws = sandbox / "docker" / "isolated-task-7" / "workspace"
+        default_ws.mkdir(parents=True)
+        isolated_ws.mkdir(parents=True)
+        # A same-named file under "default" that must NOT be the one delivered.
+        (default_ws / "out.png").write_bytes(b"WRONG FILE")
+        media = isolated_ws / "out.png"
+        media.write_bytes(b"\x89PNG\r\n\x1a\n")
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(sandbox))
+        monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+        monkeypatch.delenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", raising=False)
+
+        # Without task_id: degrades to "default" and picks up the wrong file.
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/workspace/out.png"
+        ) == str((default_ws / "out.png").resolve())
+
+        # With task_id: resolves the isolated task's own sandbox correctly.
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/workspace/out.png", "isolated-task-7"
+        ) == str(media.resolve())
+
     def test_persistent_home_root_write_translates(self, tmp_path, monkeypatch):
         """An agent writing /root/out.png in a persistent container produced a
         real host file under <sandbox>/docker/default/home — deliver it."""

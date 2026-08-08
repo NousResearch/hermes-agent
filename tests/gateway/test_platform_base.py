@@ -97,6 +97,30 @@ class TestMessageEventIsCommand:
         event = MessageEvent(text="/new")
         assert event.is_command() is True
 
+    def test_slash_command_with_image_ref_prefix(self):
+        """Desktop buildContextText prepends @image: refs before the visible text.
+        is_command() must still detect the slash command after the ref."""
+        event = MessageEvent(text="@image:/tmp/screenshot.png\n\n/moa what is this?")
+        assert event.is_command() is True
+
+    def test_slash_command_with_image_ref_spaces_in_path(self):
+        """Image refs with Windows spaces (e.g. C:\\Users\\John Doe\\img.png) must be correctly stripped."""
+        event = MessageEvent(text="@image:C:\\Users\\John Doe\\My Pictures\\photo.png\n\n/moa what is this?")
+        assert event.is_command() is True
+
+    def test_slash_command_with_file_ref_prefix(self):
+        event = MessageEvent(text="@file:/tmp/report.pdf\n\n/compress")
+        assert event.is_command() is True
+
+    def test_slash_command_with_url_ref_prefix(self):
+        event = MessageEvent(text="@url:https://example.com\n\n/status")
+        assert event.is_command() is True
+
+    def test_non_command_with_image_ref(self):
+        """A regular message (no slash command) with an image ref must NOT be detected as a command."""
+        event = MessageEvent(text="@image:/tmp/foo.png\n\nwhat is this?")
+        assert event.is_command() is False
+
 
 class TestMessageEventGetCommand:
     def test_simple_command(self):
@@ -110,6 +134,11 @@ class TestMessageEventGetCommand:
     def test_not_a_command(self):
         event = MessageEvent(text="hello")
         assert event.get_command() is None
+
+    def test_get_command_with_image_ref_prefix(self):
+        """get_command() must parse the command name even when prefixed with a Desktop media ref."""
+        event = MessageEvent(text="@image:/tmp/foo.png\n\n/moa something interesting")
+        assert event.get_command() == "moa"
 
 
 class TestMessageEventGetCommandArgs:

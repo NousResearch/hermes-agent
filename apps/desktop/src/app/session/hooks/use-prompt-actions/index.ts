@@ -85,14 +85,7 @@ const POSIX_ABSOLUTE_PATH_RE = /^\/(?!\/)/
 // (docker/ssh/singularity/modal/...) cannot see the desktop's host paths —
 // they must be crossed as bytes, like remote attachments. Mirrors the
 // container_backend set in tools/terminal_tool.py::_get_env_config.
-const CONTAINER_TERMINAL_BACKENDS = new Set([
-  'docker',
-  'ssh',
-  'singularity',
-  'modal',
-  'daytona',
-  'vercel_sandbox'
-])
+const CONTAINER_TERMINAL_BACKENDS = new Set(['docker', 'ssh', 'singularity', 'modal', 'daytona', 'vercel_sandbox'])
 
 // `mode: local` means the gateway was launched locally, not necessarily that
 // Electron and the gateway share a filesystem. Windows Desktop can front a
@@ -104,6 +97,7 @@ function attachmentPathNeedsUpload(path: string, backendCwd?: null | string, ter
   if (CONTAINER_TERMINAL_BACKENDS.has((terminalBackend || '').trim().toLowerCase())) {
     return true
   }
+
   return WINDOWS_ABSOLUTE_PATH_RE.test(path.trim()) && POSIX_ABSOLUTE_PATH_RE.test(backendCwd?.trim() || '')
 }
 
@@ -595,7 +589,17 @@ export function usePromptActions({
       const visibleText = sanitizeComposerInput(rawText).trim()
       const attachments = options?.attachments ?? $composerAttachments.get()
 
-      if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
+      if (SLASH_COMMAND_RE.test(visibleText)) {
+        if (attachments.length) {
+          notify({
+            kind: 'warning',
+            title: copy.slashCommandIgnoredTitle,
+            message: copy.slashCommandIgnoredBody
+          })
+
+          return false
+        }
+
         triggerHaptic('selection')
         // Forward the explicit target (background queue drain, tile) — dropping
         // it ran the command against whatever chat happened to be in front.

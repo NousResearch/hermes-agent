@@ -1756,6 +1756,15 @@ MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Desktop attachment reference tags prepended by buildContextText before the
+# user's visible text (e.g. "@image:/tmp/foo.png\n\n/moa ask something").
+# Strip these when detecting slash commands so a media-ref prefix does not hide
+# a slash token from MessageEvent.is_command() / get_command().
+# The pattern matches to end-of-line (not just whitespace-bounded) to handle
+# Windows paths that may contain spaces (e.g. "C:\Users\John Doe\image.png").
+_ATTACHMENT_REF_RE = re.compile(r"@(?:image|file|url):[^\n@]+", re.IGNORECASE)
+
+
 
 def _match_extensionless_path(scan_text: str, match: "re.Match") -> Optional[Tuple[str, int]]:
     """Resolve an extensionless MEDIA tag match to a validated on-disk path.
@@ -2148,16 +2157,26 @@ class MessageEvent:
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     
+    def _command_text(self) -> str:
+        """Return the message text with leading Desktop attachment refs stripped.
+
+        Desktop's buildContextText prepends ``@image:<path>``, ``@file:<path>``,
+        or ``@url:<url>`` tags before the user's visible text.  Stripping these
+        lets is_command / get_command / get_command_args work correctly even
+        when the payload is prefixed with one or more media refs.
+        """
+        return _ATTACHMENT_REF_RE.sub("", (self.text or "").lstrip()).lstrip()
+
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
-        return (self.text or "").lstrip().startswith("/")
-    
+        return self._command_text().startswith("/")
+
     def get_command(self) -> Optional[str]:
         """Extract command name if this is a command message."""
         if not self.is_command():
             return None
         # Split on space and get first word, strip the /
-        command_text = (self.text or "").lstrip()
+        command_text = self._command_text()
         parts = command_text.split(maxsplit=1)
         raw = parts[0][1:].lower() if parts else None
         if raw and "@" in raw:
@@ -2166,17 +2185,18 @@ class MessageEvent:
         if raw and "/" in raw:
             return None
         return raw
-    
+
     def get_command_args(self) -> str:
         """Get the arguments after a command."""
         if not self.is_command():
             return self.text
-        command_text = (self.text or "").lstrip()
+        command_text = self._command_text()
         parts = command_text.split(maxsplit=1)
         args = parts[1] if len(parts) > 1 else ""
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
         return args
+
 
 
 @dataclass

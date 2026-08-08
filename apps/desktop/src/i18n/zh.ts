@@ -3054,6 +3054,8 @@ export const zh: Translations = {
     promptFailed: '提示词发送失败',
     providerCredentialRequired: '发送第一条消息前请先添加提供方凭据。',
     emptySlashCommand: '空 slash 命令',
+    slashCommandIgnoredTitle: '命令未发送',
+    slashCommandIgnoredBody: 'Slash 命令不能与附件同时使用。请移除附件或单独发送命令。',
     desktopCommands: '桌面端命令',
     skillCommandsAvailable: count => `${count} 个技能命令可用。`,
     warningLine: message => `警告：${message}`,

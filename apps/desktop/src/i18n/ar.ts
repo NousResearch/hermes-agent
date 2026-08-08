@@ -2521,6 +2521,8 @@ export const ar = defineLocale({
     promptFailed: 'فشل إرسال الرسالة',
     providerCredentialRequired: 'مطلوب اعتماد المزود',
     emptySlashCommand: 'أمر slash فارغ',
+    slashCommandIgnoredTitle: 'لم يتم إرسال الأمر',
+    slashCommandIgnoredBody: 'لا يمكن دمج أوامر slash مع المرفقات. أزل المرفق أو أرسل الأمر بشكل منفصل.',
     desktopCommands: 'أوامر سطح المكتب',
     skillCommandsAvailable: count => `${count} أمر مهارة متاح`,
     warningLine: message => `تحذير: ${message}`,

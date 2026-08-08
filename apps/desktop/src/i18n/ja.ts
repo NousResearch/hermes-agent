@@ -2730,6 +2730,9 @@ export const ja = defineLocale({
     promptFailed: 'プロンプトに失敗しました',
     providerCredentialRequired: '最初のメッセージを送信する前にプロバイダー認証情報を追加してください。',
     emptySlashCommand: '空のスラッシュコマンド',
+    slashCommandIgnoredTitle: 'コマンドが送信されませんでした',
+    slashCommandIgnoredBody:
+      'スラッシュコマンドと添付ファイルを同時に使用することはできません。添付ファイルを削除するか、コマンドを別途送信してください。',
     desktopCommands: 'デスクトップコマンド',
     skillCommandsAvailable: count => `${count} 件のスキルコマンドが利用可能です。`,
     warningLine: message => `警告: ${message}`,

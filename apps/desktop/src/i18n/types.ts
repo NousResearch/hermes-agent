@@ -2446,6 +2446,8 @@ export interface Translations {
     promptFailed: string
     providerCredentialRequired: string
     emptySlashCommand: string
+    slashCommandIgnoredTitle: string
+    slashCommandIgnoredBody: string
     desktopCommands: string
     skillCommandsAvailable: (count: number) => string
     warningLine: (message: string) => string

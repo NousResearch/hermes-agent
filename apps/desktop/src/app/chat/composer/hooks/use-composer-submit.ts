@@ -1,11 +1,13 @@
 import { type RefObject, useEffect, useRef } from 'react'
 
+import { useI18n } from '@/i18n'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
+import { notify } from '@/store/notifications'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
@@ -75,6 +77,8 @@ export function useComposerSubmit({
   stashAt
 }: UseComposerSubmitArgs) {
   const scope = useComposerScope()
+  const { t } = useI18n()
+  const copy = t.desktop
 
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
   // === false) or throws, re-load + re-stash the draft so the words survive.
@@ -171,7 +175,20 @@ export function useComposerSubmit({
       // busy guard for commands that genuinely need an idle session (skill
       // /send directives).  Queuing them would make every slash command wait
       // for the current turn to finish, which is how the TUI never behaves.
-      if (!attachments.length && SLASH_COMMAND_RE.test(text.trim())) {
+      if (SLASH_COMMAND_RE.test(text.trim())) {
+        if (attachments.length) {
+          // Slash commands cannot ride alongside attachments — warn the user
+          // instead of silently queuing the payload (which would then reach the
+          // idle path and be submitted as plain text with no command execution).
+          notify({
+            kind: 'warning',
+            title: copy.slashCommandIgnoredTitle,
+            message: copy.slashCommandIgnoredBody
+          })
+
+          return
+        }
+
         triggerHaptic('submit')
         clearDraft()
         dispatchSubmit(text)

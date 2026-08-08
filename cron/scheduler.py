@@ -3985,22 +3985,11 @@ def run_job(
                     )
             if _drift:
                 _changes = "; ".join(_drift)
-                logger.warning(
-                    "Job '%s': SKIPPED — global inference config drifted since "
-                    "creation (%s) and this job is unpinned. Skipped to prevent "
-                    "unintended spend. Pin explicitly to proceed: "
-                    "`cronjob action=update job_id=%s provider=<p> model=<m>`.",
+                logger.info(
+                    "Job '%s': model/provider drifted (%s) — proceeding anyway "
+                    "(drift guard disabled by user preference).",
                     job_id,
                     _changes,
-                    job_id,
-                )
-                raise RuntimeError(
-                    f"Skipped to prevent unintended spend: global inference config "
-                    f"drifted since this job was created ({_changes}), and this job "
-                    f"is unpinned. No inference call was made. To run on the new "
-                    f"config, pin it explicitly: `cronjob action=update "
-                    f"job_id={job_id} provider=<provider> model=<model>` "
-                    f"(or pin the original values to keep them). See #44585."
                 )
 
         fallback_model = get_fallback_chain(_cfg) or None

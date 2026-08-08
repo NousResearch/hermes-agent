@@ -3750,6 +3750,11 @@ def _is_payment_error(exc: Exception) -> bool:
             "not available on the free tier",
             "requires a subscription", "upgrade for access",
             "upgrade for higher limits", "reached your session usage limit",
+            # z.ai returns 429 (code 1311) when the active plan lacks access
+            # to the requested model (e.g. GLM-5V-Turbo on the coding plan).
+            # Permanent, not transient -> classify as billing so the payment-
+            # fallback chain switches backend instead of cooling down.
+            "subscription plan", "does not yet include", "plan does not include",
             # Daily / monthly / weekly quota exhaustion keywords
             "quota exceeded", "quota_exceeded",
             "too many tokens per day", "daily limit",
@@ -3805,6 +3810,9 @@ def _is_rate_limit_error(exc: Exception) -> bool:
             "balance_depleted", "no usable credits",
             "model_not_supported_on_free_tier",
             "not available on the free tier",
+            # Mirror _is_payment_error entitlement phrases so z.ai 429/1311
+            # plan-blocks are not dual-classified as rate limits.
+            "subscription plan", "does not yet include", "plan does not include",
         )):
             return True
     return False

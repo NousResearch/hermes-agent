@@ -1319,6 +1319,18 @@ class TestIsPaymentError:
         assert _is_payment_error(exc) is True
 
 
+    def test_429_zai_subscription_plan_is_payment(self):
+        """z.ai 429 code 1311 plan entitlement is billing, not transient RL."""
+        exc = Exception(
+            "Error code: 429 - {'error': {'code': '1311', 'message': "
+            "'Your current subscription plan does not yet include access to "
+            "GLM-5V-Turbo'}}"
+        )
+        exc.status_code = 429
+        assert _is_payment_error(exc) is True
+        assert _is_rate_limit_error(exc) is False
+
+
 
 
     def test_403_subscription_required_is_payment(self):
@@ -1455,6 +1467,17 @@ class TestIsRateLimitError:
         exc = Exception("Rate limit exceeded, try again in 2 seconds")
         exc.status_code = 429
         assert _is_rate_limit_error(exc) is True
+
+
+    def test_429_zai_subscription_plan_is_not_rate_limit(self):
+        exc = Exception(
+            "Error code: 429 - {'error': {'code': '1311', 'message': "
+            "'Your current subscription plan does not yet include access to "
+            "GLM-5V-Turbo'}}"
+        )
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is False
+        assert _is_payment_error(exc) is True
 
 
 

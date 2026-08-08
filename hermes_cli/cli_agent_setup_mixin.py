@@ -404,6 +404,7 @@ class CLIAgentSetupMixin:
                 resolved_meta = self._session_db.get_session(self.session_id)
                 if resolved_meta:
                     session_meta = resolved_meta
+            self._update_terminal_title(session_title=session_meta.get("title") or "")
             restored = self._session_db.get_messages_as_conversation(
                 self.session_id, repair_alternation=True
             )
@@ -614,6 +615,8 @@ class CLIAgentSetupMixin:
             resolved_meta = self._session_db.get_session(self.session_id)
             if resolved_meta:
                 session_meta = resolved_meta
+
+        self._update_terminal_title(session_title=session_meta.get("title") or "")
 
         model_history, display_history = self._session_db.get_resume_conversations(self.session_id)
         restored = model_history

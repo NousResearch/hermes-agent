@@ -16,6 +16,7 @@ const buildUiState = (): UiState => ({
   compact: false,
   detailsMode: 'collapsed',
   detailsModeCommandOverride: false,
+  explicitLinks: false,
   focusView: false,
   indicatorStyle: DEFAULT_INDICATOR_STYLE,
   info: null,

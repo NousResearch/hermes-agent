@@ -1,6 +1,8 @@
 import { Box, Link, stringWidth, Text } from '@hermes/ink'
 import { Fragment, memo, type ReactNode, useMemo } from 'react'
+import { useStore } from '@nanostores/react'
 
+import { $uiState } from '../app/uiStore.js'
 import { ensureEmojiPresentation } from '../lib/emoji.js'
 import { normalizeExternalUrl, urlSlugTitleLabel, useLinkTitle } from '../lib/externalLink.js'
 import { BOX_CLOSE, BOX_OPEN, texToUnicode } from '../lib/mathUnicode.js'
@@ -172,13 +174,24 @@ interface ResolvedLinkProps {
 // override — replacing `[Read the RFC](url)` with the page title throws away
 // better wording than we can derive, and mangles labels like `#71706`.
 function ResolvedLink({ authoredLabel, t, url }: ResolvedLinkProps) {
-  const fetched = useLinkTitle(authoredLabel ? null : url)
-  const display = authoredLabel || fetched || defaultLinkLabel(url)
+  const explicitLinks = useStore($uiState).explicitLinks
+  // Skip title fetches in explicit mode: the raw destination is intentionally
+  // the copyable label and must remain visible in remote clients such as Herdr.
+  const fetched = useLinkTitle(explicitLinks || authoredLabel ? null : url)
+  const display = explicitLinks ? authoredLabel || url : authoredLabel || fetched || defaultLinkLabel(url)
+  const showDestination = explicitLinks && display !== url
 
   return (
     <Link url={url}>
       <Text color={t.color.accent} underline>
         {display}
+        {showDestination ? (
+          <Text color={t.color.muted} underline>
+            {' <'}
+            {url}
+            {'>'}
+          </Text>
+        ) : null}
       </Text>
     </Link>
   )

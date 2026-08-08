@@ -1291,6 +1291,36 @@ CREATE TABLE IF NOT EXISTS task_comments (
     created_at INTEGER NOT NULL
 );
 
+-- Mid-run steer mailbox for dispatcher-spawned workers.
+--
+-- A worker is a detached ``hermes ... chat -q`` subprocess (see
+-- ``_default_spawn``): nothing in the dispatcher's or dashboard's process
+-- holds a reference to its ``AIAgent``, so ``AIAgent.steer()`` cannot be
+-- called across the boundary the way ``session.steer`` does for in-process
+-- TUI/dashboard sessions. This table is the cross-process channel: an
+-- operator (CLI, dashboard, REST) queues a row, and the worker drains it
+-- at its next tool-batch boundary and feeds it through the SAME
+-- ``AIAgent.steer()`` path an interactive ``/steer`` uses.
+--
+-- Rows are pinned to ``run_id`` so a steer queued for a run that gets
+-- reclaimed is never delivered to the respawned attempt — the operator's
+-- instruction was written about work that no longer exists. Delivery is
+-- one-shot: ``delivered_at`` is stamped inside the claiming transaction.
+CREATE TABLE IF NOT EXISTS task_steers (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id      TEXT NOT NULL,
+    run_id       INTEGER NOT NULL,
+    author       TEXT NOT NULL,
+    text         TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    delivered_at INTEGER
+);
+
+-- The worker polls this on every tool batch; keep the undelivered lookup
+-- an index hit rather than a scan of the board's whole steer history.
+CREATE INDEX IF NOT EXISTS idx_task_steers_pending
+    ON task_steers(task_id, run_id, delivered_at);
+
 CREATE TABLE IF NOT EXISTS task_events (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id    TEXT NOT NULL,
@@ -3699,6 +3729,147 @@ def list_comments_after(
         )
         for r in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# Mid-run steer mailbox
+#
+# ``add_comment`` above is the *next-spawn* channel: comments are rendered
+# into the worker's prompt by ``build_worker_context``, which only runs when
+# a worker starts. These two functions are the *mid-run* channel — the
+# cross-process equivalent of typing ``/steer`` at an interactive session.
+# ---------------------------------------------------------------------------
+
+# A steer rides on a tool result, not on its own turn. Keep it small enough
+# that it reads as an interjection rather than a second prompt competing with
+# the card body (which is itself capped at 8 KB in build_worker_context).
+_STEER_MAX_CHARS = 4096
+
+# Undelivered steers are drained in one batch, so an operator hammering the
+# endpoint against a worker stuck in a long tool call would otherwise dump an
+# unbounded wall of text into a single tool result.
+_STEER_MAX_PENDING = 10
+
+
+def queue_steer(
+    conn: sqlite3.Connection,
+    task_id: str,
+    text: str,
+    *,
+    author: str = "dashboard",
+    expected_run_id: Optional[int] = None,
+) -> int:
+    """Queue a mid-run steer for the worker currently running ``task_id``.
+
+    Returns the run id the steer was pinned to.
+
+    Raises :class:`ValueError` when the task is unknown, is not ``running``
+    (there is no live worker to steer — comment on it instead, which lands
+    at the next spawn), has no open run, when ``expected_run_id`` does not
+    match the live run, when the text is empty or over
+    ``_STEER_MAX_CHARS``, or when ``_STEER_MAX_PENDING`` steers are already
+    waiting undelivered.
+
+    Delivery is best-effort *by design*: the worker drains at its next
+    tool-batch boundary, so a steer queued while it is composing its final
+    answer may never be picked up. Callers must treat a successful queue as
+    "accepted", never as "the model has seen it" — the same contract
+    ``AIAgent.steer()`` already has for interactive sessions.
+    """
+    if not text or not text.strip():
+        raise ValueError("steer text is required")
+    cleaned = text.strip()
+    if len(cleaned) > _STEER_MAX_CHARS:
+        raise ValueError(
+            f"steer text is {len(cleaned)} chars; limit is {_STEER_MAX_CHARS}"
+        )
+    if not author or not author.strip():
+        raise ValueError("steer author is required")
+    now = int(time.time())
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"unknown task {task_id}")
+        if row["status"] != "running":
+            raise ValueError(
+                f"task {task_id} is {row['status']!r}, not running — "
+                "no live worker to steer"
+            )
+        run_id = row["current_run_id"]
+        if run_id is None:
+            raise ValueError(f"task {task_id} is running but has no open run")
+        run_id = int(run_id)
+        if expected_run_id is not None and int(expected_run_id) != run_id:
+            raise ValueError(
+                f"run {expected_run_id} is no longer the live run for task "
+                f"{task_id} (now {run_id})"
+            )
+        pending = conn.execute(
+            "SELECT COUNT(*) AS n FROM task_steers "
+            "WHERE task_id = ? AND run_id = ? AND delivered_at IS NULL",
+            (task_id, run_id),
+        ).fetchone()["n"]
+        if pending >= _STEER_MAX_PENDING:
+            raise ValueError(
+                f"{pending} steers already queued undelivered for run {run_id}; "
+                "wait for the worker to reach a tool boundary, or reclaim it"
+            )
+        conn.execute(
+            "INSERT INTO task_steers (task_id, run_id, author, text, created_at, delivered_at) "
+            "VALUES (?, ?, ?, ?, ?, NULL)",
+            (task_id, run_id, author.strip(), cleaned, now),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "steer_queued",
+            {"author": author.strip(), "len": len(cleaned)},
+            run_id=run_id,
+        )
+    return run_id
+
+
+def pop_pending_steer(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    run_id: int,
+) -> Optional[str]:
+    """Atomically claim every undelivered steer for ``run_id``.
+
+    Returns the queued texts joined by newlines (matching how
+    ``AIAgent.steer()`` concatenates repeat calls), or ``None`` when the
+    mailbox is empty.
+
+    Called from the worker process on the agent's tool-batch boundary. The
+    SELECT and the ``delivered_at`` stamp share one IMMEDIATE transaction,
+    so a second poller — a goal-loop respawn racing the same run, say —
+    cannot re-deliver text the model has already been shown.
+    """
+    with write_txn(conn):
+        rows = conn.execute(
+            "SELECT id, text FROM task_steers "
+            "WHERE task_id = ? AND run_id = ? AND delivered_at IS NULL "
+            "ORDER BY id ASC",
+            (task_id, int(run_id)),
+        ).fetchall()
+        if not rows:
+            return None
+        now = int(time.time())
+        conn.executemany(
+            "UPDATE task_steers SET delivered_at = ? WHERE id = ?",
+            [(now, r["id"]) for r in rows],
+        )
+        _append_event(
+            conn,
+            task_id,
+            "steer_delivered",
+            {"count": len(rows)},
+            run_id=int(run_id),
+        )
+    return "\n".join(r["text"] for r in rows)
 
 
 # ---------------------------------------------------------------------------

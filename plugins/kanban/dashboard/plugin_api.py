@@ -1168,6 +1168,126 @@ def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query
 
 
 # ---------------------------------------------------------------------------
+# Steer — mid-run course correction
+#
+# The comment endpoint above lands at the NEXT spawn (comments are rendered
+# into the prompt by ``build_worker_context``). This one lands during the
+# CURRENT run: the worker drains the board's steer mailbox at its next
+# tool-batch boundary and injects the text through the same
+# ``AIAgent.steer()`` path an interactive ``/steer`` uses.
+#
+# Until now the only mid-run control an operator had over a dispatched
+# worker was ``/terminate`` — kill it and re-dispatch, losing the run's
+# context. This is the "you can see it going the wrong way, nudge it"
+# surface that ``session.steer`` already gives in-process sessions.
+# ---------------------------------------------------------------------------
+
+class SteerBody(BaseModel):
+    text: str = Field(..., description="Text to inject into the worker's next tool result")
+    author: Optional[str] = "dashboard"
+    run_id: Optional[int] = Field(
+        None,
+        description=(
+            "Optional guard: reject the steer unless this is still the task's "
+            "live run. Use it when steering from a stale board view so a "
+            "correction written about one attempt cannot land on its "
+            "reclaimed-and-respawned successor."
+        ),
+    )
+
+
+def _steer_task(
+    task_id: str,
+    payload: SteerBody,
+    board: Optional[str],
+    *,
+    expected_run_id: Optional[int] = None,
+) -> dict:
+    """Shared body for the task- and run-scoped steer endpoints."""
+    if not payload.text.strip():
+        raise HTTPException(status_code=400, detail="text is required")
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        if kanban_db.get_task(conn, task_id) is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        try:
+            run_id = kanban_db.queue_steer(
+                conn,
+                task_id,
+                payload.text,
+                author=payload.author or "dashboard",
+                expected_run_id=(
+                    expected_run_id if expected_run_id is not None else payload.run_id
+                ),
+            )
+        except ValueError as exc:
+            # Every rejection from queue_steer is a state/precondition
+            # problem the caller can act on (task not running, run moved on,
+            # mailbox full, text too long), not a server fault.
+            raise HTTPException(status_code=409, detail=str(exc))
+        return {"ok": True, "task_id": task_id, "run_id": run_id, "status": "queued"}
+    finally:
+        conn.close()
+
+
+@router.post("/tasks/{task_id}/steer")
+def steer_task_endpoint(
+    task_id: str,
+    payload: SteerBody,
+    board: Optional[str] = Query(None, description="Kanban board slug (omit for current)"),
+):
+    """Queue a mid-run steer for the worker currently running ``task_id``.
+
+    Responses:
+      * 200 ``{"ok": true, "task_id": ..., "run_id": ..., "status": "queued"}``
+      * 404 when the task is unknown.
+      * 409 when the task is not ``running`` (no live worker — POST a
+        comment instead, which the next spawn will read), when ``run_id``
+        no longer matches the live run, when the text exceeds the size
+        limit, or when too many steers are already waiting undelivered.
+
+    ``"queued"`` means accepted for delivery, NOT that the model has read
+    it. The worker drains at its next tool-call boundary, so a steer sent
+    while it is composing a final answer may never be picked up, and a
+    steer is dropped outright if the run is interrupted first — the same
+    contract ``AIAgent.steer()`` has for interactive sessions. Poll the
+    task's events for ``steer_delivered`` to confirm pickup.
+    """
+    return _steer_task(task_id, payload, board)
+
+
+@router.post("/runs/{run_id}/steer")
+def steer_run_endpoint(
+    run_id: int,
+    payload: SteerBody,
+    board: Optional[str] = Query(None, description="Kanban board slug (omit for current)"),
+):
+    """Run-scoped sibling of ``POST /tasks/{task_id}/steer``.
+
+    Mirrors ``POST /runs/{run_id}/terminate``: a client watching
+    ``/workers/active`` holds run ids, not task ids, and resolving one to
+    the other client-side reintroduces exactly the race the ``run_id``
+    guard exists to close.
+
+    Responses match the task-scoped endpoint, plus 404 when ``run_id`` is
+    unknown and 409 when that run has already ended.
+    """
+    board_slug = _resolve_board(board)
+    conn = _conn(board=board_slug)
+    try:
+        r = kanban_db.get_run(conn, run_id)
+        if r is None:
+            raise HTTPException(status_code=404, detail=f"run {run_id} not found")
+        if r.ended_at is not None:
+            raise HTTPException(status_code=409, detail=f"run {run_id} already ended")
+        task_id = r.task_id
+    finally:
+        conn.close()
+    return _steer_task(task_id, payload, board, expected_run_id=run_id)
+
+
+# ---------------------------------------------------------------------------
 # Links
 # ---------------------------------------------------------------------------
 

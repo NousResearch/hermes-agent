@@ -536,7 +536,13 @@ export function useMessageStream({
   )
 
   const completeAssistantMessage = useCallback(
-    (sessionId: string, text: string, responsePreviewed?: boolean, failure?: { error: string; partial: boolean }) => {
+    (
+      sessionId: string,
+      text: string,
+      responsePreviewed?: boolean,
+      failure?: { error: string; partial: boolean },
+      turnDurationSeconds?: number
+    ) => {
       let shouldHydrate = false
 
       const completedState = updateSessionState(sessionId, state => {
@@ -558,6 +564,12 @@ export function useMessageStream({
 
         const streamId = state.streamId
         const finalText = renderMediaTags(text).trim()
+
+        const completedTurnDuration =
+          typeof turnDurationSeconds === 'number' && Number.isFinite(turnDurationSeconds) && turnDurationSeconds >= 0
+            ? turnDurationSeconds
+            : undefined
+
         // Structured failure from the terminal frame wins over the legacy text
         // heuristic ("Error: <provider detail>" texts don't match the regexes).
         const completionError = failure?.error ?? completionErrorText(finalText)
@@ -576,7 +588,12 @@ export function useMessageStream({
         // Settling the final response onto a bubble makes it the turn's real
         // reply — clear `interim` so it regains the action footer.
         const completeMessage = (message: ChatMessage): ChatMessage => {
-          const settled = { ...message, pending: false, interim: false }
+          const settled = {
+            ...message,
+            pending: false,
+            interim: false,
+            ...(completedTurnDuration !== undefined ? { turnDurationSeconds: completedTurnDuration } : {})
+          }
 
           if (completionError && !keepFailedPartialText) {
             return { ...settled, error: completionError, parts: message.parts.filter(part => part.type !== 'text') }
@@ -594,6 +611,7 @@ export function useMessageStream({
           role: 'assistant',
           parts: completionError && !keepFailedPartialText ? [] : [assistantTextPart(finalText)],
           branchGroupId: state.pendingBranchGroup ?? undefined,
+          ...(completedTurnDuration !== undefined ? { turnDurationSeconds: completedTurnDuration } : {}),
           ...(completionError && { error: completionError })
         })
 

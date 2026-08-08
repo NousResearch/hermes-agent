@@ -7,7 +7,7 @@ import time
 import types
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import pytest
 
@@ -494,6 +494,7 @@ def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
     monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: dict(fixed_info))
     monkeypatch.setattr(server, "make_stream_renderer", lambda _cols: None)
     monkeypatch.setattr(server, "render_message", lambda _raw, _cols: None)
+    monkeypatch.setattr(server, "_turn_duration_seconds", lambda _session: 1.25)
     fake_title = types.ModuleType("agent.title_generator")
     setattr(fake_title, "maybe_auto_title", lambda *args, **kwargs: None)
     monkeypatch.setitem(sys.modules, "agent.title_generator", fake_title)
@@ -524,7 +525,11 @@ def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
                 sid = frame["sid"]
                 server._emit("message.start", sid)
                 server._emit("message.delta", sid, {"text": "hi"})
-                server._emit("message.complete", sid, {"text": "hi", "usage": usage, "status": "complete"})
+                server._emit(
+                    "message.complete",
+                    sid,
+                    {"text": "hi", "usage": usage, "status": "complete", "turn_duration_seconds": 1.25},
+                )
                 server._emit("session.info", sid, dict(fixed_info))
                 if on_complete is not None:
                     on_complete(
@@ -4530,7 +4535,11 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
         assert replaced == [("session-key", [])]
         assert server._sessions["confirm-empty-sid"]["history"] == [
             {"role": "user", "content": "first"},
-            {"role": "assistant", "content": "regenerated"},
+            {
+                "role": "assistant",
+                "content": "regenerated",
+                "display_metadata": {"turn_duration_seconds": ANY},
+            },
         ]
     finally:
         server._sessions.pop("confirm-empty-sid", None)
@@ -9351,7 +9360,11 @@ def test_prompt_submit_history_version_match_persists_normally(monkeypatch):
 
         # History was written
         assert server._sessions["sid"]["history"] == [
-            {"role": "assistant", "content": "reply"}
+            {
+                "role": "assistant",
+                "content": "reply",
+                "display_metadata": {"turn_duration_seconds": ANY},
+            }
         ]
         assert server._sessions["sid"]["history_version"] == 1
 
@@ -9409,7 +9422,9 @@ def test_prompt_submit_snapshots_history_after_pending_model_switch(monkeypatch)
 
         assert seen["history"] == [marker]
         assert server._sessions["sid"]["history"][-1] == {
-            "role": "assistant", "content": "reply"
+            "role": "assistant",
+            "content": "reply",
+            "display_metadata": {"turn_duration_seconds": ANY},
         }
         complete = [a for a in emits if a[0] == "message.complete"]
         assert "warning" not in complete[0][2]
@@ -9485,7 +9500,11 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
         assert server._sessions["sid"]["history"] == [
             *original_history[:2],
             {"role": "user", "content": "edited second"},
-            {"role": "assistant", "content": "edited reply"},
+            {
+                "role": "assistant",
+                "content": "edited reply",
+                "display_metadata": {"turn_duration_seconds": ANY},
+            },
         ]
         assert server._sessions["sid"]["history_version"] == 2
         assert stub_db.replaced == [("session-key", original_history[:2])]
@@ -12574,7 +12593,11 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
         assert completed["result"].get("inflight") is None
         assert completed["result"]["messages"] == [
             {"role": "user", "text": "write a long answer"},
-            {"role": "assistant", "text": "partial answer complete"},
+            {
+                "role": "assistant",
+                "text": "partial answer complete",
+                "display_metadata": {"turn_duration_seconds": ANY},
+            },
         ]
     finally:
         release.set()

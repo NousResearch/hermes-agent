@@ -48,6 +48,86 @@ def test_compute_host_workers_inherit_tui_pool_env_or_8(monkeypatch):
     assert _default_workers() == 8
 
 
+def _turn_session() -> dict:
+    return {
+        "agent": None,
+        "cols": 80,
+        "cwd": "/tmp",
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "profile_home": "",
+        "running": True,
+        "session_key": "session-key",
+        "source": "tui",
+    }
+
+
+def test_compute_host_turn_frame_carries_parent_turn_start():
+    session = _turn_session()
+    server._start_inflight_turn(session, "hello")
+    session["inflight_turn"]["started_at"] = 123.5
+    session["inflight_turn"]["started_monotonic"] = 77.0
+
+    frame = server._compute_host_turn_frame("rid", "sid", session, "hello")
+
+    assert frame["turn_started_at"] == 123.5
+    assert frame["turn_started_monotonic"] == 77.0
+
+
+def test_compute_host_inherits_parent_turn_start(monkeypatch):
+    clock = {"monotonic": 200.0}
+    monkeypatch.setattr(server.time, "monotonic", lambda: clock["monotonic"])
+    session = _turn_session()
+    server._start_inflight_turn(session, "hello")
+
+    server._inherit_inflight_turn_start(session, 100.0, 170.0)
+
+    assert session["inflight_turn"]["started_at"] == 100.0
+    assert session["inflight_turn"]["started_monotonic"] == 170.0
+    clock["monotonic"] = 205.0
+    assert server._turn_duration_seconds(session) == 35.0
+
+
+def test_compute_host_error_reports_parent_turn_duration(monkeypatch):
+    emitted = []
+    session = _turn_session()
+    server._start_inflight_turn(session, "hello")
+    session["inflight_turn"]["started_monotonic"] = 100.0
+    monkeypatch.setattr(server.time, "monotonic", lambda: 112.5)
+    monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, payload)))
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {})
+    monkeypatch.setattr(server, "_drain_queued_prompt", lambda *_args: None)
+
+    server._on_compute_host_turn_done(
+        "rid",
+        "sid",
+        session,
+        {"type": "turn.error", "message": "host crashed"},
+    )
+
+    assert emitted[0] == (
+        "message.complete",
+        "sid",
+        {
+            "error": "host crashed",
+            "recoverable": True,
+            "status": "error",
+            "text": "Error: host crashed",
+            "turn_duration_seconds": 12.5,
+        },
+    )
+    assert server._inflight_snapshot(session) == {
+        "assistant": "",
+        "error": "host crashed",
+        "recoverable": True,
+        "status": "error",
+        "streaming": False,
+        "turn_duration_seconds": 12.5,
+        "user": "hello",
+    }
+
+
 def test_mutator_route_table_matches_prd_inventory():
     assert MUTATOR_ROUTE_TABLE == {
         "prompt.submit": "turn-path",

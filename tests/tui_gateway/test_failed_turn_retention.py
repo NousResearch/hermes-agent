@@ -15,6 +15,8 @@ Contract pinned here:
 * The exception path closes the turn with a terminal ``message.complete``
   (``status: "error"``, same shape as the returned-error path) instead of a
   bare ``error`` event.
+* Terminal ``message.complete`` frames carry monotonic elapsed time when a turn
+  start is available.
 * ``session.resume``'s live payload carries the retained snapshot.
 * A retained failure never leaks into the next turn's inflight state.
 """
@@ -22,10 +24,12 @@ Contract pinned here:
 from __future__ import annotations
 
 import threading
+import time
 import types
 
 import pytest
 
+from hermes_state import SessionDB
 from tui_gateway import server
 
 
@@ -189,6 +193,93 @@ def test_completed_turn_still_clears_inflight(emits, turn_env):
     assert server._inflight_snapshot(session) is None
 
 
+def test_completed_turn_persists_elapsed_seconds(emits, turn_env, monkeypatch, tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("session-key", "test")
+    db.append_message("session-key", "assistant", "all done", timestamp=90.0)
+    write_patience = []
+    execute_write = db._execute_write
+
+    def _capture_write(fn, **kwargs):
+        write_patience.append(kwargs.get("patience_s"))
+        return execute_write(fn, **kwargs)
+
+    monkeypatch.setattr(db, "_execute_write", _capture_write)
+    messages = [
+        {"role": "user", "content": "do the thing"},
+        {"role": "assistant", "content": "all done", "display_metadata": {"model": "test"}},
+    ]
+
+    def _run(*_args, **_kwargs):
+        db.append_message(
+            "session-key",
+            "assistant",
+            "all done",
+            display_metadata={"reactions": [{"emoji": "👍", "author": "user", "at": 1.0}]},
+        )
+        db.append_message(
+            "session-key",
+            "assistant",
+            "background notification",
+            display_kind="async_delegation_complete",
+        )
+        return {
+            "final_response": "ALL DONE",
+            "messages": messages,
+            "pre_transform_response": "all done",
+            "response_transformed": True,
+        }
+
+    agent = types.SimpleNamespace(
+        _session_db=db,
+        session_id="session-key",
+        run_conversation=_run,
+        clear_interrupt=lambda: None,
+    )
+    session = _session(agent=agent, running=True)
+    server._start_inflight_turn(session, "do the thing")
+    session["inflight_turn"]["started_monotonic"] = 100.0
+    monkeypatch.setattr(server.time, "monotonic", lambda: 112.5)
+    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
+
+    server._run_prompt_submit("rid", "sid", session, "do the thing")
+
+    [payload] = _events(emits, "message.complete")
+    assert payload["text"] == "ALL DONE"
+    assert payload["turn_duration_seconds"] == pytest.approx(12.5)
+    assert messages[-1]["display_metadata"] == {
+        "model": "test",
+        "turn_duration_seconds": pytest.approx(12.5),
+    }
+    stored = SessionDB(db_path=db.db_path).get_messages_as_conversation("session-key")
+    assert "display_metadata" not in stored[0]
+    assert stored[1]["display_metadata"] == {
+        "reactions": [{"emoji": "👍", "author": "user", "at": 1.0}],
+        "turn_duration_seconds": pytest.approx(12.5),
+    }
+    assert "display_metadata" not in stored[2]
+    assert db._ACTIVITY_WRITE_PATIENCE_S in write_patience
+
+
+def test_tool_only_turn_persists_elapsed_seconds(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("session-key", "test")
+    started_at = time.time() - 1
+    tool_calls = [{"id": "call-1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}]
+    db.append_message("session-key", "assistant", None, tool_calls=tool_calls)
+    messages = [
+        {"role": "user", "content": "run it"},
+        {"role": "assistant", "content": None, "tool_calls": tool_calls},
+    ]
+    agent = types.SimpleNamespace(_session_db=db, session_id="session-key")
+
+    server._record_completed_turn_duration(agent, {"messages": messages}, 4.2, started_at)
+
+    assert messages[-1]["display_metadata"] == {"turn_duration_seconds": 4.2}
+    stored = db.get_messages_as_conversation("session-key")
+    assert stored[-1]["display_metadata"] == {"turn_duration_seconds": 4.2}
+
+
 # ── Exception path ─────────────────────────────────────────────────────
 
 
@@ -218,11 +309,13 @@ def test_exception_closes_turn_with_terminal_complete_and_partial(emits, turn_en
     assert payload["recoverable"] is True
     assert payload["partial"] is True
     assert payload["text"] == "half an ans"
+    assert payload["turn_duration_seconds"] >= 0
 
     snapshot = server._inflight_snapshot(session)
     assert snapshot is not None
     assert snapshot["assistant"] == "half an ans"
     assert snapshot["error"] == "connection reset mid-stream"
+    assert snapshot["turn_duration_seconds"] == payload["turn_duration_seconds"]
     assert session["running"] is False
 
 
@@ -253,6 +346,7 @@ def test_live_session_payload_exposes_retained_failure(emits, turn_env, monkeypa
     assert inflight["status"] == "error"
     assert inflight["error"] == "budget exhausted"
     assert inflight["user"] == "long job"
+    assert inflight["turn_duration_seconds"] >= 0
 
 
 # ── Retained failure must not leak into the next turn ─────────────────

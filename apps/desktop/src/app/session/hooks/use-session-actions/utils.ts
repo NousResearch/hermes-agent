@@ -139,7 +139,17 @@ const _chatMessageFieldsExhaustive: {
   [K in Exclude<keyof ChatMessage, (typeof COMPARED_FIELDS)[number] | (typeof IGNORED_FIELDS)[number]>]: never
 } = {}
 
-const COMPARED_FIELDS = ['id', 'role', 'pending', 'error', 'hidden', 'branchGroupId', 'interim', 'reactions'] as const
+const COMPARED_FIELDS = [
+  'id',
+  'role',
+  'pending',
+  'error',
+  'hidden',
+  'branchGroupId',
+  'interim',
+  'reactions',
+  'turnDurationSeconds'
+] as const
 
 const IGNORED_FIELDS = ['timestamp', 'attachmentRefs', 'parts', 'rowId'] as const
 
@@ -236,6 +246,7 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
     a.error !== b.error ||
     a.hidden !== b.hidden ||
     a.branchGroupId !== b.branchGroupId ||
+    a.turnDurationSeconds !== b.turnDurationSeconds ||
     // Interim gates the action footer, so flipping it must repaint (e.g. a
     // previewed final settling onto a sealed interim bubble restores the bar).
     (a.interim ?? false) !== (b.interim ?? false) ||
@@ -365,6 +376,10 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
       preserved = { ...preserved, reactions: [...previous.reactions] }
     }
 
+    if (sameTurn && preserved.turnDurationSeconds === undefined && previous.turnDurationSeconds !== undefined) {
+      preserved = { ...preserved, turnDurationSeconds: previous.turnDurationSeconds }
+    }
+
     const previousImages = embeddedImageUrls(previousText)
 
     if (!previousImages.length || embeddedImageUrls(chatMessageText(preserved)).length) {
@@ -458,6 +473,10 @@ const withAuthoritativeTurnState = (local: ChatMessage, authoritative: ChatMessa
 
   if (local.reactions === undefined && authoritative.reactions?.length) {
     merged.reactions = [...authoritative.reactions]
+  }
+
+  if (local.turnDurationSeconds === undefined && authoritative.turnDurationSeconds !== undefined) {
+    merged.turnDurationSeconds = authoritative.turnDurationSeconds
   }
 
   return merged
@@ -639,6 +658,14 @@ export function appendLiveSessionProjection(
   // the terminal frame may have been lost to a disconnect) — surface the
   // failure on the projected row instead of rendering the partial as healthy.
   const inflightError = projection.inflight?.error?.trim() ?? ''
+
+  const inflightTurnDuration =
+    typeof projection.inflight?.turn_duration_seconds === 'number' &&
+    Number.isFinite(projection.inflight.turn_duration_seconds) &&
+    projection.inflight.turn_duration_seconds >= 0
+      ? projection.inflight.turn_duration_seconds
+      : undefined
+
   const queuedUser = projection.queued?.user?.trim() ?? ''
 
   if (
@@ -747,7 +774,8 @@ export function appendLiveSessionProjection(
         role: 'assistant',
         parts: inflightAssistant ? [assistantTextPart(inflightAssistant)] : [],
         pending: inflightStreaming,
-        ...(inflightError ? { error: inflightError } : {})
+        ...(inflightError ? { error: inflightError } : {}),
+        ...(inflightTurnDuration !== undefined ? { turnDurationSeconds: inflightTurnDuration } : {})
       })
     }
   }

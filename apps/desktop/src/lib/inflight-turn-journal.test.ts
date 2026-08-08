@@ -189,7 +189,10 @@ describe('recoverInFlightTurnJournal', () => {
 
     const base = [
       user('db-u1', 'do the thing'),
-      assistant('assistant-stream-rt9', 'local part and more from the backend snapshot', { pending: true })
+      assistant('assistant-stream-rt9', 'local part and more from the backend snapshot', {
+        pending: true,
+        turnDurationSeconds: 6.5
+      })
     ]
 
     const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: true })
@@ -205,8 +208,35 @@ describe('recoverInFlightTurnJournal', () => {
     // Journal structure survives; strict-extension backend text wins.
     expect(merged.parts[0]).toMatchObject({ type: 'tool-call', toolName: 'terminal' })
     expect(merged.parts[1]).toMatchObject({ type: 'text', text: 'local part and more from the backend snapshot' })
+    expect(merged.turnDurationSeconds).toBe(6.5)
     // Still in flight — the journal must NOT be cleared.
     expect(readInFlightTurnJournal('stored-1')).not.toBeNull()
+  })
+
+  it('uses terminal projection state when overlaying a stale interim journal row', () => {
+    journalEntry([
+      user('u1', 'do the thing'),
+      assistantWithTool('assistant-stream-old', 'partial', { interim: true, pending: true })
+    ])
+
+    const base = [
+      user('db-u1', 'do the thing'),
+      assistant('assistant-stream-rt9', '', {
+        error: 'host crashed',
+        interim: false,
+        pending: false,
+        turnDurationSeconds: 6.5
+      })
+    ]
+
+    const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: true })
+
+    expect(result.messages.at(-1)).toMatchObject({
+      error: 'host crashed',
+      interim: false,
+      pending: false,
+      turnDurationSeconds: 6.5
+    })
   })
 
   it('keeps journal answer text when a longer flat dump is not a strict extension (#76444)', () => {

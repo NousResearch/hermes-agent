@@ -8,6 +8,9 @@ import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime }
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { toChatMessages } from '@/lib/chat-messages'
+import { toRuntimeMessage } from '@/lib/chat-runtime'
+
 import { Thread } from '.'
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
@@ -41,26 +44,41 @@ function userMessage(): ThreadMessage {
   } as ThreadMessage
 }
 
-function assistantMessage(): ThreadMessage {
-  return {
-    id: 'assistant-1',
-    role: 'assistant',
-    content: [{ type: 'text', text: 'done' }],
-    status: { type: 'complete', reason: 'stop' },
-    createdAt,
-    metadata: {
-      unstable_state: null,
-      unstable_annotations: [],
-      unstable_data: [],
-      steps: [],
-      custom: {}
+function assistantMessage(turnDurationSeconds?: number, text = 'done'): ThreadMessage {
+  const [message] = toChatMessages([
+    {
+      role: 'assistant',
+      content: text,
+      timestamp: createdAt.getTime() / 1000,
+      ...(text
+        ? {}
+        : {
+            tool_calls: [
+              {
+                id: 'call-1',
+                type: 'function',
+                function: { name: 'terminal', arguments: '{}' }
+              }
+            ]
+          }),
+      ...(turnDurationSeconds === undefined ? {} : { display_metadata: { turn_duration_seconds: turnDurationSeconds } })
     }
-  } as ThreadMessage
+  ])
+
+  return toRuntimeMessage(message)
 }
 
-function Harness({ onBranchInNewChat }: { onBranchInNewChat?: (messageId: string) => void }) {
+function Harness({
+  assistantText = 'done',
+  onBranchInNewChat,
+  turnDurationSeconds
+}: {
+  assistantText?: string
+  onBranchInNewChat?: (messageId: string) => void
+  turnDurationSeconds?: number
+}) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
-    messages: [userMessage(), assistantMessage()],
+    messages: [userMessage(), assistantMessage(turnDurationSeconds, assistantText)],
     isRunning: false,
     onNew: async () => {}
   })
@@ -88,5 +106,21 @@ describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
     await screen.findByText('done')
 
     expect(screen.queryByRole('button', { name: 'Branch in new chat' })).toBeNull()
+  })
+})
+
+describe('AssistantMessage turn duration', () => {
+  it('shows the completed duration in the message action bar', async () => {
+    render(<Harness turnDurationSeconds={65.4} />)
+
+    const duration = await screen.findByText('1:05')
+    expect(duration.getAttribute('data-slot')).toBe('aui_msg-turn-duration')
+    expect(duration.getAttribute('aria-label')).toBe('1m 5s')
+  })
+
+  it('shows the completed duration when the message has no text', async () => {
+    render(<Harness assistantText="" turnDurationSeconds={12.4} />)
+
+    expect(await screen.findByText('12s')).not.toBeNull()
   })
 })

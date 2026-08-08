@@ -59,8 +59,14 @@ const delta = (text: string) => act(() => handleEvent!({ payload: { text }, sess
 const interim = (text: string) =>
   act(() => handleEvent!({ payload: { text, already_streamed: true }, session_id: SID, type: 'message.interim' }))
 
-const complete = (text: string) =>
-  act(() => handleEvent!({ payload: { text }, session_id: SID, type: 'message.complete' }))
+const complete = (text: string, turnDurationSeconds?: number) =>
+  act(() =>
+    handleEvent!({
+      payload: { text, ...(turnDurationSeconds === undefined ? {} : { turn_duration_seconds: turnDurationSeconds }) },
+      session_id: SID,
+      type: 'message.complete'
+    })
+  )
 
 const completePreviewed = (text: string) =>
   act(() => handleEvent!({ payload: { text, response_previewed: true }, session_id: SID, type: 'message.complete' }))
@@ -95,6 +101,15 @@ describe('useMessageStream interim text sealing', () => {
     cleanup()
     clearSessionTodos(SID)
     vi.restoreAllMocks()
+  })
+
+  it('keeps the completed turn duration on the final reply', async () => {
+    await mountStream()
+    await start()
+    await complete('All done.', 65.4)
+
+    const reply = [...getState().messages].reverse().find(message => message.role === 'assistant')
+    expect(reply?.turnDurationSeconds).toBe(65.4)
   })
 
   it('preserves interim text that the final response does not include', async () => {

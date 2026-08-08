@@ -248,3 +248,21 @@ describe('run identity', () => {
     expect(runs.map(run => run.map(t => t.toolCallId))).toEqual([['a'], ['b']])
   })
 })
+
+describe('tool-only message coalescing', () => {
+  it('keeps the completed turn duration from the folded tool row', () => {
+    const messages: ChatMessage[] = [
+      { id: 'answer', role: 'assistant', parts: [assistantTextPart('Working.')] },
+      {
+        id: 'tools',
+        role: 'assistant',
+        parts: [{ type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', args: {} }],
+        turnDurationSeconds: 6.5
+      }
+    ]
+
+    const [merged] = coalesceToolOnlyAssistants(messages, createToolMergeCache())
+
+    expect(merged.turnDurationSeconds).toBe(6.5)
+  })
+})

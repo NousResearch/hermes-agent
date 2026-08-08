@@ -433,15 +433,26 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       unstable_annotations: [],
       unstable_data: [],
       steps: [],
-      // Carries ChatMessage.interim to AssistantMessage's footer gate.
-      custom: { ...(message.interim ? { interim: true } : {}), ...reactionMeta }
+      // Carries renderer-only message state to AssistantMessage.
+      custom: {
+        ...(message.interim ? { interim: true } : {}),
+        ...(message.turnDurationSeconds !== undefined ? { turnDurationSeconds: message.turnDurationSeconds } : {}),
+        ...reactionMeta
+      }
     }
   } as ThreadMessage
 }
 
 export type ToolMergeCache = WeakMap<
   ChatMessage,
-  { merged: ChatMessage; parts: ChatMessagePart[]; prev: ChatMessage; prevParts: ChatMessagePart[] }
+  {
+    duration?: number
+    merged: ChatMessage
+    parts: ChatMessagePart[]
+    prev: ChatMessage
+    prevDuration?: number
+    prevParts: ChatMessagePart[]
+  }
 >
 
 export function createToolMergeCache(): ToolMergeCache {
@@ -479,13 +490,26 @@ export function coalesceToolOnlyAssistants(messages: ChatMessage[], cache: ToolM
 
     if (prev && prev.role === 'assistant' && !prev.pending && !prev.hidden && isToolOnlyAssistant(message)) {
       const cached = cache.get(message)
+      const duration = message.turnDurationSeconds ?? prev.turnDurationSeconds
 
       const merged =
-        cached && cached.prev === prev && cached.prevParts === prev.parts && cached.parts === message.parts
+        cached &&
+        cached.prev === prev &&
+        cached.prevParts === prev.parts &&
+        cached.parts === message.parts &&
+        cached.duration === duration &&
+        cached.prevDuration === prev.turnDurationSeconds
           ? cached.merged
-          : { ...prev, parts: [...prev.parts, ...message.parts] }
+          : { ...prev, parts: [...prev.parts, ...message.parts], turnDurationSeconds: duration }
 
-      cache.set(message, { merged, parts: message.parts, prev, prevParts: prev.parts })
+      cache.set(message, {
+        duration,
+        merged,
+        parts: message.parts,
+        prev,
+        prevDuration: prev.turnDurationSeconds,
+        prevParts: prev.parts
+      })
       out[out.length - 1] = merged
 
       continue

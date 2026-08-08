@@ -29,6 +29,8 @@ export type ChatMessage = {
   rowId?: number
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
+  /** Elapsed time for a completed assistant turn, in seconds. */
+  turnDurationSeconds?: number
 }
 
 export type GatewayEventPayload = {
@@ -114,6 +116,8 @@ export type GatewayEventPayload = {
   // message.complete — signals the final text was already previewed via
   // interim_assistant_callback, so the UI can settle instead of duplicating.
   response_previewed?: boolean
+  // message.complete: monotonic elapsed time from active turn start to terminal frame.
+  turn_duration_seconds?: number
   // message.complete with status "error" — `text` is streamed partial output
   // (keep it visible), not the error string.
   partial?: boolean
@@ -364,6 +368,12 @@ function timelineTaskCount(metadata: SessionMessage['display_metadata']): number
   const count = parseDisplayMetadata(metadata)?.task_count
 
   return typeof count === 'number' ? count : undefined
+}
+
+function messageTurnDuration(metadata: SessionMessage['display_metadata']): number | undefined {
+  const duration = parseDisplayMetadata(metadata)?.turn_duration_seconds
+
+  return typeof duration === 'number' && Number.isFinite(duration) && duration >= 0 ? duration : undefined
 }
 
 export function messageReactions(metadata: SessionMessage['display_metadata']): MessageReaction[] {
@@ -914,14 +924,20 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   const result: ChatMessage[] = []
   let pendingToolParts: ChatMessagePart[] = []
   let pendingToolTimestamp: number | undefined
+  let pendingTurnDurationSeconds: number | undefined
   let activeAssistantIndex: null | number = null
 
   const clearPendingTools = () => {
     pendingToolParts = []
     pendingToolTimestamp = undefined
+    pendingTurnDurationSeconds = undefined
   }
 
-  const appendPartsToActiveAssistant = (parts: ChatMessagePart[], timestamp?: number): boolean => {
+  const appendPartsToActiveAssistant = (
+    parts: ChatMessagePart[],
+    timestamp?: number,
+    turnDurationSeconds?: number
+  ): boolean => {
     if (activeAssistantIndex === null) {
       return false
     }
@@ -936,6 +952,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     active.parts = [...active.parts, ...parts]
     active.timestamp = timestamp ?? active.timestamp
+    active.turnDurationSeconds = turnDurationSeconds ?? active.turnDurationSeconds
 
     return true
   }
@@ -945,12 +962,13 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       return
     }
 
-    if (!appendPartsToActiveAssistant(pendingToolParts, pendingToolTimestamp)) {
+    if (!appendPartsToActiveAssistant(pendingToolParts, pendingToolTimestamp, pendingTurnDurationSeconds)) {
       result.push({
         id: `${pendingToolTimestamp || Date.now()}-${index}-tools`,
         role: 'assistant',
         parts: pendingToolParts,
-        timestamp: pendingToolTimestamp
+        timestamp: pendingToolTimestamp,
+        ...(pendingTurnDurationSeconds !== undefined ? { turnDurationSeconds: pendingTurnDurationSeconds } : {})
       })
       activeAssistantIndex = result.length - 1
     }
@@ -1034,16 +1052,27 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const isToolOnlyAssistant =
       message.role === 'assistant' && parts.length > 0 && parts.every(part => part.type === 'tool-call')
 
+    let turnDurationSeconds = message.role === 'assistant' ? messageTurnDuration(message.display_metadata) : undefined
+
     if (isToolOnlyAssistant) {
       pendingToolParts = [...pendingToolParts, ...parts]
       pendingToolTimestamp ??= message.timestamp
+      pendingTurnDurationSeconds = turnDurationSeconds ?? pendingTurnDurationSeconds
 
       return
     }
 
     if (message.role === 'assistant') {
       if (pendingToolParts.length) {
-        if (!appendPartsToActiveAssistant(pendingToolParts, message.timestamp ?? pendingToolTimestamp)) {
+        turnDurationSeconds ??= pendingTurnDurationSeconds
+
+        if (
+          !appendPartsToActiveAssistant(
+            pendingToolParts,
+            message.timestamp ?? pendingToolTimestamp,
+            turnDurationSeconds
+          )
+        ) {
           parts.unshift(...pendingToolParts)
         }
 
@@ -1061,6 +1090,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       if (activeAssistant && (currentHasToolCall || activeHasToolCall)) {
         activeAssistant.parts = [...activeAssistant.parts, ...parts]
         activeAssistant.timestamp = message.timestamp ?? activeAssistant.timestamp
+        activeAssistant.turnDurationSeconds = turnDurationSeconds ?? activeAssistant.turnDurationSeconds
 
         return
       }
@@ -1079,6 +1109,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       role: displayRole,
       parts,
       timestamp: message.timestamp,
+      ...(turnDurationSeconds !== undefined ? { turnDurationSeconds } : {}),
       ...(rowId !== undefined ? { rowId } : {}),
       ...(reactions.length ? { reactions } : {}),
       ...(extractedAttachmentRefs ? { attachmentRefs: extractedAttachmentRefs } : {})

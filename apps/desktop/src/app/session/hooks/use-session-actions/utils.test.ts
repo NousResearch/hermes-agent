@@ -380,6 +380,13 @@ describe('chatMessagesEquivalent', () => {
     expect(chatMessagesEquivalent(msg('msg-1', 'user', 'Hello'), msg('msg-2', 'user', 'Hello'))).toBe(false)
   })
 
+  it('returns false when completed turn duration differs', () => {
+    const first = msg('1', 'assistant', 'Done.', { turnDurationSeconds: 12 })
+    const second = msg('1', 'assistant', 'Done.', { turnDurationSeconds: 13 })
+
+    expect(chatMessagesEquivalent(first, second)).toBe(false)
+  })
+
   it('compares large messages with embedded images structurally without JSON.stringify', () => {
     // Verifies that two structurally identical messages (that would be equal
     // via stringify) are also equal via the new cheap structural compare.
@@ -458,6 +465,15 @@ describe('reconcileResumeMessages', () => {
 
     const [out] = reconcileResumeMessages(next, previous)
     expect(out.parts.some(p => p.type === 'reasoning')).toBe(true)
+  })
+
+  it('keeps a live turn duration when the authoritative row omits it', () => {
+    const next = [msg('stored', 'assistant', 'answer')]
+    const previous = [msg('live', 'assistant', 'answer', { turnDurationSeconds: 12.5 })]
+
+    const [out] = reconcileResumeMessages(next, previous)
+
+    expect(out.turnDurationSeconds).toBe(12.5)
   })
 
   it('preserves attachment refs for a matching user turn', () => {
@@ -1034,11 +1050,18 @@ describe('preserveLocalPendingTurnMessages', () => {
       msg('assistant-stream-live', 'assistant', 'streamed body', { pending: true })
     ]
 
-    const next = [msg('1-user', 'user', 'question'), msg('assistant-stream-sess', 'assistant', '', { pending: false })]
+    const next = [
+      msg('1-user', 'user', 'question'),
+      msg('assistant-stream-sess', 'assistant', '', { pending: false, turnDurationSeconds: 6.5 })
+    ]
 
     const preserved = preserveLocalPendingTurnMessages(next, previous)
 
-    expect(preserved[1]).toMatchObject({ id: 'assistant-stream-live', pending: false })
+    expect(preserved[1]).toMatchObject({
+      id: 'assistant-stream-live',
+      pending: false,
+      turnDurationSeconds: 6.5
+    })
     expect(chatMessageText(preserved[1])).toBe('streamed body')
   })
 
@@ -1184,6 +1207,28 @@ describe('appendLiveSessionProjection', () => {
       'newest prompt'
     ])
     expect(restored[3]).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
+  })
+
+  it('restores duration on a retained failed turn', () => {
+    const stored = [msg('stored-user', 'user', 'failed prompt')]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'failed prompt',
+        error: 'host crashed',
+        recoverable: true,
+        status: 'error',
+        streaming: false,
+        turn_duration_seconds: 6.5
+      }
+    })
+
+    expect(restored.at(-1)).toMatchObject({
+      id: 'assistant-stream-runtime-1',
+      error: 'host crashed',
+      turnDurationSeconds: 6.5
+    })
   })
 
   it('does not duplicate a persisted inflight user after consecutive canceled user turns', () => {

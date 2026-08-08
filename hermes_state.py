@@ -20,6 +20,7 @@ import errno
 import hashlib
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -7164,6 +7165,63 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return True
 
         return bool(self._execute_write(_do))
+
+    def set_latest_matching_assistant_turn_duration(
+        self,
+        session_id: str,
+        *,
+        content: Any,
+        duration_seconds: float,
+        started_at: float,
+    ) -> bool:
+        """Add a completed turn's duration without replacing other display metadata.
+
+        ``started_at`` prevents a failed turn persist from stamping an older
+        assistant row.
+        """
+        if not session_id:
+            return False
+        try:
+            duration = float(duration_seconds)
+            cutoff = float(started_at)
+        except (TypeError, ValueError):
+            return False
+        if (
+            not math.isfinite(duration)
+            or duration < 0
+            or not math.isfinite(cutoff)
+            or cutoff <= 0
+        ):
+            return False
+
+        encoded_content = self._encode_content(content)
+
+        def _do(conn):
+            if encoded_content is None:
+                row = conn.execute(
+                    "SELECT id, display_metadata FROM messages WHERE session_id = ? "
+                    "AND role = 'assistant' AND content IS NULL AND active = 1 AND timestamp >= ? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (session_id, cutoff),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT id, display_metadata FROM messages WHERE session_id = ? "
+                    "AND role = 'assistant' AND content = ? AND active = 1 AND timestamp >= ? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (session_id, encoded_content, cutoff),
+                ).fetchone()
+            if row is None:
+                return False
+            metadata = self._decode_display_metadata(row[1]) or {}
+            metadata["turn_duration_seconds"] = duration
+            conn.execute(
+                "UPDATE messages SET display_metadata = ? WHERE id = ?",
+                (self._encode_display_metadata(metadata), row[0]),
+            )
+            return True
+
+        return bool(self._execute_write(_do, patience_s=self._ACTIVITY_WRITE_PATIENCE_S))
 
     #: Key under which message reactions live inside ``display_metadata``.
     #: Reactions share the existing per-message JSON column rather than a side

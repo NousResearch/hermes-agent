@@ -106,6 +106,18 @@ describe('terminal error message.complete frames', () => {
     expect(bubble?.pending).toBe(false)
   })
 
+  it('keeps the duration on an error-only terminal message', async () => {
+    await mountStream()
+    await start()
+
+    await completeWithError({ text: 'Error: host crashed', error: 'host crashed', turn_duration_seconds: 6.5 })
+
+    const bubble = lastAssistant()
+    expect(bubble?.error).toBe('host crashed')
+    expect(bubble?.turnDurationSeconds).toBe(6.5)
+    expect(chatMessageText(bubble!)).toBe('')
+  })
+
   it('falls back to the frame text when no error field is present', async () => {
     await mountStream()
     await start()

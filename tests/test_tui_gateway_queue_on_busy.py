@@ -257,6 +257,7 @@ def test_drain_fires_queued_prompt_and_claims_running(monkeypatch):
     assert session["running"] is True
     assert session["queued_prompt"] is None
     assert session["transport"] == "ws-9"
+    assert session["inflight_turn"]["user"] == "go"
 
 
 def test_drain_compute_host_forwards_queued_image_paths(monkeypatch):
@@ -266,7 +267,11 @@ def test_drain_compute_host_forwards_queued_image_paths(monkeypatch):
         server,
         "_submit_prompt_to_compute_host",
         lambda rid, sid, session, text, **kwargs: captured.update(
-            rid=rid, sid=sid, text=text, image_paths=kwargs.get("image_paths")
+            rid=rid,
+            sid=sid,
+            text=text,
+            image_paths=kwargs.get("image_paths"),
+            inflight=dict(session["inflight_turn"]),
         )
         or {"result": {"status": "started"}},
     )
@@ -275,12 +280,15 @@ def test_drain_compute_host_forwards_queued_image_paths(monkeypatch):
     )
 
     assert server._drain_queued_prompt("r1", "sid", session) is True
+    inflight = captured.pop("inflight")
     assert captured == {
         "rid": "r1",
         "sid": "sid",
         "text": "inspect",
         "image_paths": ["/tmp/b.png"],
     }
+    assert inflight["user"] == "inspect"
+    assert isinstance(inflight["started_monotonic"], float)
 
 
 
@@ -296,6 +304,7 @@ def test_drain_releases_running_on_dispatch_failure(monkeypatch):
     assert server._drain_queued_prompt("r1", "sid", session) is True
     # Failure must not leave the session wedged as running.
     assert session["running"] is False
+    assert session.get("inflight_turn") is None
 
 
 def test_drain_does_not_dispatch_a_prompt_cancelled_after_claim(monkeypatch):
@@ -313,6 +322,7 @@ def test_drain_does_not_dispatch_a_prompt_cancelled_after_claim(monkeypatch):
 
     assert server._drain_queued_prompt("r1", "sid", session) is True
     assert session["running"] is False
+    assert session.get("inflight_turn") is None
 
 
 def test_drain_does_not_clear_stop_after_its_final_generation_check(monkeypatch):

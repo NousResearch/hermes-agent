@@ -7,6 +7,7 @@ import hashlib
 import inspect
 import json
 import logging
+import math
 import os
 import queue
 import subprocess
@@ -1672,6 +1673,9 @@ def _compute_host_turn_frame(
     with session["history_lock"]:
         history = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
+        turn = session.get("inflight_turn")
+        turn_started_at = turn.get("started_at") if isinstance(turn, dict) else None
+        turn_started_monotonic = turn.get("started_monotonic") if isinstance(turn, dict) else None
         attached_images = (
             list(image_paths)
             if image_paths is not None
@@ -1685,6 +1689,8 @@ def _compute_host_turn_frame(
         "text": text,
         "history": history,
         "history_version": history_version,
+        "turn_started_at": turn_started_at,
+        "turn_started_monotonic": turn_started_monotonic,
         "cols": int(session.get("cols", 80) or 80),
         "cwd": _session_cwd(session),
         "profile_home": session.get("profile_home") or "",
@@ -1737,6 +1743,7 @@ def _apply_compute_host_metadata_mirror(session: dict, frame: dict | None) -> No
 
 def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -> None:
     is_error = frame.get("type") == "turn.error"
+    error_message = str(frame.get("message") or "compute host turn failed") if is_error else ""
     with session["history_lock"]:
         if frame.get("session_key"):
             session["session_key"] = str(frame.get("session_key"))
@@ -1750,10 +1757,23 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
                 pass
         session["running"] = False
         session["last_active"] = time.time()
-        _clear_inflight_turn(session)
+        turn_duration_seconds = _turn_duration_seconds(session)
+        if is_error:
+            _fail_inflight_turn(session, error_message)
+            if turn_duration_seconds is not None:
+                _store_inflight_turn_duration(session, turn_duration_seconds)
+        else:
+            _clear_inflight_turn(session)
     if is_error:
-        message = str(frame.get("message") or "compute host turn failed")
-        _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})
+        payload = {
+            "text": f"Error: {error_message}",
+            "status": "error",
+            "error": error_message,
+            "recoverable": True,
+        }
+        if turn_duration_seconds is not None:
+            payload["turn_duration_seconds"] = turn_duration_seconds
+        _emit("message.complete", sid, payload)
     _apply_compute_host_metadata_mirror(session, frame)
     try:
         info = _session_info(session.get("agent"), session)
@@ -7230,10 +7250,40 @@ def _start_inflight_turn(session: dict, text: Any) -> None:
     session["inflight_turn"] = {
         "assistant": "",
         "started_at": now,
+        "started_monotonic": time.monotonic(),
         "streaming": True,
         "updated_at": now,
         "user": _inflight_text(text),
     }
+
+
+def _inherit_inflight_turn_start(
+    session: dict,
+    started_at: Any,
+    started_monotonic: Any,
+) -> None:
+    """Continue a parent process's timer in the local compute-host child."""
+    turn = session.get("inflight_turn")
+    if (
+        not isinstance(turn, dict)
+        or isinstance(started_at, bool)
+        or isinstance(started_monotonic, bool)
+    ):
+        return
+    try:
+        inherited_at = float(started_at)
+        inherited_monotonic = float(started_monotonic)
+    except (TypeError, ValueError):
+        return
+    if (
+        not math.isfinite(inherited_at)
+        or inherited_at <= 0
+        or not math.isfinite(inherited_monotonic)
+    ):
+        return
+
+    turn["started_at"] = inherited_at
+    turn["started_monotonic"] = inherited_monotonic
 
 
 def _append_inflight_delta(session: dict, delta: Any) -> None:
@@ -7274,6 +7324,72 @@ def _record_inflight_correction(session: dict, text: Any) -> None:
 
 def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
+
+
+def _turn_duration_seconds(session: dict) -> float | None:
+    turn = session.get("inflight_turn")
+    if not isinstance(turn, dict):
+        return None
+    started = turn.get("started_monotonic")
+    if not isinstance(started, (int, float)):
+        return None
+    return round(max(0.0, time.monotonic() - float(started)), 3)
+
+
+def _store_inflight_turn_duration(session: dict, duration_seconds: float) -> None:
+    turn = session.get("inflight_turn")
+    if not isinstance(turn, dict):
+        return
+    turn = dict(turn)
+    turn["turn_duration_seconds"] = duration_seconds
+    session["inflight_turn"] = turn
+
+
+def _record_completed_turn_duration(
+    agent,
+    result: Any,
+    duration_seconds: float,
+    started_at: float,
+) -> None:
+    """Attach timing to the live result and its persisted final assistant row."""
+    if not isinstance(result, dict):
+        return
+    messages = result.get("messages")
+    if not isinstance(messages, list):
+        return
+
+    target = None
+    for message in reversed(messages):
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "user":
+            break
+        if message.get("role") == "assistant":
+            target = message
+            break
+
+    if target is None:
+        return
+    content = target.get("content")
+
+    metadata = target.get("display_metadata")
+    metadata = dict(metadata) if isinstance(metadata, dict) else {}
+    metadata["turn_duration_seconds"] = duration_seconds
+    target["display_metadata"] = metadata
+
+    db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if db is None or not session_id:
+        return
+    try:
+        db.set_latest_matching_assistant_turn_duration(
+            session_id,
+            content=content,
+            duration_seconds=duration_seconds,
+            started_at=started_at,
+        )
+    except Exception:
+        logger.debug("failed to persist completed turn duration", exc_info=True)
 
 
 def _fail_inflight_turn(session: dict, error: Any) -> None:
@@ -7632,12 +7748,14 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         if not queued_prompts:
             session.pop("queued_prompts", None)
         session["running"] = True
+        _start_inflight_turn(session, queued["text"])
         if queued.get("transport") is not None:
             session["transport"] = queued["transport"]
     use_compute_host = _session_uses_compute_host(session)
     with session["history_lock"]:
         if int(session.get("_queued_prompt_generation", 0)) != queue_generation:
             session["running"] = False
+            _clear_inflight_turn(session)
             return True
     dispatch_failed = False
     try:
@@ -7688,6 +7806,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         )
         with session["history_lock"]:
             session["running"] = False
+            _clear_inflight_turn(session)
         dispatch_failed = True
     if dispatch_failed:
         with session["history_lock"]:
@@ -7726,6 +7845,13 @@ def _inflight_snapshot(session: dict) -> dict | None:
         snapshot["error"] = error
         snapshot["status"] = str(turn.get("status") or "error")
         snapshot["recoverable"] = bool(turn.get("recoverable"))
+    duration_seconds = turn.get("turn_duration_seconds")
+    if (
+        isinstance(duration_seconds, (int, float))
+        and math.isfinite(float(duration_seconds))
+        and duration_seconds >= 0
+    ):
+        snapshot["turn_duration_seconds"] = float(duration_seconds)
     return snapshot
 
 
@@ -7761,6 +7887,10 @@ def _emit_terminal_turn_error(sid: str, session: dict, error: Any) -> None:
         rendered = ""
     if rendered:
         payload["rendered"] = rendered
+    turn_duration_seconds = _turn_duration_seconds(session)
+    if turn_duration_seconds is not None:
+        _store_inflight_turn_duration(session, turn_duration_seconds)
+        payload["turn_duration_seconds"] = turn_duration_seconds
     _retire_turn_marker(session)
     _emit("message.complete", sid, payload)
 
@@ -10001,6 +10131,19 @@ def _run_prompt_submit(
                 status = "complete"
 
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+            turn_duration_seconds = _turn_duration_seconds(session)
+            if turn_duration_seconds is not None:
+                _store_inflight_turn_duration(session, turn_duration_seconds)
+                payload["turn_duration_seconds"] = turn_duration_seconds
+                turn = session.get("inflight_turn")
+                turn_started_at = turn.get("started_at") if isinstance(turn, dict) else None
+                if isinstance(turn_started_at, (int, float)):
+                    _record_completed_turn_duration(
+                        agent,
+                        result,
+                        turn_duration_seconds,
+                        float(turn_started_at),
+                    )
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
             if status_note:

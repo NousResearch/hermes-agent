@@ -21,12 +21,22 @@ import { ResponseLoadingIndicator, StreamStallIndicator } from '@/components/ass
 import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timestamp'
 import { useMessageReactions, useTapbackDoubleClick } from '@/components/assistant-ui/thread/use-message-reactions'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
+import { formatElapsed } from '@/components/chat/activity-timer'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { AudioLines, GitForkIcon, Loader2Icon, RefreshCwIcon, SmilePlusIcon, VolumeXIcon, XIcon } from '@/lib/icons'
+import {
+  AudioLines,
+  Clock,
+  GitForkIcon,
+  Loader2Icon,
+  RefreshCwIcon,
+  SmilePlusIcon,
+  VolumeXIcon,
+  XIcon
+} from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { formatAgo } from '@/lib/time'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
@@ -70,6 +80,12 @@ export const AssistantMessage: FC<{
   // tool-heavy turn doesn't grow a copy/refresh bar per paragraph (see
   // ChatMessage.interim).
   const isInterim = useAuiState(s => s.message.metadata?.custom?.interim === true)
+
+  const hasTurnDuration = useAuiState(s => {
+    const duration = s.message.metadata?.custom?.turnDurationSeconds
+
+    return typeof duration === 'number' && Number.isFinite(duration) && duration >= 0
+  })
 
   // The thinking/stall indicator belongs to the TAIL of the thread, period. A
   // stale pending bubble mid-transcript (a turn that ended without its settle
@@ -158,9 +174,16 @@ export const AssistantMessage: FC<{
           </ErrorPrimitive.Root>
         </MessagePrimitive.Error>
       </div>
-      {hasVisibleText && !isInterim && (
-        <AssistantFooter getMessageText={getMessageText} messageId={messageId} onBranchInNewChat={onBranchInNewChat} />
-      )}
+      {!isInterim &&
+        (hasVisibleText ? (
+          <AssistantFooter
+            getMessageText={getMessageText}
+            messageId={messageId}
+            onBranchInNewChat={onBranchInNewChat}
+          />
+        ) : hasTurnDuration ? (
+          <AssistantTimingFooter />
+        ) : null)}
       {/* Last thing in the turn — under the action bar, the way Cursor ends a
           turn on its summary rather than burying it above the controls. */}
       <ChangedFilesCard parts={settledParts} />
@@ -198,7 +221,7 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
         }
         data-slot="aui_msg-actions"
       >
-        <MessageAge />
+        <MessageTiming />
         {onBranchInNewChat && (
           <TooltipIconButton
             onClick={() => {
@@ -300,23 +323,51 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
   )
 }
 
-const MessageAge: FC = () => {
+const MessageTiming: FC = () => {
   const { t } = useI18n()
   const createdAt = useAuiState(s => s.message.createdAt)
+  const turnDurationSeconds = useAuiState(s => s.message.metadata?.custom?.turnDurationSeconds)
   const date = createdAt ? new Date(createdAt) : null
 
-  if (!date || Number.isNaN(date.getTime())) {
+  const durationSeconds =
+    typeof turnDurationSeconds === 'number' && Number.isFinite(turnDurationSeconds) && turnDurationSeconds >= 0
+      ? Math.floor(turnDurationSeconds)
+      : null
+
+  const duration = durationSeconds === null ? null : formatElapsed(durationSeconds)
+
+  const durationLabel =
+    durationSeconds === null
+      ? undefined
+      : durationSeconds < 60
+        ? t.agents.durationSeconds(String(durationSeconds))
+        : t.agents.durationMinutes(Math.floor(durationSeconds / 60), durationSeconds % 60)
+
+  if ((!date || Number.isNaN(date.getTime())) && duration === null) {
     return null
   }
 
-  // Compact "2h ago" (shared util) with the absolute time on hover.
   return (
-    <span
-      className="px-0.5 text-[0.6875rem] tabular-nums text-muted-foreground"
-      title={formatMessageTimestamp(date, t.assistant.thread) || undefined}
-    >
-      {formatAgo(date.getTime(), t.agents)}
-    </span>
+    <>
+      {duration !== null && (
+        <span
+          aria-label={durationLabel}
+          className="inline-flex items-center gap-1 px-0.5 text-[0.6875rem] tabular-nums text-muted-foreground"
+          data-slot="aui_msg-turn-duration"
+        >
+          <Clock aria-hidden="true" className="size-3" />
+          {duration}
+        </span>
+      )}
+      {date && !Number.isNaN(date.getTime()) && (
+        <span
+          className="px-0.5 text-[0.6875rem] tabular-nums text-muted-foreground"
+          title={formatMessageTimestamp(date, t.assistant.thread) || undefined}
+        >
+          {formatAgo(date.getTime(), t.agents)}
+        </span>
+      )}
+    </>
   )
 }
 
@@ -337,5 +388,13 @@ const AssistantFooter: FC<MessageActionProps> = props => (
       </BranchPickerPrimitive.Next>
     </BranchPickerPrimitive.Root>
     <AssistantActionBar {...props} />
+  </div>
+)
+
+const AssistantTimingFooter: FC = () => (
+  <div className="flex min-h-6 items-center justify-end pr-(--message-text-indent) pl-(--message-text-indent)">
+    <div className="py-1.5 opacity-0 transition-opacity group-hover:opacity-100">
+      <MessageTiming />
+    </div>
   </div>
 )

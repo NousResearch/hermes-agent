@@ -526,6 +526,7 @@ export type TimelineDisplayMetadata =
       duration_seconds?: number
     }
   | { reactions: MessageReaction[] }
+  | { turn_duration_seconds: number }
 
 /** One emoji reaction on a message. One per author, iOS-Tapback style. */
 export interface MessageReaction {
@@ -598,6 +599,7 @@ export interface SessionResumeResponse {
     recoverable?: boolean
     status?: string
     streaming?: boolean
+    turn_duration_seconds?: number
     user?: string
   }
   queued?: null | {

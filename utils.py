@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -14,6 +15,20 @@ from urllib.parse import urlparse
 import yaml
 
 logger = logging.getLogger(__name__)
+
+
+# Windows can briefly deny replace/rename while antivirus, indexers, sync clients,
+# or a just-closed editor still holds the destination without FILE_SHARE_DELETE.
+# Keep retries bounded so a real ACL denial still surfaces to the caller.
+_WINDOWS_ATOMIC_REPLACE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8, 1.0)
+_WINDOWS_TRANSIENT_REPLACE_ERRORS = frozenset({5, 32, 33})
+
+
+def _is_transient_windows_replace_error(exc: OSError) -> bool:
+    return (
+        os.name == "nt"
+        and getattr(exc, "winerror", None) in _WINDOWS_TRANSIENT_REPLACE_ERRORS
+    )
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
@@ -111,28 +126,50 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     target_str = str(target)
     real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
     tmp_str = str(tmp_path)
-    try:
-        os.replace(tmp_str, real_path)
-    except OSError as exc:
-        if exc.errno not in (errno.EXDEV, errno.EBUSY):
-            raise
-        logger.debug(
-            "atomic_replace: %s -> %s failed with %s; falling back to copy",
-            tmp_str,
-            real_path,
-            errno.errorcode.get(exc.errno, exc.errno),
-        )
-        shutil.copyfile(tmp_str, real_path)
+    retry_index = 0
+    while True:
         try:
-            shutil.copystat(tmp_str, real_path)
-        except OSError:
-            pass
-        try:
-            with open(real_path, "rb") as f:
-                os.fsync(f.fileno())
-        except OSError:
-            pass
-        os.unlink(tmp_str)
+            os.replace(tmp_str, real_path)
+            break
+        except OSError as exc:
+            if (
+                _is_transient_windows_replace_error(exc)
+                and retry_index < len(_WINDOWS_ATOMIC_REPLACE_RETRY_DELAYS)
+            ):
+                delay = _WINDOWS_ATOMIC_REPLACE_RETRY_DELAYS[retry_index]
+                retry_index += 1
+                logger.debug(
+                    "atomic_replace: transient Windows lock %s for %s -> %s; "
+                    "retrying in %.2fs (%d/%d)",
+                    getattr(exc, "winerror", None),
+                    tmp_str,
+                    real_path,
+                    delay,
+                    retry_index,
+                    len(_WINDOWS_ATOMIC_REPLACE_RETRY_DELAYS),
+                )
+                time.sleep(delay)
+                continue
+            if exc.errno not in (errno.EXDEV, errno.EBUSY):
+                raise
+            logger.debug(
+                "atomic_replace: %s -> %s failed with %s; falling back to copy",
+                tmp_str,
+                real_path,
+                errno.errorcode.get(exc.errno, exc.errno),
+            )
+            shutil.copyfile(tmp_str, real_path)
+            try:
+                shutil.copystat(tmp_str, real_path)
+            except OSError:
+                pass
+            try:
+                with open(real_path, "rb") as f:
+                    os.fsync(f.fileno())
+            except OSError:
+                pass
+            os.unlink(tmp_str)
+            break
     return real_path
 
 

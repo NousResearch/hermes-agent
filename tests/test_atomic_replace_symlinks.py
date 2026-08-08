@@ -21,6 +21,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+import utils
+
 # Ensure the repo root is importable when running via `pytest tests/...`.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
@@ -86,6 +88,77 @@ def test_atomic_replace_accepts_pathlike_and_str(tmp_path: Path) -> None:
     tmp2 = _write_tmp(tmp_path, "2")
     atomic_replace(tmp2, target)
     assert target.read_text(encoding="utf-8") == "2"
+
+
+def _windows_lock_error(winerror: int) -> PermissionError:
+    exc = PermissionError(errno.EACCES, "destination is temporarily locked")
+    exc.winerror = winerror
+    return exc
+
+
+def test_windows_transient_replace_error_classification(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(utils.os, "name", "nt")
+
+    for winerror in (5, 32, 33):
+        assert utils._is_transient_windows_replace_error(_windows_lock_error(winerror))
+
+    assert not utils._is_transient_windows_replace_error(_windows_lock_error(2))
+
+
+def test_atomic_replace_retries_transient_windows_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "target.yaml"
+    target.write_text("old", encoding="utf-8")
+    tmp = _write_tmp(tmp_path, "new")
+
+    real_replace = os.replace
+    attempts = 0
+    sleeps: list[float] = []
+
+    def flaky_replace(src: str, dst: str) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise _windows_lock_error(5)
+        real_replace(src, dst)
+
+    monkeypatch.setattr(utils, "_is_transient_windows_replace_error", lambda _exc: True)
+    monkeypatch.setattr(utils.os, "replace", flaky_replace)
+    monkeypatch.setattr(utils.time, "sleep", sleeps.append)
+
+    atomic_replace(tmp, target)
+
+    assert attempts == 3
+    assert sleeps == [0.05, 0.1]
+    assert target.read_text(encoding="utf-8") == "new"
+
+
+def test_atomic_replace_reraises_after_windows_retry_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "target.yaml"
+    target.write_text("old", encoding="utf-8")
+    tmp = _write_tmp(tmp_path, "new")
+
+    attempts = 0
+
+    def always_locked(_src: str, _dst: str) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise _windows_lock_error(32)
+
+    monkeypatch.setattr(utils, "_WINDOWS_ATOMIC_REPLACE_RETRY_DELAYS", (0.0, 0.0))
+    monkeypatch.setattr(utils, "_is_transient_windows_replace_error", lambda _exc: True)
+    monkeypatch.setattr(utils.os, "replace", always_locked)
+    monkeypatch.setattr(utils.time, "sleep", lambda _delay: None)
+
+    with pytest.raises(PermissionError):
+        atomic_replace(tmp, target)
+
+    assert attempts == 3
+    assert target.read_text(encoding="utf-8") == "old"
+    assert tmp.exists(), "failed replacement must leave the temp file for caller cleanup"
 
 
 # ─── atomic_json_write / atomic_yaml_write wiring ──────────────────────────

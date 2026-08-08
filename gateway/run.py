@@ -19374,6 +19374,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await self._defer_goal_status_notice_after_delivery(source, msg)
 
         if not decision.get("should_continue"):
+            if decision.get("verdict") == "wait":
+                # The judge parked the loop because the agent is gated on
+                # an async process / timer. The barrier clears when the
+                # pid exits or the deadline passes, but nothing used to
+                # wake the loop afterwards — unattended goal runs stalled
+                # until a real user message arrived. Re-inject the
+                # continuation ourselves once the barrier clears.
+                try:
+                    asyncio.create_task(
+                        self._spawn_goal_wait_resume(session_entry, source, max_turns)
+                    )
+                except Exception as exc:
+                    logger.debug("goal wait resume task spawn failed: %s", exc)
             return
 
         prompt = decision.get("continuation_prompt") or ""
@@ -19396,6 +19409,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._enqueue_fifo(_quick_key, cont_event, adapter)
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
+
+    async def _spawn_goal_wait_resume(self, session_entry, source, max_turns: int) -> None:
+        """Re-inject a goal continuation once a WAIT barrier clears."""
+        sid = getattr(session_entry, "session_id", None) or ""
+        if not sid or source is None:
+            return
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
+        try:
+            while True:
+                try:
+                    if not mgr.is_active() or not mgr.is_waiting():
+                        break
+                except Exception:
+                    break
+                await asyncio.sleep(2)
+            if not mgr.is_active():
+                return
+            prompt = mgr.next_continuation_prompt()
+            if not prompt:
+                return
+            adapter = self._adapter_for_source(source)
+            _quick_key = self._session_key_for_source(source)
+            if adapter and _quick_key:
+                cont_event = MessageEvent(
+                    text=prompt,
+                    message_type=MessageType.TEXT,
+                    source=source,
+                    message_id=None,
+                    channel_prompt=None,
+                )
+                self._enqueue_fifo(_quick_key, cont_event, adapter)
+        except Exception as exc:
+            logger.debug("goal wait auto-resume failed: %s", exc)
 
 
 

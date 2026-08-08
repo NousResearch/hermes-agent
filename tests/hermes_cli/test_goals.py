@@ -798,3 +798,26 @@ class TestContractAndBackgroundCompose:
         assert verdict == "wait"
         assert wait_directive and wait_directive.get("pid") == 4242
 
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Judge prompt — "blocked on user input" must NOT count as DONE
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_judge_prompt_user_block_is_not_done():
+    """“需要用户输入/等待确认/阶段性总结”不应再被判定为 DONE。
+
+    Unattended goal loops previously stalled as DONE whenever the agent's
+    last response mentioned being blocked on user input. The goal is not
+    complete in that case; only a genuinely unachievable goal is DONE.
+    """
+    from hermes_cli import goals
+
+    done_section = goals.JUDGE_SYSTEM_PROMPT.split("DONE —")[1].split("WAIT —")[0]
+    # The old rule treated "needs user input" as DONE; the new rule must not.
+    assert "needs user input" not in done_section
+    assert "blocked on user input" in done_section or "blocked on user" in done_section
+    assert "genuinely unachievable" in done_section
+    # CONTINUE must remain the default when in doubt.
+    assert "default when in doubt" in goals.JUDGE_SYSTEM_PROMPT

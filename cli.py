@@ -10878,6 +10878,35 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     self._pending_input.put(prompt)
                 except Exception as exc:
                     logging.debug("goal continuation enqueue failed: %s", exc)
+        elif decision.get("verdict") == "wait":
+            # The judge parked the loop because the agent is gated on an
+            # async process / timer (e.g. a server restart, CI poller).
+            # The barrier clears when the pid exits or the deadline passes,
+            # but nothing used to wake the loop afterwards — the user had
+            # to send a message, which breaks unattended goal runs. Poll
+            # in the background and enqueue the continuation ourselves.
+            self._spawn_goal_wait_resume(mgr)
+
+    def _spawn_goal_wait_resume(self, mgr) -> None:
+        """Re-inject a goal continuation once a WAIT barrier clears."""
+
+        def _worker() -> None:
+            try:
+                while True:
+                    try:
+                        if not mgr.is_active() or not mgr.is_waiting():
+                            break
+                    except Exception:
+                        break
+                    time.sleep(2)
+                if mgr.is_active():
+                    prompt = mgr.next_continuation_prompt()
+                    if prompt:
+                        self._pending_input.put(prompt)
+            except Exception as exc:
+                logging.debug("goal wait auto-resume failed: %s", exc)
+
+        threading.Thread(target=_worker, daemon=True, name="goal-wait-resume").start()
 
 
 

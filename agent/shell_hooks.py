@@ -324,6 +324,41 @@ def register_from_config(
     return registered
 
 
+def register_from_current_config(
+    *, accept_hooks: bool = False,
+) -> List[ShellHookSpec]:
+    """Load the current profile config and register its shell hooks."""
+    from hermes_cli.config import load_config
+
+    return register_from_config(load_config(), accept_hooks=accept_hooks)
+
+
+def register_profile_scoped_child_hooks(*, runtime_name: str) -> None:
+    """Register current-profile hooks in an isolated UI child process."""
+    if os.environ.get("HERMES_PROFILE_SCOPED_UI") != "1":
+        return
+
+    # Preserve CLI security precedence: plugin policy directives run before
+    # shell-hook directives.
+    try:
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+    except Exception:
+        logger.debug(
+            "Plugin discovery failed at %s startup", runtime_name, exc_info=True
+        )
+
+    try:
+        register_from_current_config(accept_hooks=False)
+    except Exception:
+        logger.debug(
+            "shell-hook registration failed at %s startup",
+            runtime_name,
+            exc_info=True,
+        )
+
+
 def iter_configured_hooks(cfg: Optional[Dict[str, Any]]) -> List[ShellHookSpec]:
     """Return the parsed ``ShellHookSpec`` entries from config without
     registering anything.  Used by ``hermes hooks list`` and ``doctor``."""

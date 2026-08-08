@@ -11,6 +11,7 @@ import argparse
 import concurrent.futures
 import contextlib
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -23,6 +24,9 @@ from pathlib import Path
 from typing import Any, Callable, Collection
 
 from agent.interrupt_compat import request_hard_interrupt
+
+
+logger = logging.getLogger(__name__)
 
 
 def now_ns() -> int:
@@ -826,6 +830,19 @@ def _default_workers() -> int:
 
 def run_host(stdin: Any = None, stdout: Any = None) -> None:
     os.environ["HERMES_COMPUTE_HOST_CHILD"] = "1"
+
+    # Turn-isolated sessions run entirely in this child process. The shared
+    # helper's profile marker prevents launch-profile hooks from leaking into a
+    # generic multi-profile browser Dashboard.
+    try:
+        from agent.shell_hooks import register_profile_scoped_child_hooks
+
+        register_profile_scoped_child_hooks(runtime_name="compute host")
+    except Exception:
+        logger.debug(
+            "profile-scoped hook setup failed at compute-host startup", exc_info=True
+        )
+
     stdin = stdin or sys.stdin
     host = ComputeHost(stdout=stdout or sys.stdout)
     shutting_down = threading.Event()

@@ -10544,6 +10544,24 @@ def cmd_dashboard(args):
     # fail-closed SystemExit unchanged.
     _maybe_setup_dashboard_auth_interactively(args)
 
+    # Desktop starts one backend per profile, so process-global shell hooks are
+    # scoped to that profile. The browser dashboard can serve several profiles
+    # and must not register its launch profile's hooks globally. Register after
+    # interactive auth setup because that path can force plugin rediscovery and
+    # clear the process-local hook registry.
+    if os.environ.get("HERMES_DESKTOP") == "1":
+        # Turn-isolation children inherit this profile-scope marker.
+        os.environ["HERMES_PROFILE_SCOPED_UI"] = "1"
+        try:
+            from agent.shell_hooks import register_from_current_config
+
+            register_from_current_config(accept_hooks=False)
+        except Exception:
+            logger.debug(
+                "shell-hook registration failed at Desktop backend startup",
+                exc_info=True,
+            )
+
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
     # available — the desktop app and the dashboard's own Chat tab both rely on
     # the `/api/ws` + `/api/pty` sockets, so there is no reason to gate them.

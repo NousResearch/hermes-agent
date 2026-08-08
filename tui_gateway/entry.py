@@ -420,6 +420,18 @@ def ensure_mcp_discovery_started() -> None:
 
 def main():
     _install_sidecar_publisher()
+    # Turn-isolation children inherit this profile-scope marker.
+    os.environ["HERMES_PROFILE_SCOPED_UI"] = "1"
+
+    try:
+        from agent.shell_hooks import register_profile_scoped_child_hooks
+
+        register_profile_scoped_child_hooks(runtime_name="TUI gateway")
+    except Exception:
+        logger.debug(
+            "profile-scoped hook setup failed at TUI gateway startup",
+            exc_info=True,
+        )
 
     # MCP tool discovery — backgrounded so a slow or unreachable MCP server
     # can't freeze TUI startup (a dead stdio/http server burns 1+2+4s of

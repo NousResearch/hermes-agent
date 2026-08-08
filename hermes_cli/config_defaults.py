@@ -286,6 +286,10 @@ DEFAULT_CONFIG = {
         # preserves the historical error + traceback behavior.
         "degraded_mode": "warn",
         "cwd": ".",  # Use current directory
+        # Opt-in SMB mappings applied to every newly-created Windows local terminal
+        # environment. Each entry is {"drive": "E", "remote": "\\\\server\\share"}.
+        # Authentication is delegated to Windows Credential Manager.
+        "windows_network_drives": [],
         # Terminal font family for the desktop app's embedded xterm.js terminal.
         # When set (e.g. "'CaskaydiaCoveNerdFont', 'JetBrains Mono', monospace"),
         # the desktop terminal uses this as the CSS font-family value, with the

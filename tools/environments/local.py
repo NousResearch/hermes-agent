@@ -22,6 +22,41 @@ _IS_WINDOWS = platform.system() == "Windows"
 logger = logging.getLogger(__name__)
 
 
+def ensure_windows_network_drives(mappings: object) -> None:
+    """Connect configured SMB mappings for a newly-created local environment."""
+    if not _IS_WINDOWS or not isinstance(mappings, list):
+        return
+    for entry in mappings:
+        if not isinstance(entry, Mapping):
+            logger.warning("Ignoring invalid terminal.windows_network_drives entry: expected mapping")
+            continue
+        drive = str(entry.get("drive", "")).strip().upper().rstrip(":")
+        remote = str(entry.get("remote", "")).strip()
+        if not re.fullmatch(r"[A-Z]", drive) or not remote.startswith("\\\\"):
+            logger.warning("Ignoring invalid terminal.windows_network_drives entry for drive %r; use a single drive letter and a UNC path.", entry.get("drive"))
+            continue
+        try:
+            # Clear a stale/disconnected mapping first: otherwise hidden Windows
+            # processes may receive an unanswerable System error 1223 prompt.
+            subprocess.run(
+                ["net", "use", f"{drive}:", "/delete", "/y"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=15, check=False, creationflags=windows_hide_flags(),
+            )
+            result = subprocess.run(
+                ["net", "use", f"{drive}:", remote, "/persistent:no"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=15, check=False, creationflags=windows_hide_flags(),
+            )
+            if result.returncode:
+                detail = (result.stderr or result.stdout).strip().replace("\n", " ")
+                logger.warning("Could not map %s: to %s (exit %s): %s", drive, remote, result.returncode, detail[:300])
+            else:
+                logger.info("Mapped Windows drive %s: to %s for Hermes terminal environment", drive, remote)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.warning("Could not map Windows drive %s: to %s: %s", drive, remote, exc)
+
+
 def _msys_to_windows_path(cwd: str) -> str:
     """Translate a Git Bash / MSYS-style POSIX path (``/c/Users/x``) to the
     native Windows form (``C:\\Users\\x``) so ``os.path.isdir`` and
@@ -1421,7 +1456,10 @@ class LocalEnvironment(BaseEnvironment):
 
     _profile_scoped_passthrough = True
 
-    def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
+    def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None,
+                 windows_network_drives: object = None):
+        if windows_network_drives:
+            ensure_windows_network_drives(windows_network_drives)
         cwd = _resolve_local_initial_cwd(cwd)
         super().__init__(cwd=cwd, timeout=timeout, env=env)
         self.init_session()

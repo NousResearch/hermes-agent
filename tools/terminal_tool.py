@@ -1487,6 +1487,13 @@ def _get_env_config() -> Dict[str, Any]:
         docker_extra_args = []
         docker_shm_size = "1g"
 
+    windows_network_drives = _parse_env_var(
+        "TERMINAL_WINDOWS_NETWORK_DRIVES", "[]", json.loads, "valid JSON"
+    )
+    if not isinstance(windows_network_drives, list):
+        logger.warning("TERMINAL_WINDOWS_NETWORK_DRIVES must be a JSON list; ignoring it")
+        windows_network_drives = []
+
     # Default cwd: local uses the host's current directory, ssh uses the
     # remote home, Vercel uses its documented workspace root, and everything
     # else starts in the backend's default root-like cwd.
@@ -1552,6 +1559,7 @@ def _get_env_config() -> Dict[str, Any]:
             os.getenv("TERMINAL_PERSISTENT_SHELL", "true"),
         ).lower() in {"true", "1", "yes"},
         "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
+        "windows_network_drives": windows_network_drives,
         # Container resource config (applies to docker, singularity, modal,
         # daytona, and vercel_sandbox -- ignored for local/ssh)
         "container_cpu": container_cpu,
@@ -1668,7 +1676,11 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     docker_network = cc.get("docker_network", True)
 
     if env_type == "local":
-        return _LocalEnvironment(cwd=cwd, timeout=timeout)
+        return _LocalEnvironment(
+            cwd=cwd,
+            timeout=timeout,
+            windows_network_drives=(local_config or {}).get("windows_network_drives"),
+        )
     
     elif env_type == "docker":
         # One-shot orphan reaper: clean up labeled containers left behind by
@@ -2551,6 +2563,7 @@ def terminal_tool(
                         if env_type == "local":
                             local_config = {
                                 "persistent": config.get("local_persistent", False),
+                                "windows_network_drives": config.get("windows_network_drives", []),
                             }
 
                         new_env = _create_environment(

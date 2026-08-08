@@ -248,6 +248,10 @@ print(result.get("output", ""))
         self.assertEqual(result["status"], "success")
         self.assertIn("mock output for: echo hello", result["output"])
         self.assertEqual(result["tool_calls_made"], 1)
+        # Tool results must remain visible even when the script only prints
+        # progress headings instead of explicitly printing the return value.
+        self.assertEqual(result["tool_results"][0]["tool"], "terminal")
+        self.assertIn("mock output for: echo hello", result["tool_results"][0]["result"])
 
 
     def test_concurrent_tool_calls_match_responses(self):
@@ -737,6 +741,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
         listener = _OneShotListener(srv)
         stop_event = threading.Event()
         tool_call_log = []
+        tool_call_results = []
         tool_call_counter = [0]
 
         def _run():
@@ -748,6 +753,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
                     listener,
                     "test-task",
                     tool_call_log,
+                    tool_call_results,
                     tool_call_counter,
                     max_tool_calls=10,
                     allowed_tools=frozenset({"terminal"}),

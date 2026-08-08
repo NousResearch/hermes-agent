@@ -4704,6 +4704,7 @@ def cached_fetch_api_models(
     api_mode: Optional[str] = None,
     headers: Optional[dict[str, str]] = None,
     force_refresh: bool = False,
+    cache_only: bool = False,
     ttl_seconds: int = _PROVIDER_MODELS_CACHE_TTL,
 ) -> Optional[list[str]]:
     """Disk-cached wrapper around :func:`fetch_api_models` for custom endpoints.
@@ -4717,9 +4718,18 @@ def cached_fetch_api_models(
     last same-fingerprint result rather than an empty list. Returns whatever
     :func:`fetch_api_models` would (a list or ``None``); corrupt cache rows
     degrade to a live fetch instead of raising.
+
+    ``cache_only`` serves a previously-discovered catalog without touching
+    the network at all — no live fetch, no background revalidation — and
+    returns ``None`` when nothing usable is cached. Callers that deliberately
+    skip live probing for latency reasons (GUI picker opens, which must not
+    block on a stopped local endpoint) use this so a warm catalog still
+    reaches the picker instead of collapsing to the config-declared subset.
     """
     normalized_url = str(base_url or "").strip().rstrip("/").lower()
     if not normalized_url:
+        if cache_only:
+            return None
         # No base_url means nothing to key the cache on — fall through to a
         # live call so callers keep getting fetch_api_models' own behavior.
         return fetch_api_models(
@@ -4731,6 +4741,17 @@ def cached_fetch_api_models(
     cache = _load_provider_models_cache()
     entry = cache.get(cache_key)
     now = time.time()
+
+    if cache_only:
+        # Same trust window as the stale-while-revalidate tier below, minus
+        # the revalidation: an entry this side of the bound is good enough to
+        # render, and anything older is treated as a miss so the caller falls
+        # back to its configured list rather than showing a stale catalog.
+        if force_refresh or not _cache_entry_valid(entry, fp):
+            return None
+        if now - entry["at"] >= _PROVIDER_MODELS_STALE_SERVE_MAX:
+            return None
+        return list(entry["models"])
 
     if not force_refresh and _cache_entry_valid(entry, fp):
         age = now - entry["at"]

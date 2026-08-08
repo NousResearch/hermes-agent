@@ -2648,6 +2648,12 @@ def list_authenticated_providers(
                     "models": [],
                     "has_explicit_models": False,
                     "ep_cfg": ep_cfg,  # used below for discover_models / api_key
+                    # Part of group_key, so it is constant across the group.
+                    # The render loop below needs it to key the model cache:
+                    # api_mode changes the wire protocol (``x-api-key`` vs
+                    # ``Authorization: Bearer``), so two rows that differ only
+                    # by it must not share a cached catalog.
+                    "api_mode": api_mode,
                     "raw_names": [],
                     "aliases": set(),
                 }
@@ -2720,17 +2726,32 @@ def list_authenticated_providers(
                     and _ep_url_norm == _current_base_url_norm
                 )
             )
-            should_probe = _can_probe_custom_provider(row_is_current=_ep_is_current) and bool(api_url) and discover and (
-                bool(api_key) or not has_explicit_models
+            # See section 4: when live probing is suppressed for latency, a
+            # warm same-fingerprint cache entry still serves the full catalog
+            # with no network round-trip.
+            #
+            # ``has_explicit_models`` gates the *probe*, not the cache read:
+            # it exists so a keyless endpoint with a declared catalog is not
+            # hammered over the network (5f00f36ba, 1039e90b5). Reading a
+            # catalog an earlier probe already paid for costs nothing, and
+            # applying the probe gate to it re-pins the endpoint — see
+            # ``_discovery_allowed`` in section 4 for the full rationale.
+            _discovery_allowed = bool(api_url) and discover
+            _probe_live = (
+                _discovery_allowed
+                and (bool(api_key) or not has_explicit_models)
+                and _can_probe_custom_provider(row_is_current=_ep_is_current)
             )
-            if should_probe:
+            if _discovery_allowed:
                 try:
                     from hermes_cli.models import cached_fetch_api_models
                     live_models = cached_fetch_api_models(
                         api_key,
                         api_url,
                         timeout=1.5 if for_picker else 5.0,  # picker: fail fast so a slow custom endpoint doesn't block /model
+                        api_mode=grp.get("api_mode") or None,
                         headers=_extra_headers_from_config(ep_cfg) or None,
+                        cache_only=not _probe_live,
                     )
                     if live_models:
                         models_list = live_models
@@ -2793,19 +2814,22 @@ def list_authenticated_providers(
         )
     ):
         _models = [current_model] if current_model else []
-        if refresh or probe_current_custom_provider:
-            try:
-                from hermes_cli.models import cached_fetch_api_models
+        # As in sections 3 and 4: with live probing suppressed, fall back to
+        # the cached catalog rather than to the single active model.
+        _probe_live = bool(refresh or probe_current_custom_provider)
+        try:
+            from hermes_cli.models import cached_fetch_api_models
 
-                _live_models = cached_fetch_api_models(
-                    "",
-                    str(current_base_url).strip().rstrip("/"),
-                    timeout=1.5 if for_picker else 5.0,  # picker: fail fast on a slow current endpoint
-                )
-                if _live_models:
-                    _models = _live_models
-            except Exception:
-                pass
+            _live_models = cached_fetch_api_models(
+                "",
+                str(current_base_url).strip().rstrip("/"),
+                timeout=1.5 if for_picker else 5.0,  # picker: fail fast on a slow current endpoint
+                cache_only=not _probe_live,
+            )
+            if _live_models:
+                _models = _live_models
+        except Exception:
+            pass
         results.append({
             "slug": "custom",
             "name": "Custom endpoint",
@@ -2911,6 +2935,11 @@ def list_authenticated_providers(
                     "has_explicit_models": False,
                     "discover_models": discover,
                     "extra_headers": entry_extra_headers,
+                    # Part of group_key, so constant across the group. Needed
+                    # in the render loop to key the model cache — api_mode
+                    # selects the wire protocol, so rows differing only by it
+                    # must not share a cached catalog.
+                    "api_mode": api_mode,
                     "aliases": set(),
                 }
             else:
@@ -3031,13 +3060,33 @@ def list_authenticated_providers(
                 and _grp_url_norm == _current_base_url_norm
                 and _current_base_url_group_count == 1
             )
-            should_probe = (
-                _can_probe_custom_provider(row_is_current=_grp_is_current)
-                and bool(api_url)
+            # Discovery is what the user's config asks for; probing is how we
+            # get it. When the caller suppresses live probing for latency, the
+            # already-discovered catalog on disk still answers the question
+            # without a round-trip — skipping it too is what collapsed a
+            # multi-model endpoint to its config-declared subset.
+            #
+            # ``has_explicit_models`` belongs on the probe side of that line.
+            # It is a network-cost gate: don't hammer a keyless endpoint that
+            # already declares its catalog (5f00f36ba, 1039e90b5). It is not a
+            # user pin — ``discover_models: false`` is the documented way to
+            # pin, and it is honored above.
+            #
+            # Keeping it on the discovery side re-pins the endpoint it was
+            # meant to spare, because a successful probe calls
+            # ``_save_discovered_models_to_config()``, which writes a plain
+            # list — the exact shape ``_models_config_is_allowlist()`` reads
+            # back as an explicit allowlist. A keyless local server therefore
+            # self-pins on its first probe and can never widen again. f66319097
+            # already carved the dict shape out of that trap for the same
+            # reason; the list shape is the other door into it.
+            _discovery_allowed = bool(api_url) and grp.get("discover_models", True)
+            _probe_live = (
+                _discovery_allowed
                 and (bool(api_key) or not grp.get("has_explicit_models"))
-                and grp.get("discover_models", True)
+                and _can_probe_custom_provider(row_is_current=_grp_is_current)
             )
-            if should_probe:
+            if _discovery_allowed:
                 try:
                     from hermes_cli.models import cached_fetch_api_models
 
@@ -3045,7 +3094,9 @@ def list_authenticated_providers(
                         api_key,
                         api_url,
                         timeout=1.5 if for_picker else 5.0,  # picker: fail fast so a slow custom endpoint doesn't block /model
+                        api_mode=grp.get("api_mode") or None,
                         headers=grp.get("extra_headers") or None,
+                        cache_only=not _probe_live,
                     )
                     if live_models:
                         grp["models"] = live_models
@@ -3053,9 +3104,12 @@ def list_authenticated_providers(
                         # Auto-save discovered models back to config so
                         # ``discover_models: false`` has a populated cache
                         # on the next read.  A failed save is non-fatal.
-                        _save_discovered_models_to_config(
-                            api_url, live_models
-                        )
+                        # Only after a real probe: a cache hit is already the
+                        # product of an earlier probe that saved it.
+                        if _probe_live:
+                            _save_discovered_models_to_config(
+                                api_url, live_models
+                            )
                 except Exception:
                     pass
             results.append({

@@ -109,18 +109,16 @@ export function parseVenvBlockerScanOutput(raw: string): ScanOutcome {
 }
 
 /**
- * Run the venv-blocker scan subprocess.  Async so the Electron main-process
- * event loop is never blocked by the psutil process scan (up to 15s on a
- * loaded Windows box).  Accepts optional overrides for testing (dependency
- * injection).
+ * Run a single venv-blocker scan subprocess.  Extracted as a helper so
+ * scanVenvBlockers can retry transient failures.  Async so the Electron
+ * main-process event loop is never blocked by the psutil process scan
+ * (up to 15s on a loaded Windows box).
  */
-export async function scanVenvBlockers(
+async function runSingleScan(
   updateRoot: string,
-  execOverride?: typeof execFileAsync,
-  resolveOverride?: typeof resolveVenvPython
+  execFn: typeof execFileAsync,
+  resolveFn: typeof resolveVenvPython
 ): Promise<ScanOutcome> {
-  const execFn = execOverride || execFileAsync
-  const resolveFn = resolveOverride || resolveVenvPython
   const venvPython = resolveFn(updateRoot)
 
   if (!venvPython) {
@@ -149,6 +147,61 @@ export async function scanVenvBlockers(
   }
 
   return parseVenvBlockerScanOutput(stdout)
+}
+
+/**
+ * Run the venv-blocker scan subprocess with a retry loop.  Transient
+ * subprocess failures (e.g. race with the backend being mid-shutdown on
+ * Windows) are retried up to 3 times with 500ms settling delays, so a
+ * momentary probe failure does not abort the update preflight.  Accepts
+ * optional overrides for testing (dependency injection).
+ *
+ * @param updateRoot   Root of the hermetic Hermes install to scan.
+ * @param execOverride  Optional execFile override for tests.
+ * @param resolveOverride  Optional venv-python resolver override for tests.
+ * @param hermesHome   Optional HERMES_HOME path.  When provided, cleans
+ *                     any stale update-in-progress marker before scanning,
+ *                     preventing false positives from orphaned markers
+ *                     (#74805).
+ */
+export async function scanVenvBlockers(
+  updateRoot: string,
+  execOverride?: typeof execFileAsync,
+  resolveOverride?: typeof resolveVenvPython,
+  hermesHome?: string
+): Promise<ScanOutcome> {
+  const execFn = execOverride || execFileAsync
+  const resolveFn = resolveOverride || resolveVenvPython
+
+  // Clean stale update marker before scanning, so an orphaned
+  // .hermes-update-in-progress from a prior crashed update does not
+  // cause false positives (#74805).
+  if (hermesHome) {
+    try {
+      const { readLiveUpdateMarker } = await import('./update-marker')
+      readLiveUpdateMarker(hermesHome)
+    } catch {
+      // Best-effort: if the import or cleanup fails, proceed anyway.
+    }
+  }
+
+  // Retry loop: transient probe failures (race with backend shutdown,
+  // module-not-found during parallel pip install, etc.) settle after
+  // a short delay.  True 'blocked' or 'clear' outcomes are final.
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const outcome = await runSingleScan(updateRoot, execFn, resolveFn)
+
+    if (outcome.kind !== 'probe-failure') {
+      return outcome
+    }
+
+    if (attempt < 3) {
+      await new Promise(r => setTimeout(r, 500))
+    }
+  }
+
+  // All 3 attempts failed — surface the last probe-failure.
+  return runSingleScan(updateRoot, execFn, resolveFn)
 }
 
 // ---------------------------------------------------------------------------

@@ -2751,10 +2751,11 @@ async function releaseBackendLockForUpdate(updateRoot) {
 // locks — the before-quit SIGTERM + the cleanup script's own PID-wait suffice).
 async function releaseBackendLock(updateRoot, tag) {
   if (!IS_WINDOWS) {
-    return { unlocked: true }
+    return { unlocked: true, killedPids: [] }
   }
 
   // Collect every backend PID the desktop owns: primary window backend + pool.
+  const killedPids = new Set()
   const pids = []
   const hermesProcess = backendConnectionState.getProcess()
 
@@ -2780,6 +2781,7 @@ async function releaseBackendLock(updateRoot, tag) {
   stopAllPoolBackends()
 
   for (const pid of pids) {
+    killedPids.add(pid)
     forceKillProcessTree(pid)
   }
 
@@ -2790,7 +2792,7 @@ async function releaseBackendLock(updateRoot, tag) {
     if (!isShimLocked(shim)) {
       rememberLog(`[${tag}] venv shim unlocked; safe to proceed`)
 
-      return { unlocked: true }
+      return { unlocked: true, killedPids: Array.from(killedPids) }
     }
 
     // A supervised backend can respawn between kill and check (grandchildren,
@@ -2811,6 +2813,7 @@ async function releaseBackendLock(updateRoot, tag) {
     }
 
     for (const pid of stragglers) {
+      killedPids.add(pid)
       forceKillProcessTree(pid)
     }
 
@@ -2828,7 +2831,7 @@ async function releaseBackendLock(updateRoot, tag) {
     `[${tag}] venv shim still locked after 15s; aborting hand-off (something outside this app holds the venv)`
   )
 
-  return { unlocked: false }
+  return { unlocked: false, killedPids: Array.from(killedPids) }
 }
 
 // applyUpdates — hand off to the installer's --update flow, then exit.
@@ -2966,16 +2969,30 @@ async function applyUpdates(opts = {}) {
     // malformed output, missing psutil) abort the handoff — never proceed
     // to the detached updater when the venv state is unknown.
     if (IS_WINDOWS) {
-      const scanOutcome = await scanVenvBlockers(updateRoot)
+      const scanOutcome = await scanVenvBlockers(updateRoot, undefined, undefined, HERMES_HOME)
 
       if (scanOutcome.kind === 'blocked') {
-        const message = formatBlockerMessage(scanOutcome.result)
+        const blockerPids = scanOutcome.result.processes.map(p => p.pid)
+        const killedPids = lock.killedPids ?? []
+        const allAreRemnants = blockerPids.length > 0 &&
+          blockerPids.every(pid => killedPids.includes(pid))
 
-        rememberLog(`[updates] venv-blocked: ${scanOutcome.result.processes.length} process(es) hold the install`)
-        emitUpdateProgress({ stage: 'error', message, percent: null })
-        startHermes().catch(() => {})
+        if (allAreRemnants) {
+          // All blockers are remnants of our own tree-kill (processes still
+          // winding down).  They'll exit momentarily — no need to restart
+          // the backend or abort the update.  Just log and proceed.
+          rememberLog(
+            `[updates] blocker PIDs ${blockerPids.join(',')} are remnants of our own kill; proceeding`
+          )
+        } else {
+          const message = formatBlockerMessage(scanOutcome.result)
 
-        return { ok: false, error: 'venv-blocked', message }
+          rememberLog(`[updates] venv-blocked: ${scanOutcome.result.processes.length} process(es) hold the install`)
+          emitUpdateProgress({ stage: 'error', message, percent: null })
+          startHermes().catch(() => {})
+
+          return { ok: false, error: 'venv-blocked', message }
+        }
       }
 
       if (scanOutcome.kind === 'probe-failure') {

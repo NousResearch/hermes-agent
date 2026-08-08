@@ -1,6 +1,7 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import type { HermesGitWorktree, HermesRepoStatus } from '@/global'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { desktopGit } from '@/lib/desktop-git'
 
 import {
@@ -94,8 +95,9 @@ export function repoStatusForCwd(cwd?: null | string): ReadableAtom<HermesRepoSt
  * Is this path a git repo? This function reads the probe cache, and probes on
  * demand when the cache has no entry for the path. Use it to validate any repo
  * that was picked out of candidate FOLDERS: a path in a project row is not
- * evidence that git can branch from it. False on a remote backend, because
- * there is no local git truth to probe.
+ * evidence that git can branch from it. On a remote gateway the probe runs
+ * against the VPS path; if the path does not exist on the VPS the backend
+ * returns null and this returns false.
  */
 export async function isGitRepoPath(cwd: string): Promise<boolean> {
   const key = normalizeCwd(cwd)
@@ -496,6 +498,13 @@ export function _resetCodingStatusForTests(): void {
 // and ⌘⇧B now works from a detached session inside a project. '' means that no
 // repo is in reach. That is a no-op and not an error, because a worktree only
 // exists inside a repo.
+//
+// On a remote gateway, the candidate cwd is whatever the backend reported for
+// the focused session / project. The renderer's local `repoStatus` probe can
+// only validate paths that exist on the LOCAL filesystem, so it always returns
+// null for VPS-only paths (#81724 — ⌘⇧B was a silent no-op). Trust the
+// candidate here and let the backend's `git worktree add` surface a clean 400
+// if the path is not actually a repo on the VPS.
 export async function resolveWorktreeRepoPath(): Promise<string> {
   const runtimeId = $focusedRuntimeId.get()
   const scope = $projectScope.get()
@@ -508,7 +517,11 @@ export async function resolveWorktreeRepoPath(): Promise<string> {
   for (const candidate of candidates) {
     const path = candidate.trim()
 
-    if (path && (await isGitRepoPath(path))) {
+    if (!path) {
+      continue
+    }
+
+    if (isDesktopFsRemoteMode() || (await isGitRepoPath(path))) {
       return path
     }
   }

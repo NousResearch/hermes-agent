@@ -11,9 +11,11 @@ import {
   refreshRepoStatus,
   registerRepoStatusCwd,
   repoChangeKindForPath,
-  repoStatusForCwd
+  repoStatusForCwd,
+  resolveWorktreeRepoPath
 } from './coding-status'
-import { $currentCwd, $selectedStoredSessionId } from './session'
+import { $connection, $currentCwd, $selectedStoredSessionId, setActiveSessionId } from './session'
+import { $sessionStates } from './session-states'
 
 const sampleStatus: HermesRepoStatus = {
   branch: 'feature/login',
@@ -283,5 +285,65 @@ describe('repoChangeKindForPath', () => {
     expect(listener.mock.calls.at(-1)?.[0]).toBe('added')
 
     unsubscribe()
+  })
+})
+
+describe('resolveWorktreeRepoPath (#81724)', () => {
+  beforeEach(async () => {
+    _resetCodingStatusForTests()
+    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    $currentCwd.set('')
+    $selectedStoredSessionId.set(null)
+    $connection.set(null)
+    // Reset session-state atoms so the previous test's runtime/cwd don't leak
+    // into the next case (the `desktopGit().repoStatus` cache and session
+    // runtime map both outlast a single test when not cleared here).
+    $sessionStates.set({})
+    setActiveSessionId(null)
+  })
+
+  afterEach(() => {
+    _resetCodingStatusForTests()
+    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    $connection.set(null)
+  })
+
+  it('returns the focused session cwd on a remote gateway even when the local repoStatus probe finds nothing', async () => {
+    // The session cwd is a VPS path that the local probe can never validate.
+    // ⌘⇧B used to silently no-op here (#81724) because `isGitRepoPath` ran a
+    // local-only git status that returned null for paths the VPS owns.
+    const vpsCwd = '/srv/repos/hermes'
+    const { $focusedRuntimeId, publishSessionState } = await import('./session-states')
+    const { $activeSessionId } = await import('./session')
+
+    $connection.set({ mode: 'remote' } as never)
+    publishSessionState('rt-1', { cwd: vpsCwd } as never)
+    $activeSessionId.set('rt-1')
+    expect($focusedRuntimeId.get()).toBe('rt-1')
+
+    // No local repoStatus probe is set; on remote the path is trusted and the
+    // backend's `git worktree add` is the source of truth for "is this a repo".
+    expect(await resolveWorktreeRepoPath()).toBe(vpsCwd)
+  })
+
+  it('still returns "" on a remote gateway when no cwd is reachable', async () => {
+    $connection.set({ mode: 'remote' } as never)
+
+    expect(await resolveWorktreeRepoPath()).toBe('')
+  })
+
+  it('still requires the local probe to pass on a local backend', async () => {
+    // Negative control: the remote-only trust bypass must not weaken the
+    // local-only behaviour. A candidate that is NOT a git repo on the local
+    // machine must not leak through the gate.
+    stubProbe(async () => null as never)
+    const { publishSessionState } = await import('./session-states')
+    const { $activeSessionId } = await import('./session')
+
+    $connection.set({ mode: 'local' } as never)
+    publishSessionState('rt-1', { cwd: '/not/a/repo' } as never)
+    $activeSessionId.set('rt-1')
+
+    expect(await resolveWorktreeRepoPath()).toBe('')
   })
 })

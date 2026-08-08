@@ -3939,6 +3939,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "long-lived processes still use the previous runtime."
                 )
                 print("  Restart each of them to pick up the repaired runtime.")
+            # Even when the checkout is current, a previous `hermes update`
+            # may have failed at the Node.js dependency step (e.g. EBADENGINE
+            # from a system node/npm mismatch).  Re-run the check so that
+            # fixing npm and re-running `hermes update` actually repairs the
+            # Node deps — otherwise the "Already up to date" return silently
+            # leaves node_modules stale (#77211).
+            _update_node_dependencies()
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             return
 

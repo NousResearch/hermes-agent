@@ -5289,6 +5289,20 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     res_text = getattr(getattr(block, "resource", None), "text", None)
                     if res_text:
                         error_text += str(res_text)
+                # Cap error text size the same way success text is capped,
+                # so a buggy or malicious MCP error payload cannot blow the
+                # context window through an error branch (#56060).
+                if error_text:
+                    from tools.tool_output_limits import get_max_bytes as _mcp_get_max
+                    _mcp_max = _mcp_get_max()
+                    if len(error_text) > _mcp_max:
+                        _mcp_half = _mcp_max // 2
+                        _mcp_dropped = len(error_text) - _mcp_max
+                        error_text = (
+                            error_text[:_mcp_half]
+                            + f"\n...[\{_mcp_dropped:,} chars truncated]...\n"
+                            + error_text[-_mcp_half:]
+                        )
                 return tool_error(_sanitize_error(
                     error_text or "MCP tool returned an error"
                 ))
@@ -5342,11 +5356,39 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     )
             text_result = "\n".join(parts) if parts else ""
 
+            # Cap MCP tool result size to prevent unbounded allocation.
+            # Without this, a buggy or malicious MCP server can return
+            # multi-megabyte text that floods context, causes OOM on
+            # small VMs, or burns unbounded API costs.
+            from tools.tool_output_limits import get_max_bytes
+            _max = get_max_bytes()
+            if len(text_result) > _max:
+                _half = _max // 2
+                _dropped = len(text_result) - _max
+                text_result = text_result[:_half] + f"\n...[{_dropped:,} chars truncated]...\n" + text_result[-_half:]
+
             # Combine content + structuredContent when both are present.
             # MCP spec: content is model-oriented (text), structuredContent
             # is machine-oriented (JSON metadata).  For an AI agent, content
             # is the primary payload; structuredContent supplements it.
+            #
+            # Cap ``structuredContent`` the same way as ``text_result`` so a
+            # server returning a multi-megabyte structured payload cannot
+            # blow the context window (#56060). The shape is intentionally
+            # lossy: when truncated, we replace the value with a string
+            # describing the size so the model still has a hint, rather
+            # than reparse the partial JSON (which would raise).
             structured = getattr(result, "structuredContent", None)
+            from tools.tool_output_limits import get_max_bytes as _mcp_get_max_s
+            _mcp_max_s = _mcp_get_max_s()
+            if structured is not None:
+                _mcp_struct_dump = json.dumps(structured, ensure_ascii=False)
+                if len(_mcp_struct_dump) > _mcp_max_s:
+                    _mcp_dropped_s = len(_mcp_struct_dump) - _mcp_max_s
+                    structured = (
+                        f"<structuredContent of {len(_mcp_struct_dump):,} chars "
+                        f"truncated to {_mcp_max_s:,} (dropped {_mcp_dropped_s:,})>"
+                    )
             if structured is not None:
                 if text_result:
                     return json.dumps({

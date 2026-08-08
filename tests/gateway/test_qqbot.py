@@ -145,8 +145,26 @@ class TestVoiceAttachmentTempCleanup:
         response.headers = {"content-type": "audio/wav"}
         response.raise_for_status = mock.Mock()
 
+        # Downloads stream through client.stream() so the size cap can abort
+        # mid-body; the response doubles as the streaming context manager.
+        class _StreamCM:
+            headers = {"content-type": "audio/wav"}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            def raise_for_status(self):
+                return None
+
+            async def aiter_bytes(self):
+                yield content
+
         adapter._http_client = mock.AsyncMock()
         adapter._http_client.get = mock.AsyncMock(return_value=response)
+        adapter._http_client.stream = mock.Mock(return_value=_StreamCM())
 
     def test_temp_wav_cleaned_up_on_stt_failure(self):
         adapter = self._make_adapter(app_id="a", client_secret="b")

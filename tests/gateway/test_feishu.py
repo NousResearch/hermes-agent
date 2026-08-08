@@ -186,6 +186,152 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         "FEISHU_APP_ID": "cli_app",
         "FEISHU_APP_SECRET": "secret_app",
     }, clear=True)
+    def test_connect_websocket_uses_warning_sdk_log_level(self):
+        """WebSocket SDK connection URLs must not be emitted at INFO level."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        with (
+            patch("plugins.platforms.feishu.adapter.FEISHU_AVAILABLE", True),
+            patch("plugins.platforms.feishu.adapter.FEISHU_WEBSOCKET_AVAILABLE", True),
+            patch("plugins.platforms.feishu.adapter.lark",
+                  SimpleNamespace(LogLevel=SimpleNamespace(INFO="INFO", WARNING="WARNING"))),
+            patch("plugins.platforms.feishu.adapter.EventDispatcherHandler") as mock_handler_class,
+            patch("plugins.platforms.feishu.adapter.FeishuWSClient") as mock_ws_client,
+            patch("plugins.platforms.feishu.adapter._run_official_feishu_ws_client"),
+            patch("plugins.platforms.feishu.adapter.acquire_scoped_lock", return_value=(True, None)),
+            patch("plugins.platforms.feishu.adapter.release_scoped_lock"),
+            patch.object(adapter, "_hydrate_bot_identity", new=AsyncMock()),
+            patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
+        ):
+            _mock_event_dispatcher_builder(mock_handler_class)
+
+            loop = asyncio.new_event_loop()
+            future = loop.create_future()
+            future.set_result(None)
+
+            class _Loop:
+                def run_in_executor(self, *_args, **_kwargs):
+                    return future
+
+                def is_closed(self):
+                    return False
+
+            try:
+                with patch("plugins.platforms.feishu.adapter.asyncio.get_running_loop",
+                           return_value=_Loop()):
+                    connected = asyncio.run(adapter.connect())
+            finally:
+                loop.close()
+
+        self.assertTrue(connected)
+        self.assertEqual(mock_ws_client.call_args.kwargs["log_level"], "WARNING")
+
+    @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
+    @patch.dict(os.environ, {
+        "FEISHU_APP_ID": "cli_app",
+        "FEISHU_APP_SECRET": "secret_app",
+    }, clear=True)
+    def test_real_sdk_warning_hides_sensitive_websocket_url_info_record(self):
+        """The real SDK must suppress its INFO-only connection URL record at WARNING."""
+        import logging
+
+        import lark_oapi.ws.client as lark_ws_client
+        from lark_oapi.core.enum import LogLevel
+        from lark_oapi.core.log import logger as sdk_logger
+        from lark_oapi.ws import Client as FeishuWSClient
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        sensitive_url = (
+            "wss://ws.example.invalid/connect?device_id=device-123&service_id=42"
+            "&token=synthetic-sensitive-token"
+        )
+        observed_urls = []
+
+        class _AdapterLoop:
+            def is_closed(self):
+                return False
+
+            def run_in_executor(self, _executor, _func, *_args):
+                return None
+
+        class _NoBackgroundTaskLoop:
+            def create_task(self, coroutine):
+                coroutine.close()
+
+        class _CaptureHandler(logging.Handler):
+            def __init__(self):
+                super().__init__()
+                self.records = []
+
+            def emit(self, record):
+                self.records.append(record)
+
+        async def fake_connect(url, **_kwargs):
+            observed_urls.append(url)
+            return SimpleNamespace()
+
+        capture = _CaptureHandler()
+        original_level = sdk_logger.level
+        original_handlers = list(sdk_logger.handlers)
+        original_propagate = sdk_logger.propagate
+        try:
+            sdk_logger.handlers[:] = [capture]
+            sdk_logger.propagate = False
+            adapter = FeishuAdapter(PlatformConfig())
+            adapter._loop = _AdapterLoop()
+            with (
+                patch("plugins.platforms.feishu.adapter.FEISHU_WEBSOCKET_AVAILABLE", True),
+                patch("plugins.platforms.feishu.adapter.EventDispatcherHandler") as mock_handler_class,
+                patch.object(adapter, "_hydrate_bot_identity", new=AsyncMock()),
+                patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
+            ):
+                _mock_event_dispatcher_builder(mock_handler_class)
+                asyncio.run(adapter._connect_websocket())
+
+            self.assertIsInstance(adapter._ws_client, FeishuWSClient)
+            sdk_client = adapter._ws_client
+            self.assertEqual(sdk_logger.level, LogLevel.WARNING.value)
+            with (
+                patch.object(lark_ws_client, "loop", _NoBackgroundTaskLoop()),
+                patch.object(lark_ws_client.websockets, "connect", new=fake_connect),
+                patch.object(sdk_client, "_get_conn_url", return_value=sensitive_url),
+            ):
+                asyncio.run(sdk_client._connect())
+
+                self.assertEqual(observed_urls, [sensitive_url])
+                self.assertFalse(
+                    any(sensitive_url in record.getMessage() for record in capture.records),
+                    "WARNING must suppress the SDK's INFO connection URL record",
+                )
+
+                # Sensitivity control: the same real SDK path emits this URL at INFO.
+                loud_client = FeishuWSClient(
+                    app_id="synthetic-app-id",
+                    app_secret="synthetic-app-secret",
+                    log_level=LogLevel.INFO,
+                    auto_reconnect=False,
+                )
+                with patch.object(loud_client, "_get_conn_url", return_value=sensitive_url):
+                    asyncio.run(loud_client._connect())
+
+            self.assertEqual(observed_urls, [sensitive_url, sensitive_url])
+            self.assertTrue(
+                any(sensitive_url in record.getMessage() for record in capture.records),
+                "The real SDK INFO path must emit the connection URL for this test to catch a regression",
+            )
+        finally:
+            sdk_logger.setLevel(original_level)
+            sdk_logger.handlers[:] = original_handlers
+            sdk_logger.propagate = original_propagate
+
+    @patch.dict(os.environ, {
+        "FEISHU_APP_ID": "cli_app",
+        "FEISHU_APP_SECRET": "secret_app",
+    }, clear=True)
     def test_connect_websocket_sets_channel_ua_tag(self):
         """Verify that FeishuWSClient receives extra_ua_tags=["channel"].
 

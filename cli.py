@@ -519,9 +519,14 @@ def load_cli_config() -> Dict[str, Any]:
 
             "skin": "default",
         },
-        "clarify": {
-            "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
-        },
+        # Clarify timeout: intentionally NO default here. resolve_clarify_timeout
+        # (tools/clarify_gateway.py) treats any top-level clarify.timeout as an
+        # explicit user override that wins over agent.clarify_timeout. A hardcoded
+        # default of 120 here therefore silently shadowed the canonical
+        # agent.clarify_timeout (3600, set in hermes_cli/config.py DEFAULT_CONFIG),
+        # so the CLI surfaced a 2-minute wait no matter what agent.clarify_timeout
+        # said. Leaving this section absent lets the resolver fall through to
+        # agent.clarify_timeout — the documented, single source of truth.
         "code_execution": {
             "timeout": 300,    # Max seconds a sandbox script can run before being killed (5 min)
             "max_tool_calls": 50,  # Max RPC tool calls per execution

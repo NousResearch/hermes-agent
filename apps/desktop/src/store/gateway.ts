@@ -308,8 +308,15 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
 
     try {
       await openSecondary(entry)
-    } catch {
+    } catch (error) {
+      // #81094: a failed secondary connect must NOT fall through to
+      // setActive with a closed socket — that routes the user's messages to
+      // the primary backend (cross-profile session writes). Keep the
+      // reconnect schedule (transient failures still self-heal) but RE-THROW
+      // so the caller (ensureGatewayProfile) can surface the failure and
+      // skip the activation.
       scheduleReconnect(entry)
+      throw error
     }
   }
 

@@ -37,6 +37,10 @@ _MEMORY_CONTEXT_TAIL_CHARS = 1_500
 _MEMORY_CONTEXT_TRUNCATION_MARKER = "\n...[memory provider context truncated]...\n"
 
 
+class ContextEngineLifecycleError(RuntimeError):
+    """Raised when a context engine cannot provide an isolated runtime."""
+
+
 def sanitize_memory_context(memory_context: str) -> str:
     """Prepare provider context for a context-engine/LLM egress boundary."""
     sanitized = redact_sensitive_text(
@@ -84,6 +88,46 @@ def automatic_compaction_status_message(
         return None
     message = str(message).strip()
     return message or None
+
+
+def create_context_engine_runtime(
+    engine: "ContextEngine",
+    *,
+    name: str = "context engine",
+) -> "ContextEngine":
+    """Create and validate an isolated runtime from a registered prototype.
+
+    Registered engines are process-owned prototypes.  This factory is the
+    supported boundary for producing an agent-owned runtime; implicit copying
+    and shared instances are unsafe for resource-owning engines.
+    """
+    if not isinstance(engine, ContextEngine):
+        raise ContextEngineLifecycleError(
+            f"{name} must be a ContextEngine, got {type(engine).__name__}"
+        )
+    factory = getattr(engine, "create_runtime", None)
+    if not callable(factory) or type(engine).create_runtime is ContextEngine.create_runtime:
+        raise ContextEngineLifecycleError(
+            f"{name} must implement create_runtime() to create an isolated "
+            "per-agent runtime; shared prototypes and implicit copying are unsupported."
+        )
+    try:
+        runtime = factory()
+    except Exception as exc:
+        raise ContextEngineLifecycleError(
+            f"{name} create_runtime() failed: {exc}"
+        ) from exc
+    if runtime is engine:
+        raise ContextEngineLifecycleError(
+            f"{name} create_runtime() returned its shared prototype; return a distinct "
+            "runtime instance instead."
+        )
+    if not isinstance(runtime, ContextEngine):
+        raise ContextEngineLifecycleError(
+            f"{name} create_runtime() returned {type(runtime).__name__}, "
+            "not a ContextEngine runtime."
+        )
+    return runtime
 
 
 class ContextEngine(ABC):
@@ -383,6 +427,30 @@ class ContextEngine(ABC):
         return True
 
     # -- Optional: session lifecycle ---------------------------------------
+
+    def create_runtime(self) -> "ContextEngine":
+        """Create an isolated runtime for one agent.
+
+        Context-engine plugins are registered once and their registered engine
+        is retained as a process-owned prototype.  A loader must call this
+        explicit boundary before handing an engine to an agent; it must not
+        copy an engine implicitly.  Engines that do not need per-agent state
+        may return a fresh lightweight runtime from this method.
+
+        The base implementation deliberately returns ``self`` so existing
+        engines remain importable and can be diagnosed by the loader.  The
+        loader rejects that shared result with an actionable error.
+        """
+        return self
+
+    def close(self) -> None:
+        """Release runtime-owned resources; safe to call repeatedly.
+
+        The default is an idempotent no-op for engines without resources.
+        Resource-owning engines must override this boundary and make their
+        implementation idempotent.
+        """
+        return None
 
     def on_session_start(self, session_id: str, **kwargs) -> None:
         """Called when a new conversation session begins.

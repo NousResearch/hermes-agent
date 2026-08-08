@@ -22,12 +22,21 @@ import importlib
 import importlib.util
 import logging
 import sys
+import threading
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+from agent.context_engine import (
+    ContextEngine,
+    ContextEngineLifecycleError,
+    create_context_engine_runtime,
+)
 
 logger = logging.getLogger(__name__)
 
 _CONTEXT_ENGINE_PLUGINS_DIR = Path(__file__).parent
+_ENGINE_PROTOTYPES = {}
+_ENGINE_PROTOTYPES_LOCK = threading.RLock()
 
 
 def discover_context_engines() -> List[Tuple[str, str, bool]]:
@@ -60,14 +69,22 @@ def discover_context_engines() -> List[Tuple[str, str, bool]]:
             except Exception:
                 pass
 
-        # Quick availability check — try loading and calling is_available()
+        # Availability is a prototype check. Discovery may run repeatedly, so
+        # it must not create resource-owning per-agent runtimes.
         available = True
         try:
-            engine = _load_engine_from_dir(child)
-            if engine is None:
+            prototype_key = str(child.resolve())
+            with _ENGINE_PROTOTYPES_LOCK:
+                prototype = _ENGINE_PROTOTYPES.get(prototype_key)
+                if prototype is None:
+                    prototype = _load_engine_prototype_from_dir(child)
+                    if prototype is not None:
+                        _ENGINE_PROTOTYPES[prototype_key] = prototype
+
+            if prototype is None:
                 available = False
-            elif hasattr(engine, "is_available"):
-                available = engine.is_available()
+            elif hasattr(prototype, "is_available"):
+                available = prototype.is_available()
         except Exception:
             available = False
 
@@ -92,6 +109,8 @@ def load_context_engine(name: str) -> Optional["ContextEngine"]:
             return engine
         logger.warning("Context engine '%s' loaded but no engine instance found", name)
         return None
+    except ContextEngineLifecycleError:
+        raise
     except Exception as e:
         logger.warning("Failed to load context engine '%s': %s", name, e)
         return None
@@ -104,6 +123,21 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
     - A register(ctx) function (plugin-style) — we simulate a ctx
     - A top-level class that extends ContextEngine — we instantiate it
     """
+    name = engine_dir.name
+    prototype_key = str(engine_dir.resolve())
+    with _ENGINE_PROTOTYPES_LOCK:
+        prototype = _ENGINE_PROTOTYPES.get(prototype_key)
+        if prototype is None:
+            prototype = _load_engine_prototype_from_dir(engine_dir)
+            if prototype is None:
+                return None
+            _ENGINE_PROTOTYPES[prototype_key] = prototype
+
+        return create_context_engine_runtime(prototype, name=f"Context engine '{name}'")
+
+
+def _load_engine_prototype_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
+    """Import an engine module and register one process-owned prototype."""
     name = engine_dir.name
     module_name = f"plugins.context_engine.{name}"
     init_file = engine_dir / "__init__.py"
@@ -183,7 +217,6 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
             logger.debug("register() failed for %s: %s", name, e)
 
     # Fallback: find a ContextEngine subclass and instantiate it
-    from agent.context_engine import ContextEngine
     for attr_name in dir(mod):
         attr = getattr(mod, attr_name, None)
         if (isinstance(attr, type) and issubclass(attr, ContextEngine)

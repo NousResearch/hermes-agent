@@ -37,6 +37,41 @@ class _ToolEngine(_StubEngine):
         ]
 
 
+def test_general_plugin_factory_rejection_is_not_reported_as_not_found(caplog):
+    """A located plugin rejected by its factory must not be reported missing."""
+    cfg = {"context": {"engine": "rejected"}, "agent": {}}
+    candidate = MagicMock(name="rejected")
+    candidate.name = "rejected"
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("plugins.context_engine.load_context_engine", return_value=None),
+        patch("hermes_cli.plugins.get_plugin_context_engine", return_value=candidate),
+        patch(
+            "agent.context_engine.create_context_engine_runtime",
+            side_effect=RuntimeError("factory rejected candidate"),
+        ),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    warnings = [record.getMessage() for record in caplog.records]
+    assert any("does not provide a supported isolated runtime factory" in message for message in warnings)
+    assert not any("Context engine 'rejected' not found" in message for message in warnings)
+
+
 def test_plugin_engine_gets_context_length_on_init():
     """Plugin context engine should have context_length set during AIAgent init."""
     engine = _StubEngine()

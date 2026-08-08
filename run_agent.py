@@ -4087,28 +4087,68 @@ class AIAgent:
         """Shut down the memory provider and context engine — call at actual session boundaries.
 
         This calls on_session_end() then shutdown_all() on the memory
-        manager, and on_session_end() on the context engine.
-        NOT called per-turn — only at CLI exit, /reset, gateway
-        session expiry, etc.
+        manager, and on_session_end() on the context engine.  It is only
+        called at true agent shutdown (CLI exit, gateway expiry, etc.), not
+        during session rotation.
         """
-        if self._memory_manager:
+        if getattr(self, "_shutdown_memory_provider_done", False):
+            return
+
+        memory_manager = getattr(self, "_memory_manager", None)
+        if memory_manager and not getattr(self, "_memory_session_end_done", False):
             try:
-                self._memory_manager.on_session_end(messages or [])
+                memory_manager.on_session_end(messages or [])
+                self._memory_session_end_done = True
             except Exception as e:
-                logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
+                logger.warning(
+                    "Memory provider on_session_end failed during shutdown: %s",
+                    e,
+                    exc_info=True,
+                )
+        elif not memory_manager:
+            self._memory_session_end_done = True
+
+        if memory_manager and not getattr(self, "_memory_shutdown_done", False):
             try:
-                self._memory_manager.shutdown_all()
-            except Exception:
-                pass
-        # Notify context engine of session end (flush DAG, close DBs, etc.)
-        if hasattr(self, "context_compressor") and self.context_compressor:
+                memory_manager.shutdown_all()
+                self._memory_shutdown_done = True
+            except Exception as e:
+                logger.warning("Memory provider shutdown failed during shutdown: %s", e, exc_info=True)
+        elif not memory_manager:
+            self._memory_shutdown_done = True
+
+        # Notify context engine of session end before releasing its runtime.
+        context_engine = getattr(self, "context_compressor", None)
+        if context_engine and not getattr(self, "_context_engine_session_end_done", False):
             try:
-                self.context_compressor.on_session_end(
+                context_engine.on_session_end(
                     self.session_id or "",
                     messages or [],
                 )
-            except Exception:
-                pass
+                self._context_engine_session_end_done = True
+            except Exception as e:
+                logger.warning("Context engine on_session_end failed during shutdown: %s", e, exc_info=True)
+        elif not context_engine:
+            self._context_engine_session_end_done = True
+
+        if context_engine and not getattr(self, "_context_engine_close_done", False):
+            try:
+                # Runtime resources are closed only at true agent shutdown,
+                # never by commit_memory_session() during session rotation.
+                context_engine.close()
+                self._context_engine_close_done = True
+            except Exception as e:
+                logger.warning("Context engine close failed during shutdown: %s", e, exc_info=True)
+        elif not context_engine:
+            self._context_engine_close_done = True
+
+        if (
+            getattr(self, "_memory_session_end_done", False)
+            and getattr(self, "_memory_shutdown_done", False)
+            and getattr(self, "_context_engine_session_end_done", False)
+            and getattr(self, "_context_engine_close_done", False)
+        ):
+            self._shutdown_memory_provider_done = True
 
     def commit_memory_session(self, messages: list = None) -> None:
         """Trigger end-of-session extraction without tearing providers down.
@@ -4275,6 +4315,14 @@ class AIAgent:
         Safe to call multiple times (idempotent).  Each cleanup step is
         independently guarded so a failure in one does not prevent the rest.
         """
+        # This is the true agent teardown boundary. Session rotation uses
+        # commit_memory_session() and deliberately keeps the runtime alive.
+        # The helper is guarded so explicit pre-cleanup plus close is harmless.
+        try:
+            self.shutdown_memory_provider()
+        except Exception:
+            pass
+
         task_id = getattr(self, "session_id", None) or ""
 
         # 1. Kill background processes for this task

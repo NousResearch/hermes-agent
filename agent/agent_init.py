@@ -2401,7 +2401,7 @@ def init_agent(
     # 3. Check general plugin system (user-installed plugins)
     # 4. Fall back to built-in ContextCompressor
     _selected_engine = None
-    _copy_failed = False
+    _engine_found = False
     _engine_name = "compressor"  # default
     try:
         _ctx_cfg = _agent_cfg.get("context", {}) if isinstance(_agent_cfg, dict) else {}
@@ -2426,28 +2426,23 @@ def init_agent(
             except Exception:
                 _candidate = None
             if _candidate is not None and _candidate.name == _engine_name:
-                # Deep-copy the shared plugin singleton so a child agent's
-                # update_model() can't mutate the parent's compressor (#42449).
-                # Copy can fail for engines holding uncopyable state (locks, DB
-                # connections, clients); in that case fall back to the built-in
-                # compressor with an ACCURATE message rather than silently
-                # mislabelling it "not found".
-                import copy
+                _engine_found = True
                 try:
-                    _selected_engine = copy.deepcopy(_candidate)
-                except Exception as _copy_err:
-                    _copy_failed = True
+                    from agent.context_engine import create_context_engine_runtime
+                    _selected_engine = create_context_engine_runtime(
+                        _candidate,
+                        name=f"Context engine '{_engine_name}'",
+                    )
+                except Exception as _factory_err:
                     _ra().logger.warning(
-                        "Context engine '%s' could not be safely copied for this "
-                        "agent (%s) — falling back to built-in compressor. Plugin "
-                        "engines that hold uncopyable state (locks, DB connections) "
-                        "should implement __deepcopy__ to copy only mutable budget "
-                        "state.",
-                        _engine_name, _copy_err,
+                        "Context engine '%s' does not provide a supported isolated "
+                        "runtime factory (%s) — falling back to built-in compressor",
+                        _engine_name,
+                        _factory_err,
                     )
                     _selected_engine = None
 
-        if _selected_engine is None and not _copy_failed:
+        if _selected_engine is None and not _engine_found:
             _ra().logger.warning(
                 "Context engine '%s' not found — falling back to built-in compressor",
                 _engine_name,

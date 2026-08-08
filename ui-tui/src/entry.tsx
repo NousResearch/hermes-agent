@@ -48,6 +48,14 @@ if (TERMUX_TUI_MODE) {
   process.stdout.write('\x1b[2J\x1b[H\x1b[3J')
 }
 
+// Swallow EIO errors on stdout. When macOS sleeps, the terminal PTY is
+// disconnected. Ink's next write to stdout raises an unhandled "write EIO"
+// that crashes the entire TUI (the #1 cause of "闪退"). The PTY is dead
+// so there is nothing useful to write — silently ignoring the error lets
+// the process survive until the next graceful-exit path fires.
+process.stdout.on('error', () => {})
+process.stderr.on('error', () => {})
+
 const gw = new GatewayClient()
 
 gw.start()

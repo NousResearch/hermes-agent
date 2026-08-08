@@ -33,6 +33,7 @@ from agent.prompt_builder import (
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
+    _WINDOWS_BASH_SHELL_HINT,
 )
 from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
 
@@ -43,6 +44,12 @@ from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatu
 
 
 class TestGuidanceConstants:
+    def test_windows_hint_switches_from_broken_search_path(self):
+        text = _WINDOWS_BASH_SHELL_HINT.lower()
+        assert "do not retry" in text
+        assert "git grep" in text
+        assert "read_file" in text
+
     def test_memory_guidance_discourages_task_logs(self):
         assert "durable facts" in MEMORY_GUIDANCE
         assert "Do NOT save task progress" in MEMORY_GUIDANCE
@@ -888,6 +895,15 @@ class TestOpenAIModelExecutionGuidance:
         assert "verification" in text or "verify" in text
         assert "correctness" in text
 
+
+
+    def test_guidance_forbids_identical_tool_retries(self):
+        text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
+        assert "do not resend the same tool call" in text
+        assert "change the arguments, selector, path, or strategy" in text
+        assert "github actions log failures" in text
+        assert "job-log api" in text
+        assert "external blocker" in text
 
 
     def test_guidance_is_string(self):

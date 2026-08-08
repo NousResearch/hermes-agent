@@ -2353,8 +2353,12 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         # (file_operations.py:1402) — expensive to repeat. Cache so the
         # next call to a known-missing root skips both shells.
         try:
-            resolved_search_path = str(_resolve_path_for_task(path, task_id))
-        except (OSError, ValueError):
+            resolved_search_path = (
+                str(resolved_path)
+                if resolved_path is not None
+                else str(_resolve_path_for_task(path, task_id))
+            )
+        except (OSError, ValueError, RuntimeError):
             resolved_search_path = path
         cached_search_nf = _check_not_found_cache("search", resolved_search_path, task_id)
         if cached_search_nf is not None:
@@ -2362,7 +2366,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
 
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(
-            pattern=pattern, path=path, target=target, file_glob=file_glob,
+            pattern=pattern, path=resolved_search_path, target=target, file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
         omitted = _filter_read_blocked_search_results(result, task_id)

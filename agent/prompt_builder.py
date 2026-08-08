@@ -412,6 +412,13 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "- Do not stop early when another tool call would materially improve the result.\n"
     "- If a tool returns empty or partial results, retry with a different query or "
     "strategy before giving up.\n"
+    "- After any tool error, do not resend the same tool call with the same "
+    "arguments. Change the arguments, selector, path, or strategy before retrying.\n"
+    "- If a tool-call guardrail reports repeated failure, stop that exact path "
+    "immediately and use the error to choose a different tool or diagnostic method.\n"
+    "- For GitHub Actions log failures, do not repeat the same `gh run view --log-failed` "
+    "call. Switch from the run to the reported job ID, then use the job-log API; if "
+    "GitHub has no log for that job, report the external blocker instead of looping.\n"
     "- Keep calling tools until: (1) the task is complete, AND (2) you have verified "
     "the result.\n"
     "</tool_persistence>\n"
@@ -1034,7 +1041,10 @@ _WINDOWS_BASH_SHELL_HINT = (
     "calls. MSYS-style paths like `/c/Users/<user>/...` work alongside "
     "native `C:\\Users\\<user>\\...` paths. PowerShell builtins "
     "(`Get-ChildItem`, `$env:FOO`, `Select-String`) will NOT work — use their "
-    "POSIX equivalents (`ls`, `$FOO`, `grep`)."
+    "POSIX equivalents (`ls`, `$FOO`, `grep`). After a `search_files` path "
+    "error on a native Windows or MSYS repository path, do not retry the same "
+    "call: use `read_file` with the native path or run `git grep` from the "
+    "repository root instead."
 )
 
 

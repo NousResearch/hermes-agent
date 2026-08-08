@@ -306,4 +306,43 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('\\$5')
     expect(output).toContain('\\$10')
   })
+
+  it('escapes both currency dollars when prose sits between two R$ amounts on one line', () => {
+    // Regression: "**R$4.182**, e o CFO ... (~~serviços~~: R$ 86,05/mês)"
+    // used to pair the two currency dollars into ONE bogus inline-math span,
+    // so KaTeX ate the sentence — dollar signs vanished, `**` emphasis
+    // broke, and spaces collapsed into glued words.
+    const input =
+      'MRR realista em 6 meses ≈ **R$4.182**, e o CFO validou os valores do DASMEI 2026 (~~serviços~~: R$ 86,05/mês).'
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('**R\\$4.182**')
+    expect(output).not.toContain('**R$4.182**')
+    // The second amount ("R$ 86,05") is also escaped now — `$`+space+digit
+    // counts as currency — so nothing on the line can pair into math.
+    expect(output).toContain('R\\$ 86,05/mês')
+  })
+
+  it('escapes spaced currency amounts ("R$ 190") so they are not paired as math', () => {
+    // pt-BR convention writes "R$ 190" with a space after the dollar. The
+    // escape heuristic only fired on `$`+digit, so two spaced amounts on one
+    // line ("R$ 190–265/mês ... R$ 449,90+") still paired into a bogus math
+    // span and KaTeX mangled the sentence. Both must now be escaped.
+    const input =
+      '- **NFE.io:** R$ 190–265/mês · **Conta Azul:** R$ 449,90+ · **Focus NFe:** lançou automação fiscal com motor de cálculo'
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('R\\$ 190')
+    expect(output).toContain('R\\$ 449')
+    expect(output).not.toContain('**NFE.io:** R$ 190')
+    expect(output).not.toContain('**Conta Azul:** R$ 449')
+  })
+
+  it('keeps spaced inline math like "$ x = 5 $" intact', () => {
+    // A `$` followed by whitespace is only treated as currency when a digit
+    // follows the whitespace. Spaced math must still reach remark-math.
+    expect(preprocessMarkdown('O resultado é $ x = 5 $, certo?')).toContain('$ x = 5 $')
+  })
 })

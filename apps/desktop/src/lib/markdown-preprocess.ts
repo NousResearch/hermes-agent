@@ -193,6 +193,22 @@ function isLikelyNumericInlineMath(body: string, followingCharacter: string): bo
     return false
   }
 
+  // The span between two price openers can be an entire prose sentence
+  // (e.g. `R$4.182**, e o CFO validou os valores ... R$ 86,05`). Such a
+  // span is never inline math: markdown emphasis markers (`**`, `~~`,
+  // backticks) never appear inside a formula, and whitespace-separated
+  // words with no LaTeX signal are prose — `$4\in A$` keeps its backslash
+  // and stays preserved. Without these guards the two currency dollars
+  // pair into one bogus formula and KaTeX mangles the sentence (dollar
+  // signs vanish, `**` emphasis breaks, spaces collapse into glued words).
+  if (/\*\*|~~|`/u.test(value)) {
+    return false
+  }
+
+  if (/\s/u.test(value) && !/\\/u.test(value)) {
+    return false
+  }
+
   // Currency ranges and prose fragments can sit between two price openers,
   // e.g. `$5-$10` or `$5, then $10`. They are not balanced math spans.
   if (/[+\-*/=<>^_,;:(]$/u.test(value)) {
@@ -243,9 +259,18 @@ function escapeCurrencyDollarsPreservingMath(text: string): string {
   let copiedThrough = 0
 
   for (let cursor = 0; cursor < text.length; cursor += 1) {
+    const following = text[cursor + 1] || ''
+
+    // Currency lookalike: `$5` or `$ 190` (pt-BR writes "R$ 190" with a
+    // space after the dollar). A `$` followed by whitespace alone is NOT
+    // currency — the char after the whitespace must be a digit, so spaced
+    // math like `$ x = 5 $` still passes through as math.
+    const currencyLike =
+      /\d/u.test(following) || (/\s/u.test(following) && /\d/u.test(text[cursor + 2] || ''))
+
     if (
       text[cursor] !== '$' ||
-      !/\d/u.test(text[cursor + 1] || '') ||
+      !currencyLike ||
       text[cursor - 1] === '$' ||
       isEscapedAt(text, cursor)
     ) {

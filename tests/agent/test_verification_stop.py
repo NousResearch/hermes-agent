@@ -1,4 +1,5 @@
 import json
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -25,6 +26,32 @@ def _node_project(root: Path) -> None:
 def _make_project(root: Path) -> None:
     root.mkdir()
     _node_project(root)
+
+
+def _init_git_project(root: Path) -> None:
+    subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+
+
+def _commit_all(root: Path, message: str) -> None:
+    subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", message],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
 
 
 @pytest.fixture
@@ -199,6 +226,61 @@ def test_nudge_attempts_are_bounded(tmp_path, monkeypatch):
         attempts=2,
         max_attempts=2,
     ) is None
+
+
+def test_committed_paths_do_not_keep_stale_verification_loop_alive(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    project = tmp_path / "project"
+    _make_project(project)
+    src = project / "src"
+    src.mkdir()
+    changed = src / "app.ts"
+    changed.write_text("export const value = 1;\n", encoding="utf-8")
+
+    _init_git_project(project)
+    _commit_all(project, "initial")
+
+    record_terminal_result(
+        command="pnpm test",
+        cwd=project,
+        session_id="s1",
+        exit_code=0,
+        output="old green output",
+    )
+    changed.write_text("export const value = 2;\n", encoding="utf-8")
+    mark_workspace_edited(session_id="s1", cwd=project, paths=[str(changed)])
+    _commit_all(project, "change value")
+
+    assert build_verify_on_stop_nudge(
+        session_id="s1",
+        changed_paths=[str(changed)],
+    ) is None
+
+
+def test_uncommitted_paths_still_require_fresh_verification(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    project = tmp_path / "project"
+    _make_project(project)
+    src = project / "src"
+    src.mkdir()
+    changed = src / "app.ts"
+    changed.write_text("export const value = 1;\n", encoding="utf-8")
+
+    _init_git_project(project)
+    _commit_all(project, "initial")
+
+    changed.write_text("export const value = 2;\n", encoding="utf-8")
+    mark_workspace_edited(session_id="s1", cwd=project, paths=[str(changed)])
+
+    nudge = build_verify_on_stop_nudge(
+        session_id="s1",
+        changed_paths=[str(changed)],
+    )
+
+    assert nudge is not None
+    assert str(changed) in nudge
 
 
 # ---------------------------------------------------------------------------

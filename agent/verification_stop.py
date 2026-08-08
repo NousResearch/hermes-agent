@@ -8,6 +8,7 @@ finish immediately after editing code without fresh evidence.
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, Iterable
@@ -70,6 +71,49 @@ def _is_non_code_path(raw: str) -> bool:
 def _filter_verifiable_paths(paths: Iterable[str]) -> list[str]:
     """Drop documentation/prose paths; keep paths that could have verifiable behavior."""
     return [p for p in paths if p and not _is_non_code_path(p)]
+
+
+def _git_dirty_path(path: str) -> bool:
+    """Return whether ``path`` has uncommitted Git state.
+
+    Verify-on-stop receives the turn's mutation set, which can outlive a later
+    commit in the same session. In Git workspaces, committed clean paths should
+    not keep the stale-verification loop alive. If Git cannot classify the path,
+    keep the conservative old behavior and treat it as dirty.
+    """
+    try:
+        raw_path = Path(path).expanduser()
+        probe_dir = raw_path if raw_path.is_dir() else raw_path.parent
+        if not probe_dir:
+            return True
+        root = subprocess.run(
+            ["git", "-C", str(probe_dir), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if root.returncode != 0:
+            return True
+        repo_root = Path(root.stdout.strip())
+        target = raw_path if raw_path.is_absolute() else probe_dir / raw_path
+        rel = os.path.relpath(str(target), str(repo_root))
+        status = subprocess.run(
+            ["git", "-C", str(repo_root), "status", "--porcelain=v1", "--", rel],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if status.returncode != 0:
+            return True
+        return bool(status.stdout.strip())
+    except Exception:
+        return True
+
+
+def _filter_uncommitted_paths(paths: Iterable[str]) -> list[str]:
+    return [path for path in paths if _git_dirty_path(path)]
 
 
 def _session_is_messaging_surface() -> bool:
@@ -237,7 +281,10 @@ def build_verify_on_stop_nudge(
     # Drop documentation/prose paths (markdown, skills, README, LICENSE, ...) —
     # they carry no verifiable behavior, so a turn that touched only those has
     # nothing to verify and must not nudge.
-    paths = sorted({str(p) for p in _filter_verifiable_paths(changed_paths)})
+    paths = sorted({
+        str(p)
+        for p in _filter_uncommitted_paths(_filter_verifiable_paths(changed_paths))
+    })
     if not paths or attempts >= max_attempts:
         return None
 

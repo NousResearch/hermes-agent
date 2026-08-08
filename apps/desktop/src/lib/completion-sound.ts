@@ -2,8 +2,9 @@
 // Fourteen curated presets for A/B in Settings → Appearance. Default is variant 1.
 
 import { ownsAmbientCue } from '@/store/ambient'
-import { $completionSoundVariantId, resolveCompletionSoundVariantId } from '@/store/completion-sound'
+import { $completionSoundVariantId, $completionSoundVolume, resolveCompletionSoundVariantId } from '@/store/completion-sound'
 import { $hapticsMuted } from '@/store/haptics'
+import { readKey, writeKey } from '@/lib/storage'
 
 type OscType = OscillatorType
 
@@ -410,12 +411,88 @@ export const COMPLETION_SOUND_VARIANTS: readonly CompletionSoundVariant[] = [
   }
 ] as const
 
-function playVariant(variantId: number) {
-  const variant = COMPLETION_SOUND_VARIANTS.find(v => v.id === variantId)
+// Custom audio support: user-supplied audio file (id 15). The audio bytes are
+// stored as a base64 data URL in localStorage by the settings panel; we decode
+// them on demand and play the buffer through the master bus.
+const CUSTOM_AUDIO_STORAGE_KEY = 'hermes.desktop.completionSoundCustomAudio'
 
-  if (!variant) {
+let customAudioBuffer: AudioBuffer | null = null
+let customAudioSource: AudioBufferSourceNode | null = null
+
+export function getCustomAudioDataUrl(): string | null {
+  const raw = readKey(CUSTOM_AUDIO_STORAGE_KEY)
+
+  if (!raw) {
+    return null
+  }
+
+  // Guard against localStorage clutter: only accept data: URLs of audio type.
+  return /^data:audio\/[a-zA-Z0-9.+-]+;base64,/.test(raw) ? raw : null
+}
+
+export function setCustomAudioDataUrl(dataUrl: string | null) {
+  customAudioBuffer = null
+  customAudioSource = null
+
+  if (dataUrl === null) {
+    writeKey(CUSTOM_AUDIO_STORAGE_KEY, null)
+  } else {
+    writeKey(CUSTOM_AUDIO_STORAGE_KEY, dataUrl)
+  }
+}
+
+// Virtual variant id reserved for the user-supplied audio file. It is not part
+// of COMPLETION_SOUND_VARIANTS (which only holds the synthesized presets) —
+// the settings UI appends it as an extra "Custom audio" entry.
+export const CUSTOM_AUDIO_VARIANT_ID = 15
+
+async function decodeCustomAudio(ac: AudioContext, dataUrl: string): Promise<AudioBuffer | null> {
+  try {
+    const response = await fetch(dataUrl)
+    const arrayBuffer = await response.arrayBuffer()
+    const decoded = await ac.decodeAudioData(arrayBuffer)
+
+    return decoded
+  } catch {
+    return null
+  }
+}
+
+// Plays the user-supplied audio file. Falls back silently when nothing is set
+// or the file can't be decoded. A short fade avoids clicks at the edges.
+async function playCustomAudio(ac: AudioContext, master: GainNode, t0: number) {
+  const dataUrl = getCustomAudioDataUrl()
+
+  if (!dataUrl) {
     return
   }
+
+  if (!customAudioBuffer) {
+    customAudioBuffer = await decodeCustomAudio(ac, dataUrl)
+
+    if (!customAudioBuffer) {
+      return
+    }
+  }
+
+  const source = ac.createBufferSource()
+  source.buffer = customAudioBuffer
+
+  const env = ac.createGain()
+  const fade = Math.min(0.03, customAudioBuffer.duration / 2)
+  env.gain.setValueAtTime(0.0001, t0)
+  env.gain.exponentialRampToValueAtTime(1, t0 + fade)
+  env.gain.setValueAtTime(1, t0 + Math.max(0, customAudioBuffer.duration - fade))
+  env.gain.exponentialRampToValueAtTime(0.0001, t0 + customAudioBuffer.duration)
+
+  source.connect(env)
+  env.connect(master)
+  source.start(t0)
+  customAudioSource = source
+}
+
+function playVariant(variantId: number) {
+  const variant = COMPLETION_SOUND_VARIANTS.find(v => v.id === variantId)
 
   const ac = getCtx()
 
@@ -429,7 +506,11 @@ function playVariant(variantId: number) {
   tone.type = 'lowpass'
   tone.frequency.setValueAtTime(3800, ac.currentTime)
   tone.Q.setValueAtTime(0.32, ac.currentTime)
-  master.gain.setValueAtTime(0.48, ac.currentTime)
+
+  // User volume multiplier (0–4, default 2) scales the designed level so the
+  // cues are clearly audible. Applied to the master bus, not per-voice.
+  const volume = $completionSoundVolume.get()
+  master.gain.setValueAtTime(0.48 * volume, ac.currentTime)
   master.connect(tone)
 
   const dry = ac.createGain()
@@ -443,6 +524,16 @@ function playVariant(variantId: number) {
   tone.connect(reverb)
   reverb.connect(wet)
   wet.connect(ac.destination)
+
+  if (variantId === CUSTOM_AUDIO_VARIANT_ID) {
+    void playCustomAudio(ac, master, ac.currentTime + 0.01)
+
+    return
+  }
+
+  if (!variant) {
+    return
+  }
 
   variant.play(ac, master, ac.currentTime + 0.01)
 }

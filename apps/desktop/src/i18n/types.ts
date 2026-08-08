@@ -336,6 +336,14 @@ export interface Translations {
       completionSoundTitle: string
       completionSoundDesc: string
       completionSoundPreview: string
+      completionSoundVolumeLabel: string
+      completionSoundVolumeDesc: (percent: number) => string
+      completionSoundCustom: string
+      completionSoundCustomDesc: string
+      completionSoundCustomChoose: string
+      completionSoundCustomRemove: string
+      completionSoundCustomLoaded: (name: string) => string
+      completionSoundCustomTooLarge: string
     }
     sections: Record<string, string>
     searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>

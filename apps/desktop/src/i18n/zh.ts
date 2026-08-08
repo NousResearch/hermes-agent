@@ -401,7 +401,15 @@ export const zh: Translations = {
       testUnsupported: '此系统不支持原生通知。',
       completionSoundTitle: '完成提示音',
       completionSoundDesc: '智能体回合结束时播放。可在此选择预设并预览。',
-      completionSoundPreview: '预览'
+      completionSoundPreview: '预览',
+      completionSoundVolumeLabel: '音量',
+      completionSoundVolumeDesc: percent => `响度：设计音量的 ${percent}%`,
+      completionSoundCustom: '自定义音频',
+      completionSoundCustomDesc: '使用你自己的提示音文件（mp3、wav、ogg、m4a）。文件仅保存在本机。',
+      completionSoundCustomChoose: '选择音频文件…',
+      completionSoundCustomRemove: '移除自定义音频',
+      completionSoundCustomLoaded: name => `已加载：${name}`,
+      completionSoundCustomTooLarge: '音频文件过大（上限 2 MB）。'
     },
     sections: {
       model: '模型',

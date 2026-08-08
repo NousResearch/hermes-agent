@@ -276,7 +276,15 @@ export const zhHant = defineLocale({
       testUnsupported: '此系統不支援原生通知。',
       completionSoundTitle: '完成提示音',
       completionSoundDesc: '代理回合結束時播放。可在此選擇預設並預覽。',
-      completionSoundPreview: '預覽'
+      completionSoundPreview: '預覽',
+      completionSoundVolumeLabel: '音量',
+      completionSoundVolumeDesc: percent => `響度：設計音量的 ${percent}%`,
+      completionSoundCustom: '自訂音訊',
+      completionSoundCustomDesc: '使用你自己的提示音檔案（mp3、wav、ogg、m4a）。檔案僅保存在本機。',
+      completionSoundCustomChoose: '選擇音訊檔案…',
+      completionSoundCustomRemove: '移除自訂音訊',
+      completionSoundCustomLoaded: name => `已載入：${name}`,
+      completionSoundCustomTooLarge: '音訊檔案過大（上限 2 MB）。'
     },
     sections: {
       model: '模型',

@@ -410,7 +410,15 @@ export const en: Translations = {
       testUnsupported: 'This system does not support native notifications.',
       completionSoundTitle: 'Completion Sound',
       completionSoundDesc: 'Plays when an agent turn finishes. Pick a preset and preview it here.',
-      completionSoundPreview: 'Preview'
+      completionSoundPreview: 'Preview',
+      completionSoundVolumeLabel: 'Volume',
+      completionSoundVolumeDesc: percent => `Loudness: ${percent}% of the designed level`,
+      completionSoundCustom: 'Custom audio',
+      completionSoundCustomDesc: 'Use your own sound file (mp3, wav, ogg, m4a). It is stored locally in this app.',
+      completionSoundCustomChoose: 'Choose audio file…',
+      completionSoundCustomRemove: 'Remove custom audio',
+      completionSoundCustomLoaded: name => `Loaded: ${name}`,
+      completionSoundCustomTooLarge: 'Audio file too large (max 2 MB).'
     },
     sections: {
       model: 'Model',

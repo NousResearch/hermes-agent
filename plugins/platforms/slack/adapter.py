@@ -3751,8 +3751,13 @@ class SlackAdapter(BasePlatformAdapter):
             return False
 
     def _reactions_enabled(self) -> bool:
-        """Check if message reactions are enabled via config/env."""
-        return os.getenv("SLACK_REACTIONS", "true").lower() not in {"false", "0", "no"}
+        """Check if message reactions are enabled via config/env.
+
+        Default on. Shared falsy aliases (including ``off``) disable reactions.
+        """
+        from utils import env_var_enabled
+
+        return env_var_enabled("SLACK_REACTIONS", default="true")
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""

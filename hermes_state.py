@@ -5462,6 +5462,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         billing_mode: Optional[str] = None,
         api_call_count: int = 0,
         absolute: bool = False,
+        context_window: int = 0,
+        context_used: int = 0,
     ) -> None:
         """Update token counters and backfill model if not already set.
 
@@ -5496,7 +5498,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                    billing_base_url = COALESCE(billing_base_url, ?),
                    billing_mode = COALESCE(billing_mode, ?),
                    model = COALESCE(model, ?),
-                   api_call_count = ?
+                   api_call_count = ?,
+                   context_window = COALESCE(?, context_window),
+                   context_used = COALESCE(?, context_used)
                    WHERE id = ?"""
         else:
             sql = """UPDATE sessions SET
@@ -5517,7 +5521,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                    billing_base_url = COALESCE(billing_base_url, ?),
                    billing_mode = COALESCE(billing_mode, ?),
                    model = COALESCE(model, ?),
-                   api_call_count = COALESCE(api_call_count, 0) + ?
+                   api_call_count = COALESCE(api_call_count, 0) + ?,
+                   context_window = COALESCE(?, context_window),
+                   context_used = COALESCE(?, context_used)
                    WHERE id = ?"""
         has_accounted_usage = bool(
             input_tokens or output_tokens or cache_read_tokens
@@ -5541,6 +5547,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             billing_mode if has_accounted_usage else None,
             model if has_accounted_usage else None,
             api_call_count,
+            context_window if context_window else None,
+            context_used if context_used else None,
             session_id,
         )
         # Per-model usage attribution.  ``update_token_counts`` is the single

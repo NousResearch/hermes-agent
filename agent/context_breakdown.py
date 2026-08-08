@@ -358,3 +358,37 @@ def render_context_breakdown_lines(
         lines.append("")
         lines.append("Use /context all for per-skill and per-toolset costs.")
     return lines
+
+
+def context_window_usage(agent: Any) -> Dict[str, int]:
+    """Resolve the live context-window occupancy for an agent.
+
+    Returns ``{"context_window": int, "context_used": int}`` suitable for
+    persisting onto the session row. This mirrors the sentinel logic in
+    ``tui_gateway.server._get_usage`` so thin clients (Uplink) present the
+    *same* numbers the desktop shows, computed the same way:
+
+    - ``context_window`` is the resolved window from the compressor.
+    - ``context_used`` is the current-window occupancy
+      (``last_prompt_tokens``), the *measured* last-prompt size -- NOT the
+      cumulative lifetime total (which would fabricate impossible readings
+      like 1.9m/120k, see issue #50421).
+    - The ``-1`` "compression just ran, awaiting real usage" sentinel is
+      clamped to 0 so the transitional turn reads as unknown.
+    - When either value is missing/falsy, both are returned as ``0`` so the
+      caller can treat ``0`` as "unknown" and avoid clobbering a prior
+      good reading.
+
+    Returns ``{"context_window": 0, "context_used": 0}`` for an agent with no
+    compressor (e.g. before the first turn runs).
+    """
+    comp = getattr(agent, "context_compressor", None)
+    if not comp:
+        return {"context_window": 0, "context_used": 0}
+    ctx_max = int(getattr(comp, "context_length", 0) or 0)
+    last_prompt = int(getattr(comp, "last_prompt_tokens", 0) or 0)
+    if last_prompt < 0:
+        last_prompt = 0
+    if not (ctx_max and last_prompt):
+        return {"context_window": 0, "context_used": 0}
+    return {"context_window": ctx_max, "context_used": last_prompt}

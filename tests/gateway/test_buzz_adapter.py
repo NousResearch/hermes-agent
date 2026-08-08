@@ -1,7 +1,11 @@
 """Tests for the Buzz platform adapter plugin."""
 
 import asyncio
+import hashlib
 import json
+from pathlib import Path
+import stat
+import sys
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
@@ -242,6 +246,187 @@ class TestMentionGating:
     async def test_name_mention_dispatched(self, adapter):
         await self._poll_with(adapter, _event("e1", content="hey @Chip can you help?", created_at=10))
         assert len(adapter._dispatched) == 1
+
+    @pytest.mark.asyncio
+    async def test_protected_buzz_markdown_image_is_downloaded_for_vision(
+        self, adapter, monkeypatch, tmp_path
+    ):
+        image_bytes = b"\x89PNG\r\n\x1a\nprotected-image"
+        image_hash = hashlib.sha256(image_bytes).hexdigest()
+        image_url = f"https://test.relay/media/{image_hash}.png"
+        event = _event(
+            "e1",
+            content=f"@Chip what does this show?\n![image]({image_url})",
+            created_at=10,
+        )
+        monkeypatch.setenv("IMAGE_CACHE_DIR", str(tmp_path / "images"))
+
+        cli = _ScriptedCli()
+        cli.script("messages", "get", [event])
+
+        async def run_cli(args, *, input_text=None):
+            cli.calls.append((list(args), input_text))
+            if args[:2] == ["media", "get"]:
+                output = Path(args[args.index("--output") + 1])
+                output.write_bytes(image_bytes)
+                return 0, "", ""
+            queue = cli.responses.get((args[0], args[1]), [])
+            return queue[0] if queue else (0, "[]", "")
+
+        adapter._run_cli = run_cli
+        await adapter._poll_channel(CHANNEL)
+
+        dispatched = adapter._dispatched[0]
+        assert dispatched["message_type"] is _buzz_mod.MessageType.PHOTO
+        assert dispatched["media_types"] == ["image/png"]
+        assert len(dispatched["media_urls"]) == 1
+        cached_image = Path(dispatched["media_urls"][0])
+        assert cached_image.read_bytes() == image_bytes
+        if not sys.platform.startswith("win"):
+            assert stat.S_IMODE(cached_image.stat().st_mode) == 0o600
+        assert dispatched["text"] == "what does this show?"
+        assert any(call[0][:3] == ["media", "get", image_url] for call in cli.calls)
+
+    @pytest.mark.asyncio
+    async def test_retryable_media_failure_is_retried_before_preserving_link(
+        self, adapter, monkeypatch, tmp_path
+    ):
+        image_bytes = b"\x89PNG\r\n\x1a\nprotected-image-after-retry"
+        image_hash = hashlib.sha256(image_bytes).hexdigest()
+        image_url = f"https://test.relay/media/{image_hash}.png"
+        monkeypatch.setenv("IMAGE_CACHE_DIR", str(tmp_path / "images"))
+        monkeypatch.setattr(
+            _buzz_mod, "_BUZZ_MEDIA_RETRY_DELAYS", (0,), raising=False
+        )
+        attempts = 0
+
+        async def run_cli(args, *, input_text=None):
+            nonlocal attempts
+            assert args[:3] == ["media", "get", image_url]
+            attempts += 1
+            if attempts == 1:
+                return (
+                    4,
+                    "",
+                    '{"error":"server_error","message":"media unavailable",'
+                    '"retryable":true}',
+                )
+            output = Path(args[args.index("--output") + 1])
+            output.write_bytes(image_bytes)
+            return 0, "", ""
+
+        adapter._run_cli = run_cli
+        text = f"inspect this\n![image]({image_url})"
+        result_text, media_urls, media_types = await adapter._ingest_buzz_images(text)
+
+        assert attempts == 2
+        assert image_url not in result_text
+        assert len(media_urls) == 1
+        assert Path(media_urls[0]).read_bytes() == image_bytes
+        assert media_types == ["image/png"]
+
+    @pytest.mark.asyncio
+    async def test_text_without_buzz_images_is_preserved_byte_for_byte(self, adapter):
+        original = (
+            "line one\n\n\n\nline two\n\n"
+            "```\ncode\n\n\n\nstill code\n```\n\ntrailing   \n"
+        )
+
+        text, media_urls, media_types = await adapter._ingest_buzz_images(original)
+
+        assert text == original
+        assert media_urls == []
+        assert media_types == []
+
+    @pytest.mark.asyncio
+    async def test_external_images_do_not_consume_buzz_download_cap(
+        self, adapter, monkeypatch, tmp_path
+    ):
+        image_bytes = b"\x89PNG\r\n\x1a\nprotected-after-external-links"
+        image_hash = hashlib.sha256(image_bytes).hexdigest()
+        buzz_url = f"https://test.relay/media/{image_hash}.png"
+        external = "\n".join(
+            f"![external](https://example.invalid/media/{index}.png)"
+            for index in range(_buzz_mod._MAX_BUZZ_IMAGES_PER_MESSAGE)
+        )
+        text = f"{external}\n![buzz]({buzz_url})"
+        monkeypatch.setenv("IMAGE_CACHE_DIR", str(tmp_path / "images"))
+
+        cli = _ScriptedCli()
+
+        async def run_cli(args, *, input_text=None):
+            cli.calls.append((list(args), input_text))
+            output = Path(args[args.index("--output") + 1])
+            output.write_bytes(image_bytes)
+            return 0, "", ""
+
+        adapter._run_cli = run_cli
+        result_text, media_urls, media_types = await adapter._ingest_buzz_images(text)
+
+        assert len(media_urls) == 1
+        assert media_types == ["image/png"]
+        assert buzz_url not in result_text
+        assert "https://example.invalid/media/0.png" in result_text
+        assert [call[0][:3] for call in cli.calls] == [["media", "get", buzz_url]]
+
+    @pytest.mark.asyncio
+    async def test_external_markdown_image_is_not_fetched_with_buzz_credentials(self, adapter):
+        external_url = "https://example.invalid/media/" + ("a" * 64) + ".png"
+        await self._poll_with(
+            adapter,
+            _event(
+                "e1",
+                content=f"@Chip inspect this\n![image]({external_url})",
+                created_at=10,
+            ),
+        )
+
+        dispatched = adapter._dispatched[0]
+        assert dispatched["media_urls"] == []
+        assert external_url in dispatched["text"]
+        assert all(call[0][:2] != ["media", "get"] for call in adapter._run_cli.calls)
+
+    @pytest.mark.asyncio
+    async def test_failed_authenticated_image_download_preserves_original_link(self, adapter):
+        image_url = "https://test.relay/media/" + ("a" * 64) + ".png"
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "get",
+            [
+                _event(
+                    "e1",
+                    content=f"@Chip inspect this\n![image]({image_url})",
+                    created_at=10,
+                )
+            ],
+        )
+        cli.script("media", "get", "", code=3, stderr='{"error":"auth"}')
+        adapter._run_cli = cli
+
+        await adapter._poll_channel(CHANNEL)
+
+        dispatched = adapter._dispatched[0]
+        assert dispatched["media_urls"] == []
+        assert dispatched["message_type"] is _buzz_mod.MessageType.TEXT
+        assert image_url in dispatched["text"]
+        assert sum(call[0][:2] == ["media", "get"] for call in cli.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_image_message_is_not_downloaded(self, adapter):
+        adapter._allowed_pubkeys = {"b" * 64}
+        image_url = "https://test.relay/media/" + ("a" * 64) + ".png"
+        await self._poll_with(
+            adapter,
+            _event(
+                "e1",
+                content=f"@Chip inspect this\n![image]({image_url})",
+                created_at=10,
+            ),
+        )
+
+        assert adapter._dispatched == []
+        assert all(call[0][:2] != ["media", "get"] for call in adapter._run_cli.calls)
 
 
     @pytest.mark.asyncio

@@ -43,6 +43,7 @@ from tools.environments.local import (
     _make_run_env,
     _msys_to_windows_path,
     _prepend_git_bash_dirs,
+    _prepend_hermes_bin_dir,
     _quote_bash_path,
     _resolve_safe_cwd,
     _sanitize_subprocess_env,
@@ -263,7 +264,7 @@ class TestGitBashCoreutilsOnPath:
         existing = {"/pg/mingw64/bin", "/pg/usr/bin", "/pg/bin"}
         monkeypatch.setattr(local_mod.os.path, "isdir", self._fake_isdir(existing))
 
-        dirs = _git_bash_bin_dirs()
+        dirs = [entry.replace("\\", "/") for entry in _git_bash_bin_dirs()]
 
         # Compare separator-agnostically: the derivation uses os.path.join, so
         # on real Windows these come back with backslashes ("/pg\\usr\\bin").
@@ -282,12 +283,98 @@ class TestGitBashCoreutilsOnPath:
         monkeypatch.setattr(local_mod, "_git_bash_bin_dirs_cache", None)
         assert _git_bash_bin_dirs() == []
 
-    @pytest.mark.linux_only
+    def test_populated_cache_does_not_survive_logical_platform_flip(self, monkeypatch):
+        cached = ["C:/Program Files/Git/usr/bin"]
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs_cache", cached)
+        assert _git_bash_bin_dirs() == cached
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        assert _git_bash_bin_dirs() == []
+
+    def test_posix_prepend_is_noop_even_with_cached_windows_dirs(self, monkeypatch):
+        existing = "/usr/bin:/bin"
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", lambda: ["C:/Git/usr/bin"])
+
+        assert _prepend_git_bash_dirs(existing) == existing
+
+    def test_windows_prepend_uses_logical_path_separator(self, monkeypatch):
+        git_bin = "C:/Program Files/Git/usr/bin"
+        existing = "C:/Windows/System32;C:/Tools"
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", lambda: [git_bin])
+
+        assert _prepend_git_bash_dirs(existing) == f"{git_bin};{existing}"
+
+    def test_hermes_bin_prepend_uses_logical_path_separator(self, monkeypatch):
+        hermes_bin = "C:/Hermes/bin"
+        existing = "C:/Windows/System32;C:/Tools"
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(local_mod, "_resolve_hermes_bin_dir", lambda: hermes_bin)
+
+        assert _prepend_hermes_bin_dir(existing) == f"{hermes_bin};{existing}"
+
+
     def test_make_run_env_noop_on_posix(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
         monkeypatch.setattr(local_mod, "_git_bash_bin_dirs_cache", None)
         run_env = _make_run_env({"PATH": "/usr/bin:/bin"})
         # No Windows git dirs injected on POSIX.
         assert "mingw64" not in run_env["PATH"]
+
+
+# ---------------------------------------------------------------------------
+# Managed runtime PATH entries — logical-platform tests must not discard valid
+# POSIX filenames that happen to contain a backslash.
+# ---------------------------------------------------------------------------
+
+class TestManagedRuntimePathEntries:
+    class _ExistingDir:
+        def __init__(self, display: str):
+            self.display = display
+
+        def is_dir(self) -> bool:
+            return True
+
+        def __str__(self) -> str:
+            return self.display
+
+    def test_native_posix_keeps_backslash_named_runtime_dir(self, monkeypatch, tmp_path):
+        import hermes_constants
+
+        home = tmp_path / "hermes"
+        (home / "bin").mkdir(parents=True)
+        runtime_dir = self._ExistingDir("/opt/hermes/node" + chr(92) + "literal/bin")
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        monkeypatch.setattr(local_mod, "_HOST_IS_WINDOWS", False)
+        monkeypatch.setattr(hermes_constants, "iter_hermes_node_dirs", lambda: [runtime_dir])
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+
+        assert str(runtime_dir) in local_mod._managed_runtime_path_entries()
+
+    def test_logical_posix_on_windows_filters_only_native_windows_paths(self, monkeypatch, tmp_path):
+        import hermes_constants
+
+        home = tmp_path / "hermes"
+        (home / "bin").mkdir(parents=True)
+        drive_dir = self._ExistingDir("C:/Hermes/node/bin")
+        unc_dir = self._ExistingDir("//server/share/node/bin")
+        posix_dir = self._ExistingDir("/opt/hermes/node" + chr(92) + "literal/bin")
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        monkeypatch.setattr(local_mod, "_HOST_IS_WINDOWS", True)
+        monkeypatch.setattr(
+            hermes_constants,
+            "iter_hermes_node_dirs",
+            lambda: [drive_dir, unc_dir, posix_dir],
+        )
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+
+        entries = local_mod._managed_runtime_path_entries()
+
+        assert str(drive_dir) not in entries
+        assert str(unc_dir) not in entries
+        assert str(posix_dir) in entries
 
 
 # ---------------------------------------------------------------------------

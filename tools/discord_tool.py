@@ -491,7 +491,10 @@ def _search_members(token: str, guild_id: str, query: str, limit: int = 20, **_k
         limit = int(limit)
     except (TypeError, ValueError):
         limit = 20
-    params = {"query": query, "limit": str(min(limit, 100))}
+    # Discord members/search requires limit in [1, 100]. Upper-only min()
+    # still forwards 0/negatives which the API rejects with 400.
+    limit = max(1, min(limit, 100))
+    params = {"query": query, "limit": str(limit)}
     members = _discord_request("GET", f"/guilds/{guild_id}/members/search", token, params=params)
     result = []
     for m in members:
@@ -517,7 +520,9 @@ def _fetch_messages(
         limit = int(limit)
     except (TypeError, ValueError):
         limit = 50
-    params: Dict[str, str] = {"limit": str(min(limit, 100))}
+    # Discord channel message list requires limit in [1, 100].
+    limit = max(1, min(limit, 100))
+    params: Dict[str, str] = {"limit": str(limit)}
     if before:
         params["before"] = before
     if after:

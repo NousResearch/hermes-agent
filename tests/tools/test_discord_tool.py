@@ -249,6 +249,15 @@ class TestSearchMembers:
         call_params = mock_req.call_args[1]["params"]
         assert call_params["limit"] == "100"  # Capped at 100
 
+    @patch("tools.discord_tool._discord_request")
+    def test_search_members_limit_floored(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = []
+        discord_core(action="search_members", guild_id="111", query="x", limit=-5)
+        assert mock_req.call_args[1]["params"]["limit"] == "1"
+        discord_core(action="search_members", guild_id="111", query="x", limit=0)
+        assert mock_req.call_args[1]["params"]["limit"] == "1"
+
 
 # ---------------------------------------------------------------------------
 # Action: fetch_messages
@@ -273,6 +282,17 @@ class TestFetchMessages:
         assert result["count"] == 1
         assert result["messages"][0]["content"] == "Hello world"
         assert result["messages"][0]["author"]["username"] == "user1"
+
+    @patch("tools.discord_tool._discord_request")
+    def test_fetch_messages_limit_clamped(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = []
+        discord_core(action="fetch_messages", channel_id="11", limit=500)
+        assert mock_req.call_args[1]["params"]["limit"] == "100"
+        discord_core(action="fetch_messages", channel_id="11", limit=-3)
+        assert mock_req.call_args[1]["params"]["limit"] == "1"
+        discord_core(action="fetch_messages", channel_id="11", limit=0)
+        assert mock_req.call_args[1]["params"]["limit"] == "1"
 
 
 # ---------------------------------------------------------------------------

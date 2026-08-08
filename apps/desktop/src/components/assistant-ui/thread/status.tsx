@@ -200,6 +200,50 @@ export const StreamStallIndicator: FC = () => {
     return `${s.message.content.length}:${textLength}`
   })
 
+  // Every running assistant bubble mounts this component (see
+  // assistant-message.tsx), so a reconnect + queued prompt can leave two
+  // bubbles simultaneously `running` and each render its own "Summarizing
+  // thread" / "Hermes is thinking" row with the same timer (#68634). The
+  // component's own contract above is tail-only ("the thinking indicator
+  // returns at the tail"), so gate on this being the LAST ASSISTANT-ROLE
+  // message. Plain `message.isLast` is the wrong invariant here: it means
+  // last message of any role, so a trailing `/steer` system note or a
+  // queued user prompt (both appended while the assistant is still
+  // running) would make the running bubble non-last and hide the
+  // indicator entirely. `s.thread.messages` is reachable from this
+  // message-scoped selector (useAuiState exposes the whole AssistantState,
+  // see its doc comment example `s.thread.isRunning`), so walk it from the
+  // tail to find the last assistant-role message and compare ids — still a
+  // single boolean return, so the leaf-only re-render behavior holds.
+  //
+  // The ephemeral optimistic placeholder the external-store runtime appends
+  // when the tail repo message is user/system while the run is busy
+  // (incremental-external-store-runtime.ts adds `{role:'assistant', content:
+  // [], metadata:{isOptimistic:true}, status:'running'}`) COUNTS as the tail
+  // here, deliberately. Since b5d82319d that placeholder is no longer
+  // suppressed: `assistant-message.tsx` renders `ResponseLoadingIndicator`
+  // for it (`isPlaceholder ? <ResponseLoadingIndicator /> : isRunning &&
+  // <StreamStallIndicator />`), and during compaction both indicators carry
+  // the same label. Treating the placeholder as the tail makes the real
+  // running bubble fail the id compare below, so exactly one status row
+  // renders — the placeholder's. An earlier revision of this gate skipped
+  // the placeholder because it rendered `null` back then; keeping that skip
+  // now would re-create the duplicate row this component exists to prevent
+  // (#68634), just split across two indicator components.
+  const isLastAssistantMessage = useAuiState(s => {
+    const { messages } = s.thread
+
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i]
+
+      if (message.role === 'assistant') {
+        return message.id === s.message.id
+      }
+    }
+
+    return false
+  })
+
   // Timestamp of the activity that preceded the current quiet spell, set once
   // the spell qualifies as a stall. Holding the timestamp (not a boolean) is
   // what lets the timer read "quiet for 12s" rather than the age of this
@@ -224,7 +268,7 @@ export const StreamStallIndicator: FC = () => {
   // A named wait doesn't have to earn the stall threshold first — we already
   // know what the turn is doing, so say it as soon as the label is ready rather
   // than leaving the transcript silent for STREAM_STALL_S.
-  const active = (quietSince !== undefined || Boolean(hint)) && !awaitingInput && !toolNarrating
+  const active = isLastAssistantMessage && (quietSince !== undefined || Boolean(hint)) && !awaitingInput && !toolNarrating
 
   // Compaction owns the whole turn, so it keeps counting from the turn's start;
   // anything else counts from the moment the stream went quiet — the stall's own

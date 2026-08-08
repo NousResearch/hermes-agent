@@ -3283,7 +3283,7 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     back to the hardcoded default which fails when the active provider is
     openai-codex.
     """
-    cfg = config if config is not None else _load_gateway_config()
+    cfg = config if config is not None else _load_gateway_runtime_config()
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, str):
         return model_cfg

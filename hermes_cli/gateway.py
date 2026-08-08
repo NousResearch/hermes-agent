@@ -496,7 +496,10 @@ def _scan_gateway_pids(
                     current_cmd = ""
         else:
             # Try /proc first (works in Docker without procps installed),
-            # fall back to ps -A eww.
+            # fall back to ps -A eww.  Use the merged -Aeww form: macOS 26's
+            # ps rejects the separated `ps -A eww` spelling (exit 1), which
+            # silently emptied every gateway scan on that platform (#77276
+            # follow-up — the reaper could never see its orphans there).
             _found_via_proc = False
             if os.path.isdir("/proc"):
                 try:
@@ -523,7 +526,7 @@ def _scan_gateway_pids(
 
             if not _found_via_proc:
                 result = subprocess.run(
-                    ["ps", "-A", "eww", "-o", "pid=,command="],
+                    ["ps", "-Aeww", "-o", "pid=,command="],
                     capture_output=True,
                     text=True, encoding='utf-8', errors='replace',
                     timeout=10,

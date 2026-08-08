@@ -1037,8 +1037,12 @@ def _to_openai_base_url(base_url: str) -> str:
     return url
 
 
-def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
-    """Return (pool_exists_for_provider, selected_entry)."""
+def _select_pool_entry(provider: str, model: Optional[str] = "") -> Tuple[bool, Optional[Any]]:
+    """Return (pool_exists_for_provider, selected_entry).
+
+    ``model`` is forwarded to ``pool.select(model=model)`` so pool entries
+    exhausted for this specific model are skipped during selection.
+    """
     try:
         pool = load_pool(provider)
     except Exception as exc:
@@ -1047,6 +1051,11 @@ def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
     if not pool or not pool.has_credentials():
         return False, None
     try:
+        if model:
+            try:
+                return True, pool.select(model=model)
+            except TypeError:
+                return True, pool.select()
         return True, pool.select()
     except Exception as exc:
         logger.debug("Auxiliary client: could not select pool entry for %s: %s", provider, exc)
@@ -2349,7 +2358,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 pass
             return _try_anthropic()
 
-        pool_present, entry = _select_pool_entry(provider_id)
+        model = _get_aux_model_for_provider(provider_id) or None
+        pool_present, entry = _select_pool_entry(provider_id, model)
         if pool_present:
             api_key = _pool_runtime_api_key(entry)
             if not api_key:
@@ -2357,7 +2367,6 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
             raw_base_url = _pool_runtime_base_url(entry, pconfig.inference_base_url) or pconfig.inference_base_url
             base_url = _to_openai_base_url(raw_base_url)
-            model = _get_aux_model_for_provider(provider_id) or None
             if model is None:
                 continue  # skip provider if we don't know a valid aux model
             logger.debug("Auxiliary text client: %s (%s) via pool", pconfig.name, model)
@@ -2493,7 +2502,7 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
     if not _is_free_model(or_model):
         _warn_paid_lane_once(or_model)
 
-    pool_present, entry = _select_pool_entry("openrouter")
+    pool_present, entry = _select_pool_entry("openrouter", model)
     if pool_present:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
         if or_key:
@@ -3344,7 +3353,7 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    pool_present, entry = _select_pool_entry("openai-codex")
+    pool_present, entry = _select_pool_entry("openai-codex", model)
     if pool_present:
         codex_token = _pool_runtime_api_key(entry)
         if codex_token:
@@ -3488,7 +3497,8 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
     except ImportError:
         return None, None
 
-    pool_present, entry = _select_pool_entry("anthropic")
+    model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
+    pool_present, entry = _select_pool_entry("anthropic", model)
     if pool_present and entry is not None:
         token = explicit_api_key or _pool_runtime_api_key(entry)
     else:
@@ -3533,7 +3543,6 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
 
     from agent.anthropic_adapter import _is_oauth_token
     is_oauth = _is_oauth_token(token)
-    model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
     logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
     try:
         real_client = build_anthropic_client(token, base_url)
@@ -4212,13 +4221,16 @@ def _recoverable_pool_provider(
     return None
 
 
-def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str = "") -> bool:
+def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str = "", model: str = "") -> bool:
     """Try same-provider credential-pool recovery for auxiliary calls.
 
     ``failed_api_key`` is the API key that was actually used for the failing
     request.  Passing it lets mark_exhausted_and_rotate identify the correct
     pool entry even when another process has already rotated the pool (which
     would leave current() as None, causing the wrong entry to be marked).
+
+    ``model`` scopes the exhaustion marking to the model that actually failed
+    so sibling entries are not punished for another model's quota wall.
     """
     normalized = _normalize_aux_provider(provider)
     try:
@@ -4242,6 +4254,7 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
             status_code=status_code if status_code is not None else 401,
             error_context=error_context,
             api_key_hint=hint,
+            model=model or None,
         )
         if next_entry is not None:
             _evict_cached_clients(normalized)
@@ -4254,6 +4267,7 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
             status_code=status_code if status_code is not None else fallback_status,
             error_context=error_context,
             api_key_hint=hint,
+            model=model or None,
         )
         if next_entry is not None:
             _evict_cached_clients(normalized)
@@ -5908,7 +5922,7 @@ def resolve_provider_client(
 
     # ── OpenRouter ───────────────────────────────────────────
     if provider == "openrouter":
-        client, default = _try_openrouter(explicit_api_key=explicit_api_key)
+        client, default = _try_openrouter(explicit_api_key=explicit_api_key, model=model)
         if client is None:
             logger.warning(
                 "resolve_provider_client: openrouter requested but %s",
@@ -9195,7 +9209,12 @@ def _call_llm_impl(
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise
                     recovery_err = retry_err
-            if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
+            if _recover_provider_pool(
+                pool_provider,
+                recovery_err,
+                failed_api_key=_client_api_key,
+                model=resolved_model or final_model or "",
+            ):
                 logger.info(
                     "Auxiliary %s: recovered %s via credential-pool rotation after %s",
                     task or "call", pool_provider, type(recovery_err).__name__,
@@ -9227,7 +9246,11 @@ def _call_llm_impl(
                     # alternative providers can still serve the request.
                     if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
                             or _is_rate_limit_error(retry2_err)):
-                        _recover_provider_pool(pool_provider, retry2_err)
+                        _recover_provider_pool(
+                            pool_provider,
+                            retry2_err,
+                            model=resolved_model or final_model or "",
+                        )
                         first_err = retry2_err
                     else:
                         raise
@@ -9885,7 +9908,12 @@ async def _async_call_llm_impl(
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise
                     recovery_err = retry_err
-            if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
+            if _recover_provider_pool(
+                pool_provider,
+                recovery_err,
+                failed_api_key=_client_api_key,
+                model=resolved_model or final_model or "",
+            ):
                 logger.info(
                     "Auxiliary %s (async): recovered %s via credential-pool rotation after %s",
                     task or "call", pool_provider, type(recovery_err).__name__,
@@ -9910,7 +9938,11 @@ async def _async_call_llm_impl(
                 except Exception as retry2_err:
                     if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
                             or _is_rate_limit_error(retry2_err)):
-                        _recover_provider_pool(pool_provider, retry2_err)
+                        _recover_provider_pool(
+                            pool_provider,
+                            retry2_err,
+                            model=resolved_model or final_model or "",
+                        )
                         first_err = retry2_err
                     else:
                         raise

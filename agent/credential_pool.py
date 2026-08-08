@@ -9,7 +9,7 @@ import threading
 import time
 import uuid
 import re
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -198,6 +198,11 @@ class PooledCredential:
     last_error_reason: Optional[str] = None
     last_error_message: Optional[str] = None
     last_error_reset_at: Optional[float] = None
+    # Per-model 429 rate-limit benchings, keyed by exact model string. A key
+    # benched for one model stays selectable for other models. Each value:
+    # {"until": epoch seconds, "status_code": 429, "reason": Optional[str],
+    # "reset_at": Optional[float]}.
+    model_exhaustions: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     base_url: Optional[str] = None
     expires_at: Optional[str] = None
     expires_at_ms: Optional[int] = None
@@ -211,6 +216,8 @@ class PooledCredential:
     def __post_init__(self):
         if self.extra is None:
             self.extra = {}
+        if self.model_exhaustions is None:
+            self.model_exhaustions = {}
         self.auth_type = _normalize_pool_auth_type(
             self.provider,
             self.access_token,
@@ -247,6 +254,7 @@ class PooledCredential:
             "last_error_reason",
             "last_error_message",
             "last_error_reset_at",
+            "model_exhaustions",
         }
         result: Dict[str, Any] = {}
         for field_def in fields(self):
@@ -420,19 +428,33 @@ def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[st
     return normalized
 
 
-def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) -> Optional[float]:
+def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False, model: Optional[str] = None) -> Optional[float]:
+    """Return when *entry* can next be used, or None if it is not benched.
+
+    With *model*, the later of the key-level cooldown and any per-model
+    rate-limit benching for that model wins.  Without *model*, only the
+    key-level cooldown applies (legacy behavior).
+    """
     if entry.last_status != STATUS_EXHAUSTED:
-        return None
-    reset_at = _parse_absolute_timestamp(getattr(entry, "last_error_reset_at", None))
-    if reset_at is not None:
-        return reset_at
-    if entry.last_status_at:
-        return entry.last_status_at + _exhausted_ttl(
-            entry.last_error_code,
-            sole_credential=sole_credential,
-            failure_reason=getattr(entry, "failure_reason", None),
-        )
-    return None
+        until: Optional[float] = None
+    else:
+        reset_at = _parse_absolute_timestamp(getattr(entry, "last_error_reset_at", None))
+        if reset_at is not None:
+            until = reset_at
+        elif entry.last_status_at:
+            until = entry.last_status_at + _exhausted_ttl(
+                entry.last_error_code,
+                sole_credential=sole_credential,
+                failure_reason=getattr(entry, "failure_reason", None),
+            )
+        else:
+            until = None
+    if model:
+        model_info = (entry.model_exhaustions or {}).get(model)
+        model_until = model_info.get("until") if isinstance(model_info, dict) else None
+        if model_until:
+            until = model_until if until is None else max(until, model_until)
+    return until
 
 
 def _normalize_custom_pool_name(name: str) -> str:
@@ -1766,13 +1788,12 @@ class CredentialPool:
             return False
         return False
 
-    def select(self) -> Optional[PooledCredential]:
-        entry, pending_refresh = self._select_under_lock()
+    def select(self, model: Optional[str] = None) -> Optional[PooledCredential]:
+        entry, pending_refresh = self._select_under_lock(model=model)
         if pending_refresh:
             self._refresh_pending_entries(pending_refresh)
         if entry is not None:
             self._unmatched_rotation_streak = 0
-            return entry
         # If no entry was available but we just refreshed some, re-select
         # now that the refreshed entries are back in the pool.
         if pending_refresh:
@@ -1781,10 +1802,10 @@ class CredentialPool:
                 self._unmatched_rotation_streak = 0
         return entry
 
-    def _select_under_lock(self) -> Tuple[Optional[PooledCredential], List[tuple]]:
+    def _select_under_lock(self, model: Optional[str] = None) -> Tuple[Optional[PooledCredential], List[tuple]]:
         """Run selection under the lock, returning entry + pending refreshes."""
         with self._lock:
-            return self._select_unlocked()
+            return self._select_unlocked(model=model)
 
     def _refresh_pending_entries(self, pending: List[tuple]) -> None:
         """Refresh deferred single-use-token entries outside the lock.
@@ -1803,13 +1824,16 @@ class CredentialPool:
             self._refresh_entry(entry, force=False)
 
     def _available_entries(
-        self, *, clear_expired: bool = False, refresh: bool = False,
+        self, *, clear_expired: bool = False, refresh: bool = False, model: Optional[str] = None,
     ) -> Tuple[List[PooledCredential], List[tuple]]:
         """Return (available, pending_refresh) for entries not in cooldown.
 
         When *clear_expired* is True, entries whose cooldown has elapsed are
         reset to STATUS_OK and persisted.  When *refresh* is True, entries
-        that need a token refresh are refreshed (skipped on failure).
+        that need a token refresh are refreshed (skipped on failure).  When
+        *model* is given, entries with an active per-model rate-limit benching
+        for that model are skipped; with *clear_expired*, expired per-model
+        benchings for *model* are pruned too.
 
         Single-use-token refreshes (openai-codex, xai-oauth) are returned as
         *pending_refresh* tuples so the caller can execute them outside the
@@ -1911,7 +1935,7 @@ class CredentialPool:
                 # the re-auth case for OAuth singletons.
                 continue
             if entry.last_status == STATUS_EXHAUSTED:
-                exhausted_until = _exhausted_until(entry, sole_credential=sole_credential)
+                exhausted_until = _exhausted_until(entry, sole_credential=sole_credential, model=model)
                 if exhausted_until is not None and now < exhausted_until:
                     # Codex quota windows can reopen EARLY: the user redeems a
                     # banked rate-limit reset (Codex CLI / ChatGPT UI), upgrades
@@ -1937,6 +1961,20 @@ class CredentialPool:
                     )
                     self._replace_entry(entry, cleared)
                     entry = cleared
+                    cleared_any = True
+            if model is not None and entry.last_status != STATUS_EXHAUSTED:
+                # Key-level status is fine, but this model may still be
+                # rate-limited on the key: bench only the (key, model) pair.
+                model_info = (entry.model_exhaustions or {}).get(model)
+                model_until = model_info.get("until") if isinstance(model_info, dict) else None
+                if model_until is not None and model_until > now:
+                    continue
+                if clear_expired and model_until is not None:
+                    pruned = dict(entry.model_exhaustions or {})
+                    pruned.pop(model, None)
+                    cleared_entry = replace(entry, model_exhaustions=pruned)
+                    self._replace_entry(entry, cleared_entry)
+                    entry = cleared_entry
                     cleared_any = True
             if refresh and self._entry_needs_refresh(entry):
                 if self.provider in ("openai-codex", "xai-oauth"):
@@ -1975,13 +2013,13 @@ class CredentialPool:
         self._last_no_entries_log_at = now
         logger.info("credential pool: no available entries (all exhausted or empty)")
 
-    def _select_unlocked(self, *, refresh: bool = True) -> Tuple[Optional[PooledCredential], List[tuple]]:
+    def _select_unlocked(self, *, refresh: bool = True, model: Optional[str] = None) -> Tuple[Optional[PooledCredential], List[tuple]]:
         """Select the best available credential entry.
 
         Returns ``(entry, pending_refresh)`` where *pending_refresh* contains
         single-use-token entries that must be refreshed outside the lock.
         """
-        available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh)
+        available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh, model=model)
         if not available:
             self._current_id = None
             self._log_no_available_entries()
@@ -2036,8 +2074,12 @@ class CredentialPool:
         api_key_hint: Optional[str] = None,
         credential_id: Optional[str] = None,
         failure_reason: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
+            # A 429 with a known model benches only the (key, model) pair;
+            # every other status keeps the legacy key-level behavior.
+            rotate_model = model if status_code == 429 else None
             entry = None
             identity_supplied = bool(credential_id or api_key_hint)
             if credential_id:
@@ -2095,7 +2137,7 @@ class CredentialPool:
                     self.provider,
                 )
                 self._current_id = None
-                next_entry, _pending = self._select_unlocked(refresh=False)
+                next_entry, _pending = self._select_unlocked(refresh=False, model=rotate_model)
                 avail, _ = self._available_entries()
                 if next_entry is not None and len(avail) == 1:
                     # A single-entry pool cannot rotate. Returning its only
@@ -2110,10 +2152,55 @@ class CredentialPool:
             # streak is stale (this mark WILL advance pool state).
             self._unmatched_rotation_streak = 0
             if entry is None:
-                entry = self._current_unlocked() or self._select_unlocked(refresh=False)[0]
+                entry = self._current_unlocked() or self._select_unlocked(refresh=False, model=rotate_model)[0]
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
+            if rotate_model is not None:
+                # Per-model 429 rate limit: bench only the (key, model) pair.
+                # The key-level status is left untouched so the key stays
+                # selectable for other models.
+                normalized = _normalize_error_context(error_context)
+                reset_at = normalized.get("reset_at")
+                until = reset_at if reset_at is not None else time.time() + EXHAUSTED_TTL_429_SECONDS
+                bench = {
+                    "until": until,
+                    "status_code": 429,
+                    "reason": normalized.get("reason"),
+                    "reset_at": reset_at,
+                }
+                # The same key can back more than one pool entry (an explicit
+                # pool entry plus a ``model_config`` entry auto-seeded from
+                # ``model.api_key``).  Bench every entry sharing the failed
+                # key for this model, or model-aware rotation would reselect
+                # the same depleted key through its sibling entry.
+                failed_runtime_key = getattr(entry, "runtime_api_key", None)
+                targets = [entry]
+                if identity_supplied and failed_runtime_key:
+                    targets.extend(
+                        sibling
+                        for sibling in self._entries
+                        if sibling.id != entry.id
+                        and sibling.runtime_api_key == failed_runtime_key
+                    )
+                for target in targets:
+                    target_exhaustions = dict(target.model_exhaustions or {})
+                    target_exhaustions[rotate_model] = dict(bench)
+                    self._replace_entry(
+                        target, replace(target, model_exhaustions=target_exhaustions)
+                    )
+                self._persist()
+                sibling_note = f" (+{len(targets) - 1} sibling)" if len(targets) > 1 else ""
+                logger.info(
+                    "credential pool: marking %s model-limited for %s%s, rotating for that model",
+                    _label, rotate_model, sibling_note,
+                )
+                self._current_id = None
+                next_entry, _ = self._select_unlocked(refresh=False, model=rotate_model)
+                if next_entry:
+                    _next_label = next_entry.label or next_entry.id[:8]
+                    logger.info("credential pool: rotated to %s", _next_label)
+                return next_entry
             self._mark_exhausted(
                 entry, status_code, error_context, failure_reason=failure_reason
             )
@@ -2161,7 +2248,7 @@ class CredentialPool:
                     _label, status_code,
                 )
             self._current_id = None
-            next_entry, _pending = self._select_unlocked(refresh=False)
+            next_entry, _pending = self._select_unlocked(refresh=False, model=rotate_model)
             if next_entry:
                 _next_label = next_entry.label or next_entry.id[:8]
                 logger.info("credential pool: rotated to %s", _next_label)
@@ -2285,7 +2372,7 @@ class CredentialPool:
             count = 0
             new_entries = []
             for entry in self._entries:
-                if entry.last_status or entry.last_status_at or entry.last_error_code:
+                if entry.last_status or entry.last_status_at or entry.last_error_code or entry.model_exhaustions:
                     new_entries.append(
                         replace(
                             entry,
@@ -2295,6 +2382,7 @@ class CredentialPool:
                             last_error_reason=None,
                             last_error_message=None,
                             last_error_reset_at=None,
+                            model_exhaustions={},
                         )
                     )
                     count += 1

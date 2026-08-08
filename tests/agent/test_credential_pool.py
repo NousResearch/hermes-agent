@@ -2024,3 +2024,102 @@ class TestCredentialPoolQueryLocking:
             inner.release()
 
         assert done.wait(timeout=2.0), f"{method}() did not complete after lock release"
+
+
+def test_model_scoped_429_keeps_key_level_status_and_rotates_for_that_model(
+    tmp_path, monkeypatch
+):
+    """A 429 with a known model benches only (key, model), not the key.
+
+    The failing entry's key-level ``last_status`` must stay untouched so the
+    key remains selectable for every other model; rotation picks the next key
+    only for the rate-limited model.  Regression: before model-scoped
+    exhaustion, a 429 on one model marked the whole key exhausted until
+    ``reset_at`` (up to 24h), killing it for all models.
+    """
+    pool = _load_two_ok_pool(tmp_path, monkeypatch)
+
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=429,
+        error_context={"message": "quota exceeded for model"},
+        api_key_hint="***",
+        model="gemini-3.5-flash-lite",
+    )
+    # Both entries share the same runtime key ("***"), so the per-model
+    # bench propagates to the sibling: nothing is left to rotate to for the
+    # rate-limited model.
+    assert next_entry is None
+
+    cred_1 = pool.entries()[0]
+    assert cred_1.id == "cred-1"
+    assert cred_1.last_status == "ok"  # key-level status NOT flipped
+    bench = cred_1.model_exhaustions.get("gemini-3.5-flash-lite")
+    assert bench is not None
+    assert bench["status_code"] == 429
+    assert bench["until"] > time.time()
+    # Sibling sharing the failed key is benched for the model too, so
+    # model-aware rotation cannot reselect the same depleted key.
+    cred_2 = pool.entries()[1]
+    assert cred_2.last_status == "ok"
+    assert "gemini-3.5-flash-lite" in cred_2.model_exhaustions
+
+    sel_x = pool.select(model="gemini-3.5-flash-lite")
+    assert sel_x is None  # every same-key entry benched for that model
+    sel_y = pool.select(model="gemini-3.5-pro")
+    assert sel_y is not None and sel_y.id in {"cred-1", "cred-2"}
+    sel_none = pool.select()
+    assert sel_none is not None and sel_none.id in {"cred-1", "cred-2"}  # no-model callers ignore benches
+
+
+def test_peek_and_has_available_ignore_model_benches(tmp_path, monkeypatch):
+    """The model-agnostic surfaces keep seeing a model-benched key as usable.
+
+    ``peek()`` and ``has_available()`` take no model, so a key that is only
+    benched for one model must still count as available there; only
+    model-aware selection skips it.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "custom": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "tok-1",
+                        "last_status": "ok",
+                        "model_exhaustions": {
+                            "gemini-x": {
+                                "until": time.time() + 3600,
+                                "status_code": 429,
+                                "reason": None,
+                                "reset_at": None,
+                            }
+                        },
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "secondary",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "tok-2",
+                        "last_status": "ok",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("custom")
+    assert pool.has_available() is True
+    assert pool.peek().id == "cred-1"
+    # The model-aware path skips the benched key for that model.
+    assert pool.select(model="gemini-x").id == "cred-2"

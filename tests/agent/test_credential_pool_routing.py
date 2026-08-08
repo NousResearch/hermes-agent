@@ -471,6 +471,41 @@ class TestFailureAttribution:
         assert swapped.id == "cred-0"
 
 
+    def test_429_rotates_model_scoped_with_agent_model(self, tmp_path, monkeypatch):
+        """Primary-agent 429 recovery forwards agent.model.
+
+        The bench must be per-(key, model): the failing key keeps its
+        key-level status and stays selectable for other models, matching the
+        auxiliary client's model threading.
+        """
+        pool = self._make_pool(
+            tmp_path, monkeypatch,
+            [self._entry(0, "key-a"), self._entry(1, "key-b")],
+        )
+        agent = self._agent(pool, failing_key="key-a")
+        agent.model = "claude-sonnet-x"
+
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+
+        # First 429: retry-same semantics, no rotation yet.
+        recovered, has_retried = recover_with_credential_pool(
+            agent, status_code=429, has_retried_429=False
+        )
+        assert recovered is False
+        assert has_retried is True
+        # Second consecutive 429: rotate, benching (key-a, model) only.
+        recovered, has_retried = recover_with_credential_pool(
+            agent, status_code=429, has_retried_429=True
+        )
+        assert recovered is True
+        assert has_retried is False
+        statuses = self._statuses(pool)
+        assert statuses["cred-0"] != "exhausted"  # key-level status untouched
+        key_a = next(e for e in pool.entries() if e.id == "cred-0")
+        assert "claude-sonnet-x" in key_a.model_exhaustions
+        swapped = agent._swap_credential.call_args[0][0]
+        assert swapped.id == "cred-1"
+
     def test_unmatched_key_does_not_retry_only_pool_entry(
         self, tmp_path, monkeypatch
     ):

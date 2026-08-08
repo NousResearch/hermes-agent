@@ -1037,6 +1037,13 @@ def recover_with_credential_pool(
         # ``effective_reason`` is resolved below; this closure runs after.
         if effective_reason is not None:
             kwargs["failure_reason"] = effective_reason.value
+        _agent_model = getattr(agent, "model", None) or None
+        if rotate_status == 429 and _agent_model:
+            # A 429 is model-scoped: bench only the (key, model) pair so the
+            # key stays selectable for other models.  Mirrors the auxiliary
+            # client's model threading; non-429 statuses (and 429s with no
+            # known model) keep key-level exhaustion semantics.
+            kwargs["model"] = _agent_model
         return pool.mark_exhausted_and_rotate(**kwargs)
 
     effective_reason = classified_reason

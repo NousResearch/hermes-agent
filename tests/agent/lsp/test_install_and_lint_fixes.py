@@ -45,16 +45,19 @@ def test_install_npm_works_without_extras(tmp_path, monkeypatch):
     from agent.lsp import install as install_mod
 
     monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
-    monkeypatch.setattr(install_mod.shutil, "which", lambda c: "/usr/bin/npm" if c == "npm" else None)
+    # _install_npm resolves npm via find_node_executable, not shutil.which;
+    # on Windows that scans PATH directly (finding e.g. C:\...\npm.cmd), so
+    # mock the resolver itself to keep the command deterministic everywhere.
+    monkeypatch.setattr(install_mod, "find_node_executable", lambda _cmd: "/usr/bin/npm")
 
     install_mod._install_npm("pyright", "pyright-langserver")
 
     cmd = captured["cmd"]
+    assert cmd[0] == "/usr/bin/npm"
     assert "pyright" in cmd
     # Should not blow up when extra_pkgs is omitted/None
-    install_targets = [c for c in cmd if not c.startswith("-") and c not in {
+    install_targets = [c for c in cmd[1:] if not c.startswith("-") and c not in {
         "install", "--prefix", str(install_mod.hermes_lsp_bin_dir().parent),
-        "/usr/bin/npm",
     }]
     assert install_targets == ["pyright"]
 

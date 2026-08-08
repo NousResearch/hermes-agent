@@ -1318,6 +1318,14 @@ delegation:
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  # persistent_agent: false                   # Prepend a persistent "soul" contract to EVERY delegated child's
+  #                                           # system prompt (default: false = upstream behavior, no injection).
+  #                                           # Use for a mechanical/tool-executor sub-engine that must always obey
+  #                                           # a fixed output-format contract, or a house style guide.
+  # persistent_agent_soul_path: ""            # Path to the soul file when persistent_agent=true. Resolution order:
+  #                                           # this key > HERMES_SUB_ENGINE_SOUL_PATH env >
+  #                                           # <hermes_home>/profiles/sub-engine/SUB_ENGINE_SOUL.md (default).
+  #                                           # Missing/unreadable/empty file degrades gracefully (logs a warning).
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)

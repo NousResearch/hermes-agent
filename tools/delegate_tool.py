@@ -58,6 +58,113 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
 
 
 # ---------------------------------------------------------------------------
+# Persistent sub-agent soul injection (opt-in)
+# ---------------------------------------------------------------------------
+# By default a delegated child's system prompt is built fresh per task (see
+# _build_child_system_prompt) and Hermes does NOT load a persistent SOUL file
+# for children the way it loads <hermes_home>/SOUL.md for the main agent. Some
+# deployments want a *fixed* contract prepended to every delegated child — e.g.
+# a strict output-format spec for a mechanical/tool-executor sub-engine, or a
+# house style guide. The ``delegation.persistent_agent`` switch (bool, default
+# False) enables that: when true, the contents of a soul file are prepended to
+# every child's system prompt.
+#
+# This is strictly opt-in and non-breaking: with the switch off (the default),
+# behavior is byte-identical to upstream.
+#
+# Soul-file path resolution (highest priority first):
+#   1. delegation.persistent_agent_soul_path   (config)
+#   2. HERMES_SUB_ENGINE_SOUL_PATH             (env)
+#   3. <hermes_home>/profiles/sub-engine/SUB_ENGINE_SOUL.md   (default)
+_SUB_ENGINE_SOUL_RELPATH = ("profiles", "sub-engine", "SUB_ENGINE_SOUL.md")
+
+
+def _resolve_sub_engine_soul_path(explicit: Optional[str] = None) -> str:
+    """Resolve the persistent sub-agent soul path.
+
+    Resolved fresh on every call (not cached at import) so a changed
+    config/env/HERMES_HOME, or a live edit, takes effect without a process
+    restart. ``~`` and env vars in the path are expanded. Priority: ``explicit``
+    (config) > ``HERMES_SUB_ENGINE_SOUL_PATH`` env >
+    ``<hermes_home>/profiles/sub-engine/SUB_ENGINE_SOUL.md``. Using
+    get_hermes_home() (not a hardcoded ~/.hermes) keeps this correct under
+    HERMES_HOME isolation and profile overrides.
+    """
+    if explicit is not None and str(explicit).strip():
+        return os.path.expanduser(os.path.expandvars(str(explicit)))
+    env_override = os.environ.get("HERMES_SUB_ENGINE_SOUL_PATH")
+    if env_override:
+        return os.path.expanduser(os.path.expandvars(env_override))
+    # Local import mirrors the deferred-import pattern used elsewhere in this
+    # module for hermes_constants, avoiding any import-time cost/cycle.
+    from hermes_constants import get_hermes_home
+
+    return str(get_hermes_home().joinpath(*_SUB_ENGINE_SOUL_RELPATH))
+
+
+def _load_sub_engine_soul(path: Optional[str] = None) -> Optional[str]:
+    """Read the persistent sub-agent soul contract from disk.
+
+    Returns the file's text (stripped) so the caller can prepend it to a
+    delegated child's system prompt. On any failure — missing file, permission
+    or decode error, or an empty file — logs a warning and returns ``None`` so
+    the caller falls back to the standard dynamically-built prompt. Never
+    raises: a broken/absent soul must degrade to normal delegation, not take
+    down the delegate_task call.
+    """
+    resolved = _resolve_sub_engine_soul_path(path)
+    try:
+        with open(resolved, "r", encoding="utf-8") as fh:
+            text = fh.read().strip()
+    except FileNotFoundError:
+        logger.warning(
+            "Persistent sub-agent soul file not found at %s; delegated child "
+            "will use the standard dynamic prompt only.",
+            resolved,
+        )
+        return None
+    except OSError as exc:
+        logger.warning(
+            "Could not read persistent sub-agent soul file at %s (%s); "
+            "delegated child will use the standard dynamic prompt only.",
+            resolved,
+            exc,
+        )
+        return None
+    except Exception as exc:  # defensive: decode errors, etc.
+        logger.warning(
+            "Unexpected error reading persistent sub-agent soul file at %s "
+            "(%s); delegated child will use the standard dynamic prompt only.",
+            resolved,
+            exc,
+        )
+        return None
+
+    if not text:
+        logger.warning(
+            "Persistent sub-agent soul file at %s is empty; delegated child "
+            "will use the standard dynamic prompt only.",
+            resolved,
+        )
+        return None
+    return text
+
+
+def _persistent_agent_config() -> tuple:
+    """Return ``(enabled, soul_path_override)`` for the persistent-agent feature.
+
+    Reads ``delegation.persistent_agent`` (bool, default False) and the optional
+    ``delegation.persistent_agent_soul_path`` via the same ``_load_config()``
+    path as the rest of delegate_task. Off by default so upstream behavior is
+    preserved.
+    """
+    cfg = _load_config()
+    enabled = is_truthy_value(cfg.get("persistent_agent", False))
+    path = cfg.get("persistent_agent_soul_path") or None
+    return enabled, path
+
+
+# ---------------------------------------------------------------------------
 # Subagent approval callbacks
 # ---------------------------------------------------------------------------
 # Subagents run inside a ThreadPoolExecutor worker. The CLI's interactive
@@ -905,6 +1012,8 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    persistent_agent: bool = False,
+    sub_engine_soul_path: Optional[str] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -913,12 +1022,31 @@ def _build_child_system_prompt(
     inspiration/openclaw/src/agents/subagent-system-prompt.ts:63-95).
     The depth note is literal truth (grounded in the passed config) so
     the LLM doesn't confabulate nesting capabilities that don't exist.
+
+    When ``persistent_agent`` is True (from ``delegation.persistent_agent``),
+    the contents of the persistent sub-agent soul file
+    (``sub_engine_soul_path`` → env → default) are prepended ahead of the
+    per-task framing. Off by default → identical to upstream; a missing or
+    unreadable soul file degrades gracefully to the standard prompt.
     """
-    parts = [
-        "You are a focused subagent working on a specific delegated task.",
-        "",
-        f"YOUR TASK:\n{goal}",
-    ]
+    parts = []
+    # Opt-in: prepend the persistent sub-agent soul contract ahead of the
+    # per-task framing so it governs every delegated child. Off by default
+    # (persistent_agent=False) → byte-identical to upstream. A missing/
+    # unreadable file makes _load_sub_engine_soul return None (warning already
+    # logged), so we fall through to the standard prompt below.
+    if persistent_agent:
+        soul = _load_sub_engine_soul(sub_engine_soul_path)
+        if soul:
+            parts.append(soul)
+            parts.append("\n---\n")
+    parts.extend(
+        [
+            "You are a focused subagent working on a specific delegated task.",
+            "",
+            f"YOUR TASK:\n{goal}",
+        ]
+    )
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -1427,6 +1555,10 @@ def _build_child_agent(
         child_toolsets.append("delegation")
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
+    # Opt-in persistent sub-agent soul (delegation.persistent_agent, default
+    # off). Resolved here from config and passed in so _build_child_system_prompt
+    # stays a pure function.
+    persistent_agent_enabled, persistent_agent_soul_path = _persistent_agent_config()
     child_prompt = _build_child_system_prompt(
         goal,
         context,
@@ -1434,6 +1566,8 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        persistent_agent=persistent_agent_enabled,
+        sub_engine_soul_path=persistent_agent_soul_path,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)

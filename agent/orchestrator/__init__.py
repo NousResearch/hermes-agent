@@ -1,0 +1,1 @@
+"""Orchestrator dispatcher (executor that wires DecisionEngine to real state)."""

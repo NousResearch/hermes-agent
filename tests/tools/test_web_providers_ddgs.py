@@ -90,6 +90,34 @@ class TestDDGSProviderIsConfigured:
 
 
 class TestDDGSProviderSearch:
+    def test_missing_package_is_restored_through_lazy_deps(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "ddgs", None)
+
+        ensure_calls = []
+
+        def fake_ensure(feature, *, prompt):
+            ensure_calls.append((feature, prompt))
+            _install_fake_ddgs(
+                monkeypatch,
+                text_results=[
+                    {
+                        "title": "Restored",
+                        "href": "https://restored.example.com",
+                        "body": "ok",
+                    }
+                ],
+            )
+
+        monkeypatch.setattr("tools.lazy_deps.ensure", fake_ensure)
+        import plugins.web.ddgs.provider as prov
+        _force_inprocess_search(monkeypatch, prov)
+
+        result = prov.DDGSWebSearchProvider().search("q", limit=1)
+
+        assert ensure_calls == [("search.ddgs", False)]
+        assert result["success"] is True
+        assert result["data"]["web"][0]["title"] == "Restored"
+
     def test_happy_path_normalizes_results(self, monkeypatch):
         _install_fake_ddgs(monkeypatch, text_results=[
             {"title": "A", "href": "https://a.example.com", "body": "desc A"},

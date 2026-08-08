@@ -308,12 +308,18 @@ class DDGSWebSearchProvider(WebSearchProvider):
         ``primp`` call cannot freeze the Hermes process (#36776, #68096).
         """
         try:
-            import ddgs  # type: ignore  # noqa: F401 — availability probe
+            import ddgs  # type: ignore  # noqa: F401 — fast availability probe
         except ImportError:
-            return {
-                "success": False,
-                "error": "ddgs package is not installed — run `pip install ddgs`",
-            }
+            try:
+                from tools.lazy_deps import ensure as _lazy_ensure
+
+                _lazy_ensure("search.ddgs", prompt=False)
+                import ddgs  # type: ignore  # noqa: F401 — verify lazy install
+            except Exception as exc:  # noqa: BLE001 — surface the supported setup hint
+                return {
+                    "success": False,
+                    "error": f"ddgs package is unavailable: {exc}",
+                }
 
         # DDGS().text yields at most `max_results` items; we cap defensively
         # in case the package ignores the hint.

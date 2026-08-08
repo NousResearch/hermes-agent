@@ -75,6 +75,9 @@ class TestSpecSafety:
 
 
 class TestAllowlist:
+    def test_ddgs_is_managed_as_a_pinned_lazy_dependency(self):
+        assert ld.LAZY_DEPS["search.ddgs"] == ("ddgs==9.14.4",)
+
     def test_unknown_feature_raises(self, monkeypatch):
         monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
         with pytest.raises(ld.FeatureUnavailable, match="not in LAZY_DEPS"):

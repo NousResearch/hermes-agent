@@ -300,6 +300,44 @@ CATALOG: List[AutomationBlueprint] = [
         tags=("reminder", "finance"),
     ),
     AutomationBlueprint(
+        key="price-watch",
+        title="Price & availability watch",
+        description="Watch an exact product, flight, hotel, or listing and "
+        "alert when your price or availability condition is met.",
+        category="general",
+        schedule_template="0 */{interval_h} * * *",
+        prompt_template=(
+            "Load the product-price-monitor skill and run the tick for this "
+            "watch: {item}. Alert condition: {condition}. Compare the "
+            "normalized all-in price/availability against stored state, "
+            "suppress duplicate alerts, and never overwrite last-known-good "
+            "state with a failed fetch. If no condition is met, respond with "
+            "[SILENT]. On the first run, execute the skill's setup phase "
+            "first: pin the exact item, verify one live fetch, and write the "
+            "watch contract state file."
+        ),
+        slots=[
+            BlueprintSlot(
+                name="item", type="text", label="What exactly to watch?",
+                default="a product URL or exact flight/hotel/listing description",
+                help="URL or precise description — variant, dates, seller",
+            ),
+            BlueprintSlot(
+                name="condition", type="text", label="Alert me when…",
+                default="the all-in price drops below my target",
+                help="threshold price (state the currency), availability, or terms change",
+            ),
+            BlueprintSlot(
+                name="interval_h", type="enum", label="How often?",
+                default="6", options=("1", "3", "6", "12", "24"),
+                help="hours between checks — be gentle with rate limits",
+            ),
+            _DELIVER,
+        ],
+        skills=("product-price-monitor",),
+        tags=("prices", "shopping", "travel", "monitor"),
+    ),
+    AutomationBlueprint(
         key="habit-checkin",
         title="Habit check-in",
         description="A recurring nudge to keep a habit on track and reflect "

@@ -70,10 +70,13 @@ run_conversation()
      - chat_completions: OpenAI format as-is
      - codex_responses: convert to Responses API input items
      - anthropic_messages: convert via anthropic_adapter.py
-  6. Inject ephemeral prompt layers (budget warnings, context pressure)
-  7. Apply prompt caching markers if on Anthropic
-  8. Make interruptible API call (_interruptible_api_call)
-  9. Parse response:
+  6. Let the active context engine transform the API-call copy, if supported
+     - DCP-style engines can add refs, compression placeholders, and nudges
+     - canonical conversation history must remain unchanged
+  7. Inject ephemeral prompt layers (budget warnings, context pressure)
+  8. Apply prompt caching markers if on Anthropic
+  9. Make interruptible API call (_interruptible_api_call)
+  10. Parse response:
      - If tool_calls: execute them, append results, loop back to step 5
      - If text response: persist session, flush memory if needed, return
 ```
@@ -159,6 +162,19 @@ Some tools are intercepted by `run_agent.py` *before* reaching `handle_function_
 | `delegate_task` | Spawns subagent(s) with isolated context |
 
 These tools modify agent state directly and return synthetic tool results without going through the registry.
+
+
+### Context-engine tools
+
+The active context engine can expose tools via `get_tool_schemas()`. These tools
+are injected into the model-visible tool list and routed back to
+`handle_tool_call()` before normal registry dispatch.
+
+This is how DCP-style context management exposes a model-callable `compress`
+tool. The tool updates context-engine state, then the next API-call transform
+applies compression blocks to the outbound message copy. It should not mutate
+the canonical transcript unless the engine explicitly documents a
+transcript-mutating mode.
 
 ## Callback Surfaces
 

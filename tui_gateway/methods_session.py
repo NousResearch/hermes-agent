@@ -2449,6 +2449,19 @@ def _(rid, params: dict) -> dict:
         with _session_db(session) as db:
             if db is not None:
                 try:
+                    # session.resume bounds this same lineage read with
+                    # assert_resume_safe before a session goes live, but a
+                    # live session can keep growing afterward (more turns,
+                    # more compaction ancestors) — session.history is a
+                    # separate, callable-anytime RPC on an already-resumed
+                    # session, so it needs its own check here or a runaway
+                    # transcript can exhaust the gateway loading the full
+                    # lineage unbounded. Any guard failure (over-limit or
+                    # transient) falls through to the in-memory `history`
+                    # already set above, same as the existing except clause.
+                    safety_check = getattr(db, "assert_resume_safe", None)
+                    if callable(safety_check):
+                        safety_check(session["session_key"])
                     history = db.get_messages_as_conversation(
                         session["session_key"], include_ancestors=True
                     )

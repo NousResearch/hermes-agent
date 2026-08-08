@@ -259,10 +259,11 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // modal/daytona/ssh). Remote backends need extra env (image, tokens, host).
   'terminal.backend': ['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'],
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
+  'stt.gladia.model': ['solaria-1', 'solaria-3'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3'],
   // Speech-to-text backends — kept in sync with the stt block in
-  // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs).
-  'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'],
+  // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs/gladia).
+  'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs', 'gladia'],
   // OpenAI TTS voices — the union across models (per the OpenAI TTS API
   // docs). Model-specific narrowing happens in enumOptionsFor():
   // tts-1 / tts-1-hd support 9 voices; gpt-4o-mini-tts supports all 13.
@@ -626,6 +627,10 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     echoTranscripts: 'Post the raw 🎙️ transcript of voice messages back to the chat.',
     elevenlabs: {
       languageCode: 'Optional ISO-639-3 language code. Blank lets ElevenLabs auto-detect.'
+    },
+    gladia: {
+      language: 'Optional ISO-639-1 language hint. Blank falls back to stt.language.',
+      diarization: 'Identify different speakers in the recording (pre-recorded only).'
     }
   },
   updates: {
@@ -746,6 +751,9 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.elevenlabs.language_code',
       'stt.elevenlabs.tag_audio_events',
       'stt.elevenlabs.diarize',
+      'stt.gladia.model',
+      'stt.gladia.language',
+      'stt.gladia.diarization',
       'voice.record_key',
       'voice.max_recording_seconds'
     ]

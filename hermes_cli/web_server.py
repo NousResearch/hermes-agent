@@ -918,7 +918,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Speech-to-text provider",
         # "mistral" temporarily removed — mistralai PyPI package quarantined
         # (malicious 2.4.6 release on 2026-05-12). Restore once available.
-        "options": ["local", "groq", "openai", "xai", "elevenlabs"],
+        "options": ["local", "groq", "openai", "xai", "elevenlabs", "gladia"],
     },
     "stt.local.model": {
         "type": "select",
@@ -939,6 +939,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "type": "select",
         "description": "ElevenLabs Scribe model",
         "options": ["scribe_v2", "scribe_v1"],
+    },
+    "stt.gladia.model": {
+        "type": "select",
+        "description": "Gladia pre-recorded STT model",
+        "options": ["solaria-1", "solaria-3"],
     },
     "display.skin": {
         "type": "select",

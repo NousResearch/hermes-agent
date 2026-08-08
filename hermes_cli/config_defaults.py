@@ -1541,7 +1541,7 @@ DEFAULT_CONFIG = {
         # the raw transcript is also echoed back to the user as a 🎙️ message.
         # Set false to keep STT for the agent while suppressing that user-facing echo.
         "echo_transcripts": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe) | "deepinfra"
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe) | "gladia" | "deepinfra"
         # Global language hint applied to EVERY provider unless a per-provider
         # language overrides it. Defaults to "en" — Whisper auto-detection
         # frequently misidentifies short/accented clips, which reads as
@@ -1588,6 +1588,13 @@ DEFAULT_CONFIG = {
             "language_code": "",  # auto-detect by default; set to "eng", "spa", "fra", etc. to force
             "tag_audio_events": False,
             "diarize": False,
+        },
+        "gladia": {
+            "model": "solaria-1",  # solaria-1, solaria-3
+            "language": "",  # per-provider override of stt.language; blank = use global / auto
+            "diarization": False,
+            "code_switching": False,  # only when languages lists 3–5 expected codes
+            "languages": [],  # multi-lang / code-switch list; empty = use language / stt.language
         },
         "deepinfra": {
             "model": "",  # empty = first stt-tagged model from the live catalog
@@ -3807,6 +3814,14 @@ OPTIONAL_ENV_VARS = {
         "prompt": "ElevenLabs API key",
         "url": "https://elevenlabs.io/",
         "tools": ["elevenlabs_tts", "voice_transcription"],
+        "password": True,
+        "category": "tool",
+    },
+    "GLADIA_API_KEY": {
+        "description": "Gladia API key for pre-recorded speech-to-text transcription",
+        "prompt": "Gladia API key",
+        "url": "https://app.gladia.io/",
+        "tools": ["voice_transcription"],
         "password": True,
         "category": "tool",
     },

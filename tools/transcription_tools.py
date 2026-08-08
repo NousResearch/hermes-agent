@@ -2,7 +2,7 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with six providers:
+Provides speech-to-text transcription with multiple providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
@@ -12,6 +12,7 @@ Provides speech-to-text transcription with six providers:
   - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
     Inverse Text Normalization, diarization, 21 languages.
   - **elevenlabs** — ElevenLabs Scribe API, requires ``ELEVENLABS_API_KEY``.
+  - **gladia** — Gladia pre-recorded STT API, requires ``GLADIA_API_KEY``.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -113,6 +114,7 @@ DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
 DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
+DEFAULT_GLADIA_STT_MODEL = os.getenv("STT_GLADIA_MODEL", "solaria-1")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -384,6 +386,7 @@ BUILTIN_STT_PROVIDERS = frozenset({
     "mistral",
     "xai",
     "elevenlabs",
+    "gladia",
     "deepinfra",
 })
 
@@ -1087,6 +1090,14 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "gladia":
+            if _resolve_provider_key("GLADIA_API_KEY", "gladia"):
+                return "gladia"
+            logger.warning(
+                "STT provider 'gladia' configured but GLADIA_API_KEY not set"
+            )
+            return "none"
+
         if provider == "deepinfra":
             if _HAS_OPENAI and _resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra"):
                 return "deepinfra"
@@ -1099,9 +1110,9 @@ def _get_provider(stt_config: dict) -> str:
         return provider  # Unknown — let it fail downstream
 
     # --- Auto-detect (no explicit provider):
-    #     local > groq > openai > mistral > xai > elevenlabs > deepinfra ---
+    #     local > groq > openai > mistral > xai > elevenlabs > gladia > deepinfra ---
     # DeepInfra is tried LAST so adding DEEPINFRA_API_KEY (commonly set for the
-    # chat surface) never silently displaces an existing xAI/ElevenLabs STT
+    # chat surface) never silently displaces an existing xAI/ElevenLabs/Gladia STT
     # auto-selection; a DeepInfra-only box still resolves to it. mistral is
     # intentionally skipped while `mistralai` is quarantined on PyPI (malicious
     # 2.4.6 release on 2026-05-12).
@@ -1136,6 +1147,9 @@ def _get_provider(stt_config: dict) -> str:
     if _resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs"):
         logger.info("No local STT available, using ElevenLabs Scribe STT API")
         return "elevenlabs"
+    if _resolve_provider_key("GLADIA_API_KEY", "gladia"):
+        logger.info("No local STT available, using Gladia STT API")
+        return "gladia"
     if _HAS_OPENAI and _resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra"):
         logger.info("No local STT available, using DeepInfra Whisper API")
         return "deepinfra"
@@ -2432,6 +2446,152 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Provider: Gladia (pre-recorded STT via gladiaio-sdk)
+# ---------------------------------------------------------------------------
+
+
+def _normalize_gladia_languages(raw: Any) -> list[str]:
+    """Return a cleaned list of ISO language codes from config."""
+    if isinstance(raw, str) and raw.strip():
+        return [part.strip() for part in raw.split(",") if part.strip()]
+    if isinstance(raw, (list, tuple)):
+        out: list[str] = []
+        for item in raw:
+            if isinstance(item, str) and item.strip():
+                out.append(item.strip())
+        return out
+    return []
+
+
+def _build_gladia_transcribe_options(
+    stt_config: Dict[str, Any],
+    model_name: str,
+) -> Dict[str, Any]:
+    """Build Gladia ``prerecorded().transcribe`` options from Hermes STT config.
+
+    Language rules (Gladia):
+    - When a language is known, set ``language_config.languages`` explicitly.
+    - Never enable ``code_switching`` with an empty languages list.
+    - Multi-language / code-switch uses ``stt.gladia.languages`` when set.
+    """
+    gladia_config = stt_config.get("gladia") if isinstance(stt_config.get("gladia"), dict) else {}
+    options: Dict[str, Any] = {}
+
+    if isinstance(model_name, str) and model_name.strip():
+        options["model"] = model_name.strip()
+
+    languages = _normalize_gladia_languages(gladia_config.get("languages"))
+    if not languages:
+        single = _resolve_stt_language("gladia", stt_config)
+        if single:
+            languages = [single]
+
+    code_switching = is_truthy_value(gladia_config.get("code_switching", False))
+    if code_switching and not languages:
+        logger.warning(
+            "stt.gladia.code_switching is set but languages is empty; "
+            "ignoring code_switching (Gladia requires 3–5 expected languages)"
+        )
+        code_switching = False
+
+    if languages or code_switching:
+        language_config: Dict[str, Any] = {}
+        if languages:
+            language_config["languages"] = languages
+        if code_switching:
+            language_config["code_switching"] = True
+        options["language_config"] = language_config
+
+    if is_truthy_value(gladia_config.get("diarization", False)):
+        options["diarization"] = True
+
+    return options
+
+
+def _gladia_client_http_headers() -> Dict[str, str]:
+    """Headers passed to ``GladiaClient`` for Gladia request attribution.
+
+    Gladia's SDK appends its own ``SdkPython/...`` tag to ``x-gladia-version``,
+    so the wire value becomes ``hermes-agent/{version} SdkPython/{sdk}``.
+    """
+    try:
+        from hermes_cli import __version__ as _hermes_version
+    except Exception:
+        _hermes_version = "unknown"
+    return {"x-gladia-version": f"hermes-agent/{_hermes_version}"}
+
+
+def _extract_gladia_transcript(result: Any) -> str:
+    """Pull ``full_transcript`` from a Gladia SDK result (object or dict)."""
+    try:
+        transcription = getattr(getattr(result, "result", None), "transcription", None)
+        if transcription is not None:
+            text = getattr(transcription, "full_transcript", None)
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+    except Exception:
+        pass
+
+    if isinstance(result, dict):
+        nested = result.get("result") or {}
+        if isinstance(nested, dict):
+            transcription = nested.get("transcription") or {}
+            if isinstance(transcription, dict):
+                text = transcription.get("full_transcript")
+                if isinstance(text, str) and text.strip():
+                    return text.strip()
+
+    return _extract_transcript_text(result)
+
+
+def _transcribe_gladia(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using Gladia pre-recorded STT via the official SDK."""
+    api_key = _resolve_provider_key("GLADIA_API_KEY", "gladia")
+    if not api_key:
+        return {"success": False, "transcript": "", "error": "GLADIA_API_KEY not set"}
+
+    stt_config = _load_stt_config()
+    options = _build_gladia_transcribe_options(stt_config, model_name)
+
+    try:
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("stt.gladia", prompt=False)
+        except Exception:
+            pass
+        from gladiaio_sdk import GladiaClient
+
+        client = GladiaClient(
+            api_key=api_key,
+            http_headers=_gladia_client_http_headers(),
+        )
+
+        result = client.prerecorded().transcribe(file_path, options)
+        transcript_text = _extract_gladia_transcript(result)
+        if not transcript_text:
+            return {
+                "success": False,
+                "transcript": "",
+                "error": "Gladia STT returned empty transcript",
+                "no_speech": True,
+            }
+
+        logger.info(
+            "Transcribed %s via Gladia (%s, %d chars)",
+            Path(file_path).name,
+            model_name,
+            len(transcript_text),
+        )
+        return {"success": True, "transcript": transcript_text, "provider": "gladia"}
+
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except Exception as e:
+        logger.error("Gladia STT transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Gladia STT transcription failed: {e}"}
+
+
+# ---------------------------------------------------------------------------
 # Provider: DeepInfra (OpenAI-compatible /v1/audio/transcriptions)
 # ---------------------------------------------------------------------------
 
@@ -2778,6 +2938,11 @@ def _dispatch_stt_provider(
         model_name = model or elevenlabs_cfg.get("model_id", DEFAULT_ELEVENLABS_STT_MODEL)
         return _transcribe_elevenlabs(file_path, model_name)
 
+    if provider == "gladia":
+        gladia_cfg = stt_config.get("gladia") if isinstance(stt_config.get("gladia"), dict) else {}
+        model_name = model or gladia_cfg.get("model") or DEFAULT_GLADIA_STT_MODEL
+        return _transcribe_gladia(file_path, model_name)
+
     if provider == "deepinfra":
         di_config = stt_config.get("deepinfra")  # may be None (YAML null)
         di_config = di_config if isinstance(di_config, dict) else {}
@@ -2844,8 +3009,8 @@ def _dispatch_stt_provider(
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
             "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
             "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, "
-            "set ELEVENLABS_API_KEY for ElevenLabs Scribe, or set VOICE_TOOLS_OPENAI_KEY "
-            "or OPENAI_API_KEY for the OpenAI Whisper API."
+            "set ELEVENLABS_API_KEY for ElevenLabs Scribe, set GLADIA_API_KEY for Gladia, "
+            "or set VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }
 

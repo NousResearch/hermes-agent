@@ -189,6 +189,7 @@ def show_status(args):
         "Browserbase": "BROWSERBASE_API_KEY",  # Optional — direct credentials only
         "FAL": "FAL_KEY",
         "ElevenLabs": "ELEVENLABS_API_KEY",
+        "Gladia": "GLADIA_API_KEY",
         "GitHub": "GITHUB_TOKEN",
     }
 

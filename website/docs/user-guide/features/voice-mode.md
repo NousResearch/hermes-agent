@@ -97,6 +97,7 @@ Add to `~/.hermes/.env`:
 # pip install faster-whisper          # Free, runs locally, recommended
 GROQ_API_KEY=your-key                 # Groq Whisper — fast, free tier (cloud)
 VOICE_TOOLS_OPENAI_KEY=your-key       # OpenAI Whisper — paid (cloud)
+GLADIA_API_KEY=your-key               # Gladia pre-recorded STT — paid (cloud)
 
 # Text-to-Speech (optional — Edge TTS and NeuTTS work without any key)
 ELEVENLABS_API_KEY=***           # ElevenLabs — premium quality
@@ -424,12 +425,16 @@ stt:
                                     # passes its path to the agent as part of the
                                     # inbound message, useful for custom pipelines
                                     # (diarization, alignment, archival, etc.)
-  provider: "local"                  # "local" (free) | "groq" | "openai" | "mistral" | "xai"
+  provider: "local"                  # "local" (free) | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "gladia" | "deepinfra"
   local:
     model: "base"                    # tiny, base, small, medium, large-v3
     language: ""                     # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
   groq:
     language: ""                     # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+  gladia:
+    model: "solaria-1"               # solaria-1, solaria-3
+    language: ""                     # optional ISO-639-1 hint; blank = use stt.language
+    diarization: false
   # model: "whisper-1"              # Legacy: used when provider is not set
 
 # Text-to-Speech
@@ -463,10 +468,12 @@ tts:
 # pip install faster-whisper        # Free local STT — no API key needed
 GROQ_API_KEY=...                    # Groq Whisper (fast, free tier)
 VOICE_TOOLS_OPENAI_KEY=...         # OpenAI Whisper (paid)
+GLADIA_API_KEY=...                 # Gladia pre-recorded STT (free tier)
 
 # STT advanced overrides (optional)
 STT_GROQ_MODEL=whisper-large-v3-turbo    # Override default Groq STT model
 STT_OPENAI_MODEL=whisper-1               # Override default OpenAI STT model
+STT_GLADIA_MODEL=solaria-1               # Override default Gladia STT model
 GROQ_BASE_URL=https://api.groq.com/openai/v1     # Custom Groq endpoint
 STT_OPENAI_BASE_URL=https://api.openai.com/v1    # Custom OpenAI STT endpoint
 
@@ -493,8 +500,10 @@ DISCORD_ALLOWED_USERS=...
 | **OpenAI** | `gpt-transcribe` | Fast | Best | Paid ($0.0045/min) | Yes |
 | **Mistral** | `voxtral-mini-latest` | Fast | Good | Paid | Yes |
 | **xAI** | `grok-stt` | Fast | Good | Paid | Yes |
+| **Gladia** | `solaria-1` | Fast | Good–Best | free tier | Yes |
+| **Gladia** | `solaria-3` | Fast | Best | free tier | Yes |
 
-Provider priority (automatic fallback): **local** > **groq** > **openai**
+Provider priority (automatic fallback): **local** > **groq** > **openai** > **mistral** > **xai** > **elevenlabs** > **gladia** > **deepinfra**
 
 ### TTS Provider Comparison
 

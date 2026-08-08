@@ -389,6 +389,7 @@ def run_dump(args):
         ("BROWSERBASE_API_KEY", "browserbase"),
         ("FAL_KEY", "fal"),
         ("ELEVENLABS_API_KEY", "elevenlabs"),
+        ("GLADIA_API_KEY", "gladia"),
         ("GITHUB_TOKEN", "github"),
     ]
 

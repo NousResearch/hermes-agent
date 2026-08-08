@@ -11,6 +11,7 @@ Uses slack-bolt (Python) with Socket Mode for:
 import asyncio
 import contextvars
 import inspect
+import itertools
 import json
 import logging
 import os
@@ -962,6 +963,12 @@ class SlackAdapter(BasePlatformAdapter):
         # be workspace-scoped markers (team_id, ts) in multi-workspace mode.
         self._approval_resolved: Dict[Any, bool] = {}
         self._APPROVAL_RESOLVED_MAX = 1000
+        # Server-side approval token state: opaque approval_id → session_key.
+        # Block Kit button values carry only the token, never the session key.
+        self._approval_state: Dict[int, str] = {}
+        self._approval_counter = itertools.count(1)
+        # Same server-side indirection for slash-command confirmations.
+        self._slash_confirm_state: Dict[str, str] = {}
         # Same guard for clarify prompts (interactive multiple-choice
         # buttons); mirrors _approval_resolved.
         self._clarify_resolved: Dict[Any, bool] = {}
@@ -6405,13 +6412,22 @@ class SlackAdapter(BasePlatformAdapter):
             budget = 3000 - len(header) - len(reason) - len("``````\n") - len("...")
             cmd_preview = command[:budget] + "..." if len(command) > budget else command
 
+            # Mint an opaque approval token; the button value carries only this
+            # id. The real session_key is resolved server-side on click.
+            approval_id = next(self._approval_counter)
+            self._approval_state[approval_id] = session_key
+            self._trim_oldest_dict_entries(
+                self._approval_state, self._APPROVAL_RESOLVED_MAX
+            )
+            token = str(approval_id)
+
             actions = [
                 {
                     "type": "button",
                     "text": {"type": "plain_text", "text": "Allow Once"},
                     "style": "primary",
                     "action_id": "hermes_approve_once",
-                    "value": session_key,
+                    "value": token,
                 },
             ]
             if not smart_denied and allow_session:
@@ -6419,21 +6435,21 @@ class SlackAdapter(BasePlatformAdapter):
                     "type": "button",
                     "text": {"type": "plain_text", "text": "Allow Session"},
                     "action_id": "hermes_approve_session",
-                    "value": session_key,
+                    "value": token,
                 })
                 if allow_permanent:
                     actions.append({
                         "type": "button",
                         "text": {"type": "plain_text", "text": "Always Allow"},
                         "action_id": "hermes_approve_always",
-                        "value": session_key,
+                        "value": token,
                     })
             actions.append({
                 "type": "button",
                 "text": {"type": "plain_text", "text": "Deny"},
                 "style": "danger",
                 "action_id": "hermes_deny",
-                "value": session_key,
+                "value": token,
             })
             blocks = [
                 {
@@ -6496,9 +6512,13 @@ class SlackAdapter(BasePlatformAdapter):
             _title = (title or "Confirm")[:150]
             budget = 3000 - len(f"*{_title}*\n\n") - len("...")
             body = message[:budget] + "..." if len(message) > budget else message
-            # Encode session_key and confirm_id into the button value so the
-            # callback handler can resolve without extra bookkeeping.
-            value = f"{session_key}|{confirm_id}"
+            # Store the session_key server-side and expose only the confirm_id
+            # in the Block Kit button value, mirroring the approval token pattern.
+            self._slash_confirm_state[confirm_id] = session_key
+            self._trim_oldest_dict_entries(
+                self._slash_confirm_state, self._APPROVAL_RESOLVED_MAX
+            )
+            value = str(confirm_id)
 
             blocks = [
                 {
@@ -6759,11 +6779,14 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 return
 
-        # Parse session_key|confirm_id back out
-        if "|" not in value:
-            logger.warning("[Slack] Malformed slash-confirm value: %s", value)
+        # Resolve the confirm_id to the real session_key server-side. A
+        # missing/stale confirm_id means the prompt was already resolved or
+        # is forged; fail closed.
+        confirm_id = str(value)
+        session_key = self._slash_confirm_state.pop(confirm_id, "")
+        if not session_key:
+            logger.warning("[Slack] Slash-confirm %s already resolved or unknown", confirm_id)
             return
-        session_key, confirm_id = value.split("|", 1)
 
         choice_map = {
             "hermes_confirm_once": "once",
@@ -6872,7 +6895,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         team_id = self._event_team_id({}, body)
         action_id = action.get("action_id", "")
-        session_key = action.get("value", "")
+        token = action.get("value", "")
         message = body.get("message", {})
         msg_ts = message.get("ts", "")
         channel_id = body.get("channel", {}).get("id", "")
@@ -6923,6 +6946,19 @@ class SlackAdapter(BasePlatformAdapter):
         if msg_ts in self._approval_resolved:
             approval_key = msg_ts
         if self._approval_resolved.pop(approval_key, True):
+            return
+
+        # Resolve the opaque token to the real session_key server-side. A
+        # missing/stale token means the approval was already resolved or is
+        # forged; fail closed.
+        try:
+            approval_id = int(token)
+        except (ValueError, TypeError):
+            logger.warning("[Slack] Invalid approval token: %r", token)
+            return
+        session_key = self._approval_state.pop(approval_id, "")
+        if not session_key:
+            logger.warning("[Slack] Approval token %s already resolved or unknown", token)
             return
 
         # Resolve the approval FIRST — this unblocks the agent thread. Render

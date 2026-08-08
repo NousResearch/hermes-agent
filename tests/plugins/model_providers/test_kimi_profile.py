@@ -134,3 +134,37 @@ class TestKimiFullKwargsIntegration:
         )
 
 
+class TestKimiAcceptEncodingContract:
+    """Both Moonshot profiles force ``Accept-Encoding: gzip`` (#59556).
+
+    httpx's brotlicffi backend (pinned for Discord attachment decoding) fails
+    to stream-decode Kimi's ``content-encoding: br`` SSE responses, so the
+    profiles must exclude brotli from the negotiation. Regression guard for
+    the header added in the #59556 fix — if either profile ever drops the
+    override, brotli is re-negotiated and Windows Desktop streaming breaks
+    again.
+    """
+
+    @pytest.mark.parametrize(
+        ("profile_name", "base_url"),
+        [
+            ("kimi-coding", "https://api.moonshot.ai/v1"),
+            ("kimi-coding-cn", "https://api.moonshot.cn/v1"),
+        ],
+    )
+    def test_profile_declares_gzip_accept_encoding(self, profile_name, base_url):
+        import model_tools  # noqa: F401
+        import providers
+
+        profile = providers.get_provider_profile(profile_name)
+        assert profile is not None, f"{profile_name} provider profile must be registered"
+        assert profile.base_url == base_url
+
+        headers = profile.default_headers or {}
+        accept_encoding = headers.get("Accept-Encoding")
+        assert accept_encoding == "gzip", (
+            f"{profile_name} must force gzip Accept-Encoding; got {headers!r}"
+        )
+        assert "br" not in accept_encoding
+
+

@@ -118,3 +118,41 @@ class TestAuxClientHonorsUserDefaultHeaders:
         assert client is not None
         headers = mock_openai.call_args.kwargs.get("default_headers", {}) or {}
         assert headers.get("User-Agent") == "curl/8.7.1"
+
+
+class TestAuxClientHonorsProfileDefaultHeaders:
+    """Auxiliary clients must forward ``ProviderProfile.default_headers``.
+
+    The main-client tests cover AIAgent init; this covers the auxiliary
+    client (title generation, context compression, vision routing) built via
+    ``_resolve_api_key_provider`` — the second consumer of
+    ``profile.default_headers``. Regression guard for the Kimi
+    ``Accept-Encoding: gzip`` brotli workaround (#59556): if the aux path
+    ever stops copying profile headers, auxiliary calls to api.moonshot.*
+    re-negotiate brotli and hit the same streaming-decode bug.
+    """
+
+    @pytest.mark.parametrize(
+        ("api_key_env", "provider_id"),
+        [
+            ("KIMI_API_KEY", "kimi-coding"),
+            ("KIMI_CN_API_KEY", "kimi-coding-cn"),
+        ],
+    )
+    def test_kimi_aux_client_forwards_gzip_accept_encoding(
+        self, tmp_path, monkeypatch, api_key_env, provider_id
+    ):
+        monkeypatch.setenv(api_key_env, "test-key")
+        with patch("agent.auxiliary_client._create_openai_client") as mock_create:
+            mock_create.return_value = MagicMock()
+            from agent.auxiliary_client import _resolve_api_key_provider
+
+            client, model = _resolve_api_key_provider()
+
+        assert client is not None
+        assert model is not None
+        headers = mock_create.call_args.kwargs.get("default_headers", {}) or {}
+        assert headers.get("Accept-Encoding") == "gzip", (
+            f"aux client for {provider_id} must force gzip Accept-Encoding; got {headers!r}"
+        )
+        assert headers.get("User-Agent") == "hermes-agent/1.0"

@@ -102,7 +102,15 @@ kimi = KimiProfile(
     base_url="https://api.moonshot.ai/v1",
     fixed_temperature=OMIT_TEMPERATURE,
     default_max_tokens=32000,
-    default_headers={"User-Agent": "hermes-agent/1.0"},
+    # Exclude brotli from Accept-Encoding — httpx's brotlicffi backend has a
+    # streaming decode bug on Kimi's content-encoding: br SSE responses
+    # (#28043, #48428, #59556). Forcing gzip sidesteps the bug while still
+    # compressing the transfer. Same workaround already applied in
+    # tools/skills_hub.py for sitemap and index fetches.
+    default_headers={
+        "User-Agent": "hermes-agent/1.0",
+        "Accept-Encoding": "gzip",
+    },
     default_aux_model="kimi-k2-turbo-preview",
 )
 
@@ -113,7 +121,11 @@ kimi_cn = KimiProfile(
     base_url="https://api.moonshot.cn/v1",
     fixed_temperature=OMIT_TEMPERATURE,
     default_max_tokens=32000,
-    default_headers={"User-Agent": "hermes-agent/1.0"},
+    # Same brotli workaround as the kimi-coding profile above.
+    default_headers={
+        "User-Agent": "hermes-agent/1.0",
+        "Accept-Encoding": "gzip",
+    },
     default_aux_model="kimi-k2-turbo-preview",
 )
 

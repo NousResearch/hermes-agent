@@ -6,6 +6,8 @@ referrerUrl / appName / User-Agent flow into gateway analytics.
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from run_agent import AIAgent
 
 
@@ -234,5 +236,38 @@ def test_openrouter_headers_no_cache_when_disabled(mock_openai):
     assert headers["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"
     assert "X-OpenRouter-Cache" not in headers
     assert "X-OpenRouter-Cache-TTL" not in headers
+
+
+@pytest.mark.parametrize(
+    ("provider", "base_url"),
+    [
+        ("kimi-coding", "https://api.moonshot.ai/v1"),
+        ("kimi-coding-cn", "https://api.moonshot.cn/v1"),
+    ],
+)
+@patch("run_agent.OpenAI")
+def test_kimi_explicit_creds_apply_gzip_accept_encoding(mock_openai, provider, base_url):
+    """#59556: both Moonshot profiles must send ``Accept-Encoding: gzip``.
+
+    api.moonshot.* matches no URL-specific header branch, so the
+    profile.default_headers fallback (run_agent.py
+    ``_apply_client_headers_for_base_url`` else-branch) must forward the
+    brotli-excluding header set when the client is built from explicit
+    credentials — the Windows Desktop path from #59556.
+    """
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        provider=provider,
+        api_key="test-key",
+        base_url=base_url,
+        model="kimi-k2-turbo-preview",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers["Accept-Encoding"] == "gzip"
+    assert headers["User-Agent"] == "hermes-agent/1.0"
 
 

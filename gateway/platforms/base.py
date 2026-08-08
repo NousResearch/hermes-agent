@@ -3344,12 +3344,24 @@ class BasePlatformAdapter(ABC):
         self._topic_recovery_fn = fn  # type: ignore[attr-defined]
 
     def _apply_topic_recovery(self, event: MessageEvent) -> None:
-        """Rewrite ``event.source.thread_id`` in place if the hook returns one."""
+        """Rewrite ``event.source.thread_id`` in place if the hook returns one.
+
+        Telegram DM topic recovery is a fallback for replies whose topic
+        metadata was stripped. A plain root-chat message is an explicit choice
+        to use the lobby, so it must not be moved into the latest topic.
+        """
         recover = getattr(self, "_topic_recovery_fn", None)
         if recover is None:
             return
         source = getattr(event, "source", None)
         if source is None:
+            return
+        if (
+            _platform_name(getattr(source, "platform", None)) == "telegram"
+            and getattr(source, "chat_type", None) == "dm"
+            and str(getattr(source, "thread_id", None) or "") in {"", "1"}
+            and not getattr(event, "reply_to_message_id", None)
+        ):
             return
         try:
             recovered = recover(source)

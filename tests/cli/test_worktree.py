@@ -1086,9 +1086,12 @@ class TestMergeVerdictCache:
     def test_cache_is_bounded(self, monkeypatch, tmp_path):
         """The cache file must not grow without limit across sessions."""
         import cli
+        import hermes_cli.worktree_mixin as worktree_mixin
         path = tmp_path / "verdicts.json"
-        monkeypatch.setattr(cli, "_worktree_merge_cache_path", lambda: path)
-        monkeypatch.setattr(cli, "_WORKTREE_MERGE_CACHE_MAX", 10)
+        # The merge-cache helpers moved to hermes_cli/worktree_mixin.py
+        # (godfile shard s1, clusters c10/c11); patch the owning module.
+        monkeypatch.setattr(worktree_mixin, "_worktree_merge_cache_path", lambda: path)
+        monkeypatch.setattr(worktree_mixin, "_WORKTREE_MERGE_CACHE_MAX", 10)
 
         cli._save_worktree_merge_cache({f"sha{i}..sha{i}:20": True for i in range(50)})
         assert len(cli._load_worktree_merge_cache()) == 10

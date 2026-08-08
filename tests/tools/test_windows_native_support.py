@@ -766,7 +766,9 @@ class TestWorktreeSymlinkFallback:
 
     def test_source_has_symlink_fallback(self):
         root = Path(__file__).resolve().parents[2]
-        source = (root / "cli.py").read_text(encoding="utf-8")
+        # The .worktreeinclude symlink fallback lives in the extracted
+        # worktree mixin module (godfile shard s1, cluster c10).
+        source = (root / "hermes_cli" / "worktree_mixin.py").read_text(encoding="utf-8")
         # Look for the try/except that handles OSError around os.symlink
         # with a shutil.copytree fallback.
         assert "os.symlink(str(src_resolved), str(dst))" in source

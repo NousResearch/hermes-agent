@@ -716,6 +716,58 @@ describe('upsertToolPart', () => {
     expect(summaries).toEqual(['Did 5 searches', 'Did 5 searches'])
   })
 
+  it('keeps parallel read_file rows distinct when each start carries its own tool_id', () => {
+    let parts = upsertToolPart([], { context: 'setup.py', name: 'read_file', tool_id: 'read-setup' }, 'running')
+    parts = upsertToolPart(parts, { context: 'utils.py', name: 'read_file', tool_id: 'read-utils' }, 'running')
+
+    const started = parts.filter(
+      (part): part is Extract<ChatMessagePart, { type: 'tool-call' }> =>
+        part.type === 'tool-call' && part.toolName === 'read_file'
+    )
+
+    expect(started.map(part => part.toolCallId)).toEqual(['read-setup', 'read-utils'])
+    expect(started.map(part => String((part.args as Record<string, unknown>)?.context || ''))).toEqual([
+      'setup.py',
+      'utils.py'
+    ])
+
+    parts = upsertToolPart(
+      parts,
+      {
+        args: { path: 'setup.py' },
+        name: 'read_file',
+        result: { content: 'from setuptools import setup' },
+        tool_id: 'read-setup'
+      },
+      'complete'
+    )
+    parts = upsertToolPart(
+      parts,
+      {
+        args: { path: 'utils.py' },
+        name: 'read_file',
+        result: { content: 'def helper(): ...' },
+        tool_id: 'read-utils'
+      },
+      'complete'
+    )
+
+    const completed = parts.filter(
+      (part): part is Extract<ChatMessagePart, { type: 'tool-call' }> =>
+        part.type === 'tool-call' && part.toolName === 'read_file'
+    )
+
+    expect(completed.map(part => part.toolCallId)).toEqual(['read-setup', 'read-utils'])
+    expect(completed.map(part => String((part.args as Record<string, unknown>)?.context || ''))).toEqual([
+      'setup.py',
+      'utils.py'
+    ])
+    expect(completed.map(part => String((part.args as Record<string, unknown>)?.path || ''))).toEqual([
+      'setup.py',
+      'utils.py'
+    ])
+  })
+
   it('pairs a terminal completion with its context-only start when event IDs differ', () => {
     const started = upsertToolPart(
       [],

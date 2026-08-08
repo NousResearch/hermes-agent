@@ -583,7 +583,14 @@ function findToolPartIndex(
     const [singlePendingIndex] = pendingIndices
 
     if (phase === 'running' && matchValues.length && !overlaps(singlePendingIndex)) {
-      return stableId ? singlePendingIndex : -1
+      // A pending sibling that already has path/query/context is a parallel
+      // same-name call — never clobber it just because this event carries a
+      // tool_id. Only a blank placeholder row may adopt a later identity.
+      if (toolPartMatchValues(parts[singlePendingIndex]).length > 0) {
+        return -1
+      }
+
+      return singlePendingIndex
     }
 
     return singlePendingIndex
@@ -597,7 +604,13 @@ function findToolPartIndex(
   }
 
   if (stableId) {
-    return pendingIndices[0]
+    const blankPendingIndex = pendingIndices.find(index => toolPartMatchValues(parts[index]).length === 0)
+
+    if (blankPendingIndex !== undefined) {
+      return blankPendingIndex
+    }
+
+    return -1
   }
 
   // For progress/running events with no stable id, update the most-recent

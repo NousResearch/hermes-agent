@@ -2265,9 +2265,12 @@ function Install-Venv {
             # `pythonw.exe -m hermes_cli.main gateway run` straight out of
             # venv\Scripts\, so its image name is python/pythonw, not hermes.exe.
             # That process holds the venv's .pyd files open and re-triggers the
-            # access-denied failure. Stop anything whose executable lives under
-            # this venv, matched by path prefix so the image name does not matter
-            # and a global/system python outside the venv is never touched.
+            # access-denied failure. Select only roots whose executable lives
+            # under this venv, then stop each root's whole process tree. Some
+            # Hermes children re-exec through .hermes-runtime, so killing only
+            # the selected venv process can leave its child holding the install
+            # open. The path-prefix check still keeps unrelated Python processes
+            # outside this venv untouched.
             #
             # The gateway autostart task registers with /RL LIMITED as the current
             # user (see hermes_cli/gateway_windows.py), so the installer always
@@ -2291,8 +2294,9 @@ function Install-Venv {
                         Where-Object { $_.ProcessId -ne $myPid -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($venvPrefix, [System.StringComparison]::OrdinalIgnoreCase) } |
                         ForEach-Object {
                             $found++
-                            Write-Info "  stopping PID $($_.ProcessId) ($($_.Name)) running from venv"
-                            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+                            $treePid = [string]$_.ProcessId
+                            Write-Info "  stopping process tree at PID $treePid ($($_.Name)) running from venv"
+                            & taskkill /F /T /PID $treePid 2>$null | Out-Null
                         }
                 } catch {
                     Write-Warn "Could not enumerate venv processes: $($_.Exception.Message)"

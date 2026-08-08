@@ -22463,6 +22463,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return "", len(data)
             return data[offset:].decode("utf-8", errors="replace"), len(data)
 
+        def _format_adapter_error(error: object) -> str:
+            """Keep adapter errors safe and bounded in watcher logs."""
+            text = str(error or "").replace("\r", " ").replace("\n", " ").strip()
+            return text[:300] or "unknown error"
+
         bytes_sent = 0
         last_stream_time = loop.time()
         buffer = ""
@@ -22583,22 +22588,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 # but an explicit SendResult failure must use the text fallback.
                                 native_send_succeeded = (
                                     result is None
-                                    or getattr(result, "success", True)
+                                    or getattr(result, "success", True) is not False
                                 )
                                 if not native_send_succeeded:
                                     logger.warning(
                                         "Native update prompt send reported failure for %s; "
                                         "falling back to text: %s",
                                         session_key,
-                                        getattr(result, "error", None) or "unknown error",
+                                        _format_adapter_error(getattr(result, "error", None)),
                                     )
                                 sent_buttons = native_send_succeeded
                             except Exception as btn_err:
-                                logger.debug("Button-based update prompt failed: %s", btn_err)
+                                logger.debug(
+                                    "Button-based update prompt failed: %s",
+                                    _format_adapter_error(btn_err),
+                                )
+                        prompt_delivered = sent_buttons
                         if not sent_buttons:
                             default_hint = f" (default: {default})" if default else ""
                             _p = getattr(adapter, "typed_command_prefix", "/")
-                            await adapter.send(
+                            fallback_result = await adapter.send(
                                 chat_id,
                                 f"⚕ **Update needs your input:**\n\n"
                                 f"{prompt_text}{default_hint}\n\n"
@@ -22606,6 +22615,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 f"or type your answer directly.",
                                 metadata=_non_conversational_metadata(metadata, platform=platform),
                             )
+                            prompt_delivered = (
+                                fallback_result is None
+                                or getattr(fallback_result, "success", True) is not False
+                            )
+                            if not prompt_delivered:
+                                logger.warning(
+                                    "Text update prompt send reported failure for %s: %s",
+                                    session_key,
+                                    _format_adapter_error(
+                                        getattr(fallback_result, "error", None)
+                                    ),
+                                )
                         # Keep the prompt marker on disk until the user
                         # answers. If the gateway restarts mid-prompt, the
                         # next watcher can recover by re-forwarding it from
@@ -22615,7 +22636,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             session_key
                         ).persistent.update_prompt_pending = True
                         # .update_response to continue — it doesn't re-check
-                        logger.info("Forwarded update prompt to %s: %s", session_key, prompt_text[:80])
+                        if prompt_delivered:
+                            logger.info(
+                                "Forwarded update prompt to %s: %s",
+                                session_key,
+                                prompt_text[:80],
+                            )
                 except (json.JSONDecodeError, OSError) as e:
                     logger.debug("Failed to read update prompt: %s", e)
 

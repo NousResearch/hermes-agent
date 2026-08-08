@@ -31,11 +31,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
-from tools.registry import registry, tool_error
+from tools.registry import registry, tool_error, uncached_check_fn
 from hermes_cli.config import cfg_get, load_config
 
 logger = logging.getLogger(__name__)
@@ -47,12 +50,24 @@ logger = logging.getLogger(__name__)
 
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
+_RUNTIME_KANBAN_TOOLSET: ContextVar[Optional[bool]] = ContextVar(
+    "runtime_kanban_toolset", default=None
+)
+
+
+@contextmanager
+def runtime_kanban_toolset(enabled: bool) -> Iterator[None]:
+    """Scope Kanban authorization to one agent's resolved toolset list."""
+    token = _RUNTIME_KANBAN_TOOLSET.set(bool(enabled))
+    try:
+        yield
+    finally:
+        _RUNTIME_KANBAN_TOOLSET.reset(token)
 
 
 def _profile_has_kanban_toolset() -> bool:
     # Uses load_config() which has mtime-based caching, so this adds
-    # negligible overhead. The check_fn results are further TTL-cached
-    # (~30s) by the tool registry.
+    # negligible overhead for legacy top-level profile authorization.
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
@@ -60,6 +75,13 @@ def _profile_has_kanban_toolset() -> bool:
         return "kanban" in toolsets
     except Exception:
         return False
+
+
+def _kanban_toolset_authorized() -> bool:
+    runtime = _RUNTIME_KANBAN_TOOLSET.get()
+    if runtime is not None:
+        return runtime
+    return _profile_has_kanban_toolset()
 
 
 def _is_delegated_child_context() -> bool:
@@ -82,6 +104,13 @@ def _is_dispatcher_owned_worker() -> bool:
         return True
 
 
+def _dispatcher_task_id() -> Optional[str]:
+    """Return the inherited task id only for its dispatcher-owned execution."""
+    if not _is_dispatcher_owned_worker():
+        return None
+    return os.environ.get("HERMES_KANBAN_TASK") or None
+
+
 def _reject_delegated_child_mutation(tool_name: str) -> Optional[str]:
     """Deny Kanban mutations from delegate_task children.
 
@@ -100,12 +129,14 @@ def _reject_delegated_child_mutation(tool_name: str) -> Optional[str]:
     )
 
 
+@uncached_check_fn
 def _check_kanban_mode() -> bool:
     """Task-lifecycle tools are available when:
 
     1. ``HERMES_KANBAN_TASK`` is set (dispatcher-spawned worker), OR
-    2. The current profile has ``kanban`` in its toolsets config
-       (orchestrator profiles like techlead that route work via Kanban).
+    2. The current agent explicitly selected the ``kanban`` toolset at runtime
+       (including platform/per-job selection), or its profile has the legacy
+       top-level opt-in.
 
     Humans running ``hermes chat`` without the kanban toolset see zero
     kanban tools. Workers spawned by the kanban dispatcher (gateway-
@@ -116,9 +147,10 @@ def _check_kanban_mode() -> bool:
         return False
     if os.environ.get("HERMES_KANBAN_TASK") and _is_dispatcher_owned_worker():
         return True
-    return _profile_has_kanban_toolset()
+    return _kanban_toolset_authorized()
 
 
+@uncached_check_fn
 def _check_kanban_orchestrator_mode() -> bool:
     """Board-routing tools (kanban_list, kanban_unblock) are intentionally
     hidden from task workers.
@@ -132,7 +164,7 @@ def _check_kanban_orchestrator_mode() -> bool:
         return False
     if os.environ.get("HERMES_KANBAN_TASK") and _is_dispatcher_owned_worker():
         return False
-    return _profile_has_kanban_toolset()
+    return _kanban_toolset_authorized()
 
 
 # ---------------------------------------------------------------------------
@@ -145,17 +177,14 @@ def _default_task_id(arg: Optional[str]) -> Optional[str]:
         return arg
     if _is_delegated_child_context():
         return None
-    if not _is_dispatcher_owned_worker():
-        # A cron job fired in-process from a worker must never inherit the
-        # worker's task id as an implicit default.
-        return None
-    env_tid = os.environ.get("HERMES_KANBAN_TASK")
-    return env_tid or None
+    # A cron job fired in-process from a worker must never inherit the
+    # worker's task id as an implicit default.
+    return _dispatcher_task_id()
 
 
 def _worker_run_id(task_id: str) -> Optional[int]:
     """Return this worker's dispatcher run id when it is scoped to task_id."""
-    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+    if _dispatcher_task_id() != task_id:
         return None
     raw = os.environ.get("HERMES_KANBAN_RUN_ID")
     if not raw:
@@ -170,7 +199,7 @@ def _stamp_worker_session_metadata(
     task_id: str, metadata: Optional[dict]
 ) -> Optional[dict]:
     """Add trusted worker session id metadata for this worker's own task."""
-    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+    if _dispatcher_task_id() != task_id:
         return metadata
     session_id = os.environ.get("HERMES_SESSION_ID")
     if not session_id:
@@ -189,17 +218,17 @@ def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     prompt-injected worker that passed an explicit ``task_id`` for some
     other task could corrupt sibling or cross-tenant runs (see #19534).
 
-    Orchestrator profiles (kanban toolset enabled but **no**
-    ``HERMES_KANBAN_TASK`` in env) aren't subject to this check — their
-    job is routing, and they sometimes legitimately close out child
-    tasks or reopen blocked ones. Workers are narrowly scoped to their
-    one task.
+    Orchestrator executions aren't subject to this check — their job is
+    routing, and they sometimes legitimately close out child tasks or reopen
+    blocked ones. This includes cron agents running in-process while the host
+    worker's environment remains intact. Dispatcher-owned workers are narrowly
+    scoped to their one task.
 
     Returns ``None`` when the call is allowed, or a tool-error string
     when it must be rejected. Callers should ``return`` the error
     verbatim.
     """
-    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    env_tid = _dispatcher_task_id()
     if not env_tid:
         # Orchestrator or CLI context — no task-scope restriction.
         return None
@@ -268,7 +297,7 @@ def _goal_judge_available() -> bool:
 #     fails (board missing, DB locked, etc.).
 #   - Rate-limited to one DB write per 60s per-process; runtime activity
 #     can tick on every chunk/tool result and we don't need that resolution.
-#   - No-op outside dispatcher-spawned worker context (no ``HERMES_KANBAN_TASK``).
+#   - No-op outside the dispatcher-owned worker context.
 #   - No durable note on these auto-heartbeats; that's reserved for the
 #     explicit tool which carries a model-supplied note.
 
@@ -298,7 +327,7 @@ def heartbeat_current_worker_from_env() -> bool:
     the worst case is one extra DB write per race, which is harmless.
     """
     global _auto_heartbeat_last_attempt
-    tid = os.environ.get("HERMES_KANBAN_TASK")
+    tid = _dispatcher_task_id()
     if not tid:
         return False
     import time as _time
@@ -350,16 +379,16 @@ _comment_watermark: dict[str, int] = {}
 def inject_new_comments_from_env(agent: Any) -> bool:
     """Fold new operator comments on the current worker's task into ``agent``.
 
-    Best-effort and self-gating: no-op unless this process is a kanban worker
-    (``HERMES_KANBAN_TASK`` set) and ``agent`` exposes ``steer``. Returns True
-    if a steer was injected, else False. Never raises into the agent loop.
+    Best-effort and self-gating: no-op unless this execution owns the
+    dispatcher's kanban task and ``agent`` exposes ``steer``. Returns True if a
+    steer was injected, else False. Never raises into the agent loop.
 
     The first poll only *seeds* the watermark to the newest existing comment —
     those are already in the worker's context — so only comments added after
     the run started are injected. The worker's own authored comments (matched
     by ``HERMES_PROFILE``) are skipped to avoid echoing itself.
     """
-    tid = os.environ.get("HERMES_KANBAN_TASK")
+    tid = _dispatcher_task_id()
     if not tid or agent is None or not hasattr(agent, "steer"):
         return False
     global _comment_poll_last_attempt
@@ -451,7 +480,12 @@ def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
     structured tool_error so the model gets a clear refusal instead of
     silently mutating board state from a worker context.
     """
-    if os.environ.get("HERMES_KANBAN_TASK"):
+    if _is_delegated_child_context():
+        return tool_error(
+            f"{tool_name} refused: delegate_task child agents are not Kanban "
+            "orchestrators. Return findings to the parent agent instead."
+        )
+    if _dispatcher_task_id():
         return tool_error(
             f"{tool_name} is orchestrator-only; dispatcher-spawned workers "
             "must use kanban_complete, kanban_block, kanban_heartbeat, or "
@@ -1296,7 +1330,7 @@ def _handle_create(args: dict, **kw) -> str:
             # it into a fresh per-task worktree. Never inherit the parent's
             # literal workspace kind/path; directory sharing must be explicit.
             if _inherit_project and project_id is None:
-                _self_tid = os.environ.get("HERMES_KANBAN_TASK")
+                _self_tid = _dispatcher_task_id()
                 if _self_tid:
                     _self_task = kb.get_task(conn, _self_tid)
                     if _self_task is not None and _self_task.project_id:

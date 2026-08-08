@@ -80,11 +80,31 @@ def test_delegated_child_context_suppresses_env_gated_kanban_tools(monkeypatch, 
     invalidate_check_fn_cache()
     _clear_tool_defs_cache()
     with delegated_child_context():
-        schema = get_tool_definitions(enabled_toolsets=["terminal"], quiet_mode=True)
+        schema = get_tool_definitions(
+            enabled_toolsets=["terminal", "kanban"], quiet_mode=True
+        )
 
     names = {s["function"].get("name") for s in schema if "function" in s}
     assert "terminal" in names
     assert {n for n in names if n and n.startswith("kanban_")} == set()
+
+
+def test_delegated_child_cannot_invoke_orchestrator_handler_directly(
+    monkeypatch, tmp_path
+):
+    """The runtime guard must match schema denial for direct/stale dispatch."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from agent.delegation_context import delegated_child_context
+    from tools import kanban_tools
+
+    with delegated_child_context():
+        payload = json.loads(kanban_tools._handle_list({}))
+
+    assert "delegate_task child" in payload["error"]
 
 
 def test_build_child_agent_strips_kanban_toolset_even_when_parent_is_worker(monkeypatch):

@@ -318,6 +318,9 @@ def _check_fn_cached(fn: Callable) -> bool:
     re-probes) to keep flaky external checks (Docker daemon busy, socket
     contention, probe timeout) from silently stripping tools mid-session.
     """
+    if getattr(fn, "_hermes_uncached_check", False):
+        return bool(fn())
+
     now = time.monotonic()
     scope = check_fn_cache_scope()
     if scope == CHECK_FN_CACHE_BYPASS:
@@ -377,6 +380,19 @@ def _check_fn_cached(fn: Callable) -> bool:
         )
         _check_fn_cache[cache_key] = (now, False)
         return False
+
+
+def uncached_check_fn(fn: Callable) -> Callable:
+    """Mark a check function as execution-context-sensitive.
+
+    Most availability probes describe process-level state and benefit from the
+    registry TTL. Checks backed by ContextVars instead describe the current
+    agent execution; caching those can leak one concurrent session's tool
+    surface into another. Marked checks still share the per-definition-pass
+    cache in :meth:`ToolRegistry.get_definitions`.
+    """
+    setattr(fn, "_hermes_uncached_check", True)
+    return fn
 
 
 def invalidate_check_fn_cache() -> None:

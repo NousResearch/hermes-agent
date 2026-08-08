@@ -2059,17 +2059,18 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
         config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
     )
 
-    # Sorted: ["kanban", "memory", "project"]. `kanban` is auto-recovered by
-    # _get_platform_tools (a non-configurable platform toolset in hermes-cli's
-    # universe); `project` is GUI-only, folded in by _load_enabled_toolsets.
-    # Toolsets inside their first release (_RECENTLY_SHIPPED_TOOLSETS) are
-    # back-filled onto saved lists that never offered them — allow those too.
+    # Configured CLI list is ["memory"]; `project` is GUI-only, folded in by
+    # _load_enabled_toolsets. Kanban is configurable and default-off, so it is
+    # not auto-recovered. Toolsets inside their first release
+    # (_RECENTLY_SHIPPED_TOOLSETS) are back-filled onto saved lists that never
+    # offered them — allow those too.
     from hermes_cli.tools_config import _RECENTLY_SHIPPED_TOOLSETS
 
     result = server._load_enabled_toolsets()
     assert result is not None
-    assert {"kanban", "memory", "project"} <= set(result)
-    assert set(result) - {"kanban", "memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
+    assert {"memory", "project"} <= set(result)
+    assert "kanban" not in result
+    assert set(result) - {"memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
     err = capsys.readouterr().err
     assert "ignoring disabled MCP servers" in err
     assert "mcp-off" in err
@@ -2094,8 +2095,9 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
 
     result = server._load_enabled_toolsets()
     assert result is not None
-    assert {"kanban", "memory", "project"} <= set(result)
-    assert set(result) - {"kanban", "memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
+    assert {"memory", "project"} <= set(result)
+    assert "kanban" not in result
+    assert set(result) - {"memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
     assert "using configured CLI toolsets" in capsys.readouterr().err
 
 

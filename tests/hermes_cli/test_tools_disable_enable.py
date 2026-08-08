@@ -23,6 +23,21 @@ class TestToolsDisableBuiltin:
 # ── Built-in toolset enable ─────────────────────────────────────────────────
 
 
+class TestToolsEnableBuiltin:
+
+    def test_enable_kanban_for_cron_persists_explicit_opt_in(self, capsys):
+        config = {"platform_toolsets": {"cron": ["terminal"]}}
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(
+                Namespace(tools_action="enable", names=["kanban"], platform="cron")
+            )
+
+        saved = mock_save.call_args[0][0]
+        assert "kanban" in saved["platform_toolsets"]["cron"]
+        assert "Unknown toolset" not in capsys.readouterr().out
+
+
 # ── MCP tool disable ────────────────────────────────────────────────────────
 
 

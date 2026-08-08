@@ -397,6 +397,7 @@ def _compute_tool_definitions(
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
     tools_to_include: set = set()
+    kanban_runtime_authorized = False
 
     if enabled_toolsets is not None:
         effective_enabled_toolsets = list(enabled_toolsets)
@@ -412,6 +413,10 @@ def _compute_tool_definitions(
             # (for token/cost reasons), but that should not strip the kanban
             # worker's completion/block/heartbeat surface.
             effective_enabled_toolsets.append("kanban")
+        kanban_runtime_authorized = (
+            "kanban" in effective_enabled_toolsets
+            and not _is_delegated_child_context()
+        )
         for toolset_name in effective_enabled_toolsets:
             if validate_toolset(toolset_name):
                 resolved = resolve_toolset(toolset_name)
@@ -430,6 +435,16 @@ def _compute_tool_definitions(
         from toolsets import get_all_toolsets
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
+        if not _is_delegated_child_context():
+            from tools.kanban_tools import _profile_has_kanban_toolset
+
+            kanban_runtime_authorized = (
+                bool(
+                    os.environ.get("HERMES_KANBAN_TASK")
+                    and _is_dispatcher_owned_worker()
+                )
+                or _profile_has_kanban_toolset()
+            )
 
     # Always apply disabled toolsets as a subtraction step at the end.
     # This ensures that even if a composite toolset (like hermes-cli)
@@ -480,8 +495,14 @@ def _compute_tool_definitions(
     # needed; plugins respect enabled_toolsets / disabled_toolsets like any
     # other toolset.
 
-    # Ask the registry for schemas (only returns tools whose check_fn passes)
-    filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
+    # Kanban is selected per agent (platform/per-job toolsets), while registry
+    # check functions are otherwise process-scoped. Carry the resolved choice
+    # through a ContextVar so concurrent cron/delegate sessions cannot alias.
+    from tools.kanban_tools import runtime_kanban_toolset
+
+    with runtime_kanban_toolset(kanban_runtime_authorized):
+        # Ask the registry for schemas (only returns tools whose check_fn passes)
+        filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
 
     # The set of tool names that actually passed check_fn filtering.
     # Use this (not tools_to_include) for any downstream schema that references

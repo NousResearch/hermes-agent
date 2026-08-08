@@ -159,5 +159,8 @@ toolsets:
     assert resolved is not None
     assert "terminal" in resolved
     assert "web" in resolved
-    assert "kanban" in resolved  # recovered worker lifecycle surface
+    # Kanban is opt-in / default-off. Worker lifecycle tools are appended later
+    # by model_tools when HERMES_KANBAN_TASK is set — not via this CLI pin, and
+    # not by inheriting the parent home's platform_toolsets.cli.
+    assert "kanban" not in resolved
     assert resolved != ["kanban"]

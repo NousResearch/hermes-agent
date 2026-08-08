@@ -40,6 +40,40 @@ def test_kanban_tools_hidden_without_env_var(monkeypatch, tmp_path):
     )
 
 
+def test_explicit_runtime_toolset_exposes_orchestrator_tools(monkeypatch, tmp_path):
+    """Platform/per-job selection must authorize the current agent only."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import tools.kanban_tools  # noqa: F401 - ensure registered
+    from model_tools import _clear_tool_defs_cache, get_tool_definitions
+    from tools.registry import invalidate_check_fn_cache
+
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+    enabled = get_tool_definitions(enabled_toolsets=["kanban"], quiet_mode=True)
+    enabled_names = {tool["function"]["name"] for tool in enabled}
+    assert "kanban_list" in enabled_names
+    assert "kanban_create" in enabled_names
+
+    from agent.delegation_context import delegated_child_context
+
+    with delegated_child_context():
+        child = get_tool_definitions(
+            enabled_toolsets=["kanban"], quiet_mode=True
+        )
+    child_names = {tool["function"]["name"] for tool in child}
+    assert not {name for name in child_names if name.startswith("kanban_")}
+
+    # Do not invalidate the registry check cache between agents: the runtime
+    # authorization itself must be execution-scoped rather than TTL-cached.
+    disabled = get_tool_definitions(enabled_toolsets=["terminal"], quiet_mode=True)
+    disabled_names = {tool["function"]["name"] for tool in disabled}
+    assert not {name for name in disabled_names if name.startswith("kanban_")}
+
+
 # ---------------------------------------------------------------------------
 # Handler happy paths
 # ---------------------------------------------------------------------------

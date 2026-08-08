@@ -473,28 +473,17 @@ def test_get_effective_configurable_toolsets_dedupes_bundled_plugins():
 
 
 
-def test_kanban_not_reported_as_removed_in_diff():
-    """Reproduces the false-signal bug: `hermes tools` printed ``- kanban``
-    when saving a platform that resolves kanban as enabled, even though the
-    checklist never offered kanban as a toggle.
+def test_kanban_is_default_off_but_respects_explicit_platform_opt_in():
+    assert "kanban" not in _get_platform_tools(
+        {}, "cron", include_default_mcp_servers=False
+    )
 
-    The printed diff must be scoped to ``_checklist_toolset_keys`` so a tool
-    the user could not deselect is never reported as removed. The persisted
-    config still keeps kanban (verified separately by _save_platform_tools).
-    """
-    config = {"platform_toolsets": {"telegram": ["kanban", "web", "terminal"]}}
-    current = _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
-    assert "kanban" in current  # resolved as enabled at read time
+    config = {"platform_toolsets": {"cron": ["kanban", "terminal"]}}
+    enabled = _get_platform_tools(
+        config, "cron", include_default_mcp_servers=False
+    )
 
-    # The checklist can only return configurable keys it was shown; kanban
-    # is never one of them.
-    universe = _checklist_toolset_keys("telegram")
-    new_enabled = {t for t in current if t != "kanban"}
-
-    # Unscoped (old, buggy) diff would surface kanban.
-    assert (current - new_enabled) == {"kanban"}
-    # Scoped (fixed) diff drops it.
-    assert ((current - new_enabled) & universe) == set()
+    assert "kanban" in enabled
 
 
 

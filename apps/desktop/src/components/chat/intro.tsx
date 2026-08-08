@@ -1,8 +1,10 @@
 import { type CSSProperties, useState } from 'react'
 
+import { useI18n } from '@/i18n'
 import { capitalize, normalize } from '@/lib/text'
 
 import introCopyJsonl from './intro-copy.jsonl?raw'
+import introCopyPtJsonl from './intro-copy.pt.jsonl?raw'
 
 type IntroCopy = {
   headline: string
@@ -20,28 +22,63 @@ export type IntroProps = {
 
 const NEUTRAL_PERSONALITIES = new Set(['', 'default', 'none', 'neutral'])
 
-const FALLBACK_COPY: IntroCopy[] = [
-  {
-    headline: 'What are we moving today?',
-    body: "Send a bug, branch, plan, or rough idea. I'll inspect the repo and turn it into the next concrete step."
-  },
-  {
-    headline: "What's on your mind?",
-    body: "Bring the code, question, or stuck part. I'll read the room before making changes."
-  },
-  {
-    headline: 'What should Hermes look at?',
-    body: "Send the task, failing path, or half-formed plan. I'll help turn it into action."
-  },
-  {
-    headline: 'Where should we start?',
-    body: "Bring the problem, goal, or file. I'll inspect first and keep the next step concrete."
-  },
-  {
-    headline: 'What needs attention?',
-    body: "Send the context you have. I'll help sort it into a plan or a fix."
-  }
-]
+// Intro copy is data, not UI strings, so it lives outside the i18n catalog. Each
+// supported copy language gets its own JSONL + fallback set; anything else falls
+// back to English rather than showing a half-translated intro.
+type CopyLocale = 'en' | 'pt'
+
+const FALLBACK_COPY_BY_LOCALE: Record<CopyLocale, IntroCopy[]> = {
+  en: [
+    {
+      headline: 'What are we moving today?',
+      body: "Send a bug, branch, plan, or rough idea. I'll inspect the repo and turn it into the next concrete step."
+    },
+    {
+      headline: "What's on your mind?",
+      body: "Bring the code, question, or stuck part. I'll read the room before making changes."
+    },
+    {
+      headline: 'What should Hermes look at?',
+      body: "Send the task, failing path, or half-formed plan. I'll help turn it into action."
+    },
+    {
+      headline: 'Where should we start?',
+      body: "Bring the problem, goal, or file. I'll inspect first and keep the next step concrete."
+    },
+    {
+      headline: 'What needs attention?',
+      body: "Send the context you have. I'll help sort it into a plan or a fix."
+    }
+  ],
+  pt: [
+    {
+      headline: 'O que vamos destravar hoje?',
+      body: 'Mande um bug, uma branch, um plano ou uma ideia solta. Eu inspeciono o repositório e transformo isso no próximo passo concreto.'
+    },
+    {
+      headline: 'O que você está pensando?',
+      body: 'Traga o código, a pergunta ou a parte que travou. Eu entendo o contexto antes de mexer em qualquer coisa.'
+    },
+    {
+      headline: 'O que o Hermes deve olhar?',
+      body: 'Mande a tarefa, o caminho que está falhando ou o plano pela metade. Eu ajudo a transformar em ação.'
+    },
+    {
+      headline: 'Por onde a gente começa?',
+      body: 'Traga o problema, o objetivo ou o arquivo. Eu investigo primeiro e mantenho o próximo passo concreto.'
+    },
+    {
+      headline: 'O que precisa de atenção?',
+      body: 'Mande o contexto que você tem. Eu ajudo a organizar isso em um plano ou em uma correção.'
+    }
+  ]
+}
+
+const FALLBACK_COPY = FALLBACK_COPY_BY_LOCALE.en
+
+function copyLocale(locale: string): CopyLocale {
+  return locale === 'pt' ? 'pt' : 'en'
+}
 
 function normalizeKey(value?: string): string {
   return normalize(value)
@@ -103,18 +140,48 @@ function parseIntroCopy(raw: string): Record<string, IntroCopy[]> {
   return byPersonality
 }
 
-const INTRO_COPY_BY_PERSONALITY = parseIntroCopy(introCopyJsonl)
-
-function neutralCopy(): IntroCopy[] {
-  return INTRO_COPY_BY_PERSONALITY.none || INTRO_COPY_BY_PERSONALITY.default || FALLBACK_COPY
+const INTRO_COPY_BY_LOCALE: Record<CopyLocale, Record<string, IntroCopy[]>> = {
+  en: parseIntroCopy(introCopyJsonl),
+  pt: parseIntroCopy(introCopyPtJsonl)
 }
 
-function fallbackCopyForPersonality(personalityKey: string): IntroCopy[] {
+function neutralCopy(locale: CopyLocale): IntroCopy[] {
+  const byPersonality = INTRO_COPY_BY_LOCALE[locale]
+
+  return byPersonality.none || byPersonality.default || FALLBACK_COPY_BY_LOCALE[locale]
+}
+
+function fallbackCopyForPersonality(personalityKey: string, locale: CopyLocale): IntroCopy[] {
   if (NEUTRAL_PERSONALITIES.has(personalityKey)) {
-    return neutralCopy()
+    return neutralCopy(locale)
   }
 
   const label = titleize(personalityKey)
+
+  if (locale === 'pt') {
+    return [
+      {
+        headline: `O modo ${label} está ligado. No que vamos trabalhar?`,
+        body: 'Mande a tarefa, o arquivo ou a ideia solta. Eu uso a voz que você configurou e mantenho o trabalho ancorado neste repositório.'
+      },
+      {
+        headline: `O que o Hermes ${label} precisa ver?`,
+        body: 'Traga o contexto ou a parte que travou. Eu me adapto à personalidade que você configurou.'
+      },
+      {
+        headline: `O modo ${label} está pronto.`,
+        body: 'Mande o problema, o arquivo ou a ideia. Eu sigo a personalidade que você configurou.'
+      },
+      {
+        headline: `O que o Hermes ${label} deve encarar?`,
+        body: 'Solte a tarefa aqui. Eu mantenho o trabalho ancorado no repositório.'
+      },
+      {
+        headline: 'Por onde a gente começa?',
+        body: `Me dê o contexto que eu respondo no modo ${label}.`
+      }
+    ]
+  }
 
   return [
     {
@@ -146,19 +213,21 @@ function pickCopy(copies: IntroCopy[], seed = 0): IntroCopy {
 
 const WORDMARK = 'HERMES AGENT'
 
-function resolveCopy(personality?: string, seed?: number): IntroCopy {
+function resolveCopy(personality: string | undefined, seed: number | undefined, locale: CopyLocale): IntroCopy {
   const personalityKey = normalizeKey(personality)
+  const byPersonality = INTRO_COPY_BY_LOCALE[locale]
 
   const copies = NEUTRAL_PERSONALITIES.has(personalityKey)
-    ? INTRO_COPY_BY_PERSONALITY[personalityKey] || neutralCopy()
-    : INTRO_COPY_BY_PERSONALITY[personalityKey] || fallbackCopyForPersonality(personalityKey)
+    ? byPersonality[personalityKey] || neutralCopy(locale)
+    : byPersonality[personalityKey] || fallbackCopyForPersonality(personalityKey, locale)
 
   return pickCopy(copies, seed)
 }
 
 export function Intro({ personality, seed }: IntroProps) {
+  const { locale } = useI18n()
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
-  const copy = resolveCopy(personality, mountSeed + (seed ?? 0))
+  const copy = resolveCopy(personality, mountSeed + (seed ?? 0), copyLocale(locale))
 
   return (
     <div

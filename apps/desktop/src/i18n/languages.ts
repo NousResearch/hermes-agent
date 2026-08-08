@@ -34,6 +34,12 @@ export const LOCALE_OPTIONS = [
     name: 'العربية',
     englishName: 'Arabic',
     configValue: 'ar'
+  },
+  {
+    id: 'pt',
+    name: 'Português',
+    englishName: 'Portuguese',
+    configValue: 'pt'
   }
 ] as const satisfies readonly { configValue: string; englishName: string; id: Locale; name: string }[]
 
@@ -79,7 +85,20 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   'ar-eg': 'ar',
   ar_eg: 'ar',
   arabic: 'ar',
-  العربية: 'ar'
+  العربية: 'ar',
+  // Portuguese — the catalog is written in Brazilian Portuguese, so the pt-BR
+  // tags are the primary intent; pt-PT speakers still land here rather than
+  // falling back to English.
+  pt: 'pt',
+  'pt-br': 'pt',
+  pt_br: 'pt',
+  'pt-pt': 'pt',
+  pt_pt: 'pt',
+  portuguese: 'pt',
+  português: 'pt',
+  portugues: 'pt',
+  brazilian: 'pt',
+  brasileiro: 'pt'
 }
 
 export function isLocale(value: unknown): value is Locale {

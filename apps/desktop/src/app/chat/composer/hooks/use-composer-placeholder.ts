@@ -28,6 +28,21 @@ export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: Us
   )
 
   const prevSessionIdRef = useRef(sessionId)
+  const prevPlaceholdersRef = useRef(newSessionPlaceholders)
+
+  // The locale resolves asynchronously (I18nProvider reads display.language from
+  // config after first paint), so the resting placeholder above is picked from
+  // the English catalog on a cold start. Re-roll when the catalog identity
+  // changes — otherwise a non-English desktop shows an English placeholder until
+  // the user switches sessions.
+  useEffect(() => {
+    if (prevPlaceholdersRef.current === newSessionPlaceholders) {
+      return
+    }
+
+    prevPlaceholdersRef.current = newSessionPlaceholders
+    setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
+  }, [followUpPlaceholders, newSessionPlaceholders, sessionId])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {

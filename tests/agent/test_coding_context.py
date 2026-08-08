@@ -201,6 +201,60 @@ class TestHomeDotfilesGuard:
         assert cc.is_coding_context(platform="cli", cwd=proj, config=cfg) is True
 
 
+class TestStrayGitDebrisGuard:
+    """`.git` debris must not manufacture a workspace.
+
+    These assert on `_git_root` directly rather than through
+    `is_coding_context`, because the end-to-end path only misbehaves when the
+    *real* temp dir happens to be polluted — which is true on some machines and
+    not on CI. Testing the helper makes the contract hold everywhere.
+    """
+
+    def test_empty_git_directory_is_not_a_repo(self, tmp_path):
+        # `git rev-parse` exits 128 on this tree; `.git/`.exists() does not.
+        (tmp_path / ".git").mkdir()
+        assert cc._git_root(tmp_path) is None
+
+    def test_git_directory_with_head_is_a_repo(self, tmp_path):
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        assert cc._git_root(tmp_path) == tmp_path.resolve()
+
+    def test_git_file_worktree_is_a_repo(self, tmp_path):
+        # Linked worktrees and submodules use a `.git` *file* holding `gitdir:`.
+        (tmp_path / ".git").write_text("gitdir: /elsewhere/.git/worktrees/wt\n")
+        assert cc._git_root(tmp_path) == tmp_path.resolve()
+
+    def test_shared_temp_root_is_never_a_repo_root(self, tmp_path, monkeypatch):
+        """A `.git` in the shared temp dir must not claim every path under it.
+
+        Same guard `_marker_root` already applies to stray manifests: anything
+        world-writable is not somebody's workspace.
+        """
+        fake_tmp = tmp_path / "shared-tmp"
+        (fake_tmp / "work").mkdir(parents=True)
+        real_git = fake_tmp / ".git"
+        real_git.mkdir()
+        (real_git / "HEAD").write_text("ref: refs/heads/main\n")
+        # Patch utils, where the walk actually lives — cc._git_root delegates.
+        monkeypatch.setattr("utils.tempfile.gettempdir", lambda: str(fake_tmp))
+        assert cc._git_root(fake_tmp / "work") is None
+
+    def test_real_repo_under_the_temp_root_still_counts(self, tmp_path, monkeypatch):
+        """Only the temp root itself is skipped — not everything beneath it.
+
+        Pytest's own `tmp_path` lives under the temp root, so over-broad
+        skipping here would blind every workspace test in the suite.
+        """
+        fake_tmp = tmp_path / "shared-tmp"
+        repo = fake_tmp / "projects" / "app"
+        repo.mkdir(parents=True)
+        (repo / ".git").mkdir()
+        (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        # Patch utils, where the walk actually lives — cc._git_root delegates.
+        monkeypatch.setattr("utils.tempfile.gettempdir", lambda: str(fake_tmp))
+        assert cc._git_root(repo) == repo.resolve()
+
 
 # ── prompt assembly integration ─────────────────────────────────────────────
 

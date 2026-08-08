@@ -1773,22 +1773,31 @@ def _build_child_agent(
         child_optional_kwargs["max_tokens"] = child_max_tokens
 
     # Each child gets a DEDICATED SessionDB connection instead of the parent's
-    # live object. The parent's handle is owned by the parent's lifecycle:
-    # cron run_job closes its per-job SessionDB in its finally block while a
-    # fire-and-forget background delegation subagent is still flushing on a
-    # daemon thread, and every subsequent flush then hits the closed handle
-    # ('NoneType' object has no attribute 'execute') — the failure is
-    # downgraded to a WARNING and the child's entire transcript is silently
-    # dropped (#81267). The same teardown-while-child-alive shape exists for
-    # gateway session end and /new mid-delegation, so the child must never
-    # share the parent's handle. A dedicated handle is released by the
-    # child's own close() via the owned flag set below.
+    # live object. The parent's handle is owned by the parent's lifecycle
+    # (cron run_job's finally block, gateway session end, /new) and can be
+    # closed while a fire-and-forget background child is still flushing on a
+    # daemon thread — every subsequent flush then hits the closed handle and
+    # the child's transcript is silently dropped (#81267). A dedicated handle
+    # can't be closed out from under the child; it is released by the child's
+    # own close() via the owned flag set below. It MUST point at the same
+    # database FILE as the parent's handle: parents can hold non-default
+    # per-profile handles (tui_gateway opens SessionDB(db_path=<profile>/
+    # state.db) for non-launch profiles), and a bare SessionDB() would write
+    # the child's transcript into the launch profile's db, breaking
+    # parent_session_id lineage and session_search. AsyncSessionDB wrappers
+    # (gateway) forward .db_path via __getattr__, so this works through them.
     child_session_db = None
-    if getattr(parent_agent, "_session_db", None) is not None:
+    parent_session_db = getattr(parent_agent, "_session_db", None)
+    if parent_session_db is not None:
         try:
             from hermes_state import SessionDB
 
-            child_session_db = SessionDB()
+            _parent_db_path = getattr(parent_session_db, "db_path", None)
+            child_session_db = (
+                SessionDB(db_path=_parent_db_path)
+                if _parent_db_path is not None
+                else SessionDB()
+            )
         except Exception:
             logger.debug(
                 "subagent: failed to open dedicated SessionDB; child persistence disabled",

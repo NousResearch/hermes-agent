@@ -364,6 +364,55 @@ class TestDelegateTask(unittest.TestCase):
             _, kwargs = MockAgent.call_args
             self.assertIsNone(kwargs["session_db"])
 
+    def test_child_dedicated_db_follows_parents_db_path(self):
+        """Per-profile parents: the child's dedicated handle must target the
+        parent's database FILE, not the launch profile's default state.db.
+
+        tui_gateway hands agents dedicated per-profile handles
+        (``SessionDB(db_path=<profile_home>/state.db)`` via
+        ``_transfer_db_to_agent``). A bare ``SessionDB()`` in
+        ``_build_child_agent`` would write the child's transcript into the
+        launch profile's db — cross-profile leakage that breaks
+        ``parent_session_id`` lineage and ``session_search``.
+        """
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_db_path = Path(tmp) / "profile-work" / "state.db"
+            profile_db_path.parent.mkdir(parents=True)
+            parent = _make_mock_parent(depth=0)
+            parent_db = SessionDB(db_path=profile_db_path)
+            parent._session_db = parent_db
+            child_db = None
+            try:
+                with patch("run_agent.AIAgent") as MockAgent:
+                    MockAgent.return_value = MagicMock()
+
+                    _build_child_agent(
+                        task_index=0,
+                        goal="test",
+                        context=None,
+                        toolsets=None,
+                        model="test-model",
+                        max_iterations=5,
+                        parent_agent=parent,
+                        task_count=1,
+                    )
+
+                    _, kwargs = MockAgent.call_args
+
+                child_db = kwargs["session_db"]
+                self.assertIsInstance(child_db, SessionDB)
+                self.assertIsNot(child_db, parent_db)
+                self.assertEqual(
+                    str(child_db.db_path), str(parent_db.db_path)
+                )
+            finally:
+                if child_db is not None:
+                    child_db.close()
+                parent_db.close()
+
     def test_nous_child_rederives_api_mode_from_model(self):
         """Portal is dual-wire — same provider + different model prefix must
         not inherit the parent's Messages/chat_completions mode verbatim."""

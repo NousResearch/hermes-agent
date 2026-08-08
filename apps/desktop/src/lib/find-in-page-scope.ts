@@ -150,6 +150,13 @@ function highlightMatches(root: Element, query: string): HTMLElement[] {
     // Search within this text node. Splits may invalidate `textNode`'s
     // identity, so we re-read it from the parent each iteration.
     let nodeValue = textNode.nodeValue ?? ''
+    // Capture the text node's own next sibling BEFORE any replaceChild:
+    // once the original node is detached, `.nextSibling` reads null and
+    // the outer walker would stop, skipping every following sibling
+    // subtree (`<div>needle<span>needle</span></div>` searching "needle"
+    // matched only the first). `continueFrom` is the sibling AFTER this
+    // text node — for a fully-consumed match, the walker resumes there.
+    const continueFrom = textNode.nextSibling
 
     while (true) {
       const lower = nodeValue.toLowerCase()
@@ -205,7 +212,15 @@ function highlightMatches(root: Element, query: string): HTMLElement[] {
       nodeValue = afterNode.nodeValue ?? ''
     }
 
-    current = textNode ? textNode.nextSibling : null
+    if (textNode) {
+      current = textNode.nextSibling
+    } else {
+      // The whole text node was consumed by matches — `textNode` was
+      // detached by replaceChild so its own `.nextSibling` is null. Resume
+      // the outer walker from the parent's next sibling (captured before
+      // the first replaceChild), so the sibling subtree is still searched.
+      current = continueFrom
+    }
   }
 
   return marks

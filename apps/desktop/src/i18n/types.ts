@@ -98,6 +98,9 @@ export interface Translations {
     revealInSidebar: string
     copyPath: string
     copyRelativePath: string
+    /** Insert the entry into the composer as an inline `@file:`/`@folder:`
+     *  path reference — no upload, just the address. */
+    sendToChat: string
     rename: string
     delete: string
     renameTitle: string
@@ -2190,6 +2193,8 @@ export interface Translations {
     openInBrowser: string
     linkHint: string
     sourceLineTitle: string
+    /** Context-menu action: send the text-selected line range to the chat. */
+    sendSelectionToChat: (start: number, end?: number) => string
     source: string
     renderedPreview: string
     diff: string

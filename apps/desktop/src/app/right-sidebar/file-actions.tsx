@@ -1,6 +1,8 @@
 import { useStore } from '@nanostores/react'
 import { type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useRef, useState } from 'react'
 
+import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/composer/focus'
+import type { InlineRefInput } from '@/app/chat/composer/inline-refs'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import {
   ContextMenu,
@@ -62,6 +64,25 @@ export function FileEntryContextMenu({ children, isDirectory, name, path, relati
   const target: FileActionTarget = { isDirectory, name, path }
   const revealLabel = pickRevealLabel(m.revealFinder, m.revealExplorer, m.revealFileManager)
 
+  // Insert the entry's ADDRESS into the active chat as an inline
+  // `@file:`/`@folder:` ref — the gateway resolves the path itself; nothing is
+  // uploaded. Workspace-relative when possible, absolute otherwise (still
+  // resolvable). The chip SHOWS just the name (`label`) — the full path rides
+  // the ref value and the chip's hover title, so Hermes reads the real address.
+  const sendToChat = () => {
+    if (!path) {
+      return
+    }
+
+    const kind = isDirectory ? 'folder' : 'file'
+    const value = relativeTo ? toRelativePath(path, relativeTo) : path
+
+    const ref: InlineRefInput = { kind, label: name, value }
+
+    requestComposerInsertRefs([ref], { target: 'main' })
+    requestComposerFocus('main')
+  }
+
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
@@ -80,6 +101,7 @@ export function FileEntryContextMenu({ children, isDirectory, name, path, relati
             {m.copyRelativePath}
           </ContextMenuItem>
         )}
+        <ContextMenuItem onSelect={sendToChat}>{m.sendToChat}</ContextMenuItem>
         {localFs && (
           <>
             <ContextMenuSeparator />

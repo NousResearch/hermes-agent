@@ -52,6 +52,7 @@ export const en: Translations = {
     revealInSidebar: 'Reveal in filetree',
     copyPath: 'Copy Path',
     copyRelativePath: 'Copy Relative Path',
+    sendToChat: 'Send to Chat',
     rename: 'Rename…',
     delete: 'Delete',
     renameTitle: 'Rename',
@@ -2592,6 +2593,8 @@ export const en: Translations = {
     openInBrowser: 'Open in browser',
     linkHint: '⌘/Ctrl-click for preview pane',
     sourceLineTitle: 'Click to select · shift-click to extend · drag to composer',
+    sendSelectionToChat: (start, end) =>
+      end && end > start ? `Send lines ${start}–${end} to chat` : `Send line ${start} to chat`,
     source: 'SOURCE',
     renderedPreview: 'PREVIEW',
     diff: 'DIFF',

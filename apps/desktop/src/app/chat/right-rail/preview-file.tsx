@@ -20,8 +20,10 @@ import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { chunkTextLines, useFixedRowWindow } from '@/components/chat/fixed-row-window'
 import { LazyShiki as ShikiHighlighter } from '@/components/chat/shiki-highlighter'
 import { PageLoader } from '@/components/page-loader'
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { Tip } from '@/components/ui/tooltip'
 import { translateNow, useI18n } from '@/i18n'
+import { pathLabel } from '@/lib/chat-runtime'
 import {
   desktopFileDiff,
   desktopFsCacheKey,
@@ -37,6 +39,8 @@ import type { PreviewTarget } from '@/store/preview'
 import { setPreviewDirty } from '@/store/preview-edit'
 import { $connection, $currentCwd } from '@/store/session'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
+
+import { type SourceLineRange, sourceSelectionLineRange } from './source-selection'
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
@@ -500,6 +504,75 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
   const [selection, setSelection] = useState<LineSelection | null>(null)
   const inSelection = (line: number) => selection != null && line >= selection.start && line <= selection.end
 
+  // Text-drag selection → "send lines to chat". The selection is read the
+  // moment the context menu OPENS (a right-click keeps the browser selection;
+  // clicking a menu item later would collapse it), mapped to file line numbers
+  // via the chunked `.line` spans, and held until the menu closes.
+  const gridRef = useRef<HTMLDivElement | null>(null)
+  const [textSelRange, setTextSelRange] = useState<SourceLineRange | null>(null)
+
+  // Live "is something selected inside the grid" flag. Radix's trigger
+  // unconditionally preventDefaults the right-click once mounted, which would
+  // swallow the browser's native menu (Copy / Inspect) on a no-selection
+  // right-click. Feeding the flag to the trigger's `disabled` keeps the native
+  // menu whenever there is nothing to send — Radix skips preventDefault while
+  // disabled.
+  const [hasLiveSelection, setHasLiveSelection] = useState(false)
+
+  useEffect(() => {
+    const onChange = () => {
+      const grid = gridRef.current
+      const native = window.getSelection()
+      const range = native && native.rangeCount > 0 ? native.getRangeAt(0) : null
+      const next = Boolean(grid && range && !range.collapsed && grid.contains(range.commonAncestorContainer))
+
+      setHasLiveSelection(prev => (prev === next ? prev : next))
+    }
+
+    document.addEventListener('selectionchange', onChange)
+
+    return () => document.removeEventListener('selectionchange', onChange)
+  }, [])
+
+  const handleMenuOpenChange = useCallback((open: boolean) => {
+    if (!open) {
+      setTextSelRange(null)
+
+      return
+    }
+
+    const grid = gridRef.current
+    const native = typeof window !== 'undefined' ? window.getSelection() : null
+    const range = native && native.rangeCount > 0 ? native.getRangeAt(0) : null
+
+    setTextSelRange(grid && range ? sourceSelectionLineRange(grid, range) : null)
+  }, [])
+
+  const sendTextSelectionToChat = useCallback(() => {
+    if (!filePath || !textSelRange) {
+      return
+    }
+
+    // droppedFileInlineRef quotes values containing ':' and resolves the path
+    // against cwd — the same ref a gutter drag / Ctrl+L produces. The display
+    // label shows just `name:range`; the full path rides the ref value.
+    const refText = droppedFileInlineRef(
+      { line: textSelRange.start, lineEnd: textSelRange.end > textSelRange.start ? textSelRange.end : undefined, path: filePath },
+      $currentCwd.get()
+    )
+
+    if (!refText) {
+      return
+    }
+
+    const rangeLabel = textSelRange.end > textSelRange.start ? `${textSelRange.start}-${textSelRange.end}` : `${textSelRange.start}`
+
+    requestComposerInsertRefs([{ kind: 'line', label: `${pathLabel(filePath)}:${rangeLabel}`, value: refText.replace(/^@line:/, '') }], {
+      target: 'active'
+    })
+    requestComposerFocus('active')
+  }, [filePath, textSelRange])
+
   const handleLineClick = (event: ReactMouseEvent, line: number) => {
     if (!filePath) {
       return
@@ -563,54 +636,69 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
   }, [filePath, selection])
 
   return (
-    <div className="h-full overflow-auto" onScroll={onScroll} ref={scrollerRef}>
-      <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)] font-mono text-[0.7rem] leading-relaxed">
-        {beforeRows > 0 && <div aria-hidden className="col-span-2" style={{ height: beforeRows * SOURCE_LINE_PX }} />}
-        {visibleChunks.map(chunk => (
-          <Fragment key={chunk.start}>
-            <div className="select-none text-right text-muted-foreground/55">
-              {chunk.lines.map((_lineText, offset) => {
-                const line = chunk.start + offset + 1
-                const selected = inSelection(line)
+    <ContextMenu onOpenChange={handleMenuOpenChange}>
+      <ContextMenuTrigger asChild disabled={!filePath || !hasLiveSelection}>
+        <div className="h-full overflow-auto" onScroll={onScroll} ref={scrollerRef}>
+          <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)] font-mono text-[0.7rem] leading-relaxed" ref={gridRef}>
+            {beforeRows > 0 && <div aria-hidden className="col-span-2" style={{ height: beforeRows * SOURCE_LINE_PX }} />}
+            {visibleChunks.map(chunk => (
+              <Fragment key={chunk.start}>
+                <div className="select-none text-right text-muted-foreground/55">
+                  {chunk.lines.map((_lineText, offset) => {
+                    const line = chunk.start + offset + 1
+                    const selected = inSelection(line)
 
-                return (
-                  <div
-                    className={cn(
-                      'h-5 w-9 pr-2 leading-5 tabular-nums transition-colors',
-                      filePath && 'cursor-pointer',
-                      selected
-                        ? 'bg-amber-200/45 text-amber-900 dark:bg-amber-300/20 dark:text-amber-100'
-                        : filePath && 'hover:text-foreground'
-                    )}
-                    draggable={Boolean(filePath)}
-                    key={line}
-                    onClick={event => handleLineClick(event, line)}
-                    onDragStart={event => handleDragStart(event, line)}
-                    title={filePath ? t.preview.sourceLineTitle : undefined}
+                    return (
+                      <div
+                        className={cn(
+                          'h-5 w-9 pr-2 leading-5 tabular-nums transition-colors',
+                          filePath && 'cursor-pointer',
+                          selected
+                            ? 'bg-amber-200/45 text-amber-900 dark:bg-amber-300/20 dark:text-amber-100'
+                            : filePath && 'hover:text-foreground'
+                        )}
+                        draggable={Boolean(filePath)}
+                        key={line}
+                        onClick={event => handleLineClick(event, line)}
+                        onDragStart={event => handleDragStart(event, line)}
+                        title={filePath ? t.preview.sourceLineTitle : undefined}
+                      >
+                        {line}
+                      </div>
+                    )
+                  })}
+                </div>
+                <div
+                  className="preview-source-code min-w-0 [&_pre]:m-0"
+                  data-chunk-start={chunk.start}
+                  data-selectable-text="true"
+                >
+                  <ShikiHighlighter
+                    addDefaultStyles={false}
+                    as="div"
+                    defaultColor="light-dark()"
+                    delay={80}
+                    language={language || 'text'}
+                    showLanguage={false}
+                    theme={SHIKI_THEME}
                   >
-                    {line}
-                  </div>
-                )
-              })}
-            </div>
-            <div className="preview-source-code min-w-0 [&_pre]:m-0" data-selectable-text="true">
-              <ShikiHighlighter
-                addDefaultStyles={false}
-                as="div"
-                defaultColor="light-dark()"
-                delay={80}
-                language={language || 'text'}
-                showLanguage={false}
-                theme={SHIKI_THEME}
-              >
-                {chunk.text}
-              </ShikiHighlighter>
-            </div>
-          </Fragment>
-        ))}
-        {afterRows > 0 && <div aria-hidden className="col-span-2" style={{ height: afterRows * SOURCE_LINE_PX }} />}
-      </div>
-    </div>
+                    {chunk.text}
+                  </ShikiHighlighter>
+                </div>
+              </Fragment>
+            ))}
+            {afterRows > 0 && <div aria-hidden className="col-span-2" style={{ height: afterRows * SOURCE_LINE_PX }} />}
+          </div>
+        </div>
+      </ContextMenuTrigger>
+      {filePath && textSelRange && (
+        <ContextMenuContent>
+          <ContextMenuItem onSelect={sendTextSelectionToChat}>
+            {t.preview.sendSelectionToChat(textSelRange.start, textSelRange.end > textSelRange.start ? textSelRange.end : undefined)}
+          </ContextMenuItem>
+        </ContextMenuContent>
+      )}
+    </ContextMenu>
   )
 }
 

@@ -52,6 +52,7 @@ export const ja = defineLocale({
     revealInSidebar: 'ファイルツリーで表示',
     copyPath: 'パスをコピー',
     copyRelativePath: '相対パスをコピー',
+    sendToChat: 'チャットに送信',
     rename: '名前を変更…',
     delete: '削除',
     renameTitle: '名前を変更',
@@ -2414,6 +2415,8 @@ export const ja = defineLocale({
     openInBrowser: 'ブラウザで開く',
     linkHint: '⌘/Ctrl+クリックでプレビューペイン',
     sourceLineTitle: 'クリックして選択 · Shift クリックで拡張 · コンポーザーにドラッグ',
+    sendSelectionToChat: (start, end) =>
+      end && end > start ? `${start}–${end} 行目をチャットに送信` : `${start} 行目をチャットに送信`,
     source: 'ソース',
     renderedPreview: 'プレビュー',
     diff: '差分',

@@ -46,6 +46,7 @@ export const ar = defineLocale({
     revealInSidebar: 'إظهار في شجرة الملفات',
     copyPath: 'نسخ المسار',
     copyRelativePath: 'نسخ المسار النسبي',
+    sendToChat: 'إرسال إلى المحادثة',
     rename: 'إعادة تسمية...',
     delete: 'حذف',
     renameTitle: 'إعادة تسمية',
@@ -2157,6 +2158,8 @@ export const ar = defineLocale({
     openInBrowser: 'فتح في المتصفح',
     linkHint: '⌘/Ctrl-نقر لجزء المعاينة',
     sourceLineTitle: 'انقر للتحديد · shift-نقر للتوسيع · اسحب إلى المُنشئ',
+    sendSelectionToChat: (start, end) =>
+      end && end > start ? `إرسال الأسطر ${start}–${end} إلى المحادثة` : `إرسال السطر ${start} إلى المحادثة`,
     source: 'المصدر',
     renderedPreview: 'المعاينة',
     diff: 'الفرق',

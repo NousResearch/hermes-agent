@@ -52,6 +52,7 @@ export const zhHant = defineLocale({
     revealInSidebar: '在檔案樹中顯示',
     copyPath: '複製路徑',
     copyRelativePath: '複製相對路徑',
+    sendToChat: '傳送至對話',
     rename: '重新命名…',
     delete: '刪除',
     renameTitle: '重新命名',
@@ -2337,6 +2338,8 @@ export const zhHant = defineLocale({
     openInBrowser: '在瀏覽器中開啟',
     linkHint: '⌘/Ctrl+點擊在預覽窗格開啟',
     sourceLineTitle: '點擊選取 · shift 點擊擴展 · 拖曳至輸入框',
+    sendSelectionToChat: (start, end) =>
+      end && end > start ? `將第 ${start}–${end} 行傳送至對話` : `將第 ${start} 行傳送至對話`,
     source: '原始碼',
     renderedPreview: '預覽',
     diff: '差異',

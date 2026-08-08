@@ -52,6 +52,7 @@ export const zh: Translations = {
     revealInSidebar: '在文件树中显示',
     copyPath: '复制路径',
     copyRelativePath: '复制相对路径',
+    sendToChat: '发送到会话',
     rename: '重命名…',
     delete: '删除',
     renameTitle: '重命名',
@@ -2772,6 +2773,8 @@ export const zh: Translations = {
     openInBrowser: '在浏览器中打开',
     linkHint: '⌘/Ctrl+点击在预览面板打开',
     sourceLineTitle: '点击选择 · shift 点击扩展 · 拖到输入框',
+    sendSelectionToChat: (start, end) =>
+      end && end > start ? `将第 ${start}–${end} 行发送到会话` : `将第 ${start} 行发送到会话`,
     source: '源码',
     renderedPreview: '预览',
     diff: '差异',

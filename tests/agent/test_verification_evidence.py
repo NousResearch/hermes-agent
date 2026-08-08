@@ -5,9 +5,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from agent.verification_evidence import (
+    _summarize_output,
     classify_verification_command,
     mark_workspace_edited,
     record_terminal_result,
+    record_verify_run,
     verification_status,
 )
 
@@ -82,6 +84,113 @@ def test_shell_wrappers_match_but_echo_does_not(tmp_path, monkeypatch):
     assert echoed is None
 
 
+def test_classify_verification_command_redacts_embedded_secret(tmp_path, monkeypatch):
+    """A secret typed inline in a verification command must not survive
+    into the stored ``command`` field (#verification_status is later
+    replayed verbatim to the TUI/desktop client over the ``verification.status``
+    RPC, so an unredacted command persists a credential onto a wire surface)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    token = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
+
+    evidence = classify_verification_command(
+        f"pnpm run test -- --token={token}",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+    )
+
+    assert evidence is not None
+    # Matching/classification still runs against the real command.
+    assert evidence.kind == "test"
+    assert token not in evidence.command
+    assert evidence.command != f"pnpm run test -- --token={token}"
+
+
+def test_record_terminal_result_persists_redacted_command_end_to_end(tmp_path, monkeypatch):
+    """The full record → verification_status() round trip (the RPC-exposed
+    path) must never carry the raw secret, not just the in-memory dataclass."""
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _node_project(tmp_path)
+    token = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
+
+    record_terminal_result(
+        command=f"pnpm run test -- --token={token}",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="ok",
+    )
+
+    status = verification_status(session_id="s1", cwd=tmp_path)
+    assert token not in json.dumps(status)
+
+    with sqlite3.connect(home / "verification_evidence.db") as conn:
+        row = conn.execute("SELECT command FROM verification_events").fetchone()
+    assert token not in row[0]
+
+
+def test_summarize_output_redacts_embedded_secret():
+    """_summarize_output only truncated, never redacted, the command's
+    stdout/stderr — the command field's own redaction (above) doesn't cover
+    a secret that shows up in what the command PRINTS (e.g. a test runner
+    echoing a fixture's API key, or a failed curl dumping its auth header)."""
+    token = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
+
+    summary = _summarize_output(f"running checks...\nAuthorization: Bearer {token}\nok")
+
+    assert token not in summary
+
+
+def test_record_terminal_result_persists_redacted_output_end_to_end(tmp_path, monkeypatch):
+    """Same round trip as the command-redaction test above, but for a secret
+    that appears in the command's OUTPUT rather than in the command line
+    itself."""
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _node_project(tmp_path)
+    token = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
+
+    record_terminal_result(
+        command="pnpm run test",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output=f"running checks...\nAuthorization: Bearer {token}\nok",
+    )
+
+    status = verification_status(session_id="s1", cwd=tmp_path)
+    assert token not in json.dumps(status)
+
+    with sqlite3.connect(home / "verification_evidence.db") as conn:
+        row = conn.execute("SELECT output_summary FROM verification_events").fetchone()
+    assert token not in row[0]
+
+
+def test_record_verify_run_persists_redacted_output_end_to_end(tmp_path, monkeypatch):
+    """hermes verify's own ledger write (record_verify_run, a separate
+    construction site from record_terminal_result) must redact its output
+    the same way — a start command or test runner can echo a real secret
+    (e.g. a .env value dumped by a misconfigured dev server) into stdout."""
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _node_project(tmp_path)
+    token = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
+
+    record_verify_run(
+        root=tmp_path,
+        session_id="s1",
+        ok=True,
+        output=f"booting dev server...\nAuthorization: Bearer {token}\nready",
+    )
+
+    status = verification_status(session_id="s1", cwd=tmp_path)
+    assert token not in json.dumps(status)
+
+    with sqlite3.connect(home / "verification_evidence.db") as conn:
+        row = conn.execute("SELECT output_summary FROM verification_events").fetchone()
+    assert token not in row[0]
 
 
 def test_temp_script_records_ad_hoc_evidence_without_canonical_suite(tmp_path, monkeypatch):

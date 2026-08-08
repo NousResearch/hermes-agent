@@ -1,0 +1,218 @@
+{
+  "version": "1.0",
+  "default_policy": "fail_closed",
+  "states": [
+    "healthy",
+    "suspect",
+    "transient_failure",
+    "systemic_failure",
+    "stale_running",
+    "recoverable",
+    "repair_in_progress",
+    "recovered",
+    "quarantined",
+    "human_required"
+  ],
+  "transitions": [
+    {
+      "from": "healthy",
+      "to": "suspect",
+      "rule_id": "HEALTHY_TO_SUSPECT_2X_INTERVAL_V1",
+      "condition": "now - last_expected_or_terminal_at > 2 x expected_interval",
+      "action": "none",
+      "automatic": true
+    },
+    {
+      "from": "healthy",
+      "to": "systemic_failure",
+      "rule_id": "HEALTHY_TO_SYSTEMIC_FAILURE_LEDGER_V1",
+      "condition": "ledger/runtime/state-store produces a clear infrastructure fault",
+      "action": "none",
+      "automatic": true
+    },
+    {
+      "from": "suspect",
+      "to": "healthy",
+      "rule_id": "SUSPECT_TO_HEALTHY_EVIDENCE_RECOVERED_V1",
+      "condition": "required evidence becomes complete and conflict-free",
+      "action": "none",
+      "automatic": true
+    },
+    {
+      "from": "suspect",
+      "to": "transient_failure",
+      "rule_id": "SUSPECT_TO_TRANSIENT_FAILURE_PROVIDER_V1",
+      "condition": "terminal failed execution is classified as provider/auth/quota transient",
+      "action": "none",
+      "automatic": true
+    },
+    {
+      "from": "suspect",
+      "to": "stale_running",
+      "rule_id": "SUSPECT_TO_STALE_RUNNING_MAX_RUNTIME_V1",
+      "condition": "running or claimed execution exceeds max_runtime and has no terminal evidence",
+      "action": "reset_job",
+      "automatic": false
+    },
+    {
+      "from": "suspect",
+      "to": "systemic_failure",
+      "rule_id": "SUSPECT_TO_SYSTEMIC_FAILURE_LEDGER_V1",
+      "condition": "scheduler, WAL, schema, or ledger evidence is broken",
+      "action": "repair_state_store",
+      "automatic": false
+    },
+    {
+      "from": "suspect",
+      "to": "quarantined",
+      "rule_id": "SUSPECT_TO_QUARANTINED_PARTIAL_V1",
+      "condition": "evidence is partial, conflicting, or otherwise incomplete",
+      "action": "escalate_to_human",
+      "automatic": false
+    },
+    {
+      "from": "transient_failure",
+      "to": "human_required",
+      "rule_id": "TRANSIENT_TO_HUMAN_REQUIRED_POLICY_BLOCK_V1",
+      "condition": "policy, provider, auth, or output policy blocks any safe fallback or rerun",
+      "action": "escalate_to_human",
+      "automatic": false
+    },
+    {
+      "from": "transient_failure",
+      "to": "recoverable",
+      "rule_id": "TRANSIENT_TO_RECOVERABLE_FALLBACK_OK_V1",
+      "condition": "fallback exists, policy permits it, and route budget remains",
+      "action": "switch_provider",
+      "automatic": false
+    },
+    {
+      "from": "transient_failure",
+      "to": "quarantined",
+      "rule_id": "TRANSIENT_TO_QUARANTINED_BUDGET_EXHAUSTED_V1",
+      "condition": "retry or route budget is exhausted or fallback is incompatible",
+      "action": "escalate_to_human",
+      "automatic": false
+    },
+    {
+      "from": "stale_running",
+      "to": "recoverable",
+      "rule_id": "STALE_RUNNING_TO_RECOVERABLE_RESET_READY_V1",
+      "condition": "reset preconditions pass and job is safe to reset",
+      "action": "reset_job",
+      "automatic": false
+    },
+    {
+      "from": "stale_running",
+      "to": "human_required",
+      "rule_id": "STALE_RUNNING_TO_HUMAN_REQUIRED_NONIDEMPOTENT_V1",
+      "condition": "job is non-idempotent or side effects are unknown",
+      "action": "escalate_to_human",
+      "automatic": false
+    },
+    {
+      "from": "systemic_failure",
+      "to": "repair_in_progress",
+      "rule_id": "SYSTEMIC_TO_REPAIR_IN_PROGRESS_LEASE_V1",
+      "condition": "repair action is explicitly approved and lease is acquired",
+      "action": "repair_state_store",
+      "automatic": false
+    },
+    {
+      "from": "recoverable",
+      "to": "repair_in_progress",
+      "rule_id": "RECOVERABLE_TO_REPAIR_IN_PROGRESS_LEASE_V1",
+      "condition": "recovery lease is acquired for the incident/job pair",
+      "action": "switch_provider",
+      "automatic": false
+    },
+    {
+      "from": "repair_in_progress",
+      "to": "recovered",
+      "rule_id": "REPAIR_IN_PROGRESS_TO_RECOVERED_READBACK_V1",
+      "condition": "post-action evidence is complete and read-back matches",
+      "action": "none",
+      "automatic": false
+    },
+    {
+      "from": "repair_in_progress",
+      "to": "quarantined",
+      "rule_id": "REPAIR_IN_PROGRESS_TO_QUARANTINED_FAILED_V1",
+      "condition": "action_failed or verification_failed",
+      "action": "escalate_to_human",
+      "automatic": false
+    },
+    {
+      "from": "recovered",
+      "to": "healthy",
+      "rule_id": "RECOVERED_TO_HEALTHY_NEXT_TERMINAL_V1",
+      "condition": "next terminal execution evidence is normal",
+      "action": "none",
+      "automatic": true
+    },
+    {
+      "from": "recovered",
+      "to": "suspect",
+      "rule_id": "RECOVERED_TO_SUSPECT_OBSERVATION_WINDOW_V1",
+      "condition": "observation window sees renewed freshness drift",
+      "action": "none",
+      "automatic": true
+    },
+    {
+      "from": "quarantined",
+      "to": "suspect",
+      "rule_id": "QUARANTINED_TO_SUSPECT_EVIDENCE_COMPLETE_V1",
+      "condition": "missing or conflicting evidence is resolved",
+      "action": "none",
+      "automatic": true
+    },
+    {
+      "from": "quarantined",
+      "to": "human_required",
+      "rule_id": "QUARANTINED_TO_HUMAN_REQUIRED_ESCALATION_V1",
+      "condition": "escalation SLA expires",
+      "action": "escalate_to_human",
+      "automatic": true
+    },
+    {
+      "from": "human_required",
+      "to": "suspect",
+      "rule_id": "HUMAN_REQUIRED_TO_SUSPECT_OVERRIDE_V1",
+      "condition": "approved override lands with fresh evidence",
+      "action": "none",
+      "automatic": false
+    },
+    {
+      "from": "human_required",
+      "to": "quarantined",
+      "rule_id": "HUMAN_REQUIRED_TO_QUARANTINED_DENY_V1",
+      "condition": "manual deny or override expiry",
+      "action": "none",
+      "automatic": true
+    }
+  ],
+  "rule_ids": [
+    "HEALTHY_TO_SUSPECT_2X_INTERVAL_V1",
+    "HEALTHY_TO_SYSTEMIC_FAILURE_LEDGER_V1",
+    "SUSPECT_TO_HEALTHY_EVIDENCE_RECOVERED_V1",
+    "SUSPECT_TO_TRANSIENT_FAILURE_PROVIDER_V1",
+    "SUSPECT_TO_STALE_RUNNING_MAX_RUNTIME_V1",
+    "SUSPECT_TO_SYSTEMIC_FAILURE_LEDGER_V1",
+    "SUSPECT_TO_QUARANTINED_PARTIAL_V1",
+    "TRANSIENT_TO_RECOVERABLE_FALLBACK_OK_V1",
+    "TRANSIENT_TO_HUMAN_REQUIRED_POLICY_BLOCK_V1",
+    "TRANSIENT_TO_QUARANTINED_BUDGET_EXHAUSTED_V1",
+    "STALE_RUNNING_TO_RECOVERABLE_RESET_READY_V1",
+    "STALE_RUNNING_TO_HUMAN_REQUIRED_NONIDEMPOTENT_V1",
+    "SYSTEMIC_TO_REPAIR_IN_PROGRESS_LEASE_V1",
+    "RECOVERABLE_TO_REPAIR_IN_PROGRESS_LEASE_V1",
+    "REPAIR_IN_PROGRESS_TO_RECOVERED_READBACK_V1",
+    "REPAIR_IN_PROGRESS_TO_QUARANTINED_FAILED_V1",
+    "RECOVERED_TO_HEALTHY_NEXT_TERMINAL_V1",
+    "RECOVERED_TO_SUSPECT_OBSERVATION_WINDOW_V1",
+    "QUARANTINED_TO_SUSPECT_EVIDENCE_COMPLETE_V1",
+    "QUARANTINED_TO_HUMAN_REQUIRED_ESCALATION_V1",
+    "HUMAN_REQUIRED_TO_SUSPECT_OVERRIDE_V1",
+    "HUMAN_REQUIRED_TO_QUARANTINED_DENY_V1"
+  ]
+}

@@ -20,6 +20,7 @@ from hermes_time import now as _hermes_now
 EXECUTIONS_FILE = get_hermes_home().resolve() / "cron" / "executions.db"
 MAX_TERMINAL_EXECUTIONS = 1000
 _TERMINAL_STATES = ("completed", "failed", "unknown")
+_DELIVERY_STATES = ("generated", "accepted", "failed", "uncertain_in_flight", "suppressed")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
 
@@ -36,30 +37,51 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA busy_timeout=5000")
     apply_wal_with_fallback(conn, db_label="cron/executions.db")
     conn.execute("PRAGMA synchronous=FULL")
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS executions (
-             id TEXT PRIMARY KEY,
-             job_id TEXT NOT NULL,
-             source TEXT NOT NULL,
-             process_id TEXT NOT NULL,
-             pid INTEGER NOT NULL,
-             process_started_at INTEGER,
-             status TEXT NOT NULL CHECK(status IN
-               ('claimed','running','completed','failed','unknown')),
-             claimed_at TEXT NOT NULL,
-             started_at TEXT,
-             finished_at TEXT,
-             error TEXT
-           )"""
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_executions_job_claimed "
-        "ON executions(job_id, claimed_at DESC, id DESC)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_executions_status_claimed "
-        "ON executions(status, claimed_at DESC, id DESC)"
-    )
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS executions (
+                 id TEXT PRIMARY KEY,
+                 job_id TEXT NOT NULL,
+                 source TEXT NOT NULL,
+                 process_id TEXT NOT NULL,
+                 pid INTEGER NOT NULL,
+                 process_started_at INTEGER,
+                 status TEXT NOT NULL CHECK(status IN
+                   ('claimed','running','completed','failed','unknown')),
+                 claimed_at TEXT NOT NULL,
+                 started_at TEXT,
+                 finished_at TEXT,
+                 error TEXT,
+                 delivery_state TEXT,
+                 receipt_path TEXT
+               )"""
+        )
+        existing_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(executions)").fetchall()
+        }
+        for column, definition in (
+            ("delivery_state", "TEXT"),
+            ("receipt_path", "TEXT"),
+        ):
+            if column not in existing_columns:
+                try:
+                    conn.execute(f"ALTER TABLE executions ADD COLUMN {column} {definition}")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_executions_job_claimed "
+            "ON executions(job_id, claimed_at DESC, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_executions_status_claimed "
+            "ON executions(status, claimed_at DESC, id DESC)"
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 @contextmanager
@@ -170,6 +192,28 @@ def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
         ).fetchone())
     _emit_execution_state(record)
     return record
+
+
+def record_delivery_state(
+    execution_id: str,
+    *,
+    state: str,
+    receipt_path: str,
+) -> Optional[Dict[str, Any]]:
+    """Attach durable delivery evidence while an execution remains in-flight."""
+    if state not in _DELIVERY_STATES:
+        raise ValueError(f"Unsupported delivery state: {state}")
+    with _transaction() as conn:
+        cur = conn.execute(
+            """UPDATE executions SET delivery_state=?, receipt_path=?
+               WHERE id=? AND status IN ('claimed','running')""",
+            (state, str(receipt_path), execution_id),
+        )
+        if cur.rowcount != 1:
+            return None
+        return _record(conn.execute(
+            "SELECT * FROM executions WHERE id=?", (execution_id,)
+        ).fetchone())
 
 
 def finish_execution(

@@ -1,0 +1,54 @@
+{
+  "fixture_id": "fx_suppressed_receipt_success",
+  "scenario": "suppressed_receipt_success",
+  "description": "A supported suppressed receipt still counts as healthy when the delivery contract explicitly allows suppression.",
+  "job": {
+    "id": "suppress1",
+    "name": "Suppressed receipt success",
+    "state": "scheduled",
+    "enabled": true,
+    "deliver": "local",
+    "schedule": {
+      "kind": "interval",
+      "minutes": 120,
+      "display": "every 120m"
+    },
+    "control_policy": {
+      "idempotent": true,
+      "side_effect_class": "read_only",
+      "rerun_policy": "automatic",
+      "delivery_contract": {
+        "mode": "local",
+        "receipt_required": false,
+        "suppressed_receipt_allowed": true
+      }
+    }
+  },
+  "evidence": [
+    {
+      "evidence_id": "ev_sup_exec",
+      "incident_id": "inc_sup",
+      "job_id": "suppress1",
+      "execution_id": "exec_sup_01",
+      "kind": "execution_state",
+      "source": "executions.db",
+      "observed_at": "2026-07-29T15:15:00+08:00",
+      "source_time": "2026-07-29T15:14:58+08:00",
+      "value": {
+        "status": "completed",
+        "delivery_state": "suppressed"
+      },
+      "source_ref": "sqlite:executions/id=exec_sup_01",
+      "content_hash": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      "freshness_seconds": 2,
+      "validation": "valid"
+    }
+  ],
+  "expected": {
+    "evidence_state": "complete",
+    "state": "healthy",
+    "recommended_action": "none",
+    "automatic_action_allowed": true,
+    "rule_id": "SUSPECT_TO_HEALTHY_EVIDENCE_RECOVERED_V1"
+  }
+}

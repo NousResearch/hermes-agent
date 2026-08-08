@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "audit.schema.json",
+  "title": "Hermes Cron Audit Event",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "audit_id",
+    "timestamp",
+    "incident_id",
+    "job_id",
+    "event_type",
+    "actor",
+    "evidence_refs",
+    "result"
+  ],
+  "properties": {
+    "audit_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timestamp": {
+      "$ref": "#/$defs/isoTimestamp"
+    },
+    "incident_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "job_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "execution_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "event_type": {
+      "enum": [
+        "incident_opened",
+        "evidence_recorded",
+        "verdict_recorded",
+        "action_planned",
+        "action_started",
+        "action_completed",
+        "action_failed",
+        "verification_failed",
+        "override_requested",
+        "override_approved",
+        "override_denied",
+        "state_transition",
+        "incident_closed"
+      ]
+    },
+    "actor": {
+      "type": "object",
+      "required": ["type", "id"],
+      "properties": {
+        "type": {
+          "enum": ["system", "operator", "admin", "human"]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "verdict_ref": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "action": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "idempotency_key": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "fencing_token": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "before_state": {
+      "type": "object"
+    },
+    "after_state": {
+      "type": "object"
+    },
+    "result": {
+      "enum": ["planned", "executing", "verified", "failed", "denied", "blocked", "skipped", "reversed"]
+    },
+    "rollback_hint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "isoTimestamp": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

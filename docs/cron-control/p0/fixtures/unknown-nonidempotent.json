@@ -1,0 +1,66 @@
+{
+  "fixture_id": "fx_unknown_nonidempotent",
+  "scenario": "unknown_nonidempotent",
+  "description": "A long-running non-idempotent execution with no terminal evidence must escalate rather than rerun automatically.",
+  "job": {
+    "id": "nonidemp1",
+    "name": "Non-idempotent unknown execution",
+    "state": "scheduled",
+    "enabled": true,
+    "deliver": "origin",
+    "schedule": {
+      "kind": "interval",
+      "minutes": 20,
+      "display": "every 20m"
+    },
+    "control_policy": {
+      "idempotent": false,
+      "side_effect_class": "non_idempotent_write",
+      "rerun_policy": "manual_only"
+    }
+  },
+  "evidence": [
+    {
+      "evidence_id": "ev_nonidemp_exec",
+      "incident_id": "inc_nonidemp",
+      "job_id": "nonidemp1",
+      "execution_id": "exec_nonidemp_01",
+      "kind": "execution_state",
+      "source": "executions.db",
+      "observed_at": "2026-07-29T15:25:00+08:00",
+      "source_time": "2026-07-29T15:00:00+08:00",
+      "value": {
+        "status": "running",
+        "claimed_at": "2026-07-29T15:00:00+08:00"
+      },
+      "source_ref": "sqlite:executions/id=exec_nonidemp_01",
+      "content_hash": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "freshness_seconds": 1500,
+      "validation": "valid"
+    },
+    {
+      "evidence_id": "ev_nonidemp_owner",
+      "incident_id": "inc_nonidemp",
+      "job_id": "nonidemp1",
+      "execution_id": "exec_nonidemp_01",
+      "kind": "worker_heartbeat",
+      "source": "worker-heartbeat",
+      "observed_at": "2026-07-29T15:25:00+08:00",
+      "source_time": "2026-07-29T15:00:00+08:00",
+      "value": {
+        "status": "missing"
+      },
+      "source_ref": "heartbeat:worker/nonidemp1",
+      "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "freshness_seconds": 1500,
+      "validation": "valid"
+    }
+  ],
+  "expected": {
+    "evidence_state": "complete",
+    "state": "human_required",
+    "recommended_action": "escalate_to_human",
+    "automatic_action_allowed": false,
+    "rule_id": "STALE_RUNNING_TO_HUMAN_REQUIRED_NONIDEMPOTENT_V1"
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "fixture_id": "fx_action_readback_failed",
+  "scenario": "action_readback_failed",
+  "description": "A repair action that cannot be verified after execution must remain quarantined.",
+  "job": {
+    "id": "readback1",
+    "name": "Action read-back failure",
+    "state": "scheduled",
+    "enabled": true,
+    "deliver": "local",
+    "schedule": {
+      "kind": "once",
+      "run_at": "2026-07-29T17:00:00+08:00",
+      "display": "once at 2026-07-29 17:00"
+    },
+    "control_policy": {
+      "idempotent": true,
+      "side_effect_class": "read_only",
+      "rerun_policy": "automatic"
+    }
+  },
+  "evidence": [
+    {
+      "evidence_id": "ev_readback_action",
+      "incident_id": "inc_readback",
+      "job_id": "readback1",
+      "execution_id": "exec_readback_01",
+      "kind": "manual_override",
+      "source": "control-plane.db",
+      "observed_at": "2026-07-29T15:30:00+08:00",
+      "source_time": "2026-07-29T15:29:59+08:00",
+      "value": {
+        "action": "repair_state_store",
+        "status": "completed"
+      },
+      "source_ref": "sqlite:actions/id=act_01",
+      "content_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "freshness_seconds": 1,
+      "validation": "valid"
+    },
+    {
+      "evidence_id": "ev_readback_verify",
+      "incident_id": "inc_readback",
+      "job_id": "readback1",
+      "execution_id": "exec_readback_01",
+      "kind": "state_store",
+      "source": "control-plane.db",
+      "observed_at": "2026-07-29T15:30:00+08:00",
+      "source_time": "2026-07-29T15:29:59+08:00",
+      "value": {
+        "status": "unavailable",
+        "detail": "post-action read-back failed"
+      },
+      "source_ref": "sqlite:control-plane.db",
+      "content_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "freshness_seconds": 1,
+      "validation": "conflicting"
+    }
+  ],
+  "expected": {
+    "evidence_state": "conflicting",
+    "state": "quarantined",
+    "recommended_action": "escalate_to_human",
+    "automatic_action_allowed": false,
+    "rule_id": "REPAIR_IN_PROGRESS_TO_QUARANTINED_FAILED_V1"
+  }
+}

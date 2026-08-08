@@ -1,0 +1,49 @@
+capture:
+  phase: P0-T01
+  captured_at: 2026-07-29T14:58:45+08:00
+  branch: feat/cron-control-p0
+  worktree: /Users/ryanchao/.hermes/worktrees/cron-control-p0
+  repo_root: /Users/ryanchao/.hermes/hermes-agent
+  mode: read_only
+scope:
+  description: Current cron control-plane baseline for failover work.
+  included_paths:
+    - cron/jobs.py
+    - cron/executions.py
+    - cron/delivery_watchdog.py
+    - cron/provider_recovery.py
+    - cron/scheduler.py
+  excluded_paths:
+    - ~/.hermes/cron/*
+    - secrets
+    - full prompts
+    - full model outputs
+items:
+  - path: cron/jobs.py
+    role: Job store and job loading/persistence
+    sensitivity: medium
+    authority: runtime_source
+    sha256: e7aeebc9f09cba71c4f75dbe60e3ae3b59dfb2b900f38e91ae61c9e74c06e4b7
+  - path: cron/executions.py
+    role: Execution ledger and run lifecycle
+    sensitivity: medium
+    authority: runtime_source
+    sha256: 632ec7622826e1fb8c14b89aa8ea2922eeaf071b0ba81f488f0d5ad4f71ad213
+  - path: cron/delivery_watchdog.py
+    role: Delivery watchdog and watchdog baseline
+    sensitivity: medium
+    authority: runtime_source
+    sha256: 0c12f90f91b2069da48f08a5a41ec9559146f40865e808b655c28a6522055805
+  - path: cron/provider_recovery.py
+    role: Provider recovery scanner and mutator
+    sensitivity: medium
+    authority: runtime_source
+    sha256: 4f832e2b963b26817dee86c0b54452a4f01ce3e5d1600ab5590044f77c4ab896
+  - path: cron/scheduler.py
+    role: Tick loop and schedule execution coordinator
+    sensitivity: medium
+    authority: runtime_source
+    sha256: 2e8394ca788df59070a31cc14088dd86493c38f727f272aee53bd6e9595e8f10
+manifest:
+  path: docs/cron-control/hash-manifest.sha256
+  format: sha256sum

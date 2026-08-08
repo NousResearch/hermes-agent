@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "verdict.schema.json",
+  "title": "Hermes Cron Verdict Contract",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "verdict_id",
+    "incident_id",
+    "job_id",
+    "state",
+    "evidence_state",
+    "rule_id",
+    "evidence_refs",
+    "recommended_action",
+    "automatic_action_allowed",
+    "blocked_by",
+    "classified_at",
+    "classifier_version"
+  ],
+  "properties": {
+    "verdict_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "incident_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "job_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "state": {
+      "enum": [
+        "healthy",
+        "suspect",
+        "transient_failure",
+        "systemic_failure",
+        "stale_running",
+        "recoverable",
+        "repair_in_progress",
+        "recovered",
+        "quarantined",
+        "human_required"
+      ]
+    },
+    "evidence_state": {
+      "enum": ["complete", "partial", "conflicting", "unavailable"]
+    },
+    "rule_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "recommended_action": {
+      "enum": [
+        "none",
+        "verify_delivery",
+        "reset_job",
+        "switch_provider",
+        "repair_state_store",
+        "escalate_to_human",
+        "quarantine_job",
+        "release_quarantine"
+      ]
+    },
+    "automatic_action_allowed": {
+      "type": "boolean"
+    },
+    "blocked_by": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "classified_at": {
+      "$ref": "#/$defs/isoTimestamp"
+    },
+    "classifier_version": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$defs": {
+    "isoTimestamp": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

@@ -1,0 +1,574 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "job-metadata.schema.json",
+  "title": "Hermes Cron Job Metadata",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "id",
+    "name",
+    "prompt",
+    "skills",
+    "skill",
+    "model",
+    "provider",
+    "provider_snapshot",
+    "model_snapshot",
+    "base_url",
+    "script",
+    "no_agent",
+    "required_output",
+    "required_tools",
+    "required_tool_results",
+    "script_required",
+    "context_from",
+    "schedule",
+    "schedule_display",
+    "repeat",
+    "enabled",
+    "state",
+    "paused_at",
+    "paused_reason",
+    "created_at",
+    "next_run_at",
+    "last_run_at",
+    "last_status",
+    "last_error",
+    "last_delivery_error",
+    "deliver",
+    "origin",
+    "enabled_toolsets",
+    "workdir"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{12}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "prompt": {
+      "type": "string"
+    },
+    "skills": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "skill": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "model": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "provider": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "provider_snapshot": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "model_snapshot": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "base_url": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "script": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "no_agent": {
+      "type": "boolean"
+    },
+    "required_output": {
+      "type": "boolean"
+    },
+    "required_tools": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "required_tool_results": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "script_required": {
+      "type": "boolean"
+    },
+    "context_from": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schedule": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "run_at", "display"],
+          "properties": {
+            "kind": {
+              "const": "once"
+            },
+            "run_at": {
+              "$ref": "#/$defs/isoTimestamp"
+            },
+            "display": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": ["kind", "minutes", "display"],
+          "properties": {
+            "kind": {
+              "const": "interval"
+            },
+            "minutes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "display": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": ["kind", "expr", "display"],
+          "properties": {
+            "kind": {
+              "const": "cron"
+            },
+            "expr": {
+              "type": "string",
+              "minLength": 1
+            },
+            "display": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "schedule_display": {
+      "type": "string"
+    },
+    "repeat": {
+      "type": "object",
+      "required": ["times", "completed"],
+      "properties": {
+        "times": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "completed": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "state": {
+      "enum": ["scheduled", "paused"]
+    },
+    "paused_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/isoTimestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "paused_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_at": {
+      "$ref": "#/$defs/isoTimestamp"
+    },
+    "next_run_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/isoTimestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "last_run_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/isoTimestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "last_status": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "last_error": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "last_delivery_error": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "deliver": {
+      "type": "string",
+      "minLength": 1
+    },
+    "origin": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": ["platform", "chat_id"],
+          "properties": {
+            "platform": {
+              "type": "string",
+              "minLength": 1
+            },
+            "chat_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "thread_id": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "message_id": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "enabled_toolsets": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "workdir": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "attach_to_session": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "control_policy": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "schema_version",
+            "expected_interval",
+            "max_runtime",
+            "max_failures",
+            "retry_budget",
+            "idempotent",
+            "side_effect_class",
+            "rerun_policy",
+            "delivery_contract",
+            "fallback_provider",
+            "fallback_chain",
+            "human_escalation_sla_seconds",
+            "owner"
+          ],
+          "properties": {
+            "schema_version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expected_interval": {
+              "$ref": "#/$defs/isoDuration"
+            },
+            "max_runtime": {
+              "$ref": "#/$defs/isoDuration"
+            },
+            "delivery_deadline": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/isoDuration"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "max_failures": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "retry_budget": {
+              "type": "object",
+              "required": ["max_attempts_per_incident", "window_seconds"],
+              "properties": {
+                "max_attempts_per_incident": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "window_seconds": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "additionalProperties": true
+            },
+            "idempotent": {
+              "type": "boolean"
+            },
+            "side_effect_class": {
+              "enum": ["read_only", "idempotent_write", "non_idempotent_write", "unknown"]
+            },
+            "rerun_policy": {
+              "enum": ["automatic", "manual_only", "never"]
+            },
+            "delivery_contract": {
+              "type": "object",
+              "required": ["mode", "receipt_required", "suppressed_receipt_allowed"],
+              "properties": {
+                "mode": {
+                  "enum": ["external", "local", "origin"]
+                },
+                "receipt_required": {
+                  "type": "boolean"
+                },
+                "suppressed_receipt_allowed": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": true
+            },
+            "fallback_provider": {
+              "type": "object",
+              "required": ["route_id"],
+              "properties": {
+                "route_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "additionalProperties": true
+            },
+            "fallback_chain": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["route_id", "provider", "model"],
+                "properties": {
+                  "route_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "provider": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "model": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "quality_tier": {
+                    "type": "string"
+                  },
+                  "max_cost_class": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": true
+              }
+            },
+            "human_escalation_sla_seconds": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "owner": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "isoTimestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "isoDuration": {
+      "type": "string",
+      "pattern": "^P(?!$)(?:\\d+Y)?(?:\\d+M)?(?:\\d+W)?(?:\\d+D)?(?:T(?:\\d+H)?(?:\\d+M)?(?:\\d+S)?)?$"
+    }
+  }
+}

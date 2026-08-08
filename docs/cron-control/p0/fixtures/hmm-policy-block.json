@@ -1,0 +1,68 @@
+{
+  "fixture_id": "fx_hmm_policy_block",
+  "scenario": "hmm_policy_block",
+  "description": "A provider or policy block must escalate to a human instead of retrying or downgrading across providers.",
+  "job": {
+    "id": "ab12cd34ef56",
+    "name": "Hermes Cron control-plane audit",
+    "state": "scheduled",
+    "enabled": true,
+    "deliver": "origin",
+    "schedule": {
+      "kind": "interval",
+      "minutes": 30,
+      "display": "every 30m"
+    },
+    "control_policy": {
+      "idempotent": true,
+      "side_effect_class": "read_only",
+      "rerun_policy": "manual_only"
+    }
+  },
+  "evidence": [
+    {
+      "evidence_id": "ev_hmm_exec",
+      "incident_id": "inc_hmm",
+      "job_id": "ab12cd34ef56",
+      "execution_id": "exec_hmm_01",
+      "kind": "execution_state",
+      "source": "executions.db",
+      "observed_at": "2026-07-29T15:05:00+08:00",
+      "source_time": "2026-07-29T15:04:58+08:00",
+      "value": {
+        "status": "failed",
+        "error": "policy block: route disallowed by job policy"
+      },
+      "source_ref": "sqlite:executions/id=exec_hmm_01",
+      "content_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "freshness_seconds": 2,
+      "validation": "valid"
+    },
+    {
+      "evidence_id": "ev_hmm_probe",
+      "incident_id": "inc_hmm",
+      "job_id": "ab12cd34ef56",
+      "execution_id": "exec_hmm_01",
+      "kind": "provider_probe",
+      "source": "provider-registry",
+      "observed_at": "2026-07-29T15:05:00+08:00",
+      "source_time": "2026-07-29T15:04:59+08:00",
+      "value": {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "result": "blocked"
+      },
+      "source_ref": "registry:provider-route/gpt-5.6-sol",
+      "content_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "freshness_seconds": 1,
+      "validation": "valid"
+    }
+  ],
+  "expected": {
+    "evidence_state": "complete",
+    "state": "human_required",
+    "recommended_action": "escalate_to_human",
+    "automatic_action_allowed": false,
+    "rule_id": "TRANSIENT_TO_HUMAN_REQUIRED_POLICY_BLOCK_V1"
+  }
+}

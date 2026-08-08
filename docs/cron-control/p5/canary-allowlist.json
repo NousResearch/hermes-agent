@@ -1,0 +1,52 @@
+{
+  "policy_id": "p5-canary-allowlist-v1",
+  "phase": "P5",
+  "status": "draft",
+  "created_at": "2026-07-29T15:20:00+08:00",
+  "routes": [
+    {
+      "route_id": "openai-codex/gpt-5.6-terra",
+      "tier": "T2",
+      "reasoning_depth": "R2",
+      "purpose": "shadow-diff、auto-reset canary"
+    },
+    {
+      "route_id": "openai-codex/gpt-5.6-sol",
+      "tier": "T3",
+      "reasoning_depth": "R3",
+      "purpose": "model-switch rehearsal"
+    }
+  ],
+  "actions": {
+    "shadow_diff": {
+      "enabled": true,
+      "cohort": "p5-shadow",
+      "requires_approval": false,
+      "rollback": "none"
+    },
+    "auto_quarantine": {
+      "enabled": true,
+      "cohort": "p5-quarantine",
+      "requires_approval": false,
+      "rollback": "none"
+    },
+    "auto_reset": {
+      "enabled": true,
+      "cohort": "p5-reset",
+      "requires_approval": true,
+      "rollback": "restore temp jobs.json from seed"
+    },
+    "model_switch": {
+      "enabled": true,
+      "cohort": "p5-switch",
+      "requires_approval": true,
+      "rollback": "execute_rollback(temp_job_id)"
+    }
+  },
+  "hard_limits": {
+    "cross_provider_fallback": false,
+    "live_production_targets": false,
+    "mutate_live_jobs_without_temp_home": false,
+    "unreviewed_jobs": false
+  }
+}

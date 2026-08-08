@@ -1,0 +1,49 @@
+{
+  "fixture_id": "fx_state_store_unavailable",
+  "scenario": "state_store_unavailable",
+  "description": "A broken control-plane store is systemic_failure and should lead to repair_state_store, not provider switching.",
+  "job": {
+    "id": "store0001",
+    "name": "State-store integrity guard",
+    "state": "scheduled",
+    "enabled": true,
+    "deliver": "local",
+    "schedule": {
+      "kind": "once",
+      "run_at": "2026-07-29T16:30:00+08:00",
+      "display": "once at 2026-07-29 16:30"
+    },
+    "control_policy": {
+      "idempotent": true,
+      "side_effect_class": "read_only",
+      "rerun_policy": "never"
+    }
+  },
+  "evidence": [
+    {
+      "evidence_id": "ev_store_db",
+      "incident_id": "inc_store",
+      "job_id": "store0001",
+      "execution_id": "exec_store_01",
+      "kind": "state_store",
+      "source": "control-plane.db",
+      "observed_at": "2026-07-29T15:12:00+08:00",
+      "source_time": "2026-07-29T15:11:59+08:00",
+      "value": {
+        "status": "unavailable",
+        "detail": "sqlite busy timeout"
+      },
+      "source_ref": "sqlite:control-plane.db",
+      "content_hash": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "freshness_seconds": 1,
+      "validation": "unavailable"
+    }
+  ],
+  "expected": {
+    "evidence_state": "unavailable",
+    "state": "systemic_failure",
+    "recommended_action": "repair_state_store",
+    "automatic_action_allowed": false,
+    "rule_id": "HEALTHY_TO_SYSTEMIC_FAILURE_LEDGER_V1"
+  }
+}

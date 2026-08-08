@@ -1,0 +1,66 @@
+{
+  "fixture_id": "fx_cc_audit_stale_running",
+  "scenario": "cc_audit_stale_running",
+  "description": "A claimed execution that exceeds max runtime with no terminal evidence must become stale_running and only then reset.",
+  "job": {
+    "id": "ccaudit001",
+    "name": "CC Audit stale-running check",
+    "state": "scheduled",
+    "enabled": true,
+    "deliver": "origin",
+    "schedule": {
+      "kind": "interval",
+      "minutes": 15,
+      "display": "every 15m"
+    },
+    "control_policy": {
+      "idempotent": true,
+      "side_effect_class": "read_only",
+      "rerun_policy": "automatic"
+    }
+  },
+  "evidence": [
+    {
+      "evidence_id": "ev_cc_exec",
+      "incident_id": "inc_cc",
+      "job_id": "ccaudit001",
+      "execution_id": "exec_cc_01",
+      "kind": "execution_state",
+      "source": "executions.db",
+      "observed_at": "2026-07-29T15:20:00+08:00",
+      "source_time": "2026-07-29T14:59:00+08:00",
+      "value": {
+        "status": "running",
+        "claimed_at": "2026-07-29T14:59:00+08:00"
+      },
+      "source_ref": "sqlite:executions/id=exec_cc_01",
+      "content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "freshness_seconds": 1260,
+      "validation": "valid"
+    },
+    {
+      "evidence_id": "ev_cc_heartbeat",
+      "incident_id": "inc_cc",
+      "job_id": "ccaudit001",
+      "execution_id": "exec_cc_01",
+      "kind": "worker_heartbeat",
+      "source": "scheduler-heartbeat",
+      "observed_at": "2026-07-29T15:20:00+08:00",
+      "source_time": "2026-07-29T14:58:00+08:00",
+      "value": {
+        "status": "missing"
+      },
+      "source_ref": "heartbeat:worker/ccaudit001",
+      "content_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "freshness_seconds": 1320,
+      "validation": "valid"
+    }
+  ],
+  "expected": {
+    "evidence_state": "complete",
+    "state": "stale_running",
+    "recommended_action": "reset_job",
+    "automatic_action_allowed": false,
+    "rule_id": "SUSPECT_TO_STALE_RUNNING_MAX_RUNTIME_V1"
+  }
+}

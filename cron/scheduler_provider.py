@@ -169,6 +169,37 @@ def resolve_cron_scheduler() -> "CronScheduler":
         return InProcessCronScheduler()
 
 
+def _run_control_plane_cycle(
+    *,
+    adapters: Any = None,
+    loop: Any = None,
+) -> None:
+    """Best-effort control-plane reconciliation after a scheduler cycle.
+
+    The runner is config-gated. When disabled it returns immediately, so the
+    built-in ticker keeps its historical behavior unless an operator opts in.
+    """
+    try:
+        from cron_control.runner import control_plane_settings, run_control_plane_cycle
+        from hermes_cli.config import load_config
+    except Exception:
+        return
+
+    cfg = load_config() or {}
+    settings = control_plane_settings(cfg)
+    if not settings["enabled"]:
+        return
+
+    try:
+        run_control_plane_cycle(config=cfg)
+    except Exception as exc:
+        import logging
+
+        logging.getLogger("cron.scheduler_provider").warning(
+            "Cron control-plane cycle failed: %s", exc, exc_info=True
+        )
+
+
 class InProcessCronScheduler(CronScheduler):
     """Default provider: the historical in-process 60s ticker.
 
@@ -245,6 +276,7 @@ class InProcessCronScheduler(CronScheduler):
                         sync=False,
                         can_dispatch=can_dispatch,
                     )
+                    _run_control_plane_cycle(adapters=adapters, loop=loop)
                 ok = True
             except BaseException as e:
                 # Catch BaseException (not just Exception) so a SystemExit from
@@ -340,6 +372,7 @@ class InProcessCronScheduler(CronScheduler):
                                     sync=False,
                                     can_dispatch=can_dispatch,
                                 )
+                                _run_control_plane_cycle(adapters=adapters, loop=loop)
                         finally:
                             reset_hermes_home_override(home_token)
                 ok = True

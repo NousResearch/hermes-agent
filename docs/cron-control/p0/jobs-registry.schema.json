@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "jobs-registry.schema.json",
+  "title": "Hermes Cron jobs.json Registry",
+  "type": "object",
+  "required": ["jobs", "updated_at"],
+  "properties": {
+    "jobs": {
+      "type": "array",
+      "items": {
+        "$ref": "./job-metadata.schema.json"
+      }
+    },
+    "updated_at": {
+      "$ref": "./job-metadata.schema.json#/$defs/isoTimestamp"
+    }
+  },
+  "additionalProperties": true
+}

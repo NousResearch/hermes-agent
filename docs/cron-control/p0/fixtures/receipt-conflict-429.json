@@ -1,0 +1,67 @@
+{
+  "fixture_id": "fx_receipt_conflict_429",
+  "scenario": "receipt_conflict_429",
+  "description": "A provider 429 plus missing receipt should not be treated as a safe rerun; conflicting evidence stays quarantined.",
+  "job": {
+    "id": "rcpt429001",
+    "name": "Delivery receipt conflict check",
+    "state": "scheduled",
+    "enabled": true,
+    "deliver": "telegram",
+    "schedule": {
+      "kind": "interval",
+      "minutes": 60,
+      "display": "every 60m"
+    },
+    "control_policy": {
+      "idempotent": true,
+      "side_effect_class": "idempotent_write",
+      "rerun_policy": "automatic"
+    }
+  },
+  "evidence": [
+    {
+      "evidence_id": "ev_rcpt_exec",
+      "incident_id": "inc_rcpt",
+      "job_id": "rcpt429001",
+      "execution_id": "exec_rcpt_01",
+      "kind": "execution_state",
+      "source": "executions.db",
+      "observed_at": "2026-07-29T15:10:00+08:00",
+      "source_time": "2026-07-29T15:09:55+08:00",
+      "value": {
+        "status": "completed",
+        "delivery_state": null
+      },
+      "source_ref": "sqlite:executions/id=exec_rcpt_01",
+      "content_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "freshness_seconds": 5,
+      "validation": "valid"
+    },
+    {
+      "evidence_id": "ev_rcpt_probe",
+      "incident_id": "inc_rcpt",
+      "job_id": "rcpt429001",
+      "execution_id": "exec_rcpt_01",
+      "kind": "provider_probe",
+      "source": "provider-api",
+      "observed_at": "2026-07-29T15:10:00+08:00",
+      "source_time": "2026-07-29T15:09:59+08:00",
+      "value": {
+        "status_code": 429,
+        "detail": "rate limited"
+      },
+      "source_ref": "provider:telegram/send",
+      "content_hash": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "freshness_seconds": 1,
+      "validation": "conflicting"
+    }
+  ],
+  "expected": {
+    "evidence_state": "conflicting",
+    "state": "quarantined",
+    "recommended_action": "escalate_to_human",
+    "automatic_action_allowed": false,
+    "rule_id": "SUSPECT_TO_QUARANTINED_PARTIAL_V1"
+  }
+}

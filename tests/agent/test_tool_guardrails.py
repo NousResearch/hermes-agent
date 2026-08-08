@@ -33,8 +33,6 @@ def test_tool_call_signature_hashes_canonical_nested_unicode_args_without_exposi
     assert "☤" not in json.dumps(metadata)
 
 
-
-
 def test_config_parses_nested_warn_and_hard_stop_thresholds():
     cfg = ToolCallGuardrailConfig.from_mapping(
         {
@@ -44,11 +42,13 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
                 "exact_failure": 3,
                 "same_tool_failure": 4,
                 "idempotent_no_progress": 5,
+                "same_call_repeat": 5,
             },
             "hard_stop_after": {
                 "exact_failure": 6,
                 "same_tool_failure": 7,
                 "idempotent_no_progress": 8,
+                "same_call_repeat": 8,
             },
         }
     )
@@ -58,9 +58,11 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
     assert cfg.exact_failure_warn_after == 3
     assert cfg.same_tool_failure_warn_after == 4
     assert cfg.no_progress_warn_after == 5
+    assert cfg.same_call_repeat_warn_after == 5
     assert cfg.exact_failure_block_after == 6
     assert cfg.same_tool_failure_halt_after == 7
     assert cfg.no_progress_block_after == 8
+    assert cfg.same_call_repeat_block_after == 8
 
 
 def test_default_repeated_identical_failed_call_warns_without_blocking():
@@ -107,18 +109,6 @@ def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution()
     assert blocked.count == 2
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_success_output_by_default():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)
@@ -131,17 +121,98 @@ def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_succes
         assert controller.after_call("custom_tool", {"x": 1}, "ok", failed=False).action == "allow"
 
 
+def test_same_call_varying_result_warns_at_threshold_by_default():
+    """Identical idempotent args with distinct successful results should warn.
+
+    This is the varying-result counterpart to the identical-result hash tests:
+    the same read-only call made repeatedly this turn is a loop even when each
+    invocation happens to return different content.
+    """
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(same_call_repeat_warn_after=3)
+    )
+    args = {"query": "same call"}
+    results = ["result-one", "result-two", "result-three", "result-four"]
+
+    for i in range(2):
+        assert controller.before_call("web_search", args).action == "allow"
+        assert controller.after_call("web_search", args, results[i], failed=False).action == "allow"
+
+    # Third same-args call reaches the warn threshold.
+    assert controller.before_call("web_search", args).action == "allow"
+    warn = controller.after_call("web_search", args, results[2], failed=False)
+    assert warn.action == "warn"
+    assert warn.code == "same_call_repeat_warning"
+    assert warn.count == 3
+
+    # Still not blocked (warnings never prevent execution).
+    assert controller.before_call("web_search", args).action == "allow"
+    assert controller.halt_decision is None
 
 
+def test_same_call_varying_result_blocks_only_next_call_in_hard_stop():
+    """Hard-stop mode should block only the next call after the threshold.
+
+    The distinct results mean the identical-result hash path never fires;
+    only the same-args counter should gate this loop.
+    """
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            same_call_repeat_warn_after=3,
+            same_call_repeat_block_after=3,
+        )
+    )
+    args = {"query": "same call"}
+    results = ["r1", "r2", "r3", "r4"]
+
+    # Calls 1 and 2 are allowed (count 1, 2 < warn threshold 3).
+    for i in range(2):
+        assert controller.before_call("web_search", args).action == "allow"
+        assert controller.after_call("web_search", args, results[i], failed=False).action == "allow"
+
+    # Third successful call reaches the warn threshold (count == 3).
+    assert controller.before_call("web_search", args).action == "allow"
+    warn = controller.after_call("web_search", args, results[2], failed=False)
+    assert warn.action == "warn"
+    assert warn.code == "same_call_repeat_warning"
+
+    # Only the NEXT call blocks (count == 3 >= block_after == 3).
+    blocked = controller.before_call("web_search", args)
+    assert blocked.action == "block"
+    assert blocked.code == "same_call_repeat_block"
+    assert blocked.count == 3
+
+
+def test_same_call_counter_resets_on_turn_change():
+    """The varying-result same-args counter should reset between turns."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            same_call_repeat_warn_after=2,
+            same_call_repeat_block_after=2,
+        )
+    )
+    args = {"query": "same call"}
+
+    # First call allowed; second call reaches warn threshold.
+    assert controller.before_call("web_search", args).action == "allow"
+    assert controller.after_call("web_search", args, "result-0", failed=False).action == "allow"
+    assert controller.before_call("web_search", args).action == "allow"
+    assert controller.after_call("web_search", args, "result-1", failed=False).action == "warn"
+
+    # Next call blocks within the turn (count == 2 >= block_after == 2).
+    assert controller.before_call("web_search", args).action == "block"
+
+    controller.reset_for_turn()
+    # After reset, the same call is allowed again.
+    assert controller.before_call("web_search", args).action == "allow"
+    assert controller.after_call("web_search", args, "fresh-result", failed=False).action == "allow"
 
 
 # ── Per-turn runaway-loop caps (Claude Code v2.1.212, Week 29) ──────────────
 
 from agent.tool_guardrails import LoopCapConfig  # noqa: E402
-
-
-
-
 
 
 def test_loop_cap_zero_disables_and_junk_falls_back():
@@ -167,13 +238,3 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
     assert decision.action == "block"
     assert decision.code == "loop_web_search_cap"
     assert decision.should_halt is True
-
-
-
-
-
-
-
-
-
-

@@ -6669,6 +6669,29 @@ class APIServerAdapter(BasePlatformAdapter):
                                 conversation_history=conversation_history,
                                 task_id=effective_task_id,
                             )
+                            # Auto-generate session title after the first
+                            # exchange, mirroring the regular Gateway runner
+                            # (gateway/run.py). The /v1/runs API path runs its
+                            # own agent lifecycle and previously never fired
+                            # maybe_auto_title, so sessions started through the
+                            # API kept their provisional title (#78342).
+                            if isinstance(r, dict) and r.get("final_response"):
+                                try:
+                                    from agent.title_generator import maybe_auto_title
+                                    all_msgs = r.get("messages", []) or []
+                                    _title_eff_sid = getattr(agent, "session_id", None) or session_id or run_id
+                                    maybe_auto_title(
+                                        self._ensure_session_db(),
+                                        _title_eff_sid,
+                                        user_message,
+                                        r.get("final_response", ""),
+                                        all_msgs,
+                                    )
+                                except Exception:
+                                    logger.debug(
+                                        "API /v1/runs auto-title trigger failed (harmless)",
+                                        exc_info=True,
+                                    )
                         finally:
                             # Worker finished (interrupted or complete) —
                             # clear turn ownership immediately so a later

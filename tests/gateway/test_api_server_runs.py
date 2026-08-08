@@ -331,6 +331,59 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_completed_run_triggers_auto_title(self, adapter):
+        """/v1/runs should trigger automatic session title generation after
+        the first exchange, matching the regular Gateway runner (#78342)."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_create_agent") as mock_create,
+                patch("agent.title_generator.maybe_auto_title") as mock_title,
+            ):
+                mock_agent = MagicMock()
+                mock_agent.session_id = "sess-1"
+                mock_agent.run_conversation.return_value = {
+                    "final_response": "Hello!",
+                    "messages": [
+                        {"role": "user", "content": "hello"},
+                        {"role": "assistant", "content": "Hello!"},
+                    ],
+                }
+                mock_agent.session_prompt_tokens = 10
+                mock_agent.session_completion_tokens = 5
+                mock_agent.session_total_tokens = 15
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": "sess-1"},
+                )
+                assert resp.status == 202
+                data = await resp.json()
+                run_id = data["run_id"]
+
+                # Wait for the background run task to finish so the
+                # maybe_auto_title trigger has a chance to fire.
+                for _ in range(50):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+                else:
+                    raise AssertionError("run never reached completed status")
+
+                mock_title.assert_called_once()
+                call_args = mock_title.call_args
+                assert call_args.args[1] == "sess-1"
+                assert call_args.args[2] == "hello"
+                assert call_args.args[3] == "Hello!"
+                assert call_args.args[4] == [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "Hello!"},
+                ]
+
 
     @pytest.mark.asyncio
     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):

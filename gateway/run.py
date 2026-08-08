@@ -1505,6 +1505,7 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {
     "text_to_speech",
     "text_to_speech_tool",
     "image_generate",
+    "video_generate",
     "bfl_flux3_get_result",
 }
 
@@ -1557,10 +1558,22 @@ def _strip_auto_continue_noise(content: Any) -> Any:
 
 # Tools in this set return their deliverable artifact as a JSON payload with a
 # local-file path field rather than a literal ``MEDIA:`` tag (e.g. image_generate
-# returns ``{"success": true, "image": "/abs/path.png"}``). The auto-append path
+# returns ``{"success": true, "image": "/abs/path.png"}``, video_generate returns
+# ``{"success": true, "video": "/abs/path.mp4"}``). The auto-append path
 # extracts the path from these fields so delivery is deterministic and does not
 # depend on the model restating the path in its final reply.
-_JSON_MEDIA_TOOL_PATH_FIELDS = ("host_image", "image", "agent_visible_image")
+_JSON_MEDIA_TOOL_NAMES = {
+    "image_generate",
+    "video_generate",
+}
+_JSON_MEDIA_TOOL_PATH_FIELDS = (
+    "host_image",
+    "image",
+    "agent_visible_image",
+    "host_video",
+    "video",
+    "agent_visible_video",
+)
 
 
 # Extension-anchored MEDIA: matcher for tool results. Mirrors the dispatch-site
@@ -1628,10 +1641,11 @@ def _collect_auto_append_media_tags(
             continue
         content = str(msg.get("content") or "")
         tool_name = tool_name_by_call_id.get(call_id)
-        # JSON-payload tools (image_generate) return a local-file path in a
-        # known field rather than a MEDIA: tag. Extract it so delivery is
-        # deterministic even when the model omits the path from its reply.
-        if tool_name == "image_generate" and "MEDIA:" not in content:
+        # JSON-payload tools (image_generate / video_generate) return a
+        # local-file path in a known field rather than a MEDIA: tag. Extract
+        # it so delivery is deterministic even when the model omits the path
+        # from its reply.
+        if tool_name in _JSON_MEDIA_TOOL_NAMES and "MEDIA:" not in content:
             try:
                 payload = json.loads(content)
             except Exception:
@@ -1664,8 +1678,10 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
     is not re-sent on later turns. Covers three delivery shapes:
       * ``MEDIA:<path>`` text tags in tool results,
       * ``MEDIA:<path>`` text tags in assistant messages (model-generated tags),
-      * ``image_generate`` JSON-payload paths (``host_image`` / ``image`` /
-        ``agent_visible_image``), which carry no MEDIA: tag.
+      * JSON-payload paths from ``image_generate`` / ``video_generate``
+        (``host_image`` / ``image`` / ``agent_visible_image`` /
+        ``host_video`` / ``video`` / ``agent_visible_video``), which carry
+        no MEDIA: tag.
 
     Missing the JSON-payload shape caused #46627; missing the assistant-message
     shape caused repeated delivery when the model echoed a previous MEDIA tag.
@@ -1707,7 +1723,7 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
             _add_text_media_paths(content)
             continue
         cid = str(msg.get("tool_call_id") or msg.get("call_id") or "")
-        if tool_name_by_call_id.get(cid) == "image_generate":
+        if tool_name_by_call_id.get(cid) in _JSON_MEDIA_TOOL_NAMES:
             try:
                 payload = json.loads(content)
             except Exception:

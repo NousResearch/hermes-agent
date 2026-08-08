@@ -11,6 +11,7 @@ make_image tool several turns earlier must not leak onto a later
 text-only reply, even when the path-based dedup set fails to capture it.
 """
 
+import json
 import re
 from unittest.mock import MagicMock
 
@@ -268,6 +269,127 @@ caption
             history, history_offset=9999, history_media_paths=history_paths
         )
         assert tags == [], f"generated image re-emitted after compression: {tags}"
+
+    def test_video_generate_json_auto_appends_local_path(self):
+        """Sibling of image_generate/#46627: local-file video_generate JSON
+        has no MEDIA: tag, so the gateway must auto-append or the user gets
+        text with no video attachment."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        path = "/home/u/.hermes/cache/videos/clip.mp4"
+        messages = [
+            {"role": "user", "content": "make a clip"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "v1", "function": {"name": "video_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "v1",
+                "content": json.dumps({"success": True, "video": path}),
+            },
+            {"role": "assistant", "content": "Here is your clip."},
+        ]
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == [f"MEDIA:{path}"]
+        assert voice is False
+
+    def test_video_generate_prefers_host_video_over_agent_visible(self):
+        from gateway.run import _collect_auto_append_media_tags
+
+        host = "/home/u/.hermes/cache/videos/host.mp4"
+        agent = "/root/.hermes/cache/videos/host.mp4"
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "v1", "function": {"name": "video_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "v1",
+                "content": json.dumps({
+                    "success": True,
+                    "video": host,
+                    "host_video": host,
+                    "agent_visible_video": agent,
+                }),
+            },
+            {"role": "assistant", "content": "done"},
+        ]
+        tags, _ = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == [f"MEDIA:{host}"]
+
+    def test_video_generate_https_url_not_auto_appended(self):
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "v1", "function": {"name": "video_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "v1",
+                "content": json.dumps({
+                    "success": True,
+                    "video": "https://cdn.example/clip.mp4",
+                }),
+            },
+            {"role": "assistant", "content": "Here is the URL."},
+        ]
+        tags, _ = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == []
+
+    def test_collect_history_media_paths_includes_video_generate_json(self):
+        from gateway.run import _collect_history_media_paths
+
+        history = [
+            {"role": "user", "content": "make a clip"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c", "function": {"name": "video_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c",
+                "content": '{"success": true, "video": "/tmp/gen/clip.mp4"}',
+            },
+        ]
+        paths = _collect_history_media_paths(history)
+        assert "/tmp/gen/clip.mp4" in paths
+
+    def test_video_generate_not_reemitted_after_compression(self):
+        from gateway.run import (
+            _collect_auto_append_media_tags,
+            _collect_history_media_paths,
+        )
+
+        history = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c", "function": {"name": "video_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c",
+                "content": '{"success": true, "video": "/tmp/gen/clip.mp4"}',
+            },
+        ]
+        history_paths = _collect_history_media_paths(history)
+        tags, _ = _collect_auto_append_media_tags(
+            history, history_offset=9999, history_media_paths=history_paths
+        )
+        assert tags == [], f"generated video re-emitted after compression: {tags}"
 
 
     def test_media_tags_not_extracted_from_history(self):

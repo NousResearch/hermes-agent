@@ -665,7 +665,10 @@ export const ja = defineLocale({
       imported: '設定をインポートしました',
       invalidJson: '設定 JSON が無効です',
       keepAwakeTitle: 'コンピューターをスリープさせない',
-      keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。'
+      keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。',
+      longHorizonAutoContinueTitle: 'セッション跨ぎ目標継続（実験C）',
+      longHorizonAutoContinueDesc:
+        '実験Cのみ：認可済みゴールのターン上限後に次セッションを自動claim。既定off。作曲欄チップとは直交。'
     },
     quickEntry: {
       enabledTitle: 'クイック入力',
@@ -1807,6 +1810,13 @@ export const ja = defineLocale({
   },
 
   composer: {
+    sessionDeliveryMode: {
+      off: '極昼·無影灯',
+      on: '極昼·無影灯 · ON',
+      aria: 'セッション配信モード（このセッションのみ）',
+      tipOff: '既定OFF。このセッションのみ（実験Cの跨セッション継続ではない）。',
+      tipOn: 'ON: deep×premium（このセッション）。重い作業前にブレインストーム推奨。'
+    },
     message: 'メッセージ',
     wakingProfile: profile => `${profile} を起動中…`,
     placeholderStarting: 'Hermes を起動中...',

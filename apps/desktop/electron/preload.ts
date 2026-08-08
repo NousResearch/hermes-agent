@@ -162,6 +162,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
   setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
   setKeepAwake: on => ipcRenderer.send('hermes:keep-awake', on),
+  setLongHorizonAutoContinue: on => ipcRenderer.send('hermes:long-horizon-auto-continue', on),
+  setSessionDeliveryMode: payload => ipcRenderer.send('hermes:session-delivery-mode', payload),
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   openPreviewInBrowser: url => ipcRenderer.invoke('hermes:openPreviewInBrowser', url),

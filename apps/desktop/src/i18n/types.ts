@@ -467,6 +467,8 @@ export interface Translations {
       invalidJson: string
       keepAwakeTitle: string
       keepAwakeDesc: string
+      longHorizonAutoContinueTitle: string
+      longHorizonAutoContinueDesc: string
       attachmentSizeTitle: string
       attachmentSizeDesc: string
       attachmentSizeUnit: string
@@ -1670,6 +1672,13 @@ export interface Translations {
   }
 
   composer: {
+    sessionDeliveryMode: {
+      off: string
+      on: string
+      aria: string
+      tipOff: string
+      tipOn: string
+    }
     message: string
     wakingProfile: (profile: string) => string
     placeholderStarting: string

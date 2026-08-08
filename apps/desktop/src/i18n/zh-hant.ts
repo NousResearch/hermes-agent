@@ -652,7 +652,10 @@ export const zhHant = defineLocale({
       imported: '設定已匯入',
       invalidJson: '設定 JSON 無效',
       keepAwakeTitle: '保持電腦喚醒',
-      keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。'
+      keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
+      longHorizonAutoContinueTitle: '跨會話目標續跑（實驗 C）',
+      longHorizonAutoContinueDesc:
+        '僅實驗 C：目標授權後可在輪次耗盡時自動領下一會話。預設關。與輸入框「極晝·無影燈」會話芯片正交。仍須 super-grill 與預算。'
     },
     quickEntry: {
       enabledTitle: '快速輸入',
@@ -1749,6 +1752,13 @@ export const zhHant = defineLocale({
   },
 
   composer: {
+    sessionDeliveryMode: {
+      off: '極晝·無影燈',
+      on: '極晝·無影燈 · 開',
+      aria: '會話交付模式：極晝×無影燈（僅本會話）',
+      tipOff: '預設關。僅本會話；非跨會話續跑（實驗 C）。',
+      tipOn: '已開：本會話 deep×premium；瑣碎仍輕。重活前優先頭腦風暴。'
+    },
     message: '訊息',
     wakingProfile: profile => `正在喚醒 ${profile}…`,
     placeholderStarting: '正在啟動 Hermes...',

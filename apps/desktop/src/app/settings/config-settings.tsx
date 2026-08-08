@@ -19,6 +19,10 @@ import {
   setDataUrlReadMaxMb
 } from '@/store/data-url-read-max'
 import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
+import {
+  $longHorizonAutoContinue,
+  setLongHorizonAutoContinue
+} from '@/store/long-horizon-auto-continue'
 import { notify, notifyError } from '@/store/notifications'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
@@ -69,6 +73,7 @@ export function ConfigSettings({
   const { t } = useI18n()
   const c = t.settings.config
   const keepAwake = useStore($keepAwake)
+  const longHorizonAutoContinue = useStore($longHorizonAutoContinue)
   // The editable draft is local (debounced autosave watches it), but it's seeded
   // from — and saved back through — the shared config cache, so edits are visible
   // in the MCP/model surfaces and reopening the page doesn't reload-flash.
@@ -312,6 +317,12 @@ export function ConfigSettings({
             description={c.keepAwakeDesc}
             label={c.keepAwakeTitle}
             onChange={setKeepAwake}
+          />
+          <ToggleRow
+            checked={longHorizonAutoContinue}
+            description={c.longHorizonAutoContinueDesc}
+            label={c.longHorizonAutoContinueTitle}
+            onChange={setLongHorizonAutoContinue}
           />
           <QuickEntrySettings />
         </>

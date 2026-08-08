@@ -11038,6 +11038,67 @@ ipcMain.on('hermes:keep-awake', (_event, on) => {
   }
 })
 
+// Cross-session experiment C (goal auto-continue): device-local, default off.
+// NOT the session deep×premium chip. Persists userData + HERMES_HOME/state.
+// Does not authorize overnight runs alone — super-grill + budget + goal auth still apply.
+const LONG_HORIZON_AC_PATH = path.join(app.getPath('userData'), 'long-horizon-auto-continue.json')
+
+function writeLongHorizonAutoContinue(enabled) {
+  const body = JSON.stringify({ on: enabled, updated_at: new Date().toISOString() }, null, 2)
+
+  try {
+    fs.mkdirSync(path.dirname(LONG_HORIZON_AC_PATH), { recursive: true })
+    fs.writeFileSync(LONG_HORIZON_AC_PATH, body, 'utf8')
+  } catch (error) {
+    rememberLog(`[long-horizon-ac] userData write failed: ${error.message}`)
+  }
+
+  try {
+    const mirrorDir = path.join(HERMES_HOME, 'state')
+    fs.mkdirSync(mirrorDir, { recursive: true })
+    fs.writeFileSync(path.join(mirrorDir, 'long-horizon-auto-continue.json'), body, 'utf8')
+  } catch (error) {
+    rememberLog(`[long-horizon-ac] HERMES_HOME mirror failed: ${error.message}`)
+  }
+}
+
+ipcMain.on('hermes:long-horizon-auto-continue', (_event, on) => {
+  writeLongHorizonAutoContinue(Boolean(on))
+})
+
+// O5: per-session deep×premium chip (not global). Mirrors last toggled session
+// for agent hooks. Does NOT authorize cross-session goal continue (long-horizon-ac).
+function writeSessionDeliveryMode(sessionId, mode) {
+  const id = String(sessionId || '').trim()
+
+  if (!id) {
+    return
+  }
+
+  const on = mode === 'deep_premium'
+
+  const body = JSON.stringify(
+    { sessionId: id, mode: on ? 'deep_premium' : 'off', on, updated_at: new Date().toISOString() },
+    null,
+    2
+  )
+
+  try {
+    const mirrorDir = path.join(HERMES_HOME, 'state')
+    fs.mkdirSync(mirrorDir, { recursive: true })
+    fs.writeFileSync(path.join(mirrorDir, 'session-delivery-mode.json'), body, 'utf8')
+  } catch (error) {
+    rememberLog(`[session-delivery-mode] HERMES_HOME mirror failed: ${error.message}`)
+  }
+}
+
+ipcMain.on('hermes:session-delivery-mode', (_event, payload) => {
+  const sessionId = payload && payload.sessionId
+  const mode = payload && payload.mode
+  writeSessionDeliveryMode(sessionId, mode)
+})
+
+
 // Quick Entry: the renderer reads the live registration state on settings mount
 // and writes the preference back. Main is authoritative — it owns the OS
 // accelerator — so both handlers return the state that ACTUALLY resulted,

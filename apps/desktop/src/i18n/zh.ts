@@ -778,6 +778,9 @@ export const zh: Translations = {
       invalidJson: '配置 JSON 无效',
       keepAwakeTitle: '保持电脑唤醒',
       keepAwakeDesc: '阻止本机休眠，让长时间或通宵运行继续进行。屏幕仍可变暗。',
+      longHorizonAutoContinueTitle: '跨会话目标续跑（实验 C）',
+      longHorizonAutoContinueDesc:
+        '仅实验 C：目标已授权后，轮次耗尽可自动领取下一会话续跑。默认关闭。与输入框「极昼·无影灯」会话芯片正交（芯片仅本会话）。仍须 super-grill 与预算硬顶——不是无声整夜狂跑。',
       attachmentSizeTitle: '预览 / 图片加载大小上限',
       attachmentSizeDesc:
         '桌面端为预览和图片附件加载本地文件的大小上限（MB）。默认为 16。远程非图片附件使用单独的 256 MB 上限。设置过大会将整个文件读入内存，可能导致应用卡死或崩溃。',
@@ -2169,6 +2172,14 @@ export const zh: Translations = {
   },
 
   composer: {
+    sessionDeliveryMode: {
+      off: '极昼·无影灯',
+      on: '极昼·无影灯 · 开',
+      aria: '会话交付模式：极昼计划 × 无影灯质量（仅本会话）',
+      tipOff: '默认关。点击仅对本会话启用极昼·无影灯——不是跨会话自动续跑（实验 C）。',
+      tipOn:
+        '已开：本会话 intensity=deep + delivery=premium；琐碎仍轻；无人值守仅闸门满足。重活前优先头脑风暴（product-forcing-questions）。'
+    },
     message: '消息',
     wakingProfile: profile => `正在唤醒 ${profile}…`,
     placeholderStarting: '正在启动 Hermes…',

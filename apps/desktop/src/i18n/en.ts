@@ -569,6 +569,9 @@ export const en: Translations = {
       invalidJson: 'Invalid config JSON',
       keepAwakeTitle: 'Keep computer awake',
       keepAwakeDesc: 'Stop this machine from sleeping so long or overnight runs keep going. The display can still dim.',
+      longHorizonAutoContinueTitle: 'Cross-session goal continue (experiment C)',
+      longHorizonAutoContinueDesc:
+        'Experiment C only: after a goal is authorized, allow auto-claim of the next session when the turn budget ends. Default off. Orthogonal to the composer Deep×Premium chip (session-only). Still needs super-grill + budget — not silent overnight free-for-all.',
       attachmentSizeTitle: 'Max preview / image load size',
       attachmentSizeDesc:
         'How big a local file Desktop will load for previews and image attach, in MB. Default is 16. Remote non-image attach uses a separate 256 MB cap. Setting this very high loads the whole file into memory and can freeze or crash the app.',
@@ -1977,6 +1980,14 @@ export const en: Translations = {
   },
 
   composer: {
+    sessionDeliveryMode: {
+      off: 'Deep×Premium',
+      on: 'Deep×Premium · ON',
+      aria: 'Session delivery mode: Deep plan × Premium quality (this session only)',
+      tipOff: 'Off (default). Click to enable Deep×Premium for THIS session only — not cross-session auto-continue (experiment C).',
+      tipOn:
+        'On: intensity=deep + delivery=premium this session; trivial stays light; unattended only if gates pass. Prefers brainstorm (product-forcing-questions) before heavy build.'
+    },
     message: 'Message',
     wakingProfile: profile => `Waking up ${profile}…`,
     placeholderStarting: 'Starting Hermes...',

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { useStore } from '@nanostores/react'
 
 import { Button } from '@/components/ui/button'
@@ -18,6 +19,12 @@ import {
   VolumeX
 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $activeSessionId } from '@/store/session'
+import {
+  hydrateSessionDeliveryMode,
+  sessionDeliveryModeFor,
+  toggleSessionDeliveryMode
+} from '@/store/session-delivery-mode'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 
 import type { ConversationStatus } from './hooks/use-voice-conversation'
@@ -79,6 +86,8 @@ export function ComposerControls({
   onQueue: () => void
   onToggleAutoSpeak: () => void
 }) {
+  const activeId = useStore($activeSessionId)
+  const scopedId = activeId
   const { t } = useI18n()
   const c = t.composer
 
@@ -91,6 +100,7 @@ export function ComposerControls({
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
+      <SessionDeliveryModePill disabled={disabled} sessionId={scopedId} />
       <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
       <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
       <AutoSpeakButton active={autoSpeak} disabled={disabled} onToggle={onToggleAutoSpeak} />
@@ -408,6 +418,46 @@ function DictationButton({
         ) : (
           <Codicon name="mic" size="0.875rem" />
         )}
+      </Button>
+    </Tip>
+  )
+}
+
+function SessionDeliveryModePill({ disabled, sessionId }: { disabled: boolean; sessionId: null | string }) {
+  const { t } = useI18n()
+  const label = t.composer.sessionDeliveryMode
+  const [mode, setMode] = useState(() => sessionDeliveryModeFor(sessionId))
+
+  useEffect(() => {
+    hydrateSessionDeliveryMode(sessionId)
+    setMode(sessionDeliveryModeFor(sessionId))
+  }, [sessionId])
+
+  const on = mode === 'deep_premium'
+  const tip = on ? label.tipOn : label.tipOff
+
+  return (
+    <Tip label={tip}>
+      <Button
+        aria-label={label.aria}
+        aria-pressed={on}
+        className={cn(
+          'h-(--composer-control-size) max-w-44 shrink-0 gap-1 rounded-md px-2 text-xs font-normal',
+          on
+            ? 'border border-amber-500/50 bg-amber-500/15 text-foreground hover:bg-amber-500/25'
+            : 'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+        )}
+        disabled={disabled || !sessionId}
+        onClick={() => {
+          const next = toggleSessionDeliveryMode(sessionId)
+          setMode(next)
+          triggerHaptic(next === 'deep_premium' ? 'open' : 'close')
+        }}
+        size="sm"
+        type="button"
+        variant="ghost"
+      >
+        <span className="truncate">{on ? label.on : label.off}</span>
       </Button>
     </Tip>
   )

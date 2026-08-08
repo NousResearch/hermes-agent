@@ -178,6 +178,9 @@ declare global {
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
       setTranslucency?: (payload: { intensity: number }) => void
       setKeepAwake?: (on: boolean) => void
+      setLongHorizonAutoContinue?: (on: boolean) => void
+      /** O5: per-session deep×premium chip; not global auto-continue. */
+      setSessionDeliveryMode?: (payload: { sessionId: string; mode: 'off' | 'deep_premium' }) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       openPreviewInBrowser?: (url: string) => Promise<void>

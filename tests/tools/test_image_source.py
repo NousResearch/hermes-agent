@@ -99,6 +99,65 @@ class TestLocalBackend:
         assert res.data == svg_bytes
 
 
+class TestWindowsMsysPaths:
+    @pytest.mark.asyncio
+    async def test_local_windows_msys_path_is_translated_with_cygpath(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        image = tmp_path / "image.png"
+        image.write_bytes(PNG)
+
+        with patch("tools.image_source.platform.system", return_value="Windows"), patch(
+            "tools.image_source.subprocess.run",
+            return_value=SimpleNamespace(returncode=0, stdout=str(image)),
+        ) as cygpath:
+            res = await isrc.resolve_image_source(
+                "/tmp/image.png", isrc.ResolveContext())
+
+        assert res.data == PNG
+        assert res.origin == "file"
+        cygpath.assert_called_once_with(
+            ["cygpath", "-w", "/tmp/image.png"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_local_windows_msys_path_without_cygpath_is_actionable(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+
+        with patch("tools.image_source.platform.system", return_value="Windows"), patch(
+            "tools.image_source.subprocess.run", side_effect=FileNotFoundError), pytest.raises(
+                isrc.SourceNotFound, match="Unix-style path"
+            ) as exc_info:
+            await isrc.resolve_image_source("/tmp/image.png", isrc.ResolveContext())
+
+        assert r"C:\Users\...\image.png" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_windows_sandbox_path_is_not_translated(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+        def fake_execute(cmd, **kw):
+            return {"returncode": 0, "output": base64.b64encode(PNG).decode()}
+
+        with patch("tools.image_source.platform.system", return_value="Windows"), patch(
+            "tools.image_source.subprocess.run"
+        ) as cygpath, patch(
+            "tools.image_source._get_active_env",
+            return_value=SimpleNamespace(execute=fake_execute),
+        ):
+            res = await isrc.resolve_image_source(
+                "/workspace/image.png", isrc.ResolveContext(task_id="t1"))
+
+        assert res.origin == "container"
+        cygpath.assert_not_called()
+
+
 class TestNonLocalBackendConfinement:
     """The security model: under a sandbox backend, host reads are confined to
     the media caches; every other path is read inside the sandbox."""

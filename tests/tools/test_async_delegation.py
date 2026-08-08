@@ -555,6 +555,158 @@ assert ad.mark_completion_delivered({delegation_id!r})
     assert probe.stdout.strip().splitlines()[-1] == "0"
 
 
+def test_restart_restores_launch_and_activated_profile_once(tmp_path, monkeypatch):
+    launch_home = tmp_path / "launch"
+    secondary_home = tmp_path / "secondary"
+
+    def persist(home, delegation_id, session_key):
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        record = {
+            "delegation_id": delegation_id,
+            "session_key": session_key,
+            "origin_ui_session_id": "sid",
+            "parent_session_id": None,
+            "dispatched_at": 1.0,
+        }
+        ad._persist_dispatch(record)
+        event = {
+            "type": "async_delegation",
+            "delegation_id": delegation_id,
+            "session_key": session_key,
+            "origin_ui_session_id": "sid",
+            "status": "completed",
+            "completed_at": 2.0,
+            "summary": f"result for {session_key}",
+        }
+        ad._persist_completion(
+            event,
+            {"status": "completed", "summary": event["summary"]},
+        )
+
+    persist(launch_home, "deleg-launch-restart", "launch-session")
+    persist(secondary_home, "deleg-secondary-restart", "secondary-session")
+
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    import tools.process_registry as process_registry_module
+    from tools.process_registry import ProcessRegistry
+    from tui_gateway import server
+
+    restarted = ProcessRegistry()
+    monkeypatch.setattr(process_registry_module, "process_registry", restarted)
+
+    secondary_session = {"profile_home": str(secondary_home)}
+    assert server._restore_activated_profile_completions(secondary_session) == 1
+    assert server._restore_activated_profile_completions(secondary_session) == 0
+    assert restarted.restore_profile_home(launch_home) == 0
+
+    events = [
+        restarted.completion_queue.get_nowait(),
+        restarted.completion_queue.get_nowait(),
+    ]
+    assert [event["delegation_id"] for event in events] == [
+        "deleg-launch-restart",
+        "deleg-secondary-restart",
+    ]
+    assert restarted.completion_queue.empty()
+
+
+def test_submit_failure_removes_durable_running_record(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    class _BrokenExecutor:
+        def submit(self, *_args, **_kwargs):
+            raise RuntimeError("submit failed")
+
+    monkeypatch.setattr(ad, "_get_executor", lambda _max_workers: _BrokenExecutor())
+    result = ad.dispatch_async_delegation(
+        goal="never ran", context=None, toolsets=None, role="leaf", model="m",
+        session_key="owner", runner=lambda: {},
+    )
+
+    assert result["status"] == "rejected"
+    with ad._DB_LOCK, ad._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM async_delegations").fetchone()[0] == 0
+
+
+def test_pending_retention_prunes_delivered_before_undelivered(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(ad, "_MAX_RETAINED_COMPLETED", 2)
+    for index, delivery_state in enumerate(("pending", "delivered", "pending")):
+        delegation_id = f"deleg_{index}"
+        record = {
+            "delegation_id": delegation_id,
+            "session_key": "owner",
+            "origin_ui_session_id": "",
+            "parent_session_id": None,
+            "dispatched_at": float(index + 1),
+        }
+        ad._persist_dispatch(record)
+        ad._persist_completion(
+            {
+                "delegation_id": delegation_id,
+                "status": "completed",
+                "completed_at": float(index + 1),
+            },
+            {"status": "completed", "summary": delegation_id},
+        )
+        if delivery_state == "delivered":
+            ad.mark_completion_delivered(delegation_id)
+
+    ad._prune_durable_records()
+
+    assert ad.get_durable_delegation("deleg_0") is not None
+    assert ad.get_durable_delegation("deleg_1") is None
+    assert ad.get_durable_delegation("deleg_2") is not None
+
+
+def test_recover_marks_abandoned_running_record_unknown(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    record = {
+        "delegation_id": "deleg_abandoned",
+        "session_key": "owner",
+        "origin_ui_session_id": "",
+        "parent_session_id": None,
+        "dispatched_at": 1.0,
+    }
+    ad._persist_dispatch(record)
+    with ad._DB_LOCK, ad._connect() as conn:
+        conn.execute(
+            "UPDATE async_delegations SET owner_pid=?, owner_started_at=NULL WHERE delegation_id=?",
+            (99999999, "deleg_abandoned"),
+        )
+
+    assert ad.recover_abandoned_delegations() == 1
+    durable = ad.get_durable_delegation("deleg_abandoned")
+    assert durable["state"] == "unknown"
+    assert durable["delivery_state"] == "pending"
+    restored = queue.Queue()
+    assert ad.restore_undelivered_completions(restored) == 1
+    assert restored.get_nowait()["status"] == "unknown"
+
+
+def test_durable_delivery_claim_is_exclusive_and_retryable(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    record = {
+        "delegation_id": "deleg_claim", "session_key": "owner",
+        "origin_ui_session_id": "", "parent_session_id": None,
+        "dispatched_at": 1.0,
+    }
+    ad._persist_dispatch(record)
+    ad._persist_completion(
+        {"delegation_id": "deleg_claim", "status": "completed", "completed_at": 2.0},
+        {"status": "completed", "summary": "done"},
+    )
+
+    assert ad.claim_completion_delivery("deleg_claim", "consumer-a")
+    assert not ad.claim_completion_delivery("deleg_claim", "consumer-b")
+    assert ad.release_completion_delivery("deleg_claim", "consumer-a")
+    assert ad.claim_completion_delivery("deleg_claim", "consumer-b")
+    assert ad.complete_completion_delivery("deleg_claim", "consumer-b")
+    assert ad.complete_completion_delivery("deleg_claim", "consumer-b")
+    assert not ad.claim_completion_delivery("deleg_claim", "consumer-c")
+    assert ad.get_durable_delegation("deleg_claim")["delivery_state"] == "delivered"
+
+
 # ---------------------------------------------------------------------------
 # Integration: delegate_task(background=True) routing
 # ---------------------------------------------------------------------------

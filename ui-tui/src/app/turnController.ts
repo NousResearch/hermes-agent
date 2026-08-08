@@ -17,7 +17,7 @@ import {
   sameToolTrailGroup,
   toolTrailLabel
 } from '../lib/text.js'
-import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '../types.js'
+import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem, TurnOrigin } from '../types.js'
 
 import type { Notice } from './interfaces.js'
 import { resetFlowOverlays } from './overlayStore.js'
@@ -975,6 +975,57 @@ class TurnController {
     const raw = this.bufRef.trimStart()
     const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw
     patchTurnState({ streaming: boundedLiveRenderText(visible) })
+  }
+
+  reconcileTurn(
+    origin: TurnOrigin | null | undefined,
+    generation: number | undefined,
+    running?: boolean,
+    revision?: number
+  ): boolean {
+    const current = getTurnState()
+    const currentBusy = getUiState().busy
+    const hasGeneration = Number.isSafeInteger(generation) && Number(generation) >= 0
+    const nextGeneration = hasGeneration ? Number(generation) : current.turnGeneration
+    const hasRevision = Number.isSafeInteger(revision) && Number(revision) >= 0
+    const nextRevision = hasRevision ? Number(revision) : current.turnStateRevision
+
+    if (hasRevision) {
+      if (nextRevision < current.turnStateRevision) {
+        return false
+      }
+
+      if (nextRevision === current.turnStateRevision) {
+        if (hasGeneration && nextGeneration < current.turnGeneration) {
+          return false
+        }
+
+        if (running === true && currentBusy === false && nextRevision > 0) {
+          return false
+        }
+      }
+    } else if (hasGeneration && nextGeneration < current.turnGeneration) {
+      // Backward compatibility for older gateways: retain the previous
+      // generation-only ordering when turn_state_revision is absent.
+      return false
+    }
+
+    const nextOrigin =
+      origin === 'user' || origin === 'notification' || origin === 'goal' || origin === null
+        ? origin
+        : current.turnOrigin
+
+    patchTurnState({
+      turnGeneration: nextGeneration,
+      turnOrigin: nextOrigin,
+      turnStateRevision: nextRevision
+    })
+
+    if (running !== undefined) {
+      patchUiState({ busy: running })
+    }
+
+    return true
   }
 
   startMessage() {

@@ -972,6 +972,8 @@ describe('resumeSession failure recovery', () => {
             serviceTier: '',
             storedSessionId: 'stored-1',
             streamId: null,
+            turnGeneration: 0,
+            turnStateRevision: 0,
             turnStartedAt: null,
             usage: null,
             yolo: false

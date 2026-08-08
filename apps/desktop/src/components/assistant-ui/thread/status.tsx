@@ -13,14 +13,10 @@ import { StatusPulse } from '@/components/ui/status-pulse'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $backgroundResume } from '@/store/background-delegation'
-import { sessionCompacting } from '@/store/compaction'
-import { sessionAwaitingInput } from '@/store/prompts'
-import { $turnStartedAt } from '@/store/session'
-import { type DraftingTool, sessionDraftingTool } from '@/store/tool-drafting'
+import { $compactionActive } from '@/store/compaction'
+import { $activeSessionAwaitingInput } from '@/store/prompts'
+import { $activeSessionId, $turnOrigin, $turnStartedAt } from '@/store/session'
 
-// A status line is scaffolding like any other — "Editing" while the model
-// drafts a call is the same kind of line as "Explored 3 files" once it has run,
-// and reads as one continuous column only if it shares their type and colour.
 const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentPropsWithoutRef<'div'>> = ({
   children,
   label,
@@ -125,12 +121,23 @@ export const CenteredThreadSpinner: FC = () => {
 
 export const ResponseLoadingIndicator: FC = () => {
   const { t } = useI18n()
-  const { compacting, drafting, turnTimerKey } = useThreadSessionStatus()
-  const elapsed = useElapsedSeconds(true, turnTimerKey)
-  const hint = useStatusHint(compacting, drafting)
+  const timerKey = useActiveTurnTimerKey()
+  const elapsed = useElapsedSeconds(true, timerKey)
+  const compacting = useStore($compactionActive)
+  const turnOrigin = useStore($turnOrigin)
 
   return (
-    <StatusRow data-slot="aui_response-loading" label={hint || t.assistant.thread.loadingResponse}>
+    <StatusRow
+      className="text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height)"
+      data-slot="aui_response-loading"
+      label={
+        compacting
+          ? COMPACTION_LABEL
+          : turnOrigin === 'notification'
+            ? t.assistant.thread.processingBackgroundResult
+            : t.assistant.thread.loadingResponse
+      }
+    >
       <StatusPulse
         aria-hidden="true"
         className="dither inline-block size-3 rounded-[2px] text-midground/80"
@@ -186,6 +193,8 @@ const STREAM_STALL_S = 2
 // so that per-token updates re-render only this leaf, not the whole
 // AssistantMessage subtree.
 export const StreamStallIndicator: FC = () => {
+  const { t } = useI18n()
+
   const activity = useAuiState(s => {
     let textLength = 0
 
@@ -200,18 +209,14 @@ export const StreamStallIndicator: FC = () => {
     return `${s.message.content.length}:${textLength}`
   })
 
-  // Timestamp of the activity that preceded the current quiet spell, set once
-  // the spell qualifies as a stall. Holding the timestamp (not a boolean) is
-  // what lets the timer read "quiet for 12s" rather than the age of this
-  // component, which is the whole turn so far.
-  const [quietSince, setQuietSince] = useState<number | undefined>(undefined)
-  const { awaitingInput, compacting, drafting, turnTimerKey } = useThreadSessionStatus()
-  const hint = useStatusHint(compacting, drafting)
-
-  // A tool run at the tail already narrates the wait — its summary counts the
-  // calls, its ticker names the current one, and it carries its own timer. A
-  // second spinner under that adds a line and says nothing new.
-  const toolNarrating = useAuiState(s => s.message.content.at(-1)?.type === 'tool-call')
+  const [stalled, setStalled] = useState(false)
+  const compacting = useStore($compactionActive)
+  const turnTimerKey = useActiveTurnTimerKey()
+  const turnOrigin = useStore($turnOrigin)
+  // A pending clarify / approval / sudo / secret means the turn is paused on the
+  // user, not working — so don't resurrect the "thinking" timer while they
+  // decide (matches the pet's awaitingInput pose taking priority over busy).
+  const awaitingInput = useStore($activeSessionAwaitingInput)
 
   useEffect(() => {
     setQuietSince(undefined)
@@ -240,7 +245,17 @@ export const StreamStallIndicator: FC = () => {
   }
 
   return (
-    <StatusRow data-slot="aui_stream-stall" label={hint || 'Hermes is thinking'}>
+    <StatusRow
+      className="mt-1.5"
+      data-slot="aui_stream-stall"
+      label={
+        compacting
+          ? COMPACTION_LABEL
+          : turnOrigin === 'notification'
+            ? t.assistant.thread.processingBackgroundResult
+            : 'Hermes is thinking'
+      }
+    >
       <StatusPulse
         aria-hidden="true"
         className="dither inline-block size-3 rounded-[2px] text-midground/80"

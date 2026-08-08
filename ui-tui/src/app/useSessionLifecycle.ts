@@ -23,7 +23,7 @@ import type { Msg, PanelSection, SessionInfo, Usage } from '../types.js'
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
-import { patchTurnState } from './turnStore.js'
+import { getTurnState, patchTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const usageFrom = (info: null | SessionInfo): Usage => (info?.usage ? { ...ZERO, ...info.usage } : ZERO)
@@ -38,6 +38,85 @@ const statusFromLiveSession = (status?: string, running = false) => {
   }
 
   return running || status === 'working' ? 'running…' : 'ready'
+}
+
+export interface SessionResponseTurnFence {
+  busy: boolean
+  sessionId: null | string
+  turnGeneration: number
+  turnOrigin: SessionInfo['turn_origin']
+  turnStateRevision: number
+}
+
+export const captureSessionResponseTurnFence = (): SessionResponseTurnFence => {
+  const turn = getTurnState()
+  const ui = getUiState()
+
+  return {
+    busy: ui.busy,
+    sessionId: ui.sid,
+    turnGeneration: turn.turnGeneration,
+    turnOrigin: turn.turnOrigin,
+    turnStateRevision: turn.turnStateRevision
+  }
+}
+
+export function reconcileSessionResponseTurn(
+  response: SessionActivateResponse | SessionResumeResponse,
+  requestFence: SessionResponseTurnFence
+) {
+  const current = getTurnState()
+  const currentUi = getUiState()
+  const sameSession = requestFence.sessionId === response.session_id && currentUi.sid === requestFence.sessionId
+
+  const changedDuringRequest =
+    sameSession &&
+    (current.turnGeneration !== requestFence.turnGeneration ||
+      current.turnOrigin !== requestFence.turnOrigin ||
+      current.turnStateRevision !== requestFence.turnStateRevision ||
+      currentUi.busy !== requestFence.busy)
+
+  if (!changedDuringRequest) {
+    // Turn revisions are independent per session. Only a changed fence that is
+    // still owned by this response's session can order the response; otherwise
+    // reset before adopting the target session's sequence.
+    turnController.fullReset()
+    patchUiState({ busy: false })
+  }
+
+  const info = response.info ?? null
+  const running = Boolean(response.running || response.status === 'working' || response.status === 'waiting')
+  const origin = Object.hasOwn(response, 'turn_origin') ? response.turn_origin : info?.turn_origin
+  const generation = Object.hasOwn(response, 'turn_generation') ? response.turn_generation : info?.turn_generation
+
+  const revision = Object.hasOwn(response, 'turn_state_revision')
+    ? response.turn_state_revision
+    : info?.turn_state_revision
+
+  turnController.reconcileTurn(origin, generation, running, revision)
+
+  const reconciledTurn = getTurnState()
+  const reconciledRunning = getUiState().busy
+
+  const reconciledInfo = info
+    ? {
+        ...info,
+        running: reconciledRunning,
+        turn_generation: reconciledTurn.turnGeneration,
+        turn_origin: reconciledTurn.turnOrigin,
+        turn_state_revision: reconciledTurn.turnStateRevision
+      }
+    : null
+
+  return {
+    info: reconciledInfo,
+    running: reconciledRunning,
+    turn: {
+      turnGeneration: reconciledTurn.turnGeneration,
+      turnOrigin: reconciledTurn.turnOrigin,
+      turnStateRevision: reconciledTurn.turnStateRevision
+    }
+  }
 }
 
 export const writeActiveSessionFile = (sessionId: null | string, file = process.env.HERMES_TUI_ACTIVE_SESSION_FILE) => {
@@ -313,6 +392,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     (id: string) => {
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'switching session…' })
+      const requestFence = captureSessionResponseTurnFence()
 
       gw.request<SessionActivateResponse>('session.activate', { session_id: id })
         .then(raw => {
@@ -324,10 +404,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             return patchUiState({ status: 'ready' })
           }
 
-          const info = r.info ?? null
-          const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
+          const reconciled = reconcileSessionResponseTurn(r, requestFence)
+          const { info, running } = reconciled
 
           resetSession()
+          patchTurnState(reconciled.turn)
           setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
           const transcript = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]
           setHistoryItems(info ? [introMsg(info), ...transcript] : transcript)
@@ -336,7 +417,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             busy: running,
             info,
             sid: r.session_id,
-            status: statusFromLiveSession(r.status, running),
+            status: running ? statusFromLiveSession(r.status, true) : 'ready',
             usage: usageFrom(info)
           })
           hydrateLiveSessionInflight(r.inflight)
@@ -365,6 +446,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         }
 
         const previousSid = getUiState().sid
+        const requestFence = captureSessionResponseTurnFence()
 
         gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id })
           .then(raw => {
@@ -376,10 +458,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               return patchUiState({ status: 'ready' })
             }
 
-            const info = r.info ?? null
-            const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
+            const reconciled = reconcileSessionResponseTurn(r, requestFence)
+            const { info, running } = reconciled
 
             resetSession()
+            patchTurnState(reconciled.turn)
             setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
 
             const resumed = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]
@@ -390,7 +473,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               busy: running,
               info,
               sid: r.session_id,
-              status: statusFromLiveSession(r.status, running),
+              status: running ? statusFromLiveSession(r.status, true) : 'ready',
               usage: usageFrom(info)
             })
             hydrateLiveSessionInflight(r.inflight)

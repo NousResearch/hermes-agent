@@ -35,7 +35,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,7 @@ class _ClarifyEntry:
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
+    route_scope: Optional[Dict[str, str]] = None
 
     def signature(self) -> Dict[str, object]:
         return {
@@ -73,6 +74,48 @@ _entries: Dict[str, _ClarifyEntry] = {}
 _session_index: Dict[str, List[str]] = {}
 
 
+def build_route_scope(
+    *,
+    platform: Any,
+    chat_id: Any,
+    chat_type: Any = None,
+    thread_id: Any = None,
+    message_id: Any = None,
+) -> Optional[Dict[str, str]]:
+    """Return the bounded interactive scope for thread-aware platforms.
+
+    Buzz channel prompts are bound to the thread that displayed them. A
+    top-level channel event becomes that thread's root. Buzz DMs keep their
+    existing conversation-wide session semantics and therefore need no
+    additional route scope.
+    """
+    platform_value = getattr(platform, "value", platform)
+    if str(platform_value or "").strip().lower() != "buzz":
+        return None
+    normalized_chat_type = str(chat_type or "").strip().lower()
+    if normalized_chat_type in {"dm", "private"}:
+        return None
+    normalized_chat_id = str(chat_id or "").strip()
+    normalized_thread_id = str(thread_id or message_id or "").strip()
+    if not normalized_chat_id or not normalized_thread_id:
+        return None
+    return {
+        "platform": "buzz",
+        "chat_id": normalized_chat_id,
+        "thread_id": normalized_thread_id,
+    }
+
+
+def _normalize_route_scope(route_scope: Any) -> Optional[Dict[str, str]]:
+    if not isinstance(route_scope, dict):
+        return None
+    return build_route_scope(
+        platform=route_scope.get("platform"),
+        chat_id=route_scope.get("chat_id"),
+        thread_id=route_scope.get("thread_id"),
+    )
+
+
 # =========================================================================
 # Public API — agent-thread side
 # =========================================================================
@@ -83,6 +126,7 @@ def register(
     question: str,
     choices: Optional[List[str]],
     multi_select: bool = False,
+    route_scope: Optional[Dict[str, str]] = None,
 ) -> _ClarifyEntry:
     """Register a pending clarify request and return the entry.
 
@@ -97,6 +141,7 @@ def register(
         multi_select=bool(multi_select) and bool(choices),
         # Open-ended (no choices) → next message IS the response, no buttons needed.
         awaiting_text=not bool(choices),
+        route_scope=_normalize_route_scope(route_scope),
     )
     with _lock:
         _entries[clarify_id] = entry
@@ -180,6 +225,7 @@ def get_pending_for_session(
     session_key: str,
     *,
     include_choice_prompts: bool = False,
+    route_scope: Optional[Dict[str, str]] = None,
 ) -> Optional[_ClarifyEntry]:
     """Return the oldest pending clarify entry for a session, or None.
 
@@ -190,15 +236,51 @@ def get_pending_for_session(
     oldest unresolved clarify is returned so the text can resolve it instead
     of being queued as an unrelated follow-up turn.
     """
+    normalized_route_scope = _normalize_route_scope(route_scope)
     with _lock:
         ids = _session_index.get(session_key) or []
         for cid in ids:
             entry = _entries.get(cid)
             if entry is None:
                 continue
+            if (
+                entry.route_scope is not None
+                and entry.route_scope != normalized_route_scope
+            ):
+                continue
             if include_choice_prompts or entry.awaiting_text:
                 return entry
         return None
+
+
+def resolve_pending_outside_route(
+    session_key: str,
+    route_scope: Optional[Dict[str, str]],
+    response: str,
+) -> bool:
+    """Resolve a scoped clarify when the user continues on another route.
+
+    The unrelated message is not used as the clarify answer. The supplied
+    internal response only releases the blocked turn so the adapter can queue
+    the new routed event as its own follow-up turn.
+    """
+    normalized_route_scope = _normalize_route_scope(route_scope)
+    if normalized_route_scope is None:
+        return False
+    with _lock:
+        ids = _session_index.get(session_key) or []
+        for cid in ids:
+            entry = _entries.get(cid)
+            if (
+                entry is None
+                or entry.route_scope is None
+                or entry.route_scope == normalized_route_scope
+            ):
+                continue
+            entry.response = str(response)
+            entry.event.set()
+            return True
+    return False
 
 
 def _coerce_text_response(entry: _ClarifyEntry, response: str) -> Optional[str]:
@@ -313,13 +395,22 @@ def _coerce_multi_select_text(entry: _ClarifyEntry, text: str) -> Optional[str]:
     return _json.dumps(selected, ensure_ascii=False)
 
 
-def resolve_text_response_for_session(session_key: str, response: str) -> bool:
+def resolve_text_response_for_session(
+    session_key: str,
+    response: str,
+    *,
+    route_scope: Optional[Dict[str, str]] = None,
+) -> bool:
     """Resolve the oldest pending clarify in ``session_key`` from typed text.
 
     Returns False if no pending clarify exists or if the response was rejected
     (arbitrary prose for native interactive multi-choice clarifies).
     """
-    entry = get_pending_for_session(session_key, include_choice_prompts=True)
+    entry = get_pending_for_session(
+        session_key,
+        include_choice_prompts=True,
+        route_scope=route_scope,
+    )
     if entry is None:
         return False
 

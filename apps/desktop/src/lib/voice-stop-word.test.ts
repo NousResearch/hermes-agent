@@ -59,6 +59,29 @@ describe('isVoiceStopCommand', () => {
       expect(isVoiceStopCommand(phrase)).toBe(false)
     }
   })
+
+  it('matches Chinese stop commands with and without full-width punctuation', () => {
+    for (const phrase of [
+      '停止', '停止。', '停止！', '停止？', '停止…', '“停止”', '『停止』',
+      '结束对话', '结束对话。', '再见', '再见。', '取消', '取消！'
+    ]) {
+      expect(isVoiceStopCommand(phrase)).toBe(true)
+    }
+  })
+
+  it('matches Chinese stop commands addressed to 小雨 without spaces', () => {
+    for (const phrase of [
+      '你好小雨停止', '你好小雨,停止', '小雨停止', '小雨,停止', '小雨 停止'
+    ]) {
+      expect(isVoiceStopCommand(phrase)).toBe(true)
+    }
+  })
+
+  it('does NOT match Chinese requests that merely contain 停止', () => {
+    for (const phrase of ['停止播放音乐', '怎么停止这个任务', '小雨今天天气怎么样']) {
+      expect(isVoiceStopCommand(phrase)).toBe(false)
+    }
+  })
 })
 
 describe('interceptsTypedVoiceStop', () => {

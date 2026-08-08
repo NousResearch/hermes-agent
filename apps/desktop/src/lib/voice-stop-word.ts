@@ -30,20 +30,32 @@ const STOP_PHRASES: readonly string[] = [
   'goodbye',
   'good bye',
   'bye',
-  'cancel'
+  'cancel',
+  // Chinese equivalents — whisper transcribes these with full-width marks
+  // (停止。 / 停止！) which normalize() below also strips.
+  '停止',
+  '结束对话',
+  '再见',
+  '取消'
 ]
 
 // Optional address prefixes so "hermes stop" / "ok stop" / "hey hermes, stop"
 // still count. Stripped before matching the core phrase.
 const ADDRESS_PREFIXES: readonly string[] = ['hey hermes', 'hey hermes,', 'hermes', 'hermes,', 'ok', 'okay', 'hey']
 
+// Chinese address prefixes are stripped without requiring a trailing space:
+// STT output for Chinese rarely contains spaces (你好小雨停止). ASCII prefixes
+// keep the space requirement so "okay stop" can't be mis-stripped by "ok".
+const CJK_ADDRESS_PREFIXES: readonly string[] = ['你好小雨', '小雨']
+
 // Normalise: lowercase, strip surrounding punctuation/whitespace, collapse
-// internal runs of spaces. Trailing punctuation (".", "!", "…") is common in
-// STT output and must not defeat the match.
+// internal runs of spaces. Trailing punctuation (".", "!", "…", and the
+// full-width 。！？， forms whisper emits for Chinese) is common in STT output
+// and must not defeat the match.
 function normalize(text: string): string {
   return text
     .toLowerCase()
-    .replace(/[.,!?;:…]+/g, ' ')
+    .replace(/[.,!?;:…。，！？；：、”“‘’「」『』（）]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -57,6 +69,20 @@ function stripAddress(text: string): string {
 
     if (text.startsWith(`${prefix} `)) {
       return text.slice(prefix.length + 1).trim()
+    }
+  }
+
+  for (const prefix of CJK_ADDRESS_PREFIXES) {
+    if (text === prefix) {
+      continue
+    }
+
+    if (text.startsWith(prefix)) {
+      const rest = text.slice(prefix.length).trim()
+
+      if (rest) {
+        return rest
+      }
     }
   }
 

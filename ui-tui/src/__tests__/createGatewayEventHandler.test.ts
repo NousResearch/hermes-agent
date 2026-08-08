@@ -893,6 +893,35 @@ describe('createGatewayEventHandler', () => {
     expect(ctx.voice.setVoiceEnabled).not.toHaveBeenCalled()
   })
 
+  it('leaves voice transcripts editable when voice.submit_mode is draft', async () => {
+    const ctx = buildCtx([])
+
+    ctx.gateway.rpc = vi.fn(async (method: string) =>
+      method === 'config.get' ? { config: { voice: { submit_mode: 'draft' } } } : null
+    )
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { text: '  edit this first  ' }, type: 'voice.transcript' } as any)
+
+    await vi.waitFor(() => expect(ctx.composer.setInput).toHaveBeenCalledWith('edit this first'))
+    expect(ctx.submission.submitRef.current).not.toHaveBeenCalled()
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.get', { key: 'full' })
+  })
+
+  it('falls back to direct submit for an invalid voice.submit_mode', async () => {
+    const ctx = buildCtx([])
+
+    ctx.gateway.rpc = vi.fn(async (method: string) =>
+      method === 'config.get' ? { config: { voice: { submit_mode: 'refine' } } } : null
+    )
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { text: 'send safely' }, type: 'voice.transcript' } as any)
+
+    await vi.waitFor(() => expect(ctx.submission.submitRef.current).toHaveBeenCalledWith('send safely'))
+    expect(ctx.composer.setInput).toHaveBeenCalledWith('')
+  })
+
   it('opens a fresh session before starting voice after wake detection', async () => {
     const ctx = buildCtx([])
     ctx.session.newSession = vi.fn(async () => patchUiState({ sid: 'wake-session' }))

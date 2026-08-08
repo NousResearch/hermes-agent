@@ -36,6 +36,11 @@ import { isWakeUserDisabled } from './wakeState.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
 
+type VoiceSubmitMode = 'direct' | 'draft'
+
+const normalizeVoiceSubmitMode = (value: unknown): VoiceSubmitMode =>
+  typeof value === 'string' && value.trim().toLowerCase() === 'draft' ? 'draft' : 'direct'
+
 const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
 
 // The last gateway skin, kept so the theme can be re-derived when the OSC-11
@@ -944,16 +949,21 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        // CLI parity: _pending_input.put(transcript) unconditionally feeds
-        // the transcript to the agent as its next turn — draft handling
-        // doesn't apply because voice-mode users are speaking, not typing.
-        //
-        // We can't branch on composer input from inside a setInput updater
-        // (React strict mode double-invokes it, duplicating the submit).
-        // Just clear + defer submit so the cleared input is committed before
-        // submit reads it.
-        setInput('')
-        setTimeout(() => submitRef.current(text), 0)
+        void getFullConfigOnce().then(cfg => {
+          const submitMode = normalizeVoiceSubmitMode(cfg?.config?.voice?.submit_mode)
+
+          if (submitMode === 'draft') {
+            setInput(text)
+
+            return
+          }
+
+          // Default to CLI parity. Clear + defer submit so the cleared input
+          // is committed before submit reads it; invalid config also falls
+          // back to this established direct-submit behavior.
+          setInput('')
+          setTimeout(() => submitRef.current(text), 0)
+        })
 
         return
       }

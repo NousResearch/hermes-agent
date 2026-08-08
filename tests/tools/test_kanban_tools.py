@@ -40,6 +40,52 @@ def test_kanban_tools_hidden_without_env_var(monkeypatch, tmp_path):
     )
 
 
+def test_kanban_request_rework_visible_only_in_agent_review_loop(monkeypatch, tmp_path):
+    """request-rework has zero tool-schema footprint until explicitly enabled."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import tools.kanban_tools  # ensure registered
+    from tools.registry import invalidate_check_fn_cache, registry
+    from toolsets import resolve_toolset
+
+    def names() -> set[str]:
+        invalidate_check_fn_cache()
+        schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
+        return {s["function"].get("name") for s in schema if "function" in s}
+
+    assert "kanban_request_rework" not in names()
+
+    (home / "config.yaml").write_text(
+        "kanban:\n  review_loop_mode: agent\n",
+        encoding="utf-8",
+    )
+
+    assert "kanban_request_rework" in names()
+
+
+def test_kanban_orchestrator_sees_request_rework_in_agent_review_loop(monkeypatch, tmp_path):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "toolsets:\n  - kanban\nkanban:\n  review_loop_mode: agent\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import tools.kanban_tools  # ensure registered
+    from tools.registry import invalidate_check_fn_cache, registry
+    from toolsets import resolve_toolset
+
+    invalidate_check_fn_cache()
+    schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
+    names = {s["function"].get("name") for s in schema if "function" in s}
+    assert "kanban_request_rework" in names
+
+
 # ---------------------------------------------------------------------------
 # Handler happy paths
 # ---------------------------------------------------------------------------
@@ -393,6 +439,111 @@ def test_comment_ignores_caller_supplied_author(worker_env):
         assert comments[0].author == "test-worker"
     finally:
         conn.close()
+
+
+def test_request_rework_rejects_default_human_review_loop_mode(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        target = kb.create_task(conn, title="implementation", assignee="hefesto")
+        assert kb.complete_task(conn, target, result="implementation done")
+        kb.link_tasks(conn, target, worker_env)
+    finally:
+        conn.close()
+
+    out = kt._handle_request_rework({
+        "target_task_id": target,
+        "feedback": "missing regression test",
+    })
+    err = json.loads(out).get("error", "")
+    assert "review_loop_mode" in err
+    assert "agent" in err
+
+
+def test_request_rework_marks_linked_target_in_agent_mode(worker_env):
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    Path(os.environ["HERMES_HOME"], "config.yaml").write_text(
+        "kanban:\n  review_loop_mode: agent\n"
+    )
+
+    conn = kb.connect()
+    try:
+        target = kb.create_task(conn, title="implementation", assignee="hefesto")
+        assert kb.complete_task(conn, target, result="implementation done")
+        kb.link_tasks(conn, target, worker_env)
+    finally:
+        conn.close()
+
+    out = kt._handle_request_rework({
+        "target_task_id": target,
+        "feedback": "missing regression test",
+    })
+    data = json.loads(out)
+    assert data["ok"] is True
+    assert data["task_id"] == target
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, target)
+        comments = kb.list_comments(conn, target)
+    finally:
+        conn.close()
+
+    assert task is not None
+    assert task.status == "needs_rework"
+    assert comments[-1].author == "test-worker"
+    assert "missing regression test" in comments[-1].body
+
+
+def test_request_rework_rejects_conflicting_worker_reviewer_task_id(worker_env):
+    """A scoped worker cannot attribute rework to another reviewer task."""
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    Path(os.environ["HERMES_HOME"], "config.yaml").write_text(
+        "kanban:\n  review_loop_mode: agent\n"
+    )
+
+    conn = kb.connect()
+    try:
+        target = kb.create_task(conn, title="implementation", assignee="hefesto")
+        assert kb.complete_task(conn, target, result="implementation done")
+        foreign_reviewer = kb.create_task(
+            conn, title="other review", assignee="another-reviewer"
+        )
+        kb.link_tasks(conn, target, worker_env)
+        kb.link_tasks(conn, target, foreign_reviewer)
+    finally:
+        conn.close()
+
+    out = kt._handle_request_rework({
+        "target_task_id": target,
+        "reviewer_task_id": foreign_reviewer,
+        "feedback": "missing regression test",
+    })
+    err = json.loads(out).get("error", "")
+
+    assert f"worker is scoped to task {worker_env}" in err
+    assert foreign_reviewer in err
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, target)
+        comments = kb.list_comments(conn, target)
+    finally:
+        conn.close()
+
+    assert task is not None
+    assert task.status == "done"
+    assert not any("REQUEST_CHANGES" in comment.body for comment in comments)
 
 
 def test_create_happy_path(worker_env):

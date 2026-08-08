@@ -31,10 +31,22 @@ gateway:
           - ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
         home_channel: ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
         poll_interval: 4           # seconds between inbound poll sweeps
+        transport: poll            # required for ordered ambient observation
+        observer_mode: true        # keep a durable per-identity inbound cursor
+        response_authority: false  # observe without sending replies
+        observer_prompt: ""        # optional channel-specific context for the agent
         cli_path: ""               # buzz binary (default: PATH, then ~/bin/buzz)
         credentials_file: ""       # JSON file with the nsec (BUZZ_PRIVATE_KEY fallback)
         allowed_users: []          # empty = allow all; hex pubkeys or npubs
 ```
+
+With `observer_mode: true`, Hermes persists an identity-scoped cursor under
+the active profile and resumes from it after a restart, rather than seeding at
+the newest event and skipping downtime traffic. Observer mode currently
+requires `transport: poll` so backlog ordering can be proven. Keep
+`response_authority: false` for a private ambient observer; set it to `true`
+only when that identity should be allowed to dispatch agent turns and reply.
+`observer_prompt` optionally supplies channel-specific context to those turns.
 
 Plus, in `~/.hermes/.env`:
 

@@ -26,6 +26,7 @@ from tools.environments.base import (
 from tools.environments.local import (
     _HERMES_PROVIDER_ENV_BLOCKLIST,
     _is_hermes_internal_secret,
+    build_subprocess_env,
 )
 
 logger = logging.getLogger(__name__)
@@ -1554,7 +1555,10 @@ class DockerEnvironment(BaseEnvironment):
                 get_all_passthrough,
                 resolve_passthrough_value,
             )
-            from agent.secret_scope import _is_global_env, is_multiplex_active as _is_multiplex_active
+            from agent.secret_scope import (
+                _is_global_env,
+                is_multiplex_active as _is_multiplex_active,
+            )
             is_global_env = _is_global_env
             multiplex_active = _is_multiplex_active()
             passthrough_keys = set(get_all_passthrough())
@@ -1570,15 +1574,47 @@ class DockerEnvironment(BaseEnvironment):
         }
         forward_keys = explicit_forward_keys | (_implicit_forward - _HERMES_PROVIDER_ENV_BLOCKLIST)
         hermes_env = _load_hermes_env_vars() if forward_keys else {}
-        unset_names: set[str] = set()
+        try:
+            from hermes_constants import get_hermes_home_override
+
+            profile_scope_authoritative = (
+                multiplex_active or bool(get_hermes_home_override())
+            )
+        except Exception:
+            profile_scope_authoritative = multiplex_active
+
+        forwarded_env: dict[str, str] = {}
         for key in sorted(forward_keys):
-            value = os.getenv(key) or hermes_env.get(key)
+            value = os.getenv(key)
+            if not value:
+                value = hermes_env.get(key)
             if resolve_passthrough_value is not None:
                 value = resolve_passthrough_value(key, value)
             if value is not None:
-                exec_env[key] = value
-            elif multiplex_active and not is_global_env(key) and _ENV_VAR_NAME_RE.fullmatch(key):
-                unset_names.add(key)
+                forwarded_env[key] = value
+
+        # Resolve the explicitly forwarded subset through the shared child-env
+        # factory. The active profile scope wins over the launch environment,
+        # but no other value from the profile's .env is eligible for projection.
+        forwarded_env = build_subprocess_env(
+            base=forwarded_env,
+            scrub_secrets=False,
+            inherit_profile_home=False,
+            profile_secret_names=forward_keys,
+        )
+        exec_env.update({key: value for key, value in forwarded_env.items() if value is not None})
+
+        unset_names: set[str] = set()
+        if profile_scope_authoritative:
+            unset_names.update(
+                key
+                for key in forward_keys
+                if (
+                    _ENV_VAR_NAME_RE.fullmatch(key)
+                    and not is_global_env(key)
+                    and key not in forwarded_env
+                )
+            )
         return exec_env, unset_names
 
     def _build_runtime_env_args_with_unsets(self) -> tuple[list[str], tuple[str, ...]]:

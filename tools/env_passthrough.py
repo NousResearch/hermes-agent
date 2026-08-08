@@ -43,8 +43,12 @@ def _get_allowed() -> set[str]:
         return val
 
 
-# Cache for the config-based allowlist (loaded once per process).
+# Cache for the launch profile's config-based allowlist (loaded once per process).
 _config_passthrough: frozenset[str] | None = None
+# App-global Desktop/gateway processes can serve several profile homes without
+# changing process-global HERMES_HOME. Keep those config allowlists isolated by
+# the context-local home override instead of reusing the launch-profile cache.
+_profile_config_passthrough: dict[str, frozenset[str]] = {}
 
 
 def _is_hermes_provider_credential(name: str) -> bool:
@@ -126,7 +130,18 @@ def register_env_passthrough(var_names: Iterable[str]) -> None:
 def _load_config_passthrough() -> frozenset[str]:
     """Load ``tools.env_passthrough`` from config.yaml (cached)."""
     global _config_passthrough
-    if _config_passthrough is not None:
+
+    try:
+        from hermes_constants import get_hermes_home_override
+
+        profile_home = get_hermes_home_override()
+    except Exception:
+        profile_home = None
+    if profile_home is not None:
+        cached = _profile_config_passthrough.get(profile_home)
+        if cached is not None:
+            return cached
+    elif _config_passthrough is not None:
         return _config_passthrough
 
     result: set[str] = set()
@@ -159,8 +174,12 @@ def _load_config_passthrough() -> frozenset[str]:
     except Exception as e:
         logger.debug("Could not read tools.env_passthrough from config: %s", e)
 
-    _config_passthrough = frozenset(result)
-    return _config_passthrough
+    resolved = frozenset(result)
+    if profile_home is not None:
+        _profile_config_passthrough[profile_home] = resolved
+    else:
+        _config_passthrough = resolved
+    return resolved
 
 
 def is_env_passthrough(var_name: str) -> bool:

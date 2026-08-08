@@ -20,10 +20,12 @@ def _clean_passthrough():
     """Ensure a clean passthrough state for every test."""
     clear_env_passthrough()
     _ep_mod._config_passthrough = None
+    _ep_mod._profile_config_passthrough.clear()
     ss.set_multiplex_active(False)
     yield
     clear_env_passthrough()
     _ep_mod._config_passthrough = None
+    _ep_mod._profile_config_passthrough.clear()
     ss.set_multiplex_active(False)
 
 

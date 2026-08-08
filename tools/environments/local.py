@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
@@ -406,6 +406,42 @@ def _inject_context_hermes_home(env: dict) -> None:
         pass
 
 
+def _inject_profile_scoped_env_passthrough(
+    env: dict,
+    allowed_names: Iterable[str] | None = None,
+) -> None:
+    """Project explicitly-allowed values from the active profile secret scope.
+
+    A multi-profile host cannot copy the whole profile ``.env`` into a child:
+    that would defeat the sandbox's credential filtering.  It may only replace
+    names already approved by ``env_passthrough`` (or an equivalent caller
+    policy such as Docker's explicit ``forward_env`` list).
+
+    When a profile/home override or multiplexing is active, the scope is an
+    isolation boundary: an allowed name missing from the active profile must be
+    removed instead of falling through to the launch profile's ``os.environ``.
+    Outside profile isolation the scope remains an overlay, preserving the
+    existing single-profile process-environment fallback.
+    """
+    from agent.secret_scope import current_secret_scope, is_multiplex_active
+    from hermes_constants import get_hermes_home_override
+
+    scope = current_secret_scope()
+    if scope is None:
+        return
+    if allowed_names is None:
+        from tools.env_passthrough import get_all_passthrough
+
+        allowed_names = get_all_passthrough()
+    authoritative = is_multiplex_active() or bool(get_hermes_home_override())
+
+    for name in allowed_names:
+        if name in scope:
+            env[name] = scope[name]
+        elif authoritative:
+            env.pop(name, None)
+
+
 def _inject_session_context_env(env: dict) -> None:
     """Bridge gateway session ContextVars into a subprocess environment dict.
 
@@ -453,7 +489,12 @@ def _inject_session_context_env(env: dict) -> None:
             env.pop(var_name, None)
 
 
-def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
+def _sanitize_subprocess_env(
+    base_env: dict | None,
+    extra_env: dict | None = None,
+    *,
+    profile_secret_names: Iterable[str] | None = None,
+) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment."""
     try:
         from tools.env_passthrough import (
@@ -494,6 +535,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
             if resolved is not None:
                 sanitized[key] = resolved
 
+    _inject_profile_scoped_env_passthrough(sanitized, profile_secret_names)
     _inject_context_hermes_home(sanitized)
 
     from hermes_constants import apply_subprocess_home_env
@@ -662,6 +704,7 @@ def build_subprocess_env(
     inherit_profile_home: bool = True,
     scrub_secrets: bool = True,
     extra: "Mapping[str, str] | None" = None,
+    profile_secret_names: "Iterable[str] | None" = None,
 ) -> dict[str, str]:
     """Single factory for building a child-process environment.
 
@@ -699,6 +742,12 @@ def build_subprocess_env(
       overrides (e.g. a session-scoped ``HERMES_HOME``) always win.  On the
       scrub path it is forwarded as ``_sanitize_subprocess_env``'s
       ``extra_env`` (same force-prefix / blocklist handling as today).
+    * ``profile_secret_names`` is the only set eligible for projection from
+      the active context-local profile secret scope. Scrubbed environments
+      default to the current ``env_passthrough`` allowlist. Non-scrubbed or
+      caller-scrubbed environments project nothing unless the caller supplies
+      an explicit allowlist (for example Docker ``forward_env``). The full
+      profile ``.env`` is never copied into a child environment.
     """
     if scrub_secrets:
         # _sanitize_subprocess_env already performs HERMES_HOME override
@@ -707,6 +756,7 @@ def build_subprocess_env(
         return _sanitize_subprocess_env(
             dict(base) if base is not None else os.environ.copy(),
             dict(extra) if extra else None,
+            profile_secret_names=profile_secret_names,
         )
 
     env: dict[str, str] = dict(base) if base is not None else os.environ.copy()
@@ -716,6 +766,10 @@ def build_subprocess_env(
         apply_subprocess_home_env(env)
     if extra:
         env.update(extra)
+    if profile_secret_names is not None:
+        # Profile-scoped values are authoritative and must win over both the
+        # launch snapshot and explicit caller overlays for permitted names.
+        _inject_profile_scoped_env_passthrough(env, profile_secret_names)
     return env
 
 
@@ -1267,32 +1321,11 @@ def _path_env_key(run_env: dict) -> str | None:
 
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
-    try:
-        from tools.env_passthrough import (
-            is_env_passthrough as _is_passthrough,
-            resolve_passthrough_value as _resolve_passthrough_value,
-        )
-    except Exception:
-        _is_passthrough = lambda _: False  # noqa: E731
-        _resolve_passthrough_value = lambda _name, fallback: fallback  # noqa: E731
-
-    merged = dict(os.environ | env)
-    run_env = {}
-    for k, v in merged.items():
-        if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
-            real_key = k[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
-            if _is_hermes_internal_secret(real_key):
-                continue
-            run_env[real_key] = v
-        elif _is_hermes_internal_secret(k):
-            continue
-        else:
-            passthrough = _is_passthrough(k)
-            if k in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
-                continue
-            value = _resolve_passthrough_value(k, v) if passthrough else v
-            if value is not None:
-                run_env[k] = value
+    # Treat the merged terminal overlay as ``extra`` so force-prefixed vars
+    # keep their legacy semantics, while the shared factory remains the sole
+    # owner of scrubbing, profile projection, HOME/session bridging, marker
+    # cleanup, and delegated-child isolation.
+    run_env = build_subprocess_env(base={}, extra=os.environ | env)
     path_key = _path_env_key(run_env)
     if path_key is not None:
         new_path = _append_missing_sane_path_entries(run_env.get(path_key, ""))
@@ -1307,23 +1340,6 @@ def _make_run_env(env: dict) -> dict:
         # to bare ``hermes`` via the terminal tool even when the gateway was
         # launched without it on PATH (systemd, service managers, cron, etc.).
         run_env[path_key] = _prepend_hermes_bin_dir(new_path)
-
-    _inject_context_hermes_home(run_env)
-
-    from hermes_constants import apply_subprocess_home_env
-    apply_subprocess_home_env(run_env)
-
-    # Bridge ContextVar-based session vars into the subprocess env (with the
-    # cross-session leak guard — strips _UNSET vars when a concurrent host is
-    # engaged so a sibling session's os.environ mirror can't leak in).
-    _inject_session_context_env(run_env)
-
-    for _marker in _ACTIVE_VENV_MARKER_VARS:
-        run_env.pop(_marker, None)
-
-    _apply_windows_msys_bash_env_defaults(run_env)
-
-    run_env = _scrub_delegated_child_kanban_env(run_env)
 
     return run_env
 

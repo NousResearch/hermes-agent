@@ -390,10 +390,11 @@ def _maybe_unescape_new_string(new_string: str,
     The unescape is only applied per-sequence when the *matched region of
     the file* actually contains the corresponding control character — that
     is, we only convert ``\\t`` -> tab when the file region we're replacing
-    contains a real tab byte. Files that legitimately contain the literal
-    two-character string ``"\\t"`` (e.g. a Python source line that defines
-    ``sep = "\\t"``) get a backslash+t in the matched region instead of a
-    tab, so we leave new_string alone.
+    contains a real tab byte *and* does not itself contain the literal
+    two-character sequence. Files that legitimately contain ``"\\t"`` as text
+    (e.g. a Python source line that defines ``sep = "\\t"``) are left alone —
+    including when they are tab-indented, where the indentation would
+    otherwise satisfy the real-tab test on its own.
 
     ``\\n`` is intentionally excluded: newlines serialize correctly through
     JSON and rewriting backslash-n would corrupt escape sequences in
@@ -406,9 +407,16 @@ def _maybe_unescape_new_string(new_string: str,
 
     matched_regions = "".join(content[start:end] for start, end in matches)
     out = new_string
-    if "\\t" in out and "\t" in matched_regions:
+    # "the region has a real control byte" alone is not enough to conclude the
+    # model meant one: a tab-indented file puts a real tab in EVERY region, and
+    # a CRLF file a real CR in every region, so that test is always true there
+    # and the literal-sequence carve-out above never fires. When the region
+    # *also* carries the literal two-character sequence, the file demonstrably
+    # uses it as text and new_string's copy is ambiguous — leave it verbatim
+    # rather than rewriting content the edit never targeted.
+    if "\\t" in out and "\t" in matched_regions and "\\t" not in matched_regions:
         out = out.replace("\\t", "\t")
-    if "\\r" in out and "\r" in matched_regions:
+    if "\\r" in out and "\r" in matched_regions and "\\r" not in matched_regions:
         out = out.replace("\\r", "\r")
     return out
 

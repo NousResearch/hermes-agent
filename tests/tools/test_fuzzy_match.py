@@ -1,5 +1,7 @@
 """Tests for the fuzzy matching module."""
 
+import json
+
 from tools.fuzzy_match import fuzzy_find_and_replace
 
 
@@ -554,6 +556,54 @@ class TestEscapeNormalizedNewString:
         assert err is None
         assert count == 1
         assert "return 2" in new
+
+    def test_tab_indented_file_keeps_its_literal_backslash_t(self):
+        """The literal-``\\t`` carve-out must survive tab indentation.
+
+        A tab-indented file puts a real tab in every matched region, so the
+        "region contains a real tab" test alone is always true there and the
+        legitimate literal gets rewritten — corrupting a line the edit never
+        targeted. Here only ``demo`` -> ``prod`` was requested.
+        """
+        content = '{\n\t"separator": "\\t",\n\t"name": "demo"\n}\n'
+        old_string = '\t"separator": "\\t",\n\t"name": "demo"'
+        new_string = '\t"separator": "\\t",\n\t"name": "prod"'
+        new, count, _, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert '"name": "prod"' in new
+        # The separator line is untouched: still the two-character sequence,
+        # so the file is still parseable (a raw tab is invalid inside a JSON
+        # string).
+        assert '"separator": "\\t"' in new
+        assert json.loads(new)["separator"] == "\t"
+
+    def test_crlf_file_keeps_its_literal_backslash_r(self):
+        """Same hole on the ``\\r`` arm — every CRLF region has a real CR."""
+        content = 'sep = "\\r"\r\nname = "demo"\r\n'
+        old_string = 'sep = "\\r"\r\nname = "demo"'
+        new_string = 'sep = "\\r"\r\nname = "prod"'
+        new, count, _, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert 'name = "prod"' in new
+        assert 'sep = "\\r"' in new
+
+    def test_tab_indented_file_without_a_literal_still_unescapes(self):
+        """The #33733 headline behaviour is unchanged.
+
+        Tab-indented file, no literal ``\\t`` anywhere in the region: the
+        model's escaped indentation is still converted to real tabs.
+        """
+        content = "def hello():\n\tprint(\"before\")\n"
+        old_string = "\tprint(\"before\")"
+        new_string = "\\tprint(\"after\")"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert strategy == "exact"
+        assert "\tprint(\"after\")" in new
+        assert "\\t" not in new
 
 
 class TestContextAwareCorrectness:

@@ -19,7 +19,7 @@ The Signal adapter uses `httpx` (already a core Hermes dependency) for all commu
 ## Prerequisites
 
 - **signal-cli** — Java-based Signal client ([GitHub](https://github.com/AsamK/signal-cli))
-- **Java 17+** runtime — required by signal-cli
+- **Java 25+** runtime — required by current signal-cli 0.14.x releases
 - **A phone number** with Signal installed (for linking as a secondary device)
 
 ### Installing signal-cli
@@ -38,6 +38,38 @@ sudo ln -sf "/opt/signal-cli-${VERSION}/bin/signal-cli" /usr/local/bin/
 
 :::caution
 signal-cli is **not** in apt or snap repositories. The Linux install above downloads directly from [GitHub releases](https://github.com/AsamK/signal-cli/releases).
+
+Current signal-cli 0.14.x builds require Java 25 or newer. Distro-packaged
+Java 21 fails with `UnsupportedClassVersionError`, and older signal-cli 0.13.x
+builds are rejected by Signal's servers as deprecated.
+:::
+
+If your distro does not ship Java 25 yet, install a current JRE explicitly and
+point the daemon at it:
+
+```bash
+sudo mkdir -p /opt/java
+case "$(uname -m)" in
+  x86_64|amd64) ARCH=x64 ;;
+  aarch64|arm64) ARCH=aarch64 ;;
+  *) ARCH=x64 ;;
+esac
+curl -fsSL "https://api.adoptium.net/v3/binary/latest/25/ga/linux/${ARCH}/jre/hotspot/normal/eclipse?project=jdk" \
+  | sudo tar xz -C /opt/java
+sudo ln -sf /opt/java/jdk-25* /opt/java/current
+export JAVA_HOME=/opt/java/current
+```
+
+For a systemd service, set `Environment=JAVA_HOME=/opt/java/current` so
+signal-cli does not fall back to an older system JRE.
+
+:::warning Use the native signal-cli HTTP daemon
+Hermes currently speaks to signal-cli's native `--http` daemon. Do not
+substitute the popular `bbernhard/signal-cli-rest-api` Docker image unless your
+Hermes version explicitly documents support for it. That image exposes a
+different REST API (`/v1/about`, `/v2/send`, `/v1/health`, and different event
+payloads) and is not compatible with the native-daemon adapter, even if a reverse
+proxy makes the health check look green.
 :::
 
 ---
@@ -131,6 +163,15 @@ DM access follows the same pattern as all other Hermes platforms:
 2. **No allowlist set** → unknown users get a DM pairing code (approve via `hermes pairing approve signal CODE`)
 3. **`SIGNAL_ALLOW_ALL_USERS=true`** → anyone can message (use with caution)
 
+Signal's Phone Number Privacy can expose inbound DMs by ACI UUID instead of by
+E.164 phone number. If a trusted sender is rejected with a log line such as
+`Unauthorized user: 00000000-aaaa-bbbb-cccc-000000000000 (DisplayName) on signal`,
+add that UUID to `SIGNAL_ALLOWED_USERS` alongside the phone number:
+
+```bash
+SIGNAL_ALLOWED_USERS=+1234567890,+0987654321,00000000-aaaa-bbbb-cccc-000000000000
+```
+
 ### Group Access
 
 Group access is controlled by the `SIGNAL_GROUP_ALLOWED_USERS` env var:
@@ -223,9 +264,13 @@ The adapter monitors the SSE connection and automatically reconnects if:
 | Problem | Solution |
 |---------|----------|
 | **"Cannot reach signal-cli"** during setup | Ensure signal-cli daemon is running: `signal-cli --account +YOUR_NUMBER daemon --http 127.0.0.1:8080` |
-| **Messages not received** | Check that `SIGNAL_ALLOWED_USERS` includes the sender's number in E.164 format (with `+` prefix) |
-| **"signal-cli not found on PATH"** | Install signal-cli and ensure it's in your PATH, or use Docker |
-| **Connection keeps dropping** | Check signal-cli logs for errors. Ensure Java 17+ is installed. |
+| **Messages not received** | Check that `SIGNAL_ALLOWED_USERS` includes the sender's E.164 phone number or ACI UUID. |
+| **"signal-cli not found on PATH"** | Install signal-cli and ensure it's in your PATH. Do not substitute `bbernhard/signal-cli-rest-api` unless your Hermes version explicitly documents support for it. |
+| **`UnsupportedClassVersionError` on startup** | Install Java 25+ and set `JAVA_HOME` for the signal-cli daemon. |
+| **`Verify error: StatusCode: 499` / `DeprecatedVersionException`** | Upgrade to signal-cli 0.14.x or newer. Older clients are rejected by Signal's servers. |
+| **`409 AlreadyVerifiedException` during registration** | Complete and delete the Signal account once in the mobile app to clear the server-side registration state, then retry `signal-cli register --captcha`. |
+| **Connection keeps dropping** | Check signal-cli logs for errors. Ensure Java 25+ is installed. |
+| **Gateway starts before signal-cli after reboot** | Add a systemd drop-in that waits for `http://127.0.0.1:8080/api/v1/check`, or rely on the gateway reconnect watcher to recover after startup. |
 | **Group messages ignored** | Configure `SIGNAL_GROUP_ALLOWED_USERS` with specific group IDs, or `*` to allow all groups. |
 | **Bot responds to no one** | Configure `SIGNAL_ALLOWED_USERS`, use DM pairing, or explicitly allow all users through gateway policy if you want broader access. |
 | **Duplicate messages** | Ensure only one signal-cli instance is listening on your phone number |

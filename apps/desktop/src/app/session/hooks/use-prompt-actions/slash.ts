@@ -198,6 +198,24 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           selectedStoredSessionId: selectedStoredSessionIdRef.current
         })
 
+      // Same ladder, minus the create rung: `/yolo`, `/handoff` and `/skin`
+      // act on a conversation that already exists and deliberately do
+      // something else when there is none (arm YOLO locally, toast the skin,
+      // report the handoff can't run). They must NOT mint a session — but they
+      // must still honour rung 2's route check, or a durable route the runtime
+      // ref disagrees with (profile swap, reconnect, in-flight resume) sends a
+      // per-session write to the chat the user just left.
+      const resolveExistingSessionId = async (sessionHint?: string) =>
+        resolveTargetSessionId({
+          activeRuntimeId: activeSessionIdRef.current,
+          createSession: async () => null,
+          explicitRuntimeId: sessionHint,
+          getRuntimeIdForStoredSession,
+          requestGateway,
+          routedStoredSessionId: getRoutedStoredSessionId(),
+          selectedStoredSessionId: selectedStoredSessionIdRef.current
+        })
+
       // Resolve the target session plus a writer for inline slash output, or
       // notify + return null when none can be created. Folds the ensure / bail /
       // build-renderSlashOutput boilerplate every exec-style handler repeats.
@@ -650,8 +668,11 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         // bypass, same scope as the TUI's Shift+Tab. With no session yet we arm
         // it locally; the session-create path applies it on the first message.
         yolo: async ({ sessionHint }) => {
-          const sid = sessionHint || activeSessionIdRef.current
+          // Snapshot the toggle before resolving: the resolve can await a
+          // session.resume, and the flag must invert what the user saw when
+          // they typed the command.
           const next = !$yoloActive.get()
+          const sid = await resolveExistingSessionId(sessionHint)
 
           if (!sid) {
             setYoloActive(next)
@@ -745,7 +766,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             return
           }
 
-          const sid = sessionHint || activeSessionIdRef.current
+          const sid = await resolveExistingSessionId(sessionHint)
 
           if (!sid) {
             notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
@@ -797,8 +818,10 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           }
         },
         skin: async ({ arg, command, recordInput, sessionHint }) => {
-          const sid = sessionHint || activeSessionIdRef.current
+          // Apply the theme first — it is local and instant, and must not wait
+          // on the resolve's session.resume round-trip.
           const message = handleSkinCommand(arg)
+          const sid = await resolveExistingSessionId(sessionHint)
 
           // No session to print into yet — surface it as a toast instead of
           // spinning up a backend session just to change the theme.

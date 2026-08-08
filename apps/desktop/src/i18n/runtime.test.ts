@@ -53,6 +53,20 @@ describe('desktop i18n runtime translator', () => {
     expect(fieldCopyForSchemaKey(zh.settings.fieldDescriptions, field)).toBe('当后端提供推理内容时予以显示。')
   })
 
+  it('covers Simplified Chinese Advanced descriptions and shortcut formatting', () => {
+    expect(fieldCopyForSchemaKey(zh.settings.fieldDescriptions, 'terminal.backend')).toBe('用于执行终端命令的后端。')
+    expect(fieldCopyForSchemaKey(zh.settings.fieldDescriptions, 'terminal.docker_image')).toBe(
+      '当执行后端为 Docker 时使用的容器镜像。'
+    )
+    expect(fieldCopyForSchemaKey(zh.settings.fieldDescriptions, 'agent.service_tier')).toBe(
+      '用于 OpenAI/Anthropic 的 API 服务等级。'
+    )
+    expect(fieldCopyForSchemaKey(zh.settings.fieldDescriptions, 'delegation.reasoning_effort')).toBe(
+      '委派给子智能体时使用的推理强度。'
+    )
+    expect(zh.settings.quickEntry.shortcutDesc).toContain('Command 或 Control + Shift + Space')
+  })
+
   it('falls back to English when the active locale cannot resolve a key', () => {
     const boot = TRANSLATIONS.ja.boot as { ready?: string }
     const originalReady = boot.ready

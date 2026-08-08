@@ -657,6 +657,7 @@ export const zhHant = defineLocale({
     quickEntry: {
       enabledTitle: '快速輸入',
       enabledDesc: '用全域快速鍵在任何地方喚出一個小輸入框，無需開啟 Hermes 即可送出提示。',
+      commandOrControl: 'Command 或 Control',
       shortcutTitle: '快速輸入快速鍵',
       shortcutDesc: '至少需要一個修飾鍵，例如 CommandOrControl+Shift+Space。',
       active: '快速鍵已生效。',

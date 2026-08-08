@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
+import { zh } from '@/i18n/zh'
 import type { HermesConfigRecord } from '@/types/hermes'
 
 import { FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import {
+  configOptionLabelsFor,
   enumOptionsFor,
   getNested,
   isExternalMemoryProvider,
@@ -36,6 +38,27 @@ describe('settings helpers', () => {
     // so config-field consumes schema.options instead of a stale static list.
     expect(enumOptionsFor('memory.provider', '', {})).toBeUndefined()
     expect(enumOptionsFor('memory.provider', 'honcho', {})).toBeUndefined()
+  })
+
+  it('localizes Advanced select options by schema key', () => {
+    const labels = zh.settings.config.optionLabels
+
+    expect(configOptionLabelsFor('agent.service_tier', labels)).toEqual({
+      '': '默认',
+      auto: '自动',
+      default: '默认',
+      flex: '灵活'
+    })
+    expect(configOptionLabelsFor('delegation.reasoning_effort', labels)).toMatchObject({
+      '': '默认',
+      minimal: '最低',
+      xhigh: '很高',
+      ultra: '极高'
+    })
+    expect(configOptionLabelsFor('updates.non_interactive_local_changes', labels)).toEqual({
+      stash: '暂存本地更改',
+      discard: '丢弃本地更改'
+    })
   })
 
   describe('isExternalMemoryProvider', () => {

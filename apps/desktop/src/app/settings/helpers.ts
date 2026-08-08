@@ -1,3 +1,4 @@
+import type { Translations } from '@/i18n/types'
 import { asText, normalize } from '@/lib/text'
 import type { ConfigFieldSchema, HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
 
@@ -303,6 +304,41 @@ export function enumOptionsFor(
   const current = asText(value)
 
   return current && !opts.includes(current) ? [...opts, current] : opts
+}
+
+type ConfigOptionLabels = Translations['settings']['config']['optionLabels']
+
+export function configOptionLabelsFor(key: string, labels: ConfigOptionLabels): Record<string, string> | undefined {
+  if (key === 'agent.service_tier') {
+    return {
+      '': labels.default,
+      auto: labels.auto,
+      default: labels.default,
+      flex: labels.flex
+    }
+  }
+
+  if (key === 'delegation.reasoning_effort') {
+    return {
+      '': labels.default,
+      minimal: labels.minimal,
+      low: labels.low,
+      medium: labels.medium,
+      high: labels.high,
+      xhigh: labels.xhigh,
+      max: labels.max,
+      ultra: labels.ultra
+    }
+  }
+
+  if (key === 'updates.non_interactive_local_changes') {
+    return {
+      stash: labels.stash,
+      discard: labels.discard
+    }
+  }
+
+  return undefined
 }
 
 // Built-in memory (MEMORY.md/USER.md) is controlled by memory_enabled, not

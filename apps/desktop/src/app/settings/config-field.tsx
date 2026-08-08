@@ -142,13 +142,14 @@ export function ConfigField({
         <SelectContent>
           {selectOptions.map(option => (
             <SelectItem key={option || EMPTY_SELECT_VALUE} value={option || EMPTY_SELECT_VALUE}>
-              {option
-                ? (optionLabels?.[option] ?? prettyName(option))
-                : schemaKey === 'display.personality'
-                  ? c.none
-                  : schemaKey === 'memory.provider'
-                    ? c.builtinOnly
-                    : c.noneParen}
+              {optionLabels?.[option] ??
+                (option
+                  ? prettyName(option)
+                  : schemaKey === 'display.personality'
+                    ? c.none
+                    : schemaKey === 'memory.provider'
+                      ? c.builtinOnly
+                      : c.noneParen)}
             </SelectItem>
           ))}
         </SelectContent>

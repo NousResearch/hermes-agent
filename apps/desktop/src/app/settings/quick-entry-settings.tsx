@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
+import { formatQuickEntryShortcut, parseQuickEntryShortcut } from '@/lib/quick-entry-shortcut'
 import {
   $quickEntry,
   canUseQuickEntry,
@@ -25,6 +26,8 @@ export function QuickEntrySettings() {
   const { t } = useI18n()
   const q = t.settings.quickEntry
   const state = useStore($quickEntry)
+  const defaultShortcutDisplay = formatQuickEntryShortcut(QUICK_ENTRY_DEFAULT_SHORTCUT, q.commandOrControl)
+  const shortcutDisplay = formatQuickEntryShortcut(state.shortcut, q.commandOrControl)
   // The field is a local draft: the accelerator is only committed on blur/Enter,
   // so a half-typed chord ("Alt+") never tears down the live registration.
   const [draft, setDraft] = useState<null | string>(null)
@@ -38,7 +41,7 @@ export function QuickEntrySettings() {
   }
 
   const commit = () => {
-    const next = (draft ?? '').trim()
+    const next = parseQuickEntryShortcut(draft ?? '', q.commandOrControl)
     setDraft(null)
 
     if (next && next !== state.shortcut) {
@@ -78,8 +81,8 @@ export function QuickEntrySettings() {
                 commit()
               }
             }}
-            placeholder={QUICK_ENTRY_DEFAULT_SHORTCUT}
-            value={draft ?? state.shortcut}
+            placeholder={defaultShortcutDisplay}
+            value={draft ?? shortcutDisplay}
           />
         }
         below={

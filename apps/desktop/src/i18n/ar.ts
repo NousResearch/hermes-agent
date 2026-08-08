@@ -631,6 +631,7 @@ export const ar = defineLocale({
     quickEntry: {
       enabledTitle: 'الإدخال السريع',
       enabledDesc: 'استدعِ محرّرا صغيرا من أي مكان باختصار عام وأرسل طلبا دون فتح Hermes.',
+      commandOrControl: 'Command أو Control',
       shortcutTitle: 'اختصار الإدخال السريع',
       shortcutDesc: 'يحتاج إلى مفتاح تعديل واحد على الأقل، مثل CommandOrControl+Shift+Space.',
       active: 'الاختصار مفعّل.',

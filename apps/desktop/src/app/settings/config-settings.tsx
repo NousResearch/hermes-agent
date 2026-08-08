@@ -28,7 +28,14 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
 import { ConfigField } from './config-field'
-import { enumOptionsFor, getNested, isExternalMemoryProvider, sectionFieldEntries, setNested } from './helpers'
+import {
+  configOptionLabelsFor,
+  enumOptionsFor,
+  getNested,
+  isExternalMemoryProvider,
+  sectionFieldEntries,
+  setNested
+} from './helpers'
 import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
@@ -338,7 +345,9 @@ export function ConfigSettings({
                     : enumOptionsFor(key, getNested(config, key), config)
                 }
                 onChange={value => updateConfig(setNested(config, key, value))}
-                optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
+                optionLabels={
+                  key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : configOptionLabelsFor(key, c.optionLabels)
+                }
                 schema={field}
                 schemaKey={key}
                 value={getNested(config, key)}

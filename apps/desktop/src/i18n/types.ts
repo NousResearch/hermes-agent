@@ -470,10 +470,25 @@ export interface Translations {
       attachmentSizeDesc: string
       attachmentSizeUnit: string
       attachmentSizeLabel: string
+      optionLabels: {
+        auto: string
+        default: string
+        flex: string
+        stash: string
+        discard: string
+        minimal: string
+        low: string
+        medium: string
+        high: string
+        xhigh: string
+        max: string
+        ultra: string
+      }
     }
     quickEntry: {
       enabledTitle: string
       enabledDesc: string
+      commandOrControl: string
       shortcutTitle: string
       shortcutDesc: string
       active: string

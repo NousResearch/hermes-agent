@@ -687,12 +687,18 @@ export const zh: Translations = {
       timezone: '当 Hermes 需要本地时间上下文时使用。留空则使用系统时区。',
       agent: {
         imageInputMode: '控制图片附件如何发送给模型。',
-        maxTurns: 'Hermes 停止一次运行前工具调用轮次的上限。'
+        maxTurns: 'Hermes 停止一次运行前工具调用轮次的上限。',
+        serviceTier: '用于 OpenAI/Anthropic 的 API 服务等级。'
       },
       terminal: {
         cwd: '工具与终端操作的默认项目目录。',
+        backend: '用于执行终端命令的后端。',
         persistentShell: '当后端支持时，在命令之间保留 Shell 状态。',
-        envPassthrough: '传入工具执行的环境变量。'
+        envPassthrough: '传入工具执行的环境变量。',
+        dockerImage: '当执行后端为 Docker 时使用的容器镜像。',
+        singularityImage: '当执行后端为 Singularity 时使用的镜像。',
+        modalImage: '当执行后端为 Modal 时使用的镜像。',
+        daytonaImage: '当执行后端为 Daytona 时使用的镜像。'
       },
       codeExecution: {
         mode: '代码执行被限定到当前项目的严格程度。'
@@ -717,6 +723,9 @@ export const zh: Translations = {
       },
       compression: {
         enabled: '当对话变大时对较早的上下文进行摘要。'
+      },
+      delegation: {
+        reasoningEffort: '委派给子智能体时使用的推理强度。'
       },
       voice: {
         autoTts: '自动朗读助手回复。'
@@ -781,13 +790,28 @@ export const zh: Translations = {
       attachmentSizeDesc:
         '桌面端为预览和图片附件加载本地文件的大小上限（MB）。默认为 16。远程非图片附件使用单独的 256 MB 上限。设置过大会将整个文件读入内存，可能导致应用卡死或崩溃。',
       attachmentSizeUnit: 'MB',
-      attachmentSizeLabel: '预览 / 图片加载大小上限（MB）'
+      attachmentSizeLabel: '预览 / 图片加载大小上限（MB）',
+      optionLabels: {
+        auto: '自动',
+        default: '默认',
+        flex: '灵活',
+        stash: '暂存本地更改',
+        discard: '丢弃本地更改',
+        minimal: '最低',
+        low: '低',
+        medium: '中',
+        high: '高',
+        xhigh: '很高',
+        max: '最大',
+        ultra: '极高'
+      }
     },
     quickEntry: {
       enabledTitle: '快速输入',
       enabledDesc: '用全局快捷键在任何地方唤出一个小输入框，无需打开 Hermes 即可发送提示。',
+      commandOrControl: 'Command 或 Control',
       shortcutTitle: '快速输入快捷键',
-      shortcutDesc: '至少需要一个修饰键，例如 CommandOrControl+Shift+Space。',
+      shortcutDesc: '至少需要一个修饰键，例如 Command 或 Control + Shift + Space。',
       active: '快捷键已生效。',
       takenBy: '此快捷键已被其他应用占用，请换一个。',
       invalidShortcut: '不是有效的快捷键。请至少包含一个修饰键。'

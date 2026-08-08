@@ -124,6 +124,22 @@ describe('ConfigField searchable routing', () => {
     expect(screen.getByDisplayValue('hello')).not.toBeNull()
   })
 
+  it('uses localized labels for blank and non-blank select options', () => {
+    render(
+      <ConfigField
+        onChange={vi.fn()}
+        optionLabels={{ '': '默认', minimal: '最低' }}
+        schema={{ type: 'select', options: ['', 'minimal'] }}
+        schemaKey="delegation.reasoning_effort"
+        value=""
+      />
+    )
+
+    expect(screen.getByRole('combobox').textContent).toContain('默认')
+    fireEvent.click(screen.getByRole('combobox'))
+    expect(screen.getByText('最低')).not.toBeNull()
+  })
+
   it('surfaces the clear item via schema.clearable and resets to blank', () => {
     const onChange = vi.fn()
 

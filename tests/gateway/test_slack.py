@@ -332,6 +332,7 @@ class TestAppMentionHandler:
         mock_app.client = AsyncMock()
         mock_app.client.auth_test = AsyncMock(
             return_value={
+                "bot_id": "B_BOT",
                 "user_id": "U_BOT",
                 "user": "testbot",
             }
@@ -341,6 +342,7 @@ class TestAppMentionHandler:
         mock_web_client = AsyncMock()
         mock_web_client.auth_test = AsyncMock(
             return_value={
+                "bot_id": "B_BOT",
                 "user_id": "U_BOT",
                 "user": "testbot",
                 "team_id": "T_FAKE",
@@ -659,6 +661,7 @@ class TestSlackSocketWatchdog:
         mock_web_client = AsyncMock()
         mock_web_client.auth_test = AsyncMock(
             return_value={
+                "bot_id": "B_BOT",
                 "user_id": "U_BOT",
                 "user": "testbot",
                 "team_id": "T_FAKE",

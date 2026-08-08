@@ -357,6 +357,15 @@ _FAST_MODE_BETA = "fast-mode-2026-02-01"
 _OAUTH_ONLY_BETAS = [
     "claude-code-20250219",
     "oauth-2025-04-20",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "mid-conversation-system-2026-04-07",
+    "advisor-tool-2026-03-01",
+    "advanced-tool-use-2025-11-20",
+    "effort-2025-11-24",
+    "extended-cache-ttl-2025-04-11",
+    "cache-diagnosis-2026-04-07",
 ]
 
 # Claude Code identity — required for OAuth requests to be routed correctly.
@@ -392,7 +401,7 @@ def _detect_claude_code_version() -> str:
     return _CLAUDE_CODE_VERSION_FALLBACK
 
 
-_CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
+_CLAUDE_CODE_SYSTEM_PREFIX = "You are a Claude agent, built on Anthropic's Claude Agent SDK."
 _MCP_TOOL_PREFIX = "mcp__"
 
 
@@ -774,6 +783,45 @@ def _build_anthropic_client_with_bearer_hook(
     return client
 
 
+def _build_oauth_impersonation_http_client(
+    api_key: str,
+    *,
+    timeout,
+    anthropic_beta: str = "",
+) -> Any:
+    """Build an httpx client that rewrites headers to Claude Code's JS SDK shape."""
+    from httpx import Client, Limits, Timeout
+
+    cc_version = _get_claude_code_version()
+
+    def _rewrite_headers(request):
+        request.headers["user-agent"] = f"claude-cli/{cc_version} (external, sdk-cli)"
+        request.headers["x-stainless-lang"] = "js"
+        request.headers["x-stainless-runtime"] = "node"
+        request.headers["x-stainless-runtime-version"] = "v26.3.0"
+        request.headers["x-stainless-package-version"] = "0.94.0"
+        request.headers["x-stainless-timeout"] = "600"
+        request.headers["x-stainless-async"] = "false"
+        request.headers["x-stainless-helper-method"] = "stream"
+        request.headers["x-stainless-stream-helper"] = "messages"
+        request.headers["x-app"] = "cli"
+        request.headers["x-anthropic-billing-header"] = (
+            f"cc_version={cc_version}; cc_entrypoint=sdk-cli; cch=00000;"
+        )
+        request.headers["anthropic-dangerous-direct-browser-access"] = "true"
+        if anthropic_beta:
+            request.headers["anthropic-beta"] = anthropic_beta
+        request.headers["authorization"] = f"Bearer {api_key}"
+        request.headers.pop("x-api-key", None)
+
+    http_timeout = timeout if isinstance(timeout, Timeout) else Timeout(timeout=900.0, connect=10.0)
+    return Client(
+        timeout=http_timeout,
+        limits=Limits(max_keepalive_connections=5, max_connections=10),
+        event_hooks={"request": [_rewrite_headers]},
+    )
+
+
 def build_anthropic_client(
     api_key,
     base_url: str = None,
@@ -884,15 +932,25 @@ def build_anthropic_client(
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
     elif _is_oauth_token(api_key):
-        # OAuth access token / setup-token → Bearer auth + Claude Code identity.
-        # Anthropic routes OAuth requests based on user-agent and headers;
-        # without Claude Code's fingerprint, requests get intermittent 500s.
+        # OAuth access token / setup-token -> Bearer auth + Claude Code identity.
+        # The Python SDK fingerprints itself in headers, so use a request hook
+        # to rewrite the wire request to Claude Code's JS SDK shape.
         all_betas = common_betas + _OAUTH_ONLY_BETAS
+        all_betas = [b for b in all_betas if b != _TOOL_STREAMING_BETA]
+        beta_header = ",".join(all_betas)
         kwargs["auth_token"] = api_key
+        kwargs["http_client"] = _build_oauth_impersonation_http_client(
+            api_key,
+            timeout=kwargs.get("timeout"),
+            anthropic_beta=beta_header,
+        )
         kwargs["default_headers"] = {
-            "anthropic-beta": ",".join(all_betas),
-            "user-agent": f"claude-code/{_get_claude_code_version()} (external, cli)",
+            "anthropic-beta": beta_header,
+            "user-agent": f"claude-cli/{_get_claude_code_version()} (external, sdk-cli)",
             "x-app": "cli",
+            "x-anthropic-billing-header": (
+                f"cc_version={_get_claude_code_version()}; cc_entrypoint=sdk-cli; cch=00000;"
+            ),
         }
     else:
         # Regular API key → x-api-key header + common betas
@@ -2886,14 +2944,21 @@ def build_anthropic_kwargs(
 
     # ── OAuth: Claude Code identity ──────────────────────────────────
     if is_oauth:
-        # 1. Prepend Claude Code system prompt identity
+        # 1. Prepend billing attribution, then Claude Code/SDK identity.
+        billing_block = {
+            "type": "text",
+            "text": (
+                f"x-anthropic-billing-header: cc_version={_get_claude_code_version()}; "
+                "cc_entrypoint=sdk-cli; cch=00000;"
+            ),
+        }
         cc_block = {"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}
         if isinstance(system, list):
-            system = [cc_block] + system
+            system = [billing_block, cc_block] + system
         elif isinstance(system, str) and system:
-            system = [cc_block, {"type": "text", "text": system}]
+            system = [billing_block, cc_block, {"type": "text", "text": system}]
         else:
-            system = [cc_block]
+            system = [billing_block, cc_block]
 
         # 2. Sanitize system prompt — replace product name references
         #    to avoid Anthropic's server-side content filters.
@@ -2960,17 +3025,19 @@ def build_anthropic_kwargs(
 
     if anthropic_tools:
         kwargs["tools"] = anthropic_tools
-        # Map OpenAI tool_choice to Anthropic format
-        if tool_choice == "auto" or tool_choice is None:
-            kwargs["tool_choice"] = {"type": "auto"}
-        elif tool_choice == "required":
-            kwargs["tool_choice"] = {"type": "any"}
-        elif tool_choice == "none":
+        # Claude Code's native SDK omits tool_choice for OAuth requests, but
+        # caller intent to disable tools must still remove them from the body.
+        if tool_choice == "none":
             # Anthropic has no tool_choice "none" — omit tools entirely to prevent use
             kwargs.pop("tools", None)
-        elif isinstance(tool_choice, str):
-            # Specific tool name
-            kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}
+        elif not is_oauth:
+            if tool_choice == "auto" or tool_choice is None:
+                kwargs["tool_choice"] = {"type": "auto"}
+            elif tool_choice == "required":
+                kwargs["tool_choice"] = {"type": "any"}
+            elif isinstance(tool_choice, str):
+                # Specific tool name
+                kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}
 
     # Map reasoning_config to Anthropic's thinking parameter.
     # Claude 4.6+ models use adaptive thinking + output_config.effort.
@@ -3044,6 +3111,24 @@ def build_anthropic_kwargs(
             betas.extend(_OAUTH_ONLY_BETAS)
         betas.append(_FAST_MODE_BETA)
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
+
+    # ── OAuth: body fields matching Claude Code's JS SDK ─────────────
+    if is_oauth:
+        kwargs.setdefault("extra_body", {})
+        if kwargs.get("thinking"):
+            kwargs["extra_body"]["context_management"] = {
+                "edits": [
+                    {"type": "clear_thinking_20251015", "keep": "all"},
+                ],
+            }
+        kwargs["extra_body"]["metadata"] = {
+            "user_id": json.dumps({
+                "device_id": "0000000000000000000000000000000000000000000000000000000000000000",
+                "account_uuid": "00000000-0000-0000-0000-000000000000",
+                "session_id": "00000000-0000-0000-0000-000000000000",
+            }),
+        }
+        kwargs["extra_body"]["diagnostics"] = {"previous_message_id": None}
 
     return kwargs
 

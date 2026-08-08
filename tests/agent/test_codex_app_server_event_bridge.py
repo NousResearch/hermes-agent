@@ -250,7 +250,12 @@ class TestToolProgressDispatch:
 
 
 class TestAgentMessageInterimDispatch:
-    def test_completed_agent_message_emits_interim(self):
+    def test_completed_agent_message_alone_is_not_emitted_as_interim(self):
+        """A lone completed agentMessage is usually the final answer.
+
+        Emitting it through the interim path duplicates the gateway's normal
+        final send on Discord when codex_app_server is active.
+        """
         agent = _make_stub_agent()
         bridge = make_codex_app_server_event_bridge(agent)
         bridge(_item_completed({
@@ -258,10 +263,74 @@ class TestAgentMessageInterimDispatch:
             "id": "am-1",
             "text": "I'll check the config first.",
         }))
+        agent._emit_interim_assistant_message.assert_not_called()
+
+    def test_cleared_completed_agent_message_does_not_flush_next_turn(self):
+        """A reused app-server bridge must not carry a final answer into the
+        next turn's first stream/tool event."""
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+        bridge(_item_completed({
+            "type": "agentMessage",
+            "id": "am-1",
+            "text": "Final answer from the previous turn.",
+        }))
+
+        bridge.clear_pending_agent_message()
+        bridge({"method": "item/agentMessage/delta",
+                "params": {"delta": "New turn starts."}})
+
+        agent._emit_interim_assistant_message.assert_not_called()
+        agent._fire_stream_delta.assert_called_once_with("New turn starts.")
+
+    def test_completed_agent_message_flushes_before_tool_event(self):
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+        bridge(_item_completed({
+            "type": "agentMessage",
+            "id": "am-1",
+            "text": "I'll check the config first.",
+        }))
+        bridge(_item_started({
+            "type": "commandExecution",
+            "id": "exec-1",
+            "command": "ls",
+        }))
         agent._emit_interim_assistant_message.assert_called_once_with(
             {"role": "assistant", "content": "I'll check the config first."}
         )
 
+    def test_completed_agent_message_flushes_before_stream_delta(self):
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+        bridge(_item_completed({
+            "type": "agentMessage",
+            "id": "am-1",
+            "text": "I'll check the config first.",
+        }))
+        bridge({"method": "item/agentMessage/delta",
+                "params": {"delta": "final"}})
+        agent._emit_interim_assistant_message.assert_called_once_with(
+            {"role": "assistant", "content": "I'll check the config first."}
+        )
+        agent._fire_stream_delta.assert_called_once_with("final")
+
+    def test_second_completed_agent_message_flushes_previous_only(self):
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+        bridge(_item_completed({
+            "type": "agentMessage",
+            "id": "am-1",
+            "text": "First interim.",
+        }))
+        bridge(_item_completed({
+            "type": "agentMessage",
+            "id": "am-2",
+            "text": "Final answer.",
+        }))
+        agent._emit_interim_assistant_message.assert_called_once_with(
+            {"role": "assistant", "content": "First interim."}
+        )
 
 
     def test_show_commentary_off_suppresses_interim(self):
@@ -274,11 +343,11 @@ class TestAgentMessageInterimDispatch:
         bridge(_item_completed({
             "type": "agentMessage", "id": "am-5", "text": "I'll check config.",
         }))
-        agent._emit_interim_assistant_message.assert_not_called()
-        # Tool progress is unaffected by the commentary toggle.
         bridge(_item_started({
             "type": "commandExecution", "id": "cmd-1", "command": "ls",
         }))
+        agent._emit_interim_assistant_message.assert_not_called()
+        # Tool progress is unaffected by the commentary toggle.
         agent.tool_progress_callback.assert_called_once()
 
 
@@ -396,6 +465,95 @@ class TestBridgeWiredInRuntime:
             "id": "wired-1",
             "command": "ls",
         }))
+        agent.tool_progress_callback.assert_called_once()
+        assert agent.tool_progress_callback.call_args.args[0] == "tool.started"
+        assert agent.tool_progress_callback.call_args.args[1] == "exec_command"
+
+    def test_reused_session_clears_buffered_final_answer_between_turns(
+        self, monkeypatch
+    ):
+        from agent import codex_runtime
+        from agent.transports.codex_app_server_session import TurnResult
+
+        class FakeSession:
+            def __init__(self, **kwargs):
+                self._on_event = kwargs["on_event"]
+                self.calls = 0
+
+            def run_turn(self, user_input, **_):
+                self.calls += 1
+                if self.calls == 1:
+                    self._on_event(_item_completed({
+                        "type": "agentMessage",
+                        "id": "am-final-1",
+                        "text": "Previous final answer.",
+                    }))
+                    return TurnResult(
+                        final_text="Previous final answer.",
+                        projected_messages=[{
+                            "role": "assistant",
+                            "content": "Previous final answer.",
+                        }],
+                        turn_id="turn-1",
+                        thread_id="thread-1",
+                    )
+
+                self._on_event(_item_started({
+                    "type": "commandExecution",
+                    "id": "exec-2",
+                    "command": "pwd",
+                }))
+                return TurnResult(
+                    final_text="Next final answer.",
+                    projected_messages=[{
+                        "role": "assistant",
+                        "content": "Next final answer.",
+                    }],
+                    turn_id="turn-2",
+                    thread_id="thread-1",
+                )
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            "agent.transports.codex_app_server_session.CodexAppServerSession",
+            FakeSession,
+        )
+
+        agent = SimpleNamespace(
+            session_cwd=None,
+            _codex_session=None,
+            tool_progress_callback=MagicMock(),
+            _fire_stream_delta=MagicMock(),
+            _fire_reasoning_delta=MagicMock(),
+            _emit_interim_assistant_message=MagicMock(),
+            _iters_since_skill=0,
+            _skill_nudge_interval=0,
+            valid_tool_names=set(),
+            _sync_external_memory_for_turn=lambda **_: None,
+            _spawn_background_review=lambda **_: None,
+            session_api_calls=0,
+            session_prompt_tokens=0,
+            session_completion_tokens=0,
+            session_reasoning_tokens=0,
+            session_cached_tokens=0,
+            session_total_tokens=0,
+            context_compressor=None,
+            event_callback=None,
+            _session_db=None,
+        )
+
+        for text in ("first", "second"):
+            codex_runtime.run_codex_app_server_turn(
+                agent,
+                user_message=text,
+                original_user_message=text,
+                messages=[],
+                effective_task_id="task",
+            )
+
+        agent._emit_interim_assistant_message.assert_not_called()
         agent.tool_progress_callback.assert_called_once()
         assert agent.tool_progress_callback.call_args.args[0] == "tool.started"
         assert agent.tool_progress_callback.call_args.args[1] == "exec_command"

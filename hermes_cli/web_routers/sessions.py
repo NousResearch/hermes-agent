@@ -605,11 +605,17 @@ async def get_session_messages(
     limit: Optional[int] = Query(None, ge=0),
     offset: int = Query(0, ge=0),
     order: Optional[str] = Query(None),
+    scope: str = Query("live"),
 ):
     if order not in (None, "oldest", "latest"):
         raise HTTPException(
             status_code=400,
             detail="order must be one of: oldest, latest",
+        )
+    if scope not in ("live", "compacted"):
+        raise HTTPException(
+            status_code=400,
+            detail="scope must be one of: live, compacted",
         )
 
     def _read():
@@ -627,28 +633,41 @@ async def get_session_messages(
             default_page = limit is None
             latest_page = order == "latest" or (order is None and default_page)
             _limit = 500 if default_page else min(limit, 500)
-            return sid, _limit, db.get_messages(
+            # Fetch one sentinel row so the Desktop can page a compacted
+            # archive without materializing the full transcript. For latest
+            # pages the sentinel is the oldest row in the selected slice; for
+            # oldest pages it is the newest.
+            page_messages = db.get_messages(
                 sid,
-                limit=_limit,
+                limit=_limit + 1,
                 offset=offset,
                 latest=latest_page,
+                compacted_only=scope == "compacted",
             )
+            has_more = len(page_messages) > _limit
+            if has_more:
+                page_messages = page_messages[1:] if latest_page else page_messages[:-1]
+            return sid, _limit, page_messages, has_more
         finally:
             db.close()
 
     result = await asyncio.to_thread(_read)
     if result is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    sid, _limit, messages = result
+    sid, _limit, messages, has_more = result
+    pagination = {
+        "limit": _limit,
+        "offset": offset,
+        "order": order or ("latest" if limit is None else "oldest"),
+        "returned": len(messages),
+    }
+    if scope == "compacted":
+        pagination.update({"has_more": has_more, "scope": scope})
+
     return {
         "session_id": sid,
         "messages": messages,
-        "pagination": {
-            "limit": _limit,
-            "offset": offset,
-            "order": order or ("latest" if limit is None else "oldest"),
-            "returned": len(messages),
-        },
+        "pagination": pagination,
     }
 
 

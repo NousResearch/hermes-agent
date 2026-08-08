@@ -1875,6 +1875,57 @@ class TestWebServerEndpoints:
             "msg 499",
         ]
 
+    def test_get_session_messages_compacted_scope_excludes_rewound_rows(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            session_id = "compacted-scope-messages"
+            db.create_session(session_id, source="cli")
+            db.append_messages_batch(
+                session_id,
+                [
+                    {"role": "user", "content": "archived prompt 1"},
+                    {"role": "assistant", "content": "archived answer 1"},
+                    {"role": "user", "content": "archived prompt 2"},
+                ],
+            )
+            db.archive_and_compact(
+                session_id,
+                [
+                    {"role": "assistant", "content": "summary"},
+                    {"role": "user", "content": "live prompt"},
+                ],
+            )
+            live_user = next(
+                message
+                for message in db.get_messages(session_id)
+                if message["role"] == "user"
+            )
+            db.rewind_to_message(session_id, live_user["id"])
+        finally:
+            db.close()
+
+        resp = self.client.get(
+            f"/api/sessions/{session_id}/messages"
+            "?limit=2&order=latest&scope=compacted"
+        )
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["pagination"] == {
+            "limit": 2,
+            "offset": 0,
+            "order": "latest",
+            "returned": 2,
+            "has_more": True,
+            "scope": "compacted",
+        }
+        assert [message["content"] for message in payload["messages"]] == [
+            "archived answer 1",
+            "archived prompt 2",
+        ]
+        assert all(message["content"] != "live prompt" for message in payload["messages"])
+
     def test_export_session_streams_bounded_message_pages(self, monkeypatch):
         from hermes_state import SessionDB
 

@@ -571,10 +571,12 @@ export interface SessionMessage {
 export interface SessionMessagesResponse {
   messages: SessionMessage[]
   pagination?: {
+    has_more?: boolean
     limit: number
     offset: number
     order: 'latest' | 'oldest'
     returned: number
+    scope?: 'compacted' | 'live'
   }
   session_id: string
 }

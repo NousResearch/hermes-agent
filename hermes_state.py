@@ -3491,6 +3491,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         def _do(conn):
             system_prompt_hash = self._store_system_prompt(conn, system_prompt)
+            # Default session_key to the session id so every row has a non-NULL
+            # key. The Desktop's history-truncation path (methods_prompt.py) calls
+            # replace_messages(session["session_key"], ...) — a NULL session_key
+            # makes that INSERT violate the messages.session_id FK →
+            # "FOREIGN KEY constraint failed" → "Restore failed" on resume.
+            effective_session_key = session_key or session_id
             conn.execute(
                 """INSERT INTO sessions (
                    id, source, user_id, session_key, chat_id, chat_type, thread_id,
@@ -3523,7 +3529,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     session_id,
                     source,
                     user_id,
-                    session_key,
+                    effective_session_key,
                     chat_id,
                     chat_type,
                     thread_id,
@@ -7657,6 +7663,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         offset: int = 0,
         latest: bool = False,
         after_id: Optional[int] = None,
+        compacted_only: bool = False,
     ) -> List[Dict[str, Any]]:
         """Load messages for a session in insertion order.
 
@@ -7680,10 +7687,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         ``after_id`` enables keyset pagination (``id > after_id``): O(1)
         page seeks on huge transcripts where OFFSET degrades to O(n) per
         page. Ascending order only (incompatible with ``latest``/``offset``).
+
+        ``compacted_only=True`` selects only messages archived by in-place
+        context compaction (``active=0 AND compacted=1``). Rewound rows remain
+        excluded, even when the Desktop requests the archived transcript.
         """
         if after_id is not None and (latest or offset):
             raise ValueError("after_id is incompatible with latest/offset paging")
-        active_clause = "" if include_inactive else " AND active = 1"
+        if compacted_only:
+            active_clause = " AND active = 0 AND compacted = 1"
+        else:
+            active_clause = "" if include_inactive else " AND active = 1"
         keyset_clause = " AND id > ?" if after_id is not None else ""
         sql = (
             "SELECT * FROM messages WHERE session_id = ?"

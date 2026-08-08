@@ -659,7 +659,12 @@ export function getSession(id: string, profile?: string | null): Promise<Session
 export function getSessionMessages(
   id: string,
   profile?: string | null,
-  page: { limit?: number; offset?: number; order?: 'latest' | 'oldest' } = {}
+  page: {
+    limit?: number
+    offset?: number
+    order?: 'latest' | 'oldest'
+    scope?: 'compacted' | 'live'
+  } = {}
 ): Promise<SessionMessagesResponse> {
   const query = new URLSearchParams()
 
@@ -677,6 +682,10 @@ export function getSessionMessages(
 
   if (page.order) {
     query.set('order', page.order)
+  }
+
+  if (page.scope) {
+    query.set('scope', page.scope)
   }
 
   const suffix = query.size ? `?${query.toString()}` : ''

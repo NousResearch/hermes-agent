@@ -252,8 +252,12 @@ def _(rid, params: dict) -> dict:
                     # class #80216 fixed for /retry. On an uncompacted session
                     # all rows are active=1, so this is behaviorally identical
                     # to the full replace.
+                    # Fall back to session id when session_key is NULL — CLI-origin
+                    # sessions created before the session_key default fix have no
+                    # key, and replace_messages(None) triggers an FK violation.
+                    truncation_key = session.get("session_key") or sid
                     db.replace_messages(
-                        session["session_key"], truncated, active_only=True
+                        truncation_key, truncated, active_only=True
                     )
                 except Exception as exc:
                     logger.error(

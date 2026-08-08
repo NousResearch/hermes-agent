@@ -10,6 +10,7 @@ import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/u
 import { Thread } from '@/components/assistant-ui/thread'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
+import { ArchivedTranscript } from '@/components/chat/archived-transcript'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $sessionTileDragging, $sessionTileEdgeHover } from '@/components/pane-shell/tree/store'
@@ -542,19 +543,22 @@ export const ChatView = memo(function ChatView({
           data-slot="composer-bounds"
           {...dropHandlers}
         >
-          <Thread
-            clampToComposer={showChatBar}
-            cwd={currentCwd}
-            gateway={gateway}
-            intro={showIntro ? { personality: introPersonality, seed: introSeed } : undefined}
-            loading={threadLoading}
-            onBranchInNewChat={onBranchInNewChat}
-            onCancel={haltRun}
-            onDismissError={onDismissError}
-            onRestoreToMessage={onRestoreToMessage}
-            sessionId={activeSessionId}
-            sessionKey={threadKey}
-          />
+          <ArchivedTranscript profile={activeGatewayProfile} sessionId={activeSessionId} />
+          <div className="min-h-0 flex-1">
+            <Thread
+              clampToComposer={showChatBar}
+              cwd={currentCwd}
+              gateway={gateway}
+              intro={showIntro ? { personality: introPersonality, seed: introSeed } : undefined}
+              loading={threadLoading}
+              onBranchInNewChat={onBranchInNewChat}
+              onCancel={haltRun}
+              onDismissError={onDismissError}
+              onRestoreToMessage={onRestoreToMessage}
+              sessionId={activeSessionId}
+              sessionKey={threadKey}
+            />
+          </div>
           {resumeExhausted && routedSessionId && (
             <div className="absolute inset-0 z-10 grid place-items-center bg-(--ui-chat-surface-background) px-8 py-10">
               <ErrorState

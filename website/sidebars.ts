@@ -214,6 +214,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/github/github-codebase-inspection',
                     'user-guide/skills/bundled/github/github-github-auth',
                     'user-guide/skills/bundled/github/github-github-code-review',
+                    'user-guide/skills/bundled/github/github-github-issue-to-pr',
                     'user-guide/skills/bundled/github/github-github-issues',
                     'user-guide/skills/bundled/github/github-github-pr-workflow',
                     'user-guide/skills/bundled/github/github-github-repo-management',

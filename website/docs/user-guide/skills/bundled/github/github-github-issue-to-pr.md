@@ -1,15 +1,33 @@
 ---
-name: github-issue-to-pr
-description: "Carry a GitHub issue to a verified PR with honest CI state."
-version: 0.1.0
-author: Ben Barclay (benbarclay), Hermes Agent
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  hermes:
-    tags: [GitHub, Issues, Coding, Pull-Requests, CI]
-    related_skills: [github-issues, github-pr-workflow, systematic-debugging, test-driven-development, requesting-code-review]
+title: "Github Issue To Pr — Carry a GitHub issue to a verified PR with honest CI state"
+sidebar_label: "Github Issue To Pr"
+description: "Carry a GitHub issue to a verified PR with honest CI state"
 ---
+
+{/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
+
+# Github Issue To Pr
+
+Carry a GitHub issue to a verified PR with honest CI state.
+
+## Skill metadata
+
+| | |
+|---|---|
+| Source | Bundled (installed by default) |
+| Path | `skills/github/github-issue-to-pr` |
+| Version | `0.1.0` |
+| Author | Ben Barclay (benbarclay), Hermes Agent |
+| License | MIT |
+| Platforms | linux, macos, windows |
+| Tags | `GitHub`, `Issues`, `Coding`, `Pull-Requests`, `CI` |
+| Related skills | [`github-issues`](/docs/user-guide/skills/bundled/github/github-github-issues), [`github-pr-workflow`](/docs/user-guide/skills/bundled/github/github-github-pr-workflow), [`systematic-debugging`](/docs/user-guide/skills/bundled/software-development/software-development-systematic-debugging), [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development), [`requesting-code-review`](/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review) |
+
+## Reference: full SKILL.md
+
+:::info
+The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+:::
 
 # GitHub Issue to Pull Request
 

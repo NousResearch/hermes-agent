@@ -50,6 +50,8 @@ import type { StatusResponse, UsageStats } from '@/types/hermes'
 import { CRON_ROUTE, SETTINGS_ROUTE, WEBHOOKS_ROUTE } from '../../routes'
 import type { StatusbarItem } from '../statusbar-controls'
 
+import { useContextUsageSeed } from './use-context-usage-seed'
+
 const EMPTY_USAGE = { calls: 0, input: 0, output: 0, total: 0 } as const
 
 interface StatusbarItemsOptions {
@@ -154,7 +156,7 @@ export function useStatusbarItems({
 
   // EMPTY_USAGE (module constant) keeps the fallback referentially stable —
   // a fresh `{...}` each render would bust the usage-label memos below.
-  const currentUsage = primaryFocused ? primaryUsage : (focusedUsage ?? EMPTY_USAGE)
+  const currentUsage: UsageStats = primaryFocused ? primaryUsage : (focusedUsage ?? EMPTY_USAGE)
 
   const turnStartedAt = primaryFocused ? primaryTurnStartedAt : focusedTurnStartedAt
 
@@ -232,6 +234,18 @@ export function useStatusbarItems({
     },
     []
   )
+
+  // Eagerly populate context_max for the active session so the context-usage
+  // statusbar item is visible from the start. Without this, the item stays
+  // hidden until the user opens the context panel — which can't happen while
+  // the item is hidden (the Catch-22 in #78936). The panel still refetches on
+  // open, so this is a one-time seed: once context_max is known we stop.
+  useContextUsageSeed({
+    activeSessionId,
+    contextMax: currentUsage.context_max,
+    publishContextUsage,
+    requestGateway
+  })
 
   const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestGateway)
 

@@ -1246,6 +1246,231 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertTrue(captured["request"].request_body.reply_in_thread)
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_source_fix_thread_no_anchor_lists_then_replies(self):
+        """Source-level fix: thread send with no reply anchor must list the
+        thread and reply to the last message — never create with thread_id as
+        receive_id."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        calls = []
+
+        class _FileAPI:
+            def create(self, request):
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(file_key="file_123"),
+                )
+
+        class _MessageAPI:
+            def create(self, request):
+                calls.append(("create", request))
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_created"),
+                )
+
+            def reply(self, request):
+                calls.append(("reply", request))
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_replied"),
+                )
+
+            def list(self, request):
+                calls.append(("list", request))
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(
+                        items=[SimpleNamespace(message_id="om_last_in_thread")]
+                    ),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    file=_FileAPI(),
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".js", delete=False) as tmp:
+            tmp.write(b"// test script")
+            file_path = tmp.name
+
+        try:
+            with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+                result = asyncio.run(
+                    adapter.send_document(
+                        chat_id="oc_chat",
+                        file_path=file_path,
+                        metadata={"thread_id": "omt-thread"},
+                    )
+                )
+        finally:
+            os.unlink(file_path)
+
+        self.assertTrue(result.success, result.error)
+        # list first, then reply — create is NEVER called with thread_id
+        self.assertEqual(calls[0][0], "list")
+        self.assertEqual(calls[1][0], "reply")
+        self.assertEqual(calls[1][1].message_id, "om_last_in_thread")
+        self.assertTrue(calls[1][1].request_body.reply_in_thread)
+        self.assertEqual(len(calls), 2)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_source_fix_caption_thread_no_anchor_lists_then_replies(self):
+        """Captioned file/media sends (post payload with media tag) into a
+        thread must route through the same source-level fix: list the thread
+        and reply to the last message, never create with thread_id."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        calls = []
+
+        class _FileAPI:
+            def create(self, request):
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(file_key="file_123"),
+                )
+
+        class _MessageAPI:
+            def create(self, request):
+                calls.append(("create", request))
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_created"),
+                )
+
+            def reply(self, request):
+                calls.append(("reply", request))
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_caption_replied"),
+                )
+
+            def list(self, request):
+                calls.append(("list", request))
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(
+                        items=[SimpleNamespace(message_id="om_last_in_thread")]
+                    ),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    file=_FileAPI(),
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".js", delete=False) as tmp:
+            tmp.write(b"// test script")
+            file_path = tmp.name
+
+        try:
+            with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+                result = asyncio.run(
+                    adapter.send_document(
+                        chat_id="oc_chat",
+                        file_path=file_path,
+                        caption="see the file",
+                        metadata={"thread_id": "omt-thread"},
+                    )
+                )
+        finally:
+            os.unlink(file_path)
+
+        self.assertTrue(result.success, result.error)
+        # list first, then reply as a post message — create never called
+        self.assertEqual(calls[0][0], "list")
+        self.assertEqual(calls[1][0], "reply")
+        self.assertEqual(calls[1][1].request_body.msg_type, "post")
+        self.assertEqual(calls[1][1].message_id, "om_last_in_thread")
+        self.assertTrue(calls[1][1].request_body.reply_in_thread)
+        self.assertEqual(len(calls), 2)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_source_fix_thread_no_anchor_no_last_msg_creates_chat_id(self):
+        """Source-level fix: when the thread has no messages to anchor on,
+        fall back to a plain chat_id create (and keep the feishu_user_id:/
+        ou_ receive_id mapping)."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        calls = []
+
+        class _FileAPI:
+            def create(self, request):
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(file_key="file_123"),
+                )
+
+        class _MessageAPI:
+            def create(self, request):
+                calls.append(("create", request))
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_created"),
+                )
+
+            def list(self, request):
+                calls.append(("list", request))
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(items=[]),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    file=_FileAPI(),
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".js", delete=False) as tmp:
+            tmp.write(b"// test script")
+            file_path = tmp.name
+
+        try:
+            with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+                result = asyncio.run(
+                    adapter.send_document(
+                        chat_id="feishu_user_id:ou_user_123",
+                        file_path=file_path,
+                        metadata={"thread_id": "omt-thread"},
+                    )
+                )
+        finally:
+            os.unlink(file_path)
+
+        self.assertTrue(result.success, result.error)
+        # list found nothing → create with user_id mapping preserved
+        self.assertEqual(calls[0][0], "list")
+        self.assertEqual(calls[1][0], "create")
+        self.assertEqual(calls[1][1].receive_id_type, "user_id")
+        self.assertEqual(calls[1][1].request_body.receive_id, "ou_user_123")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_post_for_every_chunk_of_multi_chunk_markdown(self):

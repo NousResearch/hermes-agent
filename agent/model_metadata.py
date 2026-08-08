@@ -606,6 +606,39 @@ def grok_supports_reasoning_effort(model: str) -> bool:
     return any(name.startswith(prefix) for prefix in _GROK_EFFORT_CAPABLE_PREFIXES)
 
 
+# OpenAI Responses API (the ``openai-api`` / ``openai-codex`` providers,
+# api.openai.com/v1/responses) rejects ``reasoning.effort`` on
+# non-reasoning models — gpt-4o-mini, gpt-4.1-mini, ... — with
+# HTTP 400 "Unsupported parameter: 'reasoning.effort' is not supported
+# with this model." Only the gpt-5 family and the o-series accept the
+# dial. Matches both bare ids (``gpt-5.4``) and aggregator-prefixed ids
+# (``openai/gpt-5.4``). Conservative by design: an unrecognized model
+# gets no effort dial rather than a 400.
+_OPENAI_RESPONSES_REASONING_PREFIXES = (
+    "gpt-5",
+    "o1",
+    "o3",
+    "o4",
+)
+
+
+def openai_responses_supports_reasoning_effort(model: str) -> bool:
+    """Return True when an OpenAI Responses API model accepts ``reasoning.effort``.
+
+    The Responses route (openai-api / openai-codex providers) rejects the
+    ``reasoning`` parameter outright on non-reasoning models (gpt-4o-mini,
+    gpt-4.1-mini, ...) with HTTP 400, so callers must omit the ``reasoning``
+    key entirely for them instead of sending a default ``medium`` effort.
+    """
+    name = (model or "").strip().lower()
+    if not name:
+        return False
+    for sep in ("/",):
+        if sep in name:
+            name = name.rsplit(sep, 1)[-1]
+    return any(name.startswith(prefix) for prefix in _OPENAI_RESPONSES_REASONING_PREFIXES)
+
+
 _CONTEXT_LENGTH_KEYS = (
     "context_length",
     "context_window",

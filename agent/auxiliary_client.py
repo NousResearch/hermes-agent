@@ -1260,11 +1260,32 @@ class _CodexCompletionsAdapter:
                     # match the main-agent Codex transport behavior.
                     if effort == "minimal":
                         effort = "low"
-                    resp_kwargs["reasoning"] = {
-                        "effort": effort,
-                        "summary": "auto",
-                    }
-                    resp_kwargs["include"] = ["reasoning.encrypted_content"]
+                    # Model capability gate mirrors agent/transports/codex.py
+                    # (#76255): the OpenAI Responses API rejects the
+                    # `reasoning` parameter on non-reasoning models
+                    # (gpt-4o-mini, gpt-4.1-mini, ...) with HTTP 400, and
+                    # xAI grok models have their own effort allowlist.
+                    # Only send the dial when the model accepts it; omit
+                    # the key entirely otherwise.
+                    from agent.model_metadata import (
+                        grok_supports_reasoning_effort,
+                        openai_responses_supports_reasoning_effort,
+                    )
+                    _adapter_host = str(
+                        getattr(self._client, "base_url", "") or ""
+                    ).lower()
+                    _is_xai_adapter = "api.x.ai" in _adapter_host
+                    _adapter_supports = (
+                        grok_supports_reasoning_effort(model)
+                        if _is_xai_adapter
+                        else openai_responses_supports_reasoning_effort(model)
+                    )
+                    if _adapter_supports:
+                        resp_kwargs["reasoning"] = {
+                            "effort": effort,
+                            "summary": "auto",
+                        }
+                        resp_kwargs["include"] = ["reasoning.encrypted_content"]
 
         # Tools support for auxiliary callers (e.g. skills_hub) that pass function schemas
         tools = kwargs.get("tools")

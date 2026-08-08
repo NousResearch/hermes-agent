@@ -418,15 +418,27 @@ class ResponsesApiTransport(ProviderTransport):
             if grok_supports_reasoning_effort(model):
                 kwargs["reasoning"] = {"effort": reasoning_effort}
         elif reasoning_enabled:
+            from agent.model_metadata import openai_responses_supports_reasoning_effort
+
             if is_github_responses:
                 github_reasoning = params.get("github_reasoning_extra")
                 if github_reasoning is not None:
                     kwargs["reasoning"] = github_reasoning
-            else:
+            elif openai_responses_supports_reasoning_effort(model):
                 kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
                 kwargs["include"] = (
                     ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
                 )
+            else:
+                # OpenAI Responses (openai-api / openai-codex providers)
+                # rejects the `reasoning` parameter on non-reasoning models
+                # (gpt-4o-mini, gpt-4.1-mini, ...) with HTTP 400
+                # "Unsupported parameter: 'reasoning.effort'". Omit the key
+                # entirely for them instead of sending a default medium
+                # effort (#76255). Non-OpenAI Responses-compatible relays
+                # keep the same conservative behavior: no reasoning dial
+                # rather than a 400.
+                kwargs["include"] = []
         elif not is_github_responses and not is_xai_responses:
             kwargs["include"] = []
 

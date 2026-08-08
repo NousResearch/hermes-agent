@@ -491,8 +491,59 @@ class TestCodexBuildKwargs:
             assert "reasoning" not in kw, f"{model} must not receive reasoning"
 
 
-class TestXaiWebSearchBackendPreference:
-    """``_xai_prefers_native_web_search`` must honor web backend config."""
+    # --- OpenAI Responses reasoning-effort capability gate (#76255) ---
+    # The openai-api / openai-codex providers (api.openai.com/v1/responses)
+    # reject `reasoning.effort` on non-reasoning models (gpt-4o-mini,
+    # gpt-4.1-mini, ...) with HTTP 400 "Unsupported parameter:
+    # 'reasoning.effort' is not supported with this model." The transport
+    # must omit the `reasoning` key entirely for them, even when the user
+    # configured a reasoning effort (the default is medium).
+
+    @pytest.mark.parametrize("model", [
+        "gpt-4o-mini",
+        "gpt-4o",
+        "gpt-4.1-mini",
+        "gpt-4.1",
+        "openai/gpt-4o-mini",
+    ])
+    def test_non_reasoning_openai_models_omit_reasoning(self, transport, model):
+        """Non-reasoning OpenAI models must not receive the reasoning key."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model=model, messages=messages, tools=[],
+            reasoning_config={"effort": "high"},
+        )
+        assert "reasoning" not in kw, f"{model} must not receive reasoning"
+
+    @pytest.mark.parametrize("model", [
+        "gpt-5.4",
+        "gpt-5.6-sol",
+        "gpt-5-mini",
+        "o1",
+        "o3-mini",
+        "o4-mini",
+        "openai/gpt-5.4",
+    ])
+    def test_reasoning_openai_models_keep_reasoning(self, transport, model):
+        """Reasoning-capable OpenAI models keep the effort dial."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model=model, messages=messages, tools=[],
+            reasoning_config={"effort": "high"},
+        )
+        assert kw["reasoning"] == {"effort": "high", "summary": "auto"}, model
+
+    def test_non_reasoning_model_reasoning_disabled_still_omits_include(self, transport):
+        """reasoning_config enabled=False keeps omitting the reasoning key."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o-mini", messages=messages, tools=[],
+            reasoning_config={"enabled": False},
+        )
+        assert "reasoning" not in kw
+        assert kw.get("include") == []
+
+
 
     def test_explicit_firecrawl_prefers_client(self, monkeypatch):
         import agent.transports.codex as codex_mod

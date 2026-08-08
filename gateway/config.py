@@ -2129,6 +2129,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
 
     # API Server
     api_server_key = getenv("API_SERVER_KEY", "")
+    api_server_enabled_raw = getenv("API_SERVER_ENABLED", "")
     api_server_cors_origins = getenv("API_SERVER_CORS_ORIGINS", "")
     api_server_port = getenv("API_SERVER_PORT")
     api_server_host = getenv("API_SERVER_HOST")
@@ -2151,7 +2152,18 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         # later registry pass re-enables it), so this both consumes the flag and
         # avoids reading it twice, matching the pop convention used elsewhere.
         api_server_explicit = config.platforms[Platform.API_SERVER].extra.pop("_enabled_explicit", False)
-        if not api_server_explicit or config.platforms[Platform.API_SERVER].enabled:
+        # Honor an explicit ``API_SERVER_ENABLED=false``: the env var is the
+        # documented toggle for the API server (config_defaults) and must be
+        # able to disable the listener even when ``API_SERVER_KEY`` is present.
+        # In the Docker s6 runtime each named profile gateway rehydrates the
+        # full container env (including ``API_SERVER_KEY``/``API_SERVER_PORT``)
+        # via with-contenv, so without this guard a profile whose .env sets
+        # ``API_SERVER_ENABLED=false`` still force-enables the listener and
+        # tries to bind the default profile's port (#80310).
+        env_disables = api_server_enabled_raw != "" and not is_truthy_value(api_server_enabled_raw)
+        if not api_server_explicit and env_disables:
+            config.platforms[Platform.API_SERVER].enabled = False
+        elif not api_server_explicit or config.platforms[Platform.API_SERVER].enabled:
             config.platforms[Platform.API_SERVER].enabled = True
         if api_server_key:
             config.platforms[Platform.API_SERVER].extra["key"] = api_server_key

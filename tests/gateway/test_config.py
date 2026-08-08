@@ -1184,3 +1184,45 @@ class TestApiServerEnvOverride:
         assert config.platforms[Platform.API_SERVER].enabled is False
         # The key is still wired through for the shared listener.
         assert config.platforms[Platform.API_SERVER].extra.get("key") == api_server_key
+
+    def test_env_enabled_false_keeps_api_server_disabled_with_key_present(self):
+        """``API_SERVER_ENABLED=false`` must keep the API server disabled even
+        when a usable ``API_SERVER_KEY`` is present in the env.
+
+        Regression for #80310: the env-override path enabled the API server
+        platform purely on key presence, so in the Docker s6 runtime a named
+        profile gateway — which rehydrates the full container env (including
+        ``API_SERVER_KEY``/``API_SERVER_PORT``) via with-contenv — started its
+        own listener despite the profile's ``.env`` setting
+        ``API_SERVER_ENABLED=false``, colliding on the default profile's port.
+        """
+        config = GatewayConfig(platforms={})
+        api_server_key = "secret-key-at-least-16"
+        with patch.dict(
+            os.environ,
+            {
+                "API_SERVER_KEY": api_server_key,
+                "API_SERVER_ENABLED": "false",
+                "API_SERVER_PORT": "8000",
+            },
+            clear=True,
+        ):
+            _apply_env_overrides(config)
+
+        # API_SERVER_ENABLED=false wins over key presence.
+        assert Platform.API_SERVER not in config.platforms or (
+            config.platforms[Platform.API_SERVER].enabled is False
+        )
+
+    def test_env_enabled_unset_still_enables_on_key_presence(self):
+        """Without an explicit ``API_SERVER_ENABLED`` value, a usable key still
+        enables the API server (legacy behavior preserved)."""
+        config = GatewayConfig(platforms={})
+        with patch.dict(
+            os.environ,
+            {"API_SERVER_KEY": "secret-key-at-least-16"},
+            clear=True,
+        ):
+            _apply_env_overrides(config)
+
+        assert config.platforms[Platform.API_SERVER].enabled is True

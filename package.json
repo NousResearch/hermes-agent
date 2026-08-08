@@ -50,7 +50,7 @@
     "lodash": "4.18.1",
     "yauzl": "^3.3.1",
     "protobufjs": "^8.7.1",
-    "brace-expansion": "5.0.8"
+    "brace-expansion": "5.0.9"
   },
   "engines": {
     "node": ">=22.22.0",

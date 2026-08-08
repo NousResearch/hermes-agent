@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import asyncio
+import concurrent.futures
 import contextvars
 import importlib
 import inspect
@@ -17,6 +18,14 @@ from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
+# One worker thread reused across flush fallbacks; a shared executor is far
+# cheaper than constructing a fresh pool on every session close. The thread
+# only ever runs ``relay.subscribers.flush``, which is idempotent.
+_subscribers_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="hermes-relay-flush",
+)
+
 SESSION_SCOPE = "hermes.session"
 TURN_SCOPE = "hermes.turn"
 LOGICAL_LLM_SCOPE = "hermes.logical_llm_call"
@@ -24,6 +33,28 @@ RUNTIME_SCHEMA_KEY = "hermes.relay.schema_version"
 RUNTIME_SCHEMA_VERSION = "hermes.relay.runtime.v1"
 RUNTIME_INSTANCE_KEY = "hermes.relay.runtime_instance"
 _PROFILE_KEY_CACHE: dict[str, str] = {}
+
+_FLUSH_ASYNCIO_TIMEOUT_S = 5
+
+
+def flush_subscribers_safely(relay: Any) -> None:
+    """Flush ``relay.subscribers`` without blocking a running asyncio loop.
+
+    ``relay.subscribers.flush`` is synchronous and raises
+    ``RuntimeError: cannot block a running asyncio event loop`` when invoked
+    from a coroutine; uncaught, that would tear down the gateway. Delegate the
+    drain to the shared worker thread instead so it still completes. Any other
+    :class:`RuntimeError` (for example Relay not initialised) is re-raised so
+    the caller can surface it as a session/closing failure.
+    """
+    try:
+        relay.subscribers.flush()
+    except RuntimeError as exc:
+        if "asyncio" not in str(exc).lower():
+            raise
+        _subscribers_executor.submit(relay.subscribers.flush).result(
+            timeout=_FLUSH_ASYNCIO_TIMEOUT_S,
+        )
 
 
 @dataclass
@@ -327,7 +358,7 @@ class RelayRuntime:
                 except Exception as exc:
                     failures.append(f"session scope close failed: {exc}")
         try:
-            self.relay.subscribers.flush()
+            flush_subscribers_safely(self.relay)
         except Exception as exc:
             failures.append(f"subscriber flush failed: {exc}")
         with self._sessions_lock:

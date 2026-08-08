@@ -1777,6 +1777,82 @@ def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:
     return False
 
 
+def _query_ollama_served_ctx(
+    model: str, server_url: str, headers: Dict[str, str]
+) -> Optional[int]:
+    """Context length the server is ACTUALLY serving ``model`` at, via /api/ps.
+
+    ``/api/show`` reports the GGUF training maximum, and it cannot see
+    ``OLLAMA_CONTEXT_LENGTH`` — that is a server environment variable, not a
+    Modelfile parameter, so it appears in neither ``model_info`` nor
+    ``parameters``. When the two disagree the served value is the real limit:
+    exceed it and generation returns ``finish_reason="length"`` on the first
+    token, which the agent loop then misreports as output truncation and
+    "recovers" from by appending a continuation message that makes the prompt
+    longer still.
+
+    This is also what makes ``_ollama_context_limit_error()`` in
+    ``agent/conversation_loop.py`` able to fire. That guard compares
+    ``agent._ollama_num_ctx`` (populated from ``query_ollama_num_ctx()``)
+    against ``MINIMUM_CONTEXT_LENGTH``, so while the probe returns the GGUF
+    max the check silently passes no matter how small the real window is —
+    including the plain ``OLLAMA_CONTEXT_LENGTH`` default case.
+
+    ``/api/ps`` only lists LOADED models, so this returns None for an idle
+    model and callers keep the ``/api/show`` value. That is the correct
+    fallback — the served context is genuinely unknowable until something
+    loads it, and by the time the number matters (an in-flight conversation)
+    the model is loaded by definition.
+
+    Memoized in the 30s in-memory probe cache only, never on the 300s disk
+    cache: this tracks live server state and must re-probe promptly after a
+    restart or a config change.
+    """
+    import time as _time
+    import httpx
+
+    cache_key = ("ollama_ps", _strip_provider_prefix(model), server_url.rstrip("/"))
+    now = _time.monotonic()
+    cached = _LOCAL_CTX_PROBE_CACHE.get(cache_key)
+    if cached is not None and (now - cached[1]) < _LOCAL_CTX_PROBE_TTL_SECONDS:
+        return cached[0]
+
+    bare = _strip_provider_prefix(model)
+    try:
+        with httpx.Client(timeout=3.0, headers=headers) as client:
+            resp = client.get(f"{server_url}/api/ps")
+            if resp.status_code != 200:
+                return None
+            for entry in resp.json().get("models") or []:
+                if entry.get("name") != bare and entry.get("model") != bare:
+                    continue
+                ctx = entry.get("context_length")
+                if isinstance(ctx, (int, float)) and int(ctx) >= 1024:
+                    result = int(ctx)
+                    _LOCAL_CTX_PROBE_CACHE[cache_key] = (result, now)
+                    return result
+    except Exception:
+        pass
+    return None
+
+
+def _cap_ctx_by_served(
+    ctx: Optional[int], model: str, server_url: str, headers: Dict[str, str]
+) -> Optional[int]:
+    """Clamp an /api/show context length to what the server actually serves.
+
+    Only ever lowers the value. If /api/ps reports something larger than the
+    GGUF max (shouldn't happen) the advertised max still wins, since that is
+    the hard ceiling the weights were trained for.
+    """
+    if not ctx:
+        return ctx
+    served = _query_ollama_served_ctx(model, server_url, headers)
+    if served and 1024 <= served < ctx:
+        return served
+    return ctx
+
+
 def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query an Ollama server for the model's context length.
 
@@ -1804,11 +1880,15 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
     # Disk L2: /api/show results are stable for a given (model, server) on
     # human timescales — skip the HTTP roundtrip on fresh cross-process hits.
     _disk_key = f"{server_url}|{bare_model}"
+    headers = _auth_headers(api_key)
+
+    # The cap is applied AFTER the disk read, never before the write: the
+    # cached value is the stable /api/show number, while the served ctx is
+    # live state that must be re-checked on every call. Baking a cap into the
+    # 300s disk cache would outlive a server restart at a different setting.
     disk_hit = _local_probe_disk_get("ollama_num_ctx", _disk_key)
     if isinstance(disk_hit, int) and disk_hit > 0:
-        return disk_hit
-
-    headers = _auth_headers(api_key)
+        return _cap_ctx_by_served(disk_hit, bare_model, server_url, headers)
 
     try:
         with httpx.Client(timeout=3.0, headers=headers) as client:
@@ -1827,7 +1907,9 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
                             try:
                                 _ctx = int(parts[-1])
                                 _local_probe_disk_put("ollama_num_ctx", _disk_key, _ctx)
-                                return _ctx
+                                return _cap_ctx_by_served(
+                                    _ctx, bare_model, server_url, headers
+                                )
                             except ValueError:
                                 pass
 
@@ -1837,7 +1919,9 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
                 if "context_length" in key and isinstance(value, (int, float)):
                     _ctx = int(value)
                     _local_probe_disk_put("ollama_num_ctx", _disk_key, _ctx)
-                    return _ctx
+                    return _cap_ctx_by_served(
+                        _ctx, bare_model, server_url, headers
+                    )
     except Exception:
         pass
     return None
@@ -1925,13 +2009,23 @@ def _query_ollama_api_show(model: str, base_url: str, api_key: str = "") -> Opti
     # keys — the two probes can return different values for the same pair.
     cache_key = ("ollama_show", _strip_provider_prefix(model), base_url.rstrip("/"))
     now = _time.monotonic()
+
+    # Cap against /api/ps on the way out rather than on the way in, so the
+    # memoized entry stays the stable advertised max and the live served
+    # value is re-consulted per call (see _query_ollama_served_ctx).
+    _server_url = _localhost_to_ipv4(base_url.rstrip("/"))
+    if _server_url.endswith("/v1"):
+        _server_url = _server_url[:-3]
+    _headers = _auth_headers(api_key)
+
     cached = _LOCAL_CTX_PROBE_CACHE.get(cache_key)
     if cached is not None and (now - cached[1]) < _LOCAL_CTX_PROBE_TTL_SECONDS:
-        return cached[0]
+        return _cap_ctx_by_served(cached[0], model, _server_url, _headers)
 
     result = _query_ollama_api_show_uncached(model, base_url, api_key=api_key)
     if result:  # positive-only — never memoize a failed probe
         _LOCAL_CTX_PROBE_CACHE[cache_key] = (result, now)
+        return _cap_ctx_by_served(result, model, _server_url, _headers)
     return result
 
 
@@ -2090,6 +2184,13 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                     # which can be larger than num_ctx — using it here would let
                     # Hermes grow conversations past the runtime limit and Ollama
                     # would silently truncate. Matches query_ollama_num_ctx().
+                    #
+                    # num_ctx only covers a Modelfile override. A server started
+                    # with OLLAMA_CONTEXT_LENGTH caps every model without
+                    # appearing in `parameters` OR `model_info`, so both branches
+                    # below are additionally clamped to what /api/ps reports the
+                    # model is actually loaded at — the same "prefer the loaded
+                    # runtime value" rule the lm-studio branch below applies.
                     params = data.get("parameters", "")
                     if "num_ctx" in params:
                         for line in params.split("\n"):
@@ -2097,14 +2198,18 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                                 parts = line.strip().split()
                                 if len(parts) >= 2:
                                     try:
-                                        return int(parts[-1])
+                                        return _cap_ctx_by_served(
+                                            int(parts[-1]), model, server_url, headers
+                                        )
                                     except ValueError:
                                         pass
                     # Fall back to GGUF model_info context_length (training max)
                     model_info = data.get("model_info", {})
                     for key, value in model_info.items():
                         if "context_length" in key and isinstance(value, (int, float)):
-                            return int(value)
+                            return _cap_ctx_by_served(
+                                int(value), model, server_url, headers
+                            )
 
             # LM Studio native API: /api/v1/models returns max_context_length.
             # This is more reliable than the OpenAI-compat /v1/models which

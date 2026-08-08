@@ -4167,6 +4167,60 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
+def _annotate_browser_vision_result(
+    result: Union[str, Dict[str, Any]],
+    task_id: Optional[str] = None,
+) -> Union[str, Dict[str, Any]]:
+    """Annotate browser_vision results with a sandbox-visible screenshot path.
+
+    ``screenshot_path`` stays the host/gateway path for ``MEDIA:`` delivery.
+    Under docker/ssh/modal, ``agent_visible_screenshot`` is the path terminal /
+    file tools can open — same contract as image/tts/video artifact helpers.
+    """
+    is_str = isinstance(result, str)
+    try:
+        payload = json.loads(result) if is_str else result
+    except Exception:
+        return result
+    if not isinstance(payload, dict):
+        return result
+
+    host = payload.get("screenshot_path")
+    meta = payload.get("meta")
+    if not isinstance(host, str) or not host:
+        if isinstance(meta, dict):
+            host = meta.get("screenshot_path")
+        if not isinstance(host, str) or not host:
+            return result
+
+    from tools.image_generation_tool import (
+        _active_terminal_env,
+        _agent_visible_cache_path,
+        _force_artifact_sync,
+        _looks_like_absolute_file_path,
+    )
+
+    if not _looks_like_absolute_file_path(host):
+        return result
+
+    env = _active_terminal_env(task_id)
+    agent_path = _agent_visible_cache_path(host, env)
+    if not agent_path or agent_path == host:
+        return result
+
+    if env is not None:
+        _force_artifact_sync(env)
+
+    if "screenshot_path" in payload:
+        payload.setdefault("host_screenshot_path", host)
+        payload.setdefault("agent_visible_screenshot", agent_path)
+    if isinstance(meta, dict) and meta.get("screenshot_path"):
+        meta.setdefault("host_screenshot_path", host)
+        meta.setdefault("agent_visible_screenshot", agent_path)
+
+    return json.dumps(payload, ensure_ascii=False) if is_str else payload
+
+
 def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> Union[str, Dict[str, Any]]:
     """
     Take a screenshot of the current page for visual inspection.
@@ -4179,7 +4233,9 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     verification challenges, images, complex layouts, etc.).
 
     The screenshot is saved persistently and its file path is returned so it
-    can be shared with users via MEDIA:<path> in the response.
+    can be shared with users via MEDIA:<path> in the response. Under a sandbox
+    terminal backend, results may also include ``agent_visible_screenshot`` for
+    terminal/file follow-up (``screenshot_path`` stays the host/gateway path).
 
     Args:
         question: What you want to know about the page visually
@@ -4192,7 +4248,10 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     """
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_vision
-        return camofox_vision(question, annotate, task_id)
+        return _annotate_browser_vision_result(
+            camofox_vision(question, annotate, task_id),
+            task_id=task_id,
+        )
 
     import base64
     import uuid as uuid_mod
@@ -4370,7 +4429,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 f"{native_result.get('text_summary', '')} "
                 f"Screenshot path: {screenshot_path}"
             ).strip()
-            return native_result
+            return _annotate_browser_vision_result(native_result, task_id=task_id)
 
         vision_prompt = (
             f"You are analyzing a screenshot of a web browser.\n\n"
@@ -4456,7 +4515,10 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         # Include annotation data if annotated screenshot was taken
         if annotate and result.get("data", {}).get("annotations"):
             response_data["annotations"] = result["data"]["annotations"]
-        return json.dumps(response_data, ensure_ascii=False)
+        return _annotate_browser_vision_result(
+            json.dumps(response_data, ensure_ascii=False),
+            task_id=task_id,
+        )
 
     except Exception as e:
         # Keep the screenshot if it was captured successfully — the failure is
@@ -4469,7 +4531,10 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             error_info["screenshot_path"] = str(screenshot_path)
             error_info["note"] = "Screenshot was captured but vision analysis failed. You can still share it via MEDIA:<path>."
         _copy_fallback_warning(error_info, result if 'result' in locals() else {})
-        return json.dumps(error_info, ensure_ascii=False)
+        return _annotate_browser_vision_result(
+            json.dumps(error_info, ensure_ascii=False),
+            task_id=task_id,
+        )
 
 
 def _cleanup_old_screenshots(screenshots_dir, max_age_hours=24):

@@ -156,23 +156,30 @@ def _fallback_api_mode(provider: str, base_url: str, model: str = "") -> str:
     Precedence: URL detection (host-mandated wire shapes) first, then the
     transport the provider overlay itself declares via
     ``providers.determine_api_mode`` — which already handles host mandates,
-    dual-wire providers, and the registry transport map — and only then the
-    ``chat_completions`` default for genuinely unknown providers/endpoints.
+    dual-wire providers, and the registry transport map. When that broader
+    lookup has only the generic ``chat_completions`` fallback, an explicit
+    ``ProviderProfile.api_mode`` bridged into ``PROVIDER_REGISTRY`` may refine
+    it for plugin endpoints whose URLs are not self-describing.
 
     Before this helper the runtime paths consulted URL detection ONLY and
     silently landed reasoning providers on ``chat_completions`` whenever the
     hostname wasn't literally recognized. That is how ``openai-api`` pointed
     at OpenAI's data-residency hosts (``us.api.openai.com``) 400'd on every
-    tool-calling turn: the provider declares ``codex_responses`` but the
-    declaration was never consulted. Same latent class covered the other
-    non-chat overlays (MiniMax family, copilot-acp).
+    tool-calling turn. Plugin profiles have the same failure mode when their
+    declared transport is not encoded in the endpoint URL (#53054).
     """
     detected = _detect_api_mode_for_url(base_url)
     if detected:
         return detected
     from hermes_cli.providers import determine_api_mode
 
-    return determine_api_mode(provider, base_url, model) or "chat_completions"
+    provider_mode = determine_api_mode(provider, base_url, model) or "chat_completions"
+    if provider_mode != "chat_completions":
+        return provider_mode
+
+    pconfig = PROVIDER_REGISTRY.get((provider or "").strip().lower())
+    declared = _parse_api_mode(getattr(pconfig, "api_mode", None)) if pconfig else None
+    return declared or provider_mode
 
 
 def _resolve_plain_custom_api_mode(model_cfg: Dict[str, Any], base_url: str) -> str:
@@ -350,6 +357,15 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
         return True
     if normalized_provider == "custom":
         return normalized_configured == "custom" or normalized_configured.startswith("custom:")
+
+    # ProviderProfile aliases are registered as additional keys pointing to
+    # the same ProviderConfig. Compare canonical registry IDs so an explicit
+    # mode persisted under an alias is still recognized as belonging to the
+    # runtime provider family.
+    provider_config = PROVIDER_REGISTRY.get(normalized_provider)
+    configured_config = PROVIDER_REGISTRY.get(normalized_configured)
+    if provider_config is not None and configured_config is not None:
+        return provider_config.id == configured_config.id
     return normalized_configured == normalized_provider
 
 

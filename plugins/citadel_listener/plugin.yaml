@@ -1,0 +1,3 @@
+name: citadel_listener
+description: Starts the Citadel wake word listener (strж/тишина) as a background process
+version: 1.0.0

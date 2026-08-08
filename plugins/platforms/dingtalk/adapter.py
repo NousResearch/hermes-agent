@@ -931,8 +931,16 @@ class DingTalkAdapter(BasePlatformAdapter):
             if isinstance(rich_list, list):
                 for item in rich_list:
                     if isinstance(item, dict):
+                        # ``downloadUrl`` is the canonical resolved URL written
+                        # by ``_resolve_media_codes``; the raw code fields are
+                        # scrubbed after resolution, so they only appear when
+                        # resolution never ran (e.g. no access token) — kept as
+                        # fallbacks so unresolved messages still deliver (#77633).
                         dl_code = (
-                            item.get("downloadCode") or item.get("download_code") or ""
+                            item.get("downloadUrl")
+                            or item.get("downloadCode")
+                            or item.get("download_code")
+                            or ""
                         )
                         item_type = item.get("type", "")
                         if dl_code:
@@ -1487,30 +1495,45 @@ class DingTalkAdapter(BasePlatformAdapter):
                 "[%s] _send_emotion %s failed", self.name, action, exc_info=True
             )
 
+    # Rich-text items may carry any of three code fields for the *same* media
+    # object. They are NOT equivalent — ``pictureDownloadCode`` has been
+    # observed to return ``500 unknownError`` while ``downloadCode`` from the
+    # same item resolves fine. They are tried in this order, stopping at the
+    # first that resolves (#77633).
+    _RICH_TEXT_CODE_CANDIDATES = ("downloadCode", "pictureDownloadCode", "download_code")
+    # Canonical field holding the resolved URL; consumed by ``_extract_media``.
+    _CANONICAL_DOWNLOAD_FIELD = "downloadUrl"
+
     async def _resolve_media_codes(self, message: "ChatbotMessage") -> None:
-        """Resolve download codes in message to actual URLs."""
+        """Resolve download codes in message to actual URLs.
+
+        Rich-text items may carry several code fields for the same media
+        object. These are resolved as **ordered fallbacks** — not in
+        parallel — so a ``500`` on ``pictureDownloadCode`` cannot shadow a
+        valid ``downloadCode``. The resolved URL lands in a single canonical
+        field (``downloadUrl``) consumed by ``_extract_media``; every raw
+        code field is scrubbed before the message moves downstream (#77633).
+        """
         token = await self._get_access_token()
         if not token:
             return
 
         robot_code = getattr(message, "robot_code", None) or self._client_id
-        codes_to_resolve = []
 
-        # Collect codes and references to update
-        # 1. Single image content
+        # 1. Single image content — one code, resolved in place.
         img_content = getattr(message, "image_content", None)
         if img_content and getattr(img_content, "download_code", None):
-            codes_to_resolve.append((img_content, "download_code"))
+            await self._fetch_download_url(
+                img_content.download_code, robot_code, token, img_content, "download_code"
+            )
 
-        # 2. Rich text list
+        # 2. Rich text — ordered candidate fallback per item (#77633).
         rich_text = getattr(message, "rich_text_content", None)
         if rich_text:
             rich_list = getattr(rich_text, "rich_text_list", []) or []
             for item in rich_list:
                 if isinstance(item, dict):
-                    for key in ("downloadCode", "pictureDownloadCode", "download_code"):
-                        if item.get(key):
-                            codes_to_resolve.append((item, key))
+                    await self._resolve_rich_text_item(item, robot_code, token)
 
         # 3. File/image message (msgtype='file' or 'image', codes in extensions)
         msg_type_str = getattr(message, "message_type", "") or ""
@@ -1518,32 +1541,49 @@ class DingTalkAdapter(BasePlatformAdapter):
             extensions = getattr(message, "extensions", {}) or {}
             ext_content = extensions.get("content", {})
             if isinstance(ext_content, dict) and ext_content.get("downloadCode"):
-                codes_to_resolve.append((ext_content, "downloadCode"))
-
-        if not codes_to_resolve:
-            return
-
-        # Resolve all codes in parallel
-        tasks = []
-        for obj, key in codes_to_resolve:
-            code = getattr(obj, key, None) if hasattr(obj, key) else obj.get(key)
-            if code:
-                tasks.append(
-                    self._fetch_download_url(code, robot_code, token, obj, key)
+                await self._fetch_download_url(
+                    ext_content["downloadCode"], robot_code, token, ext_content, "downloadCode"
                 )
 
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-    async def _fetch_download_url(
-        self, code: str, robot_code: str, token: str, obj, key: str
+    async def _resolve_rich_text_item(
+        self, item: dict, robot_code: str, token: str
     ) -> None:
-        """Fetch download URL for a single code using the robot SDK."""
+        """Resolve one rich-text item's code candidates as ordered fallbacks.
+
+        Tries ``downloadCode`` → ``pictureDownloadCode`` → ``download_code``,
+        stopping after the first successful resolution. The resolved URL is
+        written to the canonical ``downloadUrl`` field; every raw code field
+        is then scrubbed so none reaches the agent or vision pipeline.
+        """
+        resolved_url: Optional[str] = None
+        for key in self._RICH_TEXT_CODE_CANDIDATES:
+            code = item.get(key)
+            if not code:
+                continue
+            resolved_url = await self._resolve_single_code(code, robot_code, token)
+            if resolved_url:
+                break
+        # Scrub every raw code field regardless of outcome (#77633).
+        for key in self._RICH_TEXT_CODE_CANDIDATES:
+            item.pop(key, None)
+        if resolved_url:
+            item[self._CANONICAL_DOWNLOAD_FIELD] = resolved_url
+
+    async def _resolve_single_code(
+        self, code: str, robot_code: str, token: str
+    ) -> Optional[str]:
+        """Resolve a single download code to a URL via the robot SDK.
+
+        Returns the URL string, or ``None`` on any failure. Failures are
+        logged WITHOUT the raw code — download codes are short-lived
+        credentials and must not appear in logs (#77633).
+        """
         if not self._robot_sdk:
             logger.warning(
                 "[%s] Robot SDK not initialized, cannot resolve media code",
                 self.name,
             )
-            return
+            return None
         try:
             request = dingtalk_robot_models.RobotMessageFileDownloadRequest(
                 download_code=code,
@@ -1560,18 +1600,36 @@ class DingTalkAdapter(BasePlatformAdapter):
             if body:
                 url = getattr(body, "download_url", None)
                 if url:
-                    if hasattr(obj, key):
-                        setattr(obj, key, url)
-                    elif isinstance(obj, dict):
-                        obj[key] = url
+                    return url
+                logger.warning(
+                    "[%s] Failed to download media: response missing download_url",
+                    self.name,
+                )
             else:
                 logger.warning(
-                    "[%s] Failed to download media: empty response for code %s",
+                    "[%s] Failed to download media: empty response body",
                     self.name,
-                    code,
                 )
+            return None
         except Exception as e:
-            logger.error("[%s] Error resolving media code %s: %s", self.name, code, e)
+            logger.error("[%s] Error resolving media code: %s", self.name, e)
+            return None
+
+    async def _fetch_download_url(
+        self, code: str, robot_code: str, token: str, obj, key: str
+    ) -> None:
+        """Resolve a single code and write the URL back onto ``obj[key]``.
+
+        Used for the single-code paths (plain image content, file/image
+        extension content) where only one candidate exists and the URL is
+        consumed in place by ``_extract_media``.
+        """
+        url = await self._resolve_single_code(code, robot_code, token)
+        if url:
+            if hasattr(obj, key):
+                setattr(obj, key, url)
+            elif isinstance(obj, dict):
+                obj[key] = url
 
     @staticmethod
     def _normalize_markdown(text: str) -> str:

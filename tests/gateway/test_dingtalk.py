@@ -598,8 +598,179 @@ class TestExtractTextMentions:
 
 
 # ---------------------------------------------------------------------------
-# Concurrency — chat-scoped message context
+# Rich-text media code resolution — ordered fallback (#77633)
 # ---------------------------------------------------------------------------
+
+
+def _resolver_adapter(code_to_url):
+    """Build a DingTalkAdapter whose robot SDK maps codes → URLs.
+
+    Codes absent from ``code_to_url`` raise (simulating DingTalk's
+    ``500 unknownError`` for ``pictureDownloadCode``).
+    """
+    from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+
+    adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+    adapter._client_id = "robot-1"
+    adapter._get_access_token = AsyncMock(return_value="token")
+
+    async def fake_download(request, headers, runtime):
+        url = code_to_url.get(request.download_code)
+        if url is None:
+            raise RuntimeError("500 unknownError")
+        return SimpleNamespace(body=SimpleNamespace(download_url=url))
+
+    sdk = MagicMock()
+    sdk.robot_message_file_download_with_options_async = fake_download
+    adapter._robot_sdk = sdk
+    return adapter
+
+
+def _richtext_msg(items):
+    """Build a message whose rich_text_content holds ``items``."""
+    return SimpleNamespace(
+        robot_code=None,
+        image_content=None,
+        rich_text_content=SimpleNamespace(rich_text_list=list(items)),
+        message_type="richText",
+        extensions={},
+    )
+
+
+class TestResolveMediaCodes:
+    """``_resolve_media_codes`` must resolve rich-text code candidates as
+    ordered fallbacks, not in parallel — a 500 on ``pictureDownloadCode``
+    must not shadow a valid ``downloadCode`` (#77633)."""
+
+    @pytest.mark.asyncio
+    async def test_downloadcode_succeeds_scrubs_others(self):
+        a = _resolver_adapter({"dl_std": "https://cdn/std.png"})
+        item = {
+            "type": "picture",
+            "downloadCode": "dl_std",
+            "pictureDownloadCode": "dl_pic",
+            "download_code": "dl_snake",
+        }
+        await a._resolve_media_codes(_richtext_msg([item]))
+
+        assert item["downloadUrl"] == "https://cdn/std.png"
+        # The two unused raw code fields are scrubbed.
+        assert "downloadCode" not in item
+        assert "pictureDownloadCode" not in item
+        assert "download_code" not in item
+        # Only the winning code was queried.
+        # (Enforced by the mapping above — dl_pic/dl_snake are absent → would
+        # raise, but we never reach them because dl_std resolved first.)
+
+    @pytest.mark.asyncio
+    async def test_downloadcode_fails_falls_back_to_picturedownloadcode(self):
+        a = _resolver_adapter({"dl_pic": "https://cdn/pic.png"})
+        item = {
+            "type": "picture",
+            "downloadCode": "dl_std",  # resolves to None (500)
+            "pictureDownloadCode": "dl_pic",  # succeeds
+            "download_code": "dl_snake",
+        }
+        await a._resolve_media_codes(_richtext_msg([item]))
+
+        assert item["downloadUrl"] == "https://cdn/pic.png"
+        assert "downloadCode" not in item
+        assert "pictureDownloadCode" not in item
+        assert "download_code" not in item
+
+    @pytest.mark.asyncio
+    async def test_first_two_fail_falls_back_to_download_code(self):
+        a = _resolver_adapter({"dl_snake": "https://cdn/snake.png"})
+        item = {
+            "type": "picture",
+            "downloadCode": "dl_std",
+            "pictureDownloadCode": "dl_pic",
+            "download_code": "dl_snake",
+        }
+        await a._resolve_media_codes(_richtext_msg([item]))
+
+        assert item["downloadUrl"] == "https://cdn/snake.png"
+        assert "downloadCode" not in item
+        assert "pictureDownloadCode" not in item
+        assert "download_code" not in item
+
+    @pytest.mark.asyncio
+    async def test_all_fail_no_media_and_no_raw_codes_leaked(self, caplog):
+        a = _resolver_adapter({})  # every code → 500
+        item = {
+            "type": "picture",
+            "downloadCode": "dl_std",
+            "pictureDownloadCode": "dl_pic",
+            "download_code": "dl_snake",
+        }
+        with caplog.at_level("ERROR"):
+            await a._resolve_media_codes(_richtext_msg([item]))
+
+        # No canonical URL written.
+        assert "downloadUrl" not in item
+        # Every raw code field is scrubbed even on total failure.
+        assert "downloadCode" not in item
+        assert "pictureDownloadCode" not in item
+        assert "download_code" not in item
+        # The failure was logged but no raw download code appears in logs.
+        log_text = caplog.text
+        assert "dl_std" not in log_text
+        assert "dl_pic" not in log_text
+        assert "dl_snake" not in log_text
+
+    @pytest.mark.asyncio
+    async def test_single_field_item_behavior_unchanged(self):
+        """An item carrying only one of the three candidates resolves it
+        and scrubs just that field — same delivery as today, no ordering
+        needed when there's nothing to fall back from."""
+        a = _resolver_adapter({"dl_pic": "https://cdn/pic.png"})
+        item = {"type": "picture", "pictureDownloadCode": "dl_pic"}
+        await a._resolve_media_codes(_richtext_msg([item]))
+
+        assert item["downloadUrl"] == "https://cdn/pic.png"
+        assert "pictureDownloadCode" not in item
+        assert "downloadCode" not in item
+        assert "download_code" not in item
+
+    @pytest.mark.asyncio
+    async def test_resolved_url_consumed_by_extract_media(self):
+        """The canonical ``downloadUrl`` is what ``_extract_media`` reads —
+        end-to-end: resolve, then extract, and the resolved URL is the one
+        delivered (not any raw code)."""
+        from gateway.platforms.base import MessageType
+
+        a = _resolver_adapter({"dl_std": "https://cdn/std.png"})
+        item = {
+            "type": "picture",
+            "downloadCode": "dl_std",
+            "pictureDownloadCode": "dl_pic",
+        }
+        msg = _richtext_msg([item])
+        await a._resolve_media_codes(msg)
+        msg_type, urls, mtypes = a._extract_media(msg)
+
+        assert urls == ["https://cdn/std.png"]
+        assert msg_type == MessageType.PHOTO
+        assert mtypes == ["image"]
+
+    @pytest.mark.asyncio
+    async def test_image_msgtype_resolves_in_place(self):
+        """Plain image message (msgtype='image') uses the single-code
+        extension path — existing behavior, code resolved onto
+        ``downloadCode`` in place (#77633 scope: rich-text ordering only)."""
+        a = _resolver_adapter({"dl_img": "https://cdn/img.png"})
+        ext_content = {"downloadCode": "dl_img", "fileName": "shot.png"}
+        msg = SimpleNamespace(
+            robot_code=None,
+            image_content=None,
+            rich_text_content=None,
+            message_type="image",
+            extensions={"content": ext_content},
+        )
+        await a._resolve_media_codes(msg)
+
+        assert ext_content["downloadCode"] == "https://cdn/img.png"
+
 
 
 class TestMessageContextIsolation:

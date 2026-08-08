@@ -860,7 +860,7 @@ _clamp_telegram_names = _clamp_command_names
 
 def _collect_gateway_skill_entries(
     platform: str,
-    max_slots: int,
+    max_slots: int | None,
     reserved_names: set[str],
     desc_limit: int = 100,
     sanitize_name: "Callable[[str], str] | None" = None,
@@ -879,7 +879,8 @@ def _collect_gateway_skill_entries(
         platform: Platform identifier for per-platform skill filtering
             (``"telegram"``, ``"discord"``, etc.).
         max_slots: Maximum number of entries to return (remaining slots after
-            built-in/core commands).
+            built-in/core commands), or ``None`` to collect all eligible
+            entries before a caller applies cross-tier prioritization.
         reserved_names: Names already taken by built-in commands.  Mutated
             in-place as new names are added.
         desc_limit: Max description length (40 for Telegram, 100 for Discord).
@@ -970,13 +971,24 @@ def _collect_gateway_skill_entries(
     # any clamp-induced renames.
     skill_triples = _clamp_command_names(skill_triples, reserved_names)
 
-    # Skills fill remaining slots — only tier that gets trimmed
-    remaining = max(0, max_slots - len(all_entries))
-    hidden_count = max(0, len(skill_triples) - remaining)
+    # Skills fill remaining slots — only tier that gets trimmed. Telegram
+    # passes ``None`` so configured priorities can be applied across core,
+    # plugin, and skill entries before the final Bot API cap is enforced.
+    remaining = (
+        len(skill_triples)
+        if max_slots is None
+        else max(0, max_slots - len(all_entries))
+    )
+    hidden_count = (
+        0 if max_slots is None else max(0, len(skill_triples) - remaining)
+    )
     for n, d, k in skill_triples[:remaining]:
         all_entries.append((n, d, k))
 
-    return all_entries[:max_slots], hidden_count
+    return (
+        all_entries if max_slots is None else all_entries[:max_slots],
+        hidden_count,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -986,12 +998,13 @@ def _collect_gateway_skill_entries(
 def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str]], int]:
     """Return Telegram menu commands capped to the Bot API limit.
 
-    Priority order (higher priority = never bumped by overflow):
-      1. Core CommandDef commands (always included)
-      2. Plugin slash commands (take precedence over skills)
-      3. Built-in skill commands (fill remaining slots, alphabetical)
+    Every eligible core, plugin, and built-in skill command is collected before
+    the configured/default Telegram priority order is applied across tiers.
+    The final cap is enforced only after that global ordering, so an explicitly
+    prioritized plugin or skill may displace an unprioritized core command.
+    Commands absent from the effective priority list retain their original
+    tier order: core commands, then plugins, then alphabetical built-in skills.
 
-    Skills are the only tier that gets trimmed when the cap is hit.
     User-installed hub skills are excluded — accessible via /skills.
     Skills disabled for the ``"telegram"`` platform (via ``hermes skills
     config``) are excluded from the menu entirely.
@@ -1000,22 +1013,26 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
         (menu_commands, hidden_count) where hidden_count is the number of
         commands omitted due to the cap.
     """
-    core_commands = _prioritize_telegram_menu_commands(list(telegram_bot_commands()))
+    core_commands = list(telegram_bot_commands())
     reserved_names = {n for n, _ in core_commands}
     all_commands = list(core_commands)
-    hidden_core_count = max(0, len(all_commands) - max_commands)
 
-    remaining_slots = max(0, max_commands - len(all_commands))
-    entries, hidden_count = _collect_gateway_skill_entries(
+    # Collect every eligible plugin/skill before trimming. Previously skills
+    # were cut alphabetically to the leftover slots first, so an explicitly
+    # configured late-sorting priority such as ``webui`` could never reach
+    # the subsequent priority pass.
+    entries, _ = _collect_gateway_skill_entries(
         platform="telegram",
-        max_slots=remaining_slots,
+        max_slots=None,
         reserved_names=reserved_names,
         desc_limit=40,
         sanitize_name=_sanitize_telegram_name,
     )
     # Drop the cmd_key — Telegram only needs (name, desc) pairs.
     all_commands.extend((n, d) for n, d, _k in entries)
-    return all_commands[:max_commands], hidden_count + hidden_core_count
+    all_commands = _prioritize_telegram_menu_commands(all_commands)
+    hidden_count = max(0, len(all_commands) - max_commands)
+    return all_commands[:max_commands], hidden_count
 
 
 def discord_skill_commands(

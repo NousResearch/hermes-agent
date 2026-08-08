@@ -636,6 +636,114 @@ class TestTelegramMenuCommands:
 
 
 
+    def test_configured_priority_skill_survives_cap_and_is_prepended(
+        self, tmp_path, monkeypatch
+    ):
+        """Configured skill priorities must apply before skill-menu trimming.
+
+        Regression: priorities were applied only to core commands, while
+        skills were alphabetically trimmed to the remaining slots first. A
+        late-sorting skill such as ``webui`` could therefore never reach the
+        menu even when explicitly configured with ``priority_mode: prepend``.
+        """
+        from unittest.mock import patch
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        priority_mode: prepend\n"
+            "        priority:\n"
+            "          - webui\n"
+        )
+        fake_cmds = {
+            "/alpha": {
+                "name": "alpha",
+                "description": "Alphabetically first skill",
+                "skill_md_path": f"{skills_dir}/alpha/SKILL.md",
+                "skill_dir": f"{skills_dir}/alpha",
+            },
+            "/webui": {
+                "name": "webui",
+                "description": "Owner WebUI",
+                "skill_md_path": f"{skills_dir}/webui/SKILL.md",
+                "skill_dir": f"{skills_dir}/webui",
+            },
+        }
+
+        with (
+            patch(
+                "hermes_cli.commands.telegram_bot_commands",
+                return_value=[("help", "Help"), ("new", "New")],
+            ),
+            patch("hermes_cli.plugins.get_plugin_commands", return_value={}),
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", skills_dir),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+        ):
+            menu, hidden = telegram_menu_commands(max_commands=3)
+
+        assert [name for name, _ in menu] == ["webui", "help", "new"]
+        assert hidden == 1
+
+    def test_configured_priority_plugin_applies_across_tiers_before_cap(
+        self, tmp_path, monkeypatch
+    ):
+        """A configured plugin priority can displace an unprioritized tier."""
+        from unittest.mock import patch
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        priority_mode: prepend\n"
+            "        priority:\n"
+            "          - priority_plugin\n"
+        )
+        fake_skills = {
+            "/alpha": {
+                "name": "alpha",
+                "description": "Alphabetically first skill",
+                "skill_md_path": f"{skills_dir}/alpha/SKILL.md",
+                "skill_dir": f"{skills_dir}/alpha",
+            },
+        }
+        fake_plugins = {
+            "priority_plugin": {
+                "description": "Prioritized plugin command",
+                "args_hint": "",
+            },
+        }
+
+        with (
+            patch(
+                "hermes_cli.commands.telegram_bot_commands",
+                return_value=[("help", "Help"), ("new", "New")],
+            ),
+            patch(
+                "hermes_cli.plugins.get_plugin_commands",
+                return_value=fake_plugins,
+            ),
+            patch(
+                "agent.skill_commands.get_skill_commands",
+                return_value=fake_skills,
+            ),
+            patch("tools.skills_tool.SKILLS_DIR", skills_dir),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+        ):
+            menu, hidden = telegram_menu_commands(max_commands=3)
+
+        assert [name for name, _ in menu] == ["priority_plugin", "help", "new"]
+        assert hidden == 1
+
     def test_external_dir_skills_included_in_telegram_menu(self, tmp_path, monkeypatch):
         """External skills (``skills.external_dirs``) must appear in the Telegram menu.
 

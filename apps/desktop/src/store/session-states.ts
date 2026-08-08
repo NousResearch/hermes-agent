@@ -32,12 +32,8 @@ import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
-import {
-  $activeSessionId,
-  $selectedStoredSessionId,
-  $unreadFinishedSessionIds,
-  setActiveSessionStoredIdRotation
-} from './session'
+import { $activeSessionId, $selectedStoredSessionId, setActiveSessionStoredIdRotation } from './session'
+import { markSessionUnreadFinished } from './session-unread'
 import { isSecondaryWindow } from './windows'
 
 // ---------------------------------------------------------------------------
@@ -173,11 +169,9 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     markSettled(storedId)
 
     if (storedId !== $selectedStoredSessionId.get()) {
-      const cur = $unreadFinishedSessionIds.get()
-
-      if (!cur.includes(storedId)) {
-        $unreadFinishedSessionIds.set([...cur, storedId])
-      }
+      // Flags the transient atom AND persists a marker, so the green dot
+      // survives an app restart (see session-unread.ts).
+      markSessionUnreadFinished(storedId)
     }
   }
 }

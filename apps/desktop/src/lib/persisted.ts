@@ -72,7 +72,26 @@ export function persistentAtom<T>(key: string, fallback: T, codec: Codec<T> = Co
 
   const $value = atom<T>(initial)
 
-  $value.subscribe(value => writeKey(key, codec.encode(value)))
+  // Persist CHANGES only — never the creation-time value. nanostores'
+  // subscribe fires immediately, and writing what was just read back is a
+  // no-op at best; at worst it is a data-loss clobber: on a cold boot the
+  // renderer bundle can run against a storage snapshot that has not caught
+  // up yet (an early hidden/boot load of the same bundle sees an empty
+  // area), and echoing the fallback back out overwrites the real record
+  // other loads are about to read. Observed with the unread-dot records:
+  // the early load wrote `{}` over a populated store between the disk read
+  // and the main window's module init.
+  let creationEmission = true
+
+  $value.subscribe(value => {
+    if (creationEmission) {
+      creationEmission = false
+
+      return
+    }
+
+    writeKey(key, codec.encode(value))
+  })
 
   return $value
 }

@@ -35,6 +35,7 @@ def _force_local_terminal(monkeypatch):
 import sys
 import threading
 import unittest
+from typing import cast
 from unittest.mock import patch, MagicMock
 
 from tools.code_execution_tool import (
@@ -46,6 +47,11 @@ from tools.code_execution_tool import (
     EXECUTE_CODE_SCHEMA,
     _TOOL_DOC_LINES,
     _execute_remote,
+    _env_temp_dir,
+    _get_or_create_env,
+    _rpc_server_loop,
+    _scrub_child_env,
+    _ship_file_to_remote,
 )
 
 
@@ -194,6 +200,260 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         # shlex.quote wraps values containing special characters in single quotes
         self.assertIn("TZ='US/Eastern; echo PWNED'", run_cmd,
                       "TZ value must be wrapped in single quotes by shlex.quote()")
+
+
+class TestExecuteCodeHelpers(unittest.TestCase):
+    def test_scrub_child_env_applies_secret_and_allowlist_rules(self):
+        source = {
+            "CUSTOM_ALLOWED": "yes",
+            "API_TOKEN": "secret",
+            "PATH": "/bin",
+            "HERMES_HOME": "/tmp/hermes",
+            "HERMES_KANBAN_DB": "/tmp/kanban.db",
+            "SystemRoot": "C:\\Windows",
+        }
+
+        scrubbed = _scrub_child_env(
+            source,
+            is_passthrough=lambda name: name == "CUSTOM_ALLOWED",
+            is_windows=True,
+        )
+
+        self.assertEqual(scrubbed["CUSTOM_ALLOWED"], "yes")
+        self.assertEqual(scrubbed["PATH"], "/bin")
+        self.assertEqual(scrubbed["HERMES_HOME"], "/tmp/hermes")
+        self.assertEqual(scrubbed["SystemRoot"], "C:\\Windows")
+        self.assertNotIn("API_TOKEN", scrubbed)
+        self.assertNotIn("HERMES_KANBAN_DB", scrubbed)
+
+    def test_ship_file_to_remote_writes_base64_payload_to_quoted_path(self):
+        class FakeEnv:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, command, cwd=None, timeout=None):
+                self.calls.append((command, cwd, timeout))
+
+        env = FakeEnv()
+
+        _ship_file_to_remote(env, "/tmp/space dir/script.py", "print('hello')\n")
+
+        command, cwd, timeout = env.calls[0]
+        self.assertIn("base64 -d", command)
+        self.assertIn("> '/tmp/space dir/script.py'", command)
+        self.assertEqual(cwd, "/")
+        self.assertEqual(timeout, 30)
+
+    def test_env_temp_dir_uses_backend_temp_dir_when_absolute(self):
+        env = MagicMock()
+        env.get_temp_dir.return_value = "/remote/tmp/"
+
+        self.assertEqual(_env_temp_dir(env), "/remote/tmp")
+
+    def test_env_temp_dir_falls_back_when_backend_raises(self):
+        env = MagicMock()
+        env.get_temp_dir.side_effect = RuntimeError("no temp")
+
+        self.assertTrue(_env_temp_dir(env).startswith("/"))
+
+    def test_get_or_create_env_reuses_active_terminal_environment(self):
+        import tools.terminal_tool as terminal_tool
+
+        env = object()
+        old_active = dict(terminal_tool._active_environments)
+        old_last = dict(terminal_tool._last_activity)
+        old_overrides = dict(terminal_tool._task_env_overrides)
+        try:
+            terminal_tool._active_environments.clear()
+            terminal_tool._last_activity.clear()
+            terminal_tool._task_env_overrides.clear()
+            terminal_tool._active_environments["default"] = env
+
+            with patch(
+                "tools.terminal_tool._get_env_config",
+                return_value={"env_type": "local", "cwd": "/repo"},
+            ):
+                resolved_env, env_type = _get_or_create_env("task-1")
+
+            self.assertIs(resolved_env, env)
+            self.assertEqual(env_type, "local")
+            self.assertIn("default", terminal_tool._last_activity)
+        finally:
+            terminal_tool._active_environments.clear()
+            terminal_tool._active_environments.update(old_active)
+            terminal_tool._last_activity.clear()
+            terminal_tool._last_activity.update(old_last)
+            terminal_tool._task_env_overrides.clear()
+            terminal_tool._task_env_overrides.update(old_overrides)
+
+    def test_get_or_create_env_creates_local_environment_with_config(self):
+        import tools.terminal_tool as terminal_tool
+
+        created_env = object()
+        captured = {}
+        old_active = dict(terminal_tool._active_environments)
+        old_last = dict(terminal_tool._last_activity)
+        old_creation = dict(terminal_tool._creation_locks)
+        old_overrides = dict(terminal_tool._task_env_overrides)
+
+        def fake_create_environment(**kwargs):
+            captured.update(kwargs)
+            return created_env
+
+        config = {
+            "env_type": "local",
+            "cwd": "/repo",
+            "timeout": 12,
+            "local_persistent": True,
+            "host_cwd": "/host/repo",
+        }
+
+        try:
+            terminal_tool._active_environments.clear()
+            terminal_tool._last_activity.clear()
+            terminal_tool._creation_locks.clear()
+            terminal_tool._task_env_overrides.clear()
+
+            with (
+                patch("tools.terminal_tool._get_env_config", return_value=config),
+                patch(
+                    "tools.terminal_tool._create_environment",
+                    side_effect=fake_create_environment,
+                ),
+                patch("tools.terminal_tool._start_cleanup_thread") as start_cleanup,
+            ):
+                resolved_env, env_type = _get_or_create_env("task-2")
+
+            self.assertIs(resolved_env, created_env)
+            self.assertEqual(env_type, "local")
+            self.assertEqual(captured["env_type"], "local")
+            self.assertEqual(captured["image"], "")
+            self.assertEqual(captured["cwd"], "/repo")
+            self.assertEqual(captured["timeout"], 12)
+            self.assertEqual(captured["local_config"], {"persistent": True})
+            self.assertEqual(captured["host_cwd"], "/host/repo")
+            self.assertIsNone(captured["container_config"])
+            self.assertIn("default", terminal_tool._active_environments)
+            start_cleanup.assert_called_once()
+        finally:
+            terminal_tool._active_environments.clear()
+            terminal_tool._active_environments.update(old_active)
+            terminal_tool._last_activity.clear()
+            terminal_tool._last_activity.update(old_last)
+            terminal_tool._creation_locks.clear()
+            terminal_tool._creation_locks.update(old_creation)
+            terminal_tool._task_env_overrides.clear()
+            terminal_tool._task_env_overrides.update(old_overrides)
+
+
+class TestRpcServerLoop(unittest.TestCase):
+    RPC_TOKEN = "test-rpc-token"
+
+    def _run_rpc(
+        self, payloads, *, allowed_tools=frozenset({"terminal"}), max_tool_calls=5
+    ):
+        parent, child = socket.socketpair()
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        stop_event = threading.Event()
+        tool_call_log = []
+        tool_call_counter = [0]
+
+        class FakeServerSock:
+            def settimeout(self, timeout):
+                pass
+
+            def accept(self):
+                return parent, None
+
+        try:
+            child.sendall(b"".join(payloads))
+            child.shutdown(socket.SHUT_WR)
+            _rpc_server_loop(
+                cast(socket.socket, FakeServerSock()),
+                "task-123",
+                tool_call_log,
+                tool_call_counter,
+                max_tool_calls,
+                allowed_tools,
+                stop_event,
+                self.RPC_TOKEN,
+            )
+            chunks = []
+            while True:
+                data = child.recv(65536)
+                if not data:
+                    break
+                chunks.append(data)
+            responses = [
+                json.loads(line)
+                for line in b"".join(chunks).decode().splitlines()
+                if line.strip()
+            ]
+            return responses, tool_call_log, tool_call_counter[0]
+        finally:
+            child.close()
+            server_sock.close()
+
+    def test_rpc_server_rejects_invalid_json_and_disallowed_tool(self):
+        responses, tool_call_log, count = self._run_rpc([
+            b"not-json\n",
+            json.dumps({
+                "tool": "read_file",
+                "args": {"path": "x"},
+                "token": self.RPC_TOKEN,
+            }).encode()
+            + b"\n",
+        ])
+
+        self.assertIn("Invalid RPC request", responses[0]["error"])
+        self.assertIn("not available", responses[1]["error"])
+        self.assertEqual(tool_call_log, [])
+        self.assertEqual(count, 0)
+
+    def test_rpc_server_enforces_tool_call_limit_before_dispatch(self):
+        responses, tool_call_log, count = self._run_rpc(
+            [
+                json.dumps({
+                    "tool": "terminal",
+                    "args": {"command": "echo hi"},
+                    "token": self.RPC_TOKEN,
+                }).encode()
+                + b"\n",
+            ],
+            max_tool_calls=0,
+        )
+
+        self.assertIn("Tool call limit reached", responses[0]["error"])
+        self.assertEqual(tool_call_log, [])
+        self.assertEqual(count, 0)
+
+    def test_rpc_server_strips_blocked_terminal_args_before_dispatch(self):
+        captured = {}
+
+        def fake_handle(tool_name, tool_args, task_id=None):
+            captured.update(tool_args)
+            return json.dumps({"ok": True, "task_id": task_id})
+
+        with patch("model_tools.handle_function_call", side_effect=fake_handle):
+            responses, tool_call_log, count = self._run_rpc([
+                json.dumps({
+                    "tool": "terminal",
+                    "args": {
+                        "command": "echo hi",
+                        "background": True,
+                        "pty": True,
+                        "notify_on_complete": True,
+                        "watch_patterns": ["done"],
+                    },
+                    "token": self.RPC_TOKEN,
+                }).encode()
+                + b"\n",
+            ])
+
+        self.assertEqual(responses, [{"ok": True, "task_id": "task-123"}])
+        self.assertEqual(captured, {"command": "echo hi"})
+        self.assertEqual(tool_call_log[0]["tool"], "terminal")
+        self.assertEqual(count, 1)
 
 
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")

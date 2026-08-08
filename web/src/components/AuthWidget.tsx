@@ -13,6 +13,9 @@
  *     defaults to the bare provider key)
  *   - a logout button that POSTs /auth/logout and full-page-navigates to
  *     /login (the dashboard becomes inaccessible again)
+ *   - a "sign out all devices" button that POSTs /api/auth/revoke
+ *     ({"all": true}) — the server-side kill switch added for #76706 —
+ *     and full-page-navigates to /login once every session is revoked
  *
  * Failure modes:
  *   - 401 from /api/auth/me means we're not gated (or the gate is on but
@@ -26,7 +29,8 @@
 import { useEffect, useState } from "react";
 import { api, type AuthMeResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { LogOut } from "lucide-react";
+import { LogOut, ShieldOff } from "lucide-react";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 interface AuthWidgetProps {
   className?: string;
@@ -44,6 +48,9 @@ export function AuthWidget({ className }: AuthWidgetProps) {
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [hidden, setHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmRevokeAll, setConfirmRevokeAll] = useState(false);
+  const [revoking, setRevoking] = useState(false);
+  const [revokeError, setRevokeError] = useState<string | null>(null);
 
   // Loopback / --insecure mode: the auth gate is off, so /api/auth/me is a
   // guaranteed 401. Don't fire the request at all — it only produces console
@@ -117,6 +124,22 @@ export function AuthWidget({ className }: AuthWidgetProps) {
     void api.logout();
   };
 
+  const handleRevokeAll = async () => {
+    setRevoking(true);
+    setRevokeError(null);
+    try {
+      await api.revokeAllSessions();
+      // Every session — including this one — is revoked server-side and the
+      // endpoint cleared our cookies. Land on the login page instead of
+      // riding a doomed cookie until the next 401.
+      window.location.assign("/login");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setRevokeError(msg);
+      setRevoking(false);
+    }
+  };
+
   // Prefer display_name → email → truncated user_id. Contract V1 only
   // populates user_id; the fallthroughs are forward-compat for a future
   // Portal that adds a userinfo endpoint (OQ-C1 in the plan).
@@ -141,20 +164,50 @@ export function AuthWidget({ className }: AuthWidgetProps) {
         <span className="truncate text-muted-foreground/70">
           via {me.provider}
         </span>
-      </div>
-      <button
-        type="button"
-        onClick={handleLogout}
-        className={cn(
-          "shrink-0 rounded p-1.5 text-muted-foreground/70",
-          "transition-colors hover:bg-current/10 hover:text-foreground",
-          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current/40",
+        {revokeError && (
+          <span className="truncate text-[0.6rem] text-destructive" title={revokeError}>
+            revoke failed
+          </span>
         )}
-        aria-label="Log out"
-        title="Log out"
-      >
-        <LogOut className="h-3.5 w-3.5" />
-      </button>
+      </div>
+      <div className="flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          onClick={() => setConfirmRevokeAll(true)}
+          className={cn(
+            "shrink-0 rounded p-1.5 text-muted-foreground/70",
+            "transition-colors hover:bg-current/10 hover:text-foreground",
+            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current/40",
+          )}
+          aria-label="Sign out all devices"
+          title="Sign out all devices"
+        >
+          <ShieldOff className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={handleLogout}
+          className={cn(
+            "shrink-0 rounded p-1.5 text-muted-foreground/70",
+            "transition-colors hover:bg-current/10 hover:text-foreground",
+            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current/40",
+          )}
+          aria-label="Log out"
+          title="Log out"
+        >
+          <LogOut className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <ConfirmDialog
+        open={confirmRevokeAll}
+        title="Sign out all devices?"
+        description="This revokes every dashboard session, including this one. You will need to sign in again on every device."
+        confirmLabel="Sign out all devices"
+        destructive
+        loading={revoking}
+        onCancel={() => setConfirmRevokeAll(false)}
+        onConfirm={() => void handleRevokeAll()}
+      />
     </div>
   );
 }

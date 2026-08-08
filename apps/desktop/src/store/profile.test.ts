@@ -19,8 +19,17 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
-const { $activeGatewayProfile, $profiles, ensureGatewayProfile, prewarmProfileBackend, refreshProfiles } =
-  await import('./profile')
+const {
+  $activeGatewayProfile,
+  $newChatProfile,
+  $profileNavigationRequest,
+  $profiles,
+  $showAllProfiles,
+  ensureGatewayProfile,
+  prewarmProfileBackend,
+  refreshProfiles,
+  selectProfile
+} = await import('./profile')
 
 const { $connection } = await import('./session')
 const { invalidateProfileScopedQueries } = await import('@/lib/query-client')
@@ -52,6 +61,9 @@ beforeEach(() => {
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
   $profiles.set([])
+  $newChatProfile.set(null)
+  $profileNavigationRequest.set(null)
+  $showAllProfiles.set(false)
   vi.stubGlobal('window', { hermesDesktop: { getConnection } })
   vi.mocked(invalidateProfileScopedQueries).mockClear()
   resetStarmapGraph.mockClear()
@@ -116,6 +128,36 @@ describe('profile-scoped cache invalidation', () => {
 
     expect(invalidateProfileScopedQueries).toHaveBeenCalled()
     expect(resetStarmapGraph).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('selectProfile navigation restore', () => {
+  it('requests the target profile restore instead of a fresh draft', () => {
+    selectProfile('coder')
+
+    expect($newChatProfile.get()).toBe('coder')
+    expect($profileNavigationRequest.get()).toMatchObject({ profile: 'coder', sequence: 1 })
+  })
+
+  it('restores when leaving the all-profiles view for the active profile', () => {
+    $showAllProfiles.set(true)
+
+    selectProfile('default')
+
+    expect($profileNavigationRequest.get()).toMatchObject({ profile: 'default', sequence: 1 })
+  })
+
+  it('coalesces rapid switches to the latest target', () => {
+    selectProfile('coder')
+    selectProfile('research')
+
+    expect($profileNavigationRequest.get()).toMatchObject({ profile: 'research', sequence: 2 })
+  })
+
+  it('does not request navigation when the active profile is selected again', () => {
+    selectProfile('default')
+
+    expect($profileNavigationRequest.get()).toBeNull()
   })
 })
 

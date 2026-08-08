@@ -40,6 +40,7 @@ import { $previewTarget } from '@/store/preview'
 import {
   $activeGatewayProfile,
   $freshSessionRequest,
+  $profileNavigationRequest,
   $profileScope,
   ensureGatewayProfile,
   newSessionInProfile,
@@ -59,6 +60,8 @@ import {
   $resumeFailedSessionId,
   $selectedStoredSessionId,
   $sessions,
+  getRememberedRoute,
+  getRememberedSessionId,
   sessionMatchesStoredId,
   sessionPinId,
   setAwaitingResponse,
@@ -87,8 +90,11 @@ import { resetProjectTreeState } from '../right-sidebar/files/use-project-tree'
 import { PersistentTerminal } from '../right-sidebar/terminal/persistent'
 import { closeAllTerminals } from '../right-sidebar/terminal/terminals'
 import {
+  appViewForPath,
   CRON_ROUTE,
+  isOverlayView,
   navigateToWorkspacePage,
+  NEW_CHAT_ROUTE,
   routeSessionId,
   sessionRoute,
   SETTINGS_ROUTE,
@@ -479,6 +485,39 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     lastFreshRef.current = freshSessionRequest
     startFreshSessionDraft()
   }, [freshSessionRequest, startFreshSessionDraft])
+
+  // A profile switch is a workspace restore, not a new-chat action. Wait until
+  // the target gateway is active, clear the old live view without changing its
+  // route, then restore the target profile's last non-overlay route. This keeps
+  // the existing per-profile persistence used by cold-start restore and makes
+  // rapid profile switches settle on the latest target.
+  const profileNavigationRequest = useStore($profileNavigationRequest)
+  const lastProfileNavigationRequestRef = useRef(profileNavigationRequest?.sequence ?? 0)
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    if (
+      !profileNavigationRequest ||
+      profileNavigationRequest.sequence === lastProfileNavigationRequestRef.current ||
+      normalizeProfileKey(activeGatewayProfile) !== profileNavigationRequest.profile
+    ) {
+      return
+    }
+
+    lastProfileNavigationRequestRef.current = profileNavigationRequest.sequence
+    startFreshSessionDraft({ preserveRoute: true })
+
+    const rememberedRoute = getRememberedRoute(profileNavigationRequest.profile)
+
+    if (rememberedRoute && rememberedRoute !== NEW_CHAT_ROUTE && !isOverlayView(appViewForPath(rememberedRoute))) {
+      navigate(rememberedRoute, { replace: true })
+
+      return
+    }
+
+    const rememberedSessionId = getRememberedSessionId(profileNavigationRequest.profile)
+    navigate(rememberedSessionId ? sessionRoute(rememberedSessionId) : NEW_CHAT_ROUTE, { replace: true })
+  }, [activeGatewayProfile, navigate, profileNavigationRequest, startFreshSessionDraft])
 
   // Swapping the live gateway to another profile must re-pull that profile's
   // global model + active-profile pill (both are nanostores — the blanket

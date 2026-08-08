@@ -154,14 +154,34 @@ export const $activeGatewayProfile = atom<string>('default')
 // / default, so single-profile users are unaffected.
 export const $newChatProfile = atom<string | null>(null)
 
-// Bumped whenever the open session should be dropped for a fresh new-session
-// draft: a profile switch/create (below), or deleting the project that owns the
-// currently-open session (store/projects). The chat controller subscribes and
+// Bumped whenever an explicit action must drop the open session for a fresh
+// new-session draft: creating a session from a profile, or deleting the project
+// that owns the currently-open session. The chat controller subscribes and
 // resets to the intro draft, so we never strand the user in an orphaned view.
 export const $freshSessionRequest = atom(0)
 
 export function requestFreshSession(): void {
   $freshSessionRequest.set($freshSessionRequest.get() + 1)
+}
+
+// A profile switch is different from an explicit new-session action. The
+// consumer clears the old live view, then restores the target profile's last
+// route or session. The sequence makes rapid A → B → C switches coalesce to the
+// latest target without replaying an older restore.
+export interface ProfileNavigationRequest {
+  profile: string
+  sequence: number
+}
+
+export const $profileNavigationRequest = atom<ProfileNavigationRequest | null>(null)
+
+export function requestProfileNavigationRestore(profile: string): void {
+  const current = $profileNavigationRequest.get()
+
+  $profileNavigationRequest.set({
+    profile: normalizeProfileKey(profile),
+    sequence: (current?.sequence ?? 0) + 1
+  })
 }
 
 // Route profile-scoped REST settings (config/env/skills/tools/model/…) to the
@@ -335,14 +355,15 @@ export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile],
 // $activeGatewayProfile → name, so $profileScope follows).
 export function selectProfile(name: string): void {
   const target = normalizeProfileKey(name)
-  // Switching profiles (or coming back from the all-profiles browse view) starts
-  // fresh; re-tapping the profile you're already in leaves your session be.
+  // Switching profiles (or coming back from the all-profiles browse view)
+  // restores that profile's last route/session; re-tapping the profile you're
+  // already in leaves your session be.
   const switching = $showAllProfiles.get() || target !== normalizeProfileKey($activeGatewayProfile.get())
   $showAllProfiles.set(false)
   $newChatProfile.set(target)
 
   if (switching) {
-    requestFreshSession()
+    requestProfileNavigationRestore(target)
   }
 
   void ensureGatewayProfile(target)

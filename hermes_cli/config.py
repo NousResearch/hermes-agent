@@ -457,7 +457,9 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     # 1. Code-scoped stamp — authoritative, immune to shared $HERMES_HOME.
     try:
         method = (root / ".install_method").read_text(encoding="utf-8").strip().lower()
-        if method in supported_methods:
+        if method in supported_methods and not (
+            method == "docker" and not _running_in_container()
+        ):
             return method
     except OSError:
         pass

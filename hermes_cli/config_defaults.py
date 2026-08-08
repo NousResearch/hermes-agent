@@ -1444,6 +1444,9 @@ DEFAULT_CONFIG = {
         # falls through to request reconstruction rather than breaking
         # the login flow.
         "public_url": "",
+        # Tailscale-User-Login values accepted through Tailscale Serve identity
+        # authentication. Empty keeps this opt-in path disabled (fail closed).
+        "tailscale_allowlist": [],
     },
 
     # Privacy settings

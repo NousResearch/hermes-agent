@@ -374,7 +374,7 @@ def register(ctx):
 
 ### 已发布的 plugin-hook 目录
 
-下表列出每个 call site 实际传入的字段。
+下表列出每个 call site 实际传入的事件专属字段。为保持向后兼容，`PluginManager` 还会向每个 plugin-hook 回调加入 `telemetry_schema_version="hermes.observer.v1"`。这个旧版 envelope 标记并不表示所有 hook payload 共用同一套语义 schema；新的版本化 contract 应归属于具体事件或 capability family。
 
 | Hook | 类别 | 精确时机与返回行为 | 显式 payload 字段 | 隐私/敏感性 |
 |---|---|---|---|---|

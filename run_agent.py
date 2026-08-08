@@ -3424,6 +3424,7 @@ class AIAgent:
         args: Dict[str, Any],
         result: Any,
         is_error: bool,
+        execution_cwd: Optional[Path] = None,
     ) -> None:
         """Record a ``write_file`` / ``patch`` outcome for the turn-end verifier.
 
@@ -3432,20 +3433,25 @@ class AIAgent:
         model recovered within the turn).  Silently no-ops if the per-turn
         state dict hasn't been initialised yet (e.g. a tool dispatched
         outside ``run_conversation``).
+
+        *execution_cwd* (the working directory the tool actually ran in) is
+        threaded into the target extractors so repo-relative paths are
+        canonicalised against the worktree rather than the process cwd
+        (#81650).
         """
         if tool_name not in _FILE_MUTATING_TOOLS:
             return
         state = getattr(self, "_turn_failed_file_mutations", None)
         if state is None:
             return
-        targets = _extract_file_mutation_targets(tool_name, args)
+        targets = _extract_file_mutation_targets(tool_name, args, execution_cwd)
         if not targets:
             return
         landed = file_mutation_result_landed(tool_name, result)
         if landed:
             changed = getattr(self, "_turn_file_mutation_paths", None)
             if changed is not None:
-                changed.update(_extract_landed_file_mutation_paths(tool_name, args, result))
+                changed.update(_extract_landed_file_mutation_paths(tool_name, args, result, execution_cwd))
         if is_error and not landed:
             preview = _extract_error_preview(result)
             for path in targets:

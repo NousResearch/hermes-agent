@@ -285,7 +285,7 @@ def _extract_parallel_scope_paths(
 
     raw_paths: List[str] = []
     if tool_name == "patch" and (function_args.get("mode") or "replace") == "patch":
-        raw_paths.extend(_extract_file_mutation_targets(tool_name, function_args))
+        raw_paths.extend(_extract_file_mutation_targets(tool_name, function_args, execution_cwd))
     else:
         raw_path = function_args.get("path")
         if isinstance(raw_path, str) and raw_path.strip():
@@ -405,61 +405,79 @@ def _append_subdir_hint_to_multimodal(value: Dict[str, Any], hint: str) -> None:
         value["text_summary"] = value["text_summary"] + hint
 
 
-def _extract_file_mutation_targets(tool_name: str, args: Dict[str, Any]) -> List[str]:
+def _extract_file_mutation_targets(
+    tool_name: str,
+    args: Dict[str, Any],
+    execution_cwd: Optional[Path] = None,
+) -> List[str]:
     """Return the file paths a ``write_file`` or ``patch`` call is targeting.
 
     For ``write_file`` and ``patch`` in replace mode this is just ``args["path"]``.
     For ``patch`` in V4A patch mode we parse the patch content for
     ``*** Update File:`` / ``*** Add File:`` / ``*** Delete File:`` headers so
     the verifier can track each file in a multi-file patch separately.
+
+    When *execution_cwd* is supplied, repo-relative targets are canonicalised
+    against it — the directory the tool actually runs in — instead of the
+    process cwd, which differs when the agent runs inside a linked git
+    worktree (#81650). Without *execution_cwd* the raw paths are returned
+    unchanged, preserving the historical behaviour.
     """
     if tool_name not in _FILE_MUTATING_TOOLS:
         return []
+    paths: List[str] = []
     if tool_name == "write_file":
         p = args.get("path")
-        return [str(p)] if p else []
-    # tool_name == "patch"
-    mode = args.get("mode") or "replace"
-    if mode == "replace":
-        p = args.get("path")
-        return [str(p)] if p else []
-    if mode == "patch":
-        body = args.get("patch") or ""
-        if not isinstance(body, str) or not body:
-            return []
-        paths: List[str] = []
-        # ``\s*`` (not ``\s+``) after ``***`` matches patch_parser / file_tools:
-        # they accept ``***Update File:`` with no space after the asterisks.
-        for _m in re.finditer(
-            r'^\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*(.+)$',
-            body,
-            re.MULTILINE,
-        ):
-            p = _m.group(1).strip()
+        if p:
+            paths.append(str(p))
+    else:  # tool_name == "patch"
+        mode = args.get("mode") or "replace"
+        if mode == "replace":
+            p = args.get("path")
             if p:
-                paths.append(p)
-        for _m in re.finditer(
-            r'^\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)$',
-            body,
-            re.MULTILINE,
-        ):
-            src = _m.group(1).strip()
-            dst = _m.group(2).strip()
-            if src:
-                paths.append(src)
-            if dst:
-                paths.append(dst)
+                paths.append(str(p))
+        elif mode == "patch":
+            body = args.get("patch") or ""
+            if isinstance(body, str) and body:
+                # ``\s*`` (not ``\s+``) after ``***`` matches patch_parser / file_tools:
+                # they accept ``***Update File:`` with no space after the asterisks.
+                for _m in re.finditer(
+                    r'^\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*(.+)$',
+                    body,
+                    re.MULTILINE,
+                ):
+                    p = _m.group(1).strip()
+                    if p:
+                        paths.append(p)
+                for _m in re.finditer(
+                    r'^\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)$',
+                    body,
+                    re.MULTILINE,
+                ):
+                    src = _m.group(1).strip()
+                    dst = _m.group(2).strip()
+                    if src:
+                        paths.append(src)
+                    if dst:
+                        paths.append(dst)
+    if execution_cwd is None:
         return paths
-    return []
+    return [str(_canonical_path(p, execution_cwd)) for p in paths]
 
 
 def _extract_landed_file_mutation_paths(
     tool_name: str,
     args: Dict[str, Any],
     result: Any,
+    execution_cwd: Optional[Path] = None,
 ) -> List[str]:
-    """Return the concrete file paths a successful mutation reports."""
-    targets = _extract_file_mutation_targets(tool_name, args)
+    """Return the concrete file paths a successful mutation reports.
+
+    *execution_cwd* is threaded through to ``_extract_file_mutation_targets``
+    and used to canonicalise repo-relative paths reported by the tool result,
+    mirroring ``_extract_file_mutation_targets`` (#81650).
+    """
+    targets = _extract_file_mutation_targets(tool_name, args, execution_cwd)
     if tool_name not in _FILE_MUTATING_TOOLS or not isinstance(result, str):
         return targets
     try:
@@ -473,11 +491,15 @@ def _extract_landed_file_mutation_paths(
     if isinstance(files, list):
         landed = [str(p) for p in files if p]
         if landed:
-            return landed
+            if execution_cwd is None:
+                return landed
+            return [str(_canonical_path(p, execution_cwd)) for p in landed]
 
     resolved = data.get("resolved_path")
     if resolved:
-        return [str(resolved)]
+        if execution_cwd is None:
+            return [str(resolved)]
+        return [str(_canonical_path(str(resolved), execution_cwd))]
 
     return targets
 

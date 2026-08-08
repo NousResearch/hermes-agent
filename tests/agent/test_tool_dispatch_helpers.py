@@ -8,10 +8,14 @@ NOT a regex scan — it's an unconditional architectural mark on every result
 from a known-untrusted source.
 """
 
+import os
+from pathlib import Path
+
 import pytest
 
 from agent.tool_dispatch_helpers import (
     _extract_file_mutation_targets,
+    _extract_landed_file_mutation_paths,
     _is_untrusted_tool,
     _maybe_wrap_untrusted,
     make_tool_result_message,
@@ -209,3 +213,69 @@ class TestFileMutationTargets:
             },
         )
         assert targets == ["old/name.py", "new/name.py"]
+
+    def test_relative_target_resolves_against_execution_cwd_not_process_cwd(
+        self, tmp_path, monkeypatch
+    ):
+        # Simulate a linked worktree: the process cwd differs from the
+        # directory the tool actually runs in (#81650). A repo-relative
+        # target must resolve against the execution cwd (the worktree),
+        # never against the process cwd.
+        process_cwd = tmp_path / "process"
+        process_cwd.mkdir()
+        worktree = tmp_path / "hermes-agent-pr-252"
+        worktree.mkdir()
+        monkeypatch.chdir(process_cwd)
+
+        targets = _extract_file_mutation_targets(
+            "write_file",
+            {"path": "tests/agent/test_x.py"},
+            execution_cwd=worktree,
+        )
+        assert targets == [os.path.realpath(str(worktree / "tests" / "agent" / "test_x.py"))]
+
+    def test_without_execution_cwd_preserves_raw_relative_target(self, tmp_path, monkeypatch):
+        # Historical behaviour: without an execution cwd the raw paths are
+        # returned unchanged — nothing about path resolution changes.
+        monkeypatch.chdir(tmp_path)
+        targets = _extract_file_mutation_targets(
+            "write_file",
+            {"path": "tests/agent/test_x.py"},
+        )
+        assert targets == ["tests/agent/test_x.py"]
+
+    def test_v4a_patch_headers_resolved_against_execution_cwd(self, tmp_path, monkeypatch):
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        monkeypatch.chdir(tmp_path)
+
+        targets = _extract_file_mutation_targets(
+            "patch",
+            {
+                "mode": "patch",
+                "patch": (
+                    "*** Begin Patch\n"
+                    "*** Update File: tests/agent/test_x.py\n"
+                    "*** Add File: new/module.py\n"
+                    "*** End Patch\n"
+                ),
+            },
+            execution_cwd=worktree,
+        )
+        assert targets == [
+            os.path.realpath(str(worktree / "tests" / "agent" / "test_x.py")),
+            os.path.realpath(str(worktree / "new" / "module.py")),
+        ]
+
+    def test_landed_paths_resolved_against_execution_cwd(self, tmp_path, monkeypatch):
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        monkeypatch.chdir(tmp_path)
+
+        landed = _extract_landed_file_mutation_paths(
+            "patch",
+            {"mode": "replace", "path": "tests/agent/test_x.py"},
+            '{"success": true, "files_modified": ["tests/agent/test_x.py"]}',
+            execution_cwd=worktree,
+        )
+        assert landed == [os.path.realpath(str(worktree / "tests" / "agent" / "test_x.py"))]

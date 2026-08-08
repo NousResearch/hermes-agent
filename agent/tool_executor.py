@@ -1452,8 +1452,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             # block count as either a failure or a success.
             if not blocked:
                 try:
+                    _env = get_active_env(effective_task_id)
+                    _exec_cwd = (
+                        Path(_env.cwd)
+                        if _env is not None and getattr(_env, "cwd", None)
+                        else None
+                    )
                     agent._record_file_mutation_result(
                         function_name, function_args, function_result, is_error,
+                        execution_cwd=_exec_cwd,
                     )
                 except Exception as _ver_err:
                     logging.debug("file-mutation verifier record failed: %s", _ver_err)
@@ -2209,8 +2216,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # turn, not just the parallel ones.
         if not _execution_blocked:
             try:
+                _env = get_active_env(effective_task_id)
+                _exec_cwd = (
+                    Path(_env.cwd)
+                    if _env is not None and getattr(_env, "cwd", None)
+                    else None
+                )
                 agent._record_file_mutation_result(
                     function_name, function_args, function_result, _is_error_result,
+                    execution_cwd=_exec_cwd,
                 )
             except Exception as _ver_err:
                 logging.debug("file-mutation verifier record failed: %s", _ver_err)

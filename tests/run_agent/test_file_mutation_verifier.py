@@ -20,6 +20,7 @@ list of files that did NOT change.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -226,6 +227,66 @@ class TestRecordFileMutationResult:
         # Keep the original error — swapping to the latest would obscure
         # the initial root cause.
         assert "first error" in agent._turn_failed_file_mutations["/tmp/a.md"]["error_preview"]
+
+    def test_failure_recorded_against_execution_cwd(self, tmp_path):
+        """#81650: a repo-relative failure is keyed by its worktree path,
+        not by a path resolved against the process cwd."""
+        agent = _bare_agent()
+        worktree = tmp_path / "hermes-agent-pr-252"
+        worktree.mkdir()
+        agent._record_file_mutation_result(
+            "patch",
+            {
+                "mode": "replace",
+                "path": "tests/agent/test_auxiliary_client.py",
+                "old_string": "x",
+                "new_string": "y",
+            },
+            json.dumps({"success": False, "error": "Could not find old_string"}),
+            is_error=True,
+            execution_cwd=worktree,
+        )
+        expected = os.path.realpath(
+            str(worktree / "tests" / "agent" / "test_auxiliary_client.py")
+        )
+        state = agent._turn_failed_file_mutations
+        assert expected in state
+        assert state[expected]["tool"] == "patch"
+        # The raw relative form must not leak into the per-turn state.
+        assert "tests/agent/test_auxiliary_client.py" not in state
+
+    def test_success_records_landed_path_against_execution_cwd(self, tmp_path):
+        agent = _bare_agent()
+        worktree = tmp_path / "hermes-agent-pr-252"
+        worktree.mkdir()
+        agent._record_file_mutation_result(
+            "patch",
+            {
+                "mode": "replace",
+                "path": "tests/agent/test_auxiliary_client.py",
+                "old_string": "x",
+                "new_string": "y",
+            },
+            json.dumps({"success": True, "diff": "..."}),
+            is_error=False,
+            execution_cwd=worktree,
+        )
+        assert agent._turn_file_mutation_paths == {
+            os.path.realpath(str(worktree / "tests" / "agent" / "test_auxiliary_client.py"))
+        }
+
+    def test_without_execution_cwd_keeps_raw_relative_key(self, tmp_path, monkeypatch):
+        # Historical behaviour preserved: no execution cwd -> raw relative
+        # path stays the state key (same string matches on success).
+        agent = _bare_agent()
+        monkeypatch.chdir(tmp_path)
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": "tests/agent/test_x.py", "old_string": "x", "new_string": "y"},
+            json.dumps({"error": "not found"}),
+            is_error=True,
+        )
+        assert "tests/agent/test_x.py" in agent._turn_failed_file_mutations
 
 
 

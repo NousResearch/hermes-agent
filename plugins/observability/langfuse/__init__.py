@@ -146,6 +146,100 @@ def _validate_langfuse_key(env_name: str, value: str) -> Optional[str]:
     )
 
 
+# Closes #29332.  The prefix check above is purely syntactic — it
+# catches the "operator left the .env template untouched" case but
+# silently passes anything well-shaped like ``pk-lf-fakeKey1234``.
+# Langfuse-issued keys with the right prefix but the wrong secret
+# (typo, revoked credential, copied from the wrong project, etc.)
+# survive prefix validation, survive SDK construction (the SDK does
+# zero network I/O at __init__ time), and then drop every trace at
+# flush time — producing the exact "registers hooks, never emits
+# traces, zero log signal" symptom the reporter saw.  Calling
+# ``Langfuse.auth_check()`` against the configured base URL surfaces
+# the credential rejection so the operator finds out about it BEFORE
+# they assume their observability is working.
+def _run_auth_check(client: Any) -> bool:
+    """Probe credentials against the Langfuse server.
+
+    Returns ``True`` when ``client.auth_check()`` confirms a valid
+    auth, ``False`` when it explicitly rejects the credentials, and
+    ``True`` (i.e. inconclusive — treated as success) when the SDK
+    raises (transient network, attribute-error quirks in older SDK
+    versions like `langfuse-python#7456 <https://github.com/langfuse/
+    langfuse/issues/7456>`_, or the method is missing entirely on
+    legacy SDK builds).  Inconclusive ≠ failure: we don't want a
+    flaky link or an SDK regression to disable observability on
+    operators with valid credentials.
+
+    Side effect: on an explicit ``False`` we replace the cached
+    client with the ``_INIT_FAILED`` sentinel so subsequent hook
+    invocations short-circuit on the existing fast path — no
+    re-warning, no leaked traces queued up for a flush that will
+    never authenticate.
+    """
+    global _LANGFUSE_CLIENT
+
+    auth_check = getattr(client, "auth_check", None)
+    if auth_check is None:
+        _debug("auth_check() not exposed on this SDK version; skipping")
+        return True
+
+    try:
+        result = auth_check()
+    except Exception as exc:
+        # Transient network errors AND the known-buggy AttributeError
+        # in langfuse-python <=3.0.4 land here.  Logging at DEBUG keeps
+        # the operator's terminal quiet for installs that are working
+        # fine but happen to throw during the probe.
+        _debug(f"auth_check() raised: {exc!r}")
+        return True
+
+    if result is False:
+        base_url = (
+            _env("HERMES_LANGFUSE_BASE_URL")
+            or _env("LANGFUSE_BASE_URL")
+            or "https://cloud.langfuse.com"
+        )
+        logger.warning(
+            "Langfuse plugin: server REJECTED the configured credentials "
+            "(auth_check returned False against %s). Traces will NOT be "
+            "ingested. Verify HERMES_LANGFUSE_PUBLIC_KEY and "
+            "HERMES_LANGFUSE_SECRET_KEY are correct for the project at "
+            "this base URL, or unset HERMES_LANGFUSE_PUBLIC_KEY / "
+            "HERMES_LANGFUSE_SECRET_KEY to disable the plugin and "
+            "silence this warning.",
+            base_url,
+        )
+        _LANGFUSE_CLIENT = _INIT_FAILED
+        return False
+
+    _debug("auth_check() OK — credentials accepted by server")
+    return True
+
+
+def _spawn_auth_check_thread(client: Any) -> Optional[threading.Thread]:
+    """Kick off :func:`_run_auth_check` in a daemon thread.
+
+    Returns the thread so tests can ``join`` it deterministically.
+    Lives in its own function so the threading concern stays out of
+    :func:`_get_langfuse` and tests can patch a synchronous variant
+    when they want to assert on the cached-client side effects.
+    """
+    if _env_bool("HERMES_LANGFUSE_SKIP_AUTH_CHECK"):
+        # Escape hatch for offline / restricted-network setups where
+        # the probe would either always-fail or unhelpfully delay the
+        # plugin's first useful trace.
+        return None
+    thread = threading.Thread(
+        target=_run_auth_check,
+        args=(client,),
+        daemon=True,
+        name="langfuse-auth-check",
+    )
+    thread.start()
+    return thread
+
+
 def _get_langfuse() -> Optional[Langfuse]:
     """Return a cached Langfuse client, or ``None`` if unavailable.
 
@@ -223,6 +317,22 @@ def _get_langfuse() -> Optional[Langfuse]:
     except Exception as exc:  # pragma: no cover - fail-open
         logger.warning("Could not initialize Langfuse client: %s", exc)
         _LANGFUSE_CLIENT = _INIT_FAILED
+        return None
+
+    # Probe the server asynchronously so a slow auth round-trip
+    # doesn't block the agent's first turn.  If the server rejects
+    # the credentials, ``_run_auth_check`` flips ``_LANGFUSE_CLIENT``
+    # to ``_INIT_FAILED`` and subsequent hook calls go inert via the
+    # fast-path short-circuit at the top of this function — see
+    # #29332 for the silent-failure mode this closes.
+    _spawn_auth_check_thread(_LANGFUSE_CLIENT)
+
+    # Normalize the rare race where the probe completed synchronously
+    # (e.g. tests using a fake SDK, or an unusually fast localhost
+    # auth endpoint) and already rejected the credentials.  Callers
+    # only ever expect ``Langfuse | None``; the sentinel must stay
+    # inside this module.
+    if _LANGFUSE_CLIENT is _INIT_FAILED:
         return None
 
     return _LANGFUSE_CLIENT

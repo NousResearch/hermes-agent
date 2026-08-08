@@ -40,6 +40,7 @@ from acp_adapter.server import (
     ACP_MAX_MODELS_PER_PROVIDER,
     HermesACPAgent,
     HERMES_VERSION,
+    _decode_text_bytes,
 )
 from acp_adapter.session import SessionManager
 from hermes_state import SessionDB
@@ -726,3 +727,34 @@ class TestRegisterSessionMcpServers:
         with patch("tools.mcp_tool.register_mcp_servers", side_effect=RuntimeError("boom")):
             # Should not raise
             await agent._register_session_mcp_servers(state, [server])
+
+
+# ---------------------------------------------------------------------------
+# _decode_text_bytes
+# ---------------------------------------------------------------------------
+
+
+class TestDecodeTextBytesNewlines:
+    """Decoded ACP text resources are newline-normalized (CRLF/CR to LF).
+
+    Editors on Windows attach CRLF files; without normalization the raw CR
+    bytes flow into prompt context and diffs downstream.
+    """
+
+    def test_crlf_and_bare_cr_normalized(self):
+        assert _decode_text_bytes(b"a\r\nb\rc\n", "text/plain") == "a\nb\nc\n"
+
+    def test_utf8_sig_content_normalized(self):
+        data = "line1\r\nline2\r\n".encode("utf-8-sig")
+        assert _decode_text_bytes(data, "text/plain") == "line1\nline2\n"
+
+    def test_binary_still_rejected(self):
+        assert _decode_text_bytes(b"\x00\x01\x02", None) is None
+
+    def test_lf_only_content_unchanged(self):
+        assert _decode_text_bytes(b"a\nb\n", "text/plain") == "a\nb\n"
+
+    def test_nul_byte_kept_when_mime_forces_text(self):
+        """A text mime type overrides the NUL-byte binary heuristic, and the
+        content is still normalized on the way out."""
+        assert _decode_text_bytes(b"\x00a\r\nb", "text/plain") == "\x00a\nb"

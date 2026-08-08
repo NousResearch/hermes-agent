@@ -856,6 +856,40 @@ def resolve_custom_provider(
     return None
 
 
+def configured_provider_endpoint(
+    name: str,
+    user_providers: Optional[Dict[str, Any]] = None,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """Endpoint ``name`` declares in the user's OWN config, or ``""``.
+
+    Built-in providers return ``""``: their endpoint lives in the resolver
+    registry, so config must not pin one (a pinned URL is what goes stale on a
+    provider switch).  User-declared providers — ``providers:`` blocks and
+    legacy ``custom_providers:`` entries — return their configured ``base_url``,
+    because for those the user-supplied URL *is* the provider's own default and
+    nothing else knows it.
+
+    Accepts every spelling a caller may hold: the canonical slug
+    (``custom:<name>``, what :func:`switch_model` reports), the raw display
+    name, and bare ``custom`` (which self-heals to the first valid entry, same
+    as :func:`resolve_custom_provider`).
+
+    Config-writing paths use this to answer "does the provider I'm switching TO
+    supply its own endpoint?" instead of unconditionally blanking
+    ``model.base_url`` — blanking strands any provider with no registry entry.
+    """
+    requested = (name or "").strip().lower()
+    if not requested:
+        return ""
+    pdef = resolve_user_provider(requested, user_providers or {}) or resolve_custom_provider(
+        requested, custom_providers
+    )
+    if pdef is None:
+        return ""
+    return (pdef.base_url or "").strip()
+
+
 def resolve_provider_full(
     name: str,
     user_providers: Optional[Dict[str, Any]] = None,

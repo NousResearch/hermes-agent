@@ -4370,12 +4370,36 @@ def _persist_model_switch(result) -> None:
     if result.base_url:
         save_config_value("model.base_url", result.base_url)
     else:
-        # Clear any stale base_url when switching to a provider that doesn't use
-        # one (e.g. custom endpoint -> native provider). Reads coalesce null to
-        # absent (`model_cfg.get("base_url") or ""`), so a null is equivalent to
-        # removal without needing a key-delete. Leaving the old value would
-        # route the new model at the previous custom host (#48305).
-        save_config_value("model.base_url", None)
+        # No resolved URL for the target. Write whatever endpoint the target
+        # declares in the user's own config, and clear only when it declares
+        # none — that is the case the original clear was for (custom endpoint ->
+        # native provider), where leaving the old value would route the new model
+        # at the previous custom host (#48305). Reads coalesce null to absent
+        # (`model_cfg.get("base_url") or ""`), so a null is equivalent to removal
+        # without needing a key-delete.
+        #
+        # Match through the resolver, NOT against raw ``custom_providers[].name``
+        # values: switch_model() reports custom providers by canonical slug
+        # (``custom:<name>`` — see providers.custom_provider_slug), so a raw-name
+        # comparison never matches a real switch and silently clears the URL.
+        # configured_provider_endpoint() accepts the slug, the display name and
+        # bare ``custom`` alike. Mirrors hermes_cli/web_server.py's
+        # _apply_main_model_assignment.
+        from hermes_cli.config import load_config
+        from hermes_cli.providers import configured_provider_endpoint
+
+        try:
+            cfg = load_config() or {}
+            target_base_url = configured_provider_endpoint(
+                result.target_provider, cfg.get("providers"), cfg.get("custom_providers")
+            )
+        except Exception:
+            logger.debug(
+                "configured-endpoint lookup failed for %r", result.target_provider,
+                exc_info=True,
+            )
+            target_base_url = ""
+        save_config_value("model.base_url", target_base_url or None)
 
 
 def _snapshot_agent_model_runtime(agent) -> dict:

@@ -1535,6 +1535,27 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
     return prov_in, model_in
 
 
+def _configured_endpoint_for(provider: str) -> str:
+    """``base_url`` ``provider`` declares in the active profile's config, or "".
+
+    Thin wrapper so the assignment helpers below stay readable; see
+    :func:`hermes_cli.providers.configured_provider_endpoint`. Reads the config
+    lazily (it is mtime-cached) and never raises — a lookup failure degrades to
+    the historical clear-on-switch behaviour rather than blocking the write.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.providers import configured_provider_endpoint
+
+        cfg = load_config() or {}
+        return configured_provider_endpoint(
+            provider, cfg.get("providers"), cfg.get("custom_providers")
+        )
+    except Exception:
+        _log.debug("configured-endpoint lookup failed for %r", provider, exc_info=True)
+        return ""
+
+
 def _apply_main_model_assignment(
     model_cfg: "Any", provider: str, model: str, base_url: str = "", api_key: str = ""
 ) -> dict:
@@ -1545,8 +1566,11 @@ def _apply_main_model_assignment(
     - An explicitly supplied ``base_url`` is always persisted (covers
       ``custom``/local endpoints and any provider whose key is bound to a
       non-default host).
-    - Otherwise, a stale ``base_url`` is cleared ONLY when switching to a
-      *different* provider — that URL belonged to the old provider. When the
+    - Otherwise, a stale ``base_url`` is replaced ONLY when switching to a
+      *different* provider — that URL belonged to the old provider. It is
+      replaced by whatever endpoint the new provider declares in the user's own
+      config (``providers:`` / ``custom_providers:``), which is empty for
+      built-ins, so they keep resolving through the registry as before. When the
       provider is unchanged and no new URL is supplied, the existing
       ``base_url`` is preserved. This keeps a user's custom endpoint (e.g. a
       Xiaomi MiMo Token Plan host, ``https://token-plan-*.xiaomimimo.com/v1``)
@@ -1572,10 +1596,19 @@ def _apply_main_model_assignment(
     if base_url.strip():
         model_cfg["base_url"] = base_url.strip()
     elif model_cfg.get("base_url") and new_provider != prev_provider:
-        # Switching providers: the old URL belonged to the old provider, drop
-        # it so the new provider's default endpoint is used. Same-provider
-        # re-assignment keeps the user's configured base_url intact.
-        model_cfg["base_url"] = ""
+        # Switching providers: the old URL belonged to the old provider, so it
+        # cannot stay. Replace it with the endpoint the NEW provider declares in
+        # the user's own config; built-ins declare none, so this still resolves
+        # to "" for them (unchanged behaviour — the registry supplies the URL).
+        #
+        # Clearing unconditionally stranded providers with no registry entry:
+        # the picker sends provider+model only (apps/desktop/src/hermes.ts
+        # ``setGlobalModel``), so switching to bare ``custom`` left
+        # ``model.base_url`` empty with nothing else pointing at the endpoint,
+        # the resolver fell through to OpenRouter's default host with no key,
+        # and the next agent call returned
+        # ``HTTP 401: Missing Authentication header``.
+        model_cfg["base_url"] = _configured_endpoint_for(provider)
     # The endpoint key follows the same lifecycle as base_url: an explicit key
     # is always persisted; an existing key is dropped only when switching to a
     # different provider (it belonged to the old endpoint), and preserved on a

@@ -122,6 +122,9 @@ def get_available_skills() -> Dict[str, List[str]]:
 
 # Cache update check results for 6 hours to avoid repeated git fetches
 _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
+# Bump when the comparison target/meaning changes so stale fork-based results
+# cannot suppress the corrected upstream check.
+_UPDATE_CHECK_CACHE_VERSION = 2
 
 # Sentinel returned when we know an update exists but can't count commits
 # (e.g. nix-built hermes — no local git history to count against).
@@ -205,88 +208,70 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
 
 
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind upstream (or origin) in a local checkout.
+    """Count commits behind Nous upstream (or origin for plain checkouts).
 
-    In Sahil's fork-as-trunk topology ``origin`` is the personal fork and
-    ``upstream`` is NousResearch/hermes-agent.  Prefer the latter when it
-    exists so the banner shows real upstream drift, not just fork lag.
+    Fork checkouts use ``upstream`` as the authority when that remote exists.
+    Shallow checkouts cannot produce a trustworthy count, so they compare tip
+    revisions and return ``UPDATE_AVAILABLE_NO_COUNT`` when they differ.
     """
-    # If origin is an official SSH remote, skip local fetch and use GitHub API
+    # If origin is an official SSH remote, skip local fetch and use a remote check.
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
     if _is_official_ssh_remote(origin_url):
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
         checked = _check_via_rev(head_rev) if head_rev else None
-        if checked == UPDATE_AVAILABLE_NO_COUNT:
-            return 1
         return checked
-    # Otherwise fall through to local git fetch
-    for remote in ("upstream", "origin"):
-        try:
-            subprocess.run(
-                ["git", "fetch", remote, "--quiet"],
-                capture_output=True, timeout=10,
-                cwd=str(repo_dir),
-            )
-        except Exception:
-            continue
 
-    # Installer checkouts are shallow (`git clone --depth 1`). On a shallow
-    # clone the history stops at a single commit, so a plain `git fetch` would
-    # unshallow the repo (dragging in the whole history) and
-    # `rev-list --count HEAD..origin/main` would report a huge bogus "behind"
-    # number (e.g. "12492 commits behind"). Detect shallow up front: fetch with
-    # --depth 1 to preserve the boundary and compare tip SHAs instead of
-    # counting. Full clones (developers, Docker dev images) keep the exact
-    # count path unchanged. Mirrors the desktop fix in apps/desktop/electron/main.cjs.
+    # In a fork checkout, origin is the user's fork and upstream is Nous.
+    # Never fall back to origin after an upstream remote has been found: doing
+    # so would turn a failed upstream check into a false "up to date" result.
+    upstream_url = _git_stdout(["remote", "get-url", "upstream"], cwd=repo_dir)
+    remote = "upstream" if upstream_url else "origin"
+
     shallow = _git_stdout(["rev-parse", "--is-shallow-repository"], cwd=repo_dir)
     is_shallow = shallow == "true"
 
+    fetch_args = ["git", "fetch", "--quiet"]
+    if is_shallow:
+        fetch_args += ["--depth", "1"]
+    fetch_args += [remote, "main"]
     try:
-        # Scope the fetch to the one branch the behind-count compares against.
-        # An unscoped ``git fetch origin`` transfers every remote head (~1,400
-        # on this repo — measured 3.0 s vs 0.55 s scoped) and can burn the full
-        # 10 s timeout on slow links. ``cmd_update`` already scopes its fetch
-        # for the same reason. Modern git updates the ``origin/main`` tracking
-        # ref on a scoped fetch, so the ``HEAD..origin/main`` count below is
-        # unaffected; the shallow path compares against FETCH_HEAD, which a
-        # scoped fetch also updates.
-        fetch_args = ["git", "fetch", "origin", "main"]
-        if is_shallow:
-            fetch_args += ["--depth", "1"]
-        fetch_args.append("--quiet")
-        subprocess.run(
+        result = subprocess.run(
             fetch_args,
-            capture_output=True, timeout=10,
+            capture_output=True,
+            timeout=10,
             cwd=str(repo_dir),
         )
+        if result.returncode != 0:
+            return None
     except Exception:
-        pass
+        return None
 
     if is_shallow:
-        # No history to count across the shallow boundary. Prefer FETCH_HEAD
-        # (just updated by the fetch above) and fall back to origin/main.
+        # No history exists across the shallow boundary. FETCH_HEAD is the tip
+        # from the remote fetched above, so it is safe for presence-only status.
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
         target_rev = (
             _git_stdout(["rev-parse", "FETCH_HEAD"], cwd=repo_dir)
-            or _git_stdout(["rev-parse", "origin/main"], cwd=repo_dir)
+            or _git_stdout(["rev-parse", f"{remote}/main"], cwd=repo_dir)
         )
         if not head_rev or not target_rev:
             return None
         return 0 if head_rev == target_rev else UPDATE_AVAILABLE_NO_COUNT
 
-    # Fork topology: upstream is authoritative when present; origin remains a
-    # portable fallback for a plain upstream checkout.
-    for target in ("upstream/main", "origin/main"):
-        try:
-            result = subprocess.run(
-                ["git", "rev-list", "--count", f"HEAD..{target}"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=5, cwd=str(repo_dir),
-            )
-            if result.returncode == 0:
-                return int(result.stdout.strip())
-        except Exception:
-            continue
+    try:
+        result = subprocess.run(
+            ["git", "rev-list", "--count", f"HEAD..{remote}/main"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 0:
+            return int(result.stdout.strip())
+    except Exception:
+        pass
     return None
 
 
@@ -294,8 +279,9 @@ def check_for_updates() -> Optional[int]:
     """Check whether a Hermes update is available.
 
     Two paths: if ``HERMES_REVISION`` is set (nix builds embed it), compare
-    it to upstream main via ``git ls-remote``. Otherwise look for a local
-    git checkout and count commits behind ``origin/main``.
+    it to upstream main via ``git ls-remote``. Otherwise look for a local git
+    checkout and count commits behind ``upstream/main`` (or ``origin/main``
+    for plain upstream checkouts).
 
     Returns the number of commits behind, ``UPDATE_AVAILABLE_NO_COUNT`` (-1)
     if behind but the count is unknown, ``0`` if up-to-date, or ``None`` if
@@ -329,6 +315,7 @@ def check_for_updates() -> Optional[int]:
                 now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
                 and cached.get("rev") == embedded_rev
                 and cached.get("ver") == VERSION
+                and cached.get("schema") == _UPDATE_CHECK_CACHE_VERSION
             ):
                 return cached.get("behind")
     except Exception:
@@ -353,7 +340,15 @@ def check_for_updates() -> Optional[int]:
 
     try:
         cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}),
+            json.dumps(
+                {
+                    "ts": now,
+                    "behind": behind,
+                    "rev": embedded_rev,
+                    "ver": VERSION,
+                    "schema": _UPDATE_CHECK_CACHE_VERSION,
+                }
+            ),
             encoding="utf-8",
         )
     except Exception:
@@ -421,10 +416,17 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
             pass
         return None
 
-    upstream = _git_short_hash(repo_dir, "origin/main")
+    # A fork checkout's origin is the user's fork; prefer Nous upstream for
+    # the title whenever that remote is configured. Do not fall back to the
+    # fork's ref if the upstream tracking ref has not been fetched yet.
+    has_upstream = bool(
+        _git_stdout(["remote", "get-url", "upstream"], cwd=repo_dir)
+    )
+    target_ref = "upstream/main" if has_upstream else "origin/main"
+    upstream = _git_short_hash(repo_dir, target_ref)
     local = _git_short_hash(repo_dir, "HEAD")
     if not upstream or not local:
-        # Live-git lookup failed (e.g. shallow clone without origin/main).
+        # Live-git lookup failed (e.g. shallow clone without a remote ref).
         # Fall back to the baked build SHA if available.
         try:
             from hermes_cli.build_info import get_build_sha
@@ -438,7 +440,7 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     ahead = 0
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", "origin/main..HEAD"],
+            ["git", "rev-list", "--count", f"{target_ref}..HEAD"],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -889,7 +891,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                 # exists but not by how much, and we don't know how the user
                 # installed it (nix run, profile, system flake, home-manager).
                 managed_cmd = get_managed_update_command()
-                line = "[bold yellow]⚠ update available[/]"
+                line = "[bold yellow]⚠ update available (commit count unavailable)[/]"
                 if managed_cmd:
                     line += f"[dim yellow] — run [bold]{managed_cmd}[/bold][/]"
                 right_lines.append(line)

@@ -83,3 +83,24 @@ def test_build_welcome_banner_non_moa_unchanged(tmp_path, monkeypatch):
     out = console.export_text()
     assert "claude-opus-4.8" in out
     assert "MoA:" not in out
+
+
+def test_build_welcome_banner_explains_unknown_update_count():
+    with (
+        patch.object(model_tools, "check_tool_availability", return_value=([], [])),
+        patch.object(banner, "get_available_skills", return_value={}),
+        patch.object(banner, "get_update_result", return_value=banner.UPDATE_AVAILABLE_NO_COUNT),
+        patch.object(tools.mcp_tool, "get_mcp_status", return_value=[]),
+        patch("hermes_cli.config.get_managed_update_command", return_value=None),
+    ):
+        console = Console(record=True, force_terminal=False, color_system=None, width=160)
+        banner.build_welcome_banner(
+            console=console,
+            model="model",
+            cwd="/tmp/project",
+            tools=[],
+            enabled_toolsets=[],
+            provider="openrouter",
+        )
+
+    assert "commit count unavailable" in console.export_text()

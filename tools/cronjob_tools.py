@@ -594,6 +594,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if job.get("buttons"):
+        result["buttons"] = job["buttons"]
     return result
 
 
@@ -1052,6 +1054,7 @@ def cronjob(
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
+    buttons: Optional[List[Any]] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
 ) -> str:
@@ -1140,6 +1143,7 @@ def cronjob(
                     attach_to_session=attach_to_session,
                     monitor_script=_normalize_optional_job_value(monitor_script),
                     monitor_url=_normalize_optional_job_value(monitor_url),
+                    buttons=buttons,
                 )
             except CronSchedulerRegistrationError as exc:
                 _partial = exc.to_dict()
@@ -1399,6 +1403,9 @@ def cronjob(
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
                 updates["workdir"] = _normalize_optional_job_value(workdir) or None
+            if buttons is not None:
+                from cron.jobs import normalize_buttons
+                updates["buttons"] = normalize_buttons(buttons)
             if no_agent is not None:
                 # Toggling no_agent on/off at update time. If flipping to True,
                 # we need a script to already exist on the job (or be part of
@@ -1552,6 +1559,23 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "boolean",
                 "description": "When True, this job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context instead of asking 'what is that?'. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread is opened for the job and its replies; on DM-only platforms (WhatsApp/Signal) the brief is mirrored into the origin DM session. Use this for conversational recurring jobs the user will reply to — daily briefings, reminders that kick off follow-up work. Leave unset for fire-and-forget alerts/watchdogs. Overrides the global cron.mirror_delivery config for this one job. Only the origin chat is touched (never fan-out targets); no effect when deliver='local'."
             },
+            "buttons": {
+                "type": "array",
+                "description": "Optional inline buttons to attach to cron delivery on supported platforms (currently Telegram live gateway). Each item may be a string or an object with text and optional value. Button presses are recorded locally for later review.",
+                "items": {
+                    "oneOf": [
+                        {"type": "string"},
+                        {
+                            "type": "object",
+                            "properties": {
+                                "text": {"type": "string"},
+                                "value": {"type": "string"}
+                            },
+                            "required": ["text"]
+                        }
+                    ]
+                }
+            },
         },
         "required": ["action"]
     }
@@ -1611,6 +1635,7 @@ registry.register(
         no_agent=args.get("no_agent"),
         monitor_script=args.get("monitor_script"),
         monitor_url=args.get("monitor_url"),
+        buttons=args.get("buttons"),
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
     ),

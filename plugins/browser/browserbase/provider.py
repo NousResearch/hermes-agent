@@ -24,7 +24,7 @@ Optional feature knobs::
 
     BROWSERBASE_BASE_URL=...      # default https://api.browserbase.com
     BROWSERBASE_PROXIES=true      # default true
-    BROWSERBASE_ADVANCED_STEALTH=false
+    BROWSERBASE_ADVANCED_STEALTH=false  # truthy aliases: 1/true/yes/on
     BROWSERBASE_KEEP_ALIVE=true   # default true
     BROWSERBASE_SESSION_TIMEOUT=... (seconds, integer, max 21600 = 6h)
 """
@@ -40,6 +40,7 @@ import requests
 
 from agent.browser_provider import BrowserProvider
 from agent.secret_scope import get_secret
+from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -97,8 +98,9 @@ class BrowserbaseBrowserProvider(BrowserProvider):
 
         # Optional env-var knobs
         enable_proxies = os.environ.get("BROWSERBASE_PROXIES", "true").lower() != "false"
-        enable_advanced_stealth = (
-            os.environ.get("BROWSERBASE_ADVANCED_STEALTH", "false").lower() == "true"
+        # Opt-in flag — accept shared truthy aliases (previously only literal "true").
+        enable_advanced_stealth = env_var_enabled(
+            "BROWSERBASE_ADVANCED_STEALTH", default="false"
         )
         enable_keep_alive = (
             os.environ.get("BROWSERBASE_KEEP_ALIVE", "true").lower() != "false"

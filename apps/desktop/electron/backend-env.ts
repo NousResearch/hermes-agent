@@ -36,7 +36,7 @@ function currentPathValue(env = process.env, platform = process.platform) {
   return env?.[key] || ''
 }
 
-function appendUniquePathEntries(entries, { delimiter = path.delimiter } = {}) {
+function appendUniquePathEntries(entries, { delimiter = path.delimiter, caseInsensitive = false }: any = {}) {
   const seen = new Set()
   const ordered = []
 
@@ -48,11 +48,13 @@ function appendUniquePathEntries(entries, { delimiter = path.delimiter } = {}) {
     const parts = Array.isArray(entry) ? entry : String(entry).split(delimiter)
 
     for (const part of parts) {
-      if (!part || seen.has(part)) {
+      const comparisonKey = caseInsensitive ? part.toLowerCase() : part
+
+      if (!part || seen.has(comparisonKey)) {
         continue
       }
 
-      seen.add(part)
+      seen.add(comparisonKey)
       ordered.push(part)
     }
   }
@@ -92,6 +94,7 @@ function buildDesktopBackendPath({
   hermesHome,
   venvRoot,
   currentPath = '',
+  hostPath = '',
   platform = process.platform,
   pathModule = pathModuleForPlatform(platform)
 }: any = {}) {
@@ -100,7 +103,10 @@ function buildDesktopBackendPath({
   const venvBin = venvRoot ? pathModule.join(venvRoot, platform === 'win32' ? 'Scripts' : 'bin') : null
   const saneEntries = platform === 'win32' ? [] : POSIX_SANE_PATH_ENTRIES
 
-  return appendUniquePathEntries([hermesNodeDirs, venvBin, currentPath, saneEntries], { delimiter })
+  return appendUniquePathEntries([hermesNodeDirs, venvBin, hostPath, currentPath, saneEntries], {
+    delimiter,
+    caseInsensitive: platform === 'win32'
+  })
 }
 
 function normalizeHermesHomeRoot(hermesHome, { pathModule = pathModuleForPlatform(process.platform) }: any = {}) {
@@ -122,6 +128,7 @@ function buildDesktopBackendEnv({
   hermesHome,
   pythonPathEntries = [],
   venvRoot,
+  hostPath = '',
   currentEnv = process.env,
   platform = process.platform,
   pathModule = pathModuleForPlatform(platform)
@@ -142,6 +149,7 @@ function buildDesktopBackendEnv({
     [key]: buildDesktopBackendPath({
       hermesHome,
       venvRoot,
+      hostPath,
       currentPath: currentPathValue(currentEnv, platform),
       platform,
       pathModule

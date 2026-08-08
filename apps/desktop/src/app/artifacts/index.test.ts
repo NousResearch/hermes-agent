@@ -67,6 +67,38 @@ describe('collectArtifactsForSession', () => {
     })
   })
 
+  it('excludes a plain-text Windows pip cache wheel candidate', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: [
+          'Using cached wheel:',
+          '/C:/Users/Alice/AppData/Local/pip/Cache/wheels/11/22/openai-2.24.0-py3-none-any.whl',
+          'Generated report: /tmp/hermes-session/report.pdf'
+        ].join('\n'),
+        role: 'tool',
+        timestamp: 4000
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toEqual(['/tmp/hermes-session/report.pdf'])
+  })
+
+  it('excludes a pip cache candidate extracted from a JSON tool result', () => {
+    const cachePath = 'file:///C:/Users/Alice/AppData/Local/pip/Cache/http-v2/11/22/metadata.json'
+    const reportPath = 'file:///C:/Users/Alice/Documents/report.pdf'
+    const sourceUrl = 'https://example.com/results/latest'
+
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: JSON.stringify({ cache_path: cachePath, report_path: reportPath, source_url: sourceUrl }),
+        role: 'tool',
+        timestamp: 5000
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value).sort()).toEqual([reportPath, sourceUrl].sort())
+  })
+
   it('resolves remote image artifact thumbnails through the desktop fs bridge', async () => {
     const api = vi.fn(async ({ path }: { path: string }) => {
       if (path.startsWith('/api/fs/read-data-url?')) {

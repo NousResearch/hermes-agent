@@ -3341,27 +3341,36 @@ class MCPServerTask:
                 # should not permanently kill the server.
                 # (Ported from Kilo Code's MCP resilience fix.)
                 if not self._ready.is_set():
-                    if _is_auth_error(root):
-                        logger.warning(
-                            "MCP server '%s' failed initial OAuth authentication, "
-                            "not retrying automatically: %s: %s",
-                            self.name, type(root).__name__, root,
-                        )
-                        self._error = exc
-                        self._ready.set()
-                        return
-
                     if failure_class == "permanent":
                         # Deterministic failure (bad command, non-MCP URL,
                         # 401/403): every retry hits the same wall. Park
                         # immediately instead of burning the retry ladder
                         # and spamming N identical warnings (#65673).
-                        logger.warning(
-                            "MCP server '%s' failed initial connection with a "
-                            "permanent error, parking without retries "
-                            "(state: connecting → parked): %s: %s",
-                            self.name, type(root).__name__, root,
-                        )
+                        #
+                        # Auth failures park here too rather than returning.
+                        # Returning ends the run task, and with it the only
+                        # listener on ``_reconnect_event`` — so a 401 on the
+                        # very first connect left the server unrevivable for
+                        # the life of the process, even after the user
+                        # re-authenticated with ``hermes mcp login``. Parking
+                        # keeps the task alive so the 300s self-probe (and an
+                        # explicit /mcp refresh) can pick up fresh tokens.
+                        if _is_auth_error(root):
+                            logger.warning(
+                                "MCP server '%s' failed initial authentication, "
+                                "parking until credentials change; re-authenticate "
+                                "with `hermes mcp login %s` "
+                                "(state: connecting → parked): %s: %s",
+                                self.name, self.name,
+                                type(root).__name__, root,
+                            )
+                        else:
+                            logger.warning(
+                                "MCP server '%s' failed initial connection with a "
+                                "permanent error, parking without retries "
+                                "(state: connecting → parked): %s: %s",
+                                self.name, type(root).__name__, root,
+                            )
                         self._error = exc
                         self._ready.set()
                         self._was_parked = True

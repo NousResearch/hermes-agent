@@ -219,7 +219,9 @@ def test_windows_npm_wrapper_uses_quoted_shell_placeholders():
     assert env["HERMES_LSP_COMMAND_1"] == command[1]
 
 
-@pytest.mark.parametrize("argument", ['unsafe\"quote', "unsafe\nline", "unsafe\0nul"])
+@pytest.mark.parametrize(
+    "argument", ['unsafe\"quote', "unsafe\rline", "unsafe\nline", "unsafe\0nul"]
+)
 def test_windows_npm_wrapper_rejects_untransportable_arguments(argument):
     from agent.lsp.client import LSPClient
 
@@ -271,7 +273,11 @@ async def test_spawn_routes_windows_batch_launcher_through_shell(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe quoting")
-def test_windows_npm_wrapper_handles_shell_metacharacters(tmp_path):
+@pytest.mark.parametrize(
+    "argument",
+    ["hello&%UNEXPANDED%!UNEXPANDED!()^caret|pipe<in>out", ""],
+)
+def test_windows_npm_wrapper_handles_shell_metacharacters(tmp_path, argument):
     """Batch launchers preserve metacharacters through both cmd.exe layers."""
     from agent.lsp.client import LSPClient
 
@@ -286,13 +292,20 @@ def test_windows_npm_wrapper_handles_shell_metacharacters(tmp_path):
     )
     env = dict(os.environ)
     env["UNEXPANDED"] = "wrong"
-    argument = "hello&%UNEXPANDED%!UNEXPANDED!()^caret|pipe<in>out"
     command_line = LSPClient._win_shell_command([str(wrapper), argument], env)
-    assert argument not in command_line
+    if argument:
+        assert argument not in command_line
+    else:
+        assert "HERMES_LSP_COMMAND_1" not in env
 
+    comspec = env.get("COMSPEC") or os.path.join(
+        env.get("SystemRoot", r"C:\Windows"), "System32", "cmd.exe"
+    )
+    outer_command = f'"{comspec}" /d /s /v:on /c "{command_line}"'
     result = subprocess.run(
-        command_line,
-        shell=True,
+        outer_command,
+        executable=comspec,
+        shell=False,
         env=env,
         check=False,
         capture_output=True,
@@ -300,7 +313,7 @@ def test_windows_npm_wrapper_handles_shell_metacharacters(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert f'READY ["{argument}"]' in result.stdout
+    assert result.stdout.splitlines() == [f'READY ["{argument}"]']
 
 
 def test_install_npm_uses_native_windows_wrapper_in_place(tmp_path, monkeypatch):

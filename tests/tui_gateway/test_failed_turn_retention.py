@@ -135,6 +135,113 @@ def test_healthy_snapshot_carries_no_error_keys():
     assert snapshot == {"assistant": "hello", "streaming": True, "user": "hi"}
 
 
+def test_interrupted_api_result_cannot_restore_stale_history_snapshot(emits, turn_env):
+    """An interrupted turn must preserve newer live history before retry/rewind.
+
+    A stale result formerly replaced ``session["history"]`` directly. The
+    desktop's subsequent regenerate then persisted that shortened snapshot with
+    ``replace_messages()``, making the missing rows permanent.
+    """
+    live_history = [
+        {
+            "role": "user" if index % 2 == 0 else "assistant",
+            "content": f"message {index}",
+            "timestamp": float(index),
+        }
+        for index in range(144)
+    ]
+
+    def _interrupted(_prompt, conversation_history=None, **_kwargs):
+        # Equivalent but copied dictionaries — fingerprint merge, not ``is``.
+        stale_prefix = [
+            {
+                "role": row["role"],
+                "content": row["content"],
+                "timestamp": row["timestamp"],
+            }
+            for row in (conversation_history or [])[:113]
+        ]
+        return {
+            "final_response": "",
+            "interrupted": True,
+            "turn_exit_reason": "interrupted_during_api_call",
+            "messages": [*stale_prefix, {"role": "user", "content": "retry me"}],
+        }
+
+    agent = types.SimpleNamespace(
+        session_id="session-key",
+        run_conversation=_interrupted,
+        clear_interrupt=lambda: None,
+    )
+    session = _session(agent=agent, running=True, history=live_history)
+    server._start_inflight_turn(session, "retry me")
+
+    server._run_prompt_submit("rid", "sid", session, "retry me")
+
+    assert session["history"][:144] == live_history
+    assert session["history"][-1]["content"] == "retry me"
+    assert len(session["history"]) == 145
+    assert _events(emits, "message.complete")[0]["status"] == "interrupted"
+
+
+def test_merge_interrupted_api_history_fingerprint_cases():
+    live = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "b"},
+        {"role": "user", "content": "c"},
+    ]
+
+    # Equivalent but copied dictionaries sharing a stale prefix + new tail.
+    returned_copied = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "b"},
+        {"role": "user", "content": "retry"},
+    ]
+    merged = server._merge_interrupted_api_history(live, returned_copied)
+    assert merged[:3] == live
+    assert merged[-1]["content"] == "retry"
+
+    # Returned is a strict prefix of live with no new tail — keep live.
+    strict_prefix = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "b"},
+    ]
+    assert server._merge_interrupted_api_history(live, strict_prefix) == live
+
+    # Full live prefix plus a new tail — accept returned.
+    extended = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "b"},
+        {"role": "user", "content": "c"},
+        {"role": "assistant", "content": "d"},
+    ]
+    assert server._merge_interrupted_api_history(live, extended) == extended
+
+    # Mismatch after several shared messages — keep live, append returned tail.
+    diverged = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "b"},
+        {"role": "user", "content": "OTHER"},
+        {"role": "assistant", "content": "tail"},
+    ]
+    merged = server._merge_interrupted_api_history(live, diverged)
+    assert merged[:3] == live
+    assert merged[3:] == diverged[2:]
+
+    # Legitimate compacted rewrite marker — accept returned shorter history.
+    compacted = [{"role": "user", "content": "summary of prior turns"}]
+    assert (
+        server._merge_interrupted_api_history(
+            live, compacted, allow_rewrite=True
+        )
+        == compacted
+    )
+
+    # No shared prefix and no rewrite marker — prefer longer live transcript.
+    unrelated = [{"role": "user", "content": "brand new"}]
+    assert server._merge_interrupted_api_history(live, unrelated) == live
+
+
 # ── Returned-error path (run_conversation returns an error result) ────
 
 

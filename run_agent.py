@@ -2225,6 +2225,14 @@ class AIAgent:
                         elif isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"}:
                             _txt.append("[screenshot]")
                     content = "\n".join(_txt) if _txt else None
+                # Keep the timestamp assigned to this first durable write on
+                # the live dict as well. A later rewind/regenerate may
+                # rewrite the in-memory transcript through replace_messages();
+                # without it every otherwise-surviving row is stamped with the
+                # rewrite batch's time instead of its original event time.
+                if _row_timestamp is None:
+                    _row_timestamp = time.time()
+                    msg["timestamp"] = _row_timestamp
                 tool_calls_data = None
                 if hasattr(msg, "tool_calls") and isinstance(msg.tool_calls, list) and msg.tool_calls:
                     tool_calls_data = [

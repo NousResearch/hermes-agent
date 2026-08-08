@@ -57,6 +57,42 @@ def _session_cwd_override() -> str:
     return str(value).strip()
 
 
+_config_bridge_attempted = False
+
+
+def _ensure_terminal_cwd_bridged() -> None:
+    """Backfill ``TERMINAL_CWD`` from config.yaml when no launcher bridged it.
+
+    This module's contract assumes ``terminal.cwd`` was bridged to
+    ``TERMINAL_CWD`` once at startup. Every process that skips those launcher
+    bridges therefore reads an unset variable and falls back to
+    ``os.getcwd()`` — the daemon's working directory — so context discovery
+    loads the wrong ``AGENTS.md`` while the user's configured workspace is
+    ignored (#74116).
+
+    ``tools/terminal_tool.py`` already closes exactly this hole for the
+    terminal backend via ``_ensure_terminal_env_bridged()`` (#63141, #54449,
+    #61115, #65696); context-file discovery was left on the original
+    assumption. Reuse the same ``apply_terminal_config_to_env`` helper rather
+    than re-deriving the value, so both consumers resolve identically.
+
+    Explicit env always wins: ``override=False`` keeps an already-set
+    ``TERMINAL_CWD`` (a launcher's bridge, or the user's .env) authoritative,
+    so this only fills the accidental-default case. Attempted once per
+    process; a config problem must never break cwd resolution.
+    """
+    global _config_bridge_attempted
+    if _config_bridge_attempted or os.environ.get("TERMINAL_CWD", "").strip():
+        return
+    _config_bridge_attempted = True
+    try:
+        from hermes_cli.config import apply_terminal_config_to_env
+
+        apply_terminal_config_to_env(env=None, override=False)
+    except Exception:
+        logger.debug("terminal cwd → env fallback bridge failed", exc_info=True)
+
+
 def resolve_agent_cwd() -> Path:
     override = _session_cwd_override()
     if override:
@@ -64,6 +100,7 @@ def resolve_agent_cwd() -> Path:
         if p.is_dir():
             return p
         logger.warning("configured working directory does not exist: %s", override)
+    _ensure_terminal_cwd_bridged()
     raw = os.environ.get("TERMINAL_CWD", "").strip()
     if raw:
         p = Path(raw).expanduser()
@@ -90,6 +127,7 @@ def resolve_context_cwd() -> Path | None:
         else:
             return p
         return None
+    _ensure_terminal_cwd_bridged()
     raw = os.environ.get("TERMINAL_CWD", "").strip()
     if raw:
         p = Path(raw).expanduser()

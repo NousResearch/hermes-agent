@@ -4175,12 +4175,52 @@ def _handle_auth_error_and_retry(
     # retrying the tool.
     _bump_server_error(server_name)
     return tool_error(
-        f"MCP server '{server_name}' requires re-authentication. "
+        f"MCP server '{server_name}' requires re-authentication."
+        f"{_auth_error_detail(exc)} "
         f"Run `hermes mcp login {server_name}` (or delete the tokens "
         f"file under ~/.hermes/mcp-tokens/ and restart). Do NOT retry "
         f"this tool — ask the user to re-authenticate.",
         needs_reauth=True,
         server=server_name,
+    )
+
+
+def _auth_error_detail(exc: BaseException) -> str:
+    """Return actionable detail for registration-class auth failures.
+
+    The mcp SDK raises :class:`OAuthRegistrationError` when dynamic client
+    registration fails — e.g. the 404 from a provider that doesn't support
+    RFC 7591 DCR (Google's hosted Gmail/Drive MCP servers). The guard in
+    ``HermesMCPOAuthProvider`` raises that error with the exact next step
+    (create an OAuth client, add ``oauth.client_id`` to config.yaml);
+    surface its text here instead of only the generic re-auth wording so
+    the model can relay it to the user. Unwraps TaskGroup wrappers because
+    the transport raises the auth error inside a group.
+    """
+    try:
+        from mcp.client.auth import OAuthRegistrationError
+    except ImportError:  # pragma: no cover — SDK required in CI
+        return ""
+    root = _unwrap_exception_group(exc)
+    if isinstance(root, OAuthRegistrationError):
+        text = str(root).strip()
+        if text:
+            return f" {_sanitize_error(text)}"
+    return ""
+
+
+def _mcp_call_failed_message(exc: BaseException) -> str:
+    """Build the generic tool-error text, surfacing the group root cause.
+
+    The MCP SDK's streamable-HTTP transport wraps transport failures in a
+    TaskGroup ``ExceptionGroup`` whose ``str()`` is opaque ("unhandled
+    errors in a TaskGroup (1 sub-exception)"). Unwrap so the model and the
+    user see the actual error (e.g. the actionable registration guidance
+    from ``OAuthRegistrationError``) instead of the wrapper text.
+    """
+    root = _unwrap_exception_group(exc)
+    return _sanitize_error(
+        f"MCP call failed: {type(root).__name__}: {_exc_str(root)}"
     )
 
 
@@ -5350,9 +5390,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 "MCP tool %s/%s call failed: %s",
                 server_name, tool_name, exc,
             )
-            return tool_error(_sanitize_error(
-                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
-            ))
+            return tool_error(_mcp_call_failed_message(exc))
 
     return _handler
 
@@ -5406,9 +5444,7 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
             logger.error(
                 "MCP %s/list_resources failed: %s", server_name, exc,
             )
-            return tool_error(_sanitize_error(
-                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
-            ))
+            return tool_error(_mcp_call_failed_message(exc))
 
     return _handler
 
@@ -5467,9 +5503,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             logger.error(
                 "MCP %s/read_resource failed: %s", server_name, exc,
             )
-            return tool_error(_sanitize_error(
-                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
-            ))
+            return tool_error(_mcp_call_failed_message(exc))
 
     return _handler
 
@@ -5528,9 +5562,7 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
             logger.error(
                 "MCP %s/list_prompts failed: %s", server_name, exc,
             )
-            return tool_error(_sanitize_error(
-                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
-            ))
+            return tool_error(_mcp_call_failed_message(exc))
 
     return _handler
 
@@ -5593,9 +5625,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
             logger.error(
                 "MCP %s/get_prompt failed: %s", server_name, exc,
             )
-            return tool_error(_sanitize_error(
-                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
-            ))
+            return tool_error(_mcp_call_failed_message(exc))
 
     return _handler
 

@@ -1270,7 +1270,14 @@ def humanize_oauth_registration_error(
     """
     msg = str(exc)
     lowered = msg.lower()
-    if "403" not in msg and "forbidden" not in lowered:
+    # 404 on a registration endpoint (e.g. Google's Gmail/Drive MCP servers
+    # answer the SDK's guessed /register with a 404 page) is the same
+    # permanent "no RFC 7591 DCR" class as 403 — surface the pre-registered
+    # client guidance instead of the raw traceback.
+    is_404_registration = "404" in msg and (
+        "not found" in lowered or "/register" in lowered
+    )
+    if not is_404_registration and "403" not in msg and "forbidden" not in lowered:
         return None
     looks_like_registration = (
         "regist" in lowered
@@ -1291,6 +1298,17 @@ def humanize_oauth_registration_error(
             f"client_name: {_FIGMA_DCR_CLIENT_NAME!r} automatically. If you "
             "set oauth.client_name yourself, change it to one of those, or "
             "clear it and re-run:\n"
+            f"  hermes mcp login {server_name}"
+        )
+
+    if is_404_registration:
+        return (
+            f"'{server_name}' does not support automatic client registration "
+            "— the registration request returned 404 (typical for Google's "
+            "hosted Gmail/Drive MCP servers and other providers without "
+            "RFC 7591 dynamic client registration). Create an OAuth client "
+            "for this provider and add it under config.yaml as "
+            "`oauth: {client_id: ..., client_secret: ...}`, then re-run:\n"
             f"  hermes mcp login {server_name}"
         )
 

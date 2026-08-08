@@ -865,7 +865,7 @@ def _maybe_mirror_cron_delivery(
         ok = mirror_to_session(
             platform_name,
             str(chat_id),
-            f"[Cron delivery: {job.get('name') or job.get('id', 'cron')}]\n{text}",
+            f"[Cron delivery: {_cron_display_name(job)}]\n{text}",
             source_label="cron",
             thread_id=thread_id,
             user_id=user_id,
@@ -906,7 +906,7 @@ def _open_continuable_cron_thread(
     create_thread = getattr(adapter, "create_handoff_thread", None)
     if not callable(create_thread) or loop is None:
         return None
-    task_name = job.get("name") or job.get("id", "cron")
+    task_name = _cron_display_name(job)
     thread_name = f"Hermes — {task_name}"
     try:
         from agent.async_utils import safe_schedule_threadsafe
@@ -996,7 +996,7 @@ def _seed_cron_thread_session(
         mirror_to_session(
             platform_name,
             str(chat_id),
-            f"[Cron delivery: {job.get('name') or job.get('id', 'cron')}]\n{text}",
+            f"[Cron delivery: {_cron_display_name(job)}]\n{text}",
             source_label="cron",
             thread_id=str(thread_id),
             user_id="system:cron",
@@ -1089,7 +1089,7 @@ def _seed_cron_channel_session(
         ok = mirror_to_session(
             platform_name,
             str(chat_id),
-            f"[Cron delivery: {job.get('name') or job.get('id', 'cron')}]\n{text}",
+            f"[Cron delivery: {_cron_display_name(job)}]\n{text}",
             source_label="cron",
             thread_id=None,
             user_id=str(user_id) if user_id else None,
@@ -1602,6 +1602,40 @@ def _is_channel_dm_topic(
     return is_channel
 
 
+def _cron_display_name(job: dict) -> str:
+    """Job name/id as it may appear in outward-facing text.
+
+    The session-mirror sinks and the thread title splice the job *name* around
+    the redacted payload. The name is user-controlled config, so a name that
+    embeds a credential would re-leak it right next to the scrubbed body —
+    same policy, same fail-closed helper.
+    """
+    return _redact_cron_payload(job.get("name") or job.get("id", "cron"), "job name")
+
+
+def _redact_cron_payload(text: str, what: str) -> str:
+    """Fail-closed secret redaction for anything a cron job emits outward.
+
+    Both outward paths — the chat message and the session mirror — must apply
+    the same policy, so the policy lives in one place.
+
+    ``force=True`` because this is a safety boundary, not logging: the
+    ``security.redact_secrets`` preference governs how much is scrubbed from
+    the user's own logs, and must not be able to turn off scrubbing on the way
+    out to a chat (same reasoning as ``tools/delegation_live_log.py``).
+    Empty input is returned as-is; any failure inside the redactor replaces the
+    payload entirely rather than letting an unscanned value through.
+    """
+    if not text:
+        return text
+    try:
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(text, force=True)
+    except Exception as e:
+        logger.warning("Failed to redact secrets from cron %s: %s", what, e)
+        return "[REDACTED - redaction failed]"
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -1667,6 +1701,17 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
+    # Redact secrets from the delivery text at this single chokepoint, BEFORE
+    # the live-adapter vs standalone send branches below. Shell-job stdout/stderr
+    # is already redacted where it is captured, but an LLM cron job's response
+    # text reaches delivery unscanned — so a job that surfaced a credential
+    # (e.g. echoed a failing curl with an API key, or summarised a config file)
+    # sent it verbatim to the chat. Redacting once here covers every platform
+    # and both send paths.
+    cleaned_delivery_content = _redact_cron_payload(
+        cleaned_delivery_content, "delivery content",
+    )
+
     # Resolve the delivery-mirror gate ONCE (default off). When on, each
     # successful delivery is also appended to the target chat's gateway session
     # transcript so a user reply in that chat sees the cron output in context.
@@ -1679,6 +1724,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     if mirror_enabled:
         _, mirror_text = BasePlatformAdapter.extract_media(content)
         mirror_text = (mirror_text or "").strip()
+        # This payload is derived from the raw `content`, not from
+        # `cleaned_delivery_content`, so it does NOT inherit the redaction
+        # above. Without this, enabling the mirror writes an unredacted
+        # credential into the origin session transcript even though the chat
+        # message itself was clean — and a transcript outlives the message.
+        mirror_text = _redact_cron_payload(mirror_text, "mirror payload")
 
     try:
         config = load_gateway_config()

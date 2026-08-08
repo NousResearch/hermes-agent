@@ -9270,6 +9270,17 @@ function restoreMainWindowFromHud() {
 
 function openHudWindow(sessionId) {
   if (hudWindow && !hudWindow.isDestroyed()) {
+    // Already up, but pointed somewhere else — switch it rather than just
+    // raising it. Asking for HUD mode from another tab means "put THIS
+    // conversation in the HUD", and a plain focus leaves the wrong one there.
+    if (sessionId && sessionId !== hudSessionId) {
+      hudSessionId = sessionId
+      hudWindow.webContents.send('hermes:hud:goto', sessionId)
+      // Keep every window's idea of where the HUD is pointed in step, so the
+      // toggle keeps reading "switch" vs "dismiss" correctly.
+      broadcastHudState(true)
+    }
+
     focusWindow(hudWindow)
 
     return hudWindow

@@ -25,6 +25,7 @@ import { isHudWindow } from '@/store/windows'
 
 import { getActiveComposer } from '../chat/composer/focus'
 import { openSession, type OpenSessionNavigate } from '../open-session'
+import { sessionRoute } from '../routes'
 
 /** Session tiles route on `tile:<storedSessionId>` (see session-tile.tsx). */
 const TILE_TARGET_PREFIX = 'tile:'
@@ -102,6 +103,15 @@ export function useHudHandoff({ navigate, resumeSession }: HudHandoffParams): vo
       }
     })
   }, [])
+}
+
+/** HUD side: follow a retarget. Asking for HUD mode from another tab while the
+ *  HUD is already up switches the conversation showing in it. */
+export function useHudGoto(navigate: OpenSessionNavigate): void {
+  const navigateRef = useRef(navigate)
+  navigateRef.current = navigate
+
+  useEffect(() => window.hermesDesktop?.hud?.onGoto?.(id => navigateRef.current(sessionRoute(id))), [])
 }
 
 /** HUD side: keep main told which session this window is on. */

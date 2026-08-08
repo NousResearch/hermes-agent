@@ -33,6 +33,10 @@ export const $hudActive = atom(isHudWindow())
  *  never invalidates a render path mid-session. */
 export const $hudMode = atom(isHudWindow())
 
+/** Which conversation the HUD is showing, as far as this window knows. Lets the
+ *  toggle tell "switch the HUD to this tab" apart from "dismiss the HUD". */
+export const $hudSession = atom<null | string>(null)
+
 /** True when the shell exposes HUD mode (desktop only). */
 export const canUseHud = (): boolean =>
   typeof window !== 'undefined' && typeof window.hermesDesktop?.hud?.open === 'function'
@@ -50,6 +54,7 @@ export function openHud(sessionId?: null | string): void {
   requestComposerDraftSync('flush')
 
   $hudActive.set(true)
+  $hudSession.set(sessionId ?? null)
   void api.open({ sessionId: sessionId ?? null })
 }
 
@@ -63,6 +68,7 @@ export function closeHud(): void {
   }
 
   $hudActive.set(false)
+  $hudSession.set(null)
   void api.close()
 }
 
@@ -82,6 +88,7 @@ export const reportHudSession = (sessionId: null | string): void => window.herme
 export function watchHudState(onClosed?: (sessionId: null | string) => void): () => void {
   const off = window.hermesDesktop?.hud?.onChanged?.(({ open, sessionId }) => {
     $hudActive.set(open)
+    $hudSession.set(open ? sessionId : null)
 
     if (!open) {
       onClosed?.(sessionId)

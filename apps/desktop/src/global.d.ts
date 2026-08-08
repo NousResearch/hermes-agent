@@ -70,7 +70,9 @@ declare global {
         open: (request?: { sessionId?: null | string }) => Promise<{ ok: boolean }>
         close: () => Promise<{ ok: boolean }>
         setIgnoreMouse: (ignore: boolean) => void
+        setVibrancy: (on: boolean) => Promise<{ ok: boolean }>
         setSession: (sessionId: null | string) => void
+        onGoto: (callback: (sessionId: string) => void) => () => void
         onChanged: (callback: (state: { open: boolean; sessionId: null | string }) => void) => () => void
       }
       // Quick Entry: a global-hotkey mini composer window. Main owns the OS

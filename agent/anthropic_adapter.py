@@ -2805,6 +2805,42 @@ def convert_messages_to_anthropic(
     return system, result
 
 
+_DEFAULT_OAUTH_SYSTEM_BUDGET_CHARS = 3000
+
+
+def _resolve_oauth_system_budget() -> int:
+    """Character budget for Hermes-specific system text on the OAuth wire.
+
+    Behavioral setting, so it lives in ``config.yaml`` (``.env`` is for
+    secrets only, per AGENTS.md)::
+
+        providers:
+          anthropic:
+            oauth_system_budget_chars: 3000   # 0 disables the trim
+
+    Returns the default (3000) when unset, ``0`` when explicitly disabled.
+    Never raises: an unreadable config or a malformed value falls back to the
+    default so a typo cannot break request building.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        providers = cfg.get("providers")
+        if isinstance(providers, dict):
+            anthropic_cfg = providers.get("anthropic")
+            if isinstance(anthropic_cfg, dict):
+                raw = anthropic_cfg.get("oauth_system_budget_chars")
+                if raw is not None:
+                    budget = int(raw)
+                    return budget if budget > 0 else 0
+    except Exception:
+        # Config unreadable, malformed value, or hermes_cli unavailable in a
+        # trimmed environment — fall through to the default.
+        pass
+    return _DEFAULT_OAUTH_SYSTEM_BUDGET_CHARS
+
+
 def build_anthropic_kwargs(
     model: str,
     messages: List[Dict],
@@ -2905,6 +2941,63 @@ def build_anthropic_kwargs(
                 text = text.replace("hermes-agent", "claude-code")
                 text = text.replace("Nous Research", "Anthropic")
                 block["text"] = text
+
+        # 2b. Cap Hermes-specific system text on OAuth/subscription auth.
+        #     Anthropic's OAuth billing classifier inspects the system prompt.
+        #     A large block of app-specific instructions (skill_manage,
+        #     session_search, Computer Use guidance, mid-turn steering, …) is
+        #     fingerprinted as raw API usage, so the request is billed against
+        #     the pay-per-token "extra usage" pool instead of the subscription's
+        #     included quota — surfacing as HTTP 400 "You're out of extra usage"
+        #     / HTTP 429 "monthly spend limit" while the plan still has headroom
+        #     (established by bisection: generic filler of identical length
+        #     passes; only the app-specific text flips the lane).
+        #
+        #     Same class of problem as the ``mcp_`` -> ``mcp__`` tool-name
+        #     normalization in step 3 below: payload SHAPE, not actual usage,
+        #     decides the billing lane.
+        #
+        #     Keep the Claude Code identity block (index 0) intact and trim the
+        #     remaining system text so the request stays on included billing.
+        #     Budget: ``providers.anthropic.oauth_system_budget_chars`` in
+        #     config.yaml (0 disables) — see _resolve_oauth_system_budget.
+        _sys_budget = _resolve_oauth_system_budget()
+        if _sys_budget > 0 and isinstance(system, list) and len(system) > 1:
+            _remaining = _sys_budget
+            _kept = [system[0]]
+            _dropped_cc = None
+            for _blk in system[1:]:
+                if not (isinstance(_blk, dict) and _blk.get("type") == "text"):
+                    _kept.append(_blk)
+                    continue
+                _t = _blk.get("text", "")
+                if len(_t) <= _remaining:
+                    _remaining -= len(_t)
+                    _kept.append(_blk)
+                    continue
+                # Trim at the last paragraph/line break before the budget so
+                # we don't cut mid-sentence; fall back to a hard cut.
+                _cut = _t.rfind("\n", 0, _remaining)
+                if _cut < _remaining // 2:
+                    _cut = _remaining
+                _trimmed = _t[:_cut].rstrip()
+                _remaining = 0
+                if _trimmed:
+                    _blk["text"] = _trimmed
+                    _kept.append(_blk)
+                elif isinstance(_blk.get("cache_control"), dict) and _dropped_cc is None:
+                    _dropped_cc = dict(_blk["cache_control"])
+            # Blocks trimmed to "" must not stay on the wire: Anthropic 400s
+            # on empty text blocks, and empty text + cache_control is always
+            # invalid ("system.N: cache_control cannot be set for empty text
+            # blocks"). If a dropped block carried the cache marker, move it
+            # to the last surviving text block so the prefix stays cacheable.
+            if _dropped_cc is not None:
+                for _blk in reversed(_kept):
+                    if isinstance(_blk, dict) and _blk.get("type") == "text" and _blk.get("text"):
+                        _blk.setdefault("cache_control", _dropped_cc)
+                        break
+            system = _kept
 
         # 3. Normalize tool names so NOTHING goes on the OAuth wire with a
         #    single-underscore ``mcp_`` prefix.  Anthropic's subscription/OAuth

@@ -162,10 +162,6 @@ export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boole
     return true
   }
 
-  if (env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY) {
-    return true
-  }
-
   if (env.GHOSTTY_RESOURCES_DIR || env.GHOSTTY_BIN_DIR) {
     return true
   }

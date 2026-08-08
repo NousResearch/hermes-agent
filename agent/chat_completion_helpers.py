@@ -5067,6 +5067,21 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 _close_request_client_once("stream_interrupt_abort")
             except Exception:
                 pass
+            # Wait for the worker to unwind Relay-managed stream scopes
+            # (physical LLM + deferred logical) before surfacing
+            # InterruptedError. Raising immediately lets turn teardown
+            # (finish_logical_calls / end_turn / close_session) race a
+            # still-open physical scope and corrupt the LIFO stack —
+            # "scope handle is not at the top of the stack" → CLI EIO /
+            # redraw storm (#81521).
+            t.join(timeout=2.0)
+            if t.is_alive():
+                logger.warning(
+                    "Streaming worker still alive after interrupt abort "
+                    "(%.1fs join timeout); Relay teardown will best-effort "
+                    "drain orphaned scopes (#81521).",
+                    2.0,
+                )
             raise InterruptedError("Agent interrupted during streaming API call")
     # Worker thread exited before the main thread's poll loop could check
     # the interrupt flag.  If the worker returned early due to an interrupt

@@ -4859,6 +4859,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # don't auto-queue another continuation on top of a user-cancelled
         # turn (which would make Ctrl+C feel like it did nothing).
         self._last_turn_interrupted = False
+        # When stdout/PTY raises EIO (broken pipe after a stream-stall
+        # interrupt), freeze further UI paints so we don't spin the main
+        # thread at hundreds of escape-sequence writes/sec (#81521).
+        self._terminal_io_broken = False
         self._should_exit = False
         # /exit --delete: when True, the current session's SQLite history and
         # on-disk transcripts are deleted during shutdown. Set by
@@ -5024,6 +5028,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         finally:
             self._active_session_lease = None
 
+    def _mark_terminal_io_broken(self, reason: str = "") -> None:
+        """Stop UI paints after the PTY/stdout becomes unusable (#81521)."""
+        if getattr(self, "_terminal_io_broken", False):
+            return
+        self._terminal_io_broken = True
+        try:
+            self._pet_stop_anim()
+        except Exception:
+            pass
+        logger.warning(
+            "Terminal I/O broken%s — freezing UI paints to avoid redraw storm (#81521)",
+            f" ({reason})" if reason else "",
+        )
+
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint for high-frequency background updates.
 
@@ -5041,12 +5059,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         within the 250ms window — or an in-flight resize — silently drop it, so
         the prompt never renders and times out unseen (#41098).
         """
+        if getattr(self, "_terminal_io_broken", False):
+            return
         if getattr(self, "_resize_recovery_pending", False):
             return
         now = time.monotonic()
         if hasattr(self, "_app") and self._app and (now - getattr(self, "_last_invalidate", 0.0)) >= min_interval:
             self._last_invalidate = now
-            self._app.invalidate()
+            try:
+                self._app.invalidate()
+            except OSError as exc:
+                if getattr(exc, "errno", None) == errno.EIO:
+                    self._mark_terminal_io_broken("invalidate")
+                    return
+                raise
 
     def _paint_now(self) -> None:
         """Immediate, unthrottled repaint for user-blocking modal prompts.
@@ -5059,10 +5085,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         already use. See ``_invalidate`` for why the throttle must not gate
         these paints (#41098).
         """
+        if getattr(self, "_terminal_io_broken", False):
+            return
         app = getattr(self, "_app", None)
         if app is not None:
             try:
                 app.invalidate()
+            except OSError as exc:
+                if getattr(exc, "errno", None) == errno.EIO:
+                    self._mark_terminal_io_broken("paint_now")
+                    return
+                raise
             except Exception:
                 pass
 
@@ -5081,6 +5114,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         matching the standard terminal-UX convention (bash, zsh, fish,
         vim, htop).
         """
+        if getattr(self, "_terminal_io_broken", False):
+            return
         app = getattr(self, "_app", None)
         if not app:
             return
@@ -5088,9 +5123,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             app,
             rebuild_scrollback=self._redraw_rebuilds_scrollback(),
         )
+        if getattr(self, "_terminal_io_broken", False):
+            return
         _replay_output_history()
         try:
             app.invalidate()
+        except OSError as exc:
+            if getattr(exc, "errno", None) == errno.EIO:
+                self._mark_terminal_io_broken("force_full_redraw")
+                return
+            raise
         except Exception:
             pass
 
@@ -5155,8 +5197,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
              screen/cursor state and forces a clean repaint.
 
         Both steps are independently safe and self-guard, so a failure of one
-        never prevents the other.
+        never prevents the other. If the PTY is already dead (EIO), skip the
+        redraw entirely — painting a broken fd is the #81521 redraw storm.
         """
+        if getattr(self, "_terminal_io_broken", False):
+            return
         try:
             from hermes_cli.curses_ui import flush_stdin
             flush_stdin()
@@ -5173,6 +5218,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
     def _clear_prompt_toolkit_screen(self, app, *, rebuild_scrollback: bool = False) -> None:
         """Clear the terminal and reset prompt_toolkit renderer state."""
+        if getattr(self, "_terminal_io_broken", False):
+            return
         try:
             renderer = app.renderer
             out = renderer.output
@@ -5189,6 +5236,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # next _redraw() starts from a known (0, 0) origin and
             # re-renders every cell rather than diffing against stale.
             renderer.reset(leave_alternate_screen=False)
+        except OSError as exc:
+            if getattr(exc, "errno", None) == errno.EIO:
+                self._mark_terminal_io_broken("clear_screen")
+                return
+            pass
         except Exception:
             pass
 
@@ -6224,6 +6276,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """Advance the frame + invalidate on a timer while a pet is enabled."""
         while self._pet_anim_running:
             time.sleep(self._PET_FRAME_INTERVAL)
+            if getattr(self, "_terminal_io_broken", False):
+                self._pet_anim_running = False
+                break
             now = time.monotonic()
             if now - self._pet_cfg_checked >= self._PET_CFG_INTERVAL:
                 self._pet_cfg_checked = now
@@ -6236,6 +6291,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if app is not None:
                 try:
                     app.invalidate()
+                except OSError as exc:
+                    if getattr(exc, "errno", None) == errno.EIO:
+                        self._mark_terminal_io_broken("pet_anim")
+                        break
                 except Exception:
                     pass
 
@@ -18668,7 +18727,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         except Exception:
                             pass  # Non-fatal — don't break the main loop
 
+                except OSError as e:
+                    if getattr(e, "errno", None) == errno.EIO:
+                        self._mark_terminal_io_broken("process_loop")
+                        logger.warning(
+                            "process_loop EIO — freezing UI paints (#81521): %s",
+                            e,
+                        )
+                        continue
+                    logger.warning("process_loop unhandled error (msg may be lost): %s", e)
                 except Exception as e:
+                    if isinstance(e, OSError) and getattr(e, "errno", None) == errno.EIO:
+                        self._mark_terminal_io_broken("process_loop")
+                        logger.warning(
+                            "process_loop EIO — freezing UI paints (#81521): %s",
+                            e,
+                        )
+                        continue
                     logger.warning("process_loop unhandled error (msg may be lost): %s", e)
         
         # Start processing thread

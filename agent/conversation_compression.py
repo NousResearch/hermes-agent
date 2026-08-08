@@ -3265,7 +3265,16 @@ def compress_context(
                             conversation_history=persisted_history,
                         )
                     except Exception:
-                        pass  # best-effort — don't block compression on a flush error
+                        # Best-effort — don't block compression on a flush error.
+                        # But never fail silently: a lost flush means the persisted
+                        # transcript is stale, and without a log line the operator
+                        # has no way to know it happened.
+                        logger.warning(
+                            "Compression pre-flush to session DB failed (session=%s); "
+                            "compression continues, persisted transcript may be stale",
+                            getattr(agent, "session_id", None) or "none",
+                            exc_info=True,
+                        )
                     # Publish parent closure + child row + compacted handoff in
                     # one transaction. No reader can observe a missing/empty child.
                     # The rotation child must stay on the parent's profile —

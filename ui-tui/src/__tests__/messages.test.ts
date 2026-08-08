@@ -84,6 +84,107 @@ describe('toTranscriptMessages', () => {
     expect(result[0]?.kind).toBe('event')
     expect(result[0]?.text).toBe('background agent work finished')
   })
+
+  it('keeps reasoning on a resumed assistant turn that also has visible text', () => {
+    const rows = [
+      { role: 'user', text: 'explain qubits' },
+      { role: 'assistant', text: 'A qubit holds superposition.', reasoning: 'Start from the classical bit.' }
+    ]
+
+    const result = toTranscriptMessages(rows)
+    expect(result).toHaveLength(2)
+    expect(result[1]?.role).toBe('assistant')
+    expect(result[1]?.text).toBe('A qubit holds superposition.')
+    expect(result[1]?.thinking).toBe('Start from the classical bit.')
+    expect(result[1]?.thinkingTokens).toBeGreaterThan(0)
+  })
+
+  it('retains a reasoning-only assistant turn as a trail block instead of dropping it', () => {
+    const rows = [
+      { role: 'user', text: 'think first' },
+      { role: 'assistant', text: '', reasoning_content: 'Weighing two approaches before answering.' },
+      { role: 'assistant', text: 'Approach B.' }
+    ]
+
+    const result = toTranscriptMessages(rows)
+    expect(result.map(msg => [msg.kind, msg.role, msg.text])).toEqual([
+      [undefined, 'user', 'think first'],
+      ['trail', 'system', ''],
+      [undefined, 'assistant', 'Approach B.']
+    ])
+    expect(result[1]?.thinking).toBe('Weighing two approaches before answering.')
+  })
+
+  it('still drops a genuinely empty assistant row', () => {
+    const rows = [
+      { role: 'user', text: 'hi' },
+      { role: 'assistant', text: '' },
+      { role: 'assistant', text: '   ', reasoning: '', reasoning_details: [], codex_reasoning_items: [] },
+      { role: 'assistant', text: 'hello' }
+    ]
+
+    expect(toTranscriptMessages(rows).map(msg => [msg.role, msg.text])).toEqual([
+      ['user', 'hi'],
+      ['assistant', 'hello']
+    ])
+  })
+
+  it('flattens structured reasoning_details entries instead of stringifying them', () => {
+    const rows = [
+      {
+        role: 'assistant',
+        text: '',
+        reasoning_details: [
+          { type: 'reasoning.summary', summary: 'Checked the failing test first.' },
+          { type: 'reasoning.encrypted_content', encrypted_content: 'AAAAB3NzaC1yc2E' },
+          { type: 'reasoning.text', text: 'Then read the stack trace.' }
+        ]
+      }
+    ]
+
+    const result = toTranscriptMessages(rows)
+    expect(result[0]?.thinking).toBe('Checked the failing test first.\n\nThen read the stack trace.')
+    expect(result[0]?.thinking).not.toContain('object Object')
+    expect(result[0]?.thinking).not.toContain('AAAAB3NzaC1yc2E')
+  })
+
+  it('reads Codex reasoning items through their summary parts and skips encrypted-only items', () => {
+    const rows = [
+      {
+        role: 'assistant',
+        text: 'done',
+        codex_reasoning_items: [
+          {
+            type: 'reasoning',
+            id: 'rs_a',
+            encrypted_content: 'enc_blob_a',
+            summary: [{ type: 'summary_text', text: 'Planned the edit.' }]
+          },
+          { type: 'reasoning', id: 'rs_b', encrypted_content: 'enc_blob_b' }
+        ]
+      }
+    ]
+
+    const result = toTranscriptMessages(rows)
+    expect(result[0]?.thinking).toBe('Planned the edit.')
+    expect(result[0]?.thinking).not.toContain('enc_blob')
+  })
+
+  it('does not double a Claude turn that reports the same thinking twice', () => {
+    const rows = [
+      {
+        role: 'assistant',
+        text: 'answer',
+        reasoning: 'Let me re-read the contract.',
+        reasoning_details: [
+          { type: 'thinking', thinking: 'Let me re-read the contract.', signature: 'sig-abc' },
+          { type: 'redacted_thinking', data: 'opaque-payload' }
+        ]
+      }
+    ]
+
+    expect(toTranscriptMessages(rows)[0]?.thinking).toBe('Let me re-read the contract.')
+  })
 })
 
 describe('MessageLine', () => {

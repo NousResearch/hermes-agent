@@ -345,6 +345,27 @@ class ToolCallGuardrailController:
                     self._halt_decision = decision
                     return decision
 
+        if self._is_mutating(tool_name):
+            record = self._tool_repetition.get(signature)
+            if record is not None:
+                _result_hash, repeat_count = record
+                if repeat_count >= self.config.tool_repetition_block_after:
+                    decision = ToolGuardrailDecision(
+                        action="block",
+                        code="tool_repetition_block",
+                        message=(
+                            f"Blocked {tool_name}: this call repeated the same arguments and "
+                            f"returned the same result {repeat_count} times without making "
+                            "progress. Stop repeating it unchanged; change the arguments or "
+                            "approach, or report the blocker."
+                        ),
+                        tool_name=tool_name,
+                        count=repeat_count,
+                        signature=signature,
+                    )
+                    self._halt_decision = decision
+                    return decision
+
         return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
     def after_call(
@@ -364,6 +385,7 @@ class ToolCallGuardrailController:
             exact_count = self._exact_failure_counts.get(signature, 0) + 1
             self._exact_failure_counts[signature] = exact_count
             self._no_progress.pop(signature, None)
+            self._tool_repetition.pop(signature, None)
 
             same_count = self._same_tool_failure_counts.get(tool_name, 0) + 1
             self._same_tool_failure_counts[tool_name] = same_count
@@ -414,6 +436,8 @@ class ToolCallGuardrailController:
 
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
+            if self._is_mutating(tool_name):
+                return self._track_tool_repetition(tool_name, signature, result)
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
         result_hash = _result_hash(result)

@@ -561,8 +561,16 @@ def _call(tool_name, args):
             buf += chunk
             if buf.endswith(b"\\n"):
                 break
-    raw = buf.decode().strip()
-    result = json.loads(raw)
+    # The transport uses newline-terminated JSON, but Windows TCP can
+    # surface a partial earlier response in the same recv() burst (e.g. a
+    # delayed ack from a previous in-flight call), giving us
+    # ``json.JSONDecodeError: Extra data`` on the naive ``json.loads``.
+    # Parse each line independently and return the last complete object
+    # — every response is newline-terminated by the server (#81610).
+    lines = [line for line in buf.decode("utf-8", errors="replace").split("\\n") if line.strip()]
+    if not lines:
+        raise RuntimeError("Agent returned an empty response")
+    result = json.loads(lines[-1])
     if isinstance(result, str):
         try:
             return json.loads(result)

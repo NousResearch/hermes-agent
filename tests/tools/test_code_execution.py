@@ -115,6 +115,21 @@ class TestHermesToolsGeneration(unittest.TestCase):
         self.assertIn("_seq_lock = threading.Lock()", src)
         self.assertIn("with _seq_lock:", src)
 
+    def test_tcp_transport_parses_concatenated_responses(self):
+        """Regression (#81610): TCP recv() can surface a delayed ack from a
+        previous in-flight call in the same buffer as the current response.
+        Naive json.loads() on the whole buffer raises ``Extra data``; the
+        template must parse each newline-terminated line independently and
+        return the last (current) response."""
+        src = generate_hermes_tools_module(["terminal"], transport="tcp")
+        # The template must split on the newline separator and parse the
+        # last line, not call json.loads on the raw concatenated buffer.
+        self.assertIn('split("\\n")', src)
+        self.assertIn("lines = [line for line in", src)
+        self.assertNotIn("raw = buf.decode().strip()", src)
+        # Empty buffer must surface a clear error rather than crashing.
+        self.assertIn("Agent returned an empty response", src)
+
 
 class TestExecuteCodeRemoteTempDir(unittest.TestCase):
     def test_execute_remote_uses_backend_temp_dir_for_sandbox(self):

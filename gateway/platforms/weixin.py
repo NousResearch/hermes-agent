@@ -956,7 +956,11 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return default
 
 
-def _extract_text(item_list: List[Dict[str, Any]]) -> str:
+def _extract_text(
+    item_list: List[Dict[str, Any]],
+    *,
+    prefer_platform_transcription: bool = False,
+) -> str:
     for item in item_list:
         if item.get("type") == ITEM_TEXT:
             text = str((item.get("text_item") or {}).get("text") or "")
@@ -979,24 +983,34 @@ def _extract_text(item_list: List[Dict[str, Any]]) -> str:
             return text
     for item in item_list:
         if item.get("type") == ITEM_VOICE:
+            voice_item = item.get("voice_item") or {}
+            voice_text = str(voice_item.get("text") or "").strip()
+            has_media = bool(voice_item.get("media") or {})
+
+            if prefer_platform_transcription and voice_text:
+                # User opted in to trust Tencent Cloud's STT (good for
+                # Chinese; avoids needing local STT entirely).
+                return (
+                    "[Voice transcription provided by Weixin]\n"
+                    f"{voice_text}"
+                )
+
+            if not has_media:
+                # No raw audio to download - Weixin supplied only its own
+                # speech-to-text result. Use it, but preserve the voice
+                # origin so the agent can distinguish this from text the
+                # user typed (#65022).
+                if voice_text:
+                    return (
+                        "[Voice transcription provided by Weixin]\n"
+                        f"{voice_text}"
+                    )
             # #27300: Tencent Cloud's `voice_item.text` is their STT output,
             # which is wrong for any non-Chinese audio (the original report
             # was a Russian voice message that came back as English
             # gibberish). Return empty so the central STT pipeline in
             # ``gateway/run.py`` produces the body from the downloaded
             # audio instead.
-            voice_item = item.get("voice_item") or {}
-            if not (voice_item.get("media") or {}):
-                # No raw audio to download — Weixin supplied only its own
-                # speech-to-text result. Use it, but preserve the voice
-                # origin so the agent can distinguish this from text the
-                # user typed (#65022).
-                voice_text = str(voice_item.get("text") or "")
-                if voice_text:
-                    return (
-                        "[Voice transcription provided by Weixin]\n"
-                        f"{voice_text}"
-                    )
             continue
     return ""
 
@@ -1242,6 +1256,14 @@ class WeixinAdapter(BasePlatformAdapter):
             or os.getenv("WEIXIN_SPLIT_MULTILINE_MESSAGES"),
             default=False,
         )
+        # When true, trust Tencent Cloud's voice transcription (voice_item.text)
+        # instead of downloading raw audio + running local STT. Good for
+        # Chinese-heavy users; avoids needing faster-whisper installed.
+        # Config: gateway.platforms.weixin.extra.prefer_platform_transcription
+        self._prefer_platform_transcription = _coerce_bool(
+            extra.get("prefer_platform_transcription"),
+            default=False,
+        )
 
         # Text debounce batching (mirrors Telegram adapter pattern).
         # iLink delivers messages individually, so rapid multi-message
@@ -1448,7 +1470,10 @@ class WeixinAdapter(BasePlatformAdapter):
 
         # Secondary content-fingerprint dedup for text messages
         item_list = message.get("item_list") or []
-        text = _extract_text(item_list)
+        text = _extract_text(
+            item_list,
+            prefer_platform_transcription=self._prefer_platform_transcription,
+        )
         if text:
             content_key = f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"
             if self._dedup.is_duplicate(content_key):
@@ -1680,11 +1705,20 @@ class WeixinAdapter(BasePlatformAdapter):
 
     async def _download_voice(self, item: Dict[str, Any]) -> Optional[str]:
         voice_item = item.get("voice_item") or {}
+
+        # When the user opts in to platform transcription, skip downloading
+        # the raw audio - _extract_text() already used voice_item.text as
+        # the message body, so there's no need for the audio file.
+        if self._prefer_platform_transcription:
+            voice_text = str(voice_item.get("text") or "").strip()
+            if voice_text:
+                return None
+
         media = voice_item.get("media") or {}
         # #27300: previously short-circuited when ``voice_item.text`` was set
         # on the assumption that Tencent Cloud's STT was good enough.
         # For non-Chinese audio that text is garbage (e.g. a Russian
-        # message comes back as English phonemes) — we must always
+        # message comes back as English phonemes) - we must always
         # download the raw audio so ``gateway/run.py``'s central STT
         # pipeline can re-transcribe with the user's configured
         # mlx-whisper / whisper.cpp / faster-whisper backend.

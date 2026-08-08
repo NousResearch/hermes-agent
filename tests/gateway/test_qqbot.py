@@ -439,6 +439,19 @@ class TestWaitForReconnection:
         assert result.message_id == "msg_123"
 
 
+class TestQQTransportRetryingState:
+    def test_mark_transport_disconnected_uses_retrying_state(self):
+        from gateway.platforms.qqbot import QQAdapter
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+        with mock.patch("gateway.status.write_runtime_status") as write_runtime_status:
+            adapter._mark_transport_disconnected()
+
+        assert write_runtime_status.call_args.kwargs["platform"] == "qqbot"
+        assert write_runtime_status.call_args.kwargs["platform_state"] == "retrying"
+
+
 # ---------------------------------------------------------------------------
 # ChunkedUploader
 # ---------------------------------------------------------------------------

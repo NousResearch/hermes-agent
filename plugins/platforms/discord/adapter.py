@@ -8836,6 +8836,14 @@ def _define_discord_view_classes() -> None:
                 return
 
             models = provider.get("models", [])
+            # Discord Select menus cap at 25 options. Stable-sort free models
+            # first so they stay reachable for providers whose catalog exceeds
+            # the cap (e.g. nous: 35 models, free ones at the tail). The
+            # relative order of everything else is preserved.
+            models = sorted(
+                models,
+                key=lambda m: 0 if m.lower().endswith(":free") else 1,
+            )
             options = []
             for model_id in models[:25]:
                 short = model_id.split("/")[-1] if "/" in model_id else model_id

@@ -83,3 +83,48 @@ async def test_model_picker_clears_controls_before_running_switch_callback():
     interaction.edit_original_response.assert_awaited_once()
 
 
+def test_model_picker_keeps_free_tail_models_inside_25_option_cap():
+    """Regression: Discord Select menus cap at 25 options.
+
+    Providers whose catalog exceeds the cap (e.g. nous: 35 models) used to
+    lose tail ``:free`` models to the ``models[:25]`` slice, making them
+    unreachable in the picker. Free models must be stable-sorted to the front
+    so they stay selectable, and the relative order of non-free models must be
+    preserved.
+    """
+    non_free = [f"provider/model-{i:02d}" for i in range(30)]
+    free = [f"provider/free-{i:02d}:free" for i in range(5)]
+    models = non_free + free  # free models at the tail, like a real catalog
+
+    view = ModelPickerView(
+        providers=[
+            {
+                "slug": "provider",
+                "name": "Provider",
+                "models": models,
+                "total_models": len(models),
+                "is_current": False,
+            }
+        ],
+        current_model="provider/model-00",
+        current_provider="provider",
+        session_key="session-1",
+        on_model_selected=AsyncMock(return_value="ok"),
+        allowed_user_ids={"123"},
+    )
+
+    view._build_model_select("provider")
+    model_select = view.children[0]
+    options = model_select.options
+
+    assert len(options) == 25  # Discord cap
+    selected = [o.value for o in options]
+
+    # Every free model is reachable despite the 25-option cap.
+    assert all(m in selected for m in free)
+    # Free models float to the front.
+    assert selected[: len(free)] == free
+    # Non-free models keep their original relative order, truncated at the cap.
+    assert selected[len(free):] == non_free[: 25 - len(free)]
+
+

@@ -1870,7 +1870,13 @@ def run_doctor(args):
         if _safe_which("docker"):
             # Check if docker daemon is running
             try:
-                result = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
+                # Use "docker version" instead of "docker info" because the
+                # /info API endpoint is often blocked by socket-proxy
+                # containers (e.g. tecnativa/docker-socket-proxy), producing
+                # a false "docker daemon not running".  "docker version"
+                # uses the /version endpoint which is safe and honors
+                # DOCKER_HOST when set to a TCP proxy (#72927).
+                result = subprocess.run(["docker", "version"], capture_output=True, timeout=10)
             except subprocess.TimeoutExpired:
                 result = None
             if result is not None and result.returncode == 0:

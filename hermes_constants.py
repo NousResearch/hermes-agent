@@ -339,7 +339,7 @@ def node_tool_runnable(path: str | None) -> bool:
         return False
     candidate = Path(path)
     if sys.platform == "win32":
-        if not candidate.is_file():
+        if not _safe_path_is_file(candidate):
             return False
     elif not os.path.exists(path) or not os.access(path, os.X_OK):
         return False
@@ -369,7 +369,7 @@ def hermes_managed_node_tree_present(home: Path | None = None) -> bool:
     for directory in iter_hermes_node_dirs(home):
         for name in names:
             candidate = directory / name
-            if candidate.is_file() and (
+            if _safe_path_is_file(candidate) and (
                 sys.platform == "win32" or os.access(candidate, os.X_OK)
             ):
                 return True
@@ -529,7 +529,7 @@ def heal_hermes_managed_node() -> bool:
     if sys.platform == "win32":
         return _heal_managed_node_windows()
 
-    if not _NODE_BOOTSTRAP_SCRIPT.is_file():
+    if not _safe_path_is_file(_NODE_BOOTSTRAP_SCRIPT):
         return False
 
     import subprocess
@@ -566,8 +566,51 @@ def _managed_node_tree_outdated(home: Path | None = None) -> bool:
     for directory in iter_hermes_node_dirs(home):
         for name in _candidate_node_command_names("node"):
             candidate = directory / name
-            if not candidate.is_file() or (
+            if not _safe_path_is_file(candidate) or (
                 sys.platform != "win32" and not os.access(candidate, os.X_OK)
+            ):
+                continue
+            try:
+                from hermes_cli._subprocess_compat import windows_hide_flags
+
+                result = subprocess.run(
+                    [str(candidate), "--version"],
+                    capture_output=True,
+                    timeout=10,
+                    creationflags=windows_hide_flags(),
+                )
+                major = int(result.stdout.decode().strip().lstrip("v").split(".")[0])
+            except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+                return False  # broken, not outdated — the runnable probe handles it
+            return major < _HERMES_NODE_TARGET_MAJOR
+    return False
+
+
+def _safe_path_is_file(path: "Path | str") -> bool:
+    """``Path.is_file()`` swallows some I/O errors but raises ``OSError`` on
+    Windows when the file is held open by another process (notably
+    ``WinError 1920`` for files inside the managed Node tree while a
+    persistent ``pythonw.exe`` is running).
+
+    Treat any ``OSError`` as "not a file" so the caller can fall through to
+    PATH-based or heal-and-retry resolution instead of crashing the upgrade.
+    See #70708.
+    """
+    try:
+        return Path(path).is_file()
+    except OSError:
+        return False
+
+
+def find_hermes_node_executable(command: str) -> str | None:
+    """Return a Hermes-managed Node/npm executable path, healing broken trees."""
+    names = _candidate_node_command_names(command)
+    broken_present = False
+    for directory in iter_hermes_node_dirs():
+        for name in names:
+            candidate = directory / name
+            if _safe_path_is_file(candidate) and (
+                sys.platform == "win32" or os.access(candidate, os.X_OK)
             ):
                 continue
             try:
@@ -602,7 +645,7 @@ def find_hermes_node_executable(command: str) -> str | None:
         for directory in iter_hermes_node_dirs():
             for name in names:
                 candidate = directory / name
-                if candidate.is_file() and (
+                if _safe_path_is_file(candidate) and (
                     sys.platform == "win32" or os.access(candidate, os.X_OK)
                 ):
                     resolved = str(candidate)
@@ -638,14 +681,14 @@ def find_node_executable_on_path(command: str) -> str | None:
         sep and sep in command_str for sep in (os.sep, os.altsep, "/", "\\")
     )
     if has_path_separator:
-        return command_str if Path(command_str).is_file() else None
+        return command_str if _safe_path_is_file(command_str) else None
 
     for name in _candidate_node_command_names(command_str):
         for directory in os.environ.get("PATH", "").split(os.pathsep):
             if not directory:
                 continue
             candidate = Path(directory) / name
-            if candidate.is_file():
+            if _safe_path_is_file(candidate):
                 return str(candidate)
     return None
 

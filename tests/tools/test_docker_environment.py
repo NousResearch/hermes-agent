@@ -101,6 +101,31 @@ def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
     assert f"{project_dir}:/workspace" in run_args_str
 
 
+@pytest.mark.parametrize("home_env", ["HOME", "USERPROFILE"])
+def test_auto_mount_skips_host_home_directory(monkeypatch, tmp_path, home_env):
+    """The explicit cwd-mount opt-in must never expose an entire host home."""
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.delenv("USERPROFILE", raising=False)
+    monkeypatch.setenv(home_env, str(home_dir))
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(
+        cwd="/workspace",
+        host_cwd=str(home_dir),
+        auto_mount_cwd=True,
+    )
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
+    assert f"{home_dir}:/workspace" not in run_args_str
+    assert "/workspace:rw,exec,size=10g" in run_args_str
+
+
 def test_non_persistent_cleanup_removes_container(monkeypatch):
     """When persist_across_processes=false, cleanup() must docker stop AND
     docker rm so containers don't leak across hermes processes.

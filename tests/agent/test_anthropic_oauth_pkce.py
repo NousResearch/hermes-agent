@@ -84,6 +84,20 @@ def _patch_oauth_flow(
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
 
 
+def test_no_browser_skips_automatic_browser_open(monkeypatch):
+    opened_urls = []
+    monkeypatch.setattr("webbrowser.open", opened_urls.append)
+    monkeypatch.setattr(
+        "hermes_cli.auth._can_open_graphical_browser", lambda: True
+    )
+    monkeypatch.setattr("builtins.input", lambda *_a, **_kw: "")
+
+    from agent.anthropic_adapter import run_hermes_oauth_login_pure
+
+    assert run_hermes_oauth_login_pure(open_browser=False) is None
+    assert opened_urls == []
+
+
 def test_authorization_url_state_is_not_pkce_verifier(monkeypatch, tmp_path):
     """The ``state`` parameter in the authorization URL must NOT equal the
     PKCE ``code_verifier``.

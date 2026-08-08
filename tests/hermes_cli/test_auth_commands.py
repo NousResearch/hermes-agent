@@ -94,6 +94,45 @@ def test_auth_add_api_key_persists_manual_entry(tmp_path, monkeypatch):
     assert entry["access_token"] == "sk-or-manual"
 
 
+def test_auth_add_anthropic_oauth_forwards_no_browser(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    token = _jwt_with_email("claude@example.com")
+    oauth_options = {}
+
+    def fake_oauth_login(*, open_browser=True):
+        oauth_options["open_browser"] = open_browser
+        return {
+            "access_token": token,
+            "refresh_token": "refresh-token",
+            "expires_at_ms": 1711234567000,
+        }
+
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.run_hermes_oauth_login_pure",
+        fake_oauth_login,
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "anthropic"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+        no_browser = True
+
+    auth_add_command(_Args())
+
+    payload = json.loads(
+        (tmp_path / "hermes" / "auth.json").read_text(encoding="utf-8")
+    )
+    entries = payload["credential_pool"]["anthropic"]
+    entry = next(item for item in entries if item["source"] == "manual:hermes_pkce")
+    assert entry["label"] == "claude@example.com"
+    assert oauth_options == {"open_browser": False}
+
+
 def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})

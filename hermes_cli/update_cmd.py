@@ -4569,6 +4569,27 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else:
             print("  ✓ Configuration is up to date")
 
+        # Migrate config for ALL profiles, not just the active one.
+        # `hermes update` runs with the default profile active, so named
+        # profiles (e.g. orchestrator) keep their stale config version
+        # and break when the desktop app spawns `hermes serve --profile
+        # <name>` against the updated code.  This loop catches them up
+        # with the same non-interactive migration used above.
+        try:
+            from hermes_cli.main import _migrate_profile_config
+            from hermes_cli.profiles import list_profiles
+            all_profiles = list_profiles()
+            for p in all_profiles:
+                try:
+                    _migrate_profile_config(p)
+                except Exception as pe:
+                    logger.debug(
+                        "Config migration for profile %s failed: %s",
+                        p.name, pe,
+                    )
+        except Exception:
+            pass  # profiles module not available or no profiles
+
         # Safety net: config-version migrations have been observed to leave
         # cron/jobs.json valid-but-empty, silently dropping every scheduled
         # job (issue #34600). The desktop scheduler can also overwrite with

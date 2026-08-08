@@ -154,3 +154,33 @@ def is_native_compaction_rejection(error: Any) -> bool:
     """
     text = str(error or "").lower()
     return "context_management" in text or "compact_threshold" in text
+
+
+def merge_interim_reasoning_items(
+    prior_items: Any,
+    new_items: Any,
+) -> List[Dict[str, Any]]:
+    """Merge ``codex_reasoning_items`` across Codex incomplete-continuation
+    dedup, preserving native compaction checkpoints.
+
+    The incomplete-retry path updates a visually-duplicate interim assistant
+    message in place with the newer response's replay payload. A checkpoint
+    captured on the EARLIER response is a cumulative context carrier the
+    continuation won't re-emit (the replayed checkpoint keeps the server
+    render under threshold), so a blind overwrite drops the only copy and the
+    next request balloons back to full history. Rule: newer items win, but
+    prior checkpoints are prepended unless the newer payload carries its own.
+    """
+    kept_checkpoints = [
+        item
+        for item in (prior_items if isinstance(prior_items, list) else [])
+        if isinstance(item, dict) and item.get("type") == "compaction"
+    ]
+    new_list = list(new_items) if isinstance(new_items, list) else []
+    new_has_checkpoint = any(
+        isinstance(item, dict) and item.get("type") == "compaction"
+        for item in new_list
+    )
+    if new_has_checkpoint or not kept_checkpoints:
+        return new_list
+    return kept_checkpoints + new_list

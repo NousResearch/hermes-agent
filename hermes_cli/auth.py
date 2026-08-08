@@ -4512,6 +4512,10 @@ def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
         "last_refresh": state.get("last_refresh"),
         "discovery": state.get("discovery") or {},
         "redirect_uri": state.get("redirect_uri"),
+        # #77553: surface the lineage fencing stamps so callers (and the
+        # stale-writer fence) can tell a superseded copy from the current head.
+        "lineage_generation": int(state.get("lineage_generation") or 0),
+        "lineage_write_contract": str(state.get("lineage_write_contract") or ""),
     }
 
 
@@ -4605,6 +4609,15 @@ def _save_xai_oauth_tokens(
         )
         if state is None:
             state = {}
+        # #77553: stamp the persisted lineage so every writer can fence
+        # superseded tokens. lineage_generation is a monotonic per-store
+        # counter — a writer holding an older generation knows a newer writer
+        # already rotated the shared grant. lineage_write_contract records
+        # that the state was last persisted by a write-through-correct
+        # runtime, so mixed-version fleets can be detected (and warned about)
+        # before a stale process spends the shared refresh token.
+        state["lineage_generation"] = int(state.get("lineage_generation") or 0) + 1
+        state["lineage_write_contract"] = XAI_OAUTH_LINEAGE_CONTRACT
         state["tokens"] = tokens
         state["last_refresh"] = last_refresh
         state["auth_mode"] = auth_mode
@@ -4928,6 +4941,123 @@ def refresh_xai_oauth_pure(
     return updated
 
 
+# ---------------------------------------------------------------------------
+# Stale-writer fence for the shared xAI OAuth lineage (#77553)
+# ---------------------------------------------------------------------------
+
+# Runtime compatibility marker stamped on every xai-oauth state persisted by
+# a write-through-correct runtime (post #74339 / #43589). A shared lineage
+# whose state lacks this marker was last touched by an older runtime and may
+# hold a consumed ancestor; writers warn before spending it.
+XAI_OAUTH_LINEAGE_CONTRACT = "xai-oauth-write-through-v2"
+
+
+def _xai_oauth_pool_refresh_tokens(auth_store):
+    """Refresh tokens currently persisted in the xai-oauth credential pool."""
+    credential_pool = auth_store.get("credential_pool")
+    entries = (
+        credential_pool.get("xai-oauth")
+        if isinstance(credential_pool, dict)
+        else None
+    )
+    if not isinstance(entries, list):
+        return []
+    return [
+        str(entry.get("refresh_token", "") or "").strip()
+        for entry in entries
+        if isinstance(entry, dict)
+    ]
+
+
+def _fence_xai_oauth_refresh_spend(tokens: Dict[str, Any]) -> None:
+    """Fail-closed fence: never spend a refresh token that is no longer the
+    current head of its persisted xAI OAuth lineage.
+
+    xAI rotates refresh tokens on every refresh, and replaying a consumed
+    refresh token revokes the *entire* token family. After the source-path
+    write-through fixes (#74339) writers running the new code propagate the
+    successor correctly — but a stale writer can still hold a superseded
+    token (a gateway that cached credentials before another writer rotated
+    the shared grant, or a profile shadow key left behind by a pre-fix
+    runtime). If such a writer spends the old token, xAI revokes the shared
+    lineage for every profile plus the external refresh coordinator
+    (fleet-wide ``invalid_grant``) — issue #77553.
+
+    This guard runs under the auth-store lock, immediately before the token
+    endpoint is called, and compares the token about to be spent against the
+    current persisted head of the lineage (provider state first, credential
+    pool fallback, both source-path aware). On any mismatch it raises
+    WITHOUT touching the network: no token is burned, so the fence can never
+    trigger the family-wide revocation it exists to prevent.
+    """
+    spend_refresh = str(tokens.get("refresh_token", "") or "").strip()
+    if not spend_refresh:
+        raise AuthError(
+            "Refusing to spend an xAI OAuth refresh token: none present.",
+            provider="xai-oauth",
+            code="xai_stale_refresh_fenced",
+        )
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        state, source_path = _load_provider_state_with_source(
+            auth_store, "xai-oauth"
+        )
+        persisted_head = ""
+        contract = ""
+        if isinstance(state, dict):
+            persisted_head = str(
+                (state.get("tokens") or {}).get("refresh_token", "") or ""
+            ).strip()
+            contract = str(state.get("lineage_write_contract") or "")
+        if persisted_head:
+            if persisted_head != spend_refresh:
+                raise AuthError(
+                    "xAI OAuth lineage already rotated by another writer: the "
+                    "refresh token this process holds was superseded before it "
+                    "could be spent. Refusing to replay a consumed token "
+                    "(fail-closed, #77553). Re-resolve credentials to pick up "
+                    "the current lineage head.",
+                    provider="xai-oauth",
+                    code="xai_stale_refresh_fenced",
+                )
+        else:
+            # No provider state — the grant may live in the credential pool.
+            pool_heads = set(_xai_oauth_pool_refresh_tokens(auth_store))
+            global_store = _load_global_auth_store()
+            if global_store:
+                pool_heads.update(_xai_oauth_pool_refresh_tokens(global_store))
+            if spend_refresh not in pool_heads:
+                raise AuthError(
+                    "xAI OAuth refresh token is not the current head of any "
+                    "persisted lineage (provider state or credential pool). "
+                    "Refusing to spend an unverified token (fail-closed, "
+                    "#77553). Re-authenticate with `hermes model`.",
+                    provider="xai-oauth",
+                    code="xai_unverified_lineage",
+                    relogin_required=True,
+                )
+        # Mixed-version safety: a shared (global-root) lineage last persisted
+        # by a runtime without the write-through contract may hold a consumed
+        # ancestor. Warn loudly before participating in rotation so operators
+        # can finish rolling the fleet or re-authenticate first.
+        global_root = _global_auth_file_path()
+        shared_lineage = bool(
+            source_path is not None
+            and global_root is not None
+            and _same_path(source_path, global_root)
+        )
+        if shared_lineage and contract != XAI_OAUTH_LINEAGE_CONTRACT:
+            logger.warning(
+                "xAI OAuth: shared lineage at %s was last persisted by a "
+                "runtime without the write-through contract (%r). Rotating "
+                "the shared token now may revoke other holders if any gateway "
+                "still runs a stale build. Ensure the whole fleet runs the "
+                "write-through-correct runtime, or re-authenticate (#77553).",
+                source_path,
+                contract or "<legacy/no-contract>",
+            )
+
+
 def _refresh_xai_oauth_tokens(
     tokens: Dict[str, Any],
     *,
@@ -4943,6 +5073,10 @@ def _refresh_xai_oauth_tokens(
         auth_mode = str(state.get("auth_mode") or "oauth_device_code")
     except Exception:
         auth_mode = "oauth_device_code"
+    # #77553: fail-closed stale-writer fence — never spend a refresh token
+    # that is no longer the current head of its persisted lineage. Must run
+    # before the token endpoint is hit; re-resolve instead of replaying.
+    _fence_xai_oauth_refresh_spend(tokens)
     refreshed = refresh_xai_oauth_pure(
         str(tokens.get("access_token", "") or ""),
         str(tokens.get("refresh_token", "") or ""),

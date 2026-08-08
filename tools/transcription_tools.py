@@ -1648,6 +1648,10 @@ def build_local_transcribe_kwargs(stt_config: Optional[Dict[str, Any]] = None) -
         "condition_on_previous_text": False,
     }
 
+    no_speech_threshold, logprob_threshold = _confidence_thresholds(local_cfg)
+    kwargs["no_speech_threshold"] = no_speech_threshold
+    kwargs["log_prob_threshold"] = logprob_threshold
+
     vad_enabled = local_cfg.get("vad", True)
     if vad_enabled is None:
         vad_enabled = True
@@ -1659,7 +1663,23 @@ def build_local_transcribe_kwargs(stt_config: Optional[Dict[str, Any]] = None) -
             )
         except (TypeError, ValueError):
             min_silence_ms = _VAD_MIN_SILENCE_MS_DEFAULT
-        kwargs["vad_parameters"] = {"min_silence_duration_ms": min_silence_ms}
+
+        vad_params: Dict[str, Any] = {"min_silence_duration_ms": min_silence_ms}
+        if "vad_threshold" in local_cfg:
+            try:
+                vad_params["threshold"] = float(local_cfg["vad_threshold"])
+            except (TypeError, ValueError):
+                pass
+        if "vad_min_speech_duration_ms" in local_cfg:
+            try:
+                vad_params["min_speech_duration_ms"] = int(local_cfg["vad_min_speech_duration_ms"])
+            except (TypeError, ValueError):
+                pass
+        cfg_vad_params = local_cfg.get("vad_parameters")
+        if isinstance(cfg_vad_params, dict):
+            vad_params.update(cfg_vad_params)
+
+        kwargs["vad_parameters"] = vad_params
     else:
         kwargs["vad_filter"] = False
 

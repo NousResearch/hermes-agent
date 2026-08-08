@@ -170,6 +170,75 @@ def append_notes_to_multimodal_content(content: Any, notes: str) -> bool:
         return False
 
 
+def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
+    """Kick off auto-titling for this session's first user message.
+
+    Called from the turn prologue, so every surface (CLI, gateway, TUI/desktop,
+    ACP) gets identical behavior without each one re-implementing the call.
+    Fully defensive: titling is cosmetic and must never break a turn.
+    """
+    session_db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if not session_db or not session_id:
+        return
+
+    try:
+        from agent.message_content import flatten_message_text
+        from agent.title_generator import maybe_auto_title
+
+        # The turn's own user message, as text. Multimodal turns flatten to
+        # their text parts; an image-only turn yields "" and is skipped, since
+        # there is nothing to title from.
+        user_text = ""
+        for msg in reversed(messages or []):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                user_text = flatten_message_text(msg.get("content")).strip()
+                break
+        if not user_text:
+            return
+
+        # The session row is created lazily on the first persist, which happens
+        # later in the turn. Force it now, or the title write matches zero rows
+        # and the session stays untitled for the whole turn anyway.
+        if not getattr(agent, "_session_db_created", False):
+            ensure = getattr(agent, "_ensure_db_session", None)
+            if callable(ensure):
+                ensure()
+            if not getattr(agent, "_session_db_created", False):
+                return
+
+        # Snapshot the runtime identity; the validator lets the background
+        # titler skip its LLM call if the user switches models before it fires
+        # (a stale request would reload an unloaded Ollama model, #19027).
+        _model = getattr(agent, "model", None)
+        _provider = getattr(agent, "provider", None)
+
+        maybe_auto_title(
+            session_db,
+            session_id,
+            user_text,
+            conversation_history=messages,
+            failure_callback=(
+                getattr(agent, "_title_failure_callback", None)
+                or getattr(agent, "_emit_auxiliary_failure", None)
+            ),
+            main_runtime={
+                "model": _model,
+                "provider": _provider,
+                "base_url": getattr(agent, "base_url", None),
+                "api_key": getattr(agent, "api_key", None),
+                "api_mode": getattr(agent, "api_mode", None),
+            },
+            title_callback=getattr(agent, "_on_session_title", None),
+            runtime_validator=lambda: (
+                getattr(agent, "model", None) == _model
+                and getattr(agent, "provider", None) == _provider
+            ),
+        )
+    except Exception:
+        logger.debug("Turn-start auto-title dispatch failed", exc_info=True)
+
+
 def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> int:
     """Locate this turn's user message after compaction rebuilt ``messages``.
 
@@ -1264,6 +1333,16 @@ def build_turn_context(
         # close path must no longer treat it as a pre-worker UI input.
         if not isinstance(pending_cli_message, dict) or pending_cli_message.get("_db_persisted"):
             agent._pending_cli_user_message = None
+
+    # Title the session from this user message, now — the row exists and the
+    # turn has not called the model yet. Titling is derived from the user's
+    # ask alone, so it runs concurrently with the turn instead of waiting for
+    # a final response; on a long tool-heavy first turn that is the difference
+    # between a title in ~1s and a title minutes later (or never, when the
+    # turn failed before producing one). Fire-and-forget on a daemon thread,
+    # a no-op once the session has a title, and shared by every surface
+    # because every surface enters the turn through this prologue.
+    _maybe_title_session_at_turn_start(agent, messages)
 
     return TurnContext(
         user_message=user_message,

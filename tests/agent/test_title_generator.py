@@ -152,8 +152,8 @@ class TestAutoTitleSession:
 
     def test_invokes_title_callback_after_setting_title(self):
         db = MagicMock()
-        db.get_session_title.return_value = None
-        db.set_auto_title_if_empty.return_value = True
+        db.get_session_title_source.return_value = None
+        db.set_auto_title.return_value = True
         seen = []
         with patch("agent.title_generator.generate_title", return_value="Readable Session"):
             auto_title_session(
@@ -163,8 +163,28 @@ class TestAutoTitleSession:
                 "hi there",
                 title_callback=seen.append,
             )
-        db.set_auto_title_if_empty.assert_called_once_with("sess-1", "Readable Session")
+        db.set_auto_title.assert_called_once_with(
+            "sess-1", "Readable Session", source="llm"
+        )
         assert seen == ["Readable Session"]
+
+    def test_upgrades_a_derived_title_but_not_an_llm_one(self, tmp_path):
+        """The instant title is provisional; a model title is final.
+
+        This is the "session renames itself" guard: re-running the titler on a
+        session that already has an LLM title must be a no-op.
+        """
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        db.set_auto_title("sess-1", "fix the flaky auth test", source="derived")
+
+        with patch("agent.title_generator.generate_title", return_value="Fix flaky auth test"):
+            auto_title_session(db, "sess-1", "fix the flaky auth test", "")
+        assert db.get_session_title("sess-1") == "Fix flaky auth test"
+
+        with patch("agent.title_generator.generate_title", return_value="Totally Different"):
+            auto_title_session(db, "sess-1", "fix the flaky auth test", "")
+        assert db.get_session_title("sess-1") == "Fix flaky auth test"
 
 
 
@@ -190,7 +210,7 @@ class TestMaybeAutoTitle:
     """Tests for maybe_auto_title() — the fire-and-forget entry point."""
 
     def test_skips_if_not_first_exchange(self):
-        """Should not fire for conversations with more than 2 user messages."""
+        """Should not fire once the conversation is past its opening turn."""
         db = MagicMock()
         history = [
             {"role": "user", "content": "first"},
@@ -209,12 +229,11 @@ class TestMaybeAutoTitle:
             mock_auto.assert_not_called()
 
     def test_fires_on_first_exchange(self):
-        """Should fire a background thread for the first exchange."""
+        """Should fire a background thread for the opening message."""
         db = MagicMock()
         db.get_session_title.return_value = None
         history = [
             {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi there"},
         ]
 
         with patch("agent.title_generator.auto_title_session") as mock_auto:
@@ -229,12 +248,37 @@ class TestMaybeAutoTitle:
                 db,
                 "sess-1",
                 "hello",
-                "hi there",
                 failure_callback=None,
                 main_runtime=None,
                 title_callback=None,
                 runtime_validator=None,
             )
+
+    def test_writes_instant_title_before_the_model_runs(self, tmp_path):
+        """The derived title lands synchronously — no LLM, no waiting."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        with patch("agent.title_generator.auto_title_session"):
+            maybe_auto_title(
+                db, "sess-1", "fix the flaky auth test in login", "", []
+            )
+        assert db.get_session_title("sess-1") == "fix the flaky auth test in login"
+        assert db.get_session_title_source("sess-1") == "derived"
+
+    def test_skips_machine_authored_opening_messages(self, tmp_path):
+        """A compaction handoff is not a user request and must not title."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(
+                db,
+                "sess-1",
+                "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted",
+                "",
+                [],
+            )
+        assert db.get_session_title("sess-1") is None
+        mock_auto.assert_not_called()
 
 
 
@@ -246,9 +290,9 @@ class TestAutoTitleDuplicateHandling:
 
     def test_dedupes_duplicate_title_via_lineage(self):
         db = MagicMock()
-        db.get_session_title.return_value = None
+        db.get_session_title_source.return_value = None
         # Atomic write path: collision raises ValueError, retry persists.
-        db.set_auto_title_if_empty.side_effect = [ValueError("in use"), True]
+        db.set_auto_title.side_effect = [ValueError("in use"), True]
         db.get_next_title_in_lineage.return_value = "Debugging Import Error #2"
         with patch(
             "agent.title_generator.generate_title",
@@ -257,7 +301,7 @@ class TestAutoTitleDuplicateHandling:
             seen = []
             auto_title_session(db, "sess-1", "hi", "hello", title_callback=seen.append)
         db.get_next_title_in_lineage.assert_called_once_with("Debugging Import Error")
-        assert db.set_auto_title_if_empty.call_args_list[-1][0] == (
+        assert db.set_auto_title.call_args_list[-1][0] == (
             "sess-1",
             "Debugging Import Error #2",
         )
@@ -267,12 +311,14 @@ class TestAutoTitleDuplicateHandling:
 
 
     def test_manual_title_race_skips_without_callback(self):
-        # Atomic predicate fails (manual /title landed while generation was in
+        # Precedence check fails (manual /title landed while generation was in
         # flight) -> nothing persisted, no callback fired.
         from agent.title_generator import _persist_session_title
         db = MagicMock()
-        db.set_auto_title_if_empty.return_value = False
-        assert _persist_session_title(db, "sess-1", "Some Title") is None
+        db.set_auto_title.return_value = False
+        assert (
+            _persist_session_title(db, "sess-1", "Some Title", source="llm") is None
+        )
         db.set_session_title.assert_not_called()
 
 

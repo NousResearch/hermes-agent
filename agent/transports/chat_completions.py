@@ -17,6 +17,7 @@ from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+from agent.turn_context import substitute_api_content
 
 
 def _static_prompt_instructions(messages: list[dict[str, Any]]) -> str:
@@ -239,6 +240,9 @@ class ChatCompletionsTransport(ProviderTransport):
           ``Extra inputs are not permitted, field: 'messages[N].tool_name'``.
           Permissive providers (OpenRouter, MiniMax) silently ignore the
           field, which masked the bug for months.
+        - ``api_content`` — substitute this persist-what-you-send sidecar into
+          user/assistant content before removing the internal field, preserving
+          the exact historical bytes at this final API boundary.
         - Hermes-internal scaffolding markers — any top-level message key
           starting with ``_`` (e.g. ``_empty_recovery_synthetic``,
           ``_empty_terminal_sentinel``, ``_thinking_prefill``). These are
@@ -314,7 +318,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 out_msg.pop("tool_name", None)
                 out_msg.pop("effect_disposition", None)
                 out_msg.pop("timestamp", None)  # #47868 — leak into strict providers
-                out_msg.pop("api_content", None)  # persist-what-you-send sidecar
+                substitute_api_content(out_msg)
 
 
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).

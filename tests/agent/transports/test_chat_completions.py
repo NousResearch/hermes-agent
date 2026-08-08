@@ -84,6 +84,38 @@ class TestChatCompletionsBasic:
         msgs = [{"role": "user", "content": "hi"}]
         assert transport.convert_messages(msgs) is msgs
 
+    @pytest.mark.parametrize("role", ["user", "assistant"])
+    def test_convert_messages_replays_api_content_sidecar(self, transport, role):
+        msgs = [
+            {
+                "role": role,
+                "content": "clean transcript content",
+                "api_content": "exact bytes previously sent",
+            }
+        ]
+
+        result = transport.convert_messages(msgs)
+
+        assert result[0]["content"] == "exact bytes previously sent"
+        assert "api_content" not in result[0]
+        assert result[0] is not msgs[0]
+        assert msgs[0]["content"] == "clean transcript content"
+        assert msgs[0]["api_content"] == "exact bytes previously sent"
+
+    def test_convert_messages_does_not_substitute_tool_api_content(self, transport):
+        msgs = [
+            {
+                "role": "tool",
+                "content": "tool result",
+                "api_content": "invalid sidecar",
+            }
+        ]
+
+        result = transport.convert_messages(msgs)
+
+        assert result[0]["content"] == "tool result"
+        assert "api_content" not in result[0]
+
     def test_convert_messages_strips_internal_scaffolding_markers(self, transport):
         """Hermes-internal ``_``-prefixed markers must never reach the wire.
 

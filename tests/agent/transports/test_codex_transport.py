@@ -468,6 +468,88 @@ class TestCodexBuildKwargs:
             for t in tools
         )
 
+    # --- DeepSeek server-side web_search (api.deepseek.com /responses) ---
+    # DeepSeek executes its built-in web_search tool entirely server-side on
+    # deepseek-v4-flash (the only model currently supporting the Responses
+    # API). Unlike the xAI 1:1 swap, the builtin is declared outright — even
+    # when no client web_search exists — because DeepSeek models decide
+    # autonomously whether to search (the officially recommended usage), and
+    # a turn without a configured web backend has no client tool to swap.
+
+    def test_deepseek_swaps_client_web_search_for_native_builtin(self, transport):
+        """provider=deepseek + flash model: client web_search is replaced by
+        the server-side builtin; non-conflicting tools are preserved."""
+        messages = [{"role": "user", "content": "Today's weather?"}]
+        kw = transport.build_kwargs(
+            model="deepseek-v4-flash", messages=messages,
+            tools=[
+                {"type": "function", "function": {
+                    "name": "read_file", "description": "Read a file.",
+                    "parameters": {"type": "object",
+                                   "properties": {"path": {"type": "string"}}}}},
+                {"type": "function", "function": {
+                    "name": "web_search", "description": "Search the web.",
+                    "parameters": {"type": "object",
+                                   "properties": {"query": {"type": "string"}}}}},
+            ],
+            provider="deepseek",
+            base_url="https://api.deepseek.com",
+        )
+        tool_types = [t.get("type") for t in kw.get("tools", [])]
+        assert "web_search" in tool_types, kw.get("tools")
+        names = [t.get("name") for t in kw.get("tools", []) if t.get("type") == "function"]
+        assert "read_file" in names
+        assert "web_search" not in names
+
+    def test_deepseek_declares_native_web_search_without_client_tool(self, transport):
+        """Even with no client web_search declared (e.g. no web backend
+        configured), the DeepSeek builtin is still declared so the model can
+        search on demand."""
+        messages = [{"role": "user", "content": "Today's weather?"}]
+        kw = transport.build_kwargs(
+            model="deepseek-v4-flash", messages=messages,
+            tools=[{"type": "function", "function": {
+                "name": "read_file", "description": "Read a file.",
+                "parameters": {"type": "object",
+                               "properties": {"path": {"type": "string"}}}}}],
+            provider="deepseek",
+            base_url="https://api.deepseek.com",
+        )
+        tool_types = [t.get("type") for t in kw.get("tools", [])]
+        assert "web_search" in tool_types, kw.get("tools")
+
+    def test_deepseek_detected_via_hostname_only(self, transport):
+        """api.deepseek.com hostname alone (provider not passed) triggers the
+        builtin declaration, mirroring the xAI hostname-based detection."""
+        messages = [{"role": "user", "content": "Search."}]
+        kw = transport.build_kwargs(
+            model="deepseek-v4-flash", messages=messages,
+            tools=None,
+            base_url="https://api.deepseek.com",
+        )
+        tool_types = [t.get("type") for t in kw.get("tools", [])]
+        assert "web_search" in tool_types, kw.get("tools")
+
+    def test_deepseek_non_flash_keeps_client_web_search(self, transport):
+        """Responses API support (incl. web_search) is currently limited to
+        deepseek-v4-flash; non-flash models keep the client tool untouched."""
+        messages = [{"role": "user", "content": "Search."}]
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro", messages=messages,
+            tools=[{"type": "function", "function": {
+                "name": "web_search", "description": "Search the web.",
+                "parameters": {"type": "object",
+                               "properties": {"query": {"type": "string"}}}}}],
+            provider="deepseek",
+            base_url="https://api.deepseek.com",
+        )
+        tools = kw.get("tools", [])
+        assert not any(t.get("type") == "web_search" for t in tools)
+        assert any(
+            t.get("type") == "function" and t.get("name") == "web_search"
+            for t in tools
+        )
+
     # --- Grok reasoning-effort capability allowlist ---
     # api.x.ai 400s with "Model X does not support parameter reasoningEffort"
     # on grok-4 / grok-4-fast / grok-3 / grok-code-fast / grok-4.20-0309-*.

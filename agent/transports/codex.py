@@ -268,6 +268,15 @@ class ResponsesApiTransport(ProviderTransport):
         is_github_responses = params.get("is_github_responses") is True
         is_codex_backend = params.get("is_codex_backend") is True
         is_xai_responses = params.get("is_xai_responses") is True
+        # DeepSeek's /responses surface (api.deepseek.com) runs the built-in
+        # web_search tool server-side on deepseek-v4-flash. Detect it here so
+        # the tools block below can declare the builtin instead of (or in
+        # addition to) Hermes' client-side web_search function.
+        is_deepseek_responses = (
+            str(params.get("provider") or "").strip().lower() == "deepseek"
+            or "api.deepseek.com"
+            in str(params.get("base_url") or params.get("base_url_hostname") or "").lower()
+        ) and "flash" in (model or "").lower()
         replay_encrypted_reasoning = bool(
             params.get("replay_encrypted_reasoning", True)
         )
@@ -327,7 +336,19 @@ class ResponsesApiTransport(ProviderTransport):
         #    is honored, but rename the wire tool to
         #    ``hermes_web_search`` so Grok cannot hijack the name. The alias
         #    is mapped back to ``web_search`` in ``normalize_response``.
-        if is_xai_responses and response_tools:
+        if is_deepseek_responses:
+            # DeepSeek executes its built-in web_search entirely server-side:
+            # swap Hermes' client-side web_search function for the builtin
+            # when one is declared, and declare the builtin outright otherwise
+            # so the model can always search on demand. The response adapter
+            # already normalizes server-side web_search_call items.
+            filtered = [
+                t for t in (response_tools or [])
+                if not (isinstance(t, dict) and t.get("name") == "web_search")
+            ]
+            filtered.append({"type": "web_search"})
+            response_tools = filtered
+        elif is_xai_responses and response_tools:
             has_client_web_search = any(
                 isinstance(t, dict) and t.get("name") == "web_search"
                 for t in response_tools

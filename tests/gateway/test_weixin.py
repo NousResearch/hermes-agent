@@ -545,6 +545,41 @@ class TestWeixinContentDedup:
         event = adapter.handle_message.await_args[0][0]
         assert event.text == "hello world"
 
+    def test_slash_commands_bypass_content_dedup(self):
+        """Slash commands with different message IDs bypass content dedup."""
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+        adapter._text_batch_delay_seconds = 0.05
+        adapter._text_batch_split_delay_seconds = 0.05
+        base_msg = {
+            "from_user_id": "wxid_user1",
+            "item_list": [{"type": 1, "text_item": {"text": "/approve"}}],
+        }
+        async def _drive():
+            await adapter._process_message({**base_msg, "message_id": "msg-1"})
+            await adapter._process_message({**base_msg, "message_id": "msg-2"})
+            await asyncio.sleep(0.2)
+        asyncio.run(_drive())
+        assert adapter.handle_message.await_count == 2
+        texts = [call.args[0].text for call in adapter.handle_message.await_args_list]
+        assert texts == ["/approve", "/approve"]
+
+    def test_slash_command_msg_id_dedup_still_applies(self):
+        """Message ID dedup still applies to slash commands."""
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+        base_msg = {
+            "from_user_id": "wxid_user1",
+            "item_list": [{"type": 1, "text_item": {"text": "/approve"}}],
+        }
+        async def _drive():
+            await adapter._process_message({**base_msg, "message_id": "same-id"})
+            await adapter._process_message({**base_msg, "message_id": "same-id"})
+        asyncio.run(_drive())
+        assert adapter.handle_message.await_count == 1
+
 
 class TestWeixinTextDebounce:
     """Text-debounce batching for rapid multi-message bursts (issue #35301).

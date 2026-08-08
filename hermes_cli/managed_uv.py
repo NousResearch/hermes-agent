@@ -1242,6 +1242,16 @@ def repair_vulnerable_runtime(
 # ---------------------------------------------------------------------------
 
 
+_UV_INSTALLER_URLS_POSIX = (
+    "https://astral.sh/uv/install.sh",
+    "https://github.com/astral-sh/uv/releases/latest/download/uv-installer.sh",
+)
+_UV_INSTALLER_URLS_WINDOWS = (
+    "https://astral.sh/uv/install.ps1",
+    "https://github.com/astral-sh/uv/releases/latest/download/uv-installer.ps1",
+)
+
+
 def _install_uv(target: Path) -> None:
     """Bootstrap uv into *target* using the official standalone installer.
 
@@ -1266,16 +1276,23 @@ def _install_uv(target: Path) -> None:
 
 
 def _install_uv_posix(env: dict[str, str]) -> None:
-    """Download + sh the POSIX installer (two-stage to avoid curl|sh pitfalls)."""
+    """Download + sh the POSIX installer from either official source."""
     with tempfile.NamedTemporaryFile(suffix=".sh", delete=False) as f:
         installer_path = f.name
 
     try:
-        subprocess.run(
-            ["curl", "-LsSf", "https://astral.sh/uv/install.sh", "-o", installer_path],
-            check=True,
-            capture_output=True,
-        )
+        for installer_url in _UV_INSTALLER_URLS_POSIX:
+            try:
+                subprocess.run(
+                    ["curl", "-LsSf", installer_url, "-o", installer_path],
+                    check=True,
+                    capture_output=True,
+                )
+            except subprocess.CalledProcessError:
+                if installer_url == _UV_INSTALLER_URLS_POSIX[-1]:
+                    raise
+            else:
+                break
         subprocess.run(
             ["sh", installer_path],
             env=env,
@@ -1290,14 +1307,21 @@ def _install_uv_posix(env: dict[str, str]) -> None:
 
 
 def _install_uv_windows(env: dict[str, str]) -> None:
-    """Invoke the PowerShell installer."""
-    cmd = "irm https://astral.sh/uv/install.ps1 | iex"
-    subprocess.run(
-        ["powershell", "-ExecutionPolicy", "Bypass", "-c", cmd],
-        env=env,
-        check=True,
-        capture_output=True,
-    )
+    """Invoke the PowerShell installer from either official source."""
+    for installer_url in _UV_INSTALLER_URLS_WINDOWS:
+        cmd = f"$ErrorActionPreference = 'Stop'; irm {installer_url} | iex"
+        try:
+            subprocess.run(
+                ["powershell", "-ExecutionPolicy", "Bypass", "-c", cmd],
+                env=env,
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError:
+            if installer_url == _UV_INSTALLER_URLS_WINDOWS[-1]:
+                raise
+        else:
+            return
 
 
 def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:

@@ -306,19 +306,21 @@ def _npm_bin_exists(bin_dir: Path, name: str) -> bool:
     )
 
 def _web_build_toolchain_ready(*roots: Path) -> bool:
-    """True when ``tsc`` and ``vite`` shims are reachable from any of *roots*.
+    """True when the ``vite`` shim is reachable from any of *roots*.
 
-    Callers must pass every root the build would search; checking only one
-    reports a healthy tree as broken.
+    Default ``npm run build`` is Vite-only (typecheck lives in
+    ``build:check`` / ``typecheck``), so a missing ``tsc`` must not force
+    endless reinstalls or mark a healthy tree broken. Callers must pass every
+    root the build would search; checking only one reports a healthy tree as
+    broken.
     """
     bin_dirs = [
         bin_dir
         for bin_dir in (root / "node_modules" / ".bin" for root in roots)
         if bin_dir.is_dir()
     ]
-    return bool(bin_dirs) and all(
-        any(_npm_bin_exists(bin_dir, tool) for bin_dir in bin_dirs)
-        for tool in ("tsc", "vite")
+    return bool(bin_dirs) and any(
+        _npm_bin_exists(bin_dir, "vite") for bin_dir in bin_dirs
     )
 
 def _web_toolchain_roots(web_dir: Path) -> tuple[Path, ...]:
@@ -2111,40 +2113,69 @@ def _update_node_dependencies() -> list[str]:
     # print download progress, and capturing it makes a long download look
     # hung. The chatty npm-deprecation noise during `hermes update` comes from
     # the *desktop* build, not this step; that one is captured to update.log.
+    def _print_npm_failure_tail(label: str, result: "subprocess.CompletedProcess") -> None:
+        print(f"  ⚠ npm install failed ({label})")
+        blob = f"{result.stderr or ''}{result.stdout or ''}".strip()
+        if blob:
+            for line in blob.splitlines()[-8:]:
+                print(f"    {line}")
+        print("    Tip: from the checkout root try:")
+        print("      npm install --include=dev --workspaces=false")
+        print("      npm install --include=dev --workspace ui-tui --workspace web")
+        print("    If the tree looks half-installed: remove node_modules and re-run.")
+
+    def _install_once(extra: list[str]) -> "subprocess.CompletedProcess":
+        return _m()._run_npm_install_deterministic(
+            npm,
+            _m().PROJECT_ROOT,
+            extra_args=tuple(extra),
+            capture_output=False,
+            env=nixos_env,
+        )
+
     root_args = [*extra_args, "--workspaces=false"]
-    root_result = _m()._run_npm_install_deterministic(
-        npm,
-        _m().PROJECT_ROOT,
-        extra_args=tuple(root_args),
-        capture_output=False,
-        env=nixos_env,
-    )
+    root_result = _install_once(root_args)
     if root_result.returncode != 0:
-        print("  ⚠ npm install failed in repo root")
-        stderr = (root_result.stderr or "").strip() if root_result.stderr else ""
-        if stderr:
-            print(f"    {stderr.splitlines()[-1]}")
+        # Retry once without --prefer-offline (stale cache / partial offline miss).
+        print("  ⚠ root install failed — retrying without --prefer-offline...")
+        retry_args = [
+            a for a in root_args if a != "--prefer-offline"
+        ] + ["--fetch-retries", "3"]
+        root_result = _install_once(retry_args)
+    if root_result.returncode != 0:
+        _print_npm_failure_tail("repo root install step", root_result)
         return _partial_update_failure("repo root")
 
     # Step 2: install only the workspaces update needs (ui-tui, web).
     # --workspace selects specific workspaces; the rest (desktop) are skipped.
     ws_args = [*extra_args, "--workspace", "ui-tui", "--workspace", "web"]
-    ws_result = _m()._run_npm_install_deterministic(
-        npm,
-        _m().PROJECT_ROOT,
-        extra_args=tuple(ws_args),
-        capture_output=False,
-        env=nixos_env,
-    )
+    ws_result = _install_once(ws_args)
+    if ws_result.returncode != 0:
+        print("  ⚠ workspace install failed — retrying without --prefer-offline...")
+        ws_retry = [
+            a for a in ws_args if a != "--prefer-offline"
+        ] + ["--fetch-retries", "3"]
+        ws_result = _install_once(ws_retry)
     if ws_result.returncode == 0:
-        _record_npm_lockfile_hash(shared_hermes_root)
-        print("  ✓ repo root + ui-tui, web workspaces (desktop skipped)")
-        return []
+        # Guard against install exit-0 with a missing Vite toolchain (omit=dev
+        # leaks, interrupted link). Force one more non-silent pass if needed.
+        web_dir = _m().PROJECT_ROOT / "web"
+        if (web_dir / "package.json").is_file() and not _web_build_toolchain_ready(
+            *_web_toolchain_roots(web_dir)
+        ):
+            print("  ⚠ vite missing after install — reinstalling web workspace...")
+            ws_result = _install_once(
+                [a for a in ws_args if a != "--prefer-offline"] + ["--fetch-retries", "3"]
+            )
+        if ws_result.returncode == 0 and (
+            not (web_dir / "package.json").is_file()
+            or _web_build_toolchain_ready(*_web_toolchain_roots(web_dir))
+        ):
+            _record_npm_lockfile_hash(shared_hermes_root)
+            print("  ✓ repo root + ui-tui, web workspaces (desktop skipped)")
+            return []
 
-    print("  ⚠ npm workspace install failed")
-    stderr = (ws_result.stderr or "").strip() if ws_result.stderr else ""
-    if stderr:
-        print(f"    {stderr.splitlines()[-1]}")
+    _print_npm_failure_tail("ui-tui/web workspace install step", ws_result)
     return _partial_update_failure("ui-tui, web workspaces")
 
 def _log_only_write(text: str) -> None:

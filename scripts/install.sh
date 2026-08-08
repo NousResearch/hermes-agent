@@ -2397,7 +2397,107 @@ install_node_deps() {
     fi
 
     # Keep the checkout clean so `hermes update` doesn't autostash every run.
-    restore_dirty_lockfiles "$INSTALL_DIR"
+    
+# Create desktop shortcuts/launchers for the built app (Linux/macOS)
+# Mirrors the Windows New-DesktopShortcuts function
+create_desktop_shortcuts() {
+    local desktop_exe="$1"
+    local user_only="${2:-true}"
+    
+    if [ "$OS" = "linux" ]; then
+        create_linux_desktop_entry "$desktop_exe" "$user_only"
+    elif [ "$OS" = "macos" ]; then
+        create_macos_alias "$desktop_exe" "$user_only"
+    fi
+}
+
+create_linux_desktop_entry() {
+    local exe_path="$1"
+    local user_only="$2"
+    
+    if [ "$user_only" = "true" ]; then
+        local applications_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+    else
+        local applications_dir="/usr/share/applications"
+    fi
+    
+    mkdir -p "$applications_dir"
+    local desktop_file="$applications_dir/hermes.desktop"
+    
+    # Find icon
+    local icon_path=""
+    if [ -f "$(dirname "$exe_path")/resources/icon.png" ]; then
+        icon_path="$(dirname "$exe_path")/resources/icon.png"
+    elif [ -f "$(dirname "$exe_path")/icon.png" ]; then
+        icon_path="$(dirname "$exe_path")/icon.png"
+    elif [ -f "$INSTALL_DIR/apps/desktop/assets/icon.png" ]; then
+        icon_path="$INSTALL_DIR/apps/desktop/assets/icon.png"
+    fi
+    
+    local icon_str="${icon_path:-hermes}"
+    
+    cat > "$desktop_file" <<EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Hermes
+GenericName=AI Agent
+Comment=Hermes Agent Desktop App
+Exec=$exe_path
+Icon=$icon_str
+Terminal=false
+Categories=Development;Utility;
+StartupWMClass=Hermes
+EOF
+    
+    chmod 644 "$desktop_file"
+    log_success "Created .desktop entry: $desktop_file"
+    
+    # Update desktop database
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$applications_dir" 2>/dev/null || true
+    fi
+}
+
+create_macos_alias() {
+    local exe_path="$1"
+    local user_only="$2"
+    
+    if [ "$user_only" = "true" ]; then
+        local apps_dir="$HOME/Applications"
+    else
+        local apps_dir="/Applications"
+    fi
+    
+    mkdir -p "$apps_dir"
+    
+    # Find the .app bundle from the executable path
+    local app_bundle="$exe_path"
+    while [ "${app_bundle##*.}" != "app" ] && [ "$app_bundle" != "$(dirname "$app_bundle")" ]; do
+        app_bundle="$(dirname "$app_bundle")"
+    done
+    
+    if [ "${app_bundle##*.}" != "app" ]; then
+        log_warn "Could not find .app bundle from $exe_path"
+        return 0
+    fi
+    
+    local alias_path="$apps_dir/Hermes.app"
+    
+    # Create alias using osascript
+    osascript -e "
+        tell application "Finder"
+            make alias file to POSIX file "$app_bundle" at POSIX file "$apps_dir"
+        end tell
+    " 2>/dev/null || {
+        log_warn "Failed to create Applications alias (osascript failed)"
+        return 0
+    }
+    
+    log_success "Created Applications alias: $alias_path"
+}
+
+restore_dirty_lockfiles "$INSTALL_DIR"
 }
 
 run_setup_wizard() {
@@ -3097,6 +3197,9 @@ install_desktop() {
         return 1
     fi
     log_success "Desktop app built: $app"
+
+    # Create desktop shortcuts/launchers
+    create_desktop_shortcuts "$app" "true"
 
     # Linux: Electron's chrome-sandbox helper needs root:root 4755 or the
     # sandboxed renderer will abort on startup.  Check the file is a regular

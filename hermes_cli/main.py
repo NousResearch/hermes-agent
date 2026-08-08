@@ -7293,6 +7293,189 @@ def cmd_gui(args: argparse.Namespace):
     launch_result = subprocess.run(launch_command, cwd=desktop_dir, env=env, check=False)
     sys.exit(launch_result.returncode)
 
+def cmd_gui_install(args: argparse.Namespace):
+    """Create desktop shortcut/menu entry for the Hermes desktop app."""
+    import os
+    import sys
+    from pathlib import Path
+    
+    # First, ensure the desktop app is built
+    desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+    if not (desktop_dir / "package.json").exists():
+        print(f"Desktop GUI source not found at: {desktop_dir}")
+        sys.exit(1)
+    
+    # Check if packaged app exists
+    from hermes_cli.main import _desktop_packaged_executable
+    packaged_executable = _desktop_packaged_executable(desktop_dir)
+    
+    if packaged_executable is None:
+        print("ERROR: No packaged desktop app found. Build it first with: hermes desktop --build-only")
+        sys.exit(1)
+    
+    print(f"Found desktop app at: {packaged_executable}")
+    
+    # Platform-specific shortcut creation
+    if sys.platform == "win32":
+        _create_windows_shortcut(packaged_executable, args.user, args.force)
+    elif sys.platform == "darwin":
+        _create_macos_alias(packaged_executable, args.user, args.force)
+    else:
+        _create_linux_desktop_entry(packaged_executable, args.user, args.force)
+    
+    print("SUCCESS: Desktop shortcut created successfully")
+
+def _create_windows_shortcut(exe_path: Path, user_only: bool, force: bool):
+    """Create Windows Start Menu and Desktop shortcuts."""
+    try:
+        import win32com.client
+    except ImportError:
+        print("ERROR: pywin32 required for Windows shortcut creation. Install with: pip install pywin32")
+        sys.exit(1)
+    
+    shell = win32com.client.Dispatch("WScript.Shell")
+    work_dir = exe_path.parent
+    
+    # Icon location
+    icon_ico = work_dir / "resources" / "icon.ico"
+    if icon_ico.exists():
+        icon_location = f"{icon_ico},0"
+    else:
+        icon_location = f"{exe_path},0"
+    
+    # Determine target directories
+    if user_only:
+        programs_dir = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+        desktop_dir = Path.home() / "Desktop"
+    else:
+        programs_dir = Path(os.environ.get("ALLUSERSPROFILE", r"C:\ProgramData")) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+        desktop_dir = Path(os.environ.get("PUBLIC", r"C:\Users\Public")) / "Desktop"
+    
+    programs_dir.mkdir(parents=True, exist_ok=True)
+    desktop_dir.mkdir(parents=True, exist_ok=True)
+    
+    shortcuts = [
+        (programs_dir / "Hermes.lnk", "Start Menu"),
+        (desktop_dir / "Hermes.lnk", "Desktop"),
+    ]
+    
+    for shortcut_path, location in shortcuts:
+        if shortcut_path.exists() and not force:
+            print(f"  Skipping {location} shortcut (already exists, use --force to overwrite)")
+            continue
+        try:
+            sc = shell.CreateShortcut(str(shortcut_path))
+            sc.TargetPath = str(exe_path)
+            sc.WorkingDirectory = str(work_dir)
+            sc.IconLocation = icon_location
+            sc.Description = "Hermes Agent"
+            sc.Save()
+            print(f"  Created {location} shortcut: {shortcut_path}")
+        except Exception as e:
+            print(f"  Failed to create {location} shortcut: {e}")
+    
+    # Bust icon cache
+    try:
+        import subprocess
+        subprocess.run(["ie4uinit.exe", "-show"], capture_output=True)
+    except Exception:
+        pass
+
+def _create_macos_alias(exe_path: Path, user_only: bool, force: bool):
+    """Create macOS Application folder alias."""
+    import subprocess
+    
+    if user_only:
+        apps_dir = Path.home() / "Applications"
+    else:
+        apps_dir = Path("/Applications")
+    
+    apps_dir.mkdir(parents=True, exist_ok=True)
+    alias_path = apps_dir / "Hermes.app"
+    
+    if alias_path.exists() and not force:
+        print(f"  Skipping Applications alias (already exists, use --force to overwrite)")
+        return
+    
+    # On macOS, the packaged app is a .app bundle
+    # The exe_path points to the executable inside, we need the .app bundle
+    app_bundle = exe_path
+    while app_bundle.suffix != ".app" and app_bundle != app_bundle.parent:
+        app_bundle = app_bundle.parent
+    
+    if app_bundle.suffix != ".app":
+        print(f"  Could not find .app bundle from {exe_path}")
+        return
+    
+    try:
+        # Create alias using osascript
+        script = 'tell application "Finder"\nmake alias file to POSIX file "' + str(app_bundle) + '" at POSIX file "' + str(apps_dir) + '"\nend tell'
+        subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
+        print(f"  Created Applications alias: {alias_path}")
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.decode() if e.stderr else str(e)
+        print(f"  Failed to create Applications alias: {stderr}")
+
+def _create_linux_desktop_entry(exe_path: Path, user_only: bool, force: bool):
+    """Create Linux .desktop file."""
+    import os
+    import subprocess
+    
+    if user_only:
+        applications_dir = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "applications"
+    else:
+        applications_dir = Path("/usr/share/applications")
+    
+    applications_dir.mkdir(parents=True, exist_ok=True)
+    desktop_file = applications_dir / "hermes.desktop"
+    
+    if desktop_file.exists() and not force:
+        print(f"  Skipping .desktop entry (already exists, use --force to overwrite)")
+        return
+    
+    # Find icon
+    icon_path = exe_path.parent / "resources" / "icon.png"
+    if not icon_path.exists():
+        icon_path = exe_path.parent / "icon.png"
+    if not icon_path.exists():
+        icon_path = exe_path.parent / "icon.ico"
+    # Check assets/ in source tree (for dev builds)
+    if not icon_path.exists():
+        # PROJECT_ROOT might not be in scope here, so try relative to cwd
+        import os
+        assets_icon = Path(os.getcwd()) / "apps" / "desktop" / "assets" / "icon.png"
+        if assets_icon.exists():
+            icon_path = assets_icon
+    
+    icon_str = str(icon_path) if icon_path.exists() else "hermes"
+    
+    desktop_content = f"""[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Hermes
+GenericName=AI Agent
+Comment=Hermes Agent Desktop App
+Exec={exe_path}
+Icon={icon_str}
+Terminal=false
+Categories=Development;Utility;
+StartupWMClass=Hermes
+"""
+    
+    try:
+        desktop_file.write_text(desktop_content)
+        desktop_file.chmod(0o644)
+        print(f"  Created .desktop entry: {desktop_file}")
+        
+        # Update desktop database
+        try:
+            subprocess.run(["update-desktop-database", str(applications_dir)], capture_output=True)
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"  Failed to create .desktop entry: {e}")
+
+
 
 # Dashboard process-hygiene helpers extracted to hermes_cli/dashboard_procs.py
 # (main.py decomposition, mechanical move). Re-exported so callers and test
@@ -12500,7 +12683,7 @@ def main():
     # =========================================================================
     # gui command  (parser built in hermes_cli/subcommands/gui.py)
     # =========================================================================
-    build_gui_parser(subparsers, cmd_gui=cmd_gui)
+    build_gui_parser(subparsers, cmd_gui=cmd_gui, cmd_gui_install=cmd_gui_install)
 
     # =========================================================================
     # logs command  (parser built in hermes_cli/subcommands/logs.py)

@@ -1272,6 +1272,9 @@ code {
 [data-slot='composer-rich-input'] {
   unicode-bidi: plaintext;
   text-align: start;
+  /* CJK fonts handle full-width punctuation (，。？！…—) before Latin fallback */
+  font-family: "PingFang SC", "PingFang TC", "PingFang HK", "Microsoft YaHei",
+    "Noto Sans CJK SC", "Noto Sans CJK TC", var(--dt-font-sans);
 }
 
 /* Inline code/KaTeX don't vote on direction and keep their own order: isolate

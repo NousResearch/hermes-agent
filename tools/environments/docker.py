@@ -45,6 +45,27 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EGRESS_LABEL_KEY = "hermes-egress"
 
 
+def _is_user_home_path(path: str) -> bool:
+    """Return whether *path* resolves to the invoking user's home directory."""
+    if not path:
+        return False
+
+    def _normalized(candidate: str) -> str:
+        return os.path.normcase(os.path.realpath(os.path.abspath(os.path.expanduser(candidate))))
+
+    normalized_path = _normalized(path)
+    home_candidates = (
+        os.path.expanduser("~"),
+        os.environ.get("HOME", ""),
+        os.environ.get("USERPROFILE", ""),
+    )
+    return any(
+        normalized_path == _normalized(home)
+        for home in home_candidates
+        if home
+    )
+
+
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
     """Return a deduplicated list of valid environment variable names."""
     normalized: list[str] = []
@@ -967,14 +988,18 @@ class DockerEnvironment(BaseEnvironment):
                 logger.warning("Docker volume '%s' missing colon, skipping", vol)
 
         host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
+        host_cwd_is_home = bool(host_cwd_abs) and _is_user_home_path(host_cwd_abs)
         bind_host_cwd = (
             auto_mount_cwd
             and bool(host_cwd_abs)
             and os.path.isdir(host_cwd_abs)
+            and not host_cwd_is_home
             and not workspace_explicitly_mounted
         )
         if auto_mount_cwd and host_cwd and not os.path.isdir(host_cwd_abs):
             logger.debug("Skipping docker cwd mount: host_cwd is not a valid directory: %s", host_cwd)
+        elif auto_mount_cwd and host_cwd_is_home:
+            logger.warning("Skipping docker cwd mount for host home directory: %s", host_cwd_abs)
 
         self._workspace_dir: Optional[str] = None
         self._home_dir: Optional[str] = None

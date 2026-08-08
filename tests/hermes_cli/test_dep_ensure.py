@@ -16,6 +16,32 @@ def test_find_install_script_from_checkout(tmp_path):
     assert shell == "bash"
 
 
+def test_ensure_dependency_honors_sealed_env(monkeypatch):
+    """HERMES_DISABLE_LAZY_INSTALLS=1 (no durable target) must block the
+    install.sh shell-out — same policy gate as pip lazy installs. Regression:
+    before this gate, every hermetic test / sealed container that hit a
+    missing dep spawned a real ~2-7s bash install.sh run (issue #79771
+    follow-up: test_browser_homebrew_paths.py spent 8s of its 36s here)."""
+    from hermes_cli.dep_ensure import ensure_dependency
+    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+    monkeypatch.delenv("HERMES_LAZY_INSTALL_TARGET", raising=False)
+    with patch("hermes_cli.dep_ensure._DEP_CHECKS", {"node": lambda: False}), \
+         patch("subprocess.run") as mock_run:
+        assert ensure_dependency("node", interactive=False) is False
+    mock_run.assert_not_called()
+
+
+def test_ensure_dependency_honors_config_kill_switch(monkeypatch):
+    """security.allow_lazy_installs: false must block the install.sh path."""
+    from hermes_cli.dep_ensure import ensure_dependency
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    with patch("hermes_cli.dep_ensure._DEP_CHECKS", {"node": lambda: False}), \
+         patch("tools.lazy_deps._allow_lazy_installs", return_value=False), \
+         patch("subprocess.run") as mock_run:
+        assert ensure_dependency("node", interactive=False) is False
+    mock_run.assert_not_called()
+
+
 
 
 
@@ -29,6 +55,7 @@ def test_ensure_dependency_uses_powershell_on_windows(tmp_path):
     (scripts_dir / "install.ps1").write_text("# fake")
     with patch("hermes_cli.dep_ensure._IS_WINDOWS", True), \
          patch("hermes_cli.dep_ensure._DEP_CHECKS", {"node": lambda: False}), \
+         patch("tools.lazy_deps.lazy_installs_allowed", return_value=True), \
          patch("hermes_cli.dep_ensure._find_install_script", return_value=(scripts_dir / "install.ps1", "powershell")), \
          patch("hermes_cli.dep_ensure.shutil") as mock_shutil, \
          patch("hermes_constants.get_hermes_home", return_value=tmp_path / "fakehome"), \

@@ -117,6 +117,19 @@ def ensure_dependency(
     if check():
         return True
 
+    # Honor the lazy-install policy before prompting or shelling out to the
+    # install script. This is the same gate pip-based lazy installs go
+    # through (config kill switch security.allow_lazy_installs, and the
+    # sealed-venv HERMES_DISABLE_LAZY_INSTALLS env var) — without it, a
+    # sealed environment (Docker image, hermetic test run) that hits a
+    # missing dep spawns a real bash install.sh run.
+    try:
+        from tools.lazy_deps import lazy_installs_allowed
+        if not lazy_installs_allowed():
+            return False
+    except ImportError:
+        pass
+
     script, shell = _find_install_script()
     if script is None:
         if interactive:

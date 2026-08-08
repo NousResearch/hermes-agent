@@ -7,6 +7,15 @@ on:
         description: Number of parallel test slices
         type: number
         default: 8
+      matrix:
+        description: >-
+          Pre-computed slice matrix JSON from the orchestrator's detect job
+          (scripts/run_tests_parallel.py --generate-slices). Generated there
+          rather than in a job here so the test slices start straight off
+          detect — a dedicated generate job added a full runner spin-up
+          (~10-14s) to the merge-gate critical path.
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -17,42 +26,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  generate:
-    name: "Generate slices"
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    outputs:
-      matrix: ${{ steps.matrix.outputs.matrix }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Restore duration cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: test_durations.json
-          key: test-durations
-          # Saves use test-durations-${run_id}, so the exact key above never
-          # matches — without this prefix fallback the cache ALWAYS missed,
-          # LPT slicing ran on no data, and unbalanced slices pushed heavy
-          # files toward the per-file timeout under load.
-          restore-keys: |
-            test-durations-
-
-      - name: Generate test slices
-        id: matrix
-        run: |
-          MATRIX=$(python3 scripts/run_tests_parallel.py --generate-slices ${{ inputs.slice_count }})
-          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-
   test:
     name: Run tests slice ${{ matrix.slice.index }}/${{ inputs.slice_count }}
-    needs: generate
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.generate.outputs.matrix) }}
+      matrix: ${{ fromJSON(inputs.matrix) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

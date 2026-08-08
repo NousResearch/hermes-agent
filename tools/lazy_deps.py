@@ -497,6 +497,18 @@ def activate_durable_lazy_target() -> None:
         logger.debug("Failed to activate durable lazy target %s: %s", target, e)
 
 
+def lazy_installs_allowed() -> bool:
+    """Public policy check: may this process install dependencies at runtime?
+
+    Single owner for the lazy-install policy. Non-pip installers (e.g.
+    ``hermes_cli.dep_ensure`` shelling out to install.sh for node/browser
+    deps) must consult this instead of re-deriving the rules — the config
+    kill switch and the sealed-venv env var apply to every runtime install,
+    not just pip ones.
+    """
+    return _allow_lazy_installs()
+
+
 def _allow_lazy_installs() -> bool:
     """Return whether lazy installs are permitted in this environment.
 

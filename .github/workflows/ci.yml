@@ -54,6 +54,7 @@ jobs:
       ci_review: ${{ steps.classify.outputs.ci_review }}
       ci_review_files: ${{ steps.classify.outputs.ci_review_files }}
       event_name: ${{ github.event_name }}
+      test_matrix: ${{ steps.test-matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Detect affected areas
@@ -61,6 +62,30 @@ jobs:
         uses: ./.github/actions/detect-changes
         with:
           github-token: ${{ github.token }}
+
+      # Test-slice generation lives here (not in a dedicated job inside
+      # tests.yml) so the test matrix jobs start straight off detect —
+      # a separate generate job added a full runner spin-up (~10-14s) to
+      # the merge-gate critical path (#79771 follow-up).
+      - name: Restore test duration cache
+        if: steps.classify.outputs.python == 'true'
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: test_durations.json
+          key: test-durations
+          # Saves use test-durations-${run_id}, so the exact key above never
+          # matches — without this prefix fallback the cache ALWAYS missed,
+          # LPT slicing ran on no data, and unbalanced slices pushed heavy
+          # files toward the per-file timeout under load.
+          restore-keys: |
+            test-durations-
+
+      - name: Generate test slices
+        if: steps.classify.outputs.python == 'true'
+        id: test-matrix
+        run: |
+          MATRIX=$(python3 scripts/run_tests_parallel.py --generate-slices 16)
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
   # ─────────────────────────────────────────────────────────────────────
   # Lane-gated sub-workflows. Each runs in parallel after detect finishes.
@@ -72,7 +97,8 @@ jobs:
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/tests.yml
     with:
-      slice_count: 12
+      slice_count: 16
+      matrix: ${{ needs.detect.outputs.test_matrix }}
 
   lint:
     name: Python lints

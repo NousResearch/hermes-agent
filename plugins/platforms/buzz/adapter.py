@@ -1032,9 +1032,16 @@ class BuzzAdapter(BasePlatformAdapter):
         is_dm = state["chat_type"] == "dm"
         # In shared channels, respond only when addressed — unless
         # require_mention is disabled, in which case respond to every message.
-        # DMs always dispatch.
-        if not is_dm and self.require_mention and not self._is_mentioned(content):
-            return
+        # A self p-tag is a stable signal that the text may target this identity;
+        # refresh the cached profile before deciding so live display-name changes
+        # do not silently drop mentions. DMs always dispatch.
+        if not is_dm and self.require_mention:
+            is_mentioned = self._is_mentioned(content)
+            if not is_mentioned and self._is_self_ptagged(event):
+                await self._refresh_self_profile()
+                is_mentioned = self._is_mentioned(content)
+            if not is_mentioned:
+                return
 
         # Adapter-level allow-list (the gateway applies BUZZ_ALLOWED_USERS /
         # BUZZ_ALLOW_ALL_USERS centrally as well; empty list = no filter here).
@@ -1099,6 +1106,37 @@ class BuzzAdapter(BasePlatformAdapter):
         description = str(meta.get("description") or "").strip()
         return name == "DM" and not description
 
+    async def _refresh_self_profile(self) -> bool:
+        """Refresh mutable profile fields used for channel mention matching."""
+        code, out, _err = await self._run_cli(["users", "get"])
+        if code != 0:
+            return False
+        profiles = _parse_json_list(out)
+        if not profiles:
+            return False
+        profile = profiles[0]
+        pubkey = str(profile.get("pubkey") or "").lower()
+        if pubkey != self._self_pubkey:
+            return False
+        self._display_name = str(profile.get("display_name") or "").strip()
+        self._self_npub = hex_to_npub(self._self_pubkey) or ""
+        return True
+
+    def _is_self_ptagged(self, event: dict) -> bool:
+        """True when the event explicitly addresses this identity by pubkey."""
+        if not self._self_pubkey:
+            return False
+        tags = event.get("tags")
+        if not isinstance(tags, list):
+            return False
+        return any(
+            isinstance(tag, (list, tuple))
+            and len(tag) > 1
+            and tag[0] == "p"
+            and str(tag[1]).lower() == self._self_pubkey
+            for tag in tags
+        )
+
     def _is_direct_message_event(self, channel_id: str, event: dict) -> bool:
         """True when ``event`` is shaped like a direct message to us: a chat
         message from another user, p-tagged to our pubkey, whose content does
@@ -1111,17 +1149,7 @@ class BuzzAdapter(BasePlatformAdapter):
         pubkey = str(event.get("pubkey") or "").lower()
         if not pubkey or pubkey == self._self_pubkey:
             return False
-        tags = event.get("tags")
-        if not isinstance(tags, list):
-            return False
-        p_tagged_to_self = any(
-            isinstance(tag, (list, tuple))
-            and len(tag) > 1
-            and tag[0] == "p"
-            and str(tag[1]).lower() == self._self_pubkey
-            for tag in tags
-        )
-        if not p_tagged_to_self:
+        if not self._is_self_ptagged(event):
             return False
         content = event.get("content")
         return isinstance(content, str) and not self._is_mentioned(content)

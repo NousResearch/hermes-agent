@@ -30,7 +30,7 @@ config.yaml ``extra``):
     NTFY_SERVER_URL            Server URL (default: https://ntfy.sh)
     NTFY_TOKEN                 Bearer token or 'user:pass' for Basic auth
     NTFY_PUBLISH_TOPIC         Reply topic (defaults to NTFY_TOPIC)
-    NTFY_MARKDOWN              "true"/"1"/"yes" enables X-Markdown header
+    NTFY_MARKDOWN              truthy aliases (1/true/yes/on) enable X-Markdown
     NTFY_ALLOWED_USERS         Allowlist (treated by gateway as user IDs;
                                on ntfy these are topic names)
     NTFY_ALLOW_ALL_USERS       Allow any topic — dev only
@@ -70,6 +70,7 @@ from gateway.platforms.base import (
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
+from utils import is_truthy_value
 
 
 def _get_scoped_secret(name, default=None):
@@ -499,9 +500,9 @@ def _env_enablement() -> dict | None:
     token = _get_scoped_secret("NTFY_TOKEN", "").strip()
     if token:
         seed["token"] = token
-    markdown = os.getenv("NTFY_MARKDOWN", "").strip().lower()
+    markdown = os.getenv("NTFY_MARKDOWN", "").strip()
     if markdown:
-        seed["markdown"] = markdown in ("1", "true", "yes")
+        seed["markdown"] = is_truthy_value(markdown)
     home = os.getenv("NTFY_HOME_CHANNEL", "").strip() or topic
     if home:
         seed["home_channel"] = {
@@ -551,8 +552,9 @@ async def _standalone_send(
         return {"error": "ntfy standalone send: NTFY_TOPIC not configured"}
 
     token = extra.get("token") or _get_scoped_secret("NTFY_TOKEN", "")
-    markdown_env = os.getenv("NTFY_MARKDOWN", "").strip().lower()
-    markdown_enabled = bool(extra.get("markdown")) or markdown_env in ("1", "true", "yes")
+    markdown_enabled = bool(extra.get("markdown")) or is_truthy_value(
+        os.getenv("NTFY_MARKDOWN", "")
+    )
 
     headers = {"Content-Type": "text/plain; charset=utf-8", "X-Tags": _ECHO_TAG, **_build_auth_header(token)}
     if markdown_enabled:

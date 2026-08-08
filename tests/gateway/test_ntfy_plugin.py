@@ -377,9 +377,15 @@ class TestEnvEnablement:
 
     def test_markdown_truthy_values(self, monkeypatch):
         monkeypatch.setenv("NTFY_TOPIC", "hermes-in")
-        for val in ("true", "1", "yes", "TRUE"):
+        for val in ("true", "1", "yes", "on", "TRUE", " On "):
             monkeypatch.setenv("NTFY_MARKDOWN", val)
             assert _env_enablement()["markdown"] is True
+
+    def test_markdown_falsy_values(self, monkeypatch):
+        monkeypatch.setenv("NTFY_TOPIC", "hermes-in")
+        for val in ("false", "0", "off", "no"):
+            monkeypatch.setenv("NTFY_MARKDOWN", val)
+            assert _env_enablement()["markdown"] is False
 
 
     def test_home_channel_override(self, monkeypatch):
@@ -429,6 +435,27 @@ class TestStandaloneSend:
 
         headers = mock_client.post.call_args[1]["headers"]
         assert headers.get("X-Tags") == _ntfy._ECHO_TAG
+
+    def test_markdown_on_sets_header(self, monkeypatch):
+        monkeypatch.setenv("NTFY_TOPIC", "hermes-in")
+        monkeypatch.setenv("NTFY_MARKDOWN", "on")
+        pconfig = MagicMock()
+        pconfig.extra = {"topic": "hermes-in"}
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "id-md"}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(_ntfy, "httpx") as mock_httpx:
+            mock_httpx.AsyncClient.return_value = mock_client
+            _run(_standalone_send(pconfig, "hermes-in", "hi"))
+
+        headers = mock_client.post.call_args[1]["headers"]
+        assert headers.get("X-Markdown") == "true"
 
 
 # ---------------------------------------------------------------------------

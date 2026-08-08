@@ -1,15 +1,33 @@
 ---
-name: meeting-action-items
-description: "Turn meeting notes into cited decisions, owners, tickets."
-version: 0.1.0
-author: Ben Barclay (benbarclay), Hermes Agent
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  hermes:
-    tags: [Meetings, Action-Items, Follow-Up, Productivity]
-    related_skills: [teams-meeting-pipeline, google-workspace, notion]
+title: "Meeting Action Items — Turn meeting notes into cited decisions, owners, tickets"
+sidebar_label: "Meeting Action Items"
+description: "Turn meeting notes into cited decisions, owners, tickets"
 ---
+
+{/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
+
+# Meeting Action Items
+
+Turn meeting notes into cited decisions, owners, tickets.
+
+## Skill metadata
+
+| | |
+|---|---|
+| Source | Bundled (installed by default) |
+| Path | `skills/productivity/meeting-action-items` |
+| Version | `0.1.0` |
+| Author | Ben Barclay (benbarclay), Hermes Agent |
+| License | MIT |
+| Platforms | linux, macos, windows |
+| Tags | `Meetings`, `Action-Items`, `Follow-Up`, `Productivity` |
+| Related skills | [`teams-meeting-pipeline`](/docs/user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline), [`google-workspace`](/docs/user-guide/skills/bundled/productivity/productivity-google-workspace), [`notion`](/docs/user-guide/skills/bundled/productivity/productivity-notion) |
+
+## Reference: full SKILL.md
+
+:::info
+The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+:::
 
 # Meeting Action Items
 

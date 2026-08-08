@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -373,6 +374,118 @@ class TestCmdList:
         mock_read_manifest.return_value = {"name": "test-plugin", "version": "1.0.0"}
 
         cmd_list()
+
+
+# ── cmd_list structural-error output tests ────────────────────────────────
+
+
+class TestCmdListStructuralErrors:
+    """cmd_list must surface missing-__init__.py plugins in all output modes.
+
+    Regression: the original feature used ``PluginManager.list_plugins()``
+    to find load failures, but the management CLI never performs plugin
+    discovery, so a fresh ``hermes plugins list`` always had an empty
+    manager and the error column never appeared. The structural check
+    (missing ``__init__.py``) runs off the already-discovered entries and
+    must be visible in JSON, plain, and Rich table output.
+    """
+
+    @staticmethod
+    def _broken_entry(name: str, tmp_path) -> tuple:
+        """(name, version, description, source, dir_path, key) with no __init__.py."""
+        return (name, "1.0.0", f"{name} description", "user", tmp_path / name, name)
+
+    @staticmethod
+    def _ok_entry(name: str, tmp_path) -> tuple:
+        """Healthy entry whose dir contains __init__.py."""
+        d = tmp_path / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "__init__.py").write_text("", encoding="utf-8")
+        return (name, "1.0.0", f"{name} description", "user", d, name)
+
+    @staticmethod
+    def _args(**kwargs):
+        from argparse import Namespace
+
+        defaults = {
+            "json": False,
+            "plain": False,
+            "no_bundled": False,
+            "user": False,
+            "enabled": False,
+            "disabled": False,
+        }
+        defaults.update(kwargs)
+        return Namespace(**defaults)
+
+    def test_json_mode_reports_error_field(self, tmp_path, capsys):
+        from hermes_cli.plugins_cmd import cmd_list
+
+        entries = [self._broken_entry("broken-plugin", tmp_path)]
+        with patch(
+            "hermes_cli.plugins_cmd._discover_all_plugins", return_value=entries
+        ), patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set()), patch(
+            "hermes_cli.plugins_cmd._get_disabled_set", return_value=set()
+        ):
+            cmd_list(self._args(json=True))
+
+        out = capsys.readouterr().out
+        payload = json.loads(out)
+        assert len(payload) == 1
+        assert payload[0]["name"] == "broken-plugin"
+        assert payload[0]["error"] == "missing __init__.py"
+
+    def test_json_mode_healthy_plugin_has_null_error(self, tmp_path, capsys):
+        from hermes_cli.plugins_cmd import cmd_list
+
+        entries = [self._ok_entry("ok-plugin", tmp_path)]
+        with patch(
+            "hermes_cli.plugins_cmd._discover_all_plugins", return_value=entries
+        ), patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set()), patch(
+            "hermes_cli.plugins_cmd._get_disabled_set", return_value=set()
+        ):
+            cmd_list(self._args(json=True))
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload[0]["error"] is None
+
+    def test_plain_mode_annotates_broken_plugin(self, tmp_path, capsys):
+        from hermes_cli.plugins_cmd import cmd_list
+
+        entries = [
+            self._ok_entry("ok-plugin", tmp_path),
+            self._broken_entry("broken-plugin", tmp_path),
+        ]
+        with patch(
+            "hermes_cli.plugins_cmd._discover_all_plugins", return_value=entries
+        ), patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set()), patch(
+            "hermes_cli.plugins_cmd._get_disabled_set", return_value=set()
+        ):
+            cmd_list(self._args(plain=True))
+
+        out = capsys.readouterr().out
+        lines = out.splitlines()
+        assert any("ok-plugin" in line for line in lines)
+        assert any("ERROR: missing __init__.py" in line for line in lines)
+        # Healthy plugin must not be flagged
+        ok_lines = [line for line in lines if "ok-plugin" in line]
+        assert ok_lines and "ERROR" not in ok_lines[0]
+
+    def test_rich_mode_warns_and_lists_broken_plugin(self, tmp_path, capsys):
+        from hermes_cli.plugins_cmd import cmd_list
+
+        entries = [self._broken_entry("broken-plugin", tmp_path)]
+        with patch(
+            "hermes_cli.plugins_cmd._discover_all_plugins", return_value=entries
+        ), patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set()), patch(
+            "hermes_cli.plugins_cmd._get_disabled_set", return_value=set()
+        ):
+            cmd_list(self._args())
+
+        out = capsys.readouterr().out
+        assert "broken-plugin" in out
+        assert "missing __init__.py" in out
+        assert "will fail to load" in out
 
 
 # ── _copy_example_files tests ─────────────────────────────────────────────────

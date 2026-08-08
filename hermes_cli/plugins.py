@@ -2162,11 +2162,42 @@ class PluginManager:
     # Hook invocation
     # -----------------------------------------------------------------------
 
+    @staticmethod
+    def _invoke_hook_callback(callback: Callable, payload: Dict[str, Any]) -> Any:
+        """Invoke a hook while withholding additive fields from old callbacks."""
+        try:
+            parameters = inspect.signature(callback).parameters
+        except (TypeError, ValueError):
+            # Some extension/builtin callables do not expose a signature. Keep
+            # the historical behavior for those callables rather than guessing.
+            return callback(**payload)
+
+        if any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        ):
+            return callback(**payload)
+
+        accepted_payload = {
+            name: value
+            for name, value in payload.items()
+            if name in parameters
+            and parameters[name].kind
+            in {
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            }
+        }
+        return callback(**accepted_payload)
+
     def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """Call all registered callbacks for *hook_name*.
 
-        Each callback is wrapped in its own try/except so a misbehaving
-        plugin cannot break the core agent loop.
+        Hook payloads evolve additively. Callbacks that accept ``**kwargs``
+        receive the complete payload; older callbacks with a narrow signature
+        receive only the keyword arguments they declare. Each callback is
+        wrapped in its own try/except so a misbehaving plugin cannot break the
+        core agent loop.
 
         Returns a list of non-``None`` return values from callbacks.
 
@@ -2187,7 +2218,7 @@ class PluginManager:
         results: List[Any] = []
         for cb in callbacks:
             try:
-                ret = cb(**kwargs)
+                ret = self._invoke_hook_callback(cb, kwargs)
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:

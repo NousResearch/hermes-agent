@@ -103,6 +103,65 @@ records it as Published. Hermes keys behavior on the canonical v1.0.0 schema
 identifiers and normative text, not either mutable status label. This is an
 explicit supported subset, not a claim of full Agent Plugins conformance.
 
+## Native plugin compatibility contract
+
+Native `plugin.yaml` plus `register(ctx)` plugins are protected by behavior,
+not by one global plugin API number. Hermes does not expose a
+`PLUGIN_API_VERSION`, require a manifest-wide `api:` match, or attach an API
+version to unrelated values. A plugin that uses a documented behavior should
+continue to work after a normal Hermes upgrade.
+
+The compatibility rules are:
+
+- **Evolve additively.** Documented `PluginContext` methods are not removed or
+  renamed. New parameters are optional, have defaults, and should be
+  keyword-only. Existing return fields are not removed or silently retyped.
+- **Hook payloads are keyword payloads.** New hook data is added as keyword
+  fields, never by changing the meaning or position of an existing field.
+  Hermes inspects callback signatures: a legacy callback receives the fields it
+  declares, while a callback with `**kwargs` receives the complete current
+  payload. New plugins should accept `**kwargs` so they can opt into additive
+  data without another signature change.
+- **Manifests are open to additions.** Unknown `plugin.yaml` fields are ignored.
+  Older Hermes releases can therefore load a plugin whose manifest contains
+  metadata introduced by a newer release, provided the plugin code itself uses
+  supported runtime behavior.
+- **Provider interfaces grow through defaults.** New provider methods have a
+  default implementation. New callback context is optional and forwarded only
+  when signature inspection shows that a provider accepts it. Adding an
+  abstract method or an unconditionally forwarded argument requires a
+  migration window rather than a flag-day signature change.
+- **Version the contract that crosses a boundary.** A capability may carry its
+  own schema version when it defines a wire payload or persisted format (for
+  example, observer payloads or secret-source state). Keep fields additive
+  within that local schema. Persisted plugin state and config must remain
+  readable, or ship an explicit migration; resumed sessions written by the old
+  format must still replay. Do not add version literals to unrelated callback
+  or context values.
+
+### Deprecation policy
+
+A documented native plugin behavior may be deprecated only with all of the
+following:
+
+1. a replacement and migration instructions in the plugin guide and release
+   notes;
+2. a warning emitted at most once per process, naming the replacement and the
+   earliest removal release;
+3. support for the old behavior through at least two subsequent minor
+   releases; and
+4. behavior-based compatibility coverage for both the legacy path and the
+   replacement throughout that window.
+
+Removal after the window must include any migration needed for persisted data
+or resumable sessions. In practice, additive aliases and adapters are preferred
+to removal.
+
+Hermes enforces this contract with frozen external-plugin fixtures discovered
+from an isolated `HERMES_HOME`. Those tests load and invoke the plugin through
+`PluginManager`; they assert real registration and callback outcomes rather
+than internal symbol lists or source-code shape.
+
 ## What you're building
 
 A **calculator** plugin with two tools:

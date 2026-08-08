@@ -532,6 +532,12 @@ function groupModels(
   const groups: ProviderGroup[] = []
 
   for (const provider of providers) {
+    // Skip unconfigured providers — they have no API key and just clutter the
+    // list.  Users who want to discover new providers can use Settings → Model.
+    if (provider.authenticated === false) {
+      continue
+    }
+
     const allFamilies = collapseModelFamilies(provider.models ?? [])
 
     if (allFamilies.length === 0) {

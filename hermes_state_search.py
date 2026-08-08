@@ -1225,10 +1225,37 @@ class SessionSearchMixin:
         # Step 5: Wrap unquoted dotted and/or hyphenated terms in double
         # quotes.  FTS5's tokenizer splits on dots and hyphens, turning
         # ``chat-send`` into ``chat AND send`` and ``P2.2`` into ``p2 AND 2``.
-        # Quoting preserves phrase semantics.  A single pass avoids the
-        # double-quoting bug that would occur if dotted, hyphenated and underscored
-        # patterns were applied sequentially (e.g. ``my-app.config``).
-        sanitized = re.sub(r"\b(\w+(?:[._-]\w+)+)\b", r'"\1"', sanitized)
+        # Quoting preserves phrase semantics.
+        #
+        # Quote the WHOLE whitespace-delimited token, not the dotted run
+        # inside it.  A substring rewrite leaves the surrounding separator
+        # outside the quotes and produces a query FTS5 cannot parse at all:
+        # ``scripts/deploy.sh`` became ``scripts/"deploy.sh"`` →
+        # ``fts5: syntax error near "/"``, and the search layer swallows
+        # OperationalError into zero results.  Same for ``user@example.com``
+        # (``user@"example.com"``) and ``61.2%`` (``"61.2"%``) — file paths,
+        # emails and percentages, i.e. exactly the terms this step exists to
+        # make matchable.  Quoting the full token keeps the separator inside
+        # the phrase, where FTS5's tokenizer splits it like any other
+        # non-word character and the phrase matches.
+        def _quote_token(tok: str) -> str:
+            # Placeholders for already-quoted phrases, and anything that
+            # somehow still carries a quote, are left exactly as they are.
+            if "\x00" in tok or '"' in tok:
+                return tok
+            # A trailing ``*`` is FTS5's prefix operator and must stay
+            # OUTSIDE the phrase or it degrades to a literal asterisk.
+            stem, star = (tok[:-1], "*") if tok.endswith("*") else (tok, "")
+            if not re.search(r"\w[._-]\w", stem):
+                return tok
+            return f'"{stem}"{star}'
+
+        # Split keeping the separators so tabs/newlines/runs of spaces survive
+        # byte-for-byte (callers compare sanitizer output).
+        sanitized = "".join(
+            part if i % 2 else _quote_token(part)
+            for i, part in enumerate(re.split(r"(\s+)", sanitized))
+        )
 
         # Step 6: Restore preserved quoted phrases
         for i, quoted in enumerate(_quoted_parts):

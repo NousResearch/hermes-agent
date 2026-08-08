@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { $backendThemes, $pendingSkinApply, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
+import { $backendThemes, $pendingSkinApply, __resetBackendSkinSync, ingestBackendSkin, ingestBackendSkinRegistry } from './backend-sync'
 
 const skin = (name: string) => ({
   name,
@@ -105,5 +105,48 @@ describe('ingestBackendSkin', () => {
     ingestBackendSkin({ name: '' }, { apply: true })
 
     expect($pendingSkinApply.get()).toBeNull()
+  })
+})
+
+describe('ingestBackendSkinRegistry', () => {
+  beforeEach(() => __resetBackendSkinSync())
+
+  it('registers every skin in the registry without applying', () => {
+    ingestBackendSkinRegistry({
+      neon: skin('neon'),
+      forest: skin('forest')
+    })
+
+    expect($backendThemes.get().neon?.name).toBe('neon')
+    expect($backendThemes.get().forest?.name).toBe('forest')
+    expect($pendingSkinApply.get()).toBeNull()
+  })
+
+  it('never registers default or built-in names (no shadowing)', () => {
+    ingestBackendSkinRegistry({
+      default: skin('default'),
+      mono: skin('mono'),
+      neon: skin('neon')
+    })
+
+    expect($backendThemes.get().default).toBeUndefined()
+    expect($backendThemes.get().mono).toBeUndefined()
+    expect($backendThemes.get().neon?.name).toBe('neon')
+  })
+
+  it('skips entries whose key does not match the payload name', () => {
+    ingestBackendSkinRegistry({
+      wrongkey: skin('neon')
+    })
+
+    expect($backendThemes.get().neon).toBeUndefined()
+    expect($backendThemes.get().wrongkey).toBeUndefined()
+  })
+
+  it('ignores empty payloads', () => {
+    ingestBackendSkinRegistry(undefined)
+    ingestBackendSkinRegistry({})
+
+    expect(Object.keys($backendThemes.get())).toHaveLength(0)
   })
 })

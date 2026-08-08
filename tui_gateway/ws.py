@@ -311,6 +311,8 @@ async def handle_ws(ws: Any) -> None:
         # (#60800). The skin payload is small (a dict of strings/arrays),
         # so the to_thread overhead is negligible.
         skin_payload = await asyncio.to_thread(server.resolve_skin)
+        skins_list = await asyncio.to_thread(server.resolve_skins_list)
+        registry = await asyncio.to_thread(server.resolve_skin_registry)
         ready_ok = await transport.write_async(
             {
                 "jsonrpc": "2.0",
@@ -320,7 +322,18 @@ async def handle_ws(ws: Any) -> None:
                     # change_events: this backend broadcasts pet.changed /
                     # cron.changed / sessions.changed, so clients can demote
                     # their legacy polls to slow backstops.
-                    "payload": {"skin": skin_payload, "change_events": True},
+                    "payload": {
+                        "skin": skin_payload,
+                        # Authoritative available-skin names: clients reconcile
+                        # caches against this so deleted skin files stop
+                        # ghosting in pickers.
+                        "skins": skins_list,
+                        # Full registry: every available skin's wire payload,
+                        # keyed by name — clients rebuild their pickers from
+                        # disk truth on every connect.
+                        "registry": registry,
+                        "change_events": True,
+                    },
                 },
             }
         )

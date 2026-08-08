@@ -17,11 +17,11 @@ import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
 import { persistString, persistStringRecord, storedString, storedStringRecord } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
-import { $backendThemes, $pendingSkinApply } from './backend-sync'
+import { $backendThemes, $pendingSkinApply, getLastSyncedSkinName } from './backend-sync'
 import { hexToRgb, mix, readableOn } from './color'
 import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
 import type { DesktopTheme, DesktopThemeColors } from './types'
-import { $userThemes, listAllThemes, resolveTheme } from './user-themes'
+import { $backendSkinCache, $userThemes, cacheBackendSkin, isUserTheme, listAllThemes, resolveBootTheme, resolveTheme } from './user-themes'
 
 // Legacy global skin (pre per-profile themes). Still the inheritance fallback
 // for any profile without its own assignment, so single-profile users and old
@@ -321,6 +321,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // grid, and `/skin` without a reload.
   const userThemes = useStore($userThemes)
   const backendThemes = useStore($backendThemes)
+  const backendSkinCache = useStore($backendSkinCache)
   const registryVersion = useStore($registryVersion)
 
   const availableThemes = useMemo(
@@ -330,9 +331,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         label,
         description
       })),
-    // userThemes + backendThemes + registryVersion ARE listAllThemes' reactivity.
+    // userThemes + backendThemes + backendSkinCache + registryVersion ARE listAllThemes' reactivity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [userThemes, backendThemes, registryVersion]
+    [userThemes, backendThemes, backendSkinCache, registryVersion]
   )
 
   const [themeName, setThemeNameState] = useState(() =>
@@ -380,6 +381,20 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     const next = normalizeSkin(name)
     setThemeNameState(next)
     skinPref.assign(liveProfile(), next)
+
+    // Backend skins (~/.hermes/skins/*.yaml) only resolve after the gateway
+    // seeds them, so a bare name can't survive relaunch: the boot-time
+    // normalizeSkin falls back to the default and the choice is lost. Cache
+    // the converted record so boot resolves it synchronously, with exactly
+    // the palette the app already rendered (the live backend conversion
+    // still wins while connected).
+    if (!isUserTheme(next)) {
+      const backend = $backendThemes.get()[next]
+
+      if (backend) {
+        cacheBackendSkin(backend)
+      }
+    }
   }, [])
 
   const setMode = useCallback((next: ThemeMode) => {
@@ -398,6 +413,35 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       $pendingSkinApply.set(null)
     }
   }, [pendingSkin, setTheme])
+
+  // First-connect adoption: when no explicit desktop theme choice exists (or the
+  // persisted name no longer resolves), adopt the backend's active skin instead
+  // of staying on the fallback forever. The seed deliberately doesn't paint —
+  // this is the one case where painting is right, because there is no stored
+  // choice to stomp. setTheme persists name + converted record, so the adopted
+  // skin survives relaunch like any manual pick.
+  useEffect(() => {
+    if (Object.keys(backendThemes).length === 0) {
+      return
+    }
+
+    const profile = liveProfile()
+    const raw = storedStringRecord(PROFILE_SKINS_KEY)[profile] ?? storedString(SKIN_KEY)
+    // Boot-time sources only: a name that resolves ONLY through the just-seeded
+    // backend registry was unresolvable at boot (the classic "reverts to the
+    // default after relaunch" case) — treat it as no real choice and adopt.
+    const resolvableChoice = raw !== null && resolveBootTheme(raw)
+
+    if (resolvableChoice) {
+      return
+    }
+
+    const name = getLastSyncedSkinName()
+
+    if (name) {
+      setTheme(name)
+    }
+  }, [backendThemes, setTheme])
 
   // The light/dark toggle (Shift+X by default) is owned by the keybind runtime
   // (`appearance.toggleMode`) so it shows up in the hotkey map and is rebindable.

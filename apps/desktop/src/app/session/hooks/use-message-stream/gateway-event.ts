@@ -73,7 +73,8 @@ import { reportInstallMethodWarning } from '@/store/updates'
 import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/store/workspace-events'
 // Leaf import (not the `@/themes` barrel) to avoid pulling the ThemeProvider
 // module graph into the gateway event hot path.
-import { ingestBackendSkin } from '@/themes/backend-sync'
+import { ingestBackendSkin, ingestBackendSkinRegistry } from '@/themes/backend-sync'
+import { pruneBackendSkinCache } from '@/themes/user-themes'
 import type { RpcEvent } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
@@ -329,6 +330,13 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // Seed the active skin into the desktop theme registry without applying,
         // so a fresh connect never overrides the user's persisted desktop theme.
         ingestBackendSkin((payload as { skin?: HermesSkin } | undefined)?.skin, { apply: false })
+        // Fold the FULL registry so the picker reflects disk truth on every
+        // connect — a wiped local cache self-heals with no per-skin re-apply.
+        ingestBackendSkinRegistry((payload as { registry?: Record<string, HermesSkin> } | undefined)?.registry)
+        // The backend owns the filesystem truth: reconcile the boot cache against
+        // the available-skin names so a skin file deleted on disk stops ghosting
+        // in the picker (it would otherwise linger in localStorage forever).
+        pruneBackendSkinCache((payload as { skins?: string[] } | undefined)?.skins ?? [])
         // Backends with the change watcher broadcast pet/cron/sessions change
         // events; consumers demote their legacy polls to slow backstops.
         setChangeEventsAvailable(Boolean((payload as { change_events?: boolean } | undefined)?.change_events))
@@ -343,6 +351,14 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         if (fromActiveProfile) {
           ingestBackendSkin(payload as HermesSkin | undefined, { apply: true })
         }
+
+        // Registry also rides along on skin.changed so new/recolored skins
+        // appear in the picker without an app restart.
+        ingestBackendSkinRegistry((payload as { registry?: Record<string, HermesSkin> } | undefined)?.registry)
+
+        // Reconcile the cache on every broadcast too — the same list rides
+        // along, so a deletion picked up by the watcher prunes immediately.
+        pruneBackendSkinCache((payload as { skins?: string[] } | undefined)?.skins ?? [])
 
         return
       } else if (

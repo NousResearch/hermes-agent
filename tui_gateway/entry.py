@@ -437,7 +437,17 @@ def main():
         "params": {
             "type": "gateway.ready",
             # change_events: see tui_gateway/ws.py — clients demote legacy polls.
-            "payload": {"skin": resolve_skin(), "change_events": True},
+            "payload": {
+                "skin": resolve_skin(),
+                # Authoritative available-skin names: clients reconcile caches
+                # against this so deleted skin files stop ghosting in pickers.
+                "skins": server.resolve_skins_list(),
+                # Full registry: every available skin's wire payload, keyed by
+                # name — clients rebuild their pickers from disk truth on every
+                # connect, so a wiped local cache self-heals.
+                "registry": server.resolve_skin_registry(),
+                "change_events": True,
+            },
         },
     }):
         _log_exit("startup write failed (broken stdout pipe before first event)")

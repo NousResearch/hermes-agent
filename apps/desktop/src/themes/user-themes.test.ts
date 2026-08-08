@@ -2,12 +2,15 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { BUILTIN_THEMES, DEFAULT_SKIN_NAME } from './presets'
 import {
+  $backendSkinCache,
   $marketplaceInstalls,
   $userThemes,
+  cacheBackendSkin,
   installUserTheme,
   isUserTheme,
   listAllThemes,
   marketplaceIdOf,
+  pruneBackendSkinCache,
   removeUserTheme,
   resolveTheme
 } from './user-themes'
@@ -27,6 +30,7 @@ describe('user theme registry', () => {
   beforeEach(() => {
     window.localStorage.clear()
     $userThemes.set({})
+    $backendSkinCache.set({})
   })
 
   it('installs a theme into the merged registry and persists it', () => {
@@ -71,6 +75,67 @@ describe('user theme registry', () => {
     broken.colors = { background: '#000000' }
 
     expect(() => installUserTheme(broken)).toThrow(/colors/)
+  })
+
+  it('resolves a cached backend skin before the gateway connects (boot path)', async () => {
+    // Simulates a relaunch: $backendThemes is empty (no gateway yet) and only
+    // the persisted cache from a previous session exists. Boot-time
+    // resolution (normalizeSkin / deriveTheme) must still find the skin.
+    const theme = makeTheme('Backend Skin')
+
+    cacheBackendSkin(theme)
+    expect(resolveTheme(theme.name)).toEqual(theme)
+    expect(window.localStorage.getItem('hermes-desktop-backend-skin-cache-v1')).toContain(theme.name)
+
+    // A live backend conversion wins over the stale cache once connected.
+    const fresher = { ...theme, colors: { ...theme.colors, foreground: '#00ff00' } }
+    const { $backendThemes } = await import('./backend-sync')
+    $backendThemes.set({ [theme.name]: fresher })
+
+    expect(resolveTheme(theme.name)).toEqual(fresher)
+  })
+
+  it('lists cached backend skins in the picker before the gateway connects', () => {
+    // Regression: the picker (listAllThemes) must include skins that were
+    // applied in a previous session and only exist in the boot cache — a
+    // relaunch must not drop them from Appearance / Cmd-K / /skin just
+    // because the gateway hasn't re-broadcast them yet.
+    const theme = makeTheme('Previously Applied Skin')
+
+    cacheBackendSkin(theme)
+    expect(listAllThemes().map(t => t.name)).toContain(theme.name)
+  })
+
+  it('prunes cached backend skins that no longer exist on disk', () => {
+    // Regression: a skin file deleted from $HERMES_HOME/skins/ must stop
+    // ghosting in the picker once the backend broadcasts the authoritative
+    // available-skin list (deleted files are absent from it).
+    const alive = makeTheme('Still Here')
+    const deleted = makeTheme('Deleted Skin')
+
+    cacheBackendSkin(alive)
+    cacheBackendSkin(deleted)
+    expect(listAllThemes().map(t => t.name)).toContain(deleted.name)
+
+    pruneBackendSkinCache([alive.name, 'nous', 'custom-green'])
+
+    expect(listAllThemes().map(t => t.name)).not.toContain(deleted.name)
+    expect(listAllThemes().map(t => t.name)).toContain(alive.name)
+    // The pruned record is gone from persistence too, so a relaunch boots
+    // without the ghost.
+    expect(window.localStorage.getItem('hermes-desktop-backend-skin-cache-v1')).not.toContain(deleted.name)
+  })
+
+  it('leaves the cache untouched when every cached skin still exists', () => {
+    const theme = makeTheme('Only Skin')
+
+    cacheBackendSkin(theme)
+    const before = window.localStorage.getItem('hermes-desktop-backend-skin-cache-v1')
+
+    pruneBackendSkinCache([theme.name])
+
+    expect(window.localStorage.getItem('hermes-desktop-backend-skin-cache-v1')).toBe(before)
+    expect(listAllThemes().map(t => t.name)).toContain(theme.name)
   })
 })
 

@@ -3281,25 +3281,59 @@ def _clear_pending(sid: str | None = None) -> None:
 # ── Agent factory ────────────────────────────────────────────────────
 
 
+def _skin_to_wire(skin) -> dict:
+    """Shape a resolved SkinConfig for the wire (what every surface consumes)."""
+    return {
+        "name": skin.name,
+        "colors": skin.colors,
+        # Paired palettes: the TUI detects the terminal's polarity and
+        # prefers the matching hand-tuned block over adapting `colors`.
+        "light_colors": skin.light_colors,
+        "dark_colors": skin.dark_colors,
+        "branding": skin.branding,
+        "banner_logo": skin.banner_logo,
+        "banner_hero": skin.banner_hero,
+        "tool_prefix": skin.tool_prefix,
+        "help_header": (skin.branding or {}).get("help_header", ""),
+    }
+
+
 def resolve_skin() -> dict:
     try:
         from hermes_cli.skin_engine import init_skin_from_config, get_active_skin
 
         init_skin_from_config(_load_cfg())
-        skin = get_active_skin()
-        return {
-            "name": skin.name,
-            "colors": skin.colors,
-            # Paired palettes: the TUI detects the terminal's polarity and
-            # prefers the matching hand-tuned block over adapting `colors`.
-            "light_colors": skin.light_colors,
-            "dark_colors": skin.dark_colors,
-            "branding": skin.branding,
-            "banner_logo": skin.banner_logo,
-            "banner_hero": skin.banner_hero,
-            "tool_prefix": skin.tool_prefix,
-            "help_header": (skin.branding or {}).get("help_header", ""),
-        }
+        return _skin_to_wire(get_active_skin())
+    except Exception:
+        return {}
+
+
+def resolve_skins_list() -> list[str]:
+    """Names of every available skin (built-in + user files). The backend owns
+    the filesystem truth, so every skin broadcast carries this list and clients
+    reconcile their caches against it — a deleted skin file must not keep
+    ghosting in a surface's picker after the next connect."""
+    try:
+        from hermes_cli.skin_engine import list_skins
+
+        return [s["name"] for s in list_skins()]
+    except Exception:
+        return []
+
+
+def resolve_skin_registry() -> dict:
+    """Every available skin's full wire payload, keyed by name.
+
+    The backend owns the filesystem truth (``~/.hermes/skins/*.yaml`` +
+    built-ins), so every connect carries the whole registry — clients rebuild
+    their pickers from disk state instead of relying on a localStorage cache
+    that updates, rebuilds, or storage resets can wipe. A wiped cache
+    self-heals on the next connect without any per-skin re-application.
+    """
+    try:
+        from hermes_cli.skin_engine import load_skin
+
+        return {name: _skin_to_wire(load_skin(name)) for name in resolve_skins_list()}
     except Exception:
         return {}
 
@@ -3351,7 +3385,7 @@ def _broadcast_skin_if_changed() -> None:
         return
     _last_skin_sig = sig
     try:
-        _broadcast_global_event("skin.changed", resolve_skin())
+        _broadcast_global_event("skin.changed", {**resolve_skin(), "skins": resolve_skins_list(), "registry": resolve_skin_registry()})
     except Exception:
         pass
 
@@ -11338,7 +11372,7 @@ def _(rid, params: dict) -> dict:
                     # Every connected surface repaints, not just the RPC's
                     # client; then sync the watcher baseline so the poll loop
                     # doesn't re-broadcast the skin this RPC just applied.
-                    _broadcast_global_event("skin.changed", resolve_skin())
+                    _broadcast_global_event("skin.changed", {**resolve_skin(), "skins": resolve_skins_list(), "registry": resolve_skin_registry()})
                     _note_skin_broadcast()
             resp = {"key": key, "value": nv}
             if key == "personality":

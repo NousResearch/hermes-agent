@@ -702,11 +702,26 @@ def test_broadcast_skin_if_changed_on_any_signature_move(server, monkeypatch):
     monkeypatch.setattr(server, "_last_skin_sig", None, raising=False)
     monkeypatch.setattr(server, "_skin_sig", lambda: next(sigs))
     monkeypatch.setattr(server, "resolve_skin", lambda: {"name": "x", "colors": {}})
+    monkeypatch.setattr(server, "resolve_skins_list", lambda: ["neon", "forest"])
+    monkeypatch.setattr(
+        server,
+        "resolve_skin_registry",
+        lambda: {
+            "neon": {"name": "neon", "colors": {}},
+            "forest": {"name": "forest", "colors": {}},
+        },
+    )
 
     for _ in range(4):
         server._broadcast_skin_if_changed()
 
     assert [ev for ev, _ in emitted] == ["skin.changed"] * 3
+    # The full registry rides along so clients can rebuild pickers from disk
+    # truth on every broadcast.
+    assert all(
+        isinstance(payload.get("registry"), dict) and payload["registry"]["neon"]["name"] == "neon"
+        for _, payload in emitted
+    )
 
 
 # ── global-event broadcast (session-less events reach every WS client) ──

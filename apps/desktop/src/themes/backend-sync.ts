@@ -37,11 +37,38 @@ export const $pendingSkinApply = atom<string | null>(null)
 // restart / disconnected), an explicit re-affirm must repaint, not no-op.
 let lastSynced: { applied: boolean; name: string } | null = null
 
+/** The active skin name last synced from the backend (seed or apply), or null
+ *  before any backend connection. Lets the theme provider adopt the backend's
+ *  active skin on first connect. */
+export function getLastSyncedSkinName(): string | null {
+  return lastSynced?.name ?? null
+}
+
 /** Test-only: reset the module's apply guard + registry between cases. */
 export function __resetBackendSkinSync(): void {
   lastSynced = null
   $backendThemes.set({})
   $pendingSkinApply.set(null)
+}
+
+/**
+ * Register a converted backend skin in the live registry. Never shadows
+ * `default` or a built-in's hand-tuned palette. Returns false on broken skins.
+ */
+function registerBackendSkin(name: string, skin: HermesSkin): boolean {
+  const theme = skinToDesktopTheme(skin)
+
+  if (!theme) {
+    return false
+  }
+
+  const current = $backendThemes.get()
+
+  if (JSON.stringify(current[name]) !== JSON.stringify(theme)) {
+    $backendThemes.set({ ...current, [name]: theme })
+  }
+
+  return true
 }
 
 /**
@@ -64,16 +91,8 @@ export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }
   // Built-in names (mono/slate/…) already have a hand-tuned desktop palette — we
   // never shadow it, but the name is still a valid apply target.
   if (name !== 'default' && !BUILTIN_THEMES[name]) {
-    const theme = skinToDesktopTheme(skin as HermesSkin)
-
-    if (!theme) {
+    if (!registerBackendSkin(name, skin as HermesSkin)) {
       return
-    }
-
-    const current = $backendThemes.get()
-
-    if (JSON.stringify(current[name]) !== JSON.stringify(theme)) {
-      $backendThemes.set({ ...current, [name]: theme })
     }
   }
 
@@ -90,5 +109,31 @@ export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }
   if (name !== lastSynced?.name || !lastSynced.applied) {
     lastSynced = { applied: true, name }
     $pendingSkinApply.set(name)
+  }
+}
+
+/**
+ * Fold the backend's FULL skin registry into the live theme store. The backend
+ * owns the filesystem truth and broadcasts every available skin on every
+ * gateway.ready / skin.changed, so the picker reflects ~/.hermes/skins/*.yaml
+ * even when localStorage was wiped — the next connect repopulates it with no
+ * per-skin re-application. Pure registration: never applies, never touches the
+ * active-skin baseline or the apply guard.
+ */
+export function ingestBackendSkinRegistry(registry: Record<string, HermesSkin> | null | undefined): void {
+  if (!registry || typeof registry !== 'object') {
+    return
+  }
+
+  for (const [name, skin] of Object.entries(registry)) {
+    const clean = (skin && typeof skin === 'object' ? (skin.name ?? '') : '').trim()
+
+    // Mirror ingestBackendSkin's shadowing rules; key must match payload name
+    // so a malformed entry can't register under a wrong key.
+    if (!clean || clean !== name || clean === 'default' || BUILTIN_THEMES[clean]) {
+      continue
+    }
+
+    registerBackendSkin(clean, skin)
   }
 }

@@ -1,10 +1,21 @@
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
-import type { StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
+import type { SidebarStatus } from "@/hooks/useSidebarStatus";
 
 export function SidebarFooter({ status }: SidebarFooterProps) {
   const { t } = useI18n();
+
+  // SidebarFooter only reads `version`. Pull it from whichever SidebarStatus
+  // branch has the last-known-good data; while `loading` we show the
+  // em-dash placeholder, and during `unreachable` we keep the last-seen
+  // version so the user knows what they were looking at.
+  const data =
+    status.kind === "live"
+      ? status.data
+      : status.kind === "unreachable"
+        ? status.lastData
+        : null;
 
   return (
     <div
@@ -17,7 +28,7 @@ export function SidebarFooter({ status }: SidebarFooterProps) {
       <Typography
         className="font-mono-ui text-xs tabular-nums tracking-[0.08em] text-text-tertiary lowercase"
       >
-        {status?.version != null ? `v${status.version}` : "—"}
+        {data?.version != null ? `v${data.version}` : "—"}
       </Typography>
 
       <a
@@ -37,5 +48,5 @@ export function SidebarFooter({ status }: SidebarFooterProps) {
 }
 
 interface SidebarFooterProps {
-  status: StatusResponse | null;
+  status: SidebarStatus;
 }

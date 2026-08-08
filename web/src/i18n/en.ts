@@ -97,6 +97,14 @@ export const en: Translations = {
     currentProfileOption: "this dashboard ({name})",
     managingProfileBanner:
       "Managing profile \u201c{name}\u201d \u2014 config, keys, skills, MCPs, model, and new chats apply to that profile.",
+    offlineBannerTitle:
+      "Dashboard unreachable — is the terminal session still running?",
+    offlineBannerBody:
+      "The backend stopped responding. Data shown here may be stale until the connection comes back.",
+    offlineRetry: "Retry",
+    statusUnreachable: "Unreachable",
+    statusUnreachableHint:
+      "Last known value — backend is not responding right now.",
   },
 
   status: {

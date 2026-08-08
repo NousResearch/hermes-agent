@@ -28,6 +28,13 @@ _ENCODING_SENSITIVE_READS = [
     ("hardware_check.py", 'with open("/proc/meminfo", "r", encoding="utf-8") as fh:'),
     ("run_workflow.py", 'with open(schema_path, encoding="utf-8-sig") as f:'),
     ("run_workflow.py", 'with wf_path.open(encoding="utf-8-sig") as f:'),
+    # Sibling call paths: every other script that parses a user-authored
+    # workflow JSON reads it the same BOM-tolerant way (same bug class).
+    ("auto_fix_deps.py", 'wf_path.open(encoding="utf-8-sig")'),
+    ("check_deps.py", 'wf_path.open(encoding="utf-8-sig")'),
+    ("extract_schema.py", 'wf_path.open(encoding="utf-8-sig")'),
+    ("health_check.py", 'wf_path.open(encoding="utf-8-sig")'),
+    ("run_batch.py", 'wf_path.open(encoding="utf-8-sig")'),
 ]
 
 

@@ -408,7 +408,7 @@ def main(argv: list[str] | None = None) -> int:
         emit_json({"error": f"Workflow file not found: {args.workflow}"})
         return 1
     try:
-        with wf_path.open() as f:
+        with wf_path.open(encoding="utf-8-sig") as f:
             payload = json.load(f)
         workflow = unwrap_workflow(payload)
     except ValueError as e:

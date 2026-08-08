@@ -3255,6 +3255,72 @@ def _cold_start_windows_gateway_after_update() -> None:
         print()
         print(f"  ✓ Starting Windows gateway after update (PID {pid})")
 
+
+def _systemd_service_membership_for_pid(
+    pid: int,
+    *,
+    proc_root: Path = Path("/proc"),
+) -> bool | None:
+    """Classify a PID's systemd service membership from its cgroup.
+
+    Returns ``True`` for service membership, ``False`` when a readable
+    systemd cgroup confirms no service membership, and ``None`` when
+    ownership cannot be determined safely.
+    """
+    try:
+        text = (proc_root / str(pid) / "cgroup").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+
+    systemd_paths: list[str] = []
+    for line in text.splitlines():
+        parts = line.strip().split(":", 2)
+        if len(parts) != 3:
+            continue
+        hierarchy, controllers, cgroup_path = parts
+        controller_names = controllers.split(",") if controllers else []
+        if not (
+            (hierarchy == "0" and not controllers)
+            or "name=systemd" in controller_names
+        ):
+            continue
+        if not cgroup_path.startswith("/"):
+            return None
+        systemd_paths.append(cgroup_path)
+
+    if not systemd_paths:
+        return None
+    return any(
+        component.endswith(".service")
+        for cgroup_path in systemd_paths
+        for component in cgroup_path.split("/")
+        if component
+    )
+
+
+def _select_update_manual_gateway_pids(
+    candidate_pids,
+    *,
+    known_service_pids,
+    systemd_supported: bool,
+) -> list[int]:
+    """Return update-time gateway PIDs confirmed safe for raw termination."""
+    service_pids = set(known_service_pids)
+    manual_pids: list[int] = []
+    for pid in dict.fromkeys(candidate_pids):
+        if pid in service_pids:
+            continue
+        membership = _systemd_service_membership_for_pid(pid)
+        if membership is True:
+            continue
+        if membership is None and (
+            systemd_supported or sys.platform == "linux"
+        ):
+            continue
+        manual_pids.append(pid)
+    return manual_pids
+
+
 def _for_each_systemd_gateway_unit(
     list_units_stdout: str,
     *,
@@ -4894,7 +4960,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             # --- Systemd services (Linux) ---
             # Discover all hermes-gateway* units (default + profiles)
-            if supports_systemd_services():
+            systemd_supported = supports_systemd_services()
+            if systemd_supported:
                 try:
                     _ensure_user_systemd_env()
                 except Exception:
@@ -5221,11 +5288,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             # --- Manual (non-service) gateways ---
             # Kill any remaining gateway processes not managed by a service.
-            # Exclude PIDs that belong to just-restarted services so we don't
-            # immediately kill the process that systemd/launchd just spawned.
+            # Candidate PIDs are already positive gateway matches. Exclude
+            # known service PIDs, then fail safe on Linux hosts unless the
+            # PID's cgroup confirms it is not service-managed.
+            gateway_pids = find_gateway_pids(all_profiles=True)
             service_pids = _get_service_pids()
-            manual_pids = find_gateway_pids(
-                exclude_pids=service_pids, all_profiles=True
+            manual_pids = _select_update_manual_gateway_pids(
+                gateway_pids,
+                known_service_pids=service_pids,
+                systemd_supported=systemd_supported,
             )
             profile_processes = {
                 proc.pid: proc

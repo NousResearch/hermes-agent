@@ -536,6 +536,22 @@ def _safe_text(text) -> str:
     return text if text.strip() else _EMPTY_TEXT_PLACEHOLDER
 
 
+def _is_openai_content_part(part) -> bool:
+    """Whether *part* is an OpenAI-style content part rather than plain data.
+
+    ``_convert_content_to_converse`` only understands ``text`` and
+    ``image_url`` parts and silently skips anything else. A list that is
+    ordinary tool output rather than message content (``[{"file": "a.py"},
+    {"file": "b.py"}]``, ``[1, 2, 3]``) therefore converts to nothing, and the
+    tool's entire result is replaced by the ``(empty)`` placeholder. Lists
+    that are not content parts have to stay on the ``json.dumps`` path that
+    preserves them.
+    """
+    if isinstance(part, str):
+        return True
+    return isinstance(part, dict) and part.get("type") in {"text", "image_url"}
+
+
 def _convert_content_to_converse(content) -> List[Dict]:
     """Convert OpenAI message content (string or list) to Converse content blocks.
 
@@ -643,11 +659,48 @@ def convert_messages_to_converse(
         if role == "tool":
             # Tool result messages → merge into the preceding user turn
             tool_call_id = msg.get("tool_call_id", "")
-            result_content = content if isinstance(content, str) else json.dumps(content)
+            # Multimodal tool results (computer-use screenshots, image tools,
+            # vision results) carry image parts. Converse toolResult.content
+            # accepts image blocks, so convert them the same way as
+            # user/assistant content. Flattening to a single text block via
+            # json.dumps instead hides the image from the model and inlines the
+            # raw base64 as text, bloating the request toward the size limit.
+            #
+            # Both shapes have to be handled, dict first, exactly as
+            # anthropic_adapter._collect_multimodal_blocks already does:
+            # vision_analyze's native fast path returns the envelope dict
+            # {"_multimodal": True, "content": [...], "text_summary": ...}
+            # rather than a bare list, and it is the most common producer of
+            # image-bearing tool results. Matching only on list would leave it
+            # falling through to json.dumps with the base64 still inline.
+            if isinstance(content, dict) and content.get("_multimodal"):
+                tr_content = _convert_content_to_converse(
+                    content.get("content") or [])
+                # Fall back to the envelope's own plain-text summary when the
+                # parts convert to nothing usable, rather than sending a bare
+                # placeholder. Note _convert_content_to_converse never returns
+                # an empty list: it substitutes the non-whitespace placeholder
+                # Converse demands, so "nothing was converted" has to be
+                # recognised by that value and not by emptiness.
+                if (tr_content == [{"text": _EMPTY_TEXT_PLACEHOLDER}]
+                        and content.get("text_summary")):
+                    tr_content = [
+                        {"text": _safe_text(str(content["text_summary"]))}]
+            # Only a list that really is message content parts goes through the
+            # converter. A list-shaped tool result that is plain data (a JSON
+            # array of records, of numbers, of anything without a recognised
+            # part "type") has no parts to convert, so it would come back as
+            # the bare "(empty)" placeholder with the tool's output destroyed.
+            # anthropic_adapter guards its own list arm for the same reason.
+            elif (isinstance(content, list) and content
+                    and all(_is_openai_content_part(p) for p in content)):
+                tr_content = _convert_content_to_converse(content)
+            else:
+                tr_content = [{"text": _safe_text(content if isinstance(content, str) else json.dumps(content))}]
             tool_result_block = {
                 "toolResult": {
                     "toolUseId": tool_call_id,
-                    "content": [{"text": _safe_text(result_content)}],
+                    "content": tr_content,
                 }
             }
             # In Converse, tool results go in a "user" role message

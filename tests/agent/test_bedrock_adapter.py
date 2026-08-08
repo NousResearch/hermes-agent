@@ -221,6 +221,160 @@ class TestConvertMessagesToConverse:
 # Response normalization: Converse → OpenAI
 # ---------------------------------------------------------------------------
 
+    def test_multimodal_tool_result_keeps_image_block(self):
+        """A tool result carrying an image (computer-use screenshot, image
+        tool, vision result) must convert to a Converse image block, not a
+        json.dumps text dump that hides the image from the model and inlines
+        the base64 as text."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        png = (
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1"
+            "HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        )
+        messages = [
+            {"role": "user", "content": "screenshot it"},
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "tu1", "type": "function",
+                "function": {"name": "screenshot", "arguments": "{}"},
+            }]},
+            {"role": "tool", "tool_call_id": "tu1", "content": [
+                {"type": "text", "text": "Here:"},
+                {"type": "image_url", "image_url": {"url": png}},
+            ]},
+        ]
+        _, msgs = convert_messages_to_converse(messages)
+        tr = [b for m in msgs for b in m["content"] if "toolResult" in b][0]
+        blocks = tr["toolResult"]["content"]
+        assert any("image" in b for b in blocks), blocks
+        # The base64 payload must not be leaked into a text block.
+        assert not any("iVBORw0KGgo" in b.get("text", "") for b in blocks)
+
+    def test_multimodal_envelope_dict_keeps_image_block(self):
+        """The same, for the envelope dict rather than a bare list.
+
+        vision_analyze's native fast path returns
+        ``{"_multimodal": True, "content": [...], "text_summary": ...}``
+        (tools/vision_tools.py), which is the most common producer of an
+        image-bearing tool result. Matching only ``isinstance(content, list)``
+        sent it down the json.dumps branch with the base64 still inline.
+        """
+        from agent.bedrock_adapter import convert_messages_to_converse
+        png = (
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1"
+            "HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        )
+        messages = [
+            {"role": "user", "content": "what is in this image?"},
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "tu1", "type": "function",
+                "function": {"name": "vision_analyze", "arguments": "{}"},
+            }]},
+            {"role": "tool", "tool_call_id": "tu1", "content": {
+                "_multimodal": True,
+                "content": [
+                    {"type": "text", "text": "Image loaded into your context"},
+                    {"type": "image_url", "image_url": {"url": png}},
+                ],
+                "text_summary": "Image attached natively for the main model.",
+                "meta": {"size_bytes": 899000},
+            }},
+        ]
+        _, msgs = convert_messages_to_converse(messages)
+        tr = [b for m in msgs for b in m["content"] if "toolResult" in b][0]
+        blocks = tr["toolResult"]["content"]
+        assert any("image" in b for b in blocks), blocks
+        assert not any("iVBORw0KGgo" in b.get("text", "") for b in blocks)
+
+    def test_multimodal_envelope_falls_back_to_its_text_summary(self):
+        """An envelope whose parts convert to nothing uses text_summary,
+        not a json.dumps of the envelope itself."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [
+            {"role": "user", "content": "look"},
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "tu1", "type": "function",
+                "function": {"name": "vision_analyze", "arguments": "{}"},
+            }]},
+            {"role": "tool", "tool_call_id": "tu1", "content": {
+                "_multimodal": True,
+                "content": [],
+                "text_summary": "Image attached natively for the main model.",
+            }},
+        ]
+        _, msgs = convert_messages_to_converse(messages)
+        tr = [b for m in msgs for b in m["content"] if "toolResult" in b][0]
+        blocks = tr["toolResult"]["content"]
+        assert blocks == [
+            {"text": "Image attached natively for the main model."}], blocks
+
+    def test_plain_dict_tool_result_is_unchanged(self):
+        """Only the _multimodal envelope takes the new path. An ordinary dict
+        result still serialises to one text block exactly as before."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [
+            {"role": "user", "content": "read it"},
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "tu1", "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            }]},
+            {"role": "tool", "tool_call_id": "tu1",
+             "content": {"ok": True, "lines": 3}},
+        ]
+        _, msgs = convert_messages_to_converse(messages)
+        tr = [b for m in msgs for b in m["content"] if "toolResult" in b][0]
+        blocks = tr["toolResult"]["content"]
+        assert len(blocks) == 1 and "text" in blocks[0], blocks
+        assert "\"ok\"" in blocks[0]["text"]
+
+    def test_list_shaped_json_tool_result_keeps_its_output(self):
+        """A list-shaped tool result that is plain data, not content parts,
+        must keep its output.
+
+        _convert_content_to_converse only recognises text/image_url parts and
+        skips everything else, so sending every list through it turns an
+        ordinary JSON array result into the bare "(empty)" placeholder and the
+        model never learns what the tool returned.
+        """
+        from agent.bedrock_adapter import convert_messages_to_converse
+        for result in ([{"file": "a.py"}, {"file": "b.py"}],
+                       [1, 2, 3],
+                       [1, "two", 3.0],
+                       [{"type": "file", "path": "a.py"}],
+                       []):
+            messages = [
+                {"role": "user", "content": "list them"},
+                {"role": "assistant", "content": None, "tool_calls": [{
+                    "id": "tu1", "type": "function",
+                    "function": {"name": "list_files", "arguments": "{}"},
+                }]},
+                {"role": "tool", "tool_call_id": "tu1", "content": result},
+            ]
+            _, msgs = convert_messages_to_converse(messages)
+            tr = [b for m in msgs for b in m["content"] if "toolResult" in b][0]
+            blocks = tr["toolResult"]["content"]
+            assert blocks == [{"text": json.dumps(result)}], (result, blocks)
+
+    def test_text_only_content_parts_still_become_separate_blocks(self):
+        """The guard above must not push a genuine content-part list back onto
+        the json.dumps path: text parts still convert to text blocks."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [
+            {"role": "user", "content": "read it"},
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "tu1", "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            }]},
+            {"role": "tool", "tool_call_id": "tu1", "content": [
+                {"type": "text", "text": "line A"},
+                {"type": "text", "text": "line B"},
+            ]},
+        ]
+        _, msgs = convert_messages_to_converse(messages)
+        tr = [b for m in msgs for b in m["content"] if "toolResult" in b][0]
+        assert tr["toolResult"]["content"] == [
+            {"text": "line A"}, {"text": "line B"}]
+
+
 class TestNormalizeConverseResponse:
     """Test Bedrock Converse response → OpenAI format conversion."""
 

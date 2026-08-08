@@ -9,12 +9,32 @@ vi.mock('@/lib/desktop-fs', () => ({
 }))
 
 import {
+  isWorkspaceLiveReloadUrl,
   localPreviewTarget,
   normalizeOrLocalPreviewTarget,
   openPreviewTargetInBrowser,
   remoteHtmlPreviewDocument,
   validatedRemoteHtmlDataUrl
 } from './local-preview'
+
+describe('workspace live reload URLs', () => {
+  it.each([
+    'http://localhost:5173',
+    'https://127.0.0.1:8443/app',
+    'http://0.0.0.0:3000',
+    'http://[::1]:4173',
+    'http://demo.local:8080'
+  ])('accepts local development origin %s', url => {
+    expect(isWorkspaceLiveReloadUrl(url)).toBe(true)
+  })
+
+  it.each(['https://x.com', 'https://localhost.example.com', 'https://demo.local.example.com', 'not a URL'])(
+    'rejects external or malformed origin %s',
+    url => {
+      expect(isWorkspaceLiveReloadUrl(url)).toBe(false)
+    }
+  )
+})
 
 const remoteTarget = {
   kind: 'file' as const,

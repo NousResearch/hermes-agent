@@ -303,6 +303,44 @@ class TestHelpers:
         monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
         assert mcp_serve._load_sessions_index() == {}
 
+    def test_truncate_helper(self):
+        from mcp_serve import _truncate
+        assert _truncate("hello world", 5) == "hello"
+        assert _truncate("short", 100) == "short"
+        assert _truncate("", 5) == ""
+        # limit 0 disables truncation — full content returned
+        assert _truncate("do not truncate me", 0) == "do not truncate me"
+        assert _truncate("negative disables too", -1) == "negative disables too"
+
+    def test_truncation_limits_defaults(self, monkeypatch):
+        """Without config.yaml mcp settings, defaults (2000, 500) are used."""
+        import mcp_serve
+        from hermes_cli import config as _cfg_mod
+        monkeypatch.setattr(_cfg_mod, "load_config", lambda: {})
+        assert mcp_serve._mcp_truncation_limits() == (2000, 500)
+
+    def test_truncation_limits_from_config(self, monkeypatch):
+        """config.yaml mcp.* settings flow through to the limits."""
+        import mcp_serve
+        from hermes_cli import config as _cfg_mod
+        monkeypatch.setattr(
+            _cfg_mod, "load_config",
+            lambda: {"mcp": {"max_content_chars": 1234, "preview_chars": 67}},
+        )
+        assert mcp_serve._mcp_truncation_limits() == (1234, 67)
+
+    def test_truncation_zero_disables(self, monkeypatch):
+        """A config value of 0 propagates (0 disables truncation downstream)."""
+        import mcp_serve
+        from hermes_cli import config as _cfg_mod
+        monkeypatch.setattr(
+            _cfg_mod, "load_config",
+            lambda: {"mcp": {"max_content_chars": 0, "preview_chars": 0}},
+        )
+        assert mcp_serve._mcp_truncation_limits() == (0, 0)
+        # And _truncate honors 0 as "no truncation"
+        assert mcp_serve._truncate("full content preserved", 0) == "full content preserved"
+
 
 class TestContentExtraction:
     def test_text(self):

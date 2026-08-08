@@ -40,7 +40,7 @@ def test_foreground_command_uses_registered_task_cwd_for_existing_environment(mo
     result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
 
     assert result["exit_code"] == 0
-    assert calls == [("pwd", {"timeout": 60, "cwd": "/workspace/acp", "bounded_capture": True})]
+    assert calls == [("pwd", {"timeout": 60, "cwd": "/workspace/acp", "bounded_capture": True, "use_pty": False})]
 
 
 def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
@@ -73,7 +73,7 @@ def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
     )
 
     assert result["exit_code"] == 0
-    assert calls == [{"timeout": 60, "cwd": "/explicit/workdir", "bounded_capture": True}]
+    assert calls == [{"timeout": 60, "cwd": "/explicit/workdir", "bounded_capture": True, "use_pty": False}]
 
 
 def test_explicit_workdir_does_not_persist_into_session_cwd(monkeypatch):

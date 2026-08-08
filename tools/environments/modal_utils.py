@@ -81,6 +81,7 @@ class BaseModalExecutionEnvironment(BaseEnvironment):
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
         bounded_capture: bool = False,
+        use_pty: bool = False,
     ) -> dict:
         # Managed/remote modal transports execute commands via explicit transport
         # and do not rely on shell background rewriters. Keep parameter for
@@ -91,6 +92,10 @@ class BaseModalExecutionEnvironment(BaseEnvironment):
         # remote function's result in one payload, so streaming-time bounding
         # does not apply; the terminal tool's final truncation still caps it.
         _ = bounded_capture
+        # use_pty: accepted for signature parity; remote transports have no
+        # PTY concept, so the flag is ignored (foreground pty=true is honored
+        # only by the local backend — issue #81756).
+        _ = use_pty
         self._before_execute()
         prepared = self._prepare_modal_exec(
             command,

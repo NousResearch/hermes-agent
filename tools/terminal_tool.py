@@ -3079,6 +3079,12 @@ def terminal_tool(
                         # Internal env.execute() consumers (file ops cat
                         # reads, RPC reads) intentionally stay unbounded.
                         "bounded_capture": True,
+                        # Foreground pty=true was silently ignored before
+                        # #81756: the execute path never carried the flag, so
+                        # interactive CLIs ran on pipes. LocalEnvironment now
+                        # honors it (ptyprocess/pywinpty); remote backends
+                        # accept and ignore it.
+                        "use_pty": effective_pty,
                     }
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
@@ -3305,6 +3311,8 @@ def terminal_tool(
                 result_dict["sudo_auth_failed"] = True
             if sudo_cache_cleared:
                 result_dict["sudo_cache_cleared"] = True
+            if pty_disabled_reason:
+                result_dict["pty_note"] = pty_disabled_reason
 
             return json.dumps(result_dict, ensure_ascii=False)
 

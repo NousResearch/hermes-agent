@@ -601,6 +601,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
         login: bool = False,
         timeout: int = 120,
         stdin_data: str | None = None,
+        use_pty: bool = False,
     ):
         """Run a bash command in the Vercel sandbox.
 

@@ -1485,7 +1485,8 @@ class LocalEnvironment(BaseEnvironment):
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
-                  stdin_data: str | None = None) -> subprocess.Popen:
+                  stdin_data: str | None = None,
+                  use_pty: bool = False):
         bash = _find_bash()
         # For login-shell invocations (used by init_session to build the
         # environment snapshot), prepend sources for the user's bashrc /
@@ -1500,6 +1501,27 @@ class LocalEnvironment(BaseEnvironment):
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
 
+        # PTY mode: interactive CLIs and line-buffered output need a real
+        # pseudo-terminal (issue #81756 — foreground pty=true used to be
+        # silently ignored).  stdin cannot be piped through a PTY, so the
+        # pipe-stdin path and PTY mode are mutually exclusive; callers with
+        # stdin_data get the pipe path below.
+        if use_pty and stdin_data is None:
+            from tools.environments.base import _spawn_pty_process
+
+            pty_proc = _spawn_pty_process(
+                cmd_string,
+                cwd=_resolve_safe_cwd(self.cwd),
+                run_env=run_env,
+                shell=bash,
+                login=login,
+            )
+            if pty_proc is not None:
+                return pty_proc
+            # PTY unavailable → fall through to the pipe path (same contract
+            # as process_registry.spawn_local: warn and degrade, never fail).
+
+        _popen_cwd = _resolve_safe_cwd(self.cwd)
         # Recover when the cwd has been deleted out from under us — usually by
         # a previous tool call that ran ``rm -rf`` on its own working dir
         # (issue #17558).  Popen would otherwise raise FileNotFoundError on
@@ -1510,22 +1532,19 @@ class LocalEnvironment(BaseEnvironment):
         # POSIX paths (``/c/Users/...``) to native form so a perfectly valid
         # ``pwd -P`` result from bash isn't mistakenly treated as "missing"
         # and spammed as a warning on every command.
-        safe_cwd = _resolve_safe_cwd(self.cwd)
-        if safe_cwd != self.cwd:
+        if _popen_cwd != self.cwd:
             # MSYS → Windows translation alone shouldn't surface as a warning
             # (it's a benign normalization, not a recovery). Only warn when
             # the directory really doesn't exist on disk.
             normalized = _msys_to_windows_path(self.cwd) if _IS_WINDOWS else self.cwd
-            if safe_cwd != normalized:
+            if _popen_cwd != normalized:
                 logger.warning(
                     "LocalEnvironment cwd %r is missing on disk; "
                     "falling back to %r so terminal commands keep working.",
                     self.cwd,
-                    safe_cwd,
+                    _popen_cwd,
                 )
-            self.cwd = safe_cwd
-
-        _popen_cwd = self.cwd
+            self.cwd = _popen_cwd
 
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 

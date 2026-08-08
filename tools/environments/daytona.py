@@ -218,7 +218,8 @@ class DaytonaEnvironment(BaseEnvironment):
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
-                  stdin_data: str | None = None):
+                  stdin_data: str | None = None,
+                  use_pty: bool = False):
         """Return a _ThreadedProcessHandle wrapping a blocking Daytona SDK call."""
         sandbox = self._sandbox
         lock = self._lock

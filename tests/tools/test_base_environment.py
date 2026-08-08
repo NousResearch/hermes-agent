@@ -15,7 +15,7 @@ class _TestableEnv(BaseEnvironment):
     def __init__(self, cwd="/tmp", timeout=10):
         super().__init__(cwd=cwd, timeout=timeout)
 
-    def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
+    def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None, use_pty=False):
         raise NotImplementedError("Use mock")
 
     def cleanup(self):
@@ -272,7 +272,7 @@ class TestSnapshotFileModes:
             def get_temp_dir(self):
                 return self._temp_dir
 
-            def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
+            def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None, use_pty=False):
                 proc = subprocess.Popen(
                     ["/bin/bash", "-lc", cmd_string],
                     stdout=subprocess.PIPE,
@@ -382,7 +382,7 @@ class TestInitSessionFailure:
 
         calls = []
 
-        def track_run_bash(cmd, *, login=False, timeout=120, stdin_data=None):
+        def track_run_bash(cmd, *, login=False, timeout=120, stdin_data=None, use_pty=False):
             calls.append({"login": login})
             mock = MagicMock()
             mock.poll.return_value = 0

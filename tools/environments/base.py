@@ -10,6 +10,7 @@ import codecs
 import json
 import logging
 import os
+import platform
 import re
 import select
 import shlex
@@ -20,7 +21,7 @@ import uuid
 from abc import ABC, abstractmethod
 from collections import deque
 from pathlib import Path
-from typing import IO, Callable, Iterable, Protocol
+from typing import IO, Any, Callable, Iterable, Protocol
 
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -466,6 +467,155 @@ class _ThreadedProcessHandle:
         return self._returncode
 
 
+class _PtyProcessHandle:
+    """ProcessHandle adapter for a PTY-spawned foreground process.
+
+    Wraps a ptyprocess (POSIX) / pywinpty (Windows) PtyProcess so the shared
+    ``BaseEnvironment._wait_for_process`` machinery — non-blocking pipe drain,
+    interrupt handling, timeout kill — works unchanged.  A reader thread
+    mirrors the PTY master into an ``os.pipe()``; ``poll()``/``kill()``/
+    ``wait()`` delegate to the PtyProcess handle.
+    """
+
+    def __init__(self, pty_proc: Any):
+        self._pty = pty_proc
+        self._done = threading.Event()
+        self._returncode: int | None = None
+
+        read_fd, write_fd = os.pipe()
+        self._stdout = os.fdopen(read_fd, "r", encoding="utf-8", errors="replace")
+        self._write_fd = write_fd
+
+        def _reader():
+            try:
+                while self._isalive():
+                    try:
+                        chunk = self._pty.read(4096)
+                    except EOFError:
+                        break
+                    except Exception:
+                        break
+                    if not chunk:
+                        break
+                    # ptyprocess returns bytes; pywinpty returns str.
+                    if isinstance(chunk, str):
+                        chunk = chunk.encode("utf-8", errors="replace")
+                    try:
+                        os.write(self._write_fd, chunk)
+                    except OSError:
+                        break
+            finally:
+                try:
+                    self._pty.wait()
+                    self._returncode = (
+                        self._pty.exitstatus
+                        if hasattr(self._pty, "exitstatus")
+                        and self._pty.exitstatus is not None
+                        else -1
+                    )
+                except Exception:
+                    self._returncode = -1
+                try:
+                    os.close(self._write_fd)
+                except OSError:
+                    pass
+                self._done.set()
+
+        t = threading.Thread(target=_reader, daemon=True)
+        t.name = "pty-fg-reader"
+        t.start()
+
+    @property
+    def pid(self) -> int | None:
+        """Return the underlying PTY process PID, if known."""
+        try:
+            return int(self._pty.pid)
+        except Exception:
+            return None
+
+    def _isalive(self) -> bool:
+        try:
+            return bool(self._pty.isalive())
+        except Exception:
+            return False
+
+    @property
+    def stdout(self):
+        return self._stdout
+
+    @property
+    def returncode(self) -> int | None:
+        return self._returncode
+
+    def poll(self) -> int | None:
+        return self._returncode if self._done.is_set() else None
+
+    def kill(self):
+        """Terminate the PTY session (SIGTERM→SIGKILL on POSIX, TerminateProcess
+        on Windows).  The child is the session leader, so this reaches the whole
+        command tree."""
+        try:
+            if self._isalive():
+                self._pty.terminate(force=True)
+        except Exception:
+            pass
+
+    def wait(self, timeout: float | None = None) -> int:
+        self._done.wait(timeout=timeout)
+        return self._returncode
+
+
+def _spawn_pty_process(
+    command: str,
+    cwd: str,
+    run_env: dict,
+    shell: str,
+    login: bool = False,
+    dimensions: tuple[int, int] = (30, 120),
+) -> "_PtyProcessHandle | None":
+    """Spawn *command* under a pseudo-terminal, or None when PTY is unavailable.
+
+    Shared by the foreground terminal path (LocalEnvironment) and the
+    background path (process_registry) so both surfaces honor ``pty=true``
+    with identical semantics.  On POSIX uses ``ptyprocess``; on Windows uses
+    ``pywinpty`` (ConPTY).  Returns None instead of raising so callers can
+    fall back to pipe mode with a warning — same contract as
+    ``process_registry.spawn_local``.
+    """
+    if not run_env:
+        run_env = {}
+    pty_env = dict(run_env)
+    pty_env["PYTHONUNBUFFERED"] = "1"
+    try:
+        if platform.system() == "Windows":
+            from winpty import PtyProcess as _PtyProcessCls
+        else:
+            from ptyprocess import PtyProcess as _PtyProcessCls
+    except ImportError:
+        logger.warning("ptyprocess/winpty not installed, falling back to pipe mode")
+        return None
+
+    # ``set +m`` mirrors the background PTY spawn: disable job control so
+    # job-control messages ("no job control in this shell") never pollute
+    # captured output.
+    argv = (
+        [shell, "-l", "-c", f"set +m; {command}"]
+        if login
+        else [shell, "-c", f"set +m; {command}"]
+    )
+    try:
+        pty_proc = _PtyProcessCls.spawn(
+            argv,
+            cwd=cwd,
+            env=pty_env,
+            dimensions=dimensions,
+        )
+    except Exception as e:
+        logger.warning("PTY spawn failed (%s), falling back to pipe mode", e)
+        return None
+    return _PtyProcessHandle(pty_proc)
+
+
 # ---------------------------------------------------------------------------
 # CWD marker for remote backends
 # ---------------------------------------------------------------------------
@@ -606,10 +756,17 @@ class BaseEnvironment(ABC):
         login: bool = False,
         timeout: int = 120,
         stdin_data: str | None = None,
+        use_pty: bool = False,
     ) -> ProcessHandle:
         """Spawn a bash process to run *cmd_string*.
 
-        Returns a ProcessHandle (subprocess.Popen or _ThreadedProcessHandle).
+        ``use_pty=True`` requests a pseudo-terminal for the child (interactive
+        CLIs, line-buffered output).  Only the local backend honors it; remote
+        backends accept and ignore the flag so the foreground ``execute`` path
+        can thread it unconditionally.
+
+        Returns a ProcessHandle (subprocess.Popen, _ThreadedProcessHandle, or
+        _PtyProcessHandle).
         Must be overridden by every backend.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement _run_bash()")
@@ -1322,6 +1479,7 @@ class BaseEnvironment(ABC):
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
         bounded_capture: bool = False,
+        use_pty: bool = False,
     ) -> dict:
         """Execute a command, return {"output": str, "returncode": int}.
 
@@ -1333,6 +1491,13 @@ class BaseEnvironment(ABC):
         full-fidelity consumers — file operations ``cat`` reads that feed
         the patch engine, code-execution RPC reads, log reads — MUST leave
         it False: truncating those corrupts data, not just display.
+
+        ``use_pty=True`` runs the command under a pseudo-terminal so
+        interactive CLIs and line-buffered output behave as they would in a
+        real terminal.  Only the local backend implements it; remote backends
+        ignore the flag (their transports have no PTY concept).  When the
+        platform's PTY library is unavailable the local backend falls back to
+        pipe mode rather than failing the command.
         """
         self._before_execute()
 
@@ -1366,7 +1531,8 @@ class BaseEnvironment(ABC):
         login = not self._snapshot_ready and not self._prefer_nonlogin
 
         proc = self._run_bash(
-            wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
+            wrapped, login=login, timeout=effective_timeout,
+            stdin_data=effective_stdin, use_pty=use_pty,
         )
         result = self._wait_for_process(
             proc, timeout=effective_timeout, bounded_capture=bounded_capture

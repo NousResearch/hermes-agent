@@ -393,7 +393,8 @@ class SSHEnvironment(BaseEnvironment):
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
-                  stdin_data: str | None = None) -> subprocess.Popen:
+                  stdin_data: str | None = None,
+                  use_pty: bool = False) -> subprocess.Popen:
         """Spawn an SSH process that runs bash on the remote host."""
         cmd = self._build_ssh_command()
         if login:

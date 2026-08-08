@@ -998,7 +998,9 @@
 
    const deleteTask = useCallback(function (taskId) {
      if (!window.confirm(tx(t, "trash.confirm", FALLBACK_TRASH.confirm))) return Promise.resolve();
-     return SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(taskId)}`, {
+     // #29347: thread the active board into the URL so non-default boards
+     // don't fall through to ``_resolve_board(None)`` and 404 on a foreign DB.
+     return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(taskId)}`, board), {
        method: "DELETE",
      }).then(function () {
        loadBoard();
@@ -1015,8 +1017,9 @@
       if (!window.confirm(tx(t, "trash.confirmMany", "Permanently delete {n} selected tasks? This cannot be undone.", { n: count }))) return Promise.resolve();
       const ids = Array.from(selectedIds);
       setSelectedIds(new Set());
+      // #29347: same fix as deleteTask — every per-id DELETE must carry the board.
       return Promise.all(ids.map(function (id) {
-        return SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+        return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(id)}`, board), { method: "DELETE" });
       })).then(function () {
         loadBoard();
       }).catch(function (e) { setError(String(e.message || e)); });

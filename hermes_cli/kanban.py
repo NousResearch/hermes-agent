@@ -74,6 +74,9 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "started_at": t.started_at,
         "completed_at": t.completed_at,
         "result": t.result,
+        "current_run_id": t.current_run_id,
+        "claim_lock": t.claim_lock,
+        "claim_expires": t.claim_expires,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
         "model_override": t.model_override,
@@ -117,6 +120,212 @@ def _parse_workspace_flag(value: str) -> tuple[str, Optional[str]]:
         f"unknown --workspace value {value!r}: use scratch, worktree, "
         "worktree:<path>, or dir:<path>"
     )
+
+
+_EXPECT_NULL_WORDS = {"none", "null", "-"}
+_EXPECT_FIELDS = frozenset(
+    {"status", "assignee", "run", "claim", "dependencies", "event"}
+)
+
+
+def _add_expected_state_args(
+    parser: argparse.ArgumentParser, *, primary: bool = True
+) -> None:
+    """Add public compare-and-set options to a mutation parser."""
+    if primary:
+        parser.add_argument(
+            "--expect-status",
+            choices=sorted(kb.VALID_STATUSES),
+            default=None,
+            help="Require the target task's exact status",
+        )
+        parser.add_argument(
+            "--expect-assignee",
+            default=None,
+            metavar="PROFILE|none",
+            help="Require the exact assignee; use 'none' for unassigned",
+        )
+        parser.add_argument(
+            "--expect-run",
+            default=None,
+            metavar="RUN_ID|none",
+            help="Require the exact current run id; use 'none' for no run",
+        )
+        parser.add_argument(
+            "--expect-claim",
+            default=None,
+            metavar="CLAIM|none",
+            help="Require the exact claim lock; use 'none' for no claim",
+        )
+        parser.add_argument(
+            "--expect-dependencies",
+            default=None,
+            metavar="JSON",
+            help=(
+                "Require the exact sorted parent snapshot as JSON, e.g. "
+                "'[{\"id\":\"t_parent\",\"status\":\"done\"}]' or '[]'"
+            ),
+        )
+        parser.add_argument(
+            "--expect-event",
+            default=None,
+            metavar="EVENT_ID|none",
+            help="Require the latest task-event id; use 'none' for no events",
+        )
+    parser.add_argument(
+        "--expect-task-state",
+        action="append",
+        default=[],
+        metavar="TASK_ID=JSON",
+        help=(
+            "Require state for an additional involved task (repeatable). JSON "
+            "fields: status, assignee, run, claim, dependencies, event"
+        ),
+    )
+
+
+def _parse_expected_nullable_int(raw: str, option: str) -> Optional[int]:
+    if raw.strip().lower() in _EXPECT_NULL_WORDS:
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{option} must be an integer or 'none'") from exc
+    if value < 0:
+        raise ValueError(f"{option} must be >= 0 or 'none'")
+    return value
+
+
+def _normalize_dependency_snapshot(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        raise ValueError("expected dependencies must be a JSON array")
+    normalized: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, dict) or set(item) != {"id", "status"}:
+            raise ValueError(
+                "each expected dependency must contain exactly 'id' and 'status'"
+            )
+        raw_task_id = item.get("id")
+        raw_status = item.get("status")
+        if not isinstance(raw_task_id, str) or not raw_task_id.strip():
+            raise ValueError(f"expected dependency {index} has an invalid id")
+        if not isinstance(raw_status, str) or raw_status not in kb.VALID_STATUSES:
+            raise ValueError(
+                f"expected dependency {raw_task_id} has invalid status {raw_status!r}"
+            )
+        task_id = raw_task_id.strip()
+        status = raw_status
+        if task_id in seen:
+            raise ValueError(f"duplicate expected dependency {task_id}")
+        seen.add(task_id)
+        normalized.append({"id": task_id, "status": status})
+    return sorted(normalized, key=lambda item: item["id"])
+
+
+def _normalize_expected_spec(spec: Any) -> dict[str, Any]:
+    if not isinstance(spec, dict) or not spec:
+        raise ValueError("expected task state must be a non-empty JSON object")
+    unknown = sorted(set(spec) - _EXPECT_FIELDS)
+    if unknown:
+        raise ValueError(f"unknown expected-state field(s): {', '.join(unknown)}")
+    normalized: dict[str, Any] = {}
+    for field_name, value in spec.items():
+        if field_name == "status":
+            if value not in kb.VALID_STATUSES:
+                raise ValueError(f"invalid expected status {value!r}")
+        elif field_name == "assignee":
+            if isinstance(value, str) and value.strip().lower() in _EXPECT_NULL_WORDS:
+                value = None
+            elif value is not None:
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError("expected assignee must be a profile name or null")
+                value = kb._canonical_assignee(value)
+        elif field_name in {"run", "event"}:
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                raise ValueError(
+                    f"expected {field_name} must be a non-negative integer or null"
+                )
+        elif field_name == "claim":
+            if isinstance(value, str) and value.strip().lower() in _EXPECT_NULL_WORDS:
+                value = None
+            elif value is not None and (not isinstance(value, str) or not value):
+                raise ValueError("expected claim must be a string or null")
+        elif field_name == "dependencies":
+            value = _normalize_dependency_snapshot(value)
+        normalized[field_name] = value
+    return normalized
+
+
+def _merge_expected_spec(
+    states: dict[str, dict[str, Any]], task_id: str, spec: dict[str, Any]
+) -> None:
+    current = states.setdefault(task_id, {})
+    for field_name, value in spec.items():
+        if field_name in current and current[field_name] != value:
+            raise ValueError(
+                f"conflicting expected {field_name} values for {task_id}"
+            )
+        current[field_name] = value
+
+
+def _expected_states_from_args(
+    args: argparse.Namespace,
+    *,
+    primary_id: Optional[str],
+    allowed_ids: set[str],
+) -> Optional[dict[str, dict[str, Any]]]:
+    states: dict[str, dict[str, Any]] = {}
+    for raw in getattr(args, "expect_task_state", None) or []:
+        task_id, sep, raw_json = raw.partition("=")
+        task_id = task_id.strip()
+        if not sep or not task_id or not raw_json.strip():
+            raise ValueError("--expect-task-state must use TASK_ID=JSON syntax")
+        try:
+            parsed = json.loads(raw_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"invalid --expect-task-state JSON for {task_id}: {exc.msg}"
+            ) from exc
+        _merge_expected_spec(states, task_id, _normalize_expected_spec(parsed))
+
+    primary: dict[str, Any] = {}
+    if getattr(args, "expect_status", None) is not None:
+        primary["status"] = args.expect_status
+    if getattr(args, "expect_assignee", None) is not None:
+        raw = args.expect_assignee.strip()
+        primary["assignee"] = (
+            None if raw.lower() in _EXPECT_NULL_WORDS else kb._canonical_assignee(raw)
+        )
+    if getattr(args, "expect_run", None) is not None:
+        primary["run"] = _parse_expected_nullable_int(args.expect_run, "--expect-run")
+    if getattr(args, "expect_claim", None) is not None:
+        raw = args.expect_claim
+        primary["claim"] = None if raw.lower() in _EXPECT_NULL_WORDS else raw
+    if getattr(args, "expect_dependencies", None) is not None:
+        try:
+            deps = json.loads(args.expect_dependencies)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid --expect-dependencies JSON: {exc.msg}") from exc
+        primary["dependencies"] = _normalize_dependency_snapshot(deps)
+    if getattr(args, "expect_event", None) is not None:
+        primary["event"] = _parse_expected_nullable_int(
+            args.expect_event, "--expect-event"
+        )
+    if primary:
+        if primary_id is None:
+            raise ValueError("primary expected-state options are not valid here")
+        _merge_expected_spec(states, primary_id, primary)
+
+    unexpected_ids = sorted(set(states) - allowed_ids)
+    if unexpected_ids:
+        raise ValueError(
+            "expected state supplied for task(s) not involved in this mutation: "
+            + ", ".join(unexpected_ids)
+        )
+    return states or None
 
 
 def _parse_branch_flag(value: Optional[str]) -> Optional[str]:
@@ -400,6 +609,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "that require immediate human ops (R3 gate) "
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
+    _add_expected_state_args(p_create, primary=False)
 
     # --- swarm ---
     p_swarm = sub.add_parser(
@@ -477,6 +687,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_assign = sub.add_parser("assign", help="Assign or reassign a task")
     p_assign.add_argument("task_id")
     p_assign.add_argument("profile", help="Profile name (or 'none' to unassign)")
+    _add_expected_state_args(p_assign)
 
     # --- set-model (per-task model/provider override) ---
     p_set_model = sub.add_parser(
@@ -523,6 +734,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--reason", default=None,
         help="Human-readable reason (recorded on the reclaimed event)",
     )
+    _add_expected_state_args(p_reassign)
 
     # --- diagnostics (board-wide health) ---
     p_diag = sub.add_parser(
@@ -550,9 +762,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_link = sub.add_parser("link", help="Add a parent->child dependency")
     p_link.add_argument("parent_id")
     p_link.add_argument("child_id")
+    _add_expected_state_args(p_link)
     p_unlink = sub.add_parser("unlink", help="Remove a parent->child dependency")
     p_unlink.add_argument("parent_id")
     p_unlink.add_argument("child_id")
+    _add_expected_state_args(p_unlink)
 
     # --- claim ---
     p_claim = sub.add_parser(
@@ -571,6 +785,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                            help="Author name (default: $HERMES_PROFILE or 'user')")
     p_comment.add_argument("--max-len", type=int, default=None,
                            help="Trim the stored comment body to this many characters")
+    _add_expected_state_args(p_comment)
 
     # --- attach / attachments / attach-rm ---
     p_attach = sub.add_parser("attach", help="Attach a local file to a task")
@@ -600,6 +815,15 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_complete.add_argument("--metadata", default=None,
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
+    p_complete.add_argument(
+        "--scheduled-gate",
+        action="store_true",
+        help=(
+            "Atomically complete a scheduled coordination gate without "
+            "promoting it to ready; refuses live claims/runs"
+        ),
+    )
+    _add_expected_state_args(p_complete)
 
     p_edit = sub.add_parser(
         "edit",
@@ -637,12 +861,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
             "triage to break unblock loops. Omit for a generic block."
         ),
     )
+    _add_expected_state_args(p_block)
 
     p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
     p_schedule.add_argument("task_id")
     p_schedule.add_argument("reason", nargs="*", help="Reason/timing note (also appended as a comment)")
     p_schedule.add_argument("--ids", nargs="+", default=None,
                             help="Additional task ids to schedule with the same reason (bulk mode)")
+    _add_expected_state_args(p_schedule)
 
     p_unblock = sub.add_parser(
         "unblock",
@@ -654,6 +880,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons.",
     )
     p_unblock.add_argument("task_ids", nargs="+")
+    _add_expected_state_args(p_unblock)
 
     p_promote = sub.add_parser(
         "promote",
@@ -687,6 +914,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         action="store_true",
         help="Emit machine-readable JSON result",
     )
+    _add_expected_state_args(p_promote)
 
     p_archive = sub.add_parser("archive", help="Archive one or more tasks")
     p_archive.add_argument("task_ids", nargs="*",
@@ -884,6 +1112,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         action="store_true",
         help="Emit one JSON object per task on stdout",
     )
+    _add_expected_state_args(p_specify)
 
     # --- decompose --- (triage → fan-out via auxiliary LLM + orchestrator)
     p_decompose = sub.add_parser(
@@ -1091,6 +1320,12 @@ def kanban_command(args: argparse.Namespace) -> int:
             return 2
         try:
             return int(handler(args) or 0)
+        except kb.KanbanStateConflict as exc:
+            print(
+                json.dumps(exc.as_dict(), ensure_ascii=False, sort_keys=True),
+                file=sys.stderr,
+            )
+            return 3
         except (ValueError, RuntimeError) as exc:
             print(f"kanban: {exc}", file=sys.stderr)
             return 1
@@ -1495,6 +1730,12 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    parents = tuple(args.parent or ())
+    expected_states = _expected_states_from_args(
+        args,
+        primary_id=None,
+        allowed_ids=set(parents),
+    )
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,
@@ -1508,7 +1749,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             project_id=getattr(args, "project", None),
             tenant=args.tenant,
             priority=args.priority,
-            parents=tuple(args.parent or ()),
+            parents=parents,
             triage=bool(getattr(args, "triage", False)),
             idempotency_key=getattr(args, "idempotency_key", None),
             max_runtime_seconds=max_runtime,
@@ -1519,6 +1760,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            expected_states=expected_states,
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -1625,25 +1867,28 @@ def _cmd_show(args: argparse.Namespace) -> int:
         )
         return 2
     with kb.connect_closing() as conn:
-        task = kb.get_task(conn, args.task_id)
-        if not task:
-            print(f"no such task: {args.task_id}", file=sys.stderr)
-            return 1
-        comments = kb.list_comments(conn, args.task_id)
-        events = kb.list_events(conn, args.task_id)
-        parents = kb.parent_ids(conn, args.task_id)
-        children = kb.child_ids(conn, args.task_id)
-        runs = kb.list_runs(conn, args.task_id, **rsk)
-        # Workers hand off via ``task_runs.summary``; ``tasks.result`` is left NULL unless the caller explicitly passed
-        # ``result=``. Surfacing the latest summary here keeps ``show`` from
-        # looking like a no-op when the worker actually did real work.
-        latest_summary = kb.latest_summary(conn, args.task_id)
+        with kb.read_txn(conn):
+            task = kb.get_task(conn, args.task_id)
+            if not task:
+                print(f"no such task: {args.task_id}", file=sys.stderr)
+                return 1
+            comments = kb.list_comments(conn, args.task_id)
+            events = kb.list_events(conn, args.task_id)
+            parents = kb.parent_ids(conn, args.task_id)
+            expected_state = kb.expected_state_snapshot(conn, args.task_id)
+            children = kb.child_ids(conn, args.task_id)
+            runs = kb.list_runs(conn, args.task_id, **rsk)
+            # Workers hand off via ``task_runs.summary``; ``tasks.result`` is left NULL unless the caller explicitly passed
+            # ``result=``. Surfacing the latest summary here keeps ``show`` from
+            # looking like a no-op when the worker actually did real work.
+            latest_summary = kb.latest_summary(conn, args.task_id)
 
     if getattr(args, "json", False):
         payload = {
             "task": _task_to_dict(task),
             "latest_summary": latest_summary,
             "parents": parents,
+            "expected_state": expected_state,
             "children": children,
             "comments": [
                 {"author": c.author, "body": c.body, "created_at": c.created_at}
@@ -1651,6 +1896,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
             ],
             "events": [
                 {
+                    "id": e.id,
                     "kind": e.kind,
                     "payload": e.payload,
                     "created_at": e.created_at,
@@ -1790,8 +2036,13 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
 def _cmd_assign(args: argparse.Namespace) -> int:
     profile = None if args.profile.lower() in {"none", "-", "null"} else args.profile
+    expected_states = _expected_states_from_args(
+        args, primary_id=args.task_id, allowed_ids={args.task_id}
+    )
     with kb.connect_closing() as conn:
-        ok = kb.assign_task(conn, args.task_id, profile)
+        ok = kb.assign_task(
+            conn, args.task_id, profile, expected_states=expected_states
+        )
     if not ok:
         print(f"no such task: {args.task_id}", file=sys.stderr)
         return 1
@@ -1841,11 +2092,15 @@ def _cmd_reclaim(args: argparse.Namespace) -> int:
 
 def _cmd_reassign(args: argparse.Namespace) -> int:
     profile = None if args.profile.lower() in {"none", "-", "null"} else args.profile
+    expected_states = _expected_states_from_args(
+        args, primary_id=args.task_id, allowed_ids={args.task_id}
+    )
     with kb.connect_closing() as conn:
         ok = kb.reassign_task(
             conn, args.task_id, profile,
             reclaim_first=bool(getattr(args, "reclaim", False)),
             reason=getattr(args, "reason", None),
+            expected_states=expected_states,
         )
     if not ok:
         print(
@@ -1994,15 +2249,33 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
 
 
 def _cmd_link(args: argparse.Namespace) -> int:
+    involved = {args.parent_id, args.child_id}
+    expected_states = _expected_states_from_args(
+        args, primary_id=args.child_id, allowed_ids=involved
+    )
     with kb.connect_closing() as conn:
-        kb.link_tasks(conn, args.parent_id, args.child_id)
+        kb.link_tasks(
+            conn,
+            args.parent_id,
+            args.child_id,
+            expected_states=expected_states,
+        )
     print(f"Linked {args.parent_id} -> {args.child_id}")
     return 0
 
 
 def _cmd_unlink(args: argparse.Namespace) -> int:
+    involved = {args.parent_id, args.child_id}
+    expected_states = _expected_states_from_args(
+        args, primary_id=args.child_id, allowed_ids=involved
+    )
     with kb.connect_closing() as conn:
-        ok = kb.unlink_tasks(conn, args.parent_id, args.child_id)
+        ok = kb.unlink_tasks(
+            conn,
+            args.parent_id,
+            args.child_id,
+            expected_states=expected_states,
+        )
     if not ok:
         print(f"No such link: {args.parent_id} -> {args.child_id}", file=sys.stderr)
         return 1
@@ -2042,8 +2315,17 @@ def _cmd_comment(args: argparse.Namespace) -> int:
             suffix = f"\n\n[trimmed to {args.max_len} chars by --max-len]"
             body = body[: max(0, args.max_len - len(suffix))].rstrip() + suffix
     author = args.author or _profile_author()
+    expected_states = _expected_states_from_args(
+        args, primary_id=args.task_id, allowed_ids={args.task_id}
+    )
     with kb.connect_closing() as conn:
-        kb.add_comment(conn, args.task_id, author, body)
+        kb.add_comment(
+            conn,
+            args.task_id,
+            author,
+            body,
+            expected_states=expected_states,
+        )
     print(f"Comment added to {args.task_id}")
     return 0
 
@@ -2144,6 +2426,25 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     if not ids:
         print("at least one task_id is required", file=sys.stderr)
         return 1
+    scheduled_gate = bool(getattr(args, "scheduled_gate", False))
+    if scheduled_gate and len(ids) != 1:
+        print(
+            "kanban: --scheduled-gate requires exactly one task id",
+            file=sys.stderr,
+        )
+        return 2
+    expected_states = _expected_states_from_args(
+        args,
+        primary_id=ids[0] if len(ids) == 1 else None,
+        allowed_ids=set(ids),
+    )
+    if expected_states and len(ids) != 1:
+        print(
+            "kanban: expected-state guards require exactly one task id; "
+            "guard and complete bulk tasks one at a time",
+            file=sys.stderr,
+        )
+        return 2
     summary = getattr(args, "summary", None)
     raw_meta = getattr(args, "metadata", None)
     # Guard: structured handoff fields are per-run, so they'd be
@@ -2219,6 +2520,8 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 summary=summary,
                 metadata=metadata,
                 expected_run_id=_worker_run_id_for(tid),
+                expected_states=expected_states,
+                complete_scheduled_gate=scheduled_gate,
             ):
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
@@ -2260,17 +2563,25 @@ def _cmd_block(args: argparse.Namespace) -> int:
     kind = getattr(args, "kind", None)
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
+    expected_states = _expected_states_from_args(
+        args, primary_id=args.task_id, allowed_ids=set(ids)
+    )
+    if expected_states and len(ids) != 1:
+        raise ValueError(
+            "expected-state guards require one block target at a time"
+        )
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
-            if reason:
-                kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
             if not kb.block_task(
                 conn,
                 tid,
                 reason=reason,
                 kind=kind,
                 expected_run_id=_worker_run_id_for(tid),
+                expected_states=expected_states,
+                comment_author=author if reason else None,
+                comment_body=f"BLOCKED: {reason}" if reason else None,
             ):
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)
@@ -2296,16 +2607,24 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
+    expected_states = _expected_states_from_args(
+        args, primary_id=args.task_id, allowed_ids=set(ids)
+    )
+    if expected_states and len(ids) != 1:
+        raise ValueError(
+            "expected-state guards require one schedule target at a time"
+        )
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
-            if reason:
-                kb.add_comment(conn, tid, author, f"SCHEDULED: {reason}")
             if not kb.schedule_task(
                 conn,
                 tid,
                 reason=reason,
                 expected_run_id=_worker_run_id_for(tid),
+                expected_states=expected_states,
+                comment_author=author if reason else None,
+                comment_body=f"SCHEDULED: {reason}" if reason else None,
             ):
                 failed.append(tid)
                 print(f"cannot schedule {tid}", file=sys.stderr)
@@ -2323,12 +2642,25 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     if reason is not None:
         reason = reason.strip() or None
     author = _profile_author() if reason else None
+    expected_states = _expected_states_from_args(
+        args,
+        primary_id=ids[0] if len(ids) == 1 else None,
+        allowed_ids=set(ids),
+    )
+    if expected_states and len(ids) != 1:
+        raise ValueError(
+            "expected-state guards require one unblock target at a time"
+        )
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
-            if reason:
-                kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
-            if not kb.unblock_task(conn, tid):
+            if not kb.unblock_task(
+                conn,
+                tid,
+                expected_states=expected_states,
+                comment_author=author,
+                comment_body=f"UNBLOCK: {reason}" if reason else None,
+            ):
                 failed.append(tid)
                 print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
             else:
@@ -2349,6 +2681,14 @@ def _cmd_promote(args: argparse.Namespace) -> int:
             ids.append(tid)
             seen.add(tid)
 
+    expected_states = _expected_states_from_args(
+        args, primary_id=args.task_id, allowed_ids=set(ids)
+    )
+    if expected_states and len(ids) != 1:
+        raise ValueError(
+            "expected-state guards require one promote target at a time"
+        )
+
     results: list[dict[str, object]] = []
     with kb.connect_closing() as conn:
         for tid in ids:
@@ -2359,6 +2699,7 @@ def _cmd_promote(args: argparse.Namespace) -> int:
                 reason=reason,
                 force=bool(args.force),
                 dry_run=bool(args.dry_run),
+                expected_states=expected_states,
             )
             results.append({
                 "task_id": tid,
@@ -2904,10 +3245,22 @@ def _cmd_specify(args: argparse.Namespace) -> int:
         )
         return 2
 
+    expected_states = _expected_states_from_args(
+        args,
+        primary_id=ids[0] if len(ids) == 1 else None,
+        allowed_ids=set(ids),
+    )
+    if expected_states and len(ids) != 1:
+        raise ValueError(
+            "expected-state guards require one specify target at a time"
+        )
+
     ok_count = 0
     fail_count = 0
     for tid in ids:
-        outcome = spec.specify_task(tid, author=author)
+        outcome = spec.specify_task(
+            tid, author=author, expected_states=expected_states
+        )
         if outcome.ok:
             ok_count += 1
         else:

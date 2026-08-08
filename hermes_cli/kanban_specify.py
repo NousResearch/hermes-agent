@@ -36,7 +36,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Mapping, Optional
 
 from hermes_cli import kanban_db as kb
 
@@ -144,6 +144,7 @@ def specify_task(
     *,
     author: Optional[str] = None,
     timeout: Optional[int] = None,
+    expected_states: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> SpecifyOutcome:
     """Specify a single triage task and promote it to ``todo``.
 
@@ -239,6 +240,7 @@ def specify_task(
             title=new_title,
             body=new_body,
             author=author or _profile_author(),
+            expected_states=expected_states,
         )
     if not ok:
         # Race: someone else promoted / archived the task between our

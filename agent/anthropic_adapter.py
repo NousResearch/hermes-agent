@@ -453,8 +453,7 @@ def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     normalized = _normalize_base_url_text(base_url)
     if not normalized:
         return False  # No base_url = direct Anthropic API
-    normalized = normalized.rstrip("/").lower()
-    if "anthropic.com" in normalized:
+    if base_url_host_matches(normalized, "anthropic.com"):
         return False  # Direct Anthropic API — OAuth applies
     return True  # Any other endpoint is a third-party proxy
 
@@ -1752,8 +1751,39 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
     return normalized
 
 
-def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
-    """Convert OpenAI tool definitions to Anthropic format."""
+# Server-only tools already reported as withheld from a compatible
+# third-party endpoint, as ``(tool_name, base_url)``. Tool conversion runs on
+# every request, so the diagnosis is emitted once per process rather than once
+# per turn. A duplicate line from a benign race is harmless.
+_reported_third_party_server_tool_drops: set = set()
+
+
+def _report_third_party_server_tool_drop(name: str, base_url: str | None) -> None:
+    """Log, once per process, a server-only tool withheld from a proxy endpoint."""
+    key = (name, str(base_url or ""))
+    if key in _reported_third_party_server_tool_drops:
+        return
+    _reported_third_party_server_tool_drops.add(key)
+    logger.warning(
+        "Tool %r only runs inside Anthropic's own Messages API; %s is a "
+        "compatible third-party endpoint, so the tool is omitted from these "
+        "requests and the model cannot call it. Select a backend this "
+        "endpoint supports (`hermes tools`) to restore this capability.",
+        name, base_url or "the configured endpoint",
+    )
+
+
+def convert_tools_to_anthropic(
+    tools: List[Dict], base_url: str | None = None
+) -> List[Dict]:
+    """Convert OpenAI tool definitions to Anthropic format.
+
+    A function schema may carry a generic ``_hermes_server_tool`` binding. On
+    Anthropic's native endpoint a matching binding replaces the client-side
+    function definition with its provider-native spec. Compatible third-party
+    endpoints omit server-only tools because neither the endpoint nor Hermes's
+    local dispatcher can execute them.
+    """
     if not tools:
         return []
     result = []
@@ -1761,6 +1791,39 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     for t in tools:
         fn = t.get("function", {})
         name = fn.get("name", "")
+        server_binding = fn.get("_hermes_server_tool")
+        if server_binding is not None:
+            server_spec = (
+                server_binding.get("definition")
+                if isinstance(server_binding, dict)
+                and server_binding.get("api_mode") == "anthropic_messages"
+                else None
+            )
+            if isinstance(server_spec, dict) and server_spec.get("type"):
+                if _is_third_party_anthropic_endpoint(base_url):
+                    # The endpoint speaks the Messages API but is not assumed
+                    # to host Anthropic's server-side tools, so the tool is
+                    # withheld. Say so: the operator enabled this capability
+                    # and would otherwise watch it vanish from the request
+                    # with no diagnosis anywhere.
+                    _report_third_party_server_tool_drop(name, base_url)
+                else:
+                    server_name = server_spec.get("name", "")
+                    if server_name and server_name in seen_names:
+                        logger.warning(
+                            "convert_tools_to_anthropic: duplicate tool name '%s' "
+                            "— dropping second occurrence",
+                            server_name,
+                        )
+                    else:
+                        result.append(copy.deepcopy(server_spec))
+                        if server_name:
+                            seen_names.add(server_name)
+            # Server-only bindings never degrade to local function tools. A
+            # third-party Anthropic-compatible endpoint cannot execute the
+            # native definition, while the selected local backend is also
+            # intentionally non-executable.
+            continue
         # Defensive dedup: Anthropic rejects requests with duplicate tool
         # names.  Upstream injection paths already dedup, but this guard
         # converts a hard API failure into a warning.  See: #18478
@@ -2024,6 +2087,25 @@ def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         }
         if isinstance(b.get("cache_control"), dict):
             out["cache_control"] = b["cache_control"]
+        return out
+    if btype == "server_tool_use":
+        out = {
+            "type": "server_tool_use",
+            "id": b.get("id", ""),
+            "name": b.get("name", ""),
+            "input": copy.deepcopy(b.get("input", {})),
+        }
+        if isinstance(b.get("cache_control"), dict):
+            out["cache_control"] = copy.deepcopy(b["cache_control"])
+        return out
+    if btype in {"web_search_tool_result", "web_fetch_tool_result"}:
+        out = {
+            "type": btype,
+            "tool_use_id": b.get("tool_use_id", ""),
+            "content": copy.deepcopy(b.get("content")),
+        }
+        if isinstance(b.get("cache_control"), dict):
+            out["cache_control"] = copy.deepcopy(b["cache_control"])
         return out
     if btype == "image":
         src = b.get("source")
@@ -2860,7 +2942,9 @@ def build_anthropic_kwargs(
     system, anthropic_messages = convert_messages_to_anthropic(
         messages, base_url=base_url, model=model
     )
-    anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
+    anthropic_tools = (
+        convert_tools_to_anthropic(tools, base_url=base_url) if tools else []
+    )
 
     # Nous Portal routes on its own catalog ids (``anthropic/claude-opus-4.8``);
     # normalizing to the bare Anthropic slug would make the model unresolvable
@@ -2934,6 +3018,11 @@ def build_anthropic_kwargs(
 
         if anthropic_tools:
             for tool in anthropic_tools:
+                # Server tools have a versioned ``type`` and a canonical name
+                # that Anthropic itself intercepts. Prefixing that name turns
+                # it back into an ordinary client tool and breaks execution.
+                if "type" in tool:
+                    continue
                 if "name" in tool:
                     tool["name"] = _to_oauth_wire_name(tool["name"])
 

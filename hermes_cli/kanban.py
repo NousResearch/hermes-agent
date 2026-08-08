@@ -56,34 +56,6 @@ def _fmt_task_line(t: kb.Task) -> str:
     return f"{icon} {t.id}  {t.status:8s}  {assignee:20s}{tenant}  {t.title}"
 
 
-def _task_to_dict(t: kb.Task) -> dict[str, Any]:
-    return {
-        "id": t.id,
-        "title": t.title,
-        "body": t.body,
-        "assignee": t.assignee,
-        "status": t.status,
-        "priority": t.priority,
-        "tenant": t.tenant,
-        "workspace_kind": t.workspace_kind,
-        "workspace_path": t.workspace_path,
-        "branch_name": t.branch_name,
-        "project_id": t.project_id,
-        "created_by": t.created_by,
-        "created_at": t.created_at,
-        "started_at": t.started_at,
-        "completed_at": t.completed_at,
-        "result": t.result,
-        "skills": list(t.skills) if t.skills else [],
-        "max_retries": t.max_retries,
-        "model_override": t.model_override,
-        "provider_override": t.provider_override,
-        "session_id": t.session_id,
-        "workflow_template_id": t.workflow_template_id,
-        "current_step_key": t.current_step_key,
-    }
-
-
 def _run_state_kwargs(args: argparse.Namespace) -> Optional[dict[str, str]]:
     st = getattr(args, "state_type", None)
     sn = getattr(args, "state_name", None)
@@ -1522,7 +1494,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
-        print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
+        print(json.dumps(kb.task_to_dict(task), indent=2, ensure_ascii=False))
     else:
         print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'})")
 
@@ -1591,7 +1563,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
             current_step_key=args.current_step_key,
         )
     if getattr(args, "json", False):
-        print(json.dumps([_task_to_dict(t) for t in tasks], indent=2, ensure_ascii=False))
+        print(json.dumps([kb.task_to_dict(t) for t in tasks], indent=2, ensure_ascii=False))
         return 0
     # Passive discoverability: when the user has multiple boards, surface
     # which one they're looking at in the list header. Single-board users
@@ -1641,7 +1613,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
     if getattr(args, "json", False):
         payload = {
-            "task": _task_to_dict(task),
+            "task": kb.task_to_dict(task),
             "latest_summary": latest_summary,
             "parents": parents,
             "children": children,

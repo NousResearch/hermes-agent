@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type CSSProperties, useEffect, useRef, useState } from 'react'
+import { type CSSProperties, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { Button } from '@/components/ui/button'
@@ -144,7 +144,10 @@ function useRecentActivity(): [boolean, () => void] {
     }
   }, [])
 
-  return [recent, () => bumpRef.current()]
+  // Stable, so callers can hang listeners off it.
+  const holdBand = useCallback(() => bumpRef.current(), [])
+
+  return [recent, holdBand]
 }
 
 /**
@@ -182,6 +185,17 @@ export function HudShell() {
   const { t } = useI18n()
   const [recent, holdBand] = useRecentActivity()
   const held = useHudHeld()
+
+  // Clicking away to another APP is the most common way the HUD is let go of,
+  // and it fires no focusout: the composer stays document.activeElement while
+  // the window is inactive. Chrome stops matching `:focus` on an unfocused
+  // window all the same, so the band lost its focus state with no hold running
+  // and snapped shut instead of stepping down to the glanceable stage.
+  useEffect(() => {
+    window.addEventListener('blur', holdBand)
+
+    return () => window.removeEventListener('blur', holdBand)
+  }, [holdBand])
 
   // Main holds the session id on this window's behalf, so leaving HUD mode can
   // hand the app window back whatever conversation ended up here.

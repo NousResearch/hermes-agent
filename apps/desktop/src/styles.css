@@ -2360,7 +2360,11 @@ button[data-slot='aui_msg-reactions'] svg {
   z-index: 0;
   pointer-events: none;
   border-radius: 0.75rem 0.75rem 0 0;
-  background: color-mix(in srgb, var(--dt-card) 55%, transparent);
+  /* Heavier than the text in front of it, deliberately: with no blur to
+     separate the band from what it lies over, the sheet is the only thing
+     keeping half-opacity text off someone else's UI. Fade the words, keep the
+     paper. */
+  background: color-mix(in srgb, var(--dt-card) 80%, transparent);
   /* Slides down behind the bar as it fades. A TRANSFORM, not height: it is
      composited, so it stays smooth where animating height re-lays-out the panel
      every frame and looked coarse — and it leaves the box alone, which matters

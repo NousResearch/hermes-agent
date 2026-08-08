@@ -3,7 +3,7 @@ import { type AnsiCode, ansiCodesToString, diffAnsiCodes } from '@alcalzone/ansi
 import { logForDebugging } from '../utils/debug.js'
 
 import type { Diff, FlickerReason, Frame } from './frame.js'
-import type { Point } from './layout/geometry.js'
+import { type Point, unionRect } from './layout/geometry.js'
 import {
   type Cell,
   cellAt,
@@ -177,6 +177,18 @@ export class LogUpdate {
       // layouts we reserve that lane for status/cursor parking, and scrolling
       // it can leave transient ghosting/bleed artifacts until a later repaint.
       if (top >= 0 && bottom < prev.screen.height - 1 && bottom < next.screen.height - 1) {
+        // DECSTBM scrolls complete terminal rows, not just the ScrollBox's
+        // horizontal bounds. Expand damage across the full screen width so
+        // fixed siblings and borders outside the ScrollBox's narrow damage
+        // are repainted after shiftRows mirrors the hardware operation.
+        const scrollDamage = {
+          x: 0,
+          y: top,
+          width: next.screen.width,
+          height: bottom - top + 1
+        }
+
+        next.screen.damage = next.screen.damage ? unionRect(next.screen.damage, scrollDamage) : scrollDamage
         shiftRows(prev.screen, top, bottom, delta)
         scrollPatch = [
           {

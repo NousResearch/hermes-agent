@@ -136,6 +136,9 @@ class TestDraftStreamingHappyPath:
             else final_call.args[1] if len(final_call.args) > 1 else None
         )
         assert sent_content == "Hello world!"
+        final_metadata = final_call.kwargs.get("metadata") or {}
+        assert final_metadata.get("notify") is True
+        assert "expect_edits" not in final_metadata
 
 
 class TestDraftFallbackOnFailure:

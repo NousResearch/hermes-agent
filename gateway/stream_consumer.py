@@ -2371,7 +2371,7 @@ class GatewayStreamConsumer:
                     reply_to=self._initial_reply_to_id,
                     metadata=self._metadata_for_send(
                         final=finalize,
-                        expect_edits=True,
+                        expect_edits=not finalize,
                     ),
                 )
                 if result.success:

@@ -4904,20 +4904,30 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session_id: str,
         model_config_json: str,
         model: Optional[str] = None,
+        *,
+        billing_provider: Optional[str] = None,
+        billing_base_url: Optional[str] = None,
     ) -> None:
-        """Update model_config and optionally model for an existing session.
+        """Update model_config and optionally model/billing route for a session.
 
         Uses COALESCE so that passing model=None leaves the stored model
-        column unchanged.  Routes through _execute_write for the standard
-        BEGIN IMMEDIATE + jitter-retry + lock guarantee.
+        column unchanged. Billing fields are updated only when provided and do
+        not clear system_prompt/system_prompt_hash. Routes through
+        _execute_write for the standard BEGIN IMMEDIATE + jitter-retry + lock
+        guarantee.
         """
         # Barrier against queued token deltas — see update_session_model.
         self.flush_token_counts()
 
         def _do(conn):
             conn.execute(
-                "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
-                (model_config_json, model, session_id),
+                """UPDATE sessions SET
+                   model_config = ?,
+                   model = COALESCE(?, model),
+                   billing_provider = COALESCE(?, billing_provider),
+                   billing_base_url = COALESCE(?, billing_base_url)
+                   WHERE id = ?""",
+                (model_config_json, model, billing_provider, billing_base_url, session_id),
             )
         self._execute_write(_do)
 

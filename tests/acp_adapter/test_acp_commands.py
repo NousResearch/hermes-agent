@@ -102,6 +102,7 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
             "hermes_cli.runtime_provider",
             resolve_runtime_provider=lambda **_kwargs: {
                 "provider": "p",
+                "requested_provider": "custom:ark",
                 "api_mode": "chat_completions",
                 "base_url": "u",
                 "api_key": "k",
@@ -118,6 +119,7 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
     assert captured["session_db"] is sentinel_db
     assert captured["platform"] == "acp"
     assert captured["session_id"] == "acp-session"
+    assert captured["requested_provider"] == "custom:ark"
 
 
 @pytest.mark.asyncio

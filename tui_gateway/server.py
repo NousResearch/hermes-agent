@@ -700,7 +700,22 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             try:
                 agent._persist_session(snapshot)
             except Exception:
-                pass
+                # Do NOT let this fail silently: below, ``_teardown_session``
+                # unconditionally calls ``agent.close()``, which discards
+                # ``agent._session_messages`` (run_agent.py) whether or not
+                # they made it to disk. Flag the failure so the caller gets
+                # one more chance to persist before that happens, and log
+                # loudly so an operator can see the data-loss risk instead of
+                # it vanishing without a trace.
+                session["_persist_failed"] = True
+                logger.error(
+                    "_finalize_session: failed to persist %d unflushed "
+                    "message(s) for session %s; they will be lost if the "
+                    "retry in _teardown_session also fails",
+                    len(snapshot),
+                    session.get("session_key"),
+                    exc_info=True,
+                )
 
     # ── Plugin hook: on_session_end ────────────────────────────────────
     # Signals every plugin that the session is closing, with
@@ -861,6 +876,26 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
     try:
         agent = session.get("agent")
         if agent is not None and hasattr(agent, "close"):
+            if session.get("_persist_failed") and hasattr(agent, "_persist_session"):
+                # _finalize_session's persist attempt failed and flagged it.
+                # agent.close() below unconditionally clears
+                # agent._session_messages (run_agent.py), so this is the last
+                # chance to save them — retry once, and fail loud either way
+                # so the outcome is never silent.
+                snapshot = getattr(agent, "_session_messages", None)
+                try:
+                    if snapshot:
+                        agent._persist_session(snapshot)
+                    session["_persist_failed"] = False
+                except Exception:
+                    logger.error(
+                        "_teardown_session: retry persist failed for "
+                        "session %s; agent.close() will now discard %d "
+                        "unflushed message(s)",
+                        session.get("session_key"),
+                        len(snapshot or []),
+                        exc_info=True,
+                    )
             agent.close()
     except Exception:
         pass

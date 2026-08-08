@@ -619,6 +619,85 @@ class TestFetchOwnerHandleRetry(unittest.TestCase):
         self.assertEqual(call_count["n"], 6)
         mock_sleep.assert_called()
 
+    # -- identifier namespacing (issue #78004) --------------------------------
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_rejects_foreign_identifier_with_same_name(self, mock_get):
+        """A fully-qualified identifier from another registry must not resolve.
+
+        Regression for #78004: ClawHubSource.fetch() previously took the last
+        path segment of ANY identifier as its slug, so
+        ``owner/repo/skills/todoist`` silently resolved to the ClawHub skill
+        named ``todoist`` when the owning source failed.  Foreign identifiers
+        must return None without hitting the ClawHub API.
+        """
+        # Simulate a ClawHub skill that shares the name with the foreign one.
+        mock_get.return_value = _MockResponse(
+            status_code=200,
+            json_data={"slug": "todoist", "latestVersion": {"version": "1.0.0"}},
+        )
+
+        bundle = self.src.fetch("owner/hermes-skills/skills/todoist")
+
+        self.assertIsNone(bundle)
+        mock_get.assert_not_called()
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_rejects_foreign_identifier_with_same_name(self, mock_get):
+        """inspect() must reject foreign identifiers the same way fetch() does."""
+        mock_get.return_value = _MockResponse(
+            status_code=200,
+            json_data={"slug": "todoist", "displayName": "Todoist", "summary": "x"},
+        )
+
+        meta = self.src.inspect("owner/hermes-skills/skills/todoist")
+
+        self.assertIsNone(meta)
+        mock_get.assert_not_called()
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_resolves_clawhub_prefixed_identifier(self, mock_get):
+        """'clawhub/<slug>' is an accepted explicit identifier form."""
+        import io
+        import zipfile
+
+        def side_effect(url, *args, **kwargs):
+            if url.endswith("/skills/todoist"):
+                return _MockResponse(
+                    status_code=200,
+                    json_data={"slug": "todoist", "latestVersion": {"version": "1.0.0"}},
+                )
+            if "download" in url:
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w") as zf:
+                    zf.writestr("SKILL.md", "---\nname: todoist\n---\n# Todoist\n")
+                resp = _MockResponse(status_code=200)
+                resp.content = buf.getvalue()
+                return resp
+            return _MockResponse(status_code=404, json_data={})
+
+        mock_get.side_effect = side_effect
+
+        bundle = self.src.fetch("clawhub/todoist")
+
+        self.assertIsNotNone(bundle)
+        self.assertEqual(bundle.name, "todoist")
+        self.assertEqual(bundle.identifier, "todoist")
+        self.assertEqual(bundle.source, "clawhub")
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_resolves_clawhub_prefixed_identifier(self, mock_get):
+        mock_get.return_value = _MockResponse(
+            status_code=200,
+            json_data={"slug": "todoist", "displayName": "Todoist", "summary": "Task manager"},
+        )
+
+        meta = self.src.inspect("clawhub/todoist")
+
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.identifier, "todoist")
+        self.assertEqual(meta.name, "Todoist")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2437,8 +2437,30 @@ class ClawHubSource(SkillSource):
         _write_index_cache(cache_key, [_skill_meta_to_dict(s) for s in final_results])
         return final_results
 
+    @staticmethod
+    def _slug_from_identifier(identifier: str) -> str:
+        """Extract the ClawHub slug from an identifier, or "" if not ours.
+
+        ClawHub identifiers are bare slugs (``todoist``) and may carry an
+        explicit ``clawhub/`` prefix (``clawhub/todoist`` — the form the
+        docs use for install).  Any other identifier shape — notably a
+        fully-qualified identifier from another registry, e.g. a GitHub tap
+        identifier ``owner/repo/skills/todoist`` — does NOT belong to
+        ClawHub and must be rejected.  Resolving it by its last path
+        segment would silently install a same-named ClawHub skill under a
+        foreign identifier, overwriting the skill the user actually asked
+        for (issue #78004).
+        """
+        if identifier.startswith("clawhub/"):
+            return identifier[len("clawhub/"):]
+        if "/" in identifier:
+            return ""
+        return identifier
+
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
-        slug = identifier.split("/")[-1]
+        slug = self._slug_from_identifier(identifier)
+        if not slug:
+            return None
 
         skill_data = self._get_json(f"{self.BASE_URL}/skills/{slug}")
         if not isinstance(skill_data, dict):
@@ -2480,7 +2502,9 @@ class ClawHubSource(SkillSource):
         )
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
-        slug = identifier.split("/")[-1]
+        slug = self._slug_from_identifier(identifier)
+        if not slug:
+            return None
         data = self._coerce_skill_payload(self._get_json(f"{self.BASE_URL}/skills/{slug}"))
         if not isinstance(data, dict):
             return None

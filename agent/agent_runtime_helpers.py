@@ -3449,7 +3449,16 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
                     seen_assistant_call_ids.add(cid)
                 kept_tcs.append(tc)
             if len(kept_tcs) != len(msg.get("tool_calls") or []):
-                msg = {**msg, "tool_calls": kept_tcs}
+                if kept_tcs:
+                    msg = {**msg, "tool_calls": kept_tcs}
+                else:
+                    # Dedup removed every tool call. An empty array is
+                    # semantically "no tool calls", but strict providers
+                    # (DeepSeek) reject `tool_calls: []` with HTTP 400
+                    # "Invalid 'messages[N].tool_calls': empty array".
+                    # Drop the key entirely — same semantics as the
+                    # empty-array pass above (#58755).
+                    msg = {k: v for k, v in msg.items() if k != "tool_calls"}
             deduped.append(msg)
         elif role == "tool":
             cid = (msg.get("tool_call_id") or "").strip()

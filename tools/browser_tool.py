@@ -4725,6 +4725,50 @@ def _chromium_search_roots() -> List[str]:
     return roots
 
 
+def _is_executable_file(path: Path) -> bool:
+    """Return True when path points at a usable browser executable."""
+    if not path.is_file():
+        return False
+    if os.name == "nt":
+        return True
+    return os.access(path, os.X_OK)
+
+
+def _playwright_chromium_executable() -> Optional[str]:
+    """Find the concrete Chromium executable inside Playwright's cache."""
+    for root in _chromium_search_roots():
+        root_path = Path(root)
+        if not root or not root_path.is_dir():
+            continue
+        try:
+            entries = sorted(root_path.iterdir(), key=lambda p: p.name, reverse=True)
+        except OSError:
+            continue
+
+        for entry in entries:
+            candidates: tuple[Path, ...] = ()
+            if entry.name.startswith("chromium_headless_shell-"):
+                candidates = (
+                    entry / "chrome-headless-shell-linux64" / "chrome-headless-shell",
+                    entry / "chrome-headless-shell-linux-arm64" / "chrome-headless-shell",
+                    entry / "chrome-linux" / "headless_shell",
+                    entry / "chrome-mac" / "Chromium.app" / "Contents" / "MacOS" / "Chromium",
+                    entry / "chrome-win" / "headless_shell.exe",
+                    entry / "chrome-win" / "chrome.exe",
+                )
+            elif entry.name.startswith("chromium-"):
+                candidates = (
+                    entry / "chrome-linux" / "chrome",
+                    entry / "chrome-mac" / "Chromium.app" / "Contents" / "MacOS" / "Chromium",
+                    entry / "chrome-win" / "chrome.exe",
+                )
+
+            for candidate in candidates:
+                if _is_executable_file(candidate):
+                    return str(candidate)
+    return None
+
+
 def _chromium_installed() -> bool:
     """Return True when a usable Chromium (or headless-shell) build is on disk.
 
@@ -4734,8 +4778,8 @@ def _chromium_installed() -> bool:
        agent-browser at a pre-installed Chrome/Chromium.
     2. System Chrome/Chromium in PATH (``google-chrome``, ``chromium``,
        ``chromium-browser``, ``chrome``).
-    3. Playwright's browser cache (current logic) — directories containing
-       ``chromium-*`` or ``chromium_headless_shell-*``.
+    3. A concrete executable inside a Playwright ``chromium-*`` or
+       ``chromium_headless_shell-*`` cache directory.
 
     agent-browser (0.26+) downloads Playwright's chromium / headless-shell
     builds into ``PLAYWRIGHT_BROWSERS_PATH`` and won't start without at least
@@ -4766,22 +4810,10 @@ def _chromium_installed() -> bool:
         _cached_chromium_installed = True
         return True
 
-    # 3. Playwright browser cache (legacy — chromium-* / chromium_headless_shell-* dirs)
-    for root in _chromium_search_roots():
-        if not root or not os.path.isdir(root):
-            continue
-        try:
-            entries = os.listdir(root)
-        except OSError:
-            continue
-        # Playwright names them ``chromium-<build>`` and
-        # ``chromium_headless_shell-<build>``; agent-browser accepts either.
-        for entry in entries:
-            if entry.startswith("chromium-") or entry.startswith(
-                "chromium_headless_shell-"
-            ):
-                _cached_chromium_installed = True
-                return True
+    # 3. Playwright browser cache.
+    if _playwright_chromium_executable():
+        _cached_chromium_installed = True
+        return True
 
     _cached_chromium_installed = False
     return False

@@ -1597,16 +1597,20 @@ def _print_tui_exit_summary(
     )
 
 
-_NPM_LOCK_RUNTIME_KEYS = frozenset({"ideallyInert", "peer"})
+_NPM_LOCK_RUNTIME_KEYS = frozenset({"ideallyInert", "peer", "dev"})
 """Lockfile fields npm writes non-deterministically at install time.
 
 ``ideallyInert`` is npm's runtime annotation for packages it skipped installing
 (per-platform opt-outs).  ``peer`` is dropped from the hidden ``.package-lock.json``
 on dev-dependencies that are *also* declared as peers — the canonical
 ``package-lock.json`` records the dual role, but npm 9's actualized tree strips
-it.  Neither key represents a real skew between what was declared and what was
-installed, so we exclude them from the comparison in :func:`_tui_need_npm_install`
-to avoid false-positive reinstalls on every launch.
+it.  ``dev`` is recomputed against the installed subset: after a scoped
+``npm install --workspace ui-tui``, packages that are prod deps of *other*
+workspaces but only dev-reachable inside ui-tui get ``dev: true`` in the hidden
+lock while the full lock records no flag — a false-positive reinstall trigger
+on every launch (#45657).  Neither key represents a real skew between what was
+declared and what was installed, so we exclude them from the comparison in
+:func:`_tui_need_npm_install` to avoid false-positive reinstalls on every launch.
 """
 
 
@@ -1663,6 +1667,60 @@ def _termux_workspace_install_context(
     return ws_root, tuple(workspace_args)
 
 
+def _npm_lock_dependency_closure(
+    packages: dict, workspace: str
+) -> set[str]:
+    """Return lockfile package paths reachable from an installed workspace."""
+    if workspace not in packages or not isinstance(packages[workspace], dict):
+        return set()
+
+    def resolve(package_path: str, dependency: str) -> str | None:
+        base = package_path.split("/") if package_path else []
+        while True:
+            candidate = "/".join(base + ["node_modules", dependency])
+            if candidate in packages:
+                return candidate
+            if not base:
+                return None
+            base.pop()
+
+    closure = {workspace}
+    pending = [workspace]
+    while pending:
+        package_path = pending.pop()
+        package = packages[package_path]
+        if not isinstance(package, dict):
+            continue
+        dependencies: set[str] = set()
+        for field in (
+            "dependencies",
+            "devDependencies",
+            "optionalDependencies",
+            "peerDependencies",
+        ):
+            values = package.get(field)
+            if isinstance(values, dict):
+                dependencies.update(values)
+        for dependency in dependencies:
+            resolved = resolve(package_path, dependency)
+            if resolved is None:
+                continue
+            if resolved not in closure:
+                closure.add(resolved)
+                pending.append(resolved)
+            linked_package = packages[resolved]
+            linked_to = (
+                linked_package.get("resolved")
+                if isinstance(linked_package, dict) and linked_package.get("link")
+                else None
+            )
+            if linked_to in packages:
+                if linked_to not in closure:
+                    closure.add(linked_to)
+                    pending.append(linked_to)
+    return closure
+
+
 def _tui_need_npm_install(root: Path) -> bool:
     """True when @hermes/ink is missing or node_modules is behind package-lock.json.
 
@@ -1683,7 +1741,8 @@ def _tui_need_npm_install(root: Path) -> bool:
     already match, which used to trigger a spurious "Installing TUI
     dependencies" on every launch.
 
-    For each entry in the root lock's ``packages`` map:
+    For each entry in the root lock's ``packages`` map (or, in workspace mode,
+    the dependency closure reachable from ``ui-tui``):
       - missing from hidden lock → reinstall (unless the entry is marked
         ``optional`` or ``peer``, which npm may intentionally skip per platform)
       - present but with differing fields (excluding npm-written runtime
@@ -1724,7 +1783,20 @@ def _tui_need_npm_install(root: Path) -> bool:
     def comparable(pkg: dict) -> dict:
         return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
 
+    workspace_packages = (
+        _npm_lock_dependency_closure(
+            wanted, root.relative_to(ws_root).as_posix()
+        )
+        if ws_root != root
+        else None
+    )
+    if workspace_packages == set():
+        # A malformed lockfile without the workspace importer cannot safely
+        # establish a scoped closure, so retain strict missing-entry checks.
+        workspace_packages = None
     for name, pkg in wanted.items():
+        if workspace_packages is not None and name not in workspace_packages:
+            continue
         if not name:
             continue
 

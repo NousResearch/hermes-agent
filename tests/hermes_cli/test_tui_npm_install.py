@@ -176,3 +176,177 @@ def test_make_tui_argv_omits_workspace_when_tui_has_own_lockfile(
     assert install_cmd[:2] == ["/bin/npm", "install"]
     # cwd must be tui_dir (standalone), not parent
     assert calls[0][1]["cwd"] == str(tui_dir)
+
+
+# ── workspace-mode lockfile comparison (#45657) ─────────────────────
+
+
+import json
+
+
+def _write_lock(path: Path, packages: dict) -> None:
+    path.write_text(json.dumps({"packages": packages}), encoding="utf-8")
+
+
+def _make_workspace_checkout(tmp_path: Path) -> Path:
+    """Minimal npm-workspaces checkout: ui-tui/ has a package.json but no
+    lockfile, so _workspace_root(ui-tui) resolves to the repo root where the
+    single lockfile and hoisted node_modules/ live."""
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    _touch_ink(tmp_path)
+    return tui_dir
+
+
+_PKG = {
+    "version": "1.2.3",
+    "resolved": "https://registry.npmjs.org/dep/-/dep-1.2.3.tgz",
+    "integrity": "sha512-abc",
+}
+
+
+def test_workspace_mode_ignores_packages_from_other_workspaces(
+    tmp_path: Path, main_mod
+) -> None:
+    """#45657 primary trigger: launch installs only the ui-tui subset
+    (``npm install --workspace ui-tui``), so the hidden lockfile never
+    contains sibling-workspace entries (apps/desktop, web, …).  Treating
+    them as missing forced a spurious "Installing TUI dependencies…" +
+    no-op npm install on EVERY launch.  In workspace mode, entries absent
+    from the hidden lockfile must be skipped."""
+    tui_dir = _make_workspace_checkout(tmp_path)
+
+    full_packages = {
+        "": {"name": "monorepo"},
+        "ui-tui": {"version": "0.1.0", "license": "MIT"},
+        # Sibling workspaces and their deps: installed only by a full-root
+        # npm install, intentionally absent from the hidden lockfile.
+        "apps/desktop": {"version": "0.1.0", "license": "MIT"},
+        "apps/bootstrap-installer": {"version": "0.1.0"},
+        "node_modules/electron": dict(_PKG),
+        # ui-tui deps: installed, present in both locks.
+        "node_modules/@hermes/ink": {"resolved": "ui-tui/packages/hermes-ink", "link": True},
+        "node_modules/ink": dict(_PKG),
+    }
+    installed_packages = {
+        "": {"name": "monorepo"},
+        "ui-tui": {"version": "0.1.0", "license": "MIT"},
+        "node_modules/@hermes/ink": {"resolved": "ui-tui/packages/hermes-ink", "link": True},
+        "node_modules/ink": dict(_PKG),
+    }
+    _write_lock(tmp_path / "package-lock.json", full_packages)
+    _write_lock(tmp_path / "node_modules" / ".package-lock.json", installed_packages)
+
+    assert main_mod._tui_need_npm_install(tui_dir) is False
+
+
+def test_workspace_mode_detects_missing_direct_tui_dependency(
+    tmp_path: Path, main_mod
+) -> None:
+    """A missing package reachable from ui-tui must still trigger repair."""
+    tui_dir = _make_workspace_checkout(tmp_path)
+    _write_lock(
+        tmp_path / "package-lock.json",
+        {
+            "": {"name": "monorepo"},
+            "ui-tui": {"dependencies": {"ink": "1.2.3"}},
+            "node_modules/ink": dict(_PKG),
+        },
+    )
+    _write_lock(
+        tmp_path / "node_modules" / ".package-lock.json",
+        {"": {"name": "monorepo"}, "ui-tui": {"dependencies": {"ink": "1.2.3"}}},
+    )
+
+    assert main_mod._tui_need_npm_install(tui_dir) is True
+
+
+def test_workspace_mode_detects_missing_nested_tui_dependency(
+    tmp_path: Path, main_mod
+) -> None:
+    """A missing transitive package in the ui-tui closure must trigger repair."""
+    tui_dir = _make_workspace_checkout(tmp_path)
+    _write_lock(
+        tmp_path / "package-lock.json",
+        {
+            "": {"name": "monorepo"},
+            "ui-tui": {"dependencies": {"ink": "1.2.3"}},
+            "node_modules/ink": {"dependencies": {"nested": "1.0.0"}, **_PKG},
+            "node_modules/ink/node_modules/nested": dict(_PKG),
+        },
+    )
+    _write_lock(
+        tmp_path / "node_modules" / ".package-lock.json",
+        {
+            "": {"name": "monorepo"},
+            "ui-tui": {"dependencies": {"ink": "1.2.3"}},
+            "node_modules/ink": {"dependencies": {"nested": "1.0.0"}, **_PKG},
+        },
+    )
+
+    assert main_mod._tui_need_npm_install(tui_dir) is True
+
+
+def test_workspace_mode_ignores_dev_flag_skew(tmp_path: Path, main_mod) -> None:
+    """#45657 secondary trigger: npm recomputes ``dev`` against the installed
+    subset — a package that is a prod dep of an *uninstalled* workspace has
+    no ``dev`` flag in the root lock but gets ``dev: true`` in the hidden
+    actualized lock.  That annotation is not real skew."""
+    tui_dir = _make_workspace_checkout(tmp_path)
+
+    _write_lock(
+        tmp_path / "package-lock.json",
+        {"": {"name": "monorepo"}, "node_modules/zod": dict(_PKG)},
+    )
+    hidden_pkg = {**_PKG, "dev": True}
+    _write_lock(
+        tmp_path / "node_modules" / ".package-lock.json",
+        {"": {"name": "monorepo"}, "node_modules/zod": hidden_pkg},
+    )
+
+    assert main_mod._tui_need_npm_install(tui_dir) is False
+
+
+def test_workspace_mode_still_detects_real_skew(tmp_path: Path, main_mod) -> None:
+    """The skip must not blind the check: a ui-tui dependency whose version
+    actually moved (e.g. lockfile updated, node_modules stale) is present
+    in BOTH locks with differing fields and must still trigger reinstall."""
+    tui_dir = _make_workspace_checkout(tmp_path)
+
+    _write_lock(
+        tmp_path / "package-lock.json",
+        {"": {"name": "monorepo"}, "node_modules/ink": dict(_PKG)},
+    )
+    stale = dict(_PKG)
+    stale["version"] = "1.2.2"
+    stale["integrity"] = "sha512-old"
+    _write_lock(
+        tmp_path / "node_modules" / ".package-lock.json",
+        {"": {"name": "monorepo"}, "node_modules/ink": stale},
+    )
+
+    assert main_mod._tui_need_npm_install(tui_dir) is True
+
+
+def test_standalone_mode_still_reinstalls_for_missing_packages(
+    tmp_path: Path, main_mod
+) -> None:
+    """Non-workspace layouts (curl install: ui-tui has its own lockfile)
+    keep the strict behaviour — a package missing from the hidden lockfile
+    means an incomplete install and must trigger npm install."""
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    # Own lockfile → _workspace_root(tui_dir) == tui_dir (standalone mode).
+    _write_lock(
+        tui_dir / "package-lock.json",
+        {"": {"name": "ui-tui"}, "node_modules/ink": dict(_PKG)},
+    )
+    _touch_ink(tui_dir)
+    _write_lock(
+        tui_dir / "node_modules" / ".package-lock.json",
+        {"": {"name": "ui-tui"}},  # ink missing from the actualized tree
+    )
+
+    assert main_mod._tui_need_npm_install(tui_dir) is True

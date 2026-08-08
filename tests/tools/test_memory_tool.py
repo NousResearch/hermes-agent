@@ -1,6 +1,7 @@
 """Tests for tools/memory_tool.py — MemoryStore, security scanning, and tool dispatcher."""
 
 import json
+import logging
 import pytest
 from pathlib import Path
 
@@ -267,6 +268,88 @@ class TestMemoryStorePersistence:
         store = MemoryStore()
         store.load_from_disk()
         assert len(store.memory_entries) == 2
+
+
+class TestMemoryStoreLoadDiagnostics:
+    @staticmethod
+    def _memory_warnings(caplog):
+        return [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "tools.memory_tool"
+            and record.levelno == logging.WARNING
+        ]
+
+    def test_invalid_utf8_memory_warns_without_hiding_valid_user_profile(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        memory_path = tmp_path / "MEMORY.md"
+        original = b"valid prefix\n\xff\xfe\x80 private memory"
+        memory_path.write_bytes(original)
+        (tmp_path / "USER.md").write_text(
+            "User prefers Chinese.", encoding="utf-8"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="tools.memory_tool"):
+            store = MemoryStore()
+            store.load_from_disk()
+
+        assert store.memory_entries == []
+        assert store.format_for_system_prompt("memory") is None
+        assert store.user_entries == ["User prefers Chinese."]
+        assert "User prefers Chinese." in store.format_for_system_prompt("user")
+        assert memory_path.read_bytes() == original
+        assert self._memory_warnings(caplog) == [
+            "Could not read MEMORY.md; omitting it from this session's memory "
+            "snapshot. The file was left unchanged. Check its permissions and "
+            "UTF-8 encoding."
+        ]
+
+    def test_permission_error_user_warns_without_hiding_valid_memory(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / "MEMORY.md").write_text(
+            "Project uses Python 3.12.", encoding="utf-8"
+        )
+        user_path = tmp_path / "USER.md"
+        original = b"User prefers concise replies."
+        user_path.write_bytes(original)
+        real_read_text = Path.read_text
+
+        def deny_user(self, *args, **kwargs):
+            if self == user_path:
+                raise PermissionError("access denied")
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", deny_user)
+
+        with caplog.at_level(logging.WARNING, logger="tools.memory_tool"):
+            store = MemoryStore()
+            store.load_from_disk()
+
+        assert store.memory_entries == ["Project uses Python 3.12."]
+        assert "Project uses Python 3.12." in store.format_for_system_prompt("memory")
+        assert store.user_entries == []
+        assert store.format_for_system_prompt("user") is None
+        assert user_path.read_bytes() == original
+        assert self._memory_warnings(caplog) == [
+            "Could not read USER.md; omitting it from this session's memory "
+            "snapshot. The file was left unchanged. Check its permissions and "
+            "UTF-8 encoding."
+        ]
+
+    def test_missing_files_do_not_warn(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+
+        with caplog.at_level(logging.WARNING, logger="tools.memory_tool"):
+            store = MemoryStore()
+            store.load_from_disk()
+
+        assert store.memory_entries == []
+        assert store.user_entries == []
+        assert self._memory_warnings(caplog) == []
 
 
 class TestMemoryStoreSnapshot:

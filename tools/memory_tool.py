@@ -220,8 +220,22 @@ class MemoryStore:
         mem_dir = get_memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
-        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
-        self.user_entries = self._read_file(mem_dir / "USER.md")
+        memory_path = mem_dir / "MEMORY.md"
+        user_path = mem_dir / "USER.md"
+        self.memory_entries, memory_read_ok = self._read_entries_checked(memory_path)
+        self.user_entries, user_read_ok = self._read_entries_checked(user_path)
+
+        for path, read_ok in (
+            (memory_path, memory_read_ok),
+            (user_path, user_read_ok),
+        ):
+            if not read_ok:
+                logger.warning(
+                    "Could not read %s; omitting it from this session's memory "
+                    "snapshot. The file was left unchanged. Check its permissions "
+                    "and UTF-8 encoding.",
+                    path.name,
+                )
 
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))

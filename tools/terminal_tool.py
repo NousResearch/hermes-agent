@@ -1503,12 +1503,19 @@ def _get_env_config() -> Dict[str, Any]:
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:
         docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
-        candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
+        expanded = os.path.expanduser(docker_cwd_source)
+        candidate = os.path.abspath(expanded)
+        # On Windows, os.path.abspath() mangles POSIX-style host paths
+        # (/Users/... -> D:\Users\...) so they no longer match the host
+        # prefixes below.  Match against BOTH forms; keep the caller's
+        # original absolute form when it is already a recognizable host
+        # path, otherwise fall back to the resolved absolute path.
         if (
-            any(candidate.startswith(p) for p in _HOST_CWD_PREFIXES)
+            any(expanded.startswith(p) for p in _HOST_CWD_PREFIXES)
+            or any(candidate.startswith(p) for p in _HOST_CWD_PREFIXES)
             or (os.path.isabs(candidate) and os.path.isdir(candidate) and not candidate.startswith(("/workspace", "/root")))
         ):
-            host_cwd = candidate
+            host_cwd = expanded if any(expanded.startswith(p) for p in _HOST_CWD_PREFIXES) else candidate
             cwd = "/workspace"
     elif env_type in _CONTAINER_BACKENDS and cwd:
         # Host paths and relative paths that won't work inside containers

@@ -4007,8 +4007,16 @@ class TurnRunner:
         # getattr, not attribute access: duck-typed adapters (test fakes,
         # minimal plugin adapters) may not define edit_message at all —
         # "missing" means the same thing as "base no-op": can't edit.
+        # The SUPPORTS_MESSAGE_EDITING check is also required: an adapter may
+        # override edit_message for in-flight stream handles only (QQBot), so
+        # overriding it does NOT imply arbitrary sent-message editing works.
         _adapter_edit = getattr(type(adapter), "edit_message", None)
-        if _adapter_edit is None or _adapter_edit is BasePlatformAdapter.edit_message:
+        _generic_editing = (
+            _adapter_edit is not None
+            and _adapter_edit is not BasePlatformAdapter.edit_message
+            and getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
+        )
+        if not _generic_editing:
             while not ctx.progress_queue.empty():
                 try:
                     ctx.progress_queue.get_nowait()
@@ -6747,11 +6755,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _profile = get_active_profile_name() or "default"
                 except Exception:
                     _profile = None
+        _group_spu, _thread_spu = self._effective_session_sharing(source)
         return build_session_key(
             source,
-            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+            group_sessions_per_user=_group_spu,
+            thread_sessions_per_user=_thread_spu,
             profile=_profile,
+        )
+
+    def _effective_session_sharing(self, source: SessionSource) -> tuple[bool, bool]:
+        """Resolve the per-platform effective (group, thread) session-sharing flags.
+
+        Single source of truth shared by session-key construction and sender
+        attribution. Mirrors the values ``BasePlatformAdapter`` uses to build
+        the session key (``self.config.extra.get(...)``): a per-platform
+        override (e.g. QQ ``platforms.qqbot.extra.group_sessions_per_user:
+        false``) therefore drives BOTH the shared key namespace AND the
+        ``[user_name]`` sender prefix in ``_prepare_inbound_message_text``.
+
+        Without this, attribution read only the global ``GatewayConfig`` value,
+        so a QQ-only shared session merged different users into one session
+        with no sender prefix.
+        """
+        config = getattr(self, "config", None)
+        group_default = getattr(config, "group_sessions_per_user", True)
+        thread_default = getattr(config, "thread_sessions_per_user", False)
+        platform_cfg = None
+        try:
+            platform_cfg = config.platforms.get(source.platform)
+        except Exception:
+            platform_cfg = None
+        extra = getattr(platform_cfg, "extra", None) if platform_cfg is not None else None
+        if not isinstance(extra, dict):
+            return (group_default, thread_default)
+        return (
+            extra.get("group_sessions_per_user", group_default),
+            extra.get("thread_sessions_per_user", thread_default),
         )
 
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
@@ -16155,8 +16194,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _pending_stt_prepared
             else event.text
         ) or ""
-        _group_sessions_per_user = getattr(self.config, "group_sessions_per_user", True)
-        _thread_sessions_per_user = getattr(self.config, "thread_sessions_per_user", False)
+        # Resolve sharing flags via the same per-platform effective value used
+        # to build the session key (see _effective_session_sharing). Using the
+        # global GatewayConfig here would desync attribution from the key: a
+        # QQ-only shared session (extra.group_sessions_per_user=false) would
+        # merge users into one key yet skip the [user_name] sender prefix.
+        _group_sessions_per_user, _thread_sessions_per_user = self._effective_session_sharing(source)
         # Prefer the already resolved session key from the caller so this write
         # key matches the consume key at the run_conversation site. Fall back
         # to deriving it here for tests and legacy standalone callers.
@@ -24393,9 +24436,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Build the shared ``StreamConsumerConfig`` and the optional
         Telegram pause-typing closure used by both agent-run paths.
 
-        ``on_missing_cursor`` controls how platforms whose adapter sets
-        ``SUPPORTS_MESSAGE_EDITING = False`` are handled — both semantics
-        are preserved verbatim from the pre-refactor call sites:
+        ``on_missing_cursor`` controls how platforms whose adapter cannot
+        edit an in-flight streaming bubble (``SUPPORTS_STREAM_EDITING``,
+        falling back to ``SUPPORTS_MESSAGE_EDITING``) are handled — both
+        semantics are preserved verbatim from the pre-refactor call sites:
 
         - ``"fallback"`` (proxy path): stream anyway with an empty cursor.
         - ``"raise"`` (in-process agent path): raise ``RuntimeError`` so
@@ -24419,7 +24463,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # duplicate messages (partial + final).
         # (The proxy path instead opts into a cursorless fallback
         # via on_missing_cursor="fallback".)
-        _adapter_supports_edit = getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
+        _adapter_supports_edit = getattr(
+            adapter,
+            "SUPPORTS_STREAM_EDITING",
+            getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True),
+        )
         if not _adapter_supports_edit and on_missing_cursor == "raise":
             raise RuntimeError("skip streaming for non-editable platform")
         _effective_cursor = scfg.cursor if _adapter_supports_edit else ""
@@ -24430,6 +24478,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if source.platform == Platform.MATRIX:
             _effective_cursor = ""
             _buffer_only = True
+        # QQBot's stream_messages endpoint enforces a strict
+        # "new full text MUST prefix previous full text" invariant.
+        # Any cursor glyph appended to intermediate frames breaks that
+        # invariant the moment the next (cursor-less, extended) frame
+        # arrives, so we suppress cursor injection at the source instead
+        # of trying to peel it back off inside the QQ adapter.
+        if source.platform == Platform.QQBOT:
+            _effective_cursor = ""
         # Fresh-final applies to Telegram only — other
         # platforms either edit in place cheaply (Discord,
         # Slack) or don't have the timestamp-on-edit /

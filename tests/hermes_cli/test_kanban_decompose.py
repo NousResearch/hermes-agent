@@ -1,6 +1,6 @@
 """Tests for the decomposer module + `hermes kanban decompose` CLI surface.
 
-The auxiliary LLM client is mocked — no network calls. Tests exercise the
+The auxiliary LLM client is mocked -- no network calls. Tests exercise the
 prompt plumbing, response parsing, DB writes (via the real DB helper),
 and the assignee-fallback logic.
 """
@@ -41,7 +41,7 @@ def _mock_client_returning(content: str):
 
 
 def _patch_aux_client(content: str, *, model: str = "test-model"):
-    # decompose_task now routes through call_llm (see #35566) — mock it at
+    # decompose_task now routes through call_llm (see #35566) -- mock it at
     # the source module so task config, extra_body, and retries stay out of
     # unit-test scope.
     return patch(
@@ -161,3 +161,148 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert "not in triage" in outcome.reason
 
 
+def test_decompose_skips_block_loop_detected_card(kanban_home):
+    """A card whose last terminal event was block_loop_detected must NOT be
+    auto-decomposed (it needs human decision).  Fixes t_15b7ebc4 vector 2.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="needs frank", triage=True)
+        # Simulate the gate-circuit: write a block_loop_detected event.
+        conn.execute(
+            "INSERT INTO task_events "
+            "(task_id, run_id, kind, payload, created_at) "
+            "VALUES (?, NULL, 'block_loop_detected', ?, ?)",
+            (tid, '{"reason":"NEEDS FRANK","kind":"needs_input"}', 1785669622),
+        )
+
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client('{"fanout":true}'):
+            outcome = decomp.decompose_task(tid, author="auto-decomposer")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok is False
+    assert "human decision" in outcome.reason
+
+
+def test_decompose_skips_needs_input_block_on_triage_card(kanban_home):
+    """A triage card that still carries a needs_input block_kind must NOT be
+    auto-decomposed -- it's a human-authority hold.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="needs input", triage=True)
+        conn.execute(
+            "UPDATE tasks SET block_kind = 'needs_input' WHERE id = ?",
+            (tid,),
+        )
+
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client('{"fanout":true}'):
+            outcome = decomp.decompose_task(tid, author="auto-decomposer")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok is False
+    assert "human decision" in outcome.reason
+
+
+def test_decompose_skips_capability_block_on_triage_card(kanban_home):
+    """Same contract as needs_input: capability blocks are human-authority
+    holds and must not be auto-resolved by the decomposer.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="capability wall", triage=True)
+        conn.execute(
+            "UPDATE tasks SET block_kind = 'capability' WHERE id = ?",
+            (tid,),
+        )
+
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client('{"fanout":true}'):
+            outcome = decomp.decompose_task(tid, author="auto-decomposer")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok is False
+    assert "human decision" in outcome.reason
+
+
+def test_decompose_fresh_triage_still_works_no_regression(kanban_home):
+    """A newly-created triage card (no block history) MUST still auto-decompose
+    exactly as today -- no regression on normal flow.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="fresh feature", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test split",
+        "tasks": [
+            {"title": "research", "body": "look it up", "assignee": "researcher", "parents": []},
+            {"title": "build", "body": "code it", "assignee": "engineer", "parents": [0]},
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "researcher", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="auto-decomposer")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.fanout is True
+    assert outcome.child_ids and len(outcome.child_ids) == 2
+    with kb.connect() as conn:
+        root = kb.get_task(conn, tid)
+    assert root is not None
+    assert root.status == "todo"
+
+
+def test_decompose_normal_triage_without_block_kind_passes(kanban_home):
+    """Triage card with no block_kind and no block_loop_detected event should
+    proceed to decompose (common case: normal new idea in triage).
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="random idea", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "single unit",
+        "title": "Refined title",
+        "body": "Concrete spec.",
+        "assignee": "researcher",
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "researcher"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.fanout is False
+    with kb.connect() as conn:
+        root = kb.get_task(conn, tid)
+    assert root is not None
+    assert root.status == "todo"
+    assert root.title == "Refined title"

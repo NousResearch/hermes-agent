@@ -1,4 +1,4 @@
-"""Kanban decomposer — fan a triage task out into a graph of child tasks.
+"""Kanban decomposer -- fan a triage task out into a graph of child tasks.
 
 Invoked by ``hermes kanban decompose [task_id | --all]`` and the
 auto-decompose path in the gateway dispatcher loop. Reads the user's
@@ -7,7 +7,7 @@ return a task graph in JSON. Then atomically creates the children,
 links them under the root, and flips the root ``triage -> todo``.
 
 The root task stays alive and becomes the parent of every leaf child,
-so when the whole graph completes the root wakes back up — its
+so when the whole graph completes the root wakes back up -- its
 assignee (the orchestrator profile) gets a chance to judge completion
 and add more tasks if the work isn't done yet.
 
@@ -18,7 +18,7 @@ Design notes
   client import inside the function, lenient response parse, never
   raises on expected failure modes.
 
-* The system prompt sees the *configured* profile roster — names plus
+* The system prompt sees the *configured* profile roster -- names plus
   descriptions plus the default fallback. Profiles without a
   description are still listed (with a note) so the decomposer can
   match on name as a fallback, but the user has an obvious incentive
@@ -47,7 +47,6 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import profiles as profiles_mod
 
 logger = logging.getLogger(__name__)
-
 
 _SYSTEM_PROMPT = """You are the Kanban decomposer for the Hermes Agent board.
 
@@ -88,7 +87,7 @@ Rules:
     DESCRIPTION (not just the name). When nothing matches well, use null
     and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
-    context — be specific about goal, approach, and acceptance criteria.
+    context -- be specific about goal, approach, and acceptance criteria.
 
 When the task is genuinely a single unit of work (no useful decomposition),
 return:
@@ -139,7 +138,7 @@ class DecomposeOutcome:
 def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
-    return text[: limit - 1] + "…"
+    return text[: limit - 1] + "\u2026"
 
 
 def _extract_json_blob(raw: str) -> Optional[dict]:
@@ -175,6 +174,49 @@ def _load_config() -> dict:
         return load_config() or {}
     except Exception:
         return {}
+
+
+# Terminal event kinds that indicate a card reached triage via a circuit-
+# breaker or auto-escalation path rather than through normal manual triage.
+# When the last terminal event on a triage card is one of these, the
+# block-loop breaker or dispatcher has decided the card needs HUMAN review;
+# auto-decomposing it re-specifies-and-promotes past that gate -- see
+# jarvis-os/t_15b7ebc4 (vector 2).
+_GATE_EVENT_KINDS = {"block_loop_detected"}
+
+
+def _has_gate_history(conn, task_id: str) -> bool:
+    """Return True when the task's LAST terminal event was a gate-circuit.
+
+    Gate events (currently only ``block_loop_detected``) are emitted by the
+    dispatcher/core machinery when a recurring block-hit loop routes the card
+    to *triage* for a HUMAN decision.  Re-specifying such a card (the
+    auto-decomposer default) defeats that intent by spinning up workers with
+    an AI-generated spec instead of waiting for Frank/operator input.
+
+    Also returns True when the task STILL carries a ``needs_input`` or
+    ``capability`` block (the original blocker didn't get cleared), because
+    those human-authority holds should never be auto-resolved.
+    """
+    # Check 1: last terminal event was a gate circuit (block_loop_detected).
+    row = conn.execute(
+        "SELECT kind FROM task_events "
+        "WHERE task_id = ? AND kind = 'block_loop_detected' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is not None:
+        return True
+
+    # Check 2: task still carries an open human-authority block.
+    task_row = conn.execute(
+        "SELECT block_kind FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if task_row is not None and task_row[0] in ("needs_input", "capability"):
+        return True
+
+    return False
 
 
 def _resolve_orchestrator_profile(cfg: dict) -> str:
@@ -241,10 +283,10 @@ def _build_roster() -> tuple[list[dict], set[str]]:
 
 def _format_roster(roster: list[dict]) -> str:
     if not roster:
-        return "  (no profiles installed — decomposer cannot route work)"
+        return "  (no profiles installed -- decomposer cannot route work)"
     lines = []
     for entry in roster:
-        tag = "" if entry["has_description"] else " ⚠ undescribed"
+        tag = "" if entry["has_description"] else " \u26a0 undescribed"
         lines.append(f"  - {entry['name']}{tag}: {entry['description']}")
     return "\n".join(lines)
 
@@ -279,7 +321,7 @@ def decompose_task(
     Returns an outcome describing what happened. Never raises for
     expected failure modes (task not in triage, no aux client
     configured, API error, malformed response, decomposer returned
-    fanout=true with empty task list) — those surface via ``ok=False``.
+    fanout=true with empty task list) -- those surface via ``ok=False``.
     """
     with kb.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
@@ -289,6 +331,17 @@ def decompose_task(
         return DecomposeOutcome(
             task_id, False, f"task is not in triage (status={task.status!r})"
         )
+
+    # Gate-hold check: skip auto-decompose when a terminal gate event or an
+    # open human-authority block indicates the card was routed to triage for a
+    # HUMAN decision.  Re-specifying such a card re-promotes past Frank's gate
+    # -- see jarvis-os/t_15b7ebc4.
+    with kb.connect_closing() as gate_conn:
+        if _has_gate_history(gate_conn, task_id):
+            return DecomposeOutcome(
+                task_id, False, "card was routed to triage by block_loop_detected "
+                "(needs human decision) -- skipped"
+            )
 
     cfg = _load_config()
     orchestrator = _resolve_orchestrator_profile(cfg)
@@ -314,7 +367,7 @@ def decompose_task(
     try:
         # Route through call_llm so auxiliary.kanban_decomposer.* config
         # (provider/model/base_url, extra_body, reasoning_effort, retries)
-        # all apply — the previous direct client.chat.completions.create()
+        # all apply \u2014 the previous direct client.chat.completions.create()
         # path dropped auxiliary.<task>.extra_body entirely (#35566).
         resp = call_llm(
             task="kanban_decomposer",
@@ -386,7 +439,7 @@ def decompose_task(
         )
 
     # Rewrite invalid assignees to the default fallback. Never leave a
-    # task with assignee=None — the user explicitly does not want that.
+    # task with assignee=None \u2014 the user explicitly does not want that.
     children: list[dict] = []
     for idx, entry in enumerate(raw_tasks):
         if not isinstance(entry, dict):
@@ -413,7 +466,7 @@ def decompose_task(
             and assignee.strip() not in valid_names
         ):
             logger.info(
-                "decompose: task %s child %d picked unknown assignee %r — "
+                "decompose: task %s child %d picked unknown assignee %r \u2014 "
                 "routing to default_assignee %r",
                 task_id, idx, assignee, default_assignee,
             )

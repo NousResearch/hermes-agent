@@ -366,6 +366,132 @@ def _ddgs_package_importable() -> bool:
     except ImportError:
         return False
 
+
+def _web_fallback_enabled() -> bool:
+    """Return whether deterministic web-provider fallback is enabled."""
+    value = _load_web_config().get("fallback_enabled", False)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _configured_fallback_backends(capability: str, primary_backend: str) -> list[str]:
+    """Return the configured backend attempt order for search/extract.
+
+    ``web.fallback_backends`` may be either a list shared by all capabilities
+    or a dict with per-capability lists. The primary backend is always first,
+    and duplicates/empty names are removed while preserving order.
+    """
+    fallback_cfg = _load_web_config().get("fallback_backends")
+    configured: list[str] = []
+    if isinstance(fallback_cfg, dict):
+        raw = fallback_cfg.get(capability) or fallback_cfg.get("default") or []
+    else:
+        raw = fallback_cfg or []
+
+    if isinstance(raw, str):
+        raw_items = [part.strip() for part in raw.split(",")]
+    elif isinstance(raw, (list, tuple)):
+        raw_items = list(raw)
+    else:
+        raw_items = []
+
+    # Sensible defaults when the switch is enabled but the chain is omitted.
+    if not raw_items:
+        if capability == "search":
+            raw_items = [primary_backend, "firecrawl", "tavily", "ddgs"]
+        elif capability == "extract":
+            raw_items = [primary_backend, "firecrawl", "tavily", "exa", "parallel"]
+        else:
+            raw_items = [primary_backend]
+
+    seen: set[str] = set()
+    for name in [primary_backend, *raw_items]:
+        normalized = str(name or "").lower().strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        configured.append(normalized)
+    return configured
+
+
+def _web_provider_candidates(capability: str, primary_backend: str) -> list[Any]:
+    """Return provider instances to attempt for a web capability.
+
+    Provider candidates are registry-backed, so cold-start subprocesses and
+    delegated contexts must load web plugins before consulting the registry.
+    """
+    _ensure_web_plugins_loaded()
+    from agent.web_search_registry import (
+        get_active_extract_provider,
+        get_active_search_provider,
+        get_provider as _wsp_get_provider,
+    )
+
+    def capable(provider: Any) -> bool:
+        if provider is None:
+            return False
+        if capability == "search":
+            return bool(provider.supports_search())
+        if capability == "extract":
+            return bool(provider.supports_extract())
+        return False
+
+    provider = _wsp_get_provider(primary_backend) if primary_backend else None
+    if provider is None or not capable(provider):
+        provider = (
+            get_active_search_provider()
+            if capability == "search"
+            else get_active_extract_provider()
+        )
+    if provider is None:
+        return []
+
+    if not _web_fallback_enabled():
+        return [provider]
+
+    providers: list[Any] = []
+    seen: set[str] = set()
+    for name in _configured_fallback_backends(capability, provider.name):
+        candidate = _wsp_get_provider(name)
+        if candidate is None or not capable(candidate):
+            continue
+        try:
+            available = bool(candidate.is_available())
+        except Exception:
+            available = False
+        if not available:
+            continue
+        if candidate.name in seen:
+            continue
+        providers.append(candidate)
+        seen.add(candidate.name)
+
+    if provider.name not in seen:
+        providers.insert(0, provider)
+    return providers
+
+
+def _search_response_should_fallback(response_data: Dict[str, Any]) -> bool:
+    if not isinstance(response_data, dict):
+        return True
+    if response_data.get("success") is False or response_data.get("error"):
+        return True
+    web_results = response_data.get("data", {}).get("web") if isinstance(response_data.get("data"), dict) else None
+    return isinstance(web_results, list) and len(web_results) == 0
+
+
+def _extract_results_should_fallback(results: Any) -> bool:
+    if not isinstance(results, list) or not results:
+        return True
+    successes = [
+        item for item in results
+        if isinstance(item, dict) and not item.get("error") and (item.get("content") or item.get("raw_content"))
+    ]
+    return len(successes) == 0
+
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -671,29 +797,13 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        # Dispatch through the web search registry. All 7 providers
-        # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
-        # now live as plugins; the dispatcher is just a registry lookup +
-        # delegation. Sync only — every provider's search() is sync.
-        _ensure_web_plugins_loaded()
-        from agent.web_search_registry import (
-            get_active_search_provider,
-            get_provider as _wsp_get_provider,
-            _disabled_web_plugin_for,
-        )
+        # Dispatch through the web search registry. When web.fallback_enabled
+        # is true, walk the configured provider chain on quota/rate/API errors.
+        providers = _web_provider_candidates("search", _get_search_backend())
 
-        backend = _get_search_backend()
-        provider = _wsp_get_provider(backend) if backend else None
-        if provider is None or not provider.supports_search():
-            # Fall back to availability-walked active provider when the
-            # configured backend isn't a registered search provider (typo,
-            # uninstalled plugin, or capability mismatch).
-            provider = get_active_search_provider()
+        if not providers:
+            from agent.web_search_registry import _disabled_web_plugin_for
 
-        if provider is None:
-            # A bundled web plugin the user explicitly disabled looks
-            # identical to "no provider" here — point at the real cause
-            # (re-enable the plugin) rather than a generic setup hint.
             disabled_key = _disabled_web_plugin_for(capability="search")
             if disabled_key:
                 _vendor = disabled_key.split("/", 1)[-1]
@@ -715,11 +825,38 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                     ),
                 }
         else:
-            logger.info(
-                "Web search via %s: '%s' (limit: %d)",
-                provider.name, query, limit,
-            )
-            response_data = provider.search(query, limit)
+            response_data = None
+            fallback_errors: list[str] = []
+            for idx, provider in enumerate(providers):
+                try:
+                    logger.info(
+                        "Web search via %s: '%s' (limit: %d)",
+                        provider.name, query, limit,
+                    )
+                    response_data = provider.search(query, limit)
+                except Exception as provider_exc:
+                    fallback_errors.append(f"{provider.name}: {provider_exc}")
+                    if idx < len(providers) - 1:
+                        logger.warning(
+                            "Web search provider %s failed; trying fallback %s",
+                            provider.name, providers[idx + 1].name,
+                        )
+                        continue
+                    raise
+
+                if _search_response_should_fallback(response_data) and idx < len(providers) - 1:
+                    fallback_errors.append(f"{provider.name}: {response_data.get('error') or 'empty results'}")
+                    logger.warning(
+                        "Web search provider %s returned fallback-worthy response; trying %s",
+                        provider.name, providers[idx + 1].name,
+                    )
+                    continue
+                break
+
+            if response_data is None:
+                response_data = {"success": False, "error": "No web search response returned"}
+            if isinstance(response_data, dict) and fallback_errors:
+                response_data.setdefault("fallback_attempts", fallback_errors)
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -859,108 +996,124 @@ async def web_extract_tool(
             # All seven providers (brave-free, ddgs, searxng, exa, parallel,
             # tavily, firecrawl) now live as plugins. The dispatcher is a
             # registry lookup + delegation. Some providers' extract() is
-            # async (parallel, firecrawl), others sync (exa, tavily) — we
-            # detect coroutine functions and await; sync functions run
-            # inline (the policy gate, SSRF re-check, etc. live inside the
-            # provider itself for the firecrawl per-URL loop).
+            # async (parallel, firecrawl), others sync (exa, tavily). When
+            # web.fallback_enabled is true, fall through the configured chain
+            # on quota/rate/API errors or all-error/empty extract results.
             _ensure_web_plugins_loaded()
             from agent.web_search_registry import (
-                get_active_extract_provider,
                 get_provider as _wsp_get_provider,
                 _disabled_web_plugin_for,
             )
 
-            provider = _wsp_get_provider(backend) if backend else None
-            if provider is None or not provider.supports_extract():
-                # When the configured name IS registered but doesn't support
-                # extract (search-only providers like brave-free / ddgs /
-                # searxng), surface that as a typed "search-only" error
-                # rather than silently switching backends. When the name
-                # isn't registered at all (typo / uninstalled plugin), fall
-                # through to the active-provider walk.
-                if provider is not None and not provider.supports_extract():
+            configured_provider = _wsp_get_provider(backend) if backend else None
+            if (
+                configured_provider is not None
+                and not configured_provider.supports_extract()
+                and not _web_fallback_enabled()
+            ):
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            f"{configured_provider.display_name} is a search-only "
+                            "backend and cannot extract URL content. "
+                            "Set web.extract_backend to firecrawl, "
+                            "tavily, exa, or parallel."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+
+            providers = _web_provider_candidates("extract", backend)
+            if not providers:
+                disabled_key = _disabled_web_plugin_for(capability="extract")
+                if disabled_key:
+                    _vendor = disabled_key.split("/", 1)[-1]
                     return json.dumps(
                         {
                             "success": False,
                             "error": (
-                                f"{provider.display_name} is a search-only "
-                                "backend and cannot extract URL content. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                f"web.extract_backend is set to '{_vendor}', "
+                                f"but its plugin ('{disabled_key}') is disabled "
+                                "in config. Re-enable it with "
+                                f"`hermes plugins enable {disabled_key}` "
+                                "(or remove it from plugins.disabled)."
                             ),
                         },
                         ensure_ascii=False,
                     )
-                provider = get_active_extract_provider()
-                if provider is None:
-                    # If the configured backend is a bundled web plugin the
-                    # user explicitly disabled, the backend is set correctly
-                    # and the real fix is to re-enable the plugin — say so
-                    # instead of telling them to set web.extract_backend
-                    # (which they already did). #40190 follow-up.
-                    disabled_key = _disabled_web_plugin_for(capability="extract")
-                    if disabled_key:
-                        _vendor = disabled_key.split("/", 1)[-1]
-                        return json.dumps(
-                            {
-                                "success": False,
-                                "error": (
-                                    f"web.extract_backend is set to '{_vendor}', "
-                                    f"but its plugin ('{disabled_key}') is disabled "
-                                    "in config. Re-enable it with "
-                                    f"`hermes plugins enable {disabled_key}` "
-                                    "(or remove it from plugins.disabled)."
-                                ),
-                            },
-                            ensure_ascii=False,
-                        )
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "error": (
-                                "No web extract provider configured. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
-                            ),
-                        },
-                        ensure_ascii=False,
-                    )
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            "No web extract provider configured. "
+                            "Set web.extract_backend to firecrawl, "
+                            "tavily, exa, or parallel."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
 
-            logger.info(
-                "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
-            )
-
-            # Async-or-sync dispatch: parallel + firecrawl have async
-            # extract(); exa + tavily are sync.
             import inspect
-            if inspect.iscoroutinefunction(provider.extract):
-                results = await provider.extract(safe_urls, format=format)
-            else:
-                # Run sync extract() in a thread so we don't block the
-                # event loop on network I/O.
-                results = await asyncio.to_thread(
-                    provider.extract, safe_urls, format=format
+            provider_results = []
+            fallback_errors: list[str] = []
+            for idx, provider in enumerate(providers):
+                logger.info(
+                    "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
                 )
+                try:
+                    if inspect.iscoroutinefunction(provider.extract):
+                        candidate_results = await provider.extract(safe_urls, format=format)
+                    else:
+                        candidate_results = await asyncio.to_thread(
+                            provider.extract, safe_urls, format=format
+                        )
+                except Exception as provider_exc:
+                    fallback_errors.append(f"{provider.name}: {provider_exc}")
+                    if idx < len(providers) - 1:
+                        logger.warning(
+                            "Web extract provider %s failed; trying fallback %s",
+                            provider.name, providers[idx + 1].name,
+                        )
+                        continue
+                    raise
 
-        # Reconstruct the original input order across invalid, blocked, and
-        # provider-processed entries. Providers are expected to preserve the
-        # order of the safe URL list they receive.
-        if invalid_urls or ssrf_blocked:
-            safe_results = {
-                index: (
-                    results[position]
-                    if position < len(results)
-                    else {
-                        "url": safe_urls[position],
-                        "title": "",
-                        "content": "",
-                        "error": "Extract backend returned no result for this URL",
-                    }
-                )
-                for position, index in enumerate(safe_indices)
-            }
-            by_index = {**safe_results, **ssrf_blocked, **invalid_urls}
-            results = [by_index[index] for index in range(len(urls))]
+                if _extract_results_should_fallback(candidate_results) and idx < len(providers) - 1:
+                    fallback_errors.append(f"{provider.name}: empty/all-error results")
+                    logger.warning(
+                        "Web extract provider %s returned fallback-worthy results; trying %s",
+                        provider.name, providers[idx + 1].name,
+                    )
+                    continue
+                provider_results = candidate_results
+                break
+
+            if fallback_errors and isinstance(provider_results, list):
+                for item in provider_results:
+                    if isinstance(item, dict):
+                        item.setdefault("fallback_attempts", fallback_errors)
+
+            # Reconstruct the original input order across invalid, blocked, and
+            # provider-processed entries. Providers are expected to preserve the
+            # order of the safe URL list they receive.
+            if invalid_urls or ssrf_blocked:
+                safe_results = {
+                    index: (
+                        provider_results[position]
+                        if position < len(provider_results)
+                        else {
+                            "url": safe_urls[position],
+                            "title": "",
+                            "content": "",
+                            "error": "Extract backend returned no result for this URL",
+                        }
+                    )
+                    for position, index in enumerate(safe_indices)
+                }
+                by_index = {**safe_results, **ssrf_blocked, **invalid_urls}
+                results = [by_index[index] for index in range(len(urls))]
+            else:
+                results = provider_results
 
         response = {"results": results}
         

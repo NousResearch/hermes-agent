@@ -342,6 +342,23 @@ web:
 
 When per-capability keys are empty, both fall through to `web.backend`. When `web.backend` is also empty, the backend is auto-detected from whichever API key/URL is present.
 
+### Provider fallback chains
+
+Hermes can retry a secondary web provider automatically when the primary returns quota/rate/API errors or empty/all-error results:
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  search_backend: "searxng"
+  extract_backend: "firecrawl"
+  fallback_enabled: true
+  fallback_backends:
+    search: ["searxng", "tavily", "ddgs"]
+    extract: ["firecrawl", "tavily", "exa", "parallel"]
+```
+
+`fallback_backends` may also be a single shared list. Hermes always attempts the configured primary backend first, removes duplicates, skips unavailable or capability-mismatched providers, and records failed attempts in `fallback_attempts` on the returned JSON. If fallback is disabled, explicit capability errors remain strict — for example, `web.extract_backend: "searxng"` still returns the search-only backend diagnostic instead of silently switching providers.
+
 **Priority order (per capability):**
 1. `web.search_backend` / `web.extract_backend` (explicit per-capability)
 2. `web.backend` (shared fallback)

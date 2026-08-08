@@ -2110,6 +2110,12 @@ web:
   # Or use per-capability keys to mix providers (e.g. free search + paid extract):
   search_backend: "searxng"
   extract_backend: "firecrawl"
+
+  # Optional deterministic fallback chains for transient quota/rate/API failures:
+  fallback_enabled: false
+  fallback_backends:
+    search: ["searxng", "tavily", "ddgs"]
+    extract: ["firecrawl", "tavily", "exa", "parallel"]
 ```
 
 | Backend | Env Var | Search | Extract |
@@ -2121,6 +2127,8 @@ web:
 | **Exa** | `EXA_API_KEY` | ✔ | ✔ |
 
 **Backend selection:** If `web.backend` is not set, the backend is auto-detected from available API keys. If only `SEARXNG_URL` is set, SearXNG is used. If only `EXA_API_KEY` is set, Exa is used. If only `TAVILY_API_KEY` is set, Tavily is used. If only `PARALLEL_API_KEY` is set, Parallel is used. Otherwise Firecrawl is the default.
+
+**Fallback chains:** Set `web.fallback_enabled: true` to retry `web_search` / `web_extract` with additional providers when the primary backend returns a quota/rate/API error or an empty/all-error result. `web.fallback_backends` may be a shared list or a per-capability map with `search` and `extract` lists. The configured primary backend is always tried first, and search-only providers still produce the explicit "search-only backend" diagnostic for `web_extract` when fallback is disabled.
 
 **SearXNG** is a free, self-hosted, privacy-respecting metasearch engine that queries 70+ search engines. No API key needed — just set `SEARXNG_URL` to your instance (e.g., `http://localhost:8080`). SearXNG is search-only; `web_extract` requires a separate extract provider (set `web.extract_backend`). See the [Web Search setup guide](/user-guide/features/web-search) for Docker setup instructions.
 

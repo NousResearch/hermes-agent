@@ -178,10 +178,17 @@ def cron_list(show_all: bool = False):
         last_status = job.get("last_status")
         if last_status:
             last_run = job.get("last_run_at", "?")
-            if last_status == "ok":
-                status_display = color("ok", Colors.GREEN)
+            if last_status in {"ok", "delivered", "completed_local"}:
+                status_display = color(last_status, Colors.GREEN)
+            elif last_status == "silent":
+                status_display = color("silent (intentionally suppressed)", Colors.DIM)
             else:
-                status_display = color(f"{last_status}: {job.get('last_error', '?')}", Colors.RED)
+                status_error = (
+                    job.get("last_delivery_error")
+                    if last_status in {"delivery_failed", "delivery_not_configured"}
+                    else job.get("last_error")
+                )
+                status_display = color(f"{last_status}: {status_error or '?'}", Colors.RED)
             print(f"    Last run:  {last_run}  {status_display}")
 
         latest_execution = job.get("latest_execution")

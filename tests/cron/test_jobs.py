@@ -484,6 +484,43 @@ class TestMarkJobRun:
         assert updated["last_error"] is None
         assert updated["last_delivery_error"] == "platform 'telegram' not configured"
 
+    def test_three_consecutive_failures_pause_recurring_job(self, tmp_cron_dir):
+        job = create_job(prompt="Fail", schedule="every 1h")
+
+        for attempt in range(1, 4):
+            mark_job_run(job["id"], success=False, error=f"failure {attempt}")
+
+        updated = get_job(job["id"])
+        assert updated["consecutive_failures"] == 3
+        assert updated["enabled"] is False
+        assert updated["state"] == "paused"
+        assert updated["next_run_at"] is None
+        assert updated["circuit_breaker_tripped_at"]
+        assert "3 consecutive" in updated["paused_reason"]
+
+    def test_success_resets_failure_streak(self, tmp_cron_dir):
+        job = create_job(prompt="Flaky", schedule="every 1h")
+        mark_job_run(job["id"], success=False, error="failure 1")
+        mark_job_run(job["id"], success=False, error="failure 2")
+        mark_job_run(job["id"], success=True)
+
+        updated = get_job(job["id"])
+        assert updated["consecutive_failures"] == 0
+        assert updated["enabled"] is True
+        assert updated["state"] == "scheduled"
+
+    def test_resume_resets_tripped_failure_streak(self, tmp_cron_dir):
+        job = create_job(prompt="Fail", schedule="every 1h")
+        for attempt in range(3):
+            mark_job_run(job["id"], success=False, error=f"failure {attempt}")
+
+        updated = resume_job(job["id"])
+
+        assert updated["enabled"] is True
+        assert updated["state"] == "scheduled"
+        assert updated["consecutive_failures"] == 0
+        assert updated.get("circuit_breaker_tripped_at") is None
+
 
     def test_recurring_cron_not_disabled_when_croniter_missing(self, tmp_cron_dir, monkeypatch):
         """Regression test for issue #16265.

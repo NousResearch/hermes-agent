@@ -4658,7 +4658,12 @@ def run_one_job(
             # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
             # #46917).  Keeps the intentional bracketed-prefix / trailing-line
             # tolerance the cron contract relies on.
-            if should_deliver and success and _is_cron_silence_response(deliver_content):
+            response_silent = (
+                should_deliver
+                and success
+                and _is_cron_silence_response(deliver_content)
+            )
+            if response_silent:
                 logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                 should_deliver = False
 
@@ -4686,15 +4691,58 @@ def run_one_job(
             success = False
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
+        normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
+        if blocked_config:
+            terminal_status = "blocked_config"
+        elif not success:
+            terminal_status = "error"
+        elif delivery_error:
+            terminal_status = "delivery_failed"
+        elif response_silent:
+            terminal_status = "silent"
+        elif should_deliver and unresolved_origin:
+            terminal_status = "delivery_not_configured"
+        elif should_deliver and normalized_deliver != "local":
+            terminal_status = "delivered"
+        else:
+            terminal_status = "completed_local"
+
+        marked_job = None
         if not _consume_interrupted_flag(job["id"]):
             if blocked_config:
-                mark_job_run(
+                marked_job = mark_job_run(
                     job["id"], success, error, delivery_error=delivery_error,
-                    status="blocked_config",
+                    status=terminal_status,
                 )
             else:
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-        normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
+                marked_job = mark_job_run(
+                    job["id"], success, error,
+                    delivery_error=delivery_error, status=terminal_status,
+                )
+        if (
+            isinstance(marked_job, dict)
+            and marked_job.get("circuit_breaker_tripped_at")
+            == marked_job.get("last_run_at")
+        ):
+            breaker_notice = (
+                f"⏸ Cron '{job.get('name') or job['id']}' paused after "
+                "3 consecutive failed runs. Operator review and an explicit "
+                "resume are required."
+            )
+            try:
+                breaker_delivery_error = _deliver_result(
+                    job, breaker_notice, adapters=adapters, loop=loop,
+                )
+                if breaker_delivery_error:
+                    logger.error(
+                        "Circuit-breaker alert delivery failed for job %s: %s",
+                        job["id"], breaker_delivery_error,
+                    )
+            except Exception as de:
+                logger.error(
+                    "Circuit-breaker alert delivery raised for job %s: %s",
+                    job["id"], de,
+                )
         if delivery_error:
             delivery_outcome = "failed"
         elif should_deliver and unresolved_origin:

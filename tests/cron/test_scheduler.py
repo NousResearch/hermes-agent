@@ -1007,6 +1007,7 @@ class TestSilentDelivery:
             False,
             "Agent completed but produced empty response (model error, timeout, or misconfiguration)",
             delivery_error=None,
+            status="error",
         )
 
 
@@ -1974,5 +1975,4 @@ class TestSetCronSessionTitle:
         out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
         assert out == "Nightly Synthesis #2"
         db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
-
 

@@ -173,6 +173,30 @@ _LEGACY_WEB_BACKENDS = frozenset(
 )
 
 
+def _ensure_web_plugins_loaded_once() -> None:
+    """Lazily trigger plugin discovery so the web registry is populated.
+
+    Idempotent and cheap on subsequent calls (plugin discovery itself is
+    cached). This makes every registry access in this module order-
+    independent: ``_registered_web_provider()``, ``_list_registered_web_
+    providers()``, and every caller that chains through them
+    (``_is_backend_available``, ``_get_backend``, ``_get_capability_backend``)
+    no longer depend on the caller having called ``_ensure_web_plugins_loaded``
+    first.
+
+    This fixes the class of bug where ``web_extract_tool`` selected a
+    backend (e.g. ``crawl4ai``) before plugin discovery ran, causing
+    ``_is_backend_available`` to miss the provider and silently fall back
+    to the wrong backend (issue: extract_backend=crawl4ai not resolving).
+    """
+    try:
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+    except Exception as exc:  # noqa: BLE001 — discovery must never be fatal
+        logger.debug("web plugin discovery failed (non-fatal): %s", exc)
+
+
 def _registered_web_provider(backend: str):
     """Return a plugin-registered web provider by name, or ``None``.
 
@@ -180,9 +204,14 @@ def _registered_web_provider(backend: str):
     plugin system (which are absent from :data:`_LEGACY_WEB_BACKENDS`) are
     discoverable during availability/selection resolution. Returns ``None``
     on any lookup failure so callers can fall through to legacy checks.
+
+    Lazily triggers plugin discovery first so the registry is populated
+    even when this is called before any tool has run
+    ``_ensure_web_plugins_loaded()``.
     """
     if not backend:
         return None
+    _ensure_web_plugins_loaded_once()
     try:
         from agent.web_search_registry import get_provider
 
@@ -210,7 +239,13 @@ def _registered_web_provider_available(backend: str):
 
 
 def _list_registered_web_providers():
-    """Return all plugin-registered web providers (empty list on failure)."""
+    """Return all plugin-registered web providers (empty list on failure).
+
+    Lazily triggers plugin discovery first so the registry is populated
+    even when this is called before any tool has run
+    ``_ensure_web_plugins_loaded()``.
+    """
+    _ensure_web_plugins_loaded_once()
     try:
         from agent.web_search_registry import list_providers
 

@@ -9,7 +9,7 @@ import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
 import { closeHud } from '@/store/hud'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
-import { $busy, $messages, $messagesEmpty } from '@/store/session'
+import { $busy, $messages } from '@/store/session'
 
 import { WiredPane } from '../contrib/wiring'
 import { titlebarButtonClass } from '../shell/titlebar'
@@ -156,10 +156,6 @@ export function HudShell() {
   const { t } = useI18n()
   const [recent, holdBand] = useRecentActivity()
   const held = useHudHeld()
-  // Nothing to back yet. Vibrancy is the window's whole content view, so on a
-  // fresh thread it frosts the empty space above the bar into a blank slab —
-  // the transcript's backing showing up before the transcript does.
-  const empty = useStore($messagesEmpty)
 
   // Main holds the session id on this window's behalf, so leaving HUD mode can
   // hand the app window back whatever conversation ended up here.
@@ -223,6 +219,13 @@ export function HudShell() {
   // carve-out (styles.css): a band with nothing to scroll stays part of the
   // window's drag region, so a short conversation never blocks moving the HUD.
   const [scrollable, setScrollable] = useState(false)
+  // Whether the sheet reaches the top of the window. Gates the frost, which is
+  // native vibrancy and therefore the WINDOW's content view — it fills the whole
+  // rectangle and nothing in the page can clip it to the sheet. Whenever the
+  // sheet is shorter than the window, the difference is frost over empty space:
+  // a grey slab hanging under the bar with nothing in it, worst on a fresh
+  // thread where the sheet is zero and the slab is the entire window.
+  const [filled, setFilled] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -274,6 +277,9 @@ export function HudShell() {
               : box.bottom - rows[0].getBoundingClientRect().top)
 
       root.style.setProperty('--hud-band-height', `${Math.max(0, Math.round(span))}px`)
+      // The sheet is capped at the window (`min(100%, …)`), so reaching the
+      // window's height is the same question as covering it.
+      setFilled(span >= window.innerHeight)
 
       // …and the bar's real height, which is what the thread has to clear.
       // --composer-measured-height would be the obvious source, but it is a
@@ -302,7 +308,7 @@ export function HudShell() {
     }
   }, [])
 
-  useHudGlass(rootRef, (recent || held) && !empty)
+  useHudGlass(rootRef, recent || held, filled)
   useHudClickThrough(rootRef)
 
   // Force the HOST layers transparent. index.html's pre-paint script writes an

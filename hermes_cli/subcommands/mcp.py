@@ -36,7 +36,73 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         action="store_true",
         help="Enable verbose logging on stderr",
     )
+    mcp_serve_p.add_argument(
+        "--profile-router",
+        action="store_true",
+        help=(
+            "Expose only the no-model profile-router MCP tools instead of the "
+            "legacy conversation/messaging bridge"
+        ),
+    )
+    mcp_serve_p.add_argument(
+        "--http",
+        action="store_true",
+        help=(
+            "Run --profile-router over Streamable HTTP instead of stdio. "
+            "HTTP is bearer-token protected and binds to localhost by default."
+        ),
+    )
+    mcp_serve_p.add_argument(
+        "--transport",
+        choices=["stdio", "streamable-http"],
+        default="stdio",
+        help="Transport for --profile-router (default: stdio; use streamable-http for local HTTP)",
+    )
+    mcp_serve_p.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host for --profile-router --http (default: 127.0.0.1)",
+    )
+    mcp_serve_p.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="Port for --profile-router --http (default: 8765)",
+    )
+    mcp_serve_p.add_argument(
+        "--streamable-http-path",
+        default="/mcp",
+        help="Streamable HTTP path for --profile-router --http (default: /mcp)",
+    )
+    mcp_serve_p.add_argument(
+        "--public-url",
+        help=(
+            "Externally reachable origin for --profile-router --http behind a "
+            "TLS reverse proxy, e.g. https://mcp.example.com. Do not include /mcp."
+        ),
+    )
     add_accept_hooks_flag(mcp_serve_p)
+
+    token_p = mcp_sub.add_parser(
+        "profile-router-token",
+        aliases=["profile-router-tokens"],
+        help="Manage local bearer tokens for the self-hosted profile-router HTTP server",
+    )
+    token_sub = token_p.add_subparsers(dest="token_action")
+    token_create = token_sub.add_parser("create", help="Create a new profile-router bearer token")
+    token_create.add_argument("--name", default="", help="Optional token label for local list/revoke UX")
+    token_create.add_argument(
+        "--scope",
+        action="append",
+        dest="scopes",
+        help="Scope to grant (repeatable; default: context:read, workspace:read, diff:read)",
+    )
+    token_create.add_argument("--expires-at", help="Optional ISO timestamp expiry")
+    token_sub.add_parser("list", aliases=["ls"], help="List profile-router token metadata")
+    token_revoke = token_sub.add_parser("revoke", help="Revoke a profile-router token by token_id")
+    token_revoke.add_argument("token_id")
+    token_rotate = token_sub.add_parser("rotate", help="Revoke and replace a profile-router token by token_id")
+    token_rotate.add_argument("token_id")
 
     mcp_add_p = mcp_sub.add_parser(
         "add", help="Add an MCP server (discovery-first install)"

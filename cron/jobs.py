@@ -753,6 +753,19 @@ def _stored_wall_clock_is_future(stored: datetime, current: datetime) -> bool:
     return stored.replace(tzinfo=None) > current.replace(tzinfo=None)
 
 
+def _is_manual_trigger(job: Dict[str, Any], next_run: str) -> bool:
+    """Return True when ``next_run_at`` is a pending human-requested run.
+
+    ``trigger_job`` records the same timestamp in both ``next_run_at`` and
+    ``manual_trigger_at``. Comparing them identifies a trigger that has not
+    fired yet, without a flag that could be left set: any later recompute of
+    ``next_run_at`` (a normal run, a fast-forward, a genuine migration repair)
+    makes the two diverge, so the marker stops matching on its own.
+    """
+    marker = job.get("manual_trigger_at")
+    return bool(marker) and marker == next_run
+
+
 def _recoverable_oneshot_run_at(
     schedule: Dict[str, Any],
     now: datetime,
@@ -2025,6 +2038,7 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
     job = resolve_job_ref(job_id)
     if not job:
         return None
+    fire_at = _hermes_now().isoformat()
     return update_job(
         job["id"],
         {
@@ -2032,7 +2046,14 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
             "state": "scheduled",
             "paused_at": None,
             "paused_reason": None,
-            "next_run_at": _hermes_now().isoformat(),
+            "next_run_at": fire_at,
+            # Mark this exact pending value as human-requested so the timezone
+            # migration-repair pass in get_due_jobs() does not mistake it for a
+            # stale persisted run and recompute it away (#78516). Storing the
+            # timestamp rather than a bare flag makes the marker self-expiring:
+            # once the job runs and next_run_at is recomputed, the two no longer
+            # match, so a genuine later migration still repairs normally.
+            "manual_trigger_at": fire_at,
         },
     )
 
@@ -2849,6 +2870,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             if (
                 kind == "cron"
                 and next_run_dt <= now
+                and not _is_manual_trigger(job, next_run)
                 and _timezone_offset_mismatch(raw_next_run_dt, now)
                 and _stored_wall_clock_is_future(raw_next_run_dt, now)
             ):

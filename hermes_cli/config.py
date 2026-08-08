@@ -3915,7 +3915,6 @@ def save_env_value(key: str, value: str):
         if _env_line_defines_key(line, key):
             lines[i] = f"{key}={serialized_value}\n"
             found = True
-            break
 
     if not found:
         # Ensure there's a newline at the end of the file before appending

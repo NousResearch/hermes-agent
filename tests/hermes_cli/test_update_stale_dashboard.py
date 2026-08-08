@@ -65,9 +65,10 @@ def _refresh_bindings_against_live_module():
     yield
 
 
-def _ps_line(pid: int, cmd: str) -> str:
-    """Format a line as it would appear in ``ps -A -o pid=,command=`` output."""
-    return f"{pid:>7} {cmd}"
+def _ps_line(pid: int, cmd: str, *, uid: int | None = None) -> str:
+    """Format a line as it appears in ``ps -A -o uid=,pid=,command=`` output."""
+    default_uid = getattr(os, "getuid", lambda: 0)()
+    return f"{default_uid if uid is None else uid:>7} {pid:>7} {cmd}"
 
 
 def _ps_runner(stdout: str):
@@ -89,7 +90,49 @@ def _ps_runner(stdout: str):
 class TestFindStaleDashboardPids:
     """Unit tests for the ps/wmic-based detection step."""
 
+    def test_ps_fixture_does_not_require_posix_getuid(self, monkeypatch):
+        monkeypatch.delattr(os, "getuid", raising=False)
 
+        assert _ps_line(12345, "hermes dashboard").split()[:2] == ["0", "12345"]
+
+    def test_posix_scan_without_getuid_fails_closed(self, monkeypatch):
+        monkeypatch.delattr(os, "getuid", raising=False)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=_ps_line(12345, "hermes dashboard --port 9119") + "\n",
+                stderr="",
+            )
+
+            assert _find_stale_dashboard_pids() == []
+
+    def test_other_user_dashboard_processes_ignored(self):
+        """A user-scoped update must not stop dashboards owned by other users."""
+        current_uid = getattr(os, "getuid", lambda: 0)()
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(
+                        12345,
+                        "/home/john/.hermes/hermes-agent/venv/bin/hermes dashboard --port 9119",
+                        uid=current_uid,
+                    ),
+                    _ps_line(
+                        12346,
+                        "/home/marc/.hermes/hermes-agent/venv/bin/hermes dashboard --port 9120",
+                        uid=current_uid + 1,
+                    ),
+                    _ps_line(
+                        12347,
+                        "/home/tammy/.hermes/hermes-agent/venv/bin/hermes serve --port 9121",
+                        uid=current_uid + 2,
+                    ),
+                ]) + "\n",
+                stderr="",
+            )
+
+            assert _find_stale_dashboard_pids() == [12345]
 
     def test_self_pid_excluded(self):
         with patch("subprocess.run") as mock_run:

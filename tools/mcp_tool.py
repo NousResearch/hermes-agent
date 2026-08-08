@@ -337,6 +337,8 @@ _MCP_LOG_LEVEL_MAP = {
 
 _DEFAULT_TOOL_TIMEOUT = 300      # seconds for tool calls
 _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
+_MAX_RETAINED_INACTIVE_MCP_CONTRACTS = 256
+_MAX_RETAINED_INACTIVE_MCP_CONTRACT_BYTES = 2 * 1024 * 1024
 _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
@@ -1955,8 +1957,9 @@ class MCPServerTask:
         "_task", "_ready", "_shutdown_event", "_reconnect_event",
         "_tools", "_error", "_config",
         "_sampling", "_elicitation",
-        "_registered_tool_names", "_auth_type", "_refresh_lock",
-        "_rpc_lock", "_pending_refresh_tasks",
+        "_registered_tool_names", "_last_registered_tool_contracts",
+        "_auth_type", "_refresh_lock",
+        "_rpc_lock", "_pending_refresh_tasks", "_tools_refresh_requested",
         "_pending_call_context",
         "_lifecycle_started_at", "_last_tool_call_at",
         "_idle_timeout_seconds", "_max_lifetime_seconds", "_recycled_reason",
@@ -1983,6 +1986,7 @@ class MCPServerTask:
         self._sampling: Optional[SamplingHandler] = None
         self._elicitation: Optional[ElicitationHandler] = None
         self._registered_tool_names: list[str] = []
+        self._last_registered_tool_contracts: Dict[str, dict] = {}
         self._reconnect_retries: int = 0
         # Rapid-drop budget (#62212): a freshly (re)established session is
         # UNPROVEN until it demonstrates real health — it survived at least
@@ -2006,6 +2010,7 @@ class MCPServerTask:
         # transports for conservative per-server ordering.
         self._rpc_lock = asyncio.Lock()
         self._pending_refresh_tasks: set[asyncio.Task] = set()
+        self._tools_refresh_requested = False
         # contextvars snapshot of the agent task that's currently in
         # session.call_tool(). The MCP recv loop dispatches incoming
         # elicitation/create requests on a SEPARATE asyncio task whose
@@ -2059,6 +2064,12 @@ class MCPServerTask:
             return True
         return getattr(caps, "tools", None) is not None
 
+    def _list_timeout(self) -> float:
+        """Bound control-plane list RPCs with the server connect timeout."""
+        return float(
+            self._config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+        )
+
     def _is_recycled_stdio(self) -> bool:
         """Return True when a stdio server was intentionally recycled."""
         return not self._is_http() and self._recycled_reason is not None
@@ -2109,16 +2120,24 @@ class MCPServerTask:
     # ----- Dynamic tool discovery (notifications/tools/list_changed) -----
 
     async def _refresh_tools_task(self):
-        """Run a dynamic tool refresh and log failures from background tasks."""
-        try:
-            await self._refresh_tools()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("MCP server '%s': dynamic tool refresh failed", self.name)
+        """Drain coalesced dynamic refresh requests in one background task."""
+        while self._tools_refresh_requested:
+            self._tools_refresh_requested = False
+            try:
+                await self._refresh_tools()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "MCP server '%s': dynamic tool refresh failed", self.name
+                )
 
     def _schedule_tools_refresh(self) -> asyncio.Task:
-        """Schedule a background tool refresh and keep it strongly referenced."""
+        """Schedule one worker while coalescing additional refresh requests."""
+        self._tools_refresh_requested = True
+        for task in self._pending_refresh_tasks:
+            if not task.done():
+                return task
         task = asyncio.create_task(self._refresh_tools_task())
         self._pending_refresh_tasks.add(task)
         task.add_done_callback(self._pending_refresh_tasks.discard)
@@ -2205,12 +2224,11 @@ class MCPServerTask:
         """Re-fetch tools from the server and update the registry.
 
         Called when the server sends ``notifications/tools/list_changed``.
-        The lock prevents overlapping refreshes from rapid-fire notifications.
+        The lock serializes refreshes with reconnect discovery so each
+        transition compares and commits against one exposed baseline.
         After the initial ``await`` (list_tools), all mutations are synchronous
         — atomic from the event loop's perspective.
         """
-        from tools.registry import registry
-
         if not self._advertises_tools():
             # A server that doesn't implement tools/* should never send
             # tools/list_changed, but guard anyway — calling tools/list
@@ -2218,68 +2236,62 @@ class MCPServerTask:
             return
 
         async with self._refresh_lock:
-            # Capture old tool names for change diff
+            # Capture names and model-visible contracts before the server refresh.
             old_tool_names = set(self._registered_tool_names)
+            old_tool_contracts = dict(self._last_registered_tool_contracts)
+            missing_contracts = old_tool_names - old_tool_contracts.keys()
+            if missing_contracts:
+                old_tool_contracts.update(
+                    _mcp_tool_contracts(
+                        self.name, self._tools, missing_contracts
+                    )
+                )
 
             # 1. Fetch current tool list from server (follow nextCursor)
             async with self._rpc_lock:
-                new_mcp_tools = await _paginate_full_list(
-                    self.session.list_tools, "tools", self.name
+                new_mcp_tools = await asyncio.wait_for(
+                    _paginate_full_list(
+                        self.session.list_tools, "tools", self.name
+                    ),
+                    timeout=self._list_timeout(),
                 )
 
-            # 2. Re-register with fresh tool list. Avoid nuke-and-repave for
-            # all names: live agent turns may already have tool-call IDs
-            # pointing at existing handler functions. Replacing entries
-            # in-place is enough for unchanged names and avoids transient
-            # "tool not connected" / stale-handler races during startup
-            # notifications. Tools absent from the fresh list are no longer
-            # callable, so remove only those stale registry entries first.
-            toolset_name = f"mcp-{self.name}"
-            stale_tool_names = old_tool_names - {
-                mcp_prefixed_tool_name(self.name, tool.name)
-                for tool in new_mcp_tools
-            }
-            for tool_name in stale_tool_names:
-                # Never let one server's refresh remove a colliding name that
-                # is currently owned by another server.
-                if registry.get_toolset_for_tool(tool_name) != toolset_name:
-                    continue
-                registry.deregister(tool_name)
-                _forget_mcp_tool_server(tool_name)
-
-            # 3. Re-register with the fresh list. The helper may skip names that
-            # are ambiguous after normalization.
+            # 2. Synchronize the final model-visible snapshot.
             self._tools = new_mcp_tools
-            registered_names = _register_server_tools(
-                self.name, self, self._config
-            )
+            self._synchronize_registered_tools()
 
-            # A previously unique raw name can become ambiguous without changing
-            # its normalized registry name. In that case the pre-pass above does
-            # not consider it stale, so remove any old entry that the final,
-            # collision-checked registration set no longer owns.
-            registered_name_set = set(registered_names)
-            for tool_name in old_tool_names - registered_name_set:
-                if registry.get_toolset_for_tool(tool_name) != toolset_name:
-                    continue
-                registry.deregister(tool_name)
-                _forget_mcp_tool_server(tool_name)
-            self._registered_tool_names = registered_names
-
-            # 4. Log what changed (user-visible notification)
+            # 3. Log what changed (user-visible notification)
             new_tool_names = set(self._registered_tool_names)
+            new_tool_contracts = {
+                tool_name: self._last_registered_tool_contracts[tool_name]
+                for tool_name in new_tool_names
+                if tool_name in self._last_registered_tool_contracts
+            }
             added = new_tool_names - old_tool_names
             removed = old_tool_names - new_tool_names
+            modified = {
+                tool_name
+                for tool_name in old_tool_contracts.keys() & new_tool_contracts.keys()
+                if _mcp_tool_contract_fingerprint(old_tool_contracts[tool_name])
+                != _mcp_tool_contract_fingerprint(new_tool_contracts[tool_name])
+            }
             changes = []
             if added:
                 changes.append(f"added: {', '.join(sorted(added))}")
             if removed:
                 changes.append(f"removed: {', '.join(sorted(removed))}")
+            if modified:
+                changes.append(f"modified: {', '.join(sorted(modified))}")
             if changes:
+                security_note = (
+                    " Same-name contract changes can indicate an MCP rug pull "
+                    "or tool poisoning."
+                    if modified else ""
+                )
                 logger.warning(
                     "MCP server '%s': tools changed dynamically — %s. "
-                    "Verify these changes are expected.",
-                    self.name, "; ".join(changes),
+                    "Verify these changes are expected.%s",
+                    self.name, "; ".join(changes), security_note,
                 )
             else:
                 logger.info(
@@ -3138,49 +3150,107 @@ class MCPServerTask:
         self._ping_unsupported = False
         if self.session is None:
             return
-        if not self._advertises_tools():
-            logger.info(
-                "MCP server '%s': does not advertise 'tools' capability — "
-                "skipping tools/list (prompts/resources remain available)",
-                self.name,
+
+        async with self._refresh_lock:
+            old_tool_contracts = dict(self._last_registered_tool_contracts)
+            missing_contracts = (
+                set(self._registered_tool_names) - old_tool_contracts.keys()
             )
-            self._tools = []
+            if missing_contracts:
+                old_tool_contracts.update(
+                    _mcp_tool_contracts(
+                        self.name, self._tools, missing_contracts
+                    )
+                )
+
+            if self._advertises_tools():
+                async with self._rpc_lock:
+                    new_mcp_tools = await asyncio.wait_for(
+                        _paginate_full_list(
+                            self.session.list_tools, "tools", self.name
+                        ),
+                        timeout=self._list_timeout(),
+                    )
+            else:
+                logger.info(
+                    "MCP server '%s': does not advertise 'tools' capability — "
+                    "skipping tools/list (prompts/resources remain available)",
+                    self.name,
+                )
+                new_mcp_tools = []
+
+            self._tools = new_mcp_tools
             self._register_discovered_tools_if_needed()
-            return
-        async with self._rpc_lock:
-            self._tools = await _paginate_full_list(
-                self.session.list_tools, "tools", self.name
-            )
-        self._register_discovered_tools_if_needed()
+            exposed_contracts = {
+                tool_name: self._last_registered_tool_contracts[tool_name]
+                for tool_name in self._registered_tool_names
+                if tool_name in self._last_registered_tool_contracts
+            }
+            exposed_modified = {
+                tool_name
+                for tool_name in old_tool_contracts.keys() & exposed_contracts.keys()
+                if _mcp_tool_contract_fingerprint(old_tool_contracts[tool_name])
+                != _mcp_tool_contract_fingerprint(exposed_contracts[tool_name])
+            }
+            if exposed_modified:
+                logger.warning(
+                    "MCP server '%s': tool contracts modified after reconnect: %s. "
+                    "Verify these changes are expected. Same-name contract changes "
+                    "can indicate an MCP rug pull or tool poisoning.",
+                    self.name, ", ".join(sorted(exposed_modified)),
+                )
 
     def _register_discovered_tools_if_needed(self) -> None:
-        """Re-register tools after an owned server reconnects if needed.
+        """Synchronize model-visible tools after a post-ready reconnect.
 
         Initial registration is performed by ``_discover_and_register_server``
         after ``start()`` completes. During a later reconnect, outage handling
         may clear ``_ready`` before discovery and may deregister stale tools.
         A managed server can still be identified by its entry in ``_servers``;
-        publish its freshly discovered tools before transport readiness is
-        restored so a successful revival cannot come back with zero tools.
+        synchronize its freshly discovered snapshot before transport readiness
+        is restored so additions, removals, and contract changes are atomic.
         A server retained after a recoverable initial failure is likewise
         registry-owned before its first successful session, so ownership also
         authorizes its first publication.
         """
-        if self._registered_tool_names:
-            return
         if not self._ready.is_set():
             with _lock:
                 if _servers.get(self.name) is not self:
                     return
-        self._registered_tool_names = _register_server_tools(
-            self.name, self, self._config
-        )
+        self._synchronize_registered_tools()
         # A retained initial-failure server that just published tools has
         # recovered: drop its stale connect error so status surfaces stop
         # reporting it as failed.
         with _lock:
-            if _servers.get(self.name) is self:
+            if (
+                _servers.get(self.name) is self
+                and self._registered_tool_names
+            ):
                 _server_connect_errors.pop(self.name, None)
+
+    def _synchronize_registered_tools(self) -> None:
+        """Publish the discovered snapshot and remove only entries still owned."""
+        from tools.registry import registry
+
+        # A superseded same-name instance must not mutate the live registry.
+        with _lock:
+            current_server = _servers.get(self.name)
+        if current_server is not None and current_server is not self:
+            self._registered_tool_names = []
+            _prune_retained_mcp_tool_contracts(self)
+            return
+
+        previous_tool_names = set(self._registered_tool_names)
+        with registry._lock:
+            registered_names = _register_server_tools(
+                self.name, self, self._config
+            )
+            for tool_name in previous_tool_names - set(registered_names):
+                _remove_mcp_tool_registration_if_owned(
+                    self.name, tool_name, registry
+                )
+        self._registered_tool_names = registered_names
+        _prune_retained_mcp_tool_contracts(self)
 
     async def run(self, config: dict):
         """Long-lived coroutine: connect, discover tools, wait, disconnect.
@@ -3632,6 +3702,18 @@ class MCPServerTask:
         self._deregister_tools()
         self.session = None
 
+    def _abort(self) -> None:
+        """Cancel lifecycle work and remove visible state without awaiting teardown."""
+        self._shutdown_event.set()
+        self._reconnect_event.set()
+        if self._task and not self._task.done():
+            self._task.cancel()
+        for task in list(self._pending_refresh_tasks):
+            task.cancel()
+        self._deregister_tools()
+        self.session = None
+
+
     def _deregister_tools(self) -> None:
         """Drop this server's tools from the global registry (idempotent).
 
@@ -3643,10 +3725,20 @@ class MCPServerTask:
         """
         from tools.registry import registry
 
-        for tool_name in list(getattr(self, "_registered_tool_names", [])):
-            registry.deregister(tool_name)
-            _forget_mcp_tool_server(tool_name)
+        with _lock:
+            current_server = _servers.get(self.name)
+        if current_server is not None and current_server is not self:
+            self._registered_tool_names = []
+            _prune_retained_mcp_tool_contracts(self)
+            return
+
+        with registry._lock:
+            for tool_name in list(getattr(self, "_registered_tool_names", [])):
+                _remove_mcp_tool_registration_if_owned(
+                    self.name, tool_name, registry
+                )
         self._registered_tool_names = []
+        _prune_retained_mcp_tool_contracts(self)
 
     async def _wait_for_lazy_reconnect(self) -> None:
         """Wait while an intentionally recycled stdio server is dormant."""
@@ -5874,6 +5966,141 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
         "parameters": _normalize_mcp_input_schema(getattr(mcp_tool, "inputSchema", None)),
     }
 
+def _canonicalize_mcp_json_schema(schema):
+    """Normalize order-insensitive JSON Schema fields for comparison."""
+    if not isinstance(schema, dict):
+        return schema
+
+    canonical = {}
+    for keyword, value in schema.items():
+        if keyword == "required" and isinstance(value, list) and all(
+            isinstance(item, str) for item in value
+        ):
+            canonical[keyword] = sorted(value)
+        elif keyword in (
+            "additionalItems",
+            "additionalProperties",
+            "contains",
+            "contentSchema",
+            "else",
+            "if",
+            "items",
+            "not",
+            "propertyNames",
+            "then",
+            "unevaluatedItems",
+            "unevaluatedProperties",
+        ):
+            if keyword == "items" and isinstance(value, list):
+                canonical[keyword] = [
+                    _canonicalize_mcp_json_schema(item) for item in value
+                ]
+            else:
+                canonical[keyword] = _canonicalize_mcp_json_schema(value)
+        elif keyword in ("allOf", "anyOf", "oneOf", "prefixItems") and isinstance(
+            value, list
+        ):
+            canonical[keyword] = [
+                _canonicalize_mcp_json_schema(item) for item in value
+            ]
+        elif keyword in (
+            "$defs",
+            "definitions",
+            "dependentSchemas",
+            "patternProperties",
+            "properties",
+        ) and isinstance(value, dict):
+            canonical[keyword] = {
+                name: _canonicalize_mcp_json_schema(child)
+                for name, child in value.items()
+            }
+        elif keyword == "dependencies" and isinstance(value, dict):
+            canonical[keyword] = {
+                name: (
+                    _canonicalize_mcp_json_schema(child)
+                    if isinstance(child, dict)
+                    else child
+                )
+                for name, child in value.items()
+            }
+        elif keyword == "dependentRequired" and isinstance(value, dict):
+            canonical[keyword] = {
+                name: (
+                    sorted(required)
+                    if isinstance(required, list)
+                    and all(isinstance(item, str) for item in required)
+                    else required
+                )
+                for name, required in value.items()
+            }
+        else:
+            canonical[keyword] = value
+    return canonical
+
+def _canonicalize_mcp_tool_schema(schema: dict) -> dict:
+    return {
+        **schema,
+        "parameters": _canonicalize_mcp_json_schema(schema["parameters"]),
+    }
+
+def _mcp_tool_contract_fingerprint(contract: dict) -> str:
+    """Serialize a contract while preserving JSON scalar type distinctions."""
+    return json.dumps(
+        contract,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+def _mcp_tool_contracts(server_name: str, tools, exposed_names=None) -> Dict[str, dict]:
+    """Return model-visible tool schemas keyed by their registry names."""
+    visible_names = set(exposed_names) if exposed_names is not None else None
+    if visible_names is not None and not visible_names:
+        return {}
+    contracts = {}
+    for tool in tools:
+        schema = _convert_mcp_schema(server_name, tool)
+        if visible_names is None or schema["name"] in visible_names:
+            contracts[schema["name"]] = _canonicalize_mcp_tool_schema(schema)
+    return contracts
+
+def _store_mcp_tool_contract(server: MCPServerTask, tool_name: str, schema: dict) -> None:
+    contracts = server._last_registered_tool_contracts
+    contracts.pop(tool_name, None)
+    contracts[tool_name] = _canonicalize_mcp_tool_schema(schema)
+
+def _prune_retained_mcp_tool_contracts(server: MCPServerTask) -> None:
+    contracts = server._last_registered_tool_contracts
+    active_names = set(server._registered_tool_names)
+    retained_count = 0
+    retained_bytes = 0
+    evicted_names = []
+
+    for tool_name in reversed(contracts):
+        if tool_name in active_names:
+            continue
+        contract_bytes = len(tool_name.encode("utf-8")) + len(
+            _mcp_tool_contract_fingerprint(contracts[tool_name]).encode("utf-8")
+        )
+        if (
+            retained_count >= _MAX_RETAINED_INACTIVE_MCP_CONTRACTS
+            or retained_bytes + contract_bytes
+            > _MAX_RETAINED_INACTIVE_MCP_CONTRACT_BYTES
+        ):
+            evicted_names.append(tool_name)
+            continue
+        retained_count += 1
+        retained_bytes += contract_bytes
+
+    for tool_name in evicted_names:
+        contracts.pop(tool_name, None)
+
+    if evicted_names:
+        logger.debug(
+            "MCP server '%s': evicted %d inactive contract baseline(s)",
+            server.name,
+            len(evicted_names),
+        )
 
 def _build_utility_schemas(server_name: str) -> List[dict]:
     """Build schemas for the MCP utility tools (resources & prompts).
@@ -6056,6 +6283,16 @@ def _forget_mcp_tool_server(tool_name: str) -> None:
     with _lock:
         _mcp_tool_server_names.pop(tool_name, None)
 
+def _remove_mcp_tool_registration_if_owned(
+    server_name: str, tool_name: str, registry
+) -> None:
+    """Remove registry and provenance state unless another MCP server owns it."""
+    current_toolset = registry.get_toolset_for_tool(tool_name)
+    if current_toolset == f"mcp-{server_name}":
+        registry.deregister(tool_name)
+        _forget_mcp_tool_server(tool_name)
+    elif not current_toolset or not current_toolset.startswith("mcp-"):
+        _forget_mcp_tool_server(tool_name)
 
 def _select_utility_schemas(server_name: str, server: MCPServerTask, config: dict) -> List[dict]:
     """Select utility schemas based on config and server capabilities."""
@@ -6156,16 +6393,17 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     """
     from tools.registry import registry
 
+    with registry._lock:
+        return _register_server_tools_locked(name, server, config, registry)
+
+
+def _register_server_tools_locked(
+    name: str, server: MCPServerTask, config: dict, registry
+) -> List[str]:
+    """Register one complete MCP snapshot while holding the registry lock."""
     registered_names: List[str] = []
     toolset_name = f"mcp-{name}"
 
-    # Selective tool loading: honour include/exclude lists from config.
-    # Rules (matching issue #690 spec, extended with glob support):
-    #   tools.include — whitelist: only matching tool names are registered
-    #   tools.exclude — blacklist: all tools EXCEPT matching ones are registered
-    #   entries may be exact names or fnmatch globs (e.g. "*_radar_*")
-    #   include takes precedence over exclude
-    #   Neither set → register all tools (backward-compatible default)
     tools_filter = config.get("tools") or {}
     include_set = _normalize_name_filter(
         tools_filter.get("include"), f"mcp_servers.{name}.tools.include"
@@ -6182,6 +6420,8 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
         return True
 
     check_fn = _make_check_fn(name)
+    utility_entries = _select_utility_schemas(name, server, config)
+    utility_names = {entry["schema"]["name"] for entry in utility_entries}
     candidates: List[dict] = []
 
     # Trust-tier metadata (security boundary): capture the server's
@@ -6201,9 +6441,17 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 
         _scan_mcp_description(name, mcp_tool.name, mcp_tool.description or "")
         schema = _convert_mcp_schema(name, mcp_tool)
+        tool_name_prefixed = schema["name"]
+        if tool_name_prefixed in utility_names:
+            logger.warning(
+                "MCP server '%s': remote tool '%s' collides with generated "
+                "utility '%s' — skipping remote tool",
+                name, mcp_tool.name, tool_name_prefixed,
+            )
+            continue
         candidates.append(
             {
-                "registry_name": schema["name"],
+                "registry_name": tool_name_prefixed,
                 "origin": f"tool {mcp_tool.name!r}",
                 "schema": schema,
                 "handler": _make_tool_handler(
@@ -6213,15 +6461,13 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             }
         )
 
-    # Generated resource/prompt utility tools share the same namespace as raw
-    # MCP tools, so they must participate in the same collision preflight.
     handler_factories = {
         "list_resources": _make_list_resources_handler,
         "read_resource": _make_read_resource_handler,
         "list_prompts": _make_list_prompts_handler,
         "get_prompt": _make_get_prompt_handler,
     }
-    for entry in _select_utility_schemas(name, server, config):
+    for entry in utility_entries:
         schema = entry["schema"]
         handler_key = entry["handler_key"]
         candidates.append(
@@ -6236,8 +6482,6 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             }
         )
 
-    # Exact duplicate rows from a server are harmless but should not inflate
-    # counts. Distinct origins that collapse to one normalized name are unsafe.
     unique_candidates: List[dict] = []
     seen_candidates: set[tuple[str, str]] = set()
     origins_by_name: Dict[str, set[str]] = {}
@@ -6273,6 +6517,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             ", ".join(origins),
         )
 
+    registration_specs = []
     for candidate in unique_candidates:
         registry_name = candidate["registry_name"]
         if registry_name in ambiguous_names:
@@ -6280,16 +6525,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 
         existing_toolset = registry.get_toolset_for_tool(registry_name)
         if existing_toolset and existing_toolset != toolset_name:
-            if existing_toolset.startswith("mcp-"):
-                logger.error(
-                    "MCP server '%s': %s normalizes to '%s', already owned by "
-                    "MCP toolset '%s' — skipping to preserve the existing owner",
-                    name,
-                    candidate["origin"],
-                    registry_name,
-                    existing_toolset,
-                )
-            else:
+            if not existing_toolset.startswith("mcp-"):
                 logger.warning(
                     "MCP server '%s': %s (→ '%s') collides with built-in tool "
                     "in toolset '%s' — skipping to preserve built-in",
@@ -6298,38 +6534,116 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
                     registry_name,
                     existing_toolset,
                 )
-            continue
+                continue
 
-        registry.register(
-            name=registry_name,
-            toolset=toolset_name,
-            schema=candidate["schema"],
-            handler=candidate["handler"],
-            check_fn=candidate["check_fn"],
-            is_async=False,
-            description=candidate["schema"]["description"],
+        registration_specs.append(
+            {
+                "name": registry_name,
+                "toolset": toolset_name,
+                "schema": candidate["schema"],
+                "handler": candidate["handler"],
+                "check_fn": candidate["check_fn"],
+                "is_async": False,
+                "description": candidate["schema"]["description"],
+            }
         )
 
-        # The pre-check above is advisory only. Multiple servers connect in
-        # parallel, so ToolRegistry.register() is the atomic ownership gate.
-        if registry.get_toolset_for_tool(registry_name) != toolset_name:
-            logger.error(
-                "MCP server '%s': registration of %s as '%s' was rejected by "
-                "the registry; skipping provenance/count updates",
-                name,
-                candidate["origin"],
-                registry_name,
+    published_entries = []
+    cross_server_contract_changes = []
+    try:
+        for spec in registration_specs:
+            tool_name = spec["name"]
+            previous_entry = registry.get_entry(tool_name)
+            previous_toolset = (
+                previous_entry.toolset if previous_entry is not None else None
             )
-            continue
+            cross_server_contract_changed = (
+                isinstance(previous_toolset, str)
+                and previous_toolset.startswith("mcp-")
+                and previous_toolset != toolset_name
+                and previous_entry is not None
+                and _mcp_tool_contract_fingerprint(
+                    _canonicalize_mcp_tool_schema(previous_entry.schema)
+                )
+                != _mcp_tool_contract_fingerprint(
+                    _canonicalize_mcp_tool_schema(spec["schema"])
+                )
+            )
+            registry.register(**spec)
+            if registry.get_toolset_for_tool(tool_name) != toolset_name:
+                owned = registry.get_toolset_for_tool(tool_name)
+                if (
+                    isinstance(owned, str)
+                    and owned.startswith("mcp-")
+                    and owned != toolset_name
+                ):
+                    logger.error(
+                        "MCP server '%s': registration of '%s' rejected; "
+                        "already owned by MCP toolset '%s'",
+                        name,
+                        tool_name,
+                        owned,
+                    )
+                    if cross_server_contract_changed:
+                        logger.warning(
+                            "MCP server '%s': MCP rug pull warning for '%s': "
+                            "model-visible contract differs from owner '%s' "
+                            "(registration not transferred). Verify this "
+                            "change is expected.",
+                            name,
+                            tool_name,
+                            owned,
+                        )
+                continue
+            published_entries.append((tool_name, previous_entry, spec["schema"]))
+            registered_names.append(tool_name)
+            if cross_server_contract_changed:
+                cross_server_contract_changes.append((tool_name, previous_toolset))
 
-        _track_mcp_tool_server(registry_name, name)
-        registered_names.append(registry_name)
+        if registered_names:
+            registry.register_toolset_alias(name, toolset_name)
+    except BaseException:
+        for tool_name, previous_entry, _schema in reversed(published_entries):
+            if registry.get_toolset_for_tool(tool_name) != toolset_name:
+                continue
+            if previous_entry is None:
+                registry.deregister(tool_name)
+                continue
+            registry.register(
+                name=previous_entry.name,
+                toolset=previous_entry.toolset,
+                schema=previous_entry.schema,
+                handler=previous_entry.handler,
+                check_fn=previous_entry.check_fn,
+                requires_env=previous_entry.requires_env,
+                is_async=previous_entry.is_async,
+                description=previous_entry.description,
+                emoji=previous_entry.emoji,
+                max_result_size_chars=previous_entry.max_result_size_chars,
+                dynamic_schema_overrides=previous_entry.dynamic_schema_overrides,
+            )
+        raise
+
+    for tool_name, _previous_entry, schema in published_entries:
+        _store_mcp_tool_contract(server, tool_name, schema)
+        _track_mcp_tool_server(tool_name, name)
+
+    for tool_name, previous_toolset in cross_server_contract_changes:
+        logger.warning(
+            "MCP server '%s': MCP rug pull warning for '%s': model-visible "
+            "contract changed while ownership moved from '%s' to '%s'. "
+            "Verify this change is expected.",
+            name,
+            tool_name,
+            previous_toolset,
+            toolset_name,
+        )
 
     if registered_names:
-        registry.register_toolset_alias(name, toolset_name)
         # Write-through (#56832): refresh the on-disk schema cache after a
         # live connect so the next startup can lazily register this server
         # without spawning it. Cache failures never break registration.
+        # Toolset alias is already registered inside the publish transaction.
         try:
             from tools.mcp_schema_cache import config_fingerprint, write_cache_entry
 
@@ -6560,8 +6874,28 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
         _server_connect_errors.pop(name, None)
         _servers[name] = server
 
-    registered_names = _register_server_tools(name, server, config)
-    server._registered_tool_names = list(registered_names)
+    async def _commit_registration() -> List[str]:
+        # A startup list-changed refresh may already be queued; registration
+        # is the model-visible baseline commit and must share its transition
+        # lock. Bound the whole commit (including lock wait) so a wedged
+        # refresh cannot leave a half-registered server cached forever.
+        async with server._refresh_lock:
+            names = _register_server_tools(name, server, config)
+            server._registered_tool_names = list(names)
+            _prune_retained_mcp_tool_contracts(server)
+            return names
+
+    try:
+        registered_names = await asyncio.wait_for(
+            _commit_registration(),
+            timeout=float(config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)),
+        )
+    except BaseException:
+        with _lock:
+            if _servers.get(name) is server:
+                _servers.pop(name, None)
+        server._abort()
+        raise
 
     transport_type = "HTTP" if "url" in config else "stdio"
     logger.info(

@@ -116,12 +116,18 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
     ("claude-fable", 600),
     # xAI Grok reasoning variants.  Explicit reasoning-only keys
     # plus one for the ``non-reasoning`` variant so users picking
-    # the fast variant don't get the 300s floor.  Bare ``grok-3``,
-    # ``grok-4`` etc. don't match — only the explicit reasoning /
-    # non-reasoning pairs.
-    ("grok-4-fast-reasoning", 300),
-    ("grok-4.20-reasoning", 300),
-    ("grok-4.5", 300),
+    # the fast variant don't get the deep-reasoning floor.  Bare
+    # ``grok-3``, ``grok-4`` etc. don't match — only the explicit
+    # reasoning / non-reasoning pairs.
+    #
+    # 600s matches o1 / DeepSeek R1: xAI OAuth uses the codex_responses
+    # stream path, and production Desktop sessions observed healthy
+    # grok-4.5 thinks exceeding the prior 300s floor (and the 180s
+    # Codex event-idle default) before the first content token, dying
+    # as errno 32 / Broken pipe with small conversation fill.
+    ("grok-4-fast-reasoning", 600),
+    ("grok-4.20-reasoning", 600),
+    ("grok-4.5", 600),
     ("grok-4-fast-non-reasoning", 180),
 )
 

@@ -160,6 +160,53 @@ def openai_codex_stale_timeout_floor(est_tokens: int) -> float:
     return 0.0
 
 
+
+def resolve_codex_event_idle_timeout(
+    *,
+    base_timeout: float,
+    model: object = None,
+    provider: object = None,
+) -> float:
+    """Resolve post-first-byte Codex SSE idle patience.
+
+    The Codex event-idle watchdog (``HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS``)
+    is separate from the wall-clock stale detector. Reasoning models on
+    ``codex_responses`` paths — including OpenAI Codex and xAI OAuth/Grok —
+    can emit an opening SSE frame and then sit silent for several minutes
+    while thinking. The tiered default tops out at 180s for large tool-heavy
+    payloads, which kills healthy thinking streams and surfaces as
+    ``BrokenPipeError`` / errno 32 even when conversation fill is small.
+
+    This resolver keeps ``base_timeout <= 0`` as an explicit disable, then
+    raises patience via:
+
+    1. ``providers.<id>.stale_timeout_seconds`` / per-model override
+    2. the reasoning-model floor (``get_reasoning_stale_timeout_floor``)
+
+    Both are floors only — never lower an explicit higher base.
+    """
+    try:
+        timeout = float(base_timeout)
+    except (TypeError, ValueError):
+        return base_timeout
+    if timeout <= 0:
+        return timeout
+
+    provider_id = str(provider or "").strip()
+    model_id = model if isinstance(model, str) else (str(model) if model else None)
+    if provider_id:
+        cfg = get_provider_stale_timeout(provider_id, model_id)
+        if cfg is not None:
+            timeout = max(timeout, float(cfg))
+
+    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+
+    floor = get_reasoning_stale_timeout_floor(model_id)
+    if floor is not None:
+        timeout = max(timeout, float(floor))
+    return timeout
+
+
 def _validated_openrouter_provider_sort(raw_sort: Any) -> Optional[str]:
     """Return a normalized OpenRouter provider.sort value or None."""
     if not isinstance(raw_sort, str):
@@ -1109,6 +1156,26 @@ def interruptible_api_call(agent, api_kwargs: dict):
     )
     if _codex_idle_timeout <= 0:
         _codex_idle_enabled = False
+    elif _codex_idle_enabled:
+        # Apply provider config + reasoning-model floor. Without this, the
+        # event-idle kill stays at the tiered default (often 180s) while the
+        # wall-clock stale path already respects reasoning floors — so Grok /
+        # o-series / DeepSeek thinking on codex_responses dies mid-think as
+        # errno 32 even on small chats (tool schemas inflate the estimate).
+        _raised = resolve_codex_event_idle_timeout(
+            base_timeout=_codex_idle_timeout,
+            model=api_kwargs.get("model") or getattr(agent, "model", None),
+            provider=getattr(agent, "provider", None),
+        )
+        if _raised > _codex_idle_timeout:
+            logger.debug(
+                "Raised Codex event-idle timeout %.0fs → %.0fs (model=%s provider=%s)",
+                _codex_idle_timeout,
+                _raised,
+                api_kwargs.get("model") or getattr(agent, "model", None),
+                getattr(agent, "provider", None),
+            )
+            _codex_idle_timeout = _raised
 
     if _codex_watchdog_enabled:
         # Reset before the worker starts so a marker left over from a previous

@@ -38,7 +38,9 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
     wh_sub.add_argument(
         "--deliver",
         default="log",
-        help="Delivery target: log, telegram, discord, slack, etc.",
+        help="Delivery target(s). Format: 'platform' (home channel), "
+             "'platform:chat_id', or comma-separated list "
+             "e.g. 'photon:+86123,feishu:oc_xxx'.",
     )
     wh_sub.add_argument(
         "--deliver-chat-id",

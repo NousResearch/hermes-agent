@@ -50,22 +50,30 @@ GOOD_A = "Refactor the login handler to use the new session helper"
 GOOD_B = "Write regression tests for the session expiry watcher"
 
 
-class TestBatchDuplicateGoals(unittest.TestCase):
-    def test_exact_duplicate_goals_rejected(self):
-        result = _call([{"goal": GOOD_A}, {"goal": GOOD_A}])
-        self.assertIn("error", result)
-        self.assertIn("duplicate", result["error"].lower())
+class TestBatchDuplicateGoalsAllowed(unittest.TestCase):
+    """Identical-goal fan-outs are legitimate (best-of-N / ensemble sampling).
 
-    def test_duplicate_detection_normalizes_case_and_whitespace(self):
-        result = _call([{"goal": GOOD_A}, {"goal": "  " + GOOD_A.upper() + "  "}])
-        self.assertIn("error", result)
-        self.assertIn("duplicate", result["error"].lower())
+    The original gate from #81141 rejected duplicates; the post-merge audit
+    downgraded that — duplicates must pass validation.
+    """
 
-    def test_duplicate_error_names_both_task_indices(self):
-        result = _call([{"goal": GOOD_A}, {"goal": GOOD_B}, {"goal": GOOD_A}])
-        self.assertIn("error", result)
-        self.assertIn("2", result["error"])
-        self.assertIn("0", result["error"])
+    def _completed(self, idx):
+        return {"task_index": idx, "status": "completed", "summary": "ok",
+                "api_calls": 1, "duration_seconds": 1.0, "_child_role": None}
+
+    def test_exact_duplicate_goals_accepted(self):
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.side_effect = [self._completed(0), self._completed(1)]
+            result = _call([{"goal": GOOD_A}, {"goal": GOOD_A}])
+        self.assertNotIn("error", result)
+        self.assertEqual(len(result["results"]), 2)
+
+    def test_case_whitespace_variant_duplicates_accepted(self):
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.side_effect = [self._completed(0), self._completed(1)]
+            result = _call([{"goal": GOOD_A}, {"goal": "  " + GOOD_A.upper() + "  "}])
+        self.assertNotIn("error", result)
+        self.assertEqual(len(result["results"]), 2)
 
 
 class TestBatchPlaceholderGoals(unittest.TestCase):
@@ -90,6 +98,39 @@ class TestBatchPlaceholderGoals(unittest.TestCase):
         result = _call([{"goal": GOOD_A}, {"goal": "Summarize {file_path} for the report"}])
         self.assertIn("error", result)
         self.assertIn("template", result["error"].lower())
+
+    def test_code_shaped_brackets_not_rejected(self):
+        """Generics, HTML tags, JSON snippets, glob braces, and f-string-style
+        single-word placeholders are legitimate goal content — the narrow
+        marker regex (post-merge audit of #81141) must not fire on them."""
+        code_goals = [
+            "Refactor the parser to return Vec<T> instead of raw pointers",
+            "Fix the Result<String> error propagation in the config loader",
+            "Render the sidebar inside a <div> wrapper with flex layout",
+            'Update the fixture to emit {"key": 1} for the happy path',
+            "Add a glob rule matching src/{a,b}/*.py to the lint config",
+            "Rewrite the loop so {i} interpolates via f-strings correctly",
+        ]
+        for bad_free_goal in code_goals:
+            with patch("tools.delegate_tool._run_single_child") as mock_run:
+                mock_run.side_effect = [
+                    {"task_index": 0, "status": "completed", "summary": "ok",
+                     "api_calls": 1, "duration_seconds": 1.0, "_child_role": None},
+                    {"task_index": 1, "status": "completed", "summary": "ok",
+                     "api_calls": 1, "duration_seconds": 1.0, "_child_role": None},
+                ]
+                result = _call([{"goal": GOOD_A}, {"goal": bad_free_goal}])
+            self.assertNotIn("error", result, bad_free_goal)
+
+    def test_multiword_placeholder_shapes_still_rejected(self):
+        for marker_goal in (
+            "Deploy the service to <target environment> when ready",
+            "Backfill rows for {customer id} in the billing table",
+            "Ship <FEATURE-NAME> behind the beta flag",
+        ):
+            result = _call([{"goal": GOOD_A}, {"goal": marker_goal}])
+            self.assertIn("error", result, marker_goal)
+            self.assertIn("template", result["error"].lower())
 
     def test_too_short_goal_rejected(self):
         result = _call([{"goal": GOOD_A}, {"goal": "fix bug"}])

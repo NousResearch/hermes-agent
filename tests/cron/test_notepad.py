@@ -96,6 +96,44 @@ class TestNotepadCrud:
         assert notepad.list_notes("job-1") == []
         assert notepad.get_note("job-2", "a") == "keep"
 
+    def test_clear_notepad_noop_without_db_file(self, notepad):
+        """Clearing a job that never used the notepad must not create the DB
+        (remove_job calls clear_notepad unconditionally)."""
+        assert notepad.clear_notepad("never-used") == 0
+        assert not notepad.NOTEPAD_FILE.exists()
+
+
+class TestJobRemovalCleanup:
+    def test_remove_job_clears_notepad(self, cron_env, notepad):
+        """remove_job must clear the job's notepad rows — without this,
+        deleted jobs orphan their KV state in notepad.db forever
+        (post-merge audit of #81139: clear_notepad was dead code)."""
+        from cron.jobs import create_job, remove_job
+
+        job = create_job(prompt="Check the feed", schedule="every 1h")
+        other = create_job(prompt="Other job", schedule="every 2h")
+        notepad.set_note(job["id"], "cursor", "page=7")
+        notepad.set_note(other["id"], "cursor", "keep")
+
+        assert remove_job(job["id"]) is True
+        assert notepad.list_notes(job["id"]) == []
+        # Sibling jobs' notepads are untouched.
+        assert notepad.get_note(other["id"], "cursor") == "keep"
+
+    def test_remove_job_survives_notepad_failure(self, cron_env, notepad, monkeypatch):
+        """Notepad cleanup is best effort — a notepad error must never block
+        job removal itself."""
+        from cron.jobs import create_job, get_job, remove_job
+
+        job = create_job(prompt="Check the feed", schedule="every 1h")
+
+        def _boom(job_id):
+            raise RuntimeError("disk on fire")
+
+        monkeypatch.setattr(notepad, "clear_notepad", _boom)
+        assert remove_job(job["id"]) is True
+        assert get_job(job["id"]) is None
+
 
 class TestNotepadCaps:
     def test_value_over_per_key_cap_rejected(self, notepad):

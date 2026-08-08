@@ -57,11 +57,18 @@ def sentinel_path() -> Path:
 
 
 def is_engaged() -> bool:
-    """Cheap check (one stat): is the global emergency stop engaged?"""
+    """Cheap check (one stat): is the global emergency stop engaged?
+
+    Fail SAFE on stat errors: if we cannot determine whether the sentinel
+    exists (permission error, transient I/O failure on HERMES_HOME), report
+    engaged. The module contract is that the pause must hold even when the
+    sentinel is unreadable — a fail-open here would silently lift an
+    operator's emergency stop exactly when the filesystem is misbehaving.
+    """
     try:
         return sentinel_path().exists()
     except OSError:
-        return False
+        return True
 
 
 def engage(reason: Optional[str] = None) -> Path:

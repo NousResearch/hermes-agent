@@ -153,6 +153,90 @@ def test_create_job_monitor_rejected_with_no_agent(hermes_env):
         )
 
 
+def test_update_job_rejects_no_agent_on_monitor_job(hermes_env):
+    """The create-time monitor×no_agent invariant must hold through the
+    update door too — the scheduler's no_agent short-circuit runs before
+    the monitor gate, so flipping no_agent=True on a monitor job would
+    silently disable the monitor (post-merge audit of #81138)."""
+    from cron.jobs import create_job, update_job
+
+    _write_script(hermes_env, "mon.sh", "echo stable\n")
+    _write_script(hermes_env, "w.sh", "echo hi\n")
+    job = create_job(
+        prompt="React to the change",
+        schedule="every 5m",
+        monitor_script="mon.sh",
+        deliver="local",
+    )
+    with pytest.raises(ValueError, match="no_agent"):
+        update_job(job["id"], {"no_agent": True, "script": "w.sh"})
+
+
+def test_update_job_rejects_adding_monitor_to_no_agent_job(hermes_env):
+    from cron.jobs import create_job, update_job
+
+    _write_script(hermes_env, "w.sh", "echo hi\n")
+    _write_script(hermes_env, "mon.sh", "echo stable\n")
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="w.sh",
+        no_agent=True,
+        deliver="local",
+    )
+    with pytest.raises(ValueError, match="no_agent"):
+        update_job(job["id"], {"monitor_script": "mon.sh"})
+
+
+def test_update_job_rejects_second_monitor_source(hermes_env):
+    from cron.jobs import create_job, update_job
+
+    _write_script(hermes_env, "mon.sh", "echo stable\n")
+    job = create_job(
+        prompt="React",
+        schedule="every 5m",
+        monitor_script="mon.sh",
+        deliver="local",
+    )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        update_job(job["id"], {"monitor_url": "https://example.com/status"})
+
+
+def test_update_job_allows_clearing_monitor_then_no_agent(hermes_env):
+    """Clearing the monitor and flipping no_agent in ONE update is valid —
+    the invariant is checked on the merged record, not per-field."""
+    from cron.jobs import create_job, get_job, update_job
+
+    _write_script(hermes_env, "mon.sh", "echo stable\n")
+    _write_script(hermes_env, "w.sh", "echo hi\n")
+    job = create_job(
+        prompt="React",
+        schedule="every 5m",
+        monitor_script="mon.sh",
+        deliver="local",
+    )
+    update_job(job["id"], {"monitor_script": "", "no_agent": True, "script": "w.sh"})
+    reloaded = get_job(job["id"])
+    assert reloaded.get("monitor_script") is None
+    assert reloaded["no_agent"] is True
+
+
+def test_update_job_unrelated_fields_skip_mode_validation(hermes_env):
+    """A legacy/odd record must keep accepting updates that don't touch the
+    mode fields — the invariant re-check is scoped to changed fields."""
+    from cron.jobs import create_job, update_job
+
+    _write_script(hermes_env, "mon.sh", "echo stable\n")
+    job = create_job(
+        prompt="React",
+        schedule="every 5m",
+        monitor_script="mon.sh",
+        deliver="local",
+    )
+    updated = update_job(job["id"], {"name": "renamed"})
+    assert updated["name"] == "renamed"
+
+
 # ---------------------------------------------------------------------------
 # cron.monitor: hashing + diff unit behavior
 # ---------------------------------------------------------------------------

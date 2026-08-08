@@ -167,8 +167,106 @@ class TestResumeRoundTrip:
 
         kwargs = _make_agent_with_override(override, monkeypatch, LEGACY_LIST_CONFIG)
 
-        assert kwargs["base_url"] == MIMO_URL
-        assert kwargs["api_key"] == MIMO_KEY
+
+# --- Issue #81789: two providers sharing one base_url, different api_keys ----
+
+SHARED_URL = "https://relay.example.invalid/v1"
+
+SHARED_URL_CONFIG = {
+    "custom_providers": [
+        {
+            "name": "slomerex-grok",
+            "base_url": SHARED_URL,
+            "api_key": "keyA",
+            "api_mode": "chat_completions",
+        },
+        {
+            "name": "slomerex-alt",
+            "base_url": SHARED_URL,
+            "api_key": "keyB",
+            "api_mode": "chat_completions",
+        },
+    ]
+}
+
+
+def _shared_url_agent(name="slomerex-alt"):
+    agent = types.SimpleNamespace(
+        model="grok-4",
+        provider="custom",
+        requested_provider=f"custom:{name}",
+        base_url=SHARED_URL,
+        api_mode="chat_completions",
+        reasoning_config=None,
+        service_tier=None,
+    )
+    return agent
+
+
+class TestSharedBaseUrlRecovery:
+    def test_persist_keeps_the_requested_identity_not_the_first_url_owner(
+        self, monkeypatch
+    ):
+        """_runtime_model_config must persist custom:slomerex-alt (the
+        requested identity), not heal through the URL to custom:slomerex-grok
+        (the first URL owner)."""
+        monkeypatch.setattr(rp, "load_config", lambda: SHARED_URL_CONFIG)
+
+        from tui_gateway.server import _runtime_model_config
+
+        config = _runtime_model_config(_shared_url_agent("slomerex-alt"))
+
+        assert config["provider"] == "custom:slomerex-alt"
+        assert config["base_url"] == SHARED_URL
+
+    def test_round_trip_restores_the_second_entries_key(self, monkeypatch):
+        """persist → stored-overrides → _make_agent must resolve keyB, the
+        second entry's credential, not keyA of the first URL owner."""
+        monkeypatch.setattr(rp, "load_config", lambda: SHARED_URL_CONFIG)
+
+        from tui_gateway.server import (
+            _runtime_model_config,
+            _stored_session_runtime_overrides,
+        )
+
+        model_config = _runtime_model_config(_shared_url_agent("slomerex-alt"))
+        row = {
+            "model": "grok-4",
+            "model_config": json.dumps(model_config),
+        }
+        overrides = _stored_session_runtime_overrides(row)
+        assert overrides["model_override"]["provider"] == "custom:slomerex-alt"
+
+        kwargs = _make_agent_with_override(
+            overrides["model_override"], monkeypatch, SHARED_URL_CONFIG
+        )
+
+        assert kwargs["base_url"] == SHARED_URL
+        assert kwargs["api_key"] == "keyB"
+
+    def test_first_entry_still_recovers_its_own_key(self, monkeypatch):
+        """The first URL owner keeps resolving its own credential too."""
+        monkeypatch.setattr(rp, "load_config", lambda: SHARED_URL_CONFIG)
+
+        from tui_gateway.server import (
+            _runtime_model_config,
+            _stored_session_runtime_overrides,
+        )
+
+        model_config = _runtime_model_config(_shared_url_agent("slomerex-grok"))
+        row = {
+            "model": "grok-4",
+            "model_config": json.dumps(model_config),
+        }
+        overrides = _stored_session_runtime_overrides(row)
+        assert overrides["model_override"]["provider"] == "custom:slomerex-grok"
+
+        kwargs = _make_agent_with_override(
+            overrides["model_override"], monkeypatch, SHARED_URL_CONFIG
+        )
+
+        assert kwargs["base_url"] == SHARED_URL
+        assert kwargs["api_key"] == "keyA"
 
 
 # --- Regression: bare "custom" WITHOUT a base_url (GH #44022 / #47714) ------

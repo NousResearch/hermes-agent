@@ -2769,14 +2769,16 @@ def _ensure_session_db_row(session: dict) -> None:
     # (the very first DB write for a fresh desktop session, before the agent is
     # built) is the origin of the recurring "No LLM provider configured" rows:
     # on the next resume bare "custom" routes to OpenRouter with no key. Recover
-    # the durable ``custom:<name>`` identity from the override's base_url, else
-    # the configured provider, so a routable identity is persisted from the
-    # start (matches _runtime_model_config's normalization).
+    # the durable ``custom:<name>`` identity from the override's provider (when
+    # it already names a real entry), else its base_url, else the configured
+    # provider, so a routable identity is persisted from the start (matches
+    # _runtime_model_config's normalization).
     if str(model_config.get("provider") or "").strip().lower() == "custom":
         try:
             from hermes_cli.runtime_provider import canonical_custom_identity
 
             healed = canonical_custom_identity(
+                requested_provider=override.get("requested_provider"),
                 base_url=model_config.get("base_url") or None,
                 model=model_config.get("model") or row_model or None,
             )
@@ -3751,7 +3753,13 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
             from hermes_cli.runtime_provider import canonical_custom_identity
 
             healed = canonical_custom_identity(
-                base_url=base_url or None, model=model or None
+                # The persisted provider (``custom:<name>`` when the row was
+                # written by a fixed build) is the most precise identity — it
+                # disambiguates two entries sharing one base_url with different
+                # api_keys, which the URL reverse-lookup cannot (issue #81789).
+                requested_provider=provider or None,
+                base_url=base_url or None,
+                model=model or None,
             )
         except Exception:
             logger.debug(
@@ -3804,12 +3812,14 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
             # later resume/rebuild cannot re-resolve the entry's credentials
             # (the api_key is deliberately never persisted; see
             # _stored_session_runtime_overrides). Recover the canonical
-            # ``custom:<name>`` menu key from the endpoint URL when present,
-            # else from the configured provider — this second fallback is the
-            # fix for sessions built WITHOUT a base_url on the override (the
-            # recurring Desktop/TUI "No LLM provider configured" regression:
-            # bare "custom" with no base_url was persisted verbatim and routed
-            # to OpenRouter with no key on the next resume).
+            # ``custom:<name>`` menu key from the agent's REQUESTED identity
+            # first (it disambiguates two entries sharing one base_url with
+            # different api_keys — issue #81789), else the endpoint URL when
+            # present, else the configured provider — these later fallbacks
+            # are the fix for sessions built WITHOUT a base_url on the
+            # override (the recurring Desktop/TUI "No LLM provider configured"
+            # regression: bare "custom" with no base_url was persisted verbatim
+            # and routed to OpenRouter with no key on the next resume).
             try:
                 from hermes_cli.runtime_provider import (
                     canonical_custom_identity,
@@ -3817,7 +3827,11 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
 
                 provider = (
                     canonical_custom_identity(
-                        base_url=base_url, model=model or None
+                        requested_provider=getattr(
+                            agent, "requested_provider", ""
+                        ),
+                        base_url=base_url,
+                        model=model or None,
                     )
                     or provider
                 )
@@ -6566,6 +6580,13 @@ def _make_agent(
         acp_command=runtime.get("command"),
         acp_args=runtime.get("args"),
         credential_pool=runtime.get("credential_pool"),
+        # Carry the REQUESTED identity (e.g. ``custom:<name>``) onto the
+        # agent so _runtime_model_config / recovery can disambiguate two
+        # custom providers that share one base_url with different api_keys
+        # (issue #81789). Without this the resolved "custom" is the only
+        # identity the agent keeps, and the next persist/recover round-trip
+        # resolves the first URL owner's key.
+        requested_provider=runtime.get("requested_provider"),
         quiet_mode=True,
         # verbose_logging controls DEBUG-level agent logging; it is intentionally
         # independent of tool_progress_mode (which only controls per-tool
@@ -12399,6 +12420,7 @@ def _model_picker_context(agent):
 
             provider = (
                 canonical_custom_identity(
+                    requested_provider=getattr(agent, "requested_provider", ""),
                     base_url=base_url or None,
                     config_provider=ctx.current_provider,
                     model=(getattr(agent, "model", "") if agent else "")

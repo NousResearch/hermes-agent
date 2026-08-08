@@ -575,6 +575,77 @@ def test_save_custom_provider_references_the_key_instead_of_inlining_it(monkeypa
     assert "sk-secret" not in yaml.safe_dump(saved)
 
 
+# ---------------------------------------------------------------------------
+# _save_custom_provider — same base_url, different api_key (issue #81789)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def custom_provider_save(monkeypatch, tmp_path):
+    """Stateful load/save around _save_custom_provider for multi-entry tests."""
+    import yaml
+    from hermes_cli.main import _save_custom_provider
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.dump({}))
+    state = {"cfg": None}
+
+    def _load():
+        if state["cfg"] is not None:
+            return state["cfg"]
+        return yaml.safe_load(cfg_path.read_text()) or {}
+
+    def _save(cfg):
+        state["cfg"] = cfg
+        cfg_path.write_text(yaml.safe_dump(cfg))
+
+    monkeypatch.setattr("hermes_cli.config.load_config", _load)
+    monkeypatch.setattr("hermes_cli.config.save_config", _save)
+    return _save_custom_provider, state
+
+
+def test_same_base_url_distinct_names_create_two_entries(custom_provider_save):
+    """Two providers sharing one base_url with different api_keys must coexist.
+
+    Regression for issue #81789: the old base_url dedup silently merged the
+    second entry into the first (and never refreshed its api_key), so a
+    multi-channel relay endpoint could only ever hold one credential.
+    """
+    _save, state = custom_provider_save
+
+    _save("https://api.slomerex.xyz/v1", api_key="keyA", name="slomerex-grok")
+    _save("https://api.slomerex.xyz/v1", api_key="keyB", name="slomerex-alt")
+
+    entries = state["cfg"]["custom_providers"]
+    assert len(entries) == 2
+    by_name = {e["name"]: e.get("api_key") for e in entries}
+    assert by_name == {"slomerex-grok": "keyA", "slomerex-alt": "keyB"}
+
+
+def test_same_name_updates_in_place_and_refreshes_api_key(custom_provider_save):
+    """Re-saving under the same name updates that entry — including api_key."""
+    _save, state = custom_provider_save
+
+    _save("https://api.slomerex.xyz/v1", api_key="keyA", name="slomerex-grok")
+    _save("https://api.slomerex.xyz/v1", api_key="keyB", name="slomerex-grok", model="grok-4")
+
+    entries = state["cfg"]["custom_providers"]
+    assert len(entries) == 1
+    assert entries[0]["api_key"] == "keyB"
+    assert entries[0]["model"] == "grok-4"
+
+
+def test_no_name_same_url_updates_first_owner_and_refreshes_key(custom_provider_save):
+    """Legacy no-name call still dedups by base_url — but now refreshes api_key."""
+    _save, state = custom_provider_save
+
+    _save("https://api.slomerex.xyz/v1", api_key="keyA", name="slomerex-grok")
+    _save("https://api.slomerex.xyz/v1", api_key="keyB")
+
+    entries = state["cfg"]["custom_providers"]
+    assert len(entries) == 1
+    assert entries[0]["api_key"] == "keyB"
+
+
 
 
 def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():

@@ -980,9 +980,20 @@ def recover_with_credential_pool(
         if current_provider == "custom" and pool_provider.startswith("custom:"):
             try:
                 from agent.credential_pool import get_custom_provider_pool_key
+                # Prefer the agent's REQUESTED identity (``custom:<name>``) —
+                # it resolves the exact entry when two custom providers share
+                # one base_url with different api_keys, while a bare base_url
+                # reverse-lookup always lands on the first URL owner (#81789).
+                _requested = getattr(agent, "requested_provider", "") or ""
                 _agent_base = (getattr(agent, "base_url", "") or "").strip()
                 _custom_match = bool(_agent_base) and (
-                    (get_custom_provider_pool_key(_agent_base) or "").strip().lower()
+                    (
+                        get_custom_provider_pool_key(
+                            _agent_base,
+                            provider_name=_requested or None,
+                        )
+                        or ""
+                    ).strip().lower()
                     == pool_provider
                 )
             except Exception:
@@ -1512,6 +1523,13 @@ def restore_primary_runtime(agent) -> bool:
             pool,
             primary_provider,
             base_url=str((agent._primary_runtime or {}).get("base_url") or ""),
+            # The snapshot's REQUESTED identity (``custom:<name>``) resolves
+            # the exact entry when two custom providers share one base_url
+            # with different api_keys — the base_url reverse-lookup alone
+            # always lands on the first URL owner (issue #81789).
+            provider_name=str(
+                (agent._primary_runtime or {}).get("requested_provider") or ""
+            ),
         ):
             from agent.credential_pool import load_pool
 
@@ -1621,9 +1639,17 @@ def restore_primary_runtime(agent) -> bool:
         ):
             try:
                 from agent.credential_pool import get_custom_provider_pool_key
-
+                # Prefer the snapshot's REQUESTED identity (``custom:<name>``)
+                # — it resolves the exact entry when two custom providers share
+                # one base_url with different api_keys, while a bare base_url
+                # reverse-lookup always lands on the first URL owner (#81789).
+                _requested = str(rt.get("requested_provider") or "").strip()
                 primary_key = (
-                    get_custom_provider_pool_key(str(rt.get("base_url") or "")) or ""
+                    get_custom_provider_pool_key(
+                        str(rt.get("base_url") or ""),
+                        provider_name=_requested or None,
+                    )
+                    or ""
                 ).strip().lower()
                 pool_matches_primary = bool(primary_key) and primary_key == pool_provider
             except Exception:
@@ -1679,8 +1705,18 @@ def restore_primary_runtime(agent) -> bool:
                     try:
                         from agent.credential_pool import get_custom_provider_pool_key
                         primary_base_url = str(rt.get("base_url") or "").strip()
+                        # Prefer the snapshot's REQUESTED identity
+                        # (``custom:<name>``) — it resolves the exact entry
+                        # when two custom providers share one gateway base_url
+                        # with different api_keys; the bare URL reverse-lookup
+                        # always lands on the first URL owner (#81789).
+                        _requested = str(rt.get("requested_provider") or "").strip()
                         primary_key = (
-                            get_custom_provider_pool_key(primary_base_url) or ""
+                            get_custom_provider_pool_key(
+                                primary_base_url,
+                                provider_name=_requested or None,
+                            )
+                            or ""
                         ).strip().lower()
                         entry_matches_primary = bool(primary_key) and primary_key == entry_provider
                     except Exception:

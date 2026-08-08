@@ -4110,15 +4110,75 @@ def _custom_provider_base_url_config_value(provider_info, resolved_base_url=""):
     return str(resolved_base_url or "").strip()
 
 
+def _apply_custom_provider_update(
+    entry: dict,
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    context_length,
+    api_mode: str,
+    key_env: str,
+) -> bool:
+    """Apply caller-supplied fields onto an existing custom_providers entry.
+
+    Returns True when anything changed. Refreshes the inline ``api_key`` when
+    the caller supplied a new one — the old base_url dedup silently ignored a
+    new key, so a second channel key for one relay endpoint was never saved
+    (issue #81789). ``key_env`` still wins over an inline key: once a
+    credential lives in ``.env``, the plaintext ``api_key`` is dropped.
+    """
+    changed = False
+    if str(entry.get("base_url", "") or "").rstrip("/") != base_url.rstrip("/"):
+        entry["base_url"] = base_url
+        changed = True
+    if model and entry.get("model") != model:
+        entry["model"] = model
+        changed = True
+    if model and context_length:
+        models_cfg = entry.get("models", {})
+        if not isinstance(models_cfg, dict):
+            models_cfg = {}
+        if models_cfg.get(model, {}).get("context_length") != context_length:
+            models_cfg[model] = {"context_length": context_length}
+            entry["models"] = models_cfg
+            changed = True
+    if api_mode:
+        if entry.get("api_mode") != api_mode:
+            entry["api_mode"] = api_mode
+            changed = True
+    elif "api_mode" in entry:
+        entry.pop("api_mode", None)
+        changed = True
+    if key_env:
+        if entry.get("key_env") != key_env or entry.get("api_key"):
+            entry["key_env"] = key_env
+            entry.pop("api_key", None)
+            changed = True
+    elif (
+        api_key
+        and not entry.get("key_env")
+        and not str(api_key).startswith("${")
+        and entry.get("api_key") != api_key
+    ):
+        entry["api_key"] = api_key
+        changed = True
+    return changed
+
+
 def _save_custom_provider(
     base_url, api_key="", model="", context_length=None, name=None, api_mode=None,
     key_env=""
 ):
     """Save a custom endpoint to custom_providers in config.yaml.
 
-    Deduplicates by base_url — if the URL already exists, updates the
-    model name, context_length, and api_mode but doesn't add a duplicate entry.
-    Uses *name* when provided, otherwise auto-generates from the URL.
+    Deduplicates by explicit *name* first — two custom providers may
+    legitimately share one base_url with different api_keys (multi-channel /
+    multi-region relay endpoints, issue #81789), so a distinct name is a NEW
+    entry, never an update of the first URL owner. Same name (or a legacy
+    no-name call hitting an existing URL) updates the entry in place and
+    refreshes ``api_key`` when a new one was supplied. Uses *name* when
+    provided, otherwise auto-generates from the URL.
 
     When *key_env* is set the caller has already written the key to ``.env``,
     so the entry references it instead of inlining the secret (#69449).
@@ -4130,37 +4190,49 @@ def _save_custom_provider(
     if not isinstance(providers, list):
         providers = []
 
-    # Check if this URL is already saved — update model/context_length if so
-    for entry in providers:
-        if isinstance(entry, dict) and entry.get("base_url", "").rstrip(
-            "/"
-        ) == base_url.rstrip("/"):
-            changed = False
-            if model and entry.get("model") != model:
-                entry["model"] = model
-                changed = True
-            if model and context_length:
-                models_cfg = entry.get("models", {})
-                if not isinstance(models_cfg, dict):
-                    models_cfg = {}
-                models_cfg[model] = {"context_length": context_length}
-                entry["models"] = models_cfg
-                changed = True
-            if api_mode:
-                if entry.get("api_mode") != api_mode:
-                    entry["api_mode"] = api_mode
-                    changed = True
-            elif "api_mode" in entry:
-                entry.pop("api_mode", None)
-                changed = True
-            if key_env and (entry.get("key_env") != key_env or entry.get("api_key")):
-                entry["key_env"] = key_env
-                entry.pop("api_key", None)
-                changed = True
-            if changed:
-                cfg["custom_providers"] = providers
-                save_config(cfg)
-            return  # already saved, updated if needed
+    # Dedup by explicit name first (same normalized name → update in place).
+    # A DIFFERENT explicit name with the same base_url is a legitimate new
+    # entry (multi-channel / multi-region relay endpoints, issue #81789) — it
+    # must never fall through to the legacy URL dedup below.
+    if name:
+        name_key = name.strip().lower().replace(" ", "-")
+        for entry in providers:
+            if (
+                isinstance(entry, dict)
+                and str(entry.get("name", "") or "")
+                .strip().lower().replace(" ", "-") == name_key
+            ):
+                if _apply_custom_provider_update(
+                    entry,
+                    base_url=base_url,
+                    api_key=api_key,
+                    model=model,
+                    context_length=context_length,
+                    api_mode=api_mode,
+                    key_env=key_env,
+                ):
+                    cfg["custom_providers"] = providers
+                    save_config(cfg)
+                return  # already saved, updated if needed
+    else:
+        # Legacy: no explicit name — keep the base_url dedup (first entry
+        # owning the URL wins), now also refreshing api_key on update.
+        for entry in providers:
+            if isinstance(entry, dict) and entry.get("base_url", "").rstrip(
+                "/"
+            ) == base_url.rstrip("/"):
+                if _apply_custom_provider_update(
+                    entry,
+                    base_url=base_url,
+                    api_key=api_key,
+                    model=model,
+                    context_length=context_length,
+                    api_mode=api_mode,
+                    key_env=key_env,
+                ):
+                    cfg["custom_providers"] = providers
+                    save_config(cfg)
+                return  # already saved, updated if needed
 
     # Use provided name or auto-generate from URL
     if not name:

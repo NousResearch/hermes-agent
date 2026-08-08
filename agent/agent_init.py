@@ -686,6 +686,11 @@ def init_agent(
                 credential_pool,
                 agent.provider,
                 base_url=agent.base_url,
+                # The REQUESTED identity (``custom:<name>``) disambiguates two
+                # entries sharing one base_url with different api_keys; a bare
+                # base_url reverse-lookup always resolves the first URL owner
+                # (issue #81789).
+                provider_name=agent.requested_provider,
             ):
                 agent._credential_pool = None
         except Exception:

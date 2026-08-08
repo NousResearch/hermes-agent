@@ -951,6 +951,7 @@ def canonical_custom_identity(
     base_url: Optional[str] = None,
     config_provider: Optional[str] = None,
     model: Optional[str] = None,
+    requested_provider: Optional[str] = None,
 ) -> Optional[str]:
     """Recover a routable ``custom:<name>`` identity for a bare custom provider.
 
@@ -962,20 +963,28 @@ def canonical_custom_identity(
 
     Any code path that persists or restores a session's provider override
     must run the resolved provider through this helper so a bare ``"custom"``
-    is upgraded back to its durable ``custom:<name>`` menu key. Three
-    recovery sources, in priority order:
+    is upgraded back to its durable ``custom:<name>`` menu key. Recovery
+    sources, in priority order:
 
-    1. ``base_url`` — reverse-lookup the entry that owns the endpoint URL
+    1. ``requested_provider`` — the identity the session was explicitly
+       switched to (e.g. a ``custom:<name>`` from a /model switch or a
+       persisted override). This is the most precise fact: when two custom
+       providers share one base_url with different api_keys, the base_url
+       reverse-lookup cannot disambiguate them (it always returns the first
+       URL owner), while the requested name resolves exactly (issue #81789).
+       Only accepted when it names a real configured entry.
+    2. ``base_url`` — reverse-lookup the entry that owns the endpoint URL
        (the one fact that always survives the persistence round-trip when a
-       URL was recorded).
-    2. ``model`` — reverse-lookup the entry that serves the session's model
+       URL was recorded). Ambiguous when multiple entries share the URL, so
+       it sits below the explicit name.
+    3. ``model`` — reverse-lookup the entry that serves the session's model
        (``model``/``default_model``/``models`` catalog). The session row
        always stores the model name, so when no base_url survived (the
        recurring Desktop/TUI regression vector) the model is the last
        session-scoped fact that can recover the entry — and unlike the
        config fallback below it stays correct after the user points their
        global default at a different provider.
-    3. ``config_provider`` — the active ``config.model.provider`` (or its
+    4. ``config_provider`` — the active ``config.model.provider`` (or its
        ``provider``/``HERMES_INFERENCE_PROVIDER`` equivalent). When neither
        a base_url nor a model recovered the entry, the configured provider
        is the only durable identity left, so fall back to it when it names
@@ -985,6 +994,49 @@ def canonical_custom_identity(
     ``None`` (caller keeps whatever it had — bare ``"custom"`` only as a last
     resort, e.g. a genuine ad-hoc endpoint with no config entry).
     """
+    # 0. Explicitly-requested identity wins: it disambiguates multiple
+    # entries that share one base_url (different api_keys per channel/tenant),
+    # which no URL reverse-lookup can do. The requested name maps to ITS OWN
+    # entry's durable slug — never through the URL, which would return the
+    # first URL owner again (issue #81789).
+    if requested_provider:
+        requested_norm = _normalize_custom_provider_name(requested_provider)
+        if requested_norm and requested_norm not in {"custom", "auto"}:
+            try:
+                config = load_config()
+            except Exception:
+                config = None
+            if isinstance(config, dict):
+                providers = config.get("providers")
+                if isinstance(providers, dict):
+                    from hermes_cli.config import is_provider_enabled
+
+                    for ep_name, entry in providers.items():
+                        if not isinstance(entry, dict):
+                            continue
+                        if not is_provider_enabled(entry):
+                            continue
+                        if requested_norm in custom_provider_aliases(
+                            str(entry.get("name") or ep_name), str(ep_name)
+                        ):
+                            return custom_provider_slug(str(ep_name), str(ep_name))
+                try:
+                    custom_providers = get_compatible_custom_providers(config)
+                except Exception:
+                    custom_providers = None
+                for entry in custom_providers or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    name = entry.get("name")
+                    if not isinstance(name, str) or not name.strip():
+                        continue
+                    if requested_norm in custom_provider_aliases(
+                        name, str(entry.get("provider_key", "") or "")
+                    ):
+                        return custom_provider_slug(
+                            name, str(entry.get("provider_key", "") or "")
+                        )
+
     # 1. Reverse-lookup by endpoint URL.
     if base_url:
         identity = find_custom_provider_identity(base_url)
@@ -1920,6 +1972,11 @@ def resolve_runtime_provider(
                     or getattr(entry, "base_url", None)
                     or ""
                 ),
+                # The REQUESTED identity (``custom:<name>``) disambiguates two
+                # entries sharing one base_url with different api_keys — a
+                # bare base_url reverse-lookup always resolves the first URL
+                # owner (issue #81789).
+                provider_name=requested_provider,
             )
         ):
             return _resolve_runtime_from_pool_entry(

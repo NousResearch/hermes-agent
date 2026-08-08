@@ -98,3 +98,103 @@ def test_legacy_unkeyed_entry_keeps_its_name_identity(monkeypatch):
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
 
     assert rp.canonical_custom_identity(config_provider="Legacy Endpoint") == "custom:legacy-endpoint"
+
+
+# --- Issue #81789: two providers sharing one base_url, different api_keys ----
+#
+# The base_url reverse-lookup cannot disambiguate same-URL entries (it always
+# returns the FIRST URL owner), so recovery must prefer the explicitly
+# requested provider identity over the URL.
+
+SHARED_URL = "https://relay.example.invalid/v1"
+
+SHARED_URL_CONFIG = {
+    "custom_providers": [
+        {
+            "name": "slomerex-grok",
+            "base_url": SHARED_URL,
+            "api_key": "keyA",
+            "api_mode": "chat_completions",
+        },
+        {
+            "name": "slomerex-alt",
+            "base_url": SHARED_URL,
+            "api_key": "keyB",
+            "api_mode": "chat_completions",
+        },
+    ]
+}
+
+
+@pytest.fixture
+def shared_url_config(monkeypatch):
+    monkeypatch.setattr(rp, "load_config", lambda *a, **k: SHARED_URL_CONFIG)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: SHARED_URL_CONFIG)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    return SHARED_URL_CONFIG
+
+
+def test_requested_identity_disambiguates_shared_base_url(shared_url_config):
+    """The explicitly requested provider must win over the first URL owner."""
+    assert (
+        rp.canonical_custom_identity(
+            requested_provider="slomerex-alt", base_url=SHARED_URL
+        )
+        == "custom:slomerex-alt"
+    )
+    assert (
+        rp.canonical_custom_identity(
+            requested_provider="slomerex-grok", base_url=SHARED_URL
+        )
+        == "custom:slomerex-grok"
+    )
+
+
+def test_requested_identity_wins_even_when_url_matches_first_entry(shared_url_config):
+    """The base_url alone would heal to the FIRST owner — the name must win."""
+    assert (
+        rp.canonical_custom_identity(
+            requested_provider="custom:slomerex-alt", base_url=SHARED_URL
+        )
+        == "custom:slomerex-alt"
+    )
+
+
+def test_bare_url_still_heals_to_first_url_owner(shared_url_config):
+    """Without a name the URL reverse-lookup keeps its legacy first-match
+    behavior (callers that only have a base_url cannot do better)."""
+    assert rp.canonical_custom_identity(base_url=SHARED_URL) == "custom:slomerex-grok"
+
+
+def test_unconfigured_requested_identity_falls_through_to_url(shared_url_config):
+    """A requested name that matches no entry must not mint a fake identity."""
+    assert (
+        rp.canonical_custom_identity(
+            requested_provider="not-a-real-entry", base_url=SHARED_URL
+        )
+        == "custom:slomerex-grok"
+    )
+
+
+def test_requested_identity_heals_keyed_providers_dict(monkeypatch):
+    """Keyed ``providers:`` entries keep their config-key slug, not the
+    display name, when recovered by the requested identity."""
+    config = {
+        "providers": {
+            "slomerex-alt": {
+                "name": "Slomerex Alt Display",
+                "api": SHARED_URL,
+                "api_key": "keyB",
+            }
+        }
+    }
+    monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+
+    assert (
+        rp.canonical_custom_identity(
+            requested_provider="Slomerex Alt Display", base_url=SHARED_URL
+        )
+        == "custom:slomerex-alt"
+    )

@@ -3,7 +3,10 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.credential_pool import credential_pool_matches_provider
+from agent.credential_pool import (
+    credential_pool_matches_provider,
+    get_custom_provider_pool_key,
+)
 from hermes_cli import runtime_provider as rp
 
 
@@ -24,6 +27,83 @@ def test_custom_pool_match_is_scoped_by_endpoint():
         assert not credential_pool_matches_provider(
             "custom:other", "custom", base_url="https://lab.example/v1"
         )
+
+
+def test_pool_key_name_wins_over_shared_base_url(monkeypatch):
+    """Two providers sharing one base_url with different api_keys (issue
+    #81789) must resolve to their own pool keys when the name is given."""
+    config = {
+        "custom_providers": [
+            {
+                "name": "slomerex-grok",
+                "base_url": "https://relay.example/v1",
+                "api_key": "keyA",
+            },
+            {
+                "name": "slomerex-alt",
+                "base_url": "https://relay.example/v1",
+                "api_key": "keyB",
+            },
+        ]
+    }
+    monkeypatch.setattr(
+        "agent.credential_pool._load_config_safe", lambda: config
+    )
+
+    assert (
+        get_custom_provider_pool_key("https://relay.example/v1", provider_name="slomerex-alt")
+        == "custom:slomerex-alt"
+    )
+    assert (
+        get_custom_provider_pool_key("https://relay.example/v1", provider_name="custom:slomerex-grok")
+        == "custom:slomerex-grok"
+    )
+    # Slug form and raw name both match.
+    assert (
+        get_custom_provider_pool_key("https://relay.example/v1", provider_name="custom:slomerex-alt")
+        == "custom:slomerex-alt"
+    )
+    # Bare base_url keeps the legacy first-owner behavior.
+    assert (
+        get_custom_provider_pool_key("https://relay.example/v1")
+        == "custom:slomerex-grok"
+    )
+
+
+def test_pool_match_prefers_requested_name_over_shared_url(monkeypatch):
+    """credential_pool_matches_provider must use the requested identity so the
+    second provider's pool is accepted even though its URL is owned first by
+    the other entry."""
+    config = {
+        "custom_providers": [
+            {
+                "name": "slomerex-grok",
+                "base_url": "https://relay.example/v1",
+                "api_key": "keyA",
+            },
+            {
+                "name": "slomerex-alt",
+                "base_url": "https://relay.example/v1",
+                "api_key": "keyB",
+            },
+        ]
+    }
+    monkeypatch.setattr(
+        "agent.credential_pool._load_config_safe", lambda: config
+    )
+
+    assert credential_pool_matches_provider(
+        "custom:slomerex-alt",
+        "custom",
+        base_url="https://relay.example/v1",
+        provider_name="custom:slomerex-alt",
+    )
+    # Without the name the URL lookup resolves the first owner → mismatch.
+    assert not credential_pool_matches_provider(
+        "custom:slomerex-alt",
+        "custom",
+        base_url="https://relay.example/v1",
+    )
 
 
 def test_runtime_ignores_pool_loaded_for_different_provider(monkeypatch):

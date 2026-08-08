@@ -484,6 +484,10 @@ def get_custom_provider_pool_key(base_url: Optional[str], provider_name: Optiona
     # base_url always resolve to the first one's credentials.
     if provider_name:
         normalized_name = _normalize_custom_pool_name(provider_name)
+        # Callers may pass the full menu slug (``custom:<name>``) or the raw
+        # entry name — both must match the entry's own normalized name.
+        if normalized_name.startswith(f"{CUSTOM_POOL_PREFIX}"):
+            normalized_name = normalized_name[len(CUSTOM_POOL_PREFIX):]
         for norm_name, entry in _iter_custom_providers():
             if norm_name == normalized_name:
                 return f"{CUSTOM_POOL_PREFIX}{norm_name}"
@@ -539,12 +543,15 @@ def credential_pool_matches_provider(
     provider: Optional[str],
     *,
     base_url: Optional[str] = None,
+    provider_name: Optional[str] = None,
 ) -> bool:
     """Return whether a pool belongs to the requested runtime provider.
 
     Named custom endpoints intentionally use two identities: the live agent is
     ``custom`` while its pool is keyed ``custom:<name>``. Accept that pair only
-    when the runtime base URL resolves to the exact same custom pool key.
+    when the requested identity (``provider_name`` first — it disambiguates
+    two entries sharing one base_url with different api_keys, issue #81789 —
+    then the runtime base URL) resolves to the exact same custom pool key.
     Empty string identities fail closed. Legacy pool adapters without a
     ``provider`` attribute remain compatible; production pools are scoped.
     """
@@ -566,7 +573,9 @@ def credential_pool_matches_provider(
     if provider_norm != "custom" or not pool_provider.startswith(CUSTOM_POOL_PREFIX):
         return False
     try:
-        matched_pool = get_custom_provider_pool_key(base_url or "")
+        matched_pool = get_custom_provider_pool_key(
+            base_url or "", provider_name=provider_name
+        )
     except Exception:
         return False
     return str(matched_pool or "").strip().lower() == pool_provider

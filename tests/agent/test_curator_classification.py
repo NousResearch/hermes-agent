@@ -404,6 +404,172 @@ def test_reconcile_mixed_declarations_and_legacy_calls(curator_env):
 
 
 # ---------------------------------------------------------------------------
+# #76588 — same-run-created umbrella must seed `destinations`
+# ---------------------------------------------------------------------------
+
+
+def test_same_run_skill_targets_parses_mutating_calls(curator_env):
+    """create/write_file/patch/edit targets are destinations; delete/view are not."""
+    targets = curator_env._same_run_skill_targets([
+        {"name": "skill_manage", "arguments": json.dumps({
+            "action": "create", "name": "external-coding-agents",
+        })},
+        {"name": "skill_manage", "arguments": json.dumps({
+            "action": "write_file", "name": "external-coding-agents",
+            "file_path": "references/claude-code.md",
+        })},
+        {"name": "skill_manage", "arguments": json.dumps({
+            "action": "patch", "name": "external-coding-agents",
+            "old_string": "a", "new_string": "b",
+        })},
+        # Non-mutating / destructive calls are not destinations:
+        {"name": "skill_manage", "arguments": json.dumps({
+            "action": "delete", "name": "claude-code",
+            "absorbed_into": "external-coding-agents",
+        })},
+        {"name": "skill_manage", "arguments": json.dumps({
+            "action": "view", "name": "claude-code",
+        })},
+        {"name": "other_tool", "arguments": json.dumps({
+            "action": "create", "name": "not-a-skill",
+        })},
+    ])
+    assert targets == {"external-coding-agents"}
+
+
+def test_same_run_skill_targets_survives_truncated_args(curator_env):
+    """A 400-char-truncated create call still seeds its target name (#76588)."""
+    raw = '{"action": "create", "name": "kanban-workflow", "content": "' + "x" * 500
+    targets = curator_env._same_run_skill_targets([
+        {"name": "skill_manage", "arguments": raw},
+    ])
+    assert targets == {"kanban-workflow"}
+
+
+def test_write_run_report_same_run_umbrella_not_pruned(curator_env):
+    """#76588 regression: absorbed_into a same-run-created umbrella is
+    classified as consolidated, never pruned — even when the after snapshot
+    omits the umbrella and the snapshot diff yields ``added: []``.
+
+    Mirrors the real-world run from the issue: the model creates the
+    umbrella, writes its reference files, and deletes the sources with
+    ``absorbed_into=<umbrella>`` — but the umbrella is absent from the
+    post-run ``after_names``, so the old ``destinations`` gate starved and
+    every declaration fell through to ``fallback (model named missing
+    umbrella, no tool-call evidence)`` → prune.
+    """
+    curator = curator_env
+    start = datetime.now(timezone.utc)
+
+    before = [
+        {"name": "claude-code", "state": "active", "pinned": False},
+        {"name": "codex", "state": "active", "pinned": False},
+        {"name": "opencode", "state": "active", "pinned": False},
+        {"name": "keeper", "state": "active", "pinned": False},
+    ]
+    # The freshly-created umbrella does NOT survive into the after snapshot
+    # (the issue's `added: []` case).
+    after = [{"name": "keeper", "state": "active", "pinned": False}]
+
+    tool_calls = [
+        {"name": "skill_manage", "arguments": json.dumps({
+            "action": "create", "name": "external-coding-agents",
+            "content": "# External coding agents umbrella",
+        })},
+        {"name": "skill_manage", "arguments": json.dumps({
+            "action": "write_file", "name": "external-coding-agents",
+            "file_path": "references/claude-code.md",
+            "file_content": "# Claude Code\n...",
+        })},
+        {"name": "skill_manage", "arguments": json.dumps({
+            "action": "write_file", "name": "external-coding-agents",
+            "file_path": "references/codex.md",
+            "file_content": "# Codex\n...",
+        })},
+        {"name": "skill_manage", "arguments": json.dumps({
+            "action": "write_file", "name": "external-coding-agents",
+            "file_path": "references/opencode.md",
+            "file_content": "# OpenCode\n...",
+        })},
+        {"name": "skill_manage", "arguments": json.dumps({
+            "action": "delete", "name": "claude-code",
+            "absorbed_into": "external-coding-agents",
+        })},
+        {"name": "skill_manage", "arguments": json.dumps({
+            "action": "delete", "name": "codex",
+            "absorbed_into": "external-coding-agents",
+        })},
+        {"name": "skill_manage", "arguments": json.dumps({
+            "action": "delete", "name": "opencode",
+            "absorbed_into": "external-coding-agents",
+        })},
+    ]
+
+    run_dir = curator._write_run_report(
+        started_at=start,
+        elapsed_seconds=60.0,
+        auto_counts={"checked": 4, "marked_stale": 0, "archived": 0, "reactivated": 0},
+        auto_summary="no auto changes",
+        before_report=before,
+        before_names={r["name"] for r in before},
+        after_report=after,
+        llm_meta={
+            "final": "",
+            "summary": "consolidated 3 into external-coding-agents",
+            "model": "m",
+            "provider": "p",
+            "error": None,
+            "tool_calls": tool_calls,
+        },
+    )
+
+    payload = json.loads((run_dir / "run.json").read_text())
+
+    cons_by_name = {e["name"]: e for e in payload["consolidated"]}
+    assert set(cons_by_name) == {"claude-code", "codex", "opencode"}
+    for n in ("claude-code", "codex", "opencode"):
+        assert cons_by_name[n]["into"] == "external-coding-agents"
+        # The authoritative absorbed_into declaration path won, not a fallback
+        assert "absorbed_into" in cons_by_name[n]["source"]
+    # Nothing was misclassified as a prune
+    assert payload["pruned"] == []
+    assert payload["counts"]["consolidated_this_run"] == 3
+    assert payload["counts"]["pruned_this_run"] == 0
+    # The same-run-created umbrella is reported as added (#76588 bookkeeping)
+    assert "external-coding-agents" in payload["added"]
+
+    md = (run_dir / "REPORT.md").read_text()
+    assert "`claude-code` → merged into `external-coding-agents`" in md
+    assert "Pruned — archived for staleness" not in md
+
+
+def test_rename_summary_same_run_umbrella_consolidation(curator_env):
+    """#76588: the user-visible rename map shows `→ umbrella` (not pruned)
+    when the umbrella was created earlier in the same run and is absent
+    from the after snapshot."""
+    result = curator_env._build_rename_summary(
+        before_names={"claude-code", "keeper"},
+        after_report=[{"name": "keeper", "state": "active"}],
+        tool_calls=[
+            {"name": "skill_manage", "arguments": json.dumps({
+                "action": "create", "name": "external-coding-agents",
+            })},
+            {"name": "skill_manage", "arguments": json.dumps({
+                "action": "write_file", "name": "external-coding-agents",
+                "file_path": "references/claude-code.md",
+            })},
+            {"name": "skill_manage", "arguments": json.dumps({
+                "action": "delete", "name": "claude-code",
+                "absorbed_into": "external-coding-agents",
+            })},
+        ],
+        model_final="",
+    )
+    assert "claude-code → external-coding-agents" in result
+    assert "pruned (stale)" not in result
+
+
+# ---------------------------------------------------------------------------
 # _build_rename_summary — surfaces the "where did my skills go?" map to the
 # user-visible curator summary (gateway 💾 line, CLI Rich panel,
 # `hermes curator status`). The full data has always been in REPORT.md on

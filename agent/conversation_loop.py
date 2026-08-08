@@ -85,6 +85,7 @@ from agent.retry_utils import (
     jittered_backoff,
     zai_coding_overload_retry_ceiling,
 )
+from agent.stream_output_repetition_guard import FAILED_REPETITION_LOOP
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
@@ -3094,6 +3095,42 @@ def run_conversation(
 
                     _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
                     _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
+
+                    if getattr(response, "_repetition_loop_terminated", False):
+                        partial_response = agent._strip_think_blocks(
+                            _trunc_content or ""
+                        ).strip()
+                        if _trunc_msg is not None:
+                            guarded_message = agent._build_assistant_message(
+                                _trunc_msg, finish_reason
+                            )
+                            guarded_message.pop("tool_calls", None)
+                            guarded_message.pop("reasoning", None)
+                            guarded_message.pop("reasoning_content", None)
+                            guarded_message.pop("reasoning_details", None)
+                            if guarded_message.get("content"):
+                                messages.append(guarded_message)
+                        detail = getattr(
+                            response,
+                            "_repetition_loop_detail",
+                            FAILED_REPETITION_LOOP,
+                        )
+                        final_response = partial_response or (
+                            "[Output stopped: repetitive generation detected.]"
+                        )
+                        agent._cleanup_task_resources(effective_task_id)
+                        agent._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": final_response,
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "failed": True,
+                            "partial": True,
+                            "error": detail,
+                            "failure_reason": FAILED_REPETITION_LOOP,
+                            "guardrail_code": FAILED_REPETITION_LOOP,
+                        }
 
                     # ── Detect thinking-budget exhaustion ──────────────
                     # When the model spends ALL output tokens on reasoning

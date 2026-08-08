@@ -3817,6 +3817,41 @@ class TestRunConversation:
         assert second_call_messages[-1]["role"] == "user"
         assert "truncated by the output length limit" in second_call_messages[-1]["content"]
 
+    def test_repetition_terminated_stream_does_not_request_continuation(self, agent):
+        """A stream guard termination is final, not an output-cap retry."""
+        from agent.stream_output_repetition_guard import FAILED_REPETITION_LOOP
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+
+        self._setup_agent(agent)
+        response = _mock_response(
+            content=(
+                "Useful beginning.\n\n"
+                "[Output stopped: repetitive generation detected.]"
+            ),
+            finish_reason="length",
+        )
+        response.id = PARTIAL_STREAM_STUB_ID
+        response._repetition_loop_terminated = True
+        response._repetition_loop_detail = "repeated line 8 times"
+        agent.client.chat.completions.create.return_value = response
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert agent.client.chat.completions.create.call_count == 1
+        assert result["completed"] is False
+        assert result["failed"] is True
+        assert result["failure_reason"] == FAILED_REPETITION_LOOP
+        assert "Useful beginning." in result["final_response"]
+        assert not any(
+            "truncated by the output length limit" in str(message.get("content", ""))
+            for message in result["messages"]
+        )
+
     def test_length_continuation_preserves_large_provider_default_output_cap(self, agent):
         """Continuation retries must not shrink a higher provider default cap."""
         self._setup_agent(agent)

@@ -98,6 +98,134 @@ class TestStreamingAccumulator:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_repetitive_text_stream_is_stopped_and_tagged(
+        self, mock_close, mock_create,
+    ):
+        """A degenerate token stream must stop before exhausting its budget."""
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        from run_agent import AIAgent
+
+        repeated = (
+            "This non-trivial generated line is repeating without progress.\n"
+        )
+
+        def _repetitive_stream():
+            for _ in range(100):
+                yield _make_stream_chunk(content=repeated)
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _repetitive_stream()
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda _text: None,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response._repetition_loop_terminated is True
+        assert "repetitive generation detected" in (
+            response.choices[0].message.content or ""
+        )
+        assert response.choices[0].message.content.count(repeated.strip()) == 1
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_repetitive_reasoning_stream_without_visible_text_is_stopped(
+        self, mock_close, mock_create,
+    ):
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        from run_agent import AIAgent
+
+        repeated = (
+            "I need to inspect the same state again before I can proceed.\n"
+        )
+
+        def _repetitive_stream():
+            for _ in range(100):
+                yield _make_stream_chunk(reasoning_content=repeated)
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _repetitive_stream()
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            reasoning_callback=lambda _text: None,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response._repetition_loop_terminated is True
+        assert response.choices[0].message.content == (
+            "[Output stopped: repetitive generation detected.]"
+        )
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_long_diverse_stream_with_spaced_status_is_not_stopped(
+        self, mock_close, mock_create,
+    ):
+        from run_agent import AIAgent
+
+        chunks = []
+        for index in range(30):
+            chunks.append(
+                _make_stream_chunk(
+                    content=(
+                        f"Unique section {index} contains enough changing detail "
+                        "to demonstrate continuing progress.\n"
+                    )
+                )
+            )
+            chunks.append(
+                _make_stream_chunk(
+                    content=(
+                        "No changes detected for this source since the previous scan.\n"
+                    )
+                )
+            )
+        chunks.append(_make_stream_chunk(content="Done.", finish_reason="stop"))
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].finish_reason == "stop"
+        assert response.choices[0].message.content.endswith("Done.")
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_chat_stream_closes_original_provider_resource(
         self,
         mock_close,
@@ -731,6 +859,50 @@ class TestAnthropicStreamCallbacks:
         agent._interruptible_streaming_api_call({})
 
         assert touch_calls.count("receiving stream response") == len(events)
+        mock_stream.close.assert_called_once()
+
+    def test_anthropic_repetitive_text_stream_is_stopped(self):
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        from run_agent import AIAgent
+
+        repeated = (
+            "This native Anthropic stream is repeating without making progress.\n"
+        )
+        events = [
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="text_delta", text=repeated),
+            )
+            for _ in range(100)
+        ]
+
+        mock_stream = MagicMock()
+        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
+        mock_stream.__exit__ = MagicMock(return_value=False)
+        mock_stream.__iter__ = MagicMock(return_value=iter(events))
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda _text: None,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.return_value = mock_stream
+        agent._create_request_anthropic_client = (
+            lambda *args, **kwargs: agent._anthropic_client
+        )
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response._repetition_loop_terminated is True
+        assert response.choices[0].message.content.count(repeated.strip()) == 1
         mock_stream.close.assert_called_once()
 
     @patch("run_agent.AIAgent._rebuild_anthropic_client")
@@ -1634,4 +1806,3 @@ class TestBedrockReasoningStaleFloor:
         from agent.chat_completion_helpers import _bedrock_reasoning_stale_floor
 
         assert _bedrock_reasoning_stale_floor(model_id) == expected
-

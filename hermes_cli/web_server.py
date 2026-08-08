@@ -2365,11 +2365,12 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
         raise HTTPException(status_code=400, detail="Path is not a directory")
 
     try:
-        entries = [
-            _managed_file_entry(policy, child)
-            for child in target.iterdir()
-            if not _is_sensitive_path(child)
-        ]
+        with os.scandir(target) as scan:
+            entries = [
+                _managed_file_entry(policy, Path(entry.path))
+                for entry in scan
+                if not _is_sensitive_path(Path(entry.path))
+            ]
     except PermissionError:
         raise HTTPException(status_code=403, detail="Directory is not readable")
     except OSError as exc:
@@ -13334,7 +13335,9 @@ async def list_checkpoints():
     sessions = []
     total_bytes = 0
     if cp_dir.is_dir():
-        for child in sorted(cp_dir.iterdir()):
+        with os.scandir(cp_dir) as scan:
+            children = sorted((Path(e.path) for e in scan), key=lambda p: p.name)
+        for child in children:
             if not child.is_dir():
                 continue
             size = 0
@@ -13552,21 +13555,28 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
 
     profiles_root = profiles_mod._get_profiles_root()
     if profiles_root.is_dir():
-        for entry in sorted(profiles_root.iterdir()):
+        # Use os.scandir (context-managed) instead of Path.iterdir to avoid
+        # leaking directory fds when an exception interrupts iteration — the
+        # sidebar polls every few seconds so an fd leak exhausts RLIMIT_NOFILE
+        # within days (#81547).
+        with os.scandir(profiles_root) as scan:
+            entries = sorted(scan, key=lambda e: e.name)
+        for entry in entries:
+            entry_path = Path(entry.path)
             if not entry.is_dir() or not profiles_mod._PROFILE_ID_RE.match(entry.name):
                 continue
-            model, provider = _safe(lambda entry=entry: profiles_mod._read_config_model(entry), (None, None))
+            model, provider = _safe(lambda entry=entry_path: profiles_mod._read_config_model(entry), (None, None))
             profiles.append({
                 "name": entry.name,
-                "path": str(entry),
+                "path": str(entry_path),
                 "is_default": False,
                 "model": model,
                 "provider": provider,
-                "has_env": (entry / ".env").exists(),
-                "skill_count": _safe(lambda entry=entry: profiles_mod._count_skills(entry), 0),
-                "gateway_running": _safe(lambda entry=entry: profiles_mod._check_gateway_running(entry), False),
-                "description": _safe(lambda entry=entry: profiles_mod.read_profile_meta(entry).get("description", ""), ""),
-                "description_auto": _safe(lambda entry=entry: profiles_mod.read_profile_meta(entry).get("description_auto", False), False),
+                "has_env": (entry_path / ".env").exists(),
+                "skill_count": _safe(lambda entry=entry_path: profiles_mod._count_skills(entry), 0),
+                "gateway_running": _safe(lambda entry=entry_path: profiles_mod._check_gateway_running(entry), False),
+                "description": _safe(lambda entry=entry_path: profiles_mod.read_profile_meta(entry).get("description", ""), ""),
+                "description_auto": _safe(lambda entry=entry_path: profiles_mod.read_profile_meta(entry).get("description_auto", False), False),
                 "distribution_name": None,
                 "distribution_version": None,
                 "distribution_source": None,
@@ -16836,7 +16846,9 @@ def _discover_dashboard_plugins() -> list:
     for plugins_root, source in search_dirs:
         if not plugins_root.is_dir():
             continue
-        for child in sorted(plugins_root.iterdir()):
+        with os.scandir(plugins_root) as scan:
+            children = sorted((Path(e.path) for e in scan), key=lambda p: p.name)
+        for child in children:
             if not child.is_dir():
                 continue
             manifest_file = child / "dashboard" / "manifest.json"
@@ -17639,6 +17651,53 @@ def _maybe_open_browser(
     threading.Thread(target=_open, daemon=True).start()
 
 
+def _raise_fd_soft_limit() -> None:
+    """Raise the process soft fd limit to the hard limit (or a sane minimum).
+
+    macOS defaults to 256 open files for LaunchAgent-managed processes, which
+    is too tight for the dashboard — every ``SessionDB`` open costs 3 fds
+    (db + wal + shm) per request, and the sidebar polls every few seconds
+    across all profiles.  After a few days the soft limit exhausts and every
+    ``os.listdir`` / ``open`` raises ``OSError [Errno 24] Too many open
+    files`` (#81547).
+
+    This is a stopgap: the real fix is auditing connection lifecycles, but
+    raising the soft limit on startup is cheap, prevents the OSError from
+    masking the underlying bug, and matches what the issue reporter's
+    workaround already does via ``ulimit -n`` in the plist.
+
+    No-op on Windows (no ``resource`` module) and when the hard limit is
+    already unlimited or high enough.
+    """
+    try:
+        import resource
+    except ImportError:
+        return  # Windows — no RLIMIT_NOFILE
+
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (ValueError, OSError):
+        return
+
+    _MIN_SOFT = 4096
+    # Target: the hard limit, but at least _MIN_SOFT.  If the hard limit is
+    # unlimited (RLIM_INFINITY), use _MIN_SOFT — we don't want to claim
+    # infinity for the soft limit on every process.
+    target = hard if hard != resource.RLIM_INFINITY and hard >= _MIN_SOFT else _MIN_SOFT
+    if soft >= target:
+        return  # already adequate
+
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+        _log.info(
+            "Raised fd soft limit %d → %d (hard: %s) for dashboard longevity (#81547)",
+            soft, target,
+            "unlimited" if hard == resource.RLIM_INFINITY else str(hard),
+        )
+    except (ValueError, OSError) as exc:
+        _log.warning("Could not raise fd soft limit (%d → %d): %s", soft, target, exc)
+
+
 def start_server(
     host: str = "127.0.0.1",
     port: int = 9119,
@@ -17665,6 +17724,8 @@ def start_server(
     """
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
+
+    _raise_fd_soft_limit()
 
     import uvicorn
 

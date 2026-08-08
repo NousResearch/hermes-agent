@@ -1203,6 +1203,11 @@ def interruptible_api_call(agent, api_kwargs: dict):
             agent._touch_activity(
                 f"codex stream killed after {int(_elapsed)}s with no first byte"
             )
+            # This is a stale-derived timeout just like the generic stale-call
+            # kill below. Record its provenance before returning to the retry
+            # loop so bounded eager fallback and the stale give-up breaker
+            # continue to apply to Codex TTFB stalls.
+            _bump_stale_streak(agent)
             # Wait briefly for the worker to notice the closed connection.
             t.join(timeout=2.0)
             if result["error"] is None and result["response"] is None:
@@ -1249,6 +1254,9 @@ def interruptible_api_call(agent, api_kwargs: dict):
             agent._touch_activity(
                 f"codex stream killed after {int(_event_stale_elapsed)}s with no SSE events"
             )
+            # Preserve stale-timeout provenance for the retry/fallback gate
+            # and the cross-turn stale-stream circuit breaker.
+            _bump_stale_streak(agent)
             t.join(timeout=2.0)
             if result["error"] is None and result["response"] is None:
                 result["error"] = TimeoutError(

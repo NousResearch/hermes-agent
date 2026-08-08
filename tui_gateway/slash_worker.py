@@ -62,6 +62,11 @@ def _prepare_slash_worker_runtime() -> None:
 
     Each slash_worker child is its own process — the parent ``hermes serve``
     discovery thread does not populate this registry (issue #61891).
+
+    Also register declarative shell hooks here. Slash workers run full agent
+    turns (via HermesCLI) without going through CLI ``_prepare_agent_startup``
+    or gateway startup, so hooks configured under ``hooks:`` were silently
+    inactive on this surface (#64178 / #50776). Mirror gateway/run.py.
     """
     import logging
 
@@ -76,6 +81,29 @@ def _prepare_slash_worker_runtime() -> None:
         thread_name="slash-worker-mcp-discovery",
     )
     wait_for_mcp_discovery()
+
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+
+        _hooks_cfg = load_config()
+        register_from_config(_hooks_cfg, accept_hooks=False)
+        try:
+            from agent.outbound_webhooks import (
+                register_from_config as register_outbound_webhooks,
+            )
+
+            register_outbound_webhooks(_hooks_cfg)
+        except Exception:
+            logger.debug(
+                "outbound-webhook registration failed at slash-worker startup",
+                exc_info=True,
+            )
+    except Exception:
+        logger.debug(
+            "shell-hook registration failed at slash-worker startup",
+            exc_info=True,
+        )
 
 
 def _start_parent_death_watchdog(original_ppid) -> None:

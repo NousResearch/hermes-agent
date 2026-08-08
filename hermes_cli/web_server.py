@@ -225,6 +225,35 @@ async def _lifespan(app: "FastAPI"):
     # event loop during lifespan startup — see _get_event_state's docstring.
     app.state.chat_argv_lock = asyncio.Lock()
 
+    # Declarative shell hooks (post_api_request, subagent_stop, …) only fire
+    # when register_from_config has run in THIS process. CLI chat and
+    # ``gateway run`` already do; dashboard/serve agent turns did not, so
+    # observability pipelines only saw cron/CLI traffic (#64178 / #50776).
+    # Mirror gateway/run.py: accept_hooks=False and let env/config resolve
+    # consent (hooks_auto_accept / HERMES_ACCEPT_HOOKS). Never block boot.
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+
+        _hooks_cfg = load_config()
+        register_from_config(_hooks_cfg, accept_hooks=False)
+        try:
+            from agent.outbound_webhooks import (
+                register_from_config as register_outbound_webhooks,
+            )
+
+            register_outbound_webhooks(_hooks_cfg)
+        except Exception:
+            _log.debug(
+                "outbound-webhook registration failed at dashboard startup",
+                exc_info=True,
+            )
+    except Exception:
+        _log.debug(
+            "shell-hook registration failed at dashboard startup",
+            exc_info=True,
+        )
+
     # Import hermes_cli.gateway eagerly *before* the lifespan yield so the
     # GIL-heavy .pyc compilation and Defender scan cost is absorbed during
     # backend initialisation — before the server socket accepts probes.

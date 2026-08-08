@@ -2439,6 +2439,8 @@ def _terminal_task_cwd(session: dict | None) -> str:
                 raw = ""
         if raw and raw not in {".", "auto", "cwd"}:
             return raw
+        if backend == "ssh":
+            return "~"
 
     return _session_cwd(session)
 

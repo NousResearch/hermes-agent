@@ -996,6 +996,27 @@ class ShellFileOperations(FileOperations):
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
+    def _escape_native_tool_arg(self, path: str) -> str:
+        """Escape a path argument for a native Windows binary.
+
+        ``_escape_shell_arg`` rewrites drive paths to the Git Bash
+        ``/c/...`` form required by MSYS tools (grep, find, test, bash
+        builtins). Native binaries are different: Hermes runs bash with
+        ``MSYS_NO_PATHCONV=1``/``MSYS2_ARG_CONV_EXCL=*``, so argv reaches
+        them verbatim, and a native build (e.g. MSVC ripgrep from WinGet)
+        cannot resolve ``/c/...`` — every explicit-path search fails with
+        ``IO error ... The system cannot find the path specified``.
+        Feed native tools the ``C:/...`` form instead. Both native and
+        MSYS builds accept it; off Windows this is a no-op beyond quoting.
+        """
+        if not path:
+            return path
+        from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
+
+        if _IS_WINDOWS:
+            path = _msys_to_windows_path(path).replace("\\", "/")
+        return "'" + path.replace("'", "'\"'\"'") + "'"
+
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
         """Write ``content`` to ``path`` atomically via temp-file + rename.
 
@@ -2475,7 +2496,7 @@ class ShellFileOperations(FileOperations):
         # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
         cmd_sorted = (
             f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
-            f"{self._escape_shell_arg(path)} 2>/dev/null "
+            f"{self._escape_native_tool_arg(path)} 2>/dev/null "
             f"| head -n {fetch_limit}"
         )
         result = self._exec(cmd_sorted, timeout=60)
@@ -2486,7 +2507,7 @@ class ShellFileOperations(FileOperations):
             # --sortr may have failed on older rg; retry without it.
             cmd_plain = (
                 f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
-                f"{self._escape_shell_arg(path)} 2>/dev/null "
+                f"{self._escape_native_tool_arg(path)} 2>/dev/null "
                 f"| head -n {fetch_limit}"
             )
             result = self._exec(cmd_plain, timeout=60)
@@ -2570,8 +2591,8 @@ class ShellFileOperations(FileOperations):
         
         # Add pattern and path
         cmd_parts.append(self._escape_shell_arg(pattern))
-        cmd_parts.append(self._escape_shell_arg(path))
-        
+        cmd_parts.append(self._escape_native_tool_arg(path))
+
         # Fetch extra rows so we can report the true total before slicing.
         # For context mode, rg emits separator lines ("--") between groups,
         # so we grab generously and filter in Python.

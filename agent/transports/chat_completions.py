@@ -384,6 +384,9 @@ class ChatCompletionsTransport(ProviderTransport):
             is_nvidia_nim: bool
             is_kimi: bool
             is_tokenhub: bool
+            is_aliyun_maas: bool — Aliyun MaaS OpenAI-compatible endpoint
+                (token-plan.*.maas.aliyuncs.com / compatible-mode/v1):
+                top-level reasoning_effort, no extra_body.reasoning
             is_lmstudio: bool
             is_custom_provider: bool
             ollama_num_ctx: int | None
@@ -496,6 +499,26 @@ class ChatCompletionsTransport(ProviderTransport):
                     if _e in {"low", "medium", "high"}:
                         _tokenhub_effort = _e
                 api_kwargs["reasoning_effort"] = _tokenhub_effort
+
+        # Aliyun MaaS OpenAI-compatible endpoint (token-plan.*.maas.aliyuncs.com,
+        # /compatible-mode/v1): top-level reasoning_effort. The endpoint does
+        # NOT understand OpenRouter-style extra_body.reasoning, and Hermes'
+        # _supports_reasoning_extra_body() gate returns False for custom
+        # providers, so reasoning_config was silently dropped and qwen3.8-max
+        # defaulted to xhigh thinking (budget ~131k). Pass the effort through
+        # verbatim (the endpoint maps high/max→xhigh, minimal→low,
+        # none→disabled); only emit when the user actually configured one so
+        # the provider default is preserved otherwise.
+        if params.get("is_aliyun_maas", False):
+            _ali_cfg = reasoning_config if isinstance(reasoning_config, dict) else {}
+            if _ali_cfg.get("enabled") is False:
+                api_kwargs["reasoning_effort"] = "none"
+            else:
+                _ali_effort = str(_ali_cfg.get("effort") or "").strip().lower()
+                if _ali_effort == "ultra":
+                    _ali_effort = "max"
+                if _ali_effort:
+                    api_kwargs["reasoning_effort"] = _ali_effort
 
         # LM Studio: top-level reasoning_effort. Only emit when the model
         # declares reasoning support via /api/v1/models capabilities (gated

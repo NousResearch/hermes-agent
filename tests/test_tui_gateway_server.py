@@ -194,6 +194,57 @@ def test_dashboard_process_isolation_config_coerces_raw_values():
     }
 
 
+def test_compute_host_supervisor_preserves_zero_respawn_limit(monkeypatch):
+    captured = {}
+
+    class FakeHostSupervisor:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    from tui_gateway import host_supervisor
+
+    monkeypatch.setattr(host_supervisor, "HostSupervisor", FakeHostSupervisor)
+    monkeypatch.setattr(server, "_compute_host_supervisor", None)
+    isolation_cfg = server._load_dashboard_process_isolation_config({
+        "dashboard": {
+            "turn_isolation": True,
+            "compute_host_respawn_max": 0,
+        }
+    })
+
+    server._get_compute_host_supervisor(isolation_cfg)
+
+    assert isolation_cfg["compute_host_respawn_max"] == 0
+    assert captured["respawn_max"] == 0
+
+
+@pytest.mark.parametrize(
+    ("isolation_cfg", "expected_respawn_max"),
+    [
+        ({"compute_host_respawn_max": 7}, 7),
+        ({}, 3),
+        ({"compute_host_respawn_max": None}, 3),
+    ],
+)
+def test_compute_host_supervisor_respawn_limit_defaults_only_when_missing_or_none(
+    monkeypatch, isolation_cfg, expected_respawn_max,
+):
+    captured = {}
+
+    class FakeHostSupervisor:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    from tui_gateway import host_supervisor
+
+    monkeypatch.setattr(host_supervisor, "HostSupervisor", FakeHostSupervisor)
+    monkeypatch.setattr(server, "_compute_host_supervisor", None)
+
+    server._get_compute_host_supervisor(isolation_cfg)
+
+    assert captured["respawn_max"] == expected_respawn_max
+
+
 def test_default_config_seeds_dashboard_process_isolation_keys():
     from hermes_cli.config import DEFAULT_CONFIG
 

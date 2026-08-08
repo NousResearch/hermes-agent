@@ -1653,10 +1653,13 @@ def _get_compute_host_supervisor(cfg: dict | None = None):
         if _compute_host_supervisor is None:
             from tui_gateway.host_supervisor import HostSupervisor
 
+            respawn_max = isolation_cfg.get("compute_host_respawn_max")
+            if respawn_max is None:
+                respawn_max = 3
             _compute_host_supervisor = HostSupervisor(
                 rpc_sink=write_json,
                 heartbeat_secs=int(isolation_cfg.get("compute_host_heartbeat_secs") or 15),
-                respawn_max=int(isolation_cfg.get("compute_host_respawn_max") or 3),
+                respawn_max=int(respawn_max),
             )
         return _compute_host_supervisor
 

@@ -9,7 +9,7 @@ import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
 import { closeHud } from '@/store/hud'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
-import { $busy, $messages } from '@/store/session'
+import { $busy, $messages, $messagesEmpty } from '@/store/session'
 
 import { WiredPane } from '../contrib/wiring'
 import { titlebarButtonClass } from '../shell/titlebar'
@@ -41,8 +41,8 @@ const HUD_DIM_MS = Math.round(HUD_FADE_MS * 1.5)
 const HUD_COLLAPSE_MS = Math.round(HUD_FADE_MS * 0.66)
 
 /** Breathing room the sheet keeps above the first row, so the fade has
- *  somewhere to land. Published to CSS, and used here to work out how much of
- *  the window the HUD actually occupies. */
+ *  somewhere to land. Folded into the measured height rather than added in CSS,
+ *  so an empty transcript measures a true zero instead of a 12px strip. */
 const HUD_SHEET_OVERHANG_PX = 12
 
 /** Composer on top, transcript always hanging below it — Spotlight's shape,
@@ -156,6 +156,10 @@ export function HudShell() {
   const { t } = useI18n()
   const [recent, holdBand] = useRecentActivity()
   const held = useHudHeld()
+  // Nothing to back yet. Vibrancy is the window's whole content view, so on a
+  // fresh thread it frosts the empty space above the bar into a blank slab —
+  // the transcript's backing showing up before the transcript does.
+  const empty = useStore($messagesEmpty)
 
   // Main holds the session id on this window's behalf, so leaving HUD mode can
   // hand the app window back whatever conversation ended up here.
@@ -264,9 +268,10 @@ export function HudShell() {
       const span =
         !rows?.length || !box
           ? 0
-          : root.dataset.hudEdge === 'top'
-            ? rows[rows.length - 1].getBoundingClientRect().bottom - box.top
-            : box.bottom - rows[0].getBoundingClientRect().top
+          : HUD_SHEET_OVERHANG_PX +
+            (root.dataset.hudEdge === 'top'
+              ? rows[rows.length - 1].getBoundingClientRect().bottom - box.top
+              : box.bottom - rows[0].getBoundingClientRect().top)
 
       root.style.setProperty('--hud-band-height', `${Math.max(0, Math.round(span))}px`)
 
@@ -297,7 +302,7 @@ export function HudShell() {
     }
   }, [])
 
-  useHudGlass(rootRef, recent || held)
+  useHudGlass(rootRef, (recent || held) && !empty)
   useHudClickThrough(rootRef)
 
   // Force the HOST layers transparent. index.html's pre-paint script writes an
@@ -332,8 +337,7 @@ export function HudShell() {
           '--hud-fade': `${HUD_FADE_MS}ms`,
           '--hud-collapse': `${HUD_COLLAPSE_MS}ms`,
           '--hud-dim': `${HUD_DIM_MS}ms`,
-          '--hud-reveal': `${HUD_REVEAL_MS}ms`,
-          '--hud-sheet-overhang': `${HUD_SHEET_OVERHANG_PX}px`
+          '--hud-reveal': `${HUD_REVEAL_MS}ms`
         } as CSSProperties
       }
     >

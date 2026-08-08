@@ -15,6 +15,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_decompose as decomp
+from hermes_cli import kanban_specify as spec
 
 
 @pytest.fixture
@@ -73,6 +74,16 @@ def _patch_list_profiles(names: list[str]):
         patch("hermes_cli.profiles.profile_exists", side_effect=lambda x: x in names),
         patch("hermes_cli.profiles.get_active_profile_name", return_value=names[0] if names else "default"),
     ]
+
+
+def test_task_generators_share_explicit_execution_contract():
+    sections = ("**Outcome**", "**Verification**", "**Constraints**", "**Stop/ask**")
+
+    for prompt in (decomp._SYSTEM_PROMPT, spec._SYSTEM_PROMPT):
+        assert all(section in prompt for section in sections)
+        assert [prompt.index(section) for section in sections] == sorted(
+            prompt.index(section) for section in sections
+        )
 
 
 def test_decompose_with_fanout_creates_children(kanban_home):

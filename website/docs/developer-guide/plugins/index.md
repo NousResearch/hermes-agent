@@ -446,6 +446,33 @@ Providers declare their capabilities explicitly, and unsupported operations
 fail explicitly rather than being silently emulated.
 Vendor-specific providers ship as standalone plugins, not in the core tree.
 
+Tool results must be returned as the original provider tool call's output,
+bound to its `call_id`; do not settle a call as merely "queued" and inject the
+real result later as a side-channel conversation item. Hosts should await work
+for a bounded period and use `continue_response(batch_id)` for genuinely long
+work. A provider that declares `CONTINUATION` must emit the resulting
+`ResponseStarted` and `ResponseCompleted` with the same
+`continuation_of_batch_id`; the base session validates this linkage.
+Continuation responses may arrive out of request order, and ordinary responses
+may interleave with them. The base session matches by `batch_id`, retains a
+bounded response-identity history so duplicate ordinary responses cannot acquire
+continuation linkage, bounds outstanding continuation state, and rejects a
+clean event-stream EOF while a continuation request or response remains
+unresolved. Terminal session events resolve outstanding continuation state
+instead of being masked by an EOF error.
+
+The current draft provider API is version 2. Session implementations provide
+their raw normalized stream through `_events()`; the public `events()` method is
+owned by the base class so it can enforce capability and continuation
+invariants. Draft version 1 providers that implemented `events()` directly must
+rename that implementation to `_events()` and advertise API version 2.
+
+Providers may redeliver events after reconnects. Hosts must deduplicate tool
+work and result delivery by `batch_id` rather than dispatching it again.
+`Interruption` is a barge-in signal, not a `SessionFailure`: hosts may redeliver
+interrupted output under a separate bounded retry budget, but must not treat an
+interruption as terminal or spend the transport-failure budget on it.
+
 This is an integration seam only. Hermes does not currently include a built-in
 OpenAI or Gemini realtime transport, and registration alone does not provide a
 ready user-facing voice feature.

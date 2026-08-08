@@ -6,6 +6,7 @@ import asyncio
 
 import pytest
 
+import agent.realtime_voice_provider as realtime_voice_provider
 from agent.realtime_voice_provider import (
     InputTranscript,
     Interruption,
@@ -368,6 +369,7 @@ class _Session(RealtimeVoiceSession):
         self.closed_count = 0
         self.submitted = []
         self.continuations = []
+        self.event_values = []
 
     async def send_audio(self, audio: bytes, *, mime_type: str | None = None) -> None:
         return None
@@ -375,10 +377,10 @@ class _Session(RealtimeVoiceSession):
     async def _submit_tool_results(self, batch_id, results) -> None:
         self.submitted.append((batch_id, results))
 
-    def events(self):
+    def _events(self):
         async def stream():
-            if False:
-                yield RealtimeVoiceEvent()
+            for event in self.event_values:
+                yield event
 
         return stream()
 
@@ -409,6 +411,19 @@ class _ControlledCloseSession(_Session):
         self.completed_close_count += 1
 
 
+class _FailingContinuationSession(_Session):
+    def __init__(self) -> None:
+        super().__init__({RealtimeCapability.CONTINUATION})
+        self.continue_entered = asyncio.Event()
+        self.release_continue = asyncio.Event()
+
+    async def _continue_response(self, batch_id: str) -> None:
+        self.continuations.append(batch_id)
+        self.continue_entered.set()
+        await self.release_continue.wait()
+        raise RuntimeError("continuation write failed")
+
+
 class _NoOptionalHooksSession(RealtimeVoiceSession):
     async def send_audio(self, audio: bytes, *, mime_type: str | None = None) -> None:
         return None
@@ -416,7 +431,7 @@ class _NoOptionalHooksSession(RealtimeVoiceSession):
     async def _submit_tool_results(self, batch_id, results) -> None:
         return None
 
-    def events(self):
+    def _events(self):
         async def stream():
             if False:
                 yield RealtimeVoiceEvent()
@@ -447,6 +462,328 @@ async def test_tool_results_require_tool_calling_and_continuation_is_separate() 
 
     await session.continue_response("batch")
     assert session.continuations == ["batch"]
+
+
+@pytest.mark.asyncio
+async def test_requested_continuation_requires_linked_response_start() -> None:
+    session = _Session({RealtimeCapability.CONTINUATION})
+    session.event_values = [
+        ResponseStarted(response_id="next-response", turn_id="turn")
+    ]
+
+    await session.continue_response("batch")
+
+    events = session.events()
+    assert await anext(events) == session.event_values[0]
+    with pytest.raises(ValueError, match="unresolved continuation"):
+        await anext(events)
+
+
+@pytest.mark.asyncio
+async def test_terminal_event_resolves_outstanding_continuation_state() -> None:
+    failure = SessionFailure(code="transport", message="connection lost")
+    session = _Session({RealtimeCapability.CONTINUATION})
+    session.event_values = [failure]
+    await session.continue_response("batch")
+
+    assert [event async for event in session.events()] == [failure]
+    assert not session._pending_continuation_batch_ids
+    assert not session._continuation_responses
+
+
+@pytest.mark.asyncio
+async def test_requested_continuation_links_response_start_and_completion() -> None:
+    session = _Session({RealtimeCapability.CONTINUATION})
+    started = ResponseStarted(
+        response_id="next-response",
+        turn_id="turn",
+        continuation_of_batch_id="batch",
+    )
+    completed = ResponseCompleted(
+        response_id="next-response",
+        turn_id="turn",
+        continuation_of_batch_id="batch",
+    )
+    session.event_values = [started, completed]
+
+    await session.continue_response("batch")
+
+    assert [event async for event in session.events()] == [started, completed]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_continuations_match_by_batch_not_response_order() -> None:
+    session = _Session({RealtimeCapability.CONTINUATION})
+    ordinary = ResponseStarted(response_id="ordinary-response", turn_id="turn")
+    started_b = ResponseStarted(
+        response_id="response-b",
+        turn_id="turn",
+        continuation_of_batch_id="batch-b",
+    )
+    completed_b = ResponseCompleted(
+        response_id="response-b",
+        turn_id="turn",
+        continuation_of_batch_id="batch-b",
+    )
+    started_a = ResponseStarted(
+        response_id="response-a",
+        turn_id="turn",
+        continuation_of_batch_id="batch-a",
+    )
+    completed_a = ResponseCompleted(
+        response_id="response-a",
+        turn_id="turn",
+        continuation_of_batch_id="batch-a",
+    )
+    session.event_values = [ordinary, started_b, completed_b, started_a, completed_a]
+
+    await session.continue_response("batch-a")
+    await session.continue_response("batch-b")
+
+    assert [event async for event in session.events()] == session.event_values
+
+
+@pytest.mark.asyncio
+async def test_ordinary_response_redelivery_cannot_acquire_continuation_link() -> None:
+    ordinary = ResponseStarted(response_id="same", turn_id="turn")
+    upgraded_duplicate = ResponseStarted(
+        response_id="same",
+        turn_id="turn",
+        continuation_of_batch_id="batch",
+    )
+    session = _Session({RealtimeCapability.CONTINUATION})
+    session.event_values = [ordinary, upgraded_duplicate]
+    await session.continue_response("batch")
+
+    events = session.events()
+    assert await anext(events) == ordinary
+    with pytest.raises(ValueError, match="linkage changed"):
+        await anext(events)
+
+
+@pytest.mark.asyncio
+async def test_ordinary_response_upgrade_does_not_consume_pending_batch() -> None:
+    ordinary = ResponseStarted(response_id="same", turn_id="turn")
+    upgraded_duplicate = ResponseStarted(
+        response_id="same",
+        turn_id="turn",
+        continuation_of_batch_id="batch",
+    )
+    session = _Session({RealtimeCapability.CONTINUATION})
+    await session.continue_response("batch")
+
+    session._validate_continuation_event(ordinary)
+    with pytest.raises(ValueError, match="linkage changed"):
+        session._validate_continuation_event(upgraded_duplicate)
+
+    assert list(session._pending_continuation_batch_ids) == ["batch"]
+
+
+@pytest.mark.asyncio
+async def test_ordinary_response_completion_cannot_acquire_continuation_link() -> None:
+    ordinary = ResponseStarted(response_id="same", turn_id="turn")
+    upgraded_completion = ResponseCompleted(
+        response_id="same",
+        turn_id="turn",
+        continuation_of_batch_id="batch",
+    )
+    session = _Session({RealtimeCapability.CONTINUATION})
+    session.event_values = [ordinary, upgraded_completion]
+    await session.continue_response("batch")
+
+    events = session.events()
+    assert await anext(events) == ordinary
+    with pytest.raises(ValueError, match="linkage changed"):
+        await anext(events)
+
+
+@pytest.mark.asyncio
+async def test_completion_first_ordinary_response_cannot_later_acquire_link() -> None:
+    ordinary_completion = ResponseCompleted(response_id="same", turn_id="turn")
+    upgraded_start = ResponseStarted(
+        response_id="same",
+        turn_id="turn",
+        continuation_of_batch_id="batch",
+    )
+    session = _Session({RealtimeCapability.CONTINUATION})
+    session.event_values = [ordinary_completion, upgraded_start]
+    await session.continue_response("batch")
+
+    events = session.events()
+    assert await anext(events) == ordinary_completion
+    with pytest.raises(ValueError, match="linkage changed"):
+        await anext(events)
+
+
+@pytest.mark.asyncio
+async def test_ordinary_response_identity_history_is_bounded(monkeypatch) -> None:
+    monkeypatch.setattr(
+        realtime_voice_provider, "MAX_TRACKED_ORDINARY_RESPONSES", 2
+    )
+    session = _Session({RealtimeCapability.CONTINUATION})
+    session.event_values = [
+        ResponseStarted(response_id=f"response-{index}", turn_id="turn")
+        for index in range(3)
+    ]
+
+    assert [event async for event in session.events()] == session.event_values
+    assert list(session._ordinary_response_ids) == ["response-1", "response-2"]
+
+
+@pytest.mark.asyncio
+async def test_event_stream_eof_rejects_unresolved_continuations() -> None:
+    pending = _Session({RealtimeCapability.CONTINUATION})
+    await pending.continue_response("pending-batch")
+    with pytest.raises(ValueError, match="unresolved continuation"):
+        assert [event async for event in pending.events()] == []
+
+    active = _Session({RealtimeCapability.CONTINUATION})
+    active.event_values = [
+        ResponseStarted(
+            response_id="active-response",
+            turn_id="turn",
+            continuation_of_batch_id="active-batch",
+        )
+    ]
+    await active.continue_response("active-batch")
+    with pytest.raises(ValueError, match="unresolved continuation"):
+        assert [event async for event in active.events()] == active.event_values
+
+
+@pytest.mark.asyncio
+async def test_outstanding_continuations_are_bounded(monkeypatch) -> None:
+    monkeypatch.setattr(
+        realtime_voice_provider, "MAX_OUTSTANDING_CONTINUATIONS", 2
+    )
+    session = _Session({RealtimeCapability.CONTINUATION})
+
+    await session.continue_response("batch-a")
+    await session.continue_response("batch-b")
+
+    with pytest.raises(ValueError, match="outstanding continuation limit"):
+        await session.continue_response("batch-c")
+
+
+@pytest.mark.asyncio
+async def test_identical_continuation_redelivery_reaches_host_for_batch_dedupe() -> None:
+    session = _Session({RealtimeCapability.CONTINUATION})
+    started = ResponseStarted(
+        response_id="next-response",
+        turn_id="turn",
+        continuation_of_batch_id="batch",
+    )
+    completed = ResponseCompleted(
+        response_id="next-response",
+        turn_id="turn",
+        continuation_of_batch_id="batch",
+    )
+    session.event_values = [started, started, completed, completed]
+
+    await session.continue_response("batch")
+
+    assert [event async for event in session.events()] == session.event_values
+
+
+@pytest.mark.asyncio
+async def test_continuation_redelivery_cannot_drop_batch_linkage() -> None:
+    started = ResponseStarted(
+        response_id="next-response",
+        turn_id="turn",
+        continuation_of_batch_id="batch",
+    )
+    completed = ResponseCompleted(
+        response_id="next-response",
+        turn_id="turn",
+        continuation_of_batch_id="batch",
+    )
+
+    start_session = _Session({RealtimeCapability.CONTINUATION})
+    start_session.event_values = [
+        started,
+        ResponseStarted(response_id="next-response", turn_id="turn"),
+    ]
+    await start_session.continue_response("batch")
+    start_events = start_session.events()
+    assert await anext(start_events) == started
+    with pytest.raises(ValueError, match="continuation response"):
+        await anext(start_events)
+
+    completion_session = _Session({RealtimeCapability.CONTINUATION})
+    completion_session.event_values = [
+        started,
+        completed,
+        ResponseCompleted(response_id="next-response", turn_id="turn"),
+    ]
+    await completion_session.continue_response("batch")
+    completion_events = completion_session.events()
+    assert await anext(completion_events) == started
+    assert await anext(completion_events) == completed
+    with pytest.raises(ValueError, match="continuation completion"):
+        await anext(completion_events)
+
+
+@pytest.mark.asyncio
+async def test_continuation_completion_rejects_mismatched_batch_linkage() -> None:
+    session = _Session({RealtimeCapability.CONTINUATION})
+    session.event_values = [
+        ResponseStarted(
+            response_id="next-response",
+            turn_id="turn",
+            continuation_of_batch_id="batch",
+        ),
+        ResponseCompleted(
+            response_id="next-response",
+            turn_id="turn",
+            continuation_of_batch_id="other-batch",
+        ),
+    ]
+
+    await session.continue_response("batch")
+    events = session.events()
+    assert await anext(events) == session.event_values[0]
+    with pytest.raises(ValueError, match="completion.*batch"):
+        await anext(events)
+
+
+@pytest.mark.asyncio
+async def test_unadvertised_continuation_rejects_linked_response() -> None:
+    session = _Session()
+    session.event_values = [
+        ResponseStarted(
+            response_id="response",
+            turn_id="turn",
+            continuation_of_batch_id="batch",
+        )
+    ]
+
+    with pytest.raises(ValueError, match="continuation capability"):
+        await anext(session.events())
+
+
+@pytest.mark.asyncio
+async def test_linked_start_does_not_mask_concurrent_continuation_write_failure() -> None:
+    session = _FailingContinuationSession()
+    session.event_values = [
+        ResponseStarted(
+            response_id="next-response",
+            turn_id="turn",
+            continuation_of_batch_id="batch",
+        )
+    ]
+
+    continuing = asyncio.create_task(session.continue_response("batch"))
+    await session.continue_entered.wait()
+    assert await anext(session.events()) == session.event_values[0]
+    session.release_continue.set()
+
+    with pytest.raises(RuntimeError, match="continuation write failed"):
+        await continuing
+    assert "batch" not in session._pending_continuation_batch_ids
+    assert "batch" not in session._continuation_responses.values()
+
+
+def test_provider_api_version_reflects_events_implementation_migration() -> None:
+    assert realtime_voice_provider.REALTIME_VOICE_PROVIDER_API_VERSION == 2
 
 
 @pytest.mark.asyncio

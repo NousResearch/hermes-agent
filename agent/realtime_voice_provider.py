@@ -39,14 +39,18 @@ from __future__ import annotations
 
 import abc
 import asyncio
+from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, AsyncIterator, Iterable
 
-REALTIME_VOICE_PROVIDER_API_VERSION = 1
+REALTIME_VOICE_PROVIDER_API_VERSION = 2
 MAX_IDENTIFIER_LENGTH = 512
+MAX_OUTSTANDING_CONTINUATIONS = 128
+MAX_TRACKED_CONTINUATION_RESPONSES = 1024
+MAX_TRACKED_ORDINARY_RESPONSES = 1024
 
 
 class RealtimeCapability(StrEnum):
@@ -446,6 +450,10 @@ class RealtimeVoiceSession(abc.ABC):
         self._closed = False
         self._close_lock = asyncio.Lock()
         self._close_task: asyncio.Task[None] | None = None
+        self._pending_continuation_batch_ids: OrderedDict[str, None] = OrderedDict()
+        self._continuation_responses: dict[str, str] = {}
+        self._completed_continuation_responses: OrderedDict[str, str] = OrderedDict()
+        self._ordinary_response_ids: OrderedDict[str, None] = OrderedDict()
 
     @property
     def capabilities(self) -> frozenset[RealtimeCapability]:
@@ -484,9 +492,108 @@ class RealtimeVoiceSession(abc.ABC):
     ) -> None:
         """Provider-specific ordered result batch submission."""
 
-    @abc.abstractmethod
     def events(self) -> AsyncIterator[RealtimeVoiceEvent]:
-        """Return the normalized typed event stream."""
+        """Return the normalized stream with capability invariants enforced."""
+        return self._validated_events()
+
+    async def _validated_events(self) -> AsyncIterator[RealtimeVoiceEvent]:
+        try:
+            async for event in self._events():
+                self._validate_continuation_event(event)
+                yield event
+        except BaseException:
+            self._pending_continuation_batch_ids.clear()
+            self._continuation_responses.clear()
+            raise
+        if self._pending_continuation_batch_ids or self._continuation_responses:
+            raise ValueError(
+                "event stream ended with unresolved continuation state "
+                f"({len(self._pending_continuation_batch_ids)} pending, "
+                f"{len(self._continuation_responses)} active)"
+            )
+
+    def _validate_continuation_event(self, event: RealtimeVoiceEvent) -> None:
+        if isinstance(event, (SessionFailure, SessionClosed)):
+            self._pending_continuation_batch_ids.clear()
+            self._continuation_responses.clear()
+            return
+        if not isinstance(event, (ResponseStarted, ResponseCompleted)):
+            return
+        linked_batch = event.continuation_of_batch_id
+        supports_continuation = RealtimeCapability.CONTINUATION in self._capabilities
+        if not supports_continuation:
+            if linked_batch is not None:
+                raise ValueError(
+                    "continuation response requires the continuation capability"
+                )
+            return
+
+        if isinstance(event, ResponseStarted):
+            known_batch = self._continuation_responses.get(event.response_id)
+            if known_batch is None:
+                known_batch = self._completed_continuation_responses.get(
+                    event.response_id
+                )
+            if known_batch is not None:
+                if linked_batch != known_batch:
+                    raise ValueError("continuation response linkage changed")
+                return
+            if event.response_id in self._ordinary_response_ids:
+                if linked_batch is not None:
+                    raise ValueError("ordinary response linkage changed")
+                self._remember_ordinary_response(event.response_id)
+                return
+            if linked_batch is None:
+                self._remember_ordinary_response(event.response_id)
+                return
+            if linked_batch not in self._pending_continuation_batch_ids:
+                raise ValueError("unsolicited continuation response linkage")
+            self._pending_continuation_batch_ids.pop(linked_batch)
+            self._continuation_responses[event.response_id] = linked_batch
+            return
+
+        if event.response_id in self._ordinary_response_ids:
+            if linked_batch is not None:
+                raise ValueError("ordinary response completion linkage changed")
+            self._remember_ordinary_response(event.response_id)
+            return
+
+        expected_batch = self._continuation_responses.get(event.response_id)
+        if expected_batch is None:
+            completed_batch = self._completed_continuation_responses.get(
+                event.response_id
+            )
+            if completed_batch is not None:
+                if linked_batch != completed_batch:
+                    raise ValueError("continuation completion linkage changed")
+            elif linked_batch is not None:
+                raise ValueError("unsolicited continuation completion linkage")
+            else:
+                self._remember_ordinary_response(event.response_id)
+            return
+        if linked_batch != expected_batch:
+            raise ValueError(
+                "continuation completion must link requested batch "
+                f"{expected_batch}"
+            )
+        del self._continuation_responses[event.response_id]
+        self._completed_continuation_responses[event.response_id] = expected_batch
+        self._completed_continuation_responses.move_to_end(event.response_id)
+        if (
+            len(self._completed_continuation_responses)
+            > MAX_TRACKED_CONTINUATION_RESPONSES
+        ):
+            self._completed_continuation_responses.popitem(last=False)
+
+    def _remember_ordinary_response(self, response_id: str) -> None:
+        self._ordinary_response_ids[response_id] = None
+        self._ordinary_response_ids.move_to_end(response_id)
+        if len(self._ordinary_response_ids) > MAX_TRACKED_ORDINARY_RESPONSES:
+            self._ordinary_response_ids.popitem(last=False)
+
+    @abc.abstractmethod
+    def _events(self) -> AsyncIterator[RealtimeVoiceEvent]:
+        """Return provider events translated to normalized typed events."""
 
     async def commit_audio(self) -> None:
         self._require(RealtimeCapability.INPUT_COMMIT_EVENTS)
@@ -542,7 +649,29 @@ class RealtimeVoiceSession(abc.ABC):
     async def continue_response(self, batch_id: str) -> None:
         _validate_identifier(batch_id, "batch_id")
         self._require(RealtimeCapability.CONTINUATION)
-        await self._continue_response(batch_id)
+        if batch_id in self._pending_continuation_batch_ids or batch_id in (
+            self._continuation_responses.values()
+        ) or batch_id in self._completed_continuation_responses.values():
+            raise ValueError(f"continuation batch is already pending: {batch_id}")
+        if (
+            len(self._pending_continuation_batch_ids)
+            + len(self._continuation_responses)
+            >= MAX_OUTSTANDING_CONTINUATIONS
+        ):
+            raise ValueError("outstanding continuation limit reached")
+        self._pending_continuation_batch_ids[batch_id] = None
+        try:
+            await self._continue_response(batch_id)
+        except BaseException:
+            self._pending_continuation_batch_ids.pop(batch_id, None)
+            failed_response_ids = [
+                response_id
+                for response_id, active_batch_id in self._continuation_responses.items()
+                if active_batch_id == batch_id
+            ]
+            for response_id in failed_response_ids:
+                del self._continuation_responses[response_id]
+            raise
 
     async def _continue_response(self, batch_id: str) -> None:
         raise UnsupportedRealtimeCapability(RealtimeCapability.CONTINUATION)

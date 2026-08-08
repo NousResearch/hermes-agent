@@ -30,7 +30,7 @@ class _FakeSession(RealtimeVoiceSession):
     async def _submit_tool_results(self, batch_id, results):
         self.result_batches.append((batch_id, tuple(results)))
 
-    def events(self):
+    def _events(self):
         async def _stream():
             yield SessionReady(session_id="session")
 

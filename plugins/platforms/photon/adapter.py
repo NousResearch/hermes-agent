@@ -2403,6 +2403,15 @@ class PhotonAdapter(BasePlatformAdapter):
             return result
 
         error_str = result.error or ""
+        # Mirror the base class: an ambiguous-delivery failure may already have
+        # reached the platform, so neither the retry loop nor the plain-text
+        # fallback below may re-send it (#64238).
+        if result.ambiguous_delivery:
+            logger.warning(
+                "[photon] Send failed with ambiguous delivery - not re-sending: %s",
+                error_str,
+            )
+            return result
         is_network = result.retryable or self._is_retryable_error(error_str)
         if not is_network and self._is_timeout_error(error_str):
             return result
@@ -2424,6 +2433,15 @@ class PhotonAdapter(BasePlatformAdapter):
                 if result.success:
                     return result
                 error_str = result.error or ""
+                if result.ambiguous_delivery:
+                    # Return instead of break: the break path falls through to
+                    # the plain-text retry below, which would re-send.
+                    logger.warning(
+                        "[photon] Retry %d failed with ambiguous delivery - "
+                        "not re-sending: %s",
+                        attempt, error_str,
+                    )
+                    return result
                 if self._is_permanent_sidecar_failure(result):
                     # A retry surfaced a permanent class — don't fall through
                     # to the plain-text resend either.

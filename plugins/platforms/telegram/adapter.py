@@ -1511,6 +1511,54 @@ class TelegramAdapter(BasePlatformAdapter):
         return False
 
     @staticmethod
+    def _looks_like_connect_error(error: Exception) -> bool:
+        """Return True when a NetworkError wraps a pre-write connection failure.
+
+        Mirrors :meth:`_looks_like_connect_timeout` for the non-timeout
+        ``NetworkError`` case. A ``NetworkError`` raised *after* the request
+        body was written (connection reset, ``RemoteProtocolError``,
+        ``ReadError``) may mean the request reached Telegram and must not be
+        re-sent -- exactly like a plain ``TimedOut``. A connection
+        *establishment* failure -- ``httpx.ConnectError``, connection refused,
+        or DNS resolution error -- happens before any bytes leave the process,
+        so re-sending is safe and prevents a silent drop. We match the wrapped
+        ``httpx.ConnectError`` class as well as the message string so the check
+        survives wrapper/wording changes, and deliberately do NOT match
+        connection-reset / broken-pipe / protocol errors, which are ambiguous
+        post-write failures.
+        """
+        seen: set[int] = set()
+        stack: list[BaseException] = [error]
+        while stack:
+            cur = stack.pop()
+            ident = id(cur)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            name = cur.__class__.__name__.lower()
+            text = str(cur).lower()
+            if "connecterror" in name:
+                return True
+            if (
+                "connect error" in text
+                or "connection refused" in text
+                or "[errno 111]" in text
+                or "getaddrinfo" in text
+                or "name or service not known" in text
+                or "temporary failure in name resolution" in text
+                or "nodename nor servname" in text
+                or "no address associated with hostname" in text
+            ):
+                return True
+            cause = getattr(cur, "__cause__", None)
+            context = getattr(cur, "__context__", None)
+            if cause is not None:
+                stack.append(cause)
+            if context is not None:
+                stack.append(context)
+        return False
+
+    @staticmethod
     def _looks_like_pool_timeout(error: Exception) -> bool:
         """Return True when a Telegram TimedOut wraps an httpx pool timeout.
 
@@ -1921,6 +1969,23 @@ class TelegramAdapter(BasePlatformAdapter):
                 _TimedOut = None
             is_timeout = (_TimedOut and isinstance(exc, _TimedOut)) or "timed out" in err_str
             is_connect_timeout = self._looks_like_connect_timeout(exc)
+            # Same post-write ambiguity as the legacy send() path (#64238): a
+            # non-timeout NetworkError raised after the request body was written
+            # may already have reached Telegram, so the base retry layer must
+            # not re-send it. Only a demonstrably pre-write failure
+            # (connect-phase or an httpx pool timeout, which PTB reports as
+            # explicitly "not sent to Telegram") is safe to re-send.
+            is_pool_timeout = self._looks_like_pool_timeout(exc)
+            never_left_process = (
+                is_connect_timeout
+                or is_pool_timeout
+                or self._looks_like_connect_error(exc)
+            )
+            is_post_write_network_error = (
+                self._looks_like_network_error(exc)
+                and not is_timeout
+                and not never_left_process
+            )
             # Extract server-requested retry_after for flood control so the
             # base retry layer honors Telegram's backoff instead of its own
             # short exponential schedule.
@@ -1938,8 +2003,16 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(
                 success=False,
                 error=safe_error,
-                retryable=(is_connect_timeout or not is_timeout),
+                retryable=(
+                    False
+                    if is_post_write_network_error
+                    else (is_connect_timeout or is_pool_timeout or not is_timeout)
+                ),
                 retry_after=_retry_after,
+                ambiguous_delivery=(
+                    not never_left_process
+                    and (is_timeout or is_post_write_network_error)
+                ),
             )
 
         message_id = None
@@ -4751,20 +4824,22 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                             # Other BadRequest errors are permanent — don't retry
                             raise
-                        # TimedOut is also a subclass of NetworkError. A
-                        # generic timeout may have reached Telegram, so don't
-                        # retry; a wrapped ConnectTimeout means no connection
-                        # was established, so retrying is safe. A pool timeout
-                        # (httpx pool exhausted) is explicitly "not sent to
-                        # Telegram" -- retrying through the loop is safe and
-                        # prevents silent drops when the pool frees up.
+                        # TimedOut is a subclass of NetworkError. A generic
+                        # NetworkError (connection reset / RemoteProtocolError /
+                        # ReadError) or a generic TimedOut raised *after* the
+                        # request body was written may have already reached
+                        # Telegram, so re-sending would duplicate the message
+                        # (#64238). Only re-send when the failure demonstrably
+                        # happened before the request left the process: a
+                        # connect-phase failure (ConnectTimeout / ConnectError /
+                        # DNS / connection refused) or an httpx pool timeout,
+                        # which PTB reports as explicitly "not sent to Telegram".
                         is_pool_timeout = self._looks_like_pool_timeout(send_err)
-                        if (
-                            _TimedOut
-                            and isinstance(send_err, _TimedOut)
-                            and not self._looks_like_connect_timeout(send_err)
-                            and not is_pool_timeout
-                        ):
+                        is_connect_phase = (
+                            self._looks_like_connect_timeout(send_err)
+                            or self._looks_like_connect_error(send_err)
+                        )
+                        if not is_pool_timeout and not is_connect_phase:
                             raise
                         if is_pool_timeout:
                             await self._drain_general_connections_after_pool_timeout()
@@ -4842,11 +4917,43 @@ class TelegramAdapter(BasePlatformAdapter):
             is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
             is_connect_timeout = self._looks_like_connect_timeout(e)
             is_pool_timeout = self._looks_like_pool_timeout(e)
+            # A non-timeout NetworkError raised *after* the request body was
+            # written (connection reset / RemoteProtocolError / ReadError) is
+            # exactly as ambiguous as a generic TimedOut: the message may have
+            # already reached Telegram. Marking it retryable here would let the
+            # gateway's _send_with_retry() re-send it and duplicate the message
+            # (#64238), so treat it as non-retryable unless it demonstrably
+            # never left the process (connect-phase or pool timeout).
+            never_left_process = (
+                is_connect_timeout
+                or is_pool_timeout
+                or self._looks_like_connect_error(e)
+            )
+            is_post_write_network_error = (
+                self._looks_like_network_error(e)
+                and not is_timeout
+                and not never_left_process
+            )
+            retryable = (
+                False
+                if is_post_write_network_error
+                else (is_connect_timeout or is_pool_timeout or not is_timeout)
+            )
             return SendResult(
                 success=False,
                 error=safe_error,
-                retryable=(is_connect_timeout or is_pool_timeout or not is_timeout),
+                retryable=retryable,
                 error_kind=error_kind,
+                # `retryable=False` alone does NOT stop the gateway retry:
+                # BasePlatformAdapter._send_with_retry() ORs it with
+                # _is_retryable_error(), whose patterns include "network" and
+                # "connectionreset". Set the explicit ambiguous-delivery signal
+                # the base layer honors unconditionally, for both the post-write
+                # NetworkError and the generic read timeout.
+                ambiguous_delivery=(
+                    not never_left_process
+                    and (is_timeout or is_post_write_network_error)
+                ),
             )
 
     async def send_or_update_status(

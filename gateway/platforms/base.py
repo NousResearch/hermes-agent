@@ -2254,6 +2254,29 @@ class SendResult:
     # ``None`` (unset / not classified).  Producers should set this via
     # :func:`classify_send_error`.
     error_kind: Optional[str] = None
+    # True when the send failed *after* the request body may already have
+    # reached the platform, so the message might have been delivered even
+    # though the call raised (post-write connection reset / RemoteProtocolError
+    # / ReadError, or a generic read timeout).  Re-sending such a payload
+    # duplicates the message in the user's chat (#64238).
+    #
+    # This is deliberately a separate flag rather than a ``retryable=False``
+    # or an ``error_kind`` member:
+    #
+    # * ``retryable=False`` is NOT sufficient — :meth:`_send_with_retry` ORs it
+    #   with :meth:`_is_retryable_error`, whose ``_RETRYABLE_ERROR_PATTERNS``
+    #   include ``"network"`` and ``"connectionreset"``, so an adapter cannot
+    #   veto a re-send through that field alone.
+    # * ``error_kind`` answers *why* the send failed and is derived from the
+    #   error text by :func:`classify_send_error`; whether the bytes were
+    #   already on the wire is an orthogonal delivery-safety property that no
+    #   substring classifier can determine (only the adapter knows which
+    #   exception type it caught and at which phase).
+    #
+    # Contract for consumers: a result with ``ambiguous_delivery=True`` must
+    # never be re-sent — not by the retry loop and not by the plain-text
+    # fallback.  Return it to the caller as-is.
+    ambiguous_delivery: bool = False
 
 
 # Machine-readable send-failure categories.  Kept platform-neutral so every
@@ -5179,6 +5202,20 @@ class BasePlatformAdapter(ABC):
             return result
 
         error_str = result.error or ""
+
+        # Ambiguous delivery: the adapter knows the payload may already have
+        # reached the platform, so ANY re-send (retry loop or plain-text
+        # fallback) risks duplicating the message.  This must be checked before
+        # ``is_network`` — ``retryable=False`` alone cannot veto a re-send,
+        # because ``_is_retryable_error`` matches "network"/"connectionreset"
+        # in the error text and ORs the adapter's answer away (#64238).
+        if result.ambiguous_delivery:
+            logger.warning(
+                "[%s] Send failed with ambiguous delivery — not re-sending: %s",
+                self.name, error_str,
+            )
+            return result
+
         is_network = result.retryable or self._is_retryable_error(error_str)
 
         # Timeout errors are not safe to retry (message may have been
@@ -5214,6 +5251,15 @@ class BasePlatformAdapter(ABC):
                 error_str = result.error or ""
                 if result.retry_after is not None:
                     server_retry_after = result.retry_after
+                if result.ambiguous_delivery:
+                    # A retry itself came back ambiguous: return immediately
+                    # rather than breaking, because the break path falls
+                    # through to the plain-text fallback, which re-sends.
+                    logger.warning(
+                        "[%s] Retry %d failed with ambiguous delivery — not re-sending: %s",
+                        self.name, attempt, error_str,
+                    )
+                    return result
                 if not (result.retryable or self._is_retryable_error(error_str)):
                     break  # error switched to non-transient — fall through to plain-text fallback
             else:

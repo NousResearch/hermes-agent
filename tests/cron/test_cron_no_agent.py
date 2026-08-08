@@ -131,3 +131,94 @@ def test_run_job_script_nul_path_fails_cleanly(hermes_env):
     ok, output = _run_job_script("~user\x00bad.sh")
     assert ok is False
     assert "Blocked" in output
+
+
+# ---------------------------------------------------------------------------
+# _summarize_cron_failure_for_delivery: no_agent jobs are never provider failures
+# ---------------------------------------------------------------------------
+
+
+NO_AGENT_JOB = {
+    "name": "ng-mirror-sync",
+    "no_agent": True,
+    "script": "sync_ng_mirror.sh",
+    "model": None,
+    "provider": None,
+}
+
+AGENT_JOB = {"name": "daily-recap", "no_agent": False, "model": "x", "provider": "y"}
+
+
+@pytest.mark.parametrize(
+    "error_text",
+    [
+        # Google Sheets read timeout surfaced through a script's stdout.
+        (
+            "Script exited with code 1\nstdout:\n"
+            "Sheet read failed (4x): HTTPSConnectionPool("
+            "host='sheets.googleapis.com', port=443): Read timed out. "
+            "(read timeout=30)"
+        ),
+        # Sheets quota rejection.
+        (
+            "Script exited with code 1\nstdout:\n"
+            "APIError: [429]: Quota exceeded for quota metric 'Read requests'"
+        ),
+        # Remote host unreachable over ssh.
+        "ssh: connect to host 10.0.0.1 port 22: Operation timed out",
+        # Upstream API rejecting the script's own credentials.
+        "urllib.error.HTTPError: HTTP Error 401: Unauthorized",
+    ],
+)
+def test_no_agent_failure_never_reported_as_provider_error(hermes_env, error_text):
+    """A no_agent job makes no inference call, so its failures must never be
+    described as provider/fallback-chain problems.
+
+    The scheduler classified failures by substring alone, so any script whose
+    stdout contained "timed out", "429" or "401" was delivered to the operator
+    as "provider timeout. Fallback chain was exhausted or unavailable" — for a
+    job with model=None and provider=None that never had a fallback chain. That
+    text sends the operator to debug the wrong subsystem and hides the script's
+    real error.
+    """
+    from cron.scheduler import _summarize_cron_failure_for_delivery
+
+    summary = _summarize_cron_failure_for_delivery(NO_AGENT_JOB, error_text)
+
+    assert "provider" not in summary.lower()
+    assert "fallback chain" not in summary.lower()
+    assert "ng-mirror-sync" in summary
+
+
+def test_no_agent_failure_surfaces_the_real_script_error(hermes_env):
+    """The delivered message must carry the script's own error, not a
+    provider-shaped substitute, so the operator can act on it."""
+    from cron.scheduler import _summarize_cron_failure_for_delivery
+
+    summary = _summarize_cron_failure_for_delivery(
+        NO_AGENT_JOB,
+        "Script exited with code 1\nstdout:\n"
+        "Sheet read failed (4x): HTTPSConnectionPool("
+        "host='sheets.googleapis.com', port=443): Read timed out. "
+        "(read timeout=30)",
+    )
+
+    assert "sheets.googleapis.com" in summary
+
+
+@pytest.mark.parametrize(
+    "error_text,expected",
+    [
+        ("Provider call failed: Read timed out", "provider timeout"),
+        ("HTTP 429 rate limit reached", "provider rate limit"),
+        ("Authentication failed for provider", "provider authentication error"),
+    ],
+)
+def test_agent_mode_still_classifies_provider_failures(hermes_env, error_text, expected):
+    """Agent-mode jobs DO call a provider, so the compact provider summaries
+    must be preserved for them."""
+    from cron.scheduler import _summarize_cron_failure_for_delivery
+
+    summary = _summarize_cron_failure_for_delivery(AGENT_JOB, error_text)
+
+    assert expected in summary.lower()

@@ -109,8 +109,18 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     text = (error or "unknown error").strip()
     lower = text.lower()
 
+    # A no_agent job never makes an inference call: the script IS the job, and
+    # `model`/`provider` are unset. Its stdout routinely contains "timed out",
+    # "429" or "401" from whatever the script itself talked to (Sheets, SSH, an
+    # HTTP API). Classifying those as provider failures tells the operator to
+    # debug a fallback chain that was never used, and hides the real error. Skip
+    # provider classification entirely and report the script's own output.
+    provider_classified = not job.get("no_agent")
+
     # Provider/API failures are the common noisy path. Keep these short.
-    if "429" in text or "rate limit" in lower or "usage limit" in lower:
+    if provider_classified and (
+        "429" in text or "rate limit" in lower or "usage limit" in lower
+    ):
         reason = "rate limit"
         if "weekly usage limit" in lower:
             reason = "weekly usage limit"
@@ -122,7 +132,9 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
             "Full details saved in cron output."
         )
 
-    if "readtimeout" in lower or "timed out" in lower or "timeout" in lower:
+    if provider_classified and (
+        "readtimeout" in lower or "timed out" in lower or "timeout" in lower
+    ):
         return (
             f"⚠️ Cron '{job_name}' failed: provider timeout. "
             "Fallback chain was exhausted or unavailable. "
@@ -132,7 +144,9 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     # Match authentication/authorization wording at a word boundary and the
     # 401/403 status codes as whole tokens, so "oauth", "4015" and similar do
     # not trip a misleading auth message.
-    if re.search(r"authenticat|authoriz", lower) or re.search(r"\b(401|403)\b", text):
+    if provider_classified and (
+        re.search(r"authenticat|authoriz", lower) or re.search(r"\b(401|403)\b", text)
+    ):
         return (
             f"⚠️ Cron '{job_name}' failed: provider authentication error. "
             "Full details saved in cron output."

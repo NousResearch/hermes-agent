@@ -103,6 +103,23 @@ _UTC_NOW = lambda: datetime.now(timezone.utc)
 # Official docs snapshot entries. Models whose published pricing and cache
 # semantics are stable enough to encode exactly.
 _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
+    # ── Anthropic Claude Fable 5 ────────────────────────────────────────
+    # Fable 5 is priced at 2x Opus 4.8 on the first-party Claude API.
+    # The docs also list a 1h cache-write tier, but PricingEntry currently
+    # models the standard 5m cache-write bucket used by usage normalization.
+    # Source: https://platform.claude.com/docs/en/about-claude/pricing
+    (
+        "anthropic",
+        "claude-fable-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("10.00"),
+        output_cost_per_million=Decimal("50.00"),
+        cache_read_cost_per_million=Decimal("1.00"),
+        cache_write_cost_per_million=Decimal("12.50"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-06",
+    ),
     # ── OpenAI GPT-5.6 series (Sol/Terra/Luna) ───────────────────────────
     # Announced in limited preview 2026-06-26; GA 2026-07-09 at the same
     # rates (Sol $5/$30, Terra $2.50/$15, Luna $1/$6 per 1M in/out). Cache

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import display_hermes_home
+from agent.prompt_cache_boundary import register_stable_prefix
 from agent.skill_preprocessing import (
     expand_inline_shell as _expand_inline_shell,
     load_skills_config as _load_skills_config,
@@ -360,15 +361,26 @@ def _build_skill_message(
             f"(e.g. `node {skill_dir}/scripts/foo.js`)."
         )
 
+    stable_prefix = None
     if user_instruction:
         parts.append("")
-        parts.append(f"The user has provided the following instruction alongside the skill invocation: {user_instruction}")
+        # Everything before the caller-supplied instruction is a stable
+        # scaffold; declare the exact boundary so the Anthropic cache planner
+        # can put a breakpoint on it instead of caching the whole message as
+        # one atomic block (#81867). The static instruction prose stays on
+        # the stable side; the volatile instruction (webhook payload, ticket
+        # IDs, timestamps) and any runtime note ride in the tail.
+        stable_prefix = "\n".join(parts) + "\n" + _SINGLE_SKILL_INSTRUCTION
+        parts.append(f"{_SINGLE_SKILL_INSTRUCTION}{user_instruction}")
 
     if runtime_note:
         parts.append("")
         parts.append(f"[Runtime note: {runtime_note}]")
 
-    return "\n".join(parts)
+    message = "\n".join(parts)
+    if stable_prefix is not None and len(message) > len(stable_prefix):
+        register_stable_prefix(stable_prefix)
+    return message
 
 
 def scan_skill_commands() -> Dict[str, Dict[str, Any]]:

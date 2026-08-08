@@ -14,6 +14,8 @@ import copy
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
+from agent.prompt_cache_boundary import find_stable_prefix, is_registered_stable_prefix
+
 
 @dataclass(frozen=True)
 class PromptCachePlan:
@@ -58,6 +60,23 @@ def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = 
         return
 
     if isinstance(content, str):
+        if role == "user":
+            stable_prefix = find_stable_prefix(content)
+            if stable_prefix is not None:
+                # Builder-declared boundary (#81867): the scaffold carries the
+                # breakpoint, the volatile invocation tail rides unmarked so a
+                # changed ticket ID or timestamp no longer invalidates the
+                # whole skill body. Request-local only — the canonical session
+                # message stays a plain string.
+                msg["content"] = [
+                    {
+                        "type": "text",
+                        "text": stable_prefix,
+                        "cache_control": cache_marker,
+                    },
+                    {"type": "text", "text": content[len(stable_prefix):]},
+                ]
+                return
         msg["content"] = [
             {"type": "text", "text": content, "cache_control": cache_marker}
         ]
@@ -211,6 +230,14 @@ def strip_anthropic_cache_control(
         ) and (
             len(content) == 1
             or (msg.get("role") == "system" and len(content) == 2)
+            or (
+                # Two-part skill-invocation split: the first part is byte-for-
+                # byte a builder-registered scaffold, so the ""-join provably
+                # reconstructs the original string.
+                msg.get("role") == "user"
+                and len(content) == 2
+                and is_registered_stable_prefix(content[0]["text"])
+            )
         )
         if decoration_shape:
             msg["content"] = "".join(part["text"] for part in content)

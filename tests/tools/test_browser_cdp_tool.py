@@ -332,6 +332,244 @@ def test_frame_id_route_allowed_when_page_is_not_private(monkeypatch):
     assert len(supervisor_calls) == 1
 
 
+def test_target_id_route_blocked_when_current_page_is_private(monkeypatch):
+    """target_id supervisor routing must not bypass the private-page guard —
+    same boundary as the stateless and frame_id paths."""
+    supervisor_calls = []
+    stateless_calls = []
+
+    monkeypatch.setattr(
+        browser_cdp_tool,
+        "_resolve_cdp_endpoint",
+        lambda: "ws://127.0.0.1:9222/devtools/browser/mock",
+    )
+
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(bt, "_current_page_private_url", lambda task_id: PRIVATE_URL)
+
+    def fake_target_route(**kwargs):
+        supervisor_calls.append(kwargs)
+        return json.dumps({"success": True, "result": {"value": "private data"}})
+
+    monkeypatch.setattr(
+        browser_cdp_tool, "_browser_cdp_target_via_supervisor", fake_target_route
+    )
+
+    async def fake_call(*args, **kwargs):
+        stateless_calls.append((args, kwargs))
+        return {"result": {"value": "private data"}}
+
+    monkeypatch.setattr(browser_cdp_tool, "_cdp_call", fake_call)
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            params={"expression": "document.body.innerText"},
+            target_id="TARGET-1",
+            task_id="task-1",
+        )
+    )
+
+    assert "error" in result
+    assert PRIVATE_URL in result["error"]
+    assert "private or internal address" in result["error"]
+    assert supervisor_calls == []
+    assert stateless_calls == []
+
+
+def test_target_id_route_falls_back_to_stateless_without_supervisor(cdp_server):
+    """No live supervisor for the task → target_id path uses the legacy
+    stateless attach flow unchanged (and reports no session_id)."""
+    cdp_server.on(
+        "Target.attachToTarget", lambda params, sid: {"sessionId": "sess-1"}
+    )
+    cdp_server.on(
+        "Runtime.evaluate", lambda params, sid: {"result": {"value": 7}}
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            params={"expression": "3 + 4", "returnByValue": True},
+            target_id="TARGET-STATELESS",
+            task_id="no-supervisor-task",
+        )
+    )
+
+    assert result.get("success") is True
+    assert result.get("target_id") == "TARGET-STATELESS"
+    assert "session_id" not in result
+
+
+def test_target_id_route_via_supervisor_redacts_secret_result(monkeypatch):
+    """The supervisor-backed target payload redacts its result like the
+    stateless payload does — supervisor routing must not become the
+    unredacted sibling path."""
+    import asyncio as _asyncio
+    import threading as _threading
+
+    from tools.browser_supervisor import CDPSupervisor
+
+    sup = object.__new__(CDPSupervisor)
+    sup._state_lock = _threading.Lock()
+    sup._active = True
+    sup._page_target_id = "TARGET-PAGE"
+    sup._page_session_id = "sess-page"
+    sup._frames = {}
+    sup._child_sessions = {}
+
+    loop = _asyncio.new_event_loop()
+
+    def _runner():
+        _asyncio.set_event_loop(loop)
+        loop.run_forever()
+
+    thread = _threading.Thread(target=_runner, daemon=True)
+    thread.start()
+
+    fake_key = "sk-" + "CDPSECRETRESULT1234567890"
+
+    async def _fake_cdp(method, params=None, *, session_id=None, timeout=10.0):
+        return {"result": {"result": {"type": "string", "value": fake_key}}}
+
+    sup._cdp = _fake_cdp  # type: ignore[method-assign]
+    sup._loop = loop
+
+    class _Registry:
+        def get(self, task_id):
+            return sup
+
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY", _Registry()
+    )
+
+    try:
+        result = json.loads(
+            browser_cdp_tool._browser_cdp_target_via_supervisor(
+                task_id="task-1",
+                target_id="TARGET-PAGE",
+                method="Runtime.evaluate",
+                params={"expression": "leak()"},
+                timeout=5.0,
+            )
+        )
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+
+    assert result["success"] is True
+    assert result["session_id"] == "sess-page"
+    serialized = json.dumps(result)
+    assert "CDPSECRETRESULT" not in serialized
+    assert result["result"]["result"]["value"].startswith("sk-")
+
+
+def test_discovery_without_target_id_routes_via_supervisor(monkeypatch):
+    """Browser-level calls (no target_id — e.g. Target.getTargets
+    discovery) must ride the supervisor's WebSocket too. A stateless
+    discovery call on a Browserless-style backend enumerates a *different*
+    private browser than the one target_id-routed calls execute in, so the
+    reported Target.getTargets → target_id workflow only becomes coherent
+    when both shapes share the supervisor connection."""
+    import asyncio as _asyncio
+    import threading as _threading
+
+    from tools.browser_supervisor import CDPSupervisor
+
+    sup = object.__new__(CDPSupervisor)
+    sup._state_lock = _threading.Lock()
+    sup._active = True
+    sup._page_target_id = "TARGET-PAGE"
+    sup._page_session_id = "sess-page"
+    sup._frames = {}
+    sup._child_sessions = {}
+
+    loop = _asyncio.new_event_loop()
+
+    def _runner():
+        _asyncio.set_event_loop(loop)
+        loop.run_forever()
+
+    thread = _threading.Thread(target=_runner, daemon=True)
+    thread.start()
+
+    seen = []
+
+    async def _fake_cdp(method, params=None, *, session_id=None, timeout=10.0):
+        seen.append({"method": method, "session_id": session_id})
+        return {
+            "result": {
+                "targetInfos": [{"targetId": "TARGET-PAGE", "type": "page"}]
+            }
+        }
+
+    sup._cdp = _fake_cdp  # type: ignore[method-assign]
+    sup._loop = loop
+
+    class _Registry:
+        def get(self, task_id):
+            return sup
+
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY", _Registry()
+    )
+    monkeypatch.setattr(
+        browser_cdp_tool,
+        "_resolve_cdp_endpoint",
+        lambda: "ws://127.0.0.1:9222/devtools/browser/mock",
+    )
+
+    async def _no_stateless(*args, **kwargs):
+        pytest.fail("stateless _cdp_call must not run while a supervisor is live")
+
+    monkeypatch.setattr(browser_cdp_tool, "_cdp_call", _no_stateless)
+
+    try:
+        result = json.loads(
+            browser_cdp_tool.browser_cdp(
+                method="Target.getTargets",
+                task_id="task-1",
+            )
+        )
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+
+    assert result["success"] is True
+    assert result["connection"] == "supervisor"
+    # Browser-level dispatch: no sessionId on the wire, no session in the payload.
+    assert seen == [{"method": "Target.getTargets", "session_id": None}]
+    assert "session_id" not in result
+    assert "target_id" not in result
+    infos = result["result"]["targetInfos"]
+    assert infos[0]["targetId"] == "TARGET-PAGE"
+
+
+def test_discovery_without_supervisor_falls_back_to_stateless(cdp_server):
+    """No live supervisor → browser-level calls keep the legacy stateless
+    connection (the plain-Chrome path, where every connection sees the
+    shared browser)."""
+    cdp_server.on(
+        "Target.getTargets",
+        lambda params, sid: {
+            "targetInfos": [{"targetId": "TARGET-SHARED", "type": "page"}]
+        },
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Target.getTargets",
+            task_id="no-supervisor-task",
+        )
+    )
+
+    assert result.get("success") is True
+    assert result.get("connection") != "supervisor"
+    assert result["result"]["targetInfos"][0]["targetId"] == "TARGET-SHARED"
+
+
 def test_page_navigate_to_private_url_blocked_before_cdp(monkeypatch):
     calls = []
 

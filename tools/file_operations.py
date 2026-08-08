@@ -1177,9 +1177,13 @@ class ShellFileOperations(FileOperations):
             file_size = 0
         
         # Check if file is too large
+        size_warning = None
         if file_size > MAX_FILE_SIZE:
-            # Still try to read, but warn
-            pass
+            size_warning = (
+                f"File is {file_size:,} bytes (limit is {MAX_FILE_SIZE:,}). "
+                "Consider using offset and limit to read a smaller portion, "
+                "or search_files to locate specific content."
+            )
         
         # Images are never inlined — redirect to the vision tool
         if self._is_image(path):
@@ -1239,7 +1243,8 @@ class ShellFileOperations(FileOperations):
             total_lines=total_lines,
             file_size=file_size,
             truncated=truncated,
-            hint=hint
+            hint=hint,
+            warning=size_warning,
         )
     
     def _suggest_similar_files(self, path: str) -> ReadResult:

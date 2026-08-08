@@ -363,9 +363,10 @@ class TestSteerInjection:
         assert "stop after next step" in content
 
     def test_multimodal_content_list_preserved(self):
-        """Anthropic-style list content should be preserved, with the steer
-        appended as a text block."""
+        """Anthropic-style list content should be preserved in anthropic_messages
+        wire format, with the steer appended as a text block."""
         agent = _bare_agent()
+        agent.api_mode = "anthropic_messages"
         agent.steer("extra note")
         original_blocks = [{"type": "text", "text": "existing output"}]
         messages = [
@@ -378,6 +379,47 @@ class TestSteerInjection:
         assert new_content[0] == {"type": "text", "text": "existing output"}
         assert new_content[1]["type"] == "text"
         assert "extra note" in new_content[1]["text"]
+
+    def test_chat_completions_coerces_non_string_content_to_plain_string(self):
+        """Chat-completions wire format requires tool content to be a plain
+        string — a non-string (e.g. multimodal block list) content must be
+        coerced to a string BEFORE appending the steer marker, otherwise the
+        provider rejects the message with HTTP 400."""
+        agent = _bare_agent()  # api_mode defaults to "chat_completions"
+        agent.steer("extra note")
+        messages = [
+            {
+                "role": "tool",
+                "content": [
+                    {"type": "text", "text": "existing output"},
+                    {"type": "image", "source": {"type": "base64", "data": "abc"}},
+                ],
+                "tool_call_id": "1",
+            }
+        ]
+        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
+        new_content = messages[-1]["content"]
+        assert isinstance(new_content, str)
+        assert "existing output" in new_content
+        assert "base64" in new_content
+        assert STEER_MARKER_OPEN in new_content
+        assert "extra note" in new_content
+        # The steer marker must come AFTER the serialized content, never before.
+        assert new_content.index(STEER_MARKER_OPEN) > new_content.index("existing output")
+
+    def test_string_content_shape_unchanged_in_anthropic_mode(self):
+        """Plain-string tool content must stay a plain string with the marker
+        appended in anthropic_messages wire format too."""
+        agent = _bare_agent()
+        agent.api_mode = "anthropic_messages"
+        agent.steer("extra note")
+        messages = [{"role": "tool", "content": "existing output", "tool_call_id": "1"}]
+        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
+        new_content = messages[-1]["content"]
+        assert isinstance(new_content, str)
+        assert "existing output" in new_content
+        assert STEER_MARKER_OPEN in new_content
+        assert "extra note" in new_content
 
 
 

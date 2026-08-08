@@ -66,6 +66,7 @@ def bundles_env(tmp_path, monkeypatch):
     import agent.skill_bundles as mod
     mod._bundles_cache = {}
     mod._bundles_cache_mtime = None
+    mod._bundles_cache_home = None
     return bundles_dir, skills_dir
 
 
@@ -105,6 +106,43 @@ class TestScanBundles:
 
 
 class TestGetSkillBundles:
+    def test_cache_is_scoped_by_profile_home_even_when_mtimes_match(self, tmp_path):
+        import agent.skill_bundles as mod
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        home_a = tmp_path / "profile-a"
+        home_b = tmp_path / "profile-b"
+        bundle_a = _make_bundle_yaml(home_a / "skill-bundles", "a-only", ["s1"])
+        bundle_b = _make_bundle_yaml(home_b / "skill-bundles", "b-only", ["s2"])
+
+        # Reproduce the old mtime-only cache collision deterministically.
+        fixed_ns = 1_700_000_000_000_000_000
+        for path in (bundle_a, bundle_b, bundle_a.parent, bundle_b.parent):
+            os.utime(path, ns=(fixed_ns, fixed_ns))
+
+        mod._bundles_cache = {}
+        mod._bundles_cache_mtime = None
+        mod._bundles_cache_home = None
+
+        token = set_hermes_home_override(home_a)
+        try:
+            bundles_a = dict(get_skill_bundles())
+        finally:
+            reset_hermes_home_override(token)
+
+        token = set_hermes_home_override(home_b)
+        try:
+            bundles_b = dict(get_skill_bundles())
+        finally:
+            reset_hermes_home_override(token)
+
+        assert "/a-only" in bundles_a
+        assert "/b-only" not in bundles_a
+        assert "/b-only" in bundles_b
+        assert "/a-only" not in bundles_b
     def test_returns_cache(self, bundles_env):
         bundles_dir, _ = bundles_env
         _make_bundle_yaml(bundles_dir, "a", ["s1"])

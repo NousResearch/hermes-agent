@@ -8,10 +8,11 @@ import json
 import logging
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from hermes_constants import display_hermes_home
+from hermes_constants import display_hermes_home, get_hermes_home
 from agent.skill_preprocessing import (
     expand_inline_shell as _expand_inline_shell,
     load_skills_config as _load_skills_config,
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _skill_commands_platform: Optional[str] = None
+_skill_commands_home: Optional[Path] = None
+_skill_commands_lock = threading.RLock()
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
@@ -372,25 +375,40 @@ def _build_skill_message(
 
 
 def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
-    """Scan ~/.hermes/skills/ and return a mapping of /command -> skill info.
+    """Scan the active profile's skills and return a /command mapping.
 
     Returns:
         Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
     """
-    global _skill_commands, _skill_commands_platform
-    _skill_commands_platform = _resolve_skill_commands_platform()
-    _skill_commands = {}
+    with _skill_commands_lock:
+        return _scan_skill_commands_locked()
+
+
+def _scan_skill_commands_locked() -> Dict[str, Dict[str, Any]]:
+    """Build and atomically publish one profile/platform command snapshot."""
+    global _skill_commands, _skill_commands_platform, _skill_commands_home
+    platform = _resolve_skill_commands_platform()
+    home = get_hermes_home()
+    commands: Dict[str, Dict[str, Any]] = {}
     try:
-        from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, skill_matches_environment, _get_disabled_skill_names
+        from tools.skills_tool import (
+            _get_disabled_skill_names,
+            _parse_frontmatter,
+            _skills_dir,
+            skill_matches_environment,
+            skill_matches_platform,
+        )
         from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
         from hermes_cli.commands import resolve_command
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 
-        # Scan local dir first, then external dirs
+        # Resolve the local directory at call time. SKILLS_DIR is an
+        # import-time compatibility constant belonging to the launch profile.
         dirs_to_scan = []
-        if SKILLS_DIR.exists():
-            dirs_to_scan.append(SKILLS_DIR)
+        skills_dir = _skills_dir()
+        if skills_dir.exists():
+            dirs_to_scan.append(skills_dir)
         dirs_to_scan.extend(get_external_skills_dirs())
 
         for scan_dir in dirs_to_scan:
@@ -447,14 +465,14 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     # slug (e.g. "git_helper" vs "git-helper"). First-wins
                     # preserves local-before-external precedence.
                     cmd_key = f"/{cmd_name}"
-                    if cmd_key in _skill_commands:
+                    if cmd_key in commands:
                         logger.warning(
                             "Skill %r maps to slash command %s already claimed "
                             "by %r; keeping the first and skipping this one.",
-                            name, cmd_key, _skill_commands[cmd_key]["name"],
+                            name, cmd_key, commands[cmd_key]["name"],
                         )
                         continue
-                    _skill_commands[cmd_key] = {
+                    commands[cmd_key] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),
@@ -464,22 +482,25 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     continue
     except Exception:
         pass
-    return _skill_commands
+    _skill_commands = commands
+    _skill_commands_platform = platform
+    _skill_commands_home = home
+    return commands
 
 
 def get_skill_commands() -> Dict[str, Dict[str, Any]]:
-    """Return the current skill commands mapping (scan first if empty).
+    """Return the current profile's skill-command mapping.
 
-    Rescans when the active platform scope changes (e.g. a gateway
-    process serving Telegram and Discord concurrently) so each platform
-    sees its own ``skills.platform_disabled`` view (#14536).
+    Rescans when the active platform or profile-home scope changes.
     """
-    if (
-        not _skill_commands
-        or _skill_commands_platform != _resolve_skill_commands_platform()
-    ):
-        scan_skill_commands()
-    return _skill_commands
+    with _skill_commands_lock:
+        if (
+            not _skill_commands
+            or _skill_commands_platform != _resolve_skill_commands_platform()
+            or _skill_commands_home != get_hermes_home()
+        ):
+            return _scan_skill_commands_locked()
+        return _skill_commands
 
 
 def reload_skills() -> Dict[str, Any]:
@@ -521,11 +542,13 @@ def reload_skills() -> Dict[str, Any]:
             out[bare] = (info or {}).get("description") or ""
         return out
 
-    before = _snapshot(_skill_commands)
-
-    # Rescan the skills dir. ``scan_skill_commands`` resets
-    # ``_skill_commands = {}`` internally and repopulates it.
-    new_commands = scan_skill_commands()
+    with _skill_commands_lock:
+        current_scope = (
+            _skill_commands_home == get_hermes_home()
+            and _skill_commands_platform == _resolve_skill_commands_platform()
+        )
+        before = _snapshot(_skill_commands) if current_scope else {}
+        new_commands = _scan_skill_commands_locked()
 
     after = _snapshot(new_commands)
 

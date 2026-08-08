@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { HermesGateway } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
+import { $activeGatewayProfile } from '@/store/profile'
 
 import { isSkillItem } from '../composer-utils'
 
@@ -41,19 +42,36 @@ const RANKED_CATALOG = {
 const commandsOf = (items: readonly Unstable_TriggerItem[]) =>
   items.map(item => (item.metadata as { command?: string })?.command)
 
-function harness(gateway: HermesGateway) {
-  const api: { search?: (query: string) => readonly Unstable_TriggerItem[] } = {}
+function deferred<T>() {
+  let resolve!: (value: T) => void
 
-  function Probe() {
-    const { adapter } = useSlashCompletions({ gateway })
+  const promise = new Promise<T>(done => {
+    resolve = done
+  })
+
+  return { promise, resolve }
+}
+
+function harness(gateway: HermesGateway, options: { sessionId?: string | null } = {}) {
+  const api: {
+    search?: (query: string) => readonly Unstable_TriggerItem[]
+    rerenderSession?: (sessionId?: string | null) => void
+  } = {}
+
+  function Probe({ sessionId }: { sessionId?: string | null }) {
+    const { adapter } = useSlashCompletions({ gateway, sessionId })
     api.search = adapter.search
 
     return null
   }
 
-  render(<Probe />)
+  const view = render(<Probe sessionId={options.sessionId} />)
+  api.rerenderSession = sessionId => view.rerender(<Probe sessionId={sessionId} />)
 
-  return api as { search: (query: string) => readonly Unstable_TriggerItem[] }
+  return api as {
+    search: (query: string) => readonly Unstable_TriggerItem[]
+    rerenderSession: (sessionId?: string | null) => void
+  }
 }
 
 /** Drive the adapter until its async fetch has settled into `search`'s result. */
@@ -73,10 +91,95 @@ async function completions(api: { search: (query: string) => readonly Unstable_T
 
 afterEach(() => {
   cleanup()
+  $activeGatewayProfile.set('default')
   queryClient.clear()
 })
 
 describe('useSlashCompletions', () => {
+  it('scopes a new-session catalog and typed completion to the selected profile', async () => {
+    $activeGatewayProfile.set('search')
+
+    const request = vi.fn().mockImplementation((method: string) =>
+      Promise.resolve(method === 'commands.catalog' ? CATALOG : { items: [] })
+    )
+
+    const api = harness({ request } as unknown as HermesGateway)
+
+    await completions(api, '')
+    await completions(api, 'work')
+
+    expect(request).toHaveBeenCalledWith('commands.catalog', { profile: 'search' })
+    expect(request).toHaveBeenCalledWith('complete.slash', { profile: 'search', text: '/work' })
+  })
+
+  it('sends both the selected profile fallback and authoritative session id', async () => {
+    $activeGatewayProfile.set('search')
+    const request = vi.fn().mockResolvedValue(CATALOG)
+    const api = harness({ request } as unknown as HermesGateway, { sessionId: 'sess-search' })
+
+    await completions(api, '')
+
+    expect(request).toHaveBeenCalledWith('commands.catalog', {
+      profile: 'search',
+      session_id: 'sess-search'
+    })
+  })
+
+  it('clears held completions when the session scope changes', async () => {
+    const catalogFor = (name: string) => ({ categories: [], pairs: [[`/${name}`, `${name} skill`]] })
+
+    const request = vi.fn().mockImplementation((_method: string, params: { session_id?: string }) =>
+      Promise.resolve(catalogFor(params.session_id === 'sess-b' ? 'b-only' : 'a-only'))
+    )
+
+    const api = harness({ request } as unknown as HermesGateway, { sessionId: 'sess-a' })
+
+    expect(commandsOf(await completions(api, ''))).toContain('/a-only')
+
+    await act(async () => api.rerenderSession('sess-b'))
+    let immediate: readonly Unstable_TriggerItem[] = []
+    await act(async () => {
+      immediate = api.search('')
+    })
+    expect(commandsOf(immediate)).not.toContain('/a-only')
+    expect(commandsOf(await completions(api, ''))).toContain('/b-only')
+  })
+
+  it('ignores an old session request that resolves after a scope change', async () => {
+    const oldRequest = deferred<typeof CATALOG>()
+    const newCatalog = { categories: [], pairs: [['/b-only', 'B skill']] }
+    const newRequest = deferred<typeof newCatalog>()
+
+    const request = vi.fn().mockImplementation((_method: string, params: { session_id?: string }) =>
+      params.session_id === 'sess-b' ? newRequest.promise : oldRequest.promise
+    )
+
+    const api = harness({ request } as unknown as HermesGateway, { sessionId: 'sess-a' })
+
+    await act(async () => {
+      api.search('')
+      await new Promise(resolve => setTimeout(resolve, 120))
+    })
+
+    await act(async () => api.rerenderSession('sess-b'))
+    await act(async () => {
+      api.search('')
+      await new Promise(resolve => setTimeout(resolve, 120))
+    })
+
+    await act(async () => {
+      oldRequest.resolve(CATALOG)
+      await Promise.resolve()
+    })
+    expect(commandsOf(api.search(''))).not.toContain('/work')
+
+    await act(async () => {
+      newRequest.resolve(newCatalog)
+      await Promise.resolve()
+    })
+    expect(commandsOf(api.search(''))).toContain('/b-only')
+  })
+
   it('serves the bare-slash catalog from cache instead of re-requesting it', async () => {
     const request = vi.fn().mockResolvedValue(CATALOG)
     const api = harness({ request } as unknown as HermesGateway)

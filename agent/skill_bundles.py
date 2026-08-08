@@ -45,6 +45,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -61,6 +62,8 @@ _BUNDLE_MULTI_HYPHEN = re.compile(r"-{2,}")
 
 _bundles_cache: Dict[str, Dict[str, Any]] = {}
 _bundles_cache_mtime: Optional[float] = None
+_bundles_cache_home: Optional[Path] = None
+_bundles_cache_lock = threading.RLock()
 
 
 def _bundles_dir() -> Path:
@@ -172,7 +175,14 @@ def scan_bundles() -> Dict[str, Dict[str, Any]]:
     bundle info dict. Later bundles with a duplicate slug are skipped with
     a warning (first wins, alphabetical order).
     """
-    global _bundles_cache, _bundles_cache_mtime
+    with _bundles_cache_lock:
+        return _scan_bundles_locked()
+
+
+def _scan_bundles_locked() -> Dict[str, Dict[str, Any]]:
+    """Build and atomically publish one profile's bundle snapshot."""
+    global _bundles_cache, _bundles_cache_mtime, _bundles_cache_home
+    home = _bundles_dir()
     files = _iter_bundle_files()
     out: Dict[str, Dict[str, Any]] = {}
     for f in files:
@@ -189,6 +199,7 @@ def scan_bundles() -> Dict[str, Dict[str, Any]]:
         out[key] = info
     _bundles_cache = out
     _bundles_cache_mtime = _max_mtime(files)
+    _bundles_cache_home = home
     return out
 
 
@@ -198,11 +209,17 @@ def get_skill_bundles() -> Dict[str, Dict[str, Any]]:
     Cheap to call repeatedly: only rescans when the bundles directory or
     any bundle file's mtime is newer than the cached snapshot.
     """
-    files = _iter_bundle_files()
-    current_mtime = _max_mtime(files)
-    if not _bundles_cache or _bundles_cache_mtime != current_mtime:
-        scan_bundles()
-    return _bundles_cache
+    with _bundles_cache_lock:
+        home = _bundles_dir()
+        files = _iter_bundle_files()
+        current_mtime = _max_mtime(files)
+        if (
+            not _bundles_cache
+            or _bundles_cache_home != home
+            or _bundles_cache_mtime != current_mtime
+        ):
+            return _scan_bundles_locked()
+        return _bundles_cache
 
 
 def resolve_bundle_command_key(command: str) -> Optional[str]:
@@ -228,8 +245,13 @@ def reload_bundles() -> Dict[str, Any]:
     def _snapshot(cmds: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
         return {k.lstrip("/"): (v or {}).get("description", "") for k, v in cmds.items()}
 
-    before = _snapshot(_bundles_cache)
-    new = scan_bundles()
+    with _bundles_cache_lock:
+        before = (
+            _snapshot(_bundles_cache)
+            if _bundles_cache_home == _bundles_dir()
+            else {}
+        )
+        new = _scan_bundles_locked()
     after = _snapshot(new)
 
     added_names = sorted(set(after) - set(before))

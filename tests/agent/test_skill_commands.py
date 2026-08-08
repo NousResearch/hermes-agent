@@ -1,6 +1,7 @@
 """Tests for agent/skill_commands.py — skill slash command scanning and platform filtering."""
 
 import os
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -51,6 +52,62 @@ def _symlink_category(skills_dir: Path, linked_root: Path, category: str) -> Pat
 
 
 class TestScanSkillCommands:
+
+    def test_concurrent_profile_scans_do_not_mix_commands(self, tmp_path, monkeypatch):
+        """Concurrent gateway RPCs must not share a partially-built cache."""
+        import agent.skill_commands as sc_mod
+        import agent.skill_utils as skill_utils
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        home_a = tmp_path / "profile-a"
+        home_b = tmp_path / "profile-b"
+        _make_skill(home_a / "skills", "profile-a-only")
+        _make_skill(home_b / "skills", "profile-b-only")
+
+        real_iter = skill_utils.iter_skill_index_files
+        first_entered = threading.Event()
+        release_first = threading.Event()
+
+        def controlled_iter(scan_dir, filename):
+            if Path(scan_dir) == home_a / "skills":
+                first_entered.set()
+                assert release_first.wait(timeout=5)
+            yield from real_iter(scan_dir, filename)
+
+        monkeypatch.setattr(skill_utils, "iter_skill_index_files", controlled_iter)
+        monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda: [])
+        monkeypatch.setattr(sc_mod, "_skill_commands", {})
+        monkeypatch.setattr(sc_mod, "_skill_commands_platform", None)
+        monkeypatch.setattr(sc_mod, "_skill_commands_home", None)
+
+        results = {}
+
+        def scan_for(label, home):
+            token = set_hermes_home_override(home)
+            try:
+                results[label] = dict(scan_skill_commands())
+            finally:
+                reset_hermes_home_override(token)
+
+        first = threading.Thread(target=scan_for, args=("a", home_a))
+        second = threading.Thread(target=scan_for, args=("b", home_b))
+        first.start()
+        assert first_entered.wait(timeout=5)
+        second.start()
+        second.join(timeout=0.2)
+        release_first.set()
+        first.join(timeout=5)
+        second.join(timeout=5)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert "/profile-a-only" in results["a"]
+        assert "/profile-b-only" not in results["a"]
+        assert "/profile-b-only" in results["b"]
+        assert "/profile-a-only" not in results["b"]
 
 
 

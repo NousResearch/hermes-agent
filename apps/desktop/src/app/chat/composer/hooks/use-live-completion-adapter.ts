@@ -34,11 +34,15 @@ export function useLiveCompletionAdapter(options: {
    *  an unchanged query would keep serving what it fetched before the source
    *  changed, because the adapter de-dupes on the query alone. */
   epoch?: number
+  /** Identity of the source behind a query (for example profile + session).
+   * Crossing this boundary clears held items and invalidates in-flight work. */
+  scopeKey?: string
   toItem: (entry: CompletionEntry, index: number) => Unstable_TriggerItem
 }): { adapter: Unstable_TriggerAdapter; loading: boolean } {
-  const { enabled, debounceMs = 60, epoch = 0, fetcher, isCached, toItem } = options
+  const { enabled, debounceMs = 60, epoch = 0, scopeKey = '', fetcher, isCached, toItem } = options
 
-  const [state, setState] = useState<{ query: string; items: Unstable_TriggerItem[] }>({
+  const [state, setState] = useState<{ scopeKey: string; query: string; items: Unstable_TriggerItem[] }>({
+    scopeKey,
     query: EMPTY_QUERY,
     items: []
   })
@@ -68,8 +72,17 @@ export function useLiveCompletionAdapter(options: {
     pendingQueryRef.current = null
     tokenRef.current += 1
     setLoading(false)
-    setState({ query: EMPTY_QUERY, items: [] })
-  }, [cancelTimer, enabled])
+    setState({ scopeKey, query: EMPTY_QUERY, items: [] })
+  }, [cancelTimer, enabled, scopeKey])
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    cancelTimer()
+    pendingQueryRef.current = null
+    tokenRef.current += 1
+    setLoading(false)
+    setState({ scopeKey, query: EMPTY_QUERY, items: [] })
+  }, [cancelTimer, scopeKey])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -110,6 +123,7 @@ export function useLiveCompletionAdapter(options: {
             }
 
             setState({
+              scopeKey,
               query: payload.query,
               items: payload.items.map((entry, index) => toItem(entry, index))
             })
@@ -119,7 +133,7 @@ export function useLiveCompletionAdapter(options: {
               return
             }
 
-            setState({ query, items: [] })
+            setState({ scopeKey, query, items: [] })
           })
           .finally(() => {
             if (token === tokenRef.current) {
@@ -132,7 +146,7 @@ export function useLiveCompletionAdapter(options: {
       // add a frame of empty popover on every keystroke.
       cached ? run() : (timerRef.current = window.setTimeout(run, debounceMs))
     },
-    [cancelTimer, debounceMs, enabled, fetcher, isCached, toItem]
+    [cancelTimer, debounceMs, enabled, fetcher, isCached, scopeKey, toItem]
   )
 
   const adapter = useMemo<Unstable_TriggerAdapter>(
@@ -140,14 +154,14 @@ export function useLiveCompletionAdapter(options: {
       categories: () => [],
       categoryItems: () => [],
       search: (query: string) => {
-        if (query !== state.query) {
+        if (state.scopeKey !== scopeKey || query !== state.query) {
           scheduleFetch(query)
         }
 
-        return state.items
+        return state.scopeKey === scopeKey ? state.items : []
       }
     }),
-    [scheduleFetch, state]
+    [scheduleFetch, scopeKey, state]
   )
 
   return { adapter, loading }

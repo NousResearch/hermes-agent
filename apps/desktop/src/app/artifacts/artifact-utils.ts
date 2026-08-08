@@ -275,6 +275,8 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         return
       }
 
+      const timestamp = message.timestamp || session.last_active || session.started_at || Date.now()
+
       found.set(key, {
         id: key,
         kind: artifactKind(value),
@@ -283,7 +285,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         label: artifactLabel(value),
         sessionId: session.id,
         sessionTitle: title,
-        timestamp: message.timestamp || session.last_active || session.started_at || Date.now()
+        timestamp: timestamp < 1e12 ? timestamp * 1000 : timestamp
       })
     })
   }

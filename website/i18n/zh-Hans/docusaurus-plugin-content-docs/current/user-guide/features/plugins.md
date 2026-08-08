@@ -1,7 +1,7 @@
 ---
 sidebar_position: 11
-sidebar_label: "Plugins"
-title: "Plugins"
+sidebar_label: "插件"
+title: "插件"
 description: "通过插件系统为 Hermes 添加自定义工具、hook 和集成"
 ---
 

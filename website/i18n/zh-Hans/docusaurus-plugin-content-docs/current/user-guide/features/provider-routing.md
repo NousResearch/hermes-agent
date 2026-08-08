@@ -1,5 +1,5 @@
 ---
-title: Provider Routing
+title: "Provider Routing（提供商路由）"
 description: 配置 OpenRouter provider 偏好，以优化成本、速度或质量。
 sidebar_label: Provider Routing
 sidebar_position: 7

@@ -1,6 +1,14 @@
 import { Box, Link, stringWidth, Text } from '@hermes/ink'
 import { Fragment, memo, type ReactNode, useMemo } from 'react'
 
+import {
+  borderLabelWidth,
+  FENCE_CLOSE_RE,
+  FENCE_OPEN_RE,
+  innerContentWidth,
+  isNarrowPanel,
+  truncateToWidth
+} from '../lib/codeBlockLayout.js'
 import { ensureEmojiPresentation } from '../lib/emoji.js'
 import { normalizeExternalUrl, urlSlugTitleLabel, useLinkTitle } from '../lib/externalLink.js'
 import { BOX_CLOSE, BOX_OPEN, texToUnicode } from '../lib/mathUnicode.js'
@@ -57,8 +65,6 @@ const renderMath = (text: string): ReactNode => {
   return out
 }
 
-const FENCE_RE = /^\s*(`{3,}|~{3,})(.*)$/
-const FENCE_CLOSE_RE = /^\s*(`{3,}|~{3,})\s*$/
 const HR_RE = /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/
 const HEADING_RE = /^\s{0,3}(#{1,6})\s+(.*?)(?:\s+#+\s*)?$/
 const SETEXT_RE = /^\s{0,3}(=+|-+)\s*$/
@@ -541,6 +547,81 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   )
 }
 
+interface CodeBlockProps {
+  children: ReactNode[]
+  cols?: number
+  compact?: boolean
+  lang: string
+  t: Theme
+}
+
+function CodeBlock({ children, cols, compact, lang, t }: CodeBlockProps) {
+  // A full outline costs two border cells plus two padding cells. Below this
+  // threshold (and in compact mode), keep only the left accent so code retains
+  // useful width and the border cannot dominate short wrapped lines.
+  const narrow = isNarrowPanel(cols ?? Infinity, compact ?? false)
+  const content = children.length ? children : [<Text key="empty"> </Text>]
+
+  // `lang` is fed straight into the syntax-highlight detector (which is
+  // CJK- and emoji-safe by construction — it only inspects the string), but
+  // the same string is *displayed* inside `borderText` content. Ink's
+  // border-embedding path takes a JS-`substring` truncation when
+  // `stringWidth(text) >= borderLength - 2`, which corrupts a wide CJK /
+  // emoji label mid-glyph. Pre-truncate to a display-safe label that the
+  // existing border budget can absorb (and which the virtual-height
+  // estimator can also count as one line).
+  //
+  // `cols` is optional in `MdProps`; when it's undefined the panel sizes
+  // from its parent and there is no fixed budget to defend, so we leave the
+  // label alone. A future call site that wants strict width safety even
+  // without a `cols` value can pass one through.
+  const safeCols = cols ?? Infinity
+  const normalLabelBudget = borderLabelWidth(safeCols)
+  const narrowContentBudget = innerContentWidth(safeCols, true)
+
+  const displayLang = lang
+    ? narrow
+      ? truncateToWidth(lang, narrowContentBudget)
+      : truncateToWidth(lang, normalLabelBudget)
+    : ''
+
+  if (narrow) {
+    return (
+      <Box
+        borderBottom={false}
+        borderColor={t.color.border}
+        borderRight={false}
+        borderStyle="single"
+        borderTop={false}
+        flexDirection="column"
+        paddingLeft={1}
+        {...(cols ? { width: cols } : {})}
+      >
+        {displayLang ? <Text color={t.color.muted}>{displayLang}</Text> : null}
+        {content}
+      </Box>
+    )
+  }
+
+  return (
+    <Box
+      borderColor={t.color.border}
+      borderDimColor
+      borderStyle="round"
+      borderText={
+        displayLang
+          ? { align: 'start', content: ` ${displayLang} `, offset: 1, position: 'top' }
+          : undefined
+      }
+      flexDirection="column"
+      paddingX={1}
+      {...(cols ? { width: cols } : {})}
+    >
+      {content}
+    </Box>
+  )
+}
+
 // `color` anchors the prose runs to a palette tone. Block callers that
 // already wrap MdInline in a colored <Text> (headings, quotes, footnotes)
 // leave it unset and inherit that parent; body-prose callers pass
@@ -775,7 +856,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
         continue
       }
 
-      const fence = line.match(FENCE_RE)
+      const fence = line.match(FENCE_OPEN_RE)
 
       if (fence) {
         const char = fence[1]![0] as '`' | '~'
@@ -809,43 +890,44 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
         const isDiff = lang === 'diff'
         const highlighted = !isDiff && isHighlightable(lang)
 
+        const codeChildren = block.map((l, j) => {
+          if (highlighted) {
+            return (
+              <Text key={j} wrap="wrap-char">
+                {highlightLine(l, lang, t).map(([color, text], kk) =>
+                  color ? (
+                    <Text color={color} key={kk}>
+                      {text}
+                    </Text>
+                  ) : (
+                    <Text key={kk}>{text}</Text>
+                  )
+                )}
+              </Text>
+            )
+          }
+
+          const add = isDiff && l.startsWith('+')
+          const del = isDiff && l.startsWith('-')
+          const hunk = isDiff && l.startsWith('@@')
+
+          return (
+            <Text
+              backgroundColor={add ? t.color.diffAdded : del ? t.color.diffRemoved : undefined}
+              color={add ? t.color.diffAddedWord : del ? t.color.diffRemovedWord : hunk ? t.color.muted : undefined}
+              dimColor={isDiff && !add && !del && !hunk && l.startsWith(' ')}
+              key={j}
+              wrap="wrap-char"
+            >
+              {l}
+            </Text>
+          )
+        })
+
         nodes.push(
-          <Box flexDirection="column" key={key} paddingLeft={2}>
-            {lang && !isDiff && <Text color={t.color.muted}>{'─ ' + lang}</Text>}
-
-            {block.map((l, j) => {
-              if (highlighted) {
-                return (
-                  <Text key={j}>
-                    {highlightLine(l, lang, t).map(([color, text], kk) =>
-                      color ? (
-                        <Text color={color} key={kk}>
-                          {text}
-                        </Text>
-                      ) : (
-                        <Text key={kk}>{text}</Text>
-                      )
-                    )}
-                  </Text>
-                )
-              }
-
-              const add = isDiff && l.startsWith('+')
-              const del = isDiff && l.startsWith('-')
-              const hunk = isDiff && l.startsWith('@@')
-
-              return (
-                <Text
-                  backgroundColor={add ? t.color.diffAdded : del ? t.color.diffRemoved : undefined}
-                  color={add ? t.color.diffAddedWord : del ? t.color.diffRemovedWord : hunk ? t.color.muted : undefined}
-                  dimColor={isDiff && !add && !del && !hunk && l.startsWith(' ')}
-                  key={j}
-                >
-                  {l}
-                </Text>
-              )
-            })}
-          </Box>
+          <CodeBlock cols={cols} compact={compact} key={key} lang={lang} t={t}>
+            {codeChildren}
+          </CodeBlock>
         )
 
         continue

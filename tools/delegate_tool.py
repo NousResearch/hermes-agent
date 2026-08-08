@@ -2558,10 +2558,70 @@ def _run_single_child(
         if interrupted:
             status = "interrupted"
         elif summary and not _empty_sentinel:
-            # A summary means the subagent produced usable output.
-            # exit_reason ("completed" vs "max_iterations") already
-            # tells the parent *how* the task ended.
-            status = "completed"
+            # ACP child agents can return summaries that are unrelated to the
+            # task (e.g. a bare model identifier string like
+            # "Claude Sonnet 4.6 (...)") or ACP-specific abort markers when
+            # requestPermission() is cancelled (issue #20807). These must be
+            # classified as failed, not completed.
+
+            # Gate ACP-specific abort detection on the ACP transport so a
+            # non-ACP child summary that quotes an abort phrase is not
+            # misclassified as failed.
+            _acp_abort_markers = (
+                "tool use aborted", "tool_use aborted",
+                "requestpermission", "permission cancelled", "signal.aborted",
+            )
+            _summary_lower = summary.strip().lower()
+            # Derive ACP context from the child agent attribute so this
+            # function does not need effective_acp_command from the outer scope.
+            _child_acp_command = getattr(child, "acp_command", None)
+            _is_acp_abort = (
+                bool(_child_acp_command)
+                and any(m in _summary_lower for m in _acp_abort_markers)
+            )
+
+            # Detect bare model-identifier summaries (e.g. "Claude Sonnet 4.6
+            # (...)"). These are produced when the ACP sub-agent's first
+            # message is an auto-generated model disclosure rather than actual
+            # task output. Matches the ENTIRE summary against a strict
+            # identifier grammar -- family name, then zero or more
+            # known-variant words or digit-bearing version tokens, then an
+            # optional single trailing parenthetical -- so a legitimate
+            # natural-language summary that merely starts with the model's
+            # name (e.g. "Claude: I completed the task successfully") is NOT
+            # misclassified: "I", "completed", "the", "task" etc. don't fit
+            # the variant/version grammar, so the match can't reach the
+            # end-of-string anchor and the whole pattern fails.
+            #
+            # The parenthetical is constrained to the SAME identifier-token
+            # vocabulary as the unparenthesized variant/version tokens above
+            # (rather than an earlier [^)]{0,120} accepting arbitrary prose),
+            # so it only matches genuine metadata like "(Sonnet 4.5)" or
+            # "(2024-10-22, preview)" -- a natural-language summary that
+            # happens to use parentheses, e.g. "Claude (I completed the
+            # task)", cannot match: "I", "completed", "the", "task" aren't
+            # identifier tokens, so the parenthetical (and therefore the
+            # whole end-anchored pattern) fails to match (review of #68515).
+            _ID_TOKEN = (
+                r"(?:sonnet|opus|haiku|pro|mini|flash|turbo|instruct|"
+                r"chat|preview|latest|\.\.\.|[\w.-]*\d[\w.-]*)"
+            )
+            _MODEL_ID_RE = re.compile(
+                r"^(?:claude|gpt|gemini|sonnet|opus|haiku|mistral|deepseek|llama)"
+                rf"(?:[\s:_/-]+{_ID_TOKEN})*"
+                rf"(?:\s*\({_ID_TOKEN}(?:[\s,]+{_ID_TOKEN})*\))?"
+                r"\s*$",
+                re.IGNORECASE,
+            )
+            _is_bare_model_id = bool(_MODEL_ID_RE.match(summary.strip()))
+
+            if _is_acp_abort or _is_bare_model_id:
+                status = "failed"
+            else:
+                # A summary means the subagent produced usable output.
+                # exit_reason ("completed" vs "max_iterations") already
+                # tells the parent *how* the task ended.
+                status = "completed"
         else:
             status = "failed"
 

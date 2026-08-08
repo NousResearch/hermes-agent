@@ -1325,6 +1325,12 @@ def _make_run_env(env: dict) -> dict:
 
     run_env = _scrub_delegated_child_kanban_env(run_env)
 
+    # Sanitize PYTHONHOME/PYTHONPATH — they can cause the subprocess to load
+    # the wrong Python interpreter (e.g. uv's Python instead of conda's), which
+    # breaks tools like conda that rely on finding their own stdlib packages.
+    run_env.pop("PYTHONHOME", None)
+    run_env.pop("PYTHONPATH", None)
+
     return run_env
 
 

@@ -5930,7 +5930,30 @@ class SlackAdapter(BasePlatformAdapter):
         media_urls = list(thread_root_media_urls)
         media_types = list(thread_root_media_types)
         attachment_notices: List[str] = []
-        files = event.get("files", [])
+        files = list(event.get("files", []))
+
+        # Forwarded/shared messages do NOT put their files in the top-level
+        # ``event.files`` list. Slack represents a forward/share as an entry
+        # in the legacy ``event.attachments`` array flagged ``is_share``
+        # (also seen as ``is_msg_unfurl``/``is_reply_unfurl``), and any file
+        # that was attached to the *original* message lives nested at
+        # ``attachment.files[]`` on that entry. Without this, a forwarded
+        # message with an attachment is invisible to the bot even though
+        # direct attachments work fine (#Pepper 2026-07-31: forwarded Slack
+        # attachment not extracted).
+        for _att in event.get("attachments") or []:
+            if not isinstance(_att, dict):
+                continue
+            if not (
+                _att.get("is_share")
+                or _att.get("is_msg_unfurl")
+                or _att.get("is_reply_unfurl")
+            ):
+                continue
+            for _shared_file in _att.get("files") or []:
+                if isinstance(_shared_file, dict):
+                    files.append(_shared_file)
+
         for f in files:
             # Slack Connect channels return stub file objects with
             # file_access="check_file_info" and no URL fields. We must

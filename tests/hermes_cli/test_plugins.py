@@ -1338,3 +1338,110 @@ class TestDispatchToolWithoutCliRef:
             assert calls[0][1].get("parent_agent") is None
         finally:
             registry.deregister("_test_dispatch_probe")
+
+
+class TestPluginContextSendMessage:
+    """Plugins can use the host send engine without exposing a model tool."""
+
+    def _ctx(self, *, source="bundled", key=""):
+        return PluginContext(
+            PluginManifest(name="test-plugin", source=source, key=key),
+            PluginManager(),
+        )
+
+    def test_routes_structured_delivery_through_host_send_engine(self):
+        button = {"label": "Open UI", "url": "https://example.com/app"}
+        with patch(
+            "tools.send_message_tool.send_message_tool",
+            return_value='{"success": true, "message_id": "42"}',
+        ) as send:
+            result = self._ctx().send_message(
+                "telegram:12345",
+                "Interface ready.",
+                web_app_button=button,
+            )
+
+        assert result == {"success": True, "message_id": "42"}
+        send.assert_called_once_with({
+            "action": "send",
+            "target": "telegram:12345",
+            "message": "Interface ready.",
+            "web_app_button": button,
+        })
+
+    def test_rejects_delivery_options_that_override_host_routing(self):
+        with pytest.raises(ValueError, match="cannot override: target"):
+            self._ctx().send_message(
+                "telegram:12345",
+                "Interface ready.",
+                target="telegram:99999",
+            )
+
+    def test_non_bundled_plugin_requires_explicit_outbound_grant(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"plugins": {"entries": {}}},
+        )
+        from hermes_cli.plugins import PluginOutboundMessagingError
+
+        with pytest.raises(
+            PluginOutboundMessagingError, match="allow-outbound-messaging"
+        ):
+            self._ctx(source="user").send_message(
+                "telegram:12345", "Interface ready."
+            )
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            None,
+            [],
+            {"plugins": []},
+            {"plugins": {"entries": []}},
+            {
+                "plugins": {
+                    "entries": {
+                        "test-plugin": {"allow_outbound_messaging": "true"}
+                    }
+                }
+            },
+        ],
+    )
+    def test_non_bundled_plugin_outbound_grant_fails_closed(
+        self, monkeypatch, config
+    ):
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        from hermes_cli.plugins import PluginOutboundMessagingError
+
+        with pytest.raises(PluginOutboundMessagingError):
+            self._ctx(source="user").send_message(
+                "telegram:12345", "Interface ready."
+            )
+
+    def test_non_bundled_plugin_uses_canonical_key_for_outbound_grant(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "plugins": {
+                    "entries": {
+                        "category/test-plugin": {
+                            "allow_outbound_messaging": True
+                        }
+                    }
+                }
+            },
+        )
+        with patch(
+            "tools.send_message_tool.send_message_tool",
+            return_value='{"success": true}',
+        ) as send:
+            result = self._ctx(
+                source="user", key="category/test-plugin"
+            ).send_message("telegram:12345", "Interface ready.")
+
+        assert result == {"success": True}
+        send.assert_called_once()

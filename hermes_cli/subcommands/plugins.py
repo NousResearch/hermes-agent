@@ -101,6 +101,18 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         action="store_true",
         help="Enable without granting built-in tool override (skip prompt).",
     )
+    _enable_outbound_group = plugins_enable.add_mutually_exclusive_group()
+    _enable_outbound_group.add_argument(
+        "--allow-outbound-messaging",
+        action="store_true",
+        help="Grant this plugin permission to send messages through configured "
+        "Hermes platforms.",
+    )
+    _enable_outbound_group.add_argument(
+        "--no-allow-outbound-messaging",
+        action="store_true",
+        help="Revoke this plugin's outbound messaging permission.",
+    )
 
     plugins_disable = plugins_subparsers.add_parser(
         "disable", help="Disable a plugin without removing it"

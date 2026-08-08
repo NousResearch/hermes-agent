@@ -64,3 +64,20 @@ def test_mcp_and_acp_accept_hooks_flag():
     # acp takes --accept-hooks at top level
     ns = parser.parse_args(["acp", "--accept-hooks"])
     assert ns.accept_hooks is True
+
+
+@pytest.mark.parametrize(
+    ("flag", "attribute"),
+    [
+        ("--allow-outbound-messaging", "allow_outbound_messaging"),
+        ("--no-allow-outbound-messaging", "no_allow_outbound_messaging"),
+    ],
+)
+def test_plugins_enable_accepts_outbound_permission_flags(flag, attribute):
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    build_plugins_parser(sub, cmd_plugins=_h("plugins"))
+
+    ns = parser.parse_args(["plugins", "enable", "example-plugin", flag])
+
+    assert getattr(ns, attribute) is True

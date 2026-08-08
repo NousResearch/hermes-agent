@@ -38,6 +38,7 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import inspect
+import json
 import logging
 import os
 import sys
@@ -74,6 +75,14 @@ except ImportError:  # pragma: no cover – yaml is optional at import time
 class PluginToolOverrideError(PermissionError):
     """Raised when a plugin attempts to override a built-in tool without
     operator opt-in via ``plugins.entries.<plugin_id>.allow_tool_override``.
+    """
+
+
+class PluginOutboundMessagingError(PermissionError):
+    """Raised when a plugin sends outbound messages without operator opt-in.
+
+    Non-bundled plugins must be granted
+    ``plugins.entries.<plugin_id>.allow_outbound_messaging`` explicitly.
     """
 
 
@@ -658,6 +667,90 @@ class PluginContext:
                 kwargs["parent_agent"] = agent
 
         return registry.dispatch(tool_name, args, **kwargs)
+
+    def send_message(
+        self,
+        target: str,
+        message: str,
+        /,
+        **delivery_options: Any,
+    ) -> dict[str, Any]:
+        """Deliver a message through Hermes's host-owned platform transport.
+
+        This is the plugin-facing outbound interface for concrete integrations
+        that need richer platform delivery than a plugin tool result can
+        express. It reuses the same target resolution, authorization-adjacent
+        configuration, media handling, retries, and mirroring as ``hermes
+        send`` without registering ``send_message`` as a model-callable tool.
+        Non-bundled plugins need an explicit operator grant under
+        ``plugins.entries.<plugin_id>.allow_outbound_messaging``. This keeps a
+        model-callable plugin tool from acquiring cross-platform send authority
+        merely because its plugin was enabled.
+
+        ``delivery_options`` is intentionally passed through to the existing
+        send engine so platform transports can add optional structured
+        capabilities without growing the plugin facade for each one. Reserved
+        routing fields remain host-owned.
+        """
+        if not self._outbound_messaging_allowed():
+            plugin_id = self.manifest.key or self.manifest.name
+            raise PluginOutboundMessagingError(
+                f"Plugin {self.manifest.name!r} cannot send outbound messages. "
+                f"Run 'hermes plugins enable {plugin_id} "
+                "--allow-outbound-messaging' to grant this capability."
+            )
+
+        reserved = {"action", "target", "message"}.intersection(delivery_options)
+        if reserved:
+            names = ", ".join(sorted(reserved))
+            raise ValueError(f"Plugin delivery options cannot override: {names}")
+
+        from tools.send_message_tool import send_message_tool
+
+        raw = send_message_tool({
+            "action": "send",
+            "target": target,
+            "message": message,
+            **delivery_options,
+        })
+        if isinstance(raw, dict):
+            return raw
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Host send engine returned an invalid result") from exc
+        if not isinstance(parsed, dict):
+            raise RuntimeError("Host send engine returned an invalid result")
+        return parsed
+
+    def _outbound_messaging_allowed(self) -> bool:
+        """Return whether this plugin may use the host outbound transport.
+
+        Bundled plugins are trusted code shipped with Hermes. Every other
+        plugin source fails closed unless the operator grants the capability
+        for that plugin's canonical id.
+        """
+        source = getattr(self.manifest, "source", "") or ""
+        if source == "bundled":
+            return True
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+        except Exception:
+            return False
+        plugin_id = self.manifest.key or self.manifest.name
+        if not isinstance(cfg, dict):
+            return False
+        plugins_cfg = cfg.get("plugins") or {}
+        if not isinstance(plugins_cfg, dict):
+            return False
+        entries = plugins_cfg.get("entries") or {}
+        if not isinstance(entries, dict):
+            return False
+        entry = entries.get(plugin_id) or {}
+        if not isinstance(entry, dict):
+            return False
+        return entry.get("allow_outbound_messaging") is True
 
     # -- context engine registration -----------------------------------------
 

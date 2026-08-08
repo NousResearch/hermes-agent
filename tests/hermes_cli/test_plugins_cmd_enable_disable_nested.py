@@ -10,7 +10,7 @@ nested bundled plugin can actually be toggled.
 
 import sys  # noqa: F401
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import pytest
 
@@ -146,6 +146,31 @@ class TestEnableToolOverrideConsent:
     privileged ``allow_tool_override`` capability, and persist the operator's
     choice under ``plugins.entries.<key>.allow_tool_override``."""
 
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._set_plugin_entry_flag")
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_explicit_outbound_flag_grants_separate_capability(
+        self, mock_en, mock_dis, mock_save_en, mock_save_dis, mock_set_flag,
+        mock_user, mock_bundled, nested_plugin_env,
+    ):
+        from hermes_cli.plugins_cmd import cmd_enable
+        mock_user.return_value = nested_plugin_env
+        mock_bundled.return_value = nested_plugin_env / "nonexistent"
+
+        cmd_enable(
+            "disk-cleanup",
+            allow_tool_override=False,
+            allow_outbound_messaging=True,
+        )
+
+        assert mock_set_flag.call_args_list == [
+            call("disk-cleanup", "allow_tool_override", False),
+            call("disk-cleanup", "allow_outbound_messaging", True),
+        ]
 
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
@@ -230,4 +255,3 @@ class TestCompositeMenuWritesCanonicalKey:
         saved_dis = mock_save_dis.call_args[0][0]
         assert "web/firecrawl" in saved_dis      # canonical key persisted
         assert "web-firecrawl" not in saved_dis   # never the bare name
-

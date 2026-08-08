@@ -877,7 +877,11 @@ def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
     save_config(config)
 
 
-def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
+def cmd_enable(
+    name: str,
+    allow_tool_override: Optional[bool] = None,
+    allow_outbound_messaging: Optional[bool] = None,
+) -> None:
     """Add a plugin to the enabled allow-list (and remove it from disabled).
 
     For non-bundled plugins, prompt the operator about granting the
@@ -886,6 +890,10 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     tri-state: ``True`` grants without prompting, ``False`` declines without
     prompting, ``None`` (default) asks interactively. Bundled plugins are
     trusted and never prompted.
+
+    ``allow_outbound_messaging`` changes the separate outbound transport grant
+    only when explicitly set. It is not prompted for every plugin because most
+    plugins do not need this capability.
     """
     from rich.console import Console
 
@@ -936,6 +944,19 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         return
 
     _resolve_tool_override_grant(console, key, allow_tool_override)
+    if allow_outbound_messaging is not None:
+        _set_plugin_entry_flag(
+            key, "allow_outbound_messaging", allow_outbound_messaging
+        )
+        if allow_outbound_messaging:
+            console.print(
+                f"[green]✓[/green] Granted [bold]{key}[/bold] permission to "
+                "send messages through configured Hermes platforms."
+            )
+        else:
+            console.print(
+                f"[dim]{key} may not send messages through Hermes platforms.[/dim]"
+            )
 
 
 def _resolve_tool_override_grant(
@@ -2115,7 +2136,16 @@ def plugins_command(args) -> None:
             allow_override = True
         elif getattr(args, "no_allow_tool_override", False):
             allow_override = False
-        cmd_enable(args.name, allow_tool_override=allow_override)
+        allow_outbound = None
+        if getattr(args, "allow_outbound_messaging", False):
+            allow_outbound = True
+        elif getattr(args, "no_allow_outbound_messaging", False):
+            allow_outbound = False
+        cmd_enable(
+            args.name,
+            allow_tool_override=allow_override,
+            allow_outbound_messaging=allow_outbound,
+        )
     elif action == "disable":
         cmd_disable(args.name)
     elif action in {"list", "ls"}:

@@ -907,5 +907,190 @@ class TestSenderAuthentication(unittest.TestCase):
         self.assertFalse(ok, reason)
 
 
+    def test_spf_does_not_fall_back_to_visible_header_from(self):
+        """A matching visible From must not override a misaligned envelope sender."""
+        ok, reason = self._verify(
+            "user@example.com",
+            [
+                "mx.example.net; spf=pass smtp.mailfrom=bounce@evil.com; "
+                "header.from=example.com"
+            ],
+        )
+        self.assertFalse(ok, reason)
+
+    def test_dkim_does_not_fall_back_to_dmarc_header_from(self):
+        """DMARC's visible From property is not a DKIM signing identity."""
+        ok, reason = self._verify(
+            "user@example.com",
+            [
+                "mx.example.net; dkim=pass header.d=evil.com; "
+                "dmarc=fail header.from=example.com"
+            ],
+        )
+        self.assertFalse(ok, reason)
+
+    def test_dkim_does_not_borrow_header_d_from_another_method(self):
+        cases = [
+            "mx.example.net; dkim=pass header.d=evil.com; "
+            "arc=pass header.d=example.com",
+            "mx.example.net; dkim=pass header.d=evil.com; "
+            "spf=fail header.d=example.com",
+        ]
+        for auth_results in cases:
+            with self.subTest(auth_results=auth_results):
+                ok, reason = self._verify("user@example.com", [auth_results])
+                self.assertFalse(ok, reason)
+
+    def test_spf_does_not_borrow_mailfrom_from_another_method(self):
+        ok, reason = self._verify(
+            "user@example.com",
+            [
+                "mx.example.net; spf=pass smtp.mailfrom=bounce@evil.com; "
+                "dkim=fail smtp.mailfrom=user@example.com"
+            ],
+        )
+        self.assertFalse(ok, reason)
+
+    def test_netease_auth_results_aliases_authenticate(self):
+        """NetEase/163 stamps SPF/DKIM properties as smtp.mail/header.i.
+
+        Keep strict sender auth enabled while accepting these provider-specific
+        aliases only when they still align with the visible From: domain.
+        """
+        ok, reason = self._verify(
+            "Qin Steven <stevenqin09@outlook.com>",
+            [
+                "gzga-mx-mtada-g4-7; spf=pass smtp.mail=stevenqin09@outlook.com; "
+                "dkim=pass header.i=@outlook.com"
+            ],
+        )
+        self.assertTrue(ok, reason)
+
+    def test_netease_auth_results_aliases_reject_misaligned_domain(self):
+        ok, reason = self._verify(
+            "admin@example.com",
+            [
+                "gzga-mx-mtada-g4-7; spf=pass smtp.mail=attacker@evil.com; "
+                "dkim=pass header.i=@evil.com"
+            ],
+        )
+        self.assertFalse(ok, reason)
+
+    def test_generic_auth_results_accepts_common_provider_aliases(self):
+        cases = [
+            (
+                "return-path envelope alias",
+                "user@example.com",
+                "mx.example.net; spf=pass return-path=<bounce@example.com>",
+            ),
+            (
+                "bare mailfrom alias",
+                "user@example.com",
+                "mx.example.net; spf=pass mailfrom=user@example.com",
+            ),
+            (
+                "dkim identity with leading at",
+                "user@example.com",
+                "mx.example.net; dkim=pass header.i=@example.com",
+            ),
+            (
+                "dkim identity with local-part",
+                "user@example.com",
+                "mx.example.net; dkim=pass header.i=selector@example.com",
+            ),
+            (
+                "subdomain relaxed alignment",
+                "user@example.com",
+                "mx.example.net; dkim=pass header.d=mail.example.com",
+            ),
+        ]
+        for label, from_addr, auth_results in cases:
+            with self.subTest(label=label):
+                ok, reason = self._verify(from_addr, [auth_results])
+                self.assertTrue(ok, reason)
+
+    def test_generic_auth_results_rejects_common_provider_alias_misalignment(self):
+        cases = [
+            (
+                "return-path envelope alias",
+                "user@example.com",
+                "mx.example.net; spf=pass return-path=<bounce@evil.com>",
+            ),
+            (
+                "bare mailfrom alias",
+                "user@example.com",
+                "mx.example.net; spf=pass mailfrom=user@evil.com",
+            ),
+            (
+                "dkim identity with leading at",
+                "user@example.com",
+                "mx.example.net; dkim=pass header.i=@evil.com",
+            ),
+            (
+                "dkim identity with local-part",
+                "user@example.com",
+                "mx.example.net; dkim=pass header.i=selector@evil.com",
+            ),
+        ]
+        for label, from_addr, auth_results in cases:
+            with self.subTest(label=label):
+                ok, reason = self._verify(from_addr, [auth_results])
+                self.assertFalse(ok, reason)
+
+    def test_generic_auth_results_uses_first_aligned_value_when_duplicate_property(self):
+        ok, reason = self._verify(
+            "user@example.com",
+            [
+                "mx.example.net; spf=pass smtp.mailfrom=bounce@evil.com; "
+                "smtp.mailfrom=bounce@example.com"
+            ],
+        )
+        self.assertTrue(ok, reason)
+
+
+    def test_auth_results_without_authserv_id_authenticates(self):
+        """Exchange Online and some MTAs omit the authserv-id token and start
+        the header directly with a method clause; the first clause must not be
+        discarded."""
+        ok, reason = self._verify(
+            "user@contoso.com",
+            [
+                "spf=pass (sender IP is 40.92.0.10) smtp.mailfrom=contoso.com; "
+                "dkim=none header.d=contoso.com; dmarc=none action=none header.from=contoso.com"
+            ],
+        )
+        self.assertTrue(ok, reason)
+
+    def test_auth_results_without_semicolon_parsed_as_single_clause(self):
+        """A header without any semicolon is a single clause, not an empty one."""
+        ok, reason = self._verify(
+            "user@example.com",
+            ["mx.example.com spf=pass smtp.mailfrom=example.com"],
+        )
+        self.assertTrue(ok, reason)
+
+    def test_dkim_pass_does_not_trust_visible_header_from(self):
+        """DKIM=pass with only a visible-From-derived header.from must not
+        authenticate: header.from mirrors the attacker-controlled From header,
+        not a DKIM signing identity (GHSA-rxqh-5572-8m77 residual path)."""
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["mx.google.com; dkim=pass header.from=example.com"],
+        )
+        self.assertFalse(ok, reason)
+
+    def test_dkim_misaligned_identity_with_matching_header_from_rejected(self):
+        """A DKIM pass signed by evil.com plus a matching visible From must be
+        rejected; the current main authenticates this spoofing scenario."""
+        ok, reason = self._verify(
+            "admin@example.com",
+            [
+                "mx.google.com; dkim=pass header.i=@evil.com header.s=x header.b=y; "
+                "spf=fail smtp.mailfrom=evil.com; dmarc=fail header.from=admin@example.com"
+            ],
+        )
+        self.assertFalse(ok, reason)
+
+
 if __name__ == "__main__":
     unittest.main()

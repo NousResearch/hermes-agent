@@ -158,6 +158,10 @@ Hermes has two entry points: start the terminal UI with `hermes`, or run the gat
 
 For the full command lists, see the [CLI guide](https://hermes-agent.nousresearch.com/docs/user-guide/cli) and the [Messaging Gateway guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).
 
+When an external service restart stops an idle gateway, Hermes skips the home-channel
+interruption warning because no active task will be interrupted. Gateway-initiated
+restarts still announce the restart in the configured home channel.
+
 ---
 
 ## Documentation

@@ -121,6 +121,80 @@ async def test_in_chat_restart_skips_home_shutdown_even_with_active_session():
 
 
 @pytest.mark.asyncio
+async def test_idle_in_chat_restart_does_not_send_interruption_warning():
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(thread_id="42")
+    source.message_id = "restart-command"
+    runner._restart_requested = True
+    runner._restart_command_source = source
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id=source.chat_id,
+        name="Telegram",
+        thread_id=source.thread_id,
+    )
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.sent_calls == []
+
+
+@pytest.mark.asyncio
+async def test_idle_external_shutdown_skips_home_channel_notification():
+    """External stop/restart (systemd, cron) with no running agents must not
+    broadcast the interruption warning to home channels (#20103, #29846)."""
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-chat",
+        name="Telegram Home",
+    )
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.sent_calls == []
+
+
+@pytest.mark.asyncio
+async def test_in_chat_restart_does_not_write_home_startup_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    source = make_restart_source(thread_id="42")
+    source.message_id = "restart-command"
+    runner._restart_command_source = source
+    runner._launch_systemd_restart_shortcut = MagicMock()
+    monkeypatch.setenv("INVOCATION_ID", "systemd-test")
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop(restart=True, service_restart=True)
+
+    assert not (tmp_path / ".restart_pending.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_drain_active_agents_throttles_status_updates():
+    runner, _adapter = make_restart_runner()
+    runner._update_runtime_status = MagicMock()
+
+    runner._running_agents = {"a": MagicMock(), "b": MagicMock()}
+
+    async def finish_agents():
+        await asyncio.sleep(0.12)
+        runner._running_agents.pop("a")
+        await asyncio.sleep(0.12)
+        runner._running_agents.clear()
+
+    task = asyncio.create_task(finish_agents())
+    await runner._drain_active_agents(1.0)
+    await task
+
+    # Start, one count-change update, and final update. Allow one extra update
+    # if the loop observes the zero-agent state before exiting.
+    assert 3 <= runner._update_runtime_status.call_count <= 4
+
+
+@pytest.mark.asyncio
 async def test_gateway_stop_kills_tool_subprocesses_before_adapter_disconnect_on_timeout(monkeypatch):
     """On drain timeout, tool subprocesses must be killed BEFORE adapter
     disconnect so systemd's TimeoutStopSec doesn't SIGKILL the cgroup with
@@ -269,5 +343,4 @@ def test_pid_exists_zombie_via_psutil_returns_false(monkeypatch):
     monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
     assert status._pid_exists(4242) is False
-
 

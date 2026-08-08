@@ -167,6 +167,23 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
         pass
 
 
+def _emit_response(stream, response: str) -> None:
+    """Write the final response to stdout, scrubbing lone surrogates.
+
+    Defense-in-depth for #80366: ``run_conversation`` sanitizes its result
+    at the egress boundary, but any string written to a UTF-8 stream must
+    be encodable regardless of origin (e.g. text resumed from sessions
+    persisted before the boundary fix), so the sink protects itself too.
+    """
+    from agent.message_sanitization import _sanitize_surrogates
+
+    text = _sanitize_surrogates(response)
+    stream.write(text)
+    if not text.endswith("\n"):
+        stream.write("\n")
+    stream.flush()
+
+
 def run_oneshot(
     prompt: str,
     model: Optional[str] = None,
@@ -278,10 +295,7 @@ def run_oneshot(
     _write_usage_file(usage_file, result)
 
     if response:
-        real_stdout.write(response)
-        if not response.endswith("\n"):
-            real_stdout.write("\n")
-        real_stdout.flush()
+        _emit_response(real_stdout, response)
 
     if (result.get("failed") or result.get("partial")) and not (response or "").strip():
         return 2

@@ -475,8 +475,33 @@ def _sanitize_structure_non_ascii(payload: Any) -> bool:
     return found
 
 
+# Text fields of a run_conversation result that flow to UTF-8 sinks
+# (oneshot stdout, gateway sends, session export). Every runtime — chat
+# completions, the codex app-server, the responses adapters — converges on
+# one result dict, so sanitizing these fields once at that boundary closes
+# the lone-surrogate crash class (#80366) for all of them: chat-completions
+# ingestion already scrubs, but the other runtimes and the failure-string
+# paths (which can embed model text) do not.
+_RESULT_TEXT_EGRESS_FIELDS = ("final_response", "error", "interrupt_message")
+
+
+def _sanitize_result_egress(result):
+    """Scrub lone surrogates from a run result's text egress fields.
+
+    In-place and idempotent; a fast no-op for results without surrogates.
+    Non-dict results and non-string fields pass through untouched.
+    """
+    if isinstance(result, dict):
+        for key in _RESULT_TEXT_EGRESS_FIELDS:
+            value = result.get(key)
+            if isinstance(value, str) and _SURROGATE_RE.search(value):
+                result[key] = _SURROGATE_RE.sub("\ufffd", value)
+    return result
+
+
 __all__ = [
     "_SURROGATE_RE",
+    "_sanitize_result_egress",
     "close_interrupted_tool_sequence",
     "_sanitize_surrogates",
     "_sanitize_structure_surrogates",

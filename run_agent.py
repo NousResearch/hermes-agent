@@ -176,6 +176,7 @@ from agent.process_bootstrap import _get_proxy_from_env  # noqa: F401
 from agent.message_sanitization import (  # noqa: F401
     _SURROGATE_RE,
     _sanitize_surrogates,
+    _sanitize_result_egress,
     _sanitize_structure_surrogates,
     _sanitize_messages_surrogates,
     _escape_invalid_chars_in_json_strings,
@@ -7936,6 +7937,10 @@ class AIAgent:
                     persist_user_display_metadata=persist_user_display_metadata,
                     moa_config=moa_config,
                 )
+            # Egress boundary for the lone-surrogate class (#80366): every
+            # runtime converges here before callers hand the text to UTF-8
+            # sinks (oneshot stdout, gateway sends, exports).
+            result = _sanitize_result_egress(result)
             terminal = result if isinstance(result, dict) else {}
             if terminal.get("interrupted") is True:
                 relay_outcome = "cancelled"

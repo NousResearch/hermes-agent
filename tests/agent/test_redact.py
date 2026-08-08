@@ -66,6 +66,14 @@ class TestKnownPrefixes:
 
 
 
+    def test_gemini_aq_key(self):
+        """Gemini AQ. authorization keys must be redacted (issue #66920)."""
+        result = redact_sensitive_text("AQ.Abc123def456ghi789jklmno01234567890")
+        assert "Abc123def456" not in result
+
+    def test_perplexity_key(self):
+        result = redact_sensitive_text("pplx-abcdef123456789012345")
+        assert "abcdef12345" not in result
 
 
     def test_fireworks_keys(self):

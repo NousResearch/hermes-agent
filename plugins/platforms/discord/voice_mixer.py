@@ -153,6 +153,87 @@ class MixerChild:
         return samples
 
 
+class StreamingSpeechChild(MixerChild):
+    """A speech child fed incrementally while it is already playing.
+
+    ``MixerChild`` wraps a complete clip: ``read_frame`` walks a fixed buffer
+    and reports ``finished`` the moment it runs off the end. A streaming reply
+    has no end yet — audio arrives clause by clause while the model is still
+    generating — so running dry must mean "wait", not "done", or the mixer
+    would drop the child mid-sentence and release the duck.
+
+    This child therefore:
+
+    * appends incoming PCM to its buffer (``feed``);
+    * emits a silent frame when it is starved but still open, which holds both
+      the slot in the mixer and the ambient duck;
+    * finishes only once ``close()`` has been called *and* the buffer has
+      drained, so the tail of the last clause is never clipped.
+
+    Producer and consumer run on different threads — the gateway event loop
+    writes, discord.py's sender thread reads — so the buffer has its own lock.
+    """
+
+    __slots__ = ("_buf", "_closed", "_lock", "_starved_frames")
+
+    def __init__(self, name: str, **kwargs):
+        super().__init__(name, b"", **kwargs)
+        self._buf = bytearray()
+        self._closed = False
+        self._lock = threading.Lock()
+        self._starved_frames = 0
+
+    def feed(self, pcm: bytes) -> None:
+        """Append PCM (48 kHz / stereo / s16le). Ignored once closed."""
+        if not pcm:
+            return
+        with self._lock:
+            if self._closed:
+                return
+            self._buf.extend(pcm)
+
+    def close(self) -> None:
+        """Signal end-of-stream; the child finishes once the buffer drains."""
+        with self._lock:
+            self._closed = True
+
+    @property
+    def starved_frames(self) -> int:
+        """Frames of silence emitted while waiting for the producer."""
+        with self._lock:
+            return self._starved_frames
+
+    def read_frame(self):
+        if self._finished:
+            return None
+
+        with self._lock:
+            if len(self._buf) >= FRAME_SIZE:
+                chunk = bytes(self._buf[:FRAME_SIZE])
+                del self._buf[:FRAME_SIZE]
+            elif self._closed:
+                if not self._buf:
+                    self._finished = True
+                    return None
+                # Final partial frame — pad rather than clip the last syllable.
+                chunk = bytes(self._buf) + b"\x00" * (FRAME_SIZE - len(self._buf))
+                self._buf.clear()
+            else:
+                # Producer hasn't caught up. Hold the slot with silence.
+                self._starved_frames += 1
+                chunk = SILENCE_FRAME
+
+        np = _require_numpy()
+        samples = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
+        gain = self.gain
+        if self.fade_frames and self._fade_done < self.fade_frames:
+            self._fade_done += 1
+            gain *= self._fade_done / self.fade_frames
+        if gain != 1.0:
+            samples = samples * gain
+        return samples
+
+
 class VoiceMixer(discord.AudioSource):
     """A continuous ``discord.AudioSource`` that mixes N child streams.
 
@@ -229,6 +310,27 @@ class VoiceMixer(discord.AudioSource):
             self._duck_release_left = 0
             if self._ambient is not None:
                 self._ambient.gain = self._duck_gain
+
+    def begin_speech_stream(self, *, gain: Optional[float] = None,
+                            fade_in_ms: int = 40) -> "StreamingSpeechChild":
+        """Open an incrementally-fed speech child over the ambient bed.
+
+        The streaming counterpart of :meth:`play_speech`: same ducking and
+        fade-in, but the caller feeds PCM as it is synthesised and calls
+        ``close()`` when the reply ends.
+        """
+        with self._lock:
+            child = StreamingSpeechChild(
+                "speech-stream", loop=False,
+                gain=self._speech_gain if gain is None else float(gain),
+                is_speech=True, fade_in_ms=fade_in_ms,
+            )
+            self._speech.append(child)
+            self._speech_active = True
+            self._duck_release_left = 0
+            if self._ambient is not None:
+                self._ambient.gain = self._duck_gain
+            return child
 
     @property
     def speech_active(self) -> bool:
@@ -307,6 +409,99 @@ class VoiceMixer(discord.AudioSource):
 # ----------------------------------------------------------------------
 # PCM helpers
 # ----------------------------------------------------------------------
+
+class PCMResampler:
+    """Convert streaming s16le PCM to the mixer's 48 kHz / stereo format.
+
+    A TTS provider emits whatever its model produces -- commonly 24 kHz mono --
+    while Discord's voice socket wants 48 kHz stereo. Converting per chunk
+    naively would click at every boundary twice over: a chunk can split a
+    sample across its last byte, and linear interpolation needs the previous
+    chunk's final sample to place the first interpolated point. Both pieces of
+    state are carried here, so a stream converted in N chunks is sample-for-
+    sample identical to the same audio converted in one.
+
+    Downmixes multi-channel input to mono first (averaging), then upsamples,
+    then duplicates to stereo.
+    """
+
+    __slots__ = ("src_rate", "src_channels", "_tail_byte", "_carry", "_consumed", "_next_out")
+
+    def __init__(self, src_rate: int, src_channels: int = 1):
+        if src_rate <= 0:
+            raise ValueError(f"invalid sample rate: {src_rate}")
+        if src_channels <= 0:
+            raise ValueError(f"invalid channel count: {src_channels}")
+        self.src_rate = int(src_rate)
+        self.src_channels = int(src_channels)
+        self._tail_byte = b""     # odd byte left by a chunk splitting a sample
+        self._carry = None        # last mono sample of the previous chunk
+        self._consumed = 0        # count of input samples already released
+        self._next_out = 0        # index of the next output sample to emit
+
+    def convert(self, pcm: bytes) -> bytes:
+        """Return *pcm* as 48 kHz stereo s16le, carrying boundary state."""
+        if not pcm:
+            return b""
+        np = _require_numpy()
+
+        buf = self._tail_byte + pcm
+        usable = len(buf) - (len(buf) % 2)
+        self._tail_byte = buf[usable:]
+        if usable <= 0:
+            return b""
+        mono = np.frombuffer(buf[:usable], dtype=np.int16).astype(np.float32)
+
+        if self.src_channels > 1:
+            frames = len(mono) // self.src_channels
+            if frames == 0:
+                # Not a whole multi-channel frame yet — hold it for the next call.
+                self._tail_byte = buf[:usable] + self._tail_byte
+                return b""
+            extra = len(mono) - frames * self.src_channels
+            if extra:
+                self._tail_byte = mono[-extra:].astype(np.int16).tobytes() + self._tail_byte
+            mono = mono[: frames * self.src_channels].reshape(frames, self.src_channels).mean(axis=1)
+
+        if len(mono) == 0:
+            return b""
+
+        if self.src_rate == SAMPLE_RATE:
+            up = mono
+        else:
+            ratio = SAMPLE_RATE / float(self.src_rate)
+            # Global input index of this chunk's first sample.
+            base = self._consumed
+            if self._carry is None:
+                src = mono
+                src_base = base                       # src[0] is input[base]
+            else:
+                src = np.concatenate(([self._carry], mono))
+                src_base = base - 1                   # src[0] is input[base-1]
+            last_index = base + len(mono) - 1         # newest input sample we hold
+
+            # Emit every output whose source position is fully covered, and no
+            # more — the tail is left for the next chunk rather than being
+            # clamped, which is what made chunked output differ from whole.
+            n_out = int(np.floor(last_index * ratio)) - self._next_out + 1
+            if n_out <= 0:
+                self._carry = float(mono[-1])
+                self._consumed += len(mono)
+                return b""
+            ks = self._next_out + np.arange(n_out, dtype=np.float64)
+            idx = ks / ratio - src_base
+            up = np.interp(idx, np.arange(len(src), dtype=np.float64), src)
+            self._next_out += n_out
+
+        self._carry = float(mono[-1])
+        self._consumed += len(mono)
+
+        up = np.asarray(up, dtype=np.float64)
+        np.clip(up, -32768, 32767, out=up)
+        mono16 = up.astype(np.int16)
+        stereo = np.repeat(mono16[:, None], CHANNELS, axis=1).reshape(-1)
+        return stereo.tobytes()
+
 
 def decode_to_pcm(path: str, *, timeout: float = 30.0) -> Optional[bytes]:
     """Decode any audio file to 48 kHz / stereo / s16le PCM via ffmpeg.

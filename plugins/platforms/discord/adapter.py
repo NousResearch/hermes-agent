@@ -148,12 +148,15 @@ from gateway.platforms.helpers import (
     convert_table_to_bullets,
 )
 from utils import atomic_json_write, env_float, env_int
+from dataclasses import dataclass
 from gateway.platforms.base import (
+    AudioFormat,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
     ProcessingOutcome,
     SendResult,
+    StreamingTTSHandle,
     cache_image_from_url,
     cache_image_from_bytes,
     cache_audio_from_url,
@@ -471,6 +474,20 @@ def check_discord_requirements() -> bool:
     DISCORD_AVAILABLE = True
     _define_discord_view_classes()
     return True
+
+
+@dataclass
+class _DiscordStreamingTTSHandle(StreamingTTSHandle):
+    """Per-stream state for a Discord voice-channel TTS stream.
+
+    ``child`` is the mixer child being fed; ``resampler`` carries the
+    boundary state that makes chunk-by-chunk conversion identical to
+    converting the whole reply at once.
+    """
+
+    guild_id: int = 0
+    child: Any = None
+    resampler: Any = None
 
 
 def _build_allowed_mentions():
@@ -3774,6 +3791,225 @@ class DiscordAdapter(BasePlatformAdapter):
                 success = await self.play_in_voice_channel(gid, audio_path)
                 return SendResult(success=success)
         return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
+
+    # ------------------------------------------------------------------
+    # Streaming TTS (gateway/streaming_tts_consumer.py drives these)
+    # ------------------------------------------------------------------
+
+    def _streaming_tts_guild(self, chat_id: str) -> Optional[int]:
+        """Guild whose voice channel is bound to *chat_id* and can stream.
+
+        Streaming needs the continuous mixer: it is the only playback path that
+        can accept audio after playback has already started. The legacy
+        one-shot FFmpegPCMAudio path takes a finished file, so a chat on that
+        path declines and keeps the whole-file behaviour.
+        """
+        mixers = getattr(self, "_voice_mixers", None) or {}
+        for gid, text_ch_id in (getattr(self, "_voice_text_channels", None) or {}).items():
+            if str(text_ch_id) != str(chat_id):
+                continue
+            if not self.is_in_voice_channel(gid):
+                continue
+            if mixers.get(gid) is None:
+                continue
+            return gid
+        return None
+
+    def supports_streaming_tts(self, chat_id: str, audio_format: "AudioFormat") -> bool:
+        """True when this chat maps to a live voice channel running the mixer."""
+        try:
+            if int(getattr(audio_format, "sample_width", 2)) != 2:
+                # The mixer is s16le throughout; anything else would need a
+                # bit-depth conversion this path has no reason to grow.
+                return False
+            # A provider declaring a nonsense rate or channel count is declined
+            # rather than coerced to a default: silently retuning its audio
+            # would play the reply at the wrong pitch. Falling back to
+            # whole-file TTS is the honest outcome.
+            if int(getattr(audio_format, "sample_rate", 0)) <= 0:
+                return False
+            if int(getattr(audio_format, "channels", 0)) <= 0:
+                return False
+        except (TypeError, ValueError):
+            return False
+        return self._streaming_tts_guild(chat_id) is not None
+
+    async def begin_streaming_tts(
+        self,
+        chat_id: str,
+        audio_format: "AudioFormat",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional["StreamingTTSHandle"]:
+        """Open an incrementally-fed speech stream on the guild's mixer."""
+        guild_id = self._streaming_tts_guild(chat_id)
+        if guild_id is None:
+            return None
+        mixer = (getattr(self, "_voice_mixers", None) or {}).get(guild_id)
+        if mixer is None:
+            return None
+        try:
+            from voice_mixer import PCMResampler
+        except ImportError:
+            from .voice_mixer import PCMResampler
+
+        # Playback is activity: hold off the inactivity disconnect for the
+        # whole stream, exactly as play_in_voice_channel does for a clip.
+        self._cancel_voice_timeout(guild_id)
+        child = None
+        try:
+            child = mixer.begin_speech_stream(
+                gain=float(self._voice_fx_cfg.get("speech_gain", 1.0)),
+            )
+            # Discord's voice socket clips the first ~100-200ms after it starts
+            # sending; the whole-file path prepends the same silence.
+            lead = self._lead_silence_bytes()
+            if lead:
+                child.feed(lead)
+            handle = _DiscordStreamingTTSHandle(
+                chat_id=str(chat_id),
+                audio_format=audio_format,
+                guild_id=guild_id,
+                child=child,
+                # supports_streaming_tts() already rejected a non-positive
+                # rate or channel count, so these are read plainly; the
+                # defaults only cover an object that isn't an AudioFormat.
+                resampler=PCMResampler(
+                    int(getattr(audio_format, "sample_rate", 24000)),
+                    int(getattr(audio_format, "channels", 1)),
+                ),
+            )
+            # Echo prevention, same as the clip path.
+            receiver = (getattr(self, "_voice_receivers", None) or {}).get(guild_id)
+            if receiver:
+                try:
+                    receiver.pause()
+                except Exception:
+                    pass
+            logger.info("[%s] Streaming TTS started in voice channel (guild=%d)", self.name, guild_id)
+            return handle
+        except Exception as exc:
+            logger.warning("[%s] Could not start streaming TTS: %s", self.name, exc)
+            # A child registered before the failure would otherwise sit open and
+            # starved forever: mixer.speech_active never clears, the ambient bed
+            # stays ducked for the rest of the session, and every later clip
+            # queues under a stream that will never produce audio.
+            if child is not None:
+                try:
+                    child.close()
+                    mixer.stop_speech()
+                except Exception:
+                    pass
+            self._resume_after_streaming_tts(guild_id)
+            return None
+
+    async def write_streaming_tts(self, handle: "StreamingTTSHandle", chunk: bytes) -> None:
+        """Resample one PCM chunk into the mixer's format and queue it."""
+        if not chunk or handle is None or getattr(handle, "aborted", False):
+            return
+        child = getattr(handle, "child", None)
+        resampler = getattr(handle, "resampler", None)
+        if child is None or resampler is None:
+            return
+        # Deliberately NOT swallowed. The consumer marks the handle audible
+        # (and suppresses whole-file fallback) on any normal return from this
+        # method -- gateway/streaming_tts_consumer.py does
+        # ``await write_streaming_tts(...)`` then unconditionally sets
+        # ``audible = True``. Returning quietly after a failed conversion would
+        # therefore claim audio played when none did, and the user would get
+        # silence with the fallback already suppressed. Raising lets the
+        # consumer's error path keep the fallback while nothing is audible yet.
+        try:
+            pcm = await asyncio.to_thread(resampler.convert, chunk)
+        except Exception as exc:
+            logger.warning("[%s] streaming TTS resample failed: %s", self.name, exc)
+            raise
+        if not pcm:
+            return
+        child.feed(pcm)
+        # Mirrors the consumer's own bookkeeping; harmless if it sets it too.
+        handle.audible = True
+
+    async def finish_streaming_tts(self, handle: "StreamingTTSHandle", *, interrupted: bool = False) -> None:
+        """Close the stream and, on a normal end, wait for the tail to play.
+
+        ``child.close()`` only stops new input -- the child keeps handing
+        buffered PCM to the mixer afterwards. Un-pausing the receiver and
+        re-arming the inactivity timer at that moment would open the mic while
+        the bot is still speaking (echo) and start counting idle time against a
+        reply in progress. ``play_in_voice_channel`` has the same requirement
+        and solves it by waiting on ``mixer.speech_active``; this mirrors that,
+        with the same configured playback timeout as the ceiling.
+
+        An interrupt skips the wait: the point of ``interrupted=True`` is to
+        stop speaking now.
+        """
+        if handle is None:
+            return
+        child = getattr(handle, "child", None)
+        guild_id = int(getattr(handle, "guild_id", 0) or 0)
+        mixer = (getattr(self, "_voice_mixers", None) or {}).get(guild_id)
+        try:
+            if child is not None:
+                if interrupted:
+                    if mixer is not None:
+                        mixer.stop_speech()
+                    child.close()
+                else:
+                    child.close()
+                    await self._await_streaming_tts_drain(mixer, child)
+        finally:
+            self._resume_after_streaming_tts(guild_id)
+
+    async def _await_streaming_tts_drain(self, mixer, child) -> None:
+        """Block until the closed stream child has finished playing out."""
+        if mixer is None or child is None:
+            return
+        timeout = float(self._playback_timeout_limit())
+        started = time.monotonic()
+        while mixer.speech_active and not getattr(child, "finished", False):
+            if time.monotonic() - started > timeout:
+                logger.warning(
+                    "[%s] Streaming TTS playout timed out after %.1fs; stopping",
+                    self.name, timeout,
+                )
+                mixer.stop_speech()
+                break
+            await asyncio.sleep(0.05)
+
+    async def abort_streaming_tts(self, handle: "StreamingTTSHandle", error: Optional[str] = None) -> None:
+        """Drop the stream. Idempotent — late chunks are ignored, not raised."""
+        if handle is None:
+            return
+        if getattr(handle, "aborted", False):
+            return
+        handle.aborted = True
+        guild_id = int(getattr(handle, "guild_id", 0) or 0)
+        child = getattr(handle, "child", None)
+        try:
+            if child is not None:
+                child.close()
+            mixer = (getattr(self, "_voice_mixers", None) or {}).get(guild_id)
+            if mixer is not None:
+                mixer.stop_speech()
+            if error:
+                logger.info("[%s] Streaming TTS aborted (guild=%d): %s", self.name, guild_id, error)
+        finally:
+            self._resume_after_streaming_tts(guild_id)
+
+    def _resume_after_streaming_tts(self, guild_id: int) -> None:
+        """Un-pause the receiver and re-arm the inactivity timer."""
+        if not guild_id:
+            return
+        receiver = (getattr(self, "_voice_receivers", None) or {}).get(guild_id)
+        if receiver:
+            try:
+                receiver.resume()
+            except Exception:
+                pass
+        try:
+            self._reset_voice_timeout(guild_id)
+        except Exception:
+            pass
 
     async def send_voice(
         self,

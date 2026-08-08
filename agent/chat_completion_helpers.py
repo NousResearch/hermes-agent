@@ -2329,11 +2329,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         # (finish_reason, reasoning) that strict APIs like Mistral reject with 422
         _needs_sanitize = agent._should_sanitize_tool_calls()
         api_messages = []
-        for msg in messages:
-            api_msg = msg.copy()
-            agent._copy_reasoning_content_for_api(msg, api_msg)
-            for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
-                api_msg.pop(internal_field, None)
+
+        def _strip_chat_completions_schema_foreign(api_msg):
             # Strict OpenAI-compatible gateways (Fireworks-backed OpenCode Go,
             # Mistral, Moonshot/Kimi) reject any message key outside the Chat
             # Completions schema. The main loop drops these via
@@ -2344,23 +2341,25 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # timestamp (preserved on gateway user replay entries for the
             # stale-confirmation expiry check — #47868 rejection class),
             # and every Hermes-internal underscore-prefixed scaffolding key.
-            for schema_foreign in ("tool_name", "codex_reasoning_items", "codex_message_items", "timestamp"):
+            for schema_foreign in (
+                "tool_name",
+                "codex_reasoning_items",
+                "codex_message_items",
+                "timestamp",
+            ):
                 api_msg.pop(schema_foreign, None)
             # api_content (the persist-what-you-send sidecar) carries the
-            # exact bytes every main-loop call sent for this message —
-            # substitute it before dropping the key (Hermes bookkeeping,
-            # never a provider field), mirroring the loop's api_messages
-            # build. Popping without substituting would send CLEAN content
-            # here, diverging the summary request's prefix at the EARLIEST
-            # sidecar-carrying message and re-prefilling the whole transcript
-            # at exactly the moment the context is largest.
+            # exact bytes every main-loop call sent for this message. Mirror
+            # the loop before dropping this Hermes-only bookkeeping field.
             substitute_api_content(api_msg)
-            for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
+            for internal_key in [
+                k for k in api_msg
+                if isinstance(k, str) and k.startswith("_")
+            ]:
                 api_msg.pop(internal_key, None)
             if _needs_sanitize:
-                # In MoA mode, agent.model is the virtual preset name,
-                # not the actual aggregator model.  Resolve the real
-                # aggregator model so Gemini preserves thought_signature.
+                # In MoA mode, agent.model is the virtual preset name, not the
+                # actual aggregator model used for thought-signature handling.
                 _sanitize_model = agent.model
                 if agent.provider == "moa":
                     _moa_client = getattr(agent, "client", None)
@@ -2369,7 +2368,14 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                         if _agg_slot and _agg_slot.get("model"):
                             _sanitize_model = _agg_slot["model"]
                 agent._sanitize_tool_calls_for_strict_api(api_msg, model=_sanitize_model)
-            api_messages.append(api_msg)
+            return api_msg
+
+        for msg in messages:
+            api_msg = msg.copy()
+            agent._copy_reasoning_content_for_api(msg, api_msg)
+            for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
+                api_msg.pop(internal_field, None)
+            api_messages.append(_strip_chat_completions_schema_foreign(api_msg))
 
         effective_system = agent._cached_system_prompt or ""
         if agent.ephemeral_system_prompt:
@@ -2379,7 +2385,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         if agent.prefill_messages:
             sys_offset = 1 if effective_system else 0
             for idx, pfm in enumerate(agent.prefill_messages):
-                api_messages.insert(sys_offset + idx, pfm.copy())
+                api_messages.insert(
+                    sys_offset + idx,
+                    _strip_chat_completions_schema_foreign(pfm.copy()),
+                )
 
         # Same safety net as the main loop: repair tool-call/result
         # pairing before asking for a final summary.  Compression and

@@ -114,11 +114,11 @@ def _pending_dir(subsystem: str) -> Path:
 def _dedup_key(subsystem: str, payload: Dict[str, Any]) -> Optional[tuple]:
     """Identity of what a pending write would change, ignoring its wording.
 
-    Two ``replace`` proposals sharing an ``old_text`` in the same target are
-    mutually exclusive rather than merely redundant: once either applies, the
-    other's anchor no longer exists in the file, so the second can only fail
-    or clobber. Two ``add`` proposals with byte-identical content are plainly
-    the same write.
+    ``replace`` and ``remove`` are both anchored on ``old_text``: two such
+    proposals naming the same anchor in the same target are mutually exclusive
+    rather than merely redundant, because once either applies the other's
+    anchor no longer exists in the file. Two ``add`` proposals with
+    byte-identical content are plainly the same write.
 
     Anything else returns ``None`` and is never treated as a duplicate. There
     is no safe equivalence for re-worded *content*, and collapsing proposals
@@ -127,7 +127,10 @@ def _dedup_key(subsystem: str, payload: Dict[str, Any]) -> Optional[tuple]:
     """
     action = str(payload.get("action") or "").strip().lower()
     target = str(payload.get("target") or "")
-    if action == "replace":
+    if action in ("replace", "remove"):
+        # ``remove`` is anchored the same way: memory_tool rejects a remove
+        # without ``old_text``, so two removes naming the same anchor are the
+        # same write, and after either applies the other's anchor is gone.
         old_text = payload.get("old_text")
         if isinstance(old_text, str) and old_text.strip():
             return (subsystem, action, target, old_text)

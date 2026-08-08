@@ -79,10 +79,36 @@ def test_different_add_content_both_queue():
     assert len(wa.list_pending(wa.MEMORY)) == 2
 
 
+def test_identical_removes_are_deduplicated():
+    """``remove`` is anchored on old_text, same as replace."""
+    rm = {"action": "remove", "target": "user", "old_text": "stale entry"}
+    first = _stage(dict(rm))
+    second = _stage(dict(rm))
+
+    assert second["id"] == first["id"]
+    assert len(wa.list_pending(wa.MEMORY)) == 1
+
+
+def test_removes_of_different_anchors_both_queue():
+    """Guard: distinct anchors are distinct removals."""
+    _stage({"action": "remove", "target": "user", "old_text": "one"})
+    _stage({"action": "remove", "target": "user", "old_text": "two"})
+
+    assert len(wa.list_pending(wa.MEMORY)) == 2
+
+
+def test_a_remove_and_a_replace_of_the_same_anchor_stay_separate():
+    """Deleting a line and rewriting it are different outcomes to review."""
+    _stage({"action": "remove", "target": "user", "old_text": "likes tea"})
+    _stage(_replace("likes tea", "prefers tea"))
+
+    assert len(wa.list_pending(wa.MEMORY)) == 2
+
+
 def test_actions_without_a_safe_key_are_never_deduplicated():
-    """Guard: only replace/add have a defined identity; everything else queues."""
-    _stage({"action": "remove", "target": "user", "content": "x"})
-    _stage({"action": "remove", "target": "user", "content": "x"})
+    """Guard: only replace/remove/add have a defined identity."""
+    _stage({"action": "reorder", "target": "user", "content": "x"})
+    _stage({"action": "reorder", "target": "user", "content": "x"})
 
     assert len(wa.list_pending(wa.MEMORY)) == 2
 

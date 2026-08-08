@@ -1,11 +1,19 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { $backendThemes, $pendingSkinApply, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
+import {
+  $backendCustomCSS,
+  $backendThemes,
+  $pendingSkinApply,
+  __resetBackendSkinSync,
+  ingestBackendSkin,
+} from './backend-sync'
 
 const skin = (name: string) => ({
   name,
   colors: { background: '#101020', ui_accent: '#ff33aa', banner_text: '#eeeeee' }
 })
+
+const skinWithCSS = (name: string, customCSS: string) => ({ ...skin(name), customCSS })
 
 describe('ingestBackendSkin', () => {
   beforeEach(() => __resetBackendSkinSync())
@@ -98,6 +106,50 @@ describe('ingestBackendSkin', () => {
 
     expect($backendThemes.get().mono).toBeUndefined()
     expect($pendingSkinApply.get()).toBe('mono')
+  })
+
+  it('carries customCSS for a built-in-named user skin without shadowing the palette', () => {
+    ingestBackendSkin(skinWithCSS('mono', '.chat-input { font-size: 16px; }'), { apply: true })
+
+    expect($backendThemes.get().mono).toBeUndefined() // palette policy preserved
+    expect($pendingSkinApply.get()).toBe('mono')
+    expect($backendCustomCSS.get().mono).toBe('.chat-input { font-size: 16px; }')
+  })
+
+  it('keys default-named skin CSS under the resolved desktop default', () => {
+    ingestBackendSkin(skinWithCSS('default', 'body { background: red; }'), { apply: true })
+
+    expect($backendThemes.get().default).toBeUndefined()
+    // setTheme normalizes `default` → DEFAULT_SKIN_NAME ('nous'), so the CSS
+    // must be findable under that name when the theme is derived.
+    expect($backendCustomCSS.get().nous).toBe('body { background: red; }')
+  })
+
+  it('clears customCSS when a built-in-named skin drops the field', () => {
+    ingestBackendSkin(skinWithCSS('mono', 'a { color: red; }'), { apply: true })
+    expect($backendCustomCSS.get().mono).toBe('a { color: red; }')
+
+    // Same skin, CSS removed from the YAML — the entry must go so stale rules
+    // don't linger after the next apply.
+    ingestBackendSkin(skin('mono'), { apply: true })
+
+    expect($backendCustomCSS.get().mono).toBeUndefined()
+  })
+
+  it('does not populate the CSS store for non-built-in skins (converter carries it)', () => {
+    ingestBackendSkin(skinWithCSS('neon', 'a { color: red; }'), { apply: true })
+
+    expect($backendCustomCSS.get()).toEqual({})
+    expect($backendThemes.get().neon?.customCSS).toBe('a { color: red; }')
+  })
+
+  it('reset clears the custom CSS store', () => {
+    ingestBackendSkin(skinWithCSS('mono', 'a {}'), { apply: false })
+    expect($backendCustomCSS.get().mono).toBe('a {}')
+
+    __resetBackendSkinSync()
+
+    expect($backendCustomCSS.get()).toEqual({})
   })
 
   it('ignores empty payloads', () => {

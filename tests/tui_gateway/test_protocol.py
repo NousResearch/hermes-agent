@@ -666,7 +666,7 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
 
     (tmp_path / "skins").mkdir()
     (tmp_path / "skins" / "midnight.yaml").write_text(
-        "name: midnight\ndescription: t\ncolors:\n  banner_title: '#00ffcc'\n  background: '#001010'\n"
+        "name: midnight\ndescription: t\ncolors:\n  banner_title: '#00ffcc'\n  background: '#001010'\ncustomCSS: |\n  .chat-input { font-size: 16px; }\n"
     )
     monkeypatch.setattr(skin_engine, "get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
@@ -689,6 +689,9 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
     assert [ev for ev, _ in emitted] == ["skin.changed"]
     assert emitted[0][1]["name"] == "midnight"
     assert emitted[0][1]["colors"]["banner_title"] == "#00ffcc"
+    # customCSS rides the same payload end-to-end: parsed from the YAML,
+    # stripped, and emitted by resolve_skin().
+    assert emitted[0][1]["customCSS"] == ".chat-input { font-size: 16px; }"
 
 
 def test_broadcast_skin_if_changed_on_any_signature_move(server, monkeypatch):

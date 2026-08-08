@@ -17,7 +17,7 @@ import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
 import { persistString, persistStringRecord, storedString, storedStringRecord } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
-import { $backendThemes, $pendingSkinApply } from './backend-sync'
+import { $backendCustomCSS, $backendThemes, $pendingSkinApply } from './backend-sync'
 import { hexToRgb, mix, readableOn } from './color'
 import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
 import type { DesktopTheme, DesktopThemeColors } from './types'
@@ -133,7 +133,12 @@ function deriveTheme(skinName: string, mode: 'light' | 'dark'): DesktopTheme {
     name: `${skinName}-${mode}`,
     label: `${seed.label} ${mode === 'light' ? 'Light' : 'Dark'}`,
     description: `${seed.label} ${mode} palette`,
-    colors: getBaseColors(skinName, mode)
+    colors: getBaseColors(skinName, mode),
+    // A backend skin named `default`/`mono`/… keeps the desktop's own palette
+    // (never shadowed — see ingestBackendSkin), but its customCSS is carried
+    // separately in $backendCustomCSS. The seed's own customCSS (non-built-in
+    // backend skins) wins when both exist.
+    customCSS: seed.customCSS ?? $backendCustomCSS.get()[skinName]
   }
 }
 
@@ -256,6 +261,28 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     document.head.appendChild(link)
     INJECTED_FONT_URLS.add(typo.fontUrl)
   }
+
+  // Inject / clear customCSS from the skin (mirrors web/src/themes/context.tsx).
+  // A theme carries the optional customCSS field; we inject/remove a single
+  // <style> tag to keep the DOM clean and avoid stale rules on switch.
+  const cssId = 'hermes-desktop-custom-css'
+  let cssEl = document.getElementById(cssId) as HTMLStyleElement | null
+  const customCSS = theme.customCSS?.trim()
+
+  if (!customCSS) {
+    if (cssEl) {
+      cssEl.remove()
+    }
+  } else {
+    if (!cssEl) {
+      cssEl = document.createElement('style')
+      cssEl.id = cssId
+      cssEl.dataset.hermesSkinCSS = 'true'
+      document.head.appendChild(cssEl)
+    }
+
+    cssEl.textContent = customCSS
+  }
 }
 
 // Pin Electron's nativeTheme to the app's mode so the NATIVE window chrome
@@ -321,6 +348,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // grid, and `/skin` without a reload.
   const userThemes = useStore($userThemes)
   const backendThemes = useStore($backendThemes)
+  const backendCustomCSS = useStore($backendCustomCSS)
   const registryVersion = useStore($registryVersion)
 
   const availableThemes = useMemo(
@@ -358,9 +386,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     () => deriveTheme(themeName, resolvedMode),
     // deriveTheme resolves its seed through the merged registry, so the theme
     // stores are its reactivity too — an in-place palette edit of the ACTIVE
-    // skin (live theme authoring) must repaint, not just a name switch.
+    // skin (live theme authoring) must repaint, not just a name switch. The
+    // backend CSS store matters the same way for built-in-named user skins.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [themeName, resolvedMode, userThemes, backendThemes, registryVersion]
+    [themeName, resolvedMode, userThemes, backendThemes, backendCustomCSS, registryVersion]
   )
 
   // What actually gets painted (matches the `.dark` class applyTheme toggles).

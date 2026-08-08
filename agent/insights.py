@@ -20,7 +20,7 @@ import json
 import sqlite3
 import time
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from agent.usage_pricing import (
@@ -170,6 +170,7 @@ class InsightsEngine:
                     "top_skills": [],
                 },
                 "activity": {},
+                "daily_series": self._compute_daily_series(sessions, days),
                 "top_sessions": [],
             }
 
@@ -180,6 +181,7 @@ class InsightsEngine:
         tools = self._compute_tool_breakdown(tool_usage)
         skills = self._compute_skill_breakdown(skill_usage)
         activity = self._compute_activity_patterns(sessions)
+        daily_series = self._compute_daily_series(sessions, days)
         top_sessions = self._compute_top_sessions(sessions)
 
         return {
@@ -193,6 +195,7 @@ class InsightsEngine:
             "tools": tools,
             "skills": skills,
             "activity": activity,
+            "daily_series": daily_series,
             "top_sessions": top_sessions,
         }
 
@@ -892,6 +895,59 @@ class InsightsEngine:
             "active_days": active_days,
             "max_streak": max_streak,
         }
+
+    def _compute_daily_series(
+        self, sessions: List[Dict], days: int
+    ) -> Dict[str, Dict[str, Any]]:
+        """Aggregate token usage and estimated cost per calendar day.
+
+        Builds a per-day time series of token/cost buckets over the last
+        ``days`` calendar days, zero-filling days without sessions so
+        consumers (e.g. a cost/token intensity heatmap) get a continuous
+        axis without re-implementing ``_get_sessions`` + ``_estimate_cost``.
+
+        Returns a dict keyed by ``%Y-%m-%d`` in chronological order::
+
+            {
+                "2026-07-04": {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "estimated_cost_usd": 0.0,
+                },
+                ...
+            }
+        """
+        # Zero-fill the whole window first so the axis is continuous,
+        # then accumulate sessions into it (keeps chronological order).
+        today = datetime.now()
+        series: Dict[str, Dict[str, Any]] = {}
+        for offset in range(days - 1, -1, -1):
+            day = (today - timedelta(days=offset)).strftime("%Y-%m-%d")
+            series[day] = {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read_tokens": 0,
+                "estimated_cost_usd": 0.0,
+            }
+
+        for s in sessions:
+            ts = s.get("started_at")
+            if not ts:
+                continue
+            day = datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+            bucket = series.get(day)
+            if bucket is None:
+                # Outside the requested window — matches the cutoff used by
+                # generate() when fetching sessions.
+                continue
+            bucket["input_tokens"] += s.get("input_tokens") or 0
+            bucket["output_tokens"] += s.get("output_tokens") or 0
+            bucket["cache_read_tokens"] += s.get("cache_read_tokens") or 0
+            estimated, _ = _estimate_cost(s)
+            bucket["estimated_cost_usd"] += estimated
+
+        return series
 
     def _compute_top_sessions(self, sessions: List[Dict]) -> List[Dict]:
         """Find notable sessions (longest, most messages, most tokens)."""

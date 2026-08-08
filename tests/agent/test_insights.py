@@ -3,6 +3,7 @@
 import sqlite3
 import time
 import pytest
+from datetime import datetime
 
 from hermes_state import SessionDB
 from agent.insights import (
@@ -362,6 +363,116 @@ class TestInsightsPopulated:
         assert activity["active_days"] >= 1
         assert activity["busiest_day"] is not None
         assert activity["busiest_hour"] is not None
+
+
+class TestDailySeries:
+    def test_daily_series_shape_and_contiguity(self, populated_db):
+        engine = InsightsEngine(populated_db)
+        report = engine.generate(days=30)
+        series = report["daily_series"]
+
+        assert len(series) == 30
+        dates = list(series)
+        # Chronological and contiguous — a continuous axis for the heatmap.
+        for prev, cur in zip(dates, dates[1:]):
+            prev_dt = datetime.strptime(prev, "%Y-%m-%d")
+            cur_dt = datetime.strptime(cur, "%Y-%m-%d")
+            assert (cur_dt - prev_dt).days == 1
+        for bucket in series.values():
+            assert set(bucket) == {
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "estimated_cost_usd",
+            }
+
+    def test_daily_series_aggregates_tokens_and_cost(self, populated_db):
+        engine = InsightsEngine(populated_db)
+        report = engine.generate(days=30)
+        series = report["daily_series"]
+
+        # All 4 in-window sessions sum to the session-level totals.
+        assert sum(b["input_tokens"] for b in series.values()) == (
+            50000 + 20000 + 100000 + 10000
+        )
+        assert sum(b["output_tokens"] for b in series.values()) == (
+            15000 + 8000 + 40000 + 5000
+        )
+
+        # Session s4 (1 day ago, claude-sonnet) lands in a single day bucket.
+        s4_bucket = next(
+            b for b in series.values()
+            if b["input_tokens"] == 10000 and b["output_tokens"] == 5000
+        )
+        assert s4_bucket["estimated_cost_usd"] > 0
+
+        # The 45-day-old session is outside the 30-day window: no bucket
+        # carries its 5000/2000 tokens.
+        assert not any(
+            b["input_tokens"] == 5000 and b["output_tokens"] == 2000
+            for b in series.values()
+        )
+
+    def test_daily_series_zero_fills_empty_db(self, db):
+        engine = InsightsEngine(db)
+        report = engine.generate(days=7)
+        series = report["daily_series"]
+
+        assert len(series) == 7
+        assert all(
+            b["input_tokens"] == 0
+            and b["output_tokens"] == 0
+            and b["cache_read_tokens"] == 0
+            and b["estimated_cost_usd"] == 0.0
+            for b in series.values()
+        )
+
+    def test_daily_series_direct_buckets_and_window(self, db):
+        """Direct call: same-day sessions share a bucket; out-of-window and
+        timestamp-less sessions are ignored."""
+        now = time.time()
+        day = 86400
+        sessions = [
+            {
+                "id": "a",
+                "model": "gpt-4o",
+                "billing_provider": "openai",
+                "started_at": now - 2 * day,
+                "input_tokens": 1000,
+                "output_tokens": 200,
+                "cache_read_tokens": 300,
+            },
+            {
+                "id": "b",
+                "model": "gpt-4o",
+                "billing_provider": "openai",
+                "started_at": now - 2 * day,
+                "input_tokens": 500,
+                "output_tokens": 50,
+                "cache_read_tokens": 0,
+            },
+            {"id": "c", "model": "gpt-4o", "started_at": None, "input_tokens": 999},
+            {
+                "id": "d",
+                "model": "gpt-4o",
+                "billing_provider": "openai",
+                "started_at": now - 5 * day,
+                "input_tokens": 888,
+            },
+        ]
+        engine = InsightsEngine(db)
+        series = engine._compute_daily_series(sessions, days=3)
+
+        assert len(series) == 3
+        # The two same-day sessions share one bucket; out-of-window and
+        # timestamp-less sessions contributed nothing.
+        filled = [b for b in series.values() if b["input_tokens"]]
+        assert len(filled) == 1
+        assert filled[0]["input_tokens"] == 1500
+        assert filled[0]["output_tokens"] == 250
+        assert filled[0]["cache_read_tokens"] == 300
+        # Known-priced model -> non-zero estimated cost.
+        assert filled[0]["estimated_cost_usd"] > 0
 
 
 

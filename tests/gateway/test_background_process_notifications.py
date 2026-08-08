@@ -336,3 +336,69 @@ async def test_inject_watch_notification_origin_session_id_wins(monkeypatch, tmp
     result = await runner._inject_watch_notification("[SYSTEM: done]", evt)
     assert result is True
     assert posts == ["raw-origin-sid"]
+
+# ---------------------------------------------------------------------------
+# ANSI strip ordering (full buffer before tail slice)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_completion_strips_ansi_before_tail_slice(monkeypatch, tmp_path):
+    """Completion path: strip full buffer before [-1000:] so boundary escapes die."""
+    import tools.process_registry as pr_module
+
+    pad = "x" * 997
+    esc = "\x1b[31m"
+    payload = pad + esc + "RED\x1b[0m"
+    assert len(payload) > 1000
+
+    sessions = [SimpleNamespace(
+        output_buffer=payload, exited=True, exit_code=0, command="echo red",
+    )]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    await runner._run_process_watcher(_watcher_dict())
+
+    adapter.send.assert_awaited()
+    sent = adapter.send.await_args.args[1]
+    assert "\x1b" not in sent
+    assert "[31m" not in sent
+    assert "RED" in sent
+    assert "finished with exit code" in sent
+
+
+@pytest.mark.asyncio
+async def test_running_update_strips_ansi_before_tail_slice(monkeypatch, tmp_path):
+    """Periodic-status path: strip full buffer before [-500:] boundary."""
+    import tools.process_registry as pr_module
+
+    pad = "y" * 497
+    esc = "\x1b[32m"
+    payload = pad + esc + "GREEN\x1b[0m"
+    assert len(payload) > 500
+
+    # First get: running with output; later gets: None so loop ends after one update.
+    sessions = [SimpleNamespace(
+        output_buffer=payload, exited=False, exit_code=None, command="echo green",
+    )]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    await runner._run_process_watcher(_watcher_dict())
+
+    adapter.send.assert_awaited()
+    sent = adapter.send.await_args.args[1]
+    assert "still running" in sent
+    assert "\x1b" not in sent
+    assert "[32m" not in sent
+    assert "GREEN" in sent

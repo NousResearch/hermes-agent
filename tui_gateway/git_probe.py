@@ -174,7 +174,19 @@ def resolve(cwd: str) -> dict | None:
     worktree_root = repo_root(cwd)
     if not worktree_root:
         return None
-    return {"repo_root": common_repo_root(cwd) or worktree_root, "worktree_root": worktree_root}
+    # Normalize both roots to the same path spelling. `git rev-parse
+    # --show-toplevel` returns forward slashes while `os.path.realpath`
+    # (in common_repo_root) returns backslashes on Windows; on a main
+    # checkout the two describe the SAME directory, and `build_tree` decides
+    # "main vs linked worktree" by string equality
+    # (`worktree_root == repo_root`). Without normalization a main checkout
+    # is misclassified as a linked worktree, and the sidebar renders two
+    # identically-labeled lanes (the repo's own lane relabeled to the live
+    # branch + the synthetic home lane).
+    return {
+        "repo_root": os.path.normpath(common_repo_root(cwd) or worktree_root),
+        "worktree_root": os.path.normpath(worktree_root),
+    }
 
 
 def warm_roots(cwds: Iterable[str], max_workers: int = _WARM_WORKERS) -> None:

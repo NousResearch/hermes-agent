@@ -438,10 +438,20 @@ display:
   tool_progress_command: false  # set to true to enable /verbose in messaging
   # How progress is grouped on platforms that support message editing:
   #   accumulate (default) — edit one bubble in place as tools run
+  #   rolling              — keep one bounded activity bubble for the turn
   #   separate             — send one message per tool (pre-v0.9 style; noisier)
   # Only applies where tool_progress is already enabled.
-  tool_progress_grouping: accumulate   # accumulate | separate
+  tool_progress_grouping: accumulate   # accumulate | rolling | separate
 ```
+
+`rolling` is useful for long-running turns in notification-heavy chats. Hermes
+sends one `⏳ Working…` activity bubble, edits it with tool progress, concise
+interim commentary, and long-running heartbeats, then marks it complete while
+the final answer is delivered separately. When the platform's message limit is
+reached, Hermes drops the oldest complete activity entries, adds an omission
+count, and keeps editing the same bubble. It never splits an individual entry.
+The default `accumulate` mode is unchanged and starts a continuation bubble
+when the current one fills.
 
 ### `log` mode — audit file instead of chat messages
 

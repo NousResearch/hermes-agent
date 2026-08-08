@@ -66,6 +66,13 @@ class TurnRetryState:
     # ── Transport / rate-limit recovery ──────────────────────────────────
     primary_recovery_attempted: bool = False
     has_retried_429: bool = False
+    # Monotonic deadline for OmniRoute ``chat_admission_busy`` waits within
+    # this API-call block. Set on the first admission 503 to
+    # ``time.monotonic() + omniroute_admission_cumulative_budget()``; every
+    # subsequent sleep is clamped to the remaining time so the hard budget
+    # cannot be exceeded by fixed 0.2s sleep ticks or scheduler oversleep.
+    # ``None`` means no admission wait has started yet.
+    admission_deadline_mono: float | None = None
 
     # ── Auth-failure provider failover ───────────────────────────────────
     # Set once we've escalated a persistent 401/403 (after the per-provider

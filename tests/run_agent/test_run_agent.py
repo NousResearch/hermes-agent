@@ -17,7 +17,7 @@ import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from agent.codex_responses_adapter import _normalize_codex_response
@@ -1789,6 +1789,121 @@ class TestRetryAfterCap:
         status = self._drive_once(agent, 300)
         assert "Waiting 300.0s" in status
 
+
+class TestOmniRouteAdmissionRetry:
+    """#76468: structured OmniRoute chat_admission_busy 503s wait for capacity
+    without credential rotation / fallback / transport rebuild, under a hard
+    cumulative wait budget (#75223 review: per-wait caps alone were not enough).
+    """
+
+    def _admission_error(self, retry_after="1"):
+        class _AdmissionError(Exception):
+            status_code = 503
+            body = {
+                "error": {
+                    "code": "chat_admission_busy",
+                    "message": "Structurally heavy chat request capacity is busy",
+                }
+            }
+            response = SimpleNamespace(headers={"Retry-After": str(retry_after)})
+
+            def __str__(self):
+                return "Error code: 503 - admission busy"
+
+        return _AdmissionError()
+
+    def test_structured_admission_503_survives_without_rotation(self, agent):
+        calls = 0
+        default_ceiling = agent._api_max_retries
+
+        def _fake_api_call(api_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls <= default_ceiling:
+                raise self._admission_error(retry_after="1")
+            return _mock_response(content="Recovered after admission wait")
+
+        agent._interruptible_api_call = _fake_api_call
+        agent._persist_session = lambda *args, **kwargs: None
+        agent._save_trajectory = lambda *args, **kwargs: None
+        agent._recover_with_credential_pool = Mock(
+            side_effect=AssertionError("rotated credentials")
+        )
+        agent._try_activate_fallback = Mock(
+            side_effect=AssertionError("activated fallback")
+        )
+        agent._try_recover_primary_transport = Mock(
+            side_effect=AssertionError("rebuilt transport")
+        )
+
+        with patch("agent.conversation_loop.time.sleep", return_value=None):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered after admission wait"
+        assert calls == default_ceiling + 1
+        agent._recover_with_credential_pool.assert_not_called()
+        agent._try_activate_fallback.assert_not_called()
+        agent._try_recover_primary_transport.assert_not_called()
+
+    def test_cumulative_budget_caps_repeated_retry_after_30(self, agent):
+        """Repeated Retry-After: 30 must not exceed the hard 120s budget.
+
+        The admission path pins a monotonic deadline and clamps every sleep
+        tick to the remaining duration, so simulated elapsed time is strictly
+        ``<=120s`` (review on #76682: planned-delay budgets overshoot).
+        """
+        sleeps = []
+
+        def _fake_api_call(api_kwargs):
+            raise self._admission_error(retry_after="30")
+
+        agent._interruptible_api_call = _fake_api_call
+        agent._persist_session = lambda *args, **kwargs: None
+        agent._save_trajectory = lambda *args, **kwargs: None
+        agent._recover_with_credential_pool = Mock(
+            side_effect=AssertionError("rotated credentials")
+        )
+        agent._try_activate_fallback = Mock(
+            side_effect=AssertionError("activated fallback")
+        )
+        agent._try_recover_primary_transport = Mock(
+            side_effect=AssertionError("rebuilt transport")
+        )
+
+        # Shared fake clock for time.time / time.monotonic; each sleep advances
+        # it by the clamped duration so the hard deadline is enforceable.
+        clock = {"t": 1_000_000.0}
+
+        def _fake_clock():
+            return clock["t"]
+
+        def _sleep_and_advance(seconds):
+            sleeps.append(float(seconds))
+            clock["t"] += float(seconds)
+
+        with patch("agent.conversation_loop.time.time", side_effect=_fake_clock):
+            with patch(
+                "agent.conversation_loop.time.monotonic", side_effect=_fake_clock
+            ):
+                with patch(
+                    "agent.conversation_loop.time.sleep",
+                    side_effect=_sleep_and_advance,
+                ):
+                    result = agent.run_conversation("hello")
+
+        assert result["completed"] is False
+        assert result.get("failed") is True
+        assert result.get("failure_reason") == "chat_admission_busy"
+        assert "chat_admission_busy" in (result.get("error") or "")
+        # Hard cumulative budget: sum of clamped sleeps must not exceed 120s
+        # (float noise from 0.2s ticks is far below a real overshoot).
+        assert sum(sleeps) <= 120.0 + 1e-6
+        assert sum(sleeps) >= 90.0  # at least three full 30s floors
+
+        agent._recover_with_credential_pool.assert_not_called()
+        agent._try_activate_fallback.assert_not_called()
+        agent._try_recover_primary_transport.assert_not_called()
 
 
 class TestConcurrentToolExecution:

@@ -5,7 +5,15 @@ import threading
 import agent.retry_utils as retry_utils
 from types import SimpleNamespace
 
-from agent.retry_utils import adaptive_rate_limit_backoff, is_zai_coding_overload_error, jittered_backoff
+from agent.retry_utils import (
+    adaptive_rate_limit_backoff,
+    admission_retry_wait,
+    is_omniroute_admission_error,
+    is_zai_coding_overload_error,
+    jittered_backoff,
+    omniroute_admission_cumulative_budget,
+    omniroute_admission_retry_ceiling,
+)
 
 
 def test_backoff_is_exponential():
@@ -208,3 +216,53 @@ class TestParseRetryAfterSeconds:
                 raise RuntimeError("boom")
 
         assert parse_retry_after_seconds(Explosive()) is None
+
+
+def _omniroute_admission_error(*, code="chat_admission_busy", status=503, headers=None):
+    return SimpleNamespace(
+        status_code=status,
+        body={"error": {"code": code, "message": "capacity busy"}},
+        response=SimpleNamespace(headers=headers or {}),
+    )
+
+
+class TestOmniRouteAdmissionRetry:
+    def test_detects_only_exact_structured_code_on_503(self):
+        assert is_omniroute_admission_error(_omniroute_admission_error())
+        assert not is_omniroute_admission_error(
+            _omniroute_admission_error(code="gateway_draining")
+        )
+        assert not is_omniroute_admission_error(
+            _omniroute_admission_error(status=429)
+        )
+        assert not is_omniroute_admission_error(
+            SimpleNamespace(status_code=503, body="chat_admission_busy")
+        )
+
+    def test_extended_ceiling_and_budget(self):
+        assert omniroute_admission_retry_ceiling() > 3
+        assert omniroute_admission_cumulative_budget() == 120.0
+
+    def test_retry_after_is_a_floor_but_hostile_values_are_bounded(self, monkeypatch):
+        monkeypatch.setattr(
+            retry_utils,
+            "jittered_backoff",
+            lambda attempt, **kwargs: min(
+                kwargs["base_delay"] * (2 ** max(0, attempt - 1)),
+                kwargs["max_delay"],
+            ),
+        )
+        assert admission_retry_wait(1, {"Retry-After": "5"}, remaining_budget=120.0) == 5.0
+        assert admission_retry_wait(1, {"Retry-After": "999999999"}, remaining_budget=120.0) == 30.0
+        assert admission_retry_wait(4, {"Retry-After": "malformed"}, remaining_budget=120.0) == 16.0
+
+    def test_wait_respects_remaining_budget(self, monkeypatch):
+        monkeypatch.setattr(
+            retry_utils,
+            "jittered_backoff",
+            lambda attempt, **kwargs: kwargs["max_delay"],
+        )
+        # Retry-After floor 30, but only 12s of budget left → clamp to 12.
+        assert admission_retry_wait(1, {"Retry-After": "30"}, remaining_budget=12.0) == 12.0
+        assert admission_retry_wait(1, {"Retry-After": "30"}, remaining_budget=0.0) is None
+        assert admission_retry_wait(1, {"Retry-After": "30"}, remaining_budget=-1.0) is None

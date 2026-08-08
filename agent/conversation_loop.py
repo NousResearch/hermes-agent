@@ -81,8 +81,12 @@ from agent.prompt_caching import (
 )
 from agent.retry_utils import (
     adaptive_rate_limit_backoff,
+    admission_retry_wait,
+    is_omniroute_admission_error,
     is_zai_coding_overload_error,
     jittered_backoff,
+    omniroute_admission_cumulative_budget,
+    omniroute_admission_retry_ceiling,
     zai_coding_overload_retry_ceiling,
 )
 from agent.trajectory import has_incomplete_scratchpad
@@ -4031,6 +4035,7 @@ def run_conversation(
 
                 status_code = getattr(api_error, "status_code", None)
                 error_context = agent._extract_api_error_context(api_error)
+                _is_omniroute_admission = is_omniroute_admission_error(api_error)
 
                 # ── Classify the error for structured recovery decisions ──
                 _compressor = getattr(agent, "context_compressor", None)
@@ -4082,12 +4087,16 @@ def run_conversation(
                         )
                         continue
 
-                recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
-                    status_code=status_code,
-                    has_retried_429=_retry.has_retried_429,
-                    classified_reason=classified.reason,
-                    error_context=error_context,
-                )
+                # Local OmniRoute admission saturation is process-local
+                # backpressure — rotating credentials cannot free the lease.
+                recovered_with_pool = False
+                if not _is_omniroute_admission:
+                    recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
+                        status_code=status_code,
+                        has_retried_429=_retry.has_retried_429,
+                        classified_reason=classified.reason,
+                        error_context=error_context,
+                    )
                 if recovered_with_pool:
                     continue
 
@@ -4668,9 +4677,15 @@ def run_conversation(
                 )
                 if _is_zai_coding_overload:
                     max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
+                if _is_omniroute_admission:
+                    # High attempt ceiling; cumulative wait budget is binding.
+                    max_retries = max(max_retries, omniroute_admission_retry_ceiling())
                 _should_fallback = (
-                    is_rate_limited
-                    or (_is_transport_failure and retry_count >= 2)
+                    not _is_omniroute_admission
+                    and (
+                        is_rate_limited
+                        or (_is_transport_failure and retry_count >= 2)
+                    )
                 )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
@@ -5553,9 +5568,15 @@ def run_conversation(
                     # Before falling back, try rebuilding the primary
                     # client once for transient transport errors (stale
                     # connection pool, TCP reset).  Only attempted once
-                    # per API call block.
-                    if not _retry.primary_recovery_attempted and agent._try_recover_primary_transport(
-                        api_error, retry_count=retry_count, max_retries=max_retries,
+                    # per API call block. Admission saturation is not a
+                    # transport fault — rebuilding the client cannot free
+                    # OmniRoute's process-local lease.
+                    if (
+                        not _is_omniroute_admission
+                        and not _retry.primary_recovery_attempted
+                        and agent._try_recover_primary_transport(
+                            api_error, retry_count=retry_count, max_retries=max_retries,
+                        )
                     ):
                         _retry.primary_recovery_attempted = True
                         retry_count = 0
@@ -5568,9 +5589,9 @@ def run_conversation(
                         agent._fallback_activated = False
                         continue
                     # Try fallback before giving up entirely
-                    if agent._has_pending_fallback():
+                    if not _is_omniroute_admission and agent._has_pending_fallback():
                         agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-                    if agent._try_activate_fallback():
+                    if not _is_omniroute_admission and agent._try_activate_fallback():
                         active_system_prompt = _sync_failover_system_message(
                             agent, api_messages, active_system_prompt)
                         retry_count = 0
@@ -5754,89 +5775,186 @@ def run_conversation(
 
                 # For rate limits, respect the Retry-After header if present
                 _retry_after = None
-                if is_rate_limited:
-                    _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
-                    if _resp_headers and hasattr(_resp_headers, "get"):
-                        _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
-                        if _ra_raw:
-                            try:
-                                # Cap at 10 minutes. Anthropic Tier 1 input-token
-                                # buckets reset in ~171s, so a 120s cap caused us to
-                                # retry before the actual reset window and re-trip the
-                                # limit. 600s covers all realistic provider reset
-                                # windows while still rejecting pathological values. (#26293)
-                                _retry_after = min(float(_ra_raw), 600)
-                            except (TypeError, ValueError):
-                                pass
-                wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 _backoff_policy = None
-                if (is_rate_limited or _is_zai_coding_overload) and not _retry_after:
-                    wait_time, _backoff_policy = adaptive_rate_limit_backoff(
+                _admission_hard_deadline = None  # monotonic; admission path only
+                if _is_omniroute_admission:
+                    _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
+                    _admission_budget = omniroute_admission_cumulative_budget()
+                    # Pin a single monotonic deadline for the whole admission
+                    # wait sequence so fixed-interval sleeps cannot overshoot
+                    # the advertised hard budget (#76682 review).
+                    if _retry.admission_deadline_mono is None:
+                        _retry.admission_deadline_mono = time.monotonic() + _admission_budget
+                    _remaining_admission = _retry.admission_deadline_mono - time.monotonic()
+                    _spent_admission = max(0.0, _admission_budget - max(0.0, _remaining_admission))
+                    wait_time = admission_retry_wait(
                         retry_count,
-                        base_url=str(_base),
-                        model=_model,
-                        error=api_error,
-                        default_wait=wait_time,
+                        _resp_headers,
+                        remaining_budget=_remaining_admission,
                     )
-                if is_rate_limited or _is_zai_coding_overload:
-                    _policy_note = ""
-                    if _backoff_policy == "zai_coding_overload_long":
-                        _policy_note = " (Z.AI Coding overload adaptive long backoff)"
-                    elif _backoff_policy == "zai_coding_overload_short":
-                        _policy_note = " (Z.AI Coding overload short retry)"
-                    _wait_reason = "Provider overloaded" if _is_zai_coding_overload and not is_rate_limited else "Rate limited"
-                    _rate_limit_status = f"⏱️ {_wait_reason}. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries}){_policy_note}..."
-                    # Normal retries are buffered to avoid noisy transient chatter. Long
-                    # Z.AI Coding waits are different: they can last minutes, so surface
-                    # progress immediately instead of making the TUI look frozen.
-                    if _backoff_policy == "zai_coding_overload_long":
-                        agent._emit_status(_rate_limit_status)
-                    else:
-                        agent._buffer_status(_rate_limit_status)
-                else:
-                    agent._buffer_status(f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})...")
-                logger.warning(
-                    "Retrying API call in %ss (attempt %s/%s) %s policy=%s error=%s",
-                    wait_time,
-                    retry_count,
-                    max_retries,
-                    agent._client_log_context(),
-                    _backoff_policy or "default",
-                    api_error,
-                )
-                # Sleep in small increments so we can respond to interrupts quickly
-                # instead of blocking the entire wait_time in one sleep() call
-                sleep_end = time.time() + wait_time
-                _backoff_touch_counter = 0
-                while time.time() < sleep_end:
-                    if agent._interrupt_requested:
-                        # Same preserve-redirect rule as the retry-wait above:
-                        # a steering correction must survive backoff, not die
-                        # as "Operation interrupted".
-                        if agent.clear_interrupt(preserve_redirect=True):
-                            _retry.restart_with_redirected_messages = True
-                            break
-                        agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
-                        _interrupt_text = f"Operation interrupted: retrying API call after error (retry {retry_count}/{max_retries})."
-                        close_interrupted_tool_sequence(messages, _interrupt_text)
-                        agent._persist_session(messages, conversation_history)
-                        agent.clear_interrupt()
+                    if wait_time is None:
+                        # Cumulative admission wait budget exhausted — fail
+                        # the turn without credential rotation or fallback.
+                        agent._flush_status_buffer()
+                        _final_summary = (
+                            f"Local gateway admission busy (chat_admission_busy) "
+                            f"for {_spent_admission:.0f}s (budget {_admission_budget:.0f}s exhausted)"
+                        )
+                        agent._emit_status(f"❌ {_final_summary}")
+                        logger.error(
+                            "%s admission wait budget exhausted after %.1fs (budget=%.1fs) %s error=%s",
+                            agent.log_prefix,
+                            _spent_admission,
+                            _admission_budget,
+                            agent._client_log_context(),
+                            api_error,
+                        )
                         return {
-                            "final_response": _interrupt_text,
+                            "final_response": f"API call failed: {_final_summary}",
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,
-                            "interrupted": True,
+                            "failed": True,
+                            "error": _final_summary,
+                            "failure_reason": "chat_admission_busy",
                         }
-                    time.sleep(0.2)  # Check interrupt every 200ms
-                    # Touch activity every ~30s so the gateway's inactivity
-                    # monitor knows we're alive during backoff waits.
-                    _backoff_touch_counter += 1
-                    if _backoff_touch_counter % 150 == 0:  # 150 × 0.2s = 30s
-                        agent._touch_activity(
-                            f"error retry backoff ({retry_count}/{max_retries}), "
-                            f"{int(sleep_end - time.time())}s remaining"
+                    agent._emit_status(
+                        f"⏱️ Local gateway busy; waiting for capacity "
+                        f"{wait_time:.1f}s (attempt {retry_count + 1}/{max_retries}, "
+                        f"waited {_spent_admission:.0f}s/"
+                        f"{_admission_budget:.0f}s)..."
+                    )
+                    logger.warning(
+                        "OmniRoute admission busy: waiting %.1fs (attempt %s/%s, "
+                        "spent=%.1fs budget=%.1fs remaining=%.1fs) %s error=%s",
+                        wait_time,
+                        retry_count,
+                        max_retries,
+                        _spent_admission,
+                        _admission_budget,
+                        _remaining_admission,
+                        agent._client_log_context(),
+                        api_error,
+                    )
+                    _admission_hard_deadline = _retry.admission_deadline_mono
+                else:
+                    if is_rate_limited:
+                        _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
+                        if _resp_headers and hasattr(_resp_headers, "get"):
+                            _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
+                            if _ra_raw:
+                                try:
+                                    # Cap at 10 minutes. Anthropic Tier 1 input-token
+                                    # buckets reset in ~171s, so a 120s cap caused us to
+                                    # retry before the actual reset window and re-trip the
+                                    # limit. 600s covers all realistic provider reset
+                                    # windows while still rejecting pathological values. (#26293)
+                                    _retry_after = min(float(_ra_raw), 600)
+                                except (TypeError, ValueError):
+                                    pass
+                    wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+                    if (is_rate_limited or _is_zai_coding_overload) and not _retry_after:
+                        wait_time, _backoff_policy = adaptive_rate_limit_backoff(
+                            retry_count,
+                            base_url=str(_base),
+                            model=_model,
+                            error=api_error,
+                            default_wait=wait_time,
                         )
+                    if is_rate_limited or _is_zai_coding_overload:
+                        _policy_note = ""
+                        if _backoff_policy == "zai_coding_overload_long":
+                            _policy_note = " (Z.AI Coding overload adaptive long backoff)"
+                        elif _backoff_policy == "zai_coding_overload_short":
+                            _policy_note = " (Z.AI Coding overload short retry)"
+                        _wait_reason = "Provider overloaded" if _is_zai_coding_overload and not is_rate_limited else "Rate limited"
+                        _rate_limit_status = f"⏱️ {_wait_reason}. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries}){_policy_note}..."
+                        # Normal retries are buffered to avoid noisy transient chatter. Long
+                        # Z.AI Coding waits are different: they can last minutes, so surface
+                        # progress immediately instead of making the TUI look frozen.
+                        if _backoff_policy == "zai_coding_overload_long":
+                            agent._emit_status(_rate_limit_status)
+                        else:
+                            agent._buffer_status(_rate_limit_status)
+                    else:
+                        agent._buffer_status(f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})...")
+                    logger.warning(
+                        "Retrying API call in %ss (attempt %s/%s) %s policy=%s error=%s",
+                        wait_time,
+                        retry_count,
+                        max_retries,
+                        agent._client_log_context(),
+                        _backoff_policy or "default",
+                        api_error,
+                    )
+                # Sleep in small increments so we can respond to interrupts quickly
+                # instead of blocking the entire wait_time in one sleep() call.
+                # Admission path uses a monotonic hard deadline and clamps each
+                # tick so the final 0.2s sleep cannot cross the 120s budget.
+                if _admission_hard_deadline is not None:
+                    _mono_now = time.monotonic()
+                    sleep_end_mono = min(_mono_now + wait_time, _admission_hard_deadline)
+                    _backoff_touch_counter = 0
+                    while True:
+                        _remaining_sleep = sleep_end_mono - time.monotonic()
+                        _remaining_hard = _admission_hard_deadline - time.monotonic()
+                        if _remaining_sleep <= 0 or _remaining_hard <= 0:
+                            break
+                        if agent._interrupt_requested:
+                            if agent.clear_interrupt(preserve_redirect=True):
+                                _retry.restart_with_redirected_messages = True
+                                break
+                            agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
+                            _interrupt_text = f"Operation interrupted: retrying API call after error (retry {retry_count}/{max_retries})."
+                            close_interrupted_tool_sequence(messages, _interrupt_text)
+                            agent._persist_session(messages, conversation_history)
+                            agent.clear_interrupt()
+                            return {
+                                "final_response": _interrupt_text,
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "interrupted": True,
+                            }
+                        time.sleep(min(0.2, _remaining_sleep, _remaining_hard))
+                        _backoff_touch_counter += 1
+                        if _backoff_touch_counter % 150 == 0:
+                            agent._touch_activity(
+                                f"error retry backoff ({retry_count}/{max_retries}), "
+                                f"{int(max(0.0, sleep_end_mono - time.monotonic()))}s remaining"
+                            )
+                else:
+                    sleep_end = time.time() + wait_time
+                    _backoff_touch_counter = 0
+                    while time.time() < sleep_end:
+                        if agent._interrupt_requested:
+                            # Same preserve-redirect rule as the retry-wait above:
+                            # a steering correction must survive backoff, not die
+                            # as "Operation interrupted".
+                            if agent.clear_interrupt(preserve_redirect=True):
+                                _retry.restart_with_redirected_messages = True
+                                break
+                            agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
+                            _interrupt_text = f"Operation interrupted: retrying API call after error (retry {retry_count}/{max_retries})."
+                            close_interrupted_tool_sequence(messages, _interrupt_text)
+                            agent._persist_session(messages, conversation_history)
+                            agent.clear_interrupt()
+                            return {
+                                "final_response": _interrupt_text,
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "interrupted": True,
+                            }
+                        time.sleep(0.2)  # Check interrupt every 200ms
+                        # Touch activity every ~30s so the gateway's inactivity
+                        # monitor knows we're alive during backoff waits.
+                        _backoff_touch_counter += 1
+                        if _backoff_touch_counter % 150 == 0:  # 150 × 0.2s = 30s
+                            agent._touch_activity(
+                                f"error retry backoff ({retry_count}/{max_retries}), "
+                                f"{int(sleep_end - time.time())}s remaining"
+                            )
                 if _retry.restart_with_redirected_messages:
                     # Leave the retry loop — the check right below rebuilds this
                     # iteration from the correction instead of re-firing the

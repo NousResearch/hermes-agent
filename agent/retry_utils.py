@@ -34,6 +34,19 @@ _ZAI_CODING_OVERLOAD_LONG_BACKOFF = (30.0, 60.0, 90.0, 120.0)
 # the two from silently desyncing if the short-retry count is ever tuned.
 _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS = 3
 
+# OmniRoute holds admission leases for the lifetime of a heavy streaming
+# response. Local ``chat_admission_busy`` 503s are temporary process-local
+# backpressure — not credential failure, not an upstream model outage.
+# Policy: honor a capped Retry-After floor with light jittered backoff, and
+# enforce a hard cumulative wait budget so repeated Retry-After: 30 cannot
+# stretch far past the advertised window (#76468 / #75223 review).
+_OMNIROUTE_ADMISSION_CUMULATIVE_BUDGET_S = 120.0
+_OMNIROUTE_ADMISSION_RETRY_AFTER_CAP = 30.0
+# High attempt ceiling so the cumulative budget is the binding constraint
+# when Retry-After is short (e.g. 1s). The loop still stops early when the
+# budget is exhausted.
+_OMNIROUTE_ADMISSION_RETRY_ATTEMPTS = 64
+
 
 def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
     """Parse a ``Retry-After`` value into non-negative seconds.
@@ -137,6 +150,89 @@ def _error_text(error: Any) -> str:
         getattr(error, "response", None),
     ]
     return " ".join(str(part) for part in parts if part is not None).lower()
+
+
+def _structured_error_code(error: Any) -> str | None:
+    """Extract an error code from SDK response data without free-text matching."""
+    candidates = [getattr(error, "body", None)]
+    response = getattr(error, "response", None)
+    if response is not None:
+        json_method = getattr(response, "json", None)
+        if callable(json_method):
+            try:
+                candidates.append(json_method())
+            except Exception:
+                pass
+    for payload in candidates:
+        if not isinstance(payload, dict):
+            continue
+        detail = payload.get("error", payload)
+        if isinstance(detail, dict) and isinstance(detail.get("code"), str):
+            return detail["code"]
+    return None
+
+
+def is_omniroute_admission_error(error: Any) -> bool:
+    """Return True only for structured OmniRoute admission-busy HTTP 503s.
+
+    Requires both HTTP 503 and structured ``error.code == chat_admission_busy``.
+    Generic provider 503/529 overload and free-text 503 bodies must not match.
+    """
+    return (
+        getattr(error, "status_code", None) == 503
+        and _structured_error_code(error) == "chat_admission_busy"
+    )
+
+
+def omniroute_admission_retry_ceiling() -> int:
+    """Retry-loop ceiling for local admission saturation (budget still binds)."""
+    return _OMNIROUTE_ADMISSION_RETRY_ATTEMPTS
+
+
+def omniroute_admission_cumulative_budget() -> float:
+    """Hard cumulative wait budget (seconds) for admission-busy retries."""
+    return _OMNIROUTE_ADMISSION_CUMULATIVE_BUDGET_S
+
+
+def admission_retry_wait(
+    attempt: int,
+    headers: Any,
+    *,
+    remaining_budget: float,
+) -> Optional[float]:
+    """Compute the next admission wait, or ``None`` when the budget is exhausted.
+
+    * ``Retry-After`` (when present) is a floor, capped at
+      ``_OMNIROUTE_ADMISSION_RETRY_AFTER_CAP``.
+    * Missing/unparseable headers fall back to light jittered exponential
+      backoff with the same per-wait cap.
+    * The returned wait never exceeds ``remaining_budget``. A non-positive
+      remaining budget returns ``None`` so the caller can fail the turn with
+      a clear admission-budget error instead of rotating credentials.
+    """
+    if remaining_budget <= 0:
+        return None
+
+    retry_after = parse_retry_after_seconds(headers)
+    if retry_after is not None:
+        retry_after = min(float(retry_after), _OMNIROUTE_ADMISSION_RETRY_AFTER_CAP)
+
+    # Bound the exponential base by both the per-wait cap and the remaining
+    # budget so jitter cannot invent a delay past the cumulative window.
+    max_delay = min(_OMNIROUTE_ADMISSION_RETRY_AFTER_CAP, remaining_budget)
+    if max_delay <= 0:
+        return None
+    backoff = jittered_backoff(
+        attempt,
+        base_delay=2.0,
+        max_delay=max_delay,
+        jitter_ratio=0.2,
+    )
+    wait = max(retry_after or 0.0, backoff)
+    wait = min(wait, remaining_budget)
+    if wait <= 0:
+        return None
+    return wait
 
 
 def is_zai_coding_overload_error(*, base_url: str | None, model: str | None, error: Any) -> bool:

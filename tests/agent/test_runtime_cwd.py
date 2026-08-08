@@ -51,6 +51,36 @@ class TestResolveContextCwd:
         assert resolve_context_cwd() == Path(os.path.expanduser("~"))
 
 
+class TestRemoteBackendIgnoresTerminalCwd:
+    """TERMINAL_CWD on a remote backend (ssh/docker/...) is a path on the
+    REMOTE machine — it must never be stat'd or returned from the host
+    process (root@ssh profiles set TERMINAL_CWD=/root, unreadable locally;
+    that used to abort system-prompt construction with PermissionError)."""
+
+    @pytest.mark.parametrize("backend", ["ssh", "docker", "modal"])
+    def test_context_cwd_ignored_for_remote_backend(self, monkeypatch, tmp_path, backend):
+        monkeypatch.setenv("TERMINAL_ENV", backend)
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        assert resolve_context_cwd() is None
+
+    @pytest.mark.parametrize("backend", ["ssh", "docker"])
+    def test_agent_cwd_falls_back_to_getcwd_for_remote_backend(self, monkeypatch, tmp_path, backend):
+        monkeypatch.setenv("TERMINAL_ENV", backend)
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        monkeypatch.chdir(tmp_path)
+        assert resolve_agent_cwd() == tmp_path
+
+    def test_local_backend_still_uses_terminal_cwd(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        assert resolve_context_cwd() == tmp_path
+
+    def test_unset_env_is_local(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        assert resolve_context_cwd() == tmp_path
+
+
 
 class TestSessionCwdOverride:
     """The #29531 per-session arm: a contextvar cwd wins over TERMINAL_CWD so a

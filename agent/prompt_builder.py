@@ -16,7 +16,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
 from typing import Optional
 
-from agent.runtime_cwd import resolve_agent_cwd
+from agent.runtime_cwd import _REMOTE_TERMINAL_BACKENDS, resolve_agent_cwd
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS,
     ORG_ACTIVE_MARKER,
@@ -87,8 +87,14 @@ def _find_git_root(start: Path) -> Optional[Path]:
     """
     current = start.resolve()
     for parent in [current, *current.parents]:
-        if (parent / ".git").exists():
-            return parent
+        try:
+            if (parent / ".git").exists():
+                return parent
+        except OSError:
+            # Unreadable directory (e.g. /root owned by another user) — skip
+            # and keep walking up; prompt construction must never crash on a
+            # permission error.
+            continue
     return None
 
 
@@ -112,8 +118,12 @@ def _find_hermes_md(cwd: Path) -> Optional[Path]:
     for directory in search_dirs:
         for name in _HERMES_MD_NAMES:
             candidate = directory / name
-            if candidate.is_file():
-                return candidate
+            try:
+                if candidate.is_file():
+                    return candidate
+            except OSError:
+                # Unreadable directory — keep searching elsewhere.
+                continue
         if stop_at and directory == stop_at:
             break
     return None
@@ -997,10 +1007,7 @@ WSL_ENVIRONMENT_HINT = (
 # container / remote host rather than on the machine where Hermes itself
 # runs. For these backends, host info (Windows/Linux/macOS, $HOME, cwd) is
 # misleading — the agent should only see the machine it can actually touch.
-_REMOTE_TERMINAL_BACKENDS = frozenset({
-    "docker", "singularity", "modal", "daytona", "ssh",
-    "vercel_sandbox", "managed_modal",
-})
+# Defined once in agent.runtime_cwd and imported here (see that module).
 
 
 # Per-backend fallback descriptions — used when the live probe fails.

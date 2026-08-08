@@ -488,10 +488,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # (developing Hermes). Every other surface (desktop chat panel,
         # gateway daemons) self-spawns into the install tree, where the
         # fallback would inject this repo's contributor AGENTS.md (#64590).
-        context_files_prompt = _r.build_context_files_prompt(
-            cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
-            context_length=_ctx_len,
-            allow_install_tree_fallback=agent.platform in ("cli", "tui"))
+        try:
+            context_files_prompt = _r.build_context_files_prompt(
+                cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
+                context_length=_ctx_len,
+                allow_install_tree_fallback=agent.platform in ("cli", "tui"))
+        except Exception as e:
+            # Context-file discovery must never abort prompt construction —
+            # an unreadable cwd (e.g. remote TERMINAL_CWD=/root on a local
+            # host) or a malformed file is a soft failure, not a crash.
+            logger.warning("context-file discovery failed; skipping: %s", e)
+            context_files_prompt = ""
         if context_files_prompt:
             context_parts.append(context_files_prompt)
 

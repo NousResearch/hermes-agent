@@ -69,13 +69,10 @@ _PROBE_WAIT_TIMEOUT = 10.0
 # ever finishes, the published line resumes appearing in new prompts.
 _WAIT_ALREADY_TIMED_OUT = False
 
-# Remote backends — keep in sync with agent/prompt_builder.py:_REMOTE_TERMINAL_BACKENDS.
-# Duplicated rather than imported to avoid a circular import (prompt_builder
-# imports nothing from tools).
-_REMOTE_BACKENDS = frozenset({
-    "docker", "singularity", "modal", "daytona", "ssh", "managed_modal",
-    "vercel_sandbox",
-})
+# Remote backends — single source of truth lives in agent/runtime_cwd
+# (agent.runtime_cwd is stdlib-only, so importing it here cannot create a
+# circular import).
+from agent.runtime_cwd import _REMOTE_TERMINAL_BACKENDS
 
 
 def _run(cmd: list[str], timeout: float = 3.0) -> tuple[int, str, str]:
@@ -195,7 +192,7 @@ def _build_probe_line() -> str:
     # Bail out if a remote terminal backend is configured; the host's
     # Python state isn't where the agent's tools run.
     backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
-    if backend in _REMOTE_BACKENDS:
+    if backend in _REMOTE_TERMINAL_BACKENDS:
         return ""
 
     py3_ver = _python_version_of("python3")

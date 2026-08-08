@@ -2005,6 +2005,30 @@ class FeishuAdapter(BasePlatformAdapter):
                         reply_to=reply_to,
                         metadata=metadata,
                     )
+                # The Feishu API rejects ``post`` messages on the thread_id create
+                # path with code 99992402 ("field validation failed"). When that
+                # happens in a topic-routed delivery (e.g. cron ``deliver=origin``
+                # where the origin snapshot carries a ``thread_id``), the message
+                # would be dropped. Strip ``thread_id`` so the message lands in the
+                # main chat instead of being lost. Mirrors the audio fallback in
+                # ``_send_uploaded_file_message``.
+                if (
+                    msg_type == "post"
+                    and not self._response_succeeded(response)
+                    and getattr(response, "code", None) == 99992402
+                    and (metadata or {}).get("thread_id")
+                ):
+                    logger.warning(
+                        "[Feishu] Post send rejected with 99992402 on thread_id; "
+                        "retrying without thread_id (lands in main chat)"
+                    )
+                    response = await self._feishu_send_with_retry(
+                        chat_id=chat_id,
+                        msg_type=msg_type,
+                        payload=payload,
+                        reply_to=reply_to,
+                        metadata=None,
+                    )
                 last_response = response
 
             return self._finalize_send_result(last_response, "send failed")

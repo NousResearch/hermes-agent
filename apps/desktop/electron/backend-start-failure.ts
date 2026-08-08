@@ -70,3 +70,73 @@ export interface RemoteReauthFailureContext {
 export function shouldLatchRemoteReauthFailure(context: RemoteReauthFailureContext): boolean {
   return context.attemptedRemote && context.isReauth
 }
+
+/**
+ * The one LOCAL failure class that cannot self-heal across restarts: the
+ * backend is HTTP-reachable (so the install is healthy) but /api/ws rejects
+ * the session token. A stale HERMES_DASHBOARD_SESSION_TOKEN in the Hermes
+ * .env overrides the token the desktop injects into its own spawned backend,
+ * so every restart fails identically and the renderer's "Reload and retry"
+ * loop spins forever. Matching the exact message both WS-probe throw sites in
+ * main.ts construct keeps unrelated failures (port timeout, child exit,
+ * connection-test WS probes) out of this class.
+ */
+export const MAX_TOKEN_REJECTION_BOOT_RETRIES = 3
+
+export function isSessionTokenRejectionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return message.includes('WebSocket (/api/ws) rejected the session token')
+}
+
+/**
+ * Actionable hint appended to the surfaced failure so the user knows the fix
+ * instead of watching a silent retry loop. `envPath` is the resolved Hermes
+ * .env (the main process passes HERMES_HOME/.env).
+ */
+export function sessionTokenRejectionHint(envPath: string): string {
+  return (
+    `A stale HERMES_DASHBOARD_SESSION_TOKEN= line in ${envPath} can override the token the desktop ` +
+    'injects into its own backend and cause exactly this rejection. Remove that line (or run ' +
+    '`hermes setup`) and retry.'
+  )
+}
+
+export interface TokenRejectionRetryGuard {
+  /** Consecutive WS session-token rejections seen so far. */
+  readonly count: number
+  /** True once `count` has reached the bound; the reset loop must stop. */
+  readonly exhausted: boolean
+  /**
+   * Record one boot failure. Token rejections extend the streak; any other
+   * failure class breaks it (the bound only applies to CONSECUTIVE
+   * rejections, so unrelated failures keep their existing retry behavior).
+   */
+  recordFailure(error: unknown): void
+  /** Called on a clean boot completion so the next episode starts fresh. */
+  reset(): void
+}
+
+export function createTokenRejectionRetryGuard(
+  maxRetries: number = MAX_TOKEN_REJECTION_BOOT_RETRIES
+): TokenRejectionRetryGuard {
+  let consecutive = 0
+
+  return {
+    get count() {
+      return consecutive
+    },
+
+    get exhausted() {
+      return consecutive >= maxRetries
+    },
+
+    recordFailure(error) {
+      consecutive = isSessionTokenRejectionError(error) ? consecutive + 1 : 0
+    },
+
+    reset() {
+      consecutive = 0
+    }
+  }
+}

@@ -1,6 +1,7 @@
 """Tests for hermes_cli.web_server and related config utilities."""
 
 import asyncio
+import logging
 import os
 import json
 import shutil
@@ -231,6 +232,136 @@ class TestSessionTokenInjection:
         assert ws.app is original_app
         assert ws._SESSION_HEADER_NAME == original_header_name
         assert ws._SESSION_TOKEN == original_token
+
+
+class TestSessionTokenSource:
+    """Provenance classification for _session_token_source()."""
+
+    def test_injected_when_desktop_marker_present(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "t")
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        assert ws._session_token_source() == "injected"
+
+    def test_env_when_token_without_desktop_marker(self, monkeypatch):
+        # The stale-~/.hermes/.env clobber case: a token is in the
+        # environment but the desktop shell marker is not.
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "stale-from-dotenv")
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+        assert ws._session_token_source() == "env"
+
+    def test_generated_when_no_token_in_env(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        assert ws._session_token_source() == "generated"
+
+    def test_env_when_token_and_empty_desktop_marker(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "t")
+        monkeypatch.setenv("HERMES_DESKTOP", "")
+        assert ws._session_token_source() == "env"
+
+
+class TestTokenMismatchHint:
+    """Actionable diagnostics on loopback token_mismatch rejections."""
+
+    def _warning_messages(self, caplog):
+        return [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_hint_emitted_for_env_source_loopback(self, monkeypatch, caplog):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "_SESSION_TOKEN_SOURCE", "env")
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.web_server"):
+            ws._log_token_mismatch_hint("loopback")
+        assert any(
+            "stale HERMES_DASHBOARD_SESSION_TOKEN" in m and ".env" in m
+            for m in self._warning_messages(caplog)
+        )
+
+    def test_hint_emitted_for_generated_source_loopback(self, monkeypatch, caplog):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "_SESSION_TOKEN_SOURCE", "generated")
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.web_server"):
+            ws._log_token_mismatch_hint("loopback")
+        assert any(
+            "fresh session token" in m for m in self._warning_messages(caplog)
+        )
+
+    def test_hint_emitted_for_injected_source_loopback(self, monkeypatch, caplog):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "_SESSION_TOKEN_SOURCE", "injected")
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.web_server"):
+            ws._log_token_mismatch_hint("loopback")
+        # A mismatch under the desktop marker IS the lockout signature: the
+        # stale-.env clobber leaves HERMES_DESKTOP=1 intact while replacing
+        # the token, so source reads "injected" even though the desktop's
+        # credential was clobbered. The hint must NOT be suppressed here.
+        assert any(
+            "stale HERMES_DASHBOARD_SESSION_TOKEN" in m and ".env" in m
+            for m in self._warning_messages(caplog)
+        )
+
+    def test_no_hint_outside_loopback_mode(self, monkeypatch, caplog):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "_SESSION_TOKEN_SOURCE", "env")
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.web_server"):
+            ws._log_token_mismatch_hint("gated")
+            ws._log_token_mismatch_hint("insecure")
+        assert self._warning_messages(caplog) == []
+
+    def test_ws_auth_reason_emits_hint_on_token_mismatch(self, monkeypatch, caplog):
+        # End-to-end through the WS auth helper: a bad token in loopback mode
+        # with an env-sourced server token warns AND still rejects.
+        import hermes_cli.web_server as ws
+
+        fake_ws = SimpleNamespace(
+            query_params={"token": "wrong-token"},
+            client=SimpleNamespace(host="127.0.0.1"),
+        )
+        monkeypatch.setattr(ws.app.state, "auth_required", False, raising=False)
+        monkeypatch.setattr(ws.app.state, "bound_host", None, raising=False)
+        monkeypatch.setattr(ws, "_SESSION_TOKEN_SOURCE", "env")
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.web_server"):
+            reason, cred = ws._ws_auth_reason(fake_ws)
+        assert reason == "token_mismatch"
+        assert cred == "token"
+        assert any(
+            "stale HERMES_DASHBOARD_SESSION_TOKEN" in m
+            for m in self._warning_messages(caplog)
+        )
+
+    def test_ws_auth_reason_emits_hint_when_injected(self, monkeypatch, caplog):
+        # End-to-end: a bad token in loopback mode with an injected-sourced
+        # server token STILL warns — the marker survives the stale-.env
+        # clobber, so "injected" does not exonerate the mismatch. The
+        # rejection itself is preserved.
+        import hermes_cli.web_server as ws
+
+        fake_ws = SimpleNamespace(
+            query_params={"token": "wrong-token"},
+            client=SimpleNamespace(host="127.0.0.1"),
+        )
+        monkeypatch.setattr(ws.app.state, "auth_required", False, raising=False)
+        monkeypatch.setattr(ws.app.state, "bound_host", None, raising=False)
+        monkeypatch.setattr(ws, "_SESSION_TOKEN_SOURCE", "injected")
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.web_server"):
+            reason, cred = ws._ws_auth_reason(fake_ws)
+        assert reason == "token_mismatch"
+        assert cred == "token"
+        assert any(
+            "stale HERMES_DASHBOARD_SESSION_TOKEN" in m
+            for m in self._warning_messages(caplog)
+        )
 
 
 # ---------------------------------------------------------------------------

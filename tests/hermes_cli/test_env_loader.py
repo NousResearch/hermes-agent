@@ -440,3 +440,181 @@ def test_other_profile_home_does_not_bridge_process_config(tmp_path, monkeypatch
 
     # The other profile's .env value stands; the process config was not applied.
     assert os.getenv("TERMINAL_ENV") == "docker"
+
+
+# ---------------------------------------------------------------------------
+# Desktop-injected session token preservation
+#
+# The desktop shell mints a fresh HERMES_DASHBOARD_SESSION_TOKEN and injects
+# it into the spawned `hermes serve` process env (apps/desktop/electron/
+# main.ts). A stale persisted value for the same key in the user .env would
+# clobber it under override=True, breaking the desktop↔gateway WS auth
+# handshake (web_server.py resolves _SESSION_TOKEN at module import).
+# ---------------------------------------------------------------------------
+
+
+def test_desktop_injected_session_token_survives_dotenv_load(tmp_path, monkeypatch):
+    """An Electron-injected HERMES_DASHBOARD_SESSION_TOKEN must win over .env.
+
+    The .env contains a stale persisted token from a previous update; the
+    spawn-time injected token is fresh and per-launch, so it must survive
+    the override=True .env load. Electron always pairs the token with
+    HERMES_DESKTOP='1' (apps/desktop/electron/main.ts), which is the
+    discriminator that authorizes the save/restore.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    injected = "injected-fresh-token-abc123"
+    (home / ".env").write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=stale-persisted-token\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", injected)
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") == injected
+
+
+def test_session_token_from_dotenv_when_not_injected(tmp_path, monkeypatch):
+    """Without an injected token, the .env value keeps loading as before.
+
+    Guards the other side of the save/restore: when the desktop did not
+    inject a token (CLI / headless runs), the .env value must still reach
+    os.environ so web_server._resolve_session_token can pick it up.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=persisted-token\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") == "persisted-token"
+
+
+def test_unmarked_inherited_token_is_overridden_by_dotenv(tmp_path, monkeypatch):
+    """A shell-exported token WITHOUT HERMES_DESKTOP keeps documented semantics.
+
+    The loader rule is that a profile .env overrides stale shell exports.
+    Only Electron-spawned processes (HERMES_DESKTOP='1') get the injected
+    token preserved; an unmarked inherited token must still be overridden
+    by the .env value so the documented rule is not silently changed for
+    non-desktop runs.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=dotenv-wins\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "shell-exported-token")
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") == "dotenv-wins"
+
+
+def test_desktop_token_preservation_does_not_affect_other_keys(tmp_path, monkeypatch):
+    """Only the session token is save/restored; other keys keep override=True.
+
+    Locks the minimal blast radius: OPENAI_BASE_URL in the .env still
+    overrides a stale inherited value while the injected token survives.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "OPENAI_BASE_URL=https://profile.example/v1\n"
+        "HERMES_DASHBOARD_SESSION_TOKEN=stale-persisted-token\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://stale.example/v1")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "injected-fresh-token")
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") == "injected-fresh-token"
+    assert os.getenv("OPENAI_BASE_URL") == "https://profile.example/v1"
+
+
+def test_desktop_token_survives_project_env_load(tmp_path, monkeypatch):
+    """The guard must cover the project .env fallback path (override=True).
+
+    When no user .env exists, the project .env loads with override=True and
+    could clobber the desktop-injected token exactly like the user env does.
+    With a user .env present the project env loads override=False, so this
+    test pins the no-user-env case where the clobber was still possible.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    project_env = tmp_path / "project" / ".env"
+    project_env.parent.mkdir()
+    project_env.write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=stale-persisted-token\n",
+        encoding="utf-8",
+    )
+    injected = "injected-fresh-token-xyz789"
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", injected)
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+
+    load_hermes_dotenv(hermes_home=home, project_env=project_env)
+
+    assert os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") == injected
+
+
+def test_desktop_token_survives_managed_env_load(tmp_path, monkeypatch):
+    """The guard must cover the managed-scope .env load (override=True).
+
+    Managed scope is applied last with override=True and would replace the
+    injected token with a stale pinned value just like the user env would.
+    ``HERMES_MANAGED_DIR`` is the documented test hook for managed scope.
+    """
+    managed_dir = tmp_path / "managed"
+    managed_dir.mkdir()
+    (managed_dir / ".env").write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=stale-managed-token\n",
+        encoding="utf-8",
+    )
+    injected = "injected-fresh-token-managed"
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", injected)
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+
+    load_hermes_dotenv(hermes_home=tmp_path / "hermes")
+
+    assert os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") == injected
+
+
+def test_desktop_token_survives_hot_reload_reentry(tmp_path, monkeypatch):
+    """Re-running load_hermes_dotenv (gateway per-turn reload) must not clobber.
+
+    gateway/run.py's _reload_runtime_env_preserving_config_authority calls
+    load_hermes_dotenv() again on later turns to pick up rotated keys; that
+    second user_env override=True load must not replace the injected token
+    with the stale .env value.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=stale-persisted-token\n",
+        encoding="utf-8",
+    )
+    injected = "injected-fresh-token-hotreload"
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", injected)
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+
+    load_hermes_dotenv(hermes_home=home)
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") == injected

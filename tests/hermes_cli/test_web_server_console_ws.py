@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from urllib.parse import urlencode
 
@@ -68,6 +69,22 @@ def test_console_ws_rejects_missing_or_bad_token(console_client):
         with console_client.websocket_connect(_url(token="wrong")):
             pass
     assert exc.value.code == 4401
+
+
+def test_console_ws_token_mismatch_hints_at_stale_dotenv(console_client, monkeypatch, caplog):
+    """A loopback token mismatch with an env-sourced server token logs an
+    actionable hint naming the stale ~/.hermes/.env value — while still
+    rejecting the connection (auth semantics unchanged)."""
+    monkeypatch.setattr(web_server, "_SESSION_TOKEN_SOURCE", "env")
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.web_server"):
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with console_client.websocket_connect(_url(token="wrong")):
+                pass
+    assert exc.value.code == 4401
+    assert any(
+        "stale HERMES_DASHBOARD_SESSION_TOKEN" in r.message and ".env" in r.message
+        for r in caplog.records
+    )
 
 
 def test_console_ws_cancel_returns_to_prompt(console_client, monkeypatch):

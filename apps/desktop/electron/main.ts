@@ -45,7 +45,14 @@ import {
   verifyHermesCli
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
-import { shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from './backend-start-failure'
+import {
+  createTokenRejectionRetryGuard,
+  isSessionTokenRejectionError,
+  MAX_TOKEN_REJECTION_BOOT_RETRIES,
+  sessionTokenRejectionHint,
+  shouldLatchBackendStartFailure,
+  shouldLatchRemoteReauthFailure
+} from './backend-start-failure'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
@@ -626,6 +633,12 @@ const DEFAULT_UPDATE_BRANCH = 'main'
 // errors.log, gateway.log produced by hermes_logging.setup_logging — one log
 // directory per user, regardless of which UI surface produced the line.
 const DESKTOP_LOG_PATH = path.join(HERMES_HOME, 'logs', 'desktop.log')
+// The Hermes .env the backend loads at startup. A stale
+// HERMES_DASHBOARD_SESSION_TOKEN= line here overrides the token the desktop
+// injects into its own spawned backend, so every boot fails with a WS
+// session-token rejection no matter how often the renderer retries. Named in
+// the failure hint so the user knows exactly which file to fix.
+const HERMES_ENV_PATH = path.join(HERMES_HOME, '.env')
 const DESKTOP_LOG_FLUSH_MS = 120
 const DESKTOP_LOG_BUFFER_MAX_CHARS = 64 * 1024
 // Bound desktop.log on disk. It is an append-only forensic log, so a boot loop
@@ -1114,6 +1127,14 @@ let bootstrapRepairRequested = false
 // looping the user through a destructive venv reinstall.
 let bootstrapRepairAttempt = 0
 const MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS = 3
+// Bounds the renderer's "Reload and retry" loop for the WS session-token
+// rejection class: the backend comes up HTTP-fine on every restart and every
+// retry fails identically, so without a bound the app silently restarts for
+// hours (the stale HERMES_DASHBOARD_SESSION_TOKEN in the .env never changes
+// on its own). Once the streak reaches MAX_TOKEN_REJECTION_BOOT_RETRIES the
+// reset path holds the latched failure and the failure overlay stays up with
+// the actionable hint instead of restarting. Reset on every clean boot.
+const tokenRejectionRetryGuard = createTokenRejectionRetryGuard(MAX_TOKEN_REJECTION_BOOT_RETRIES)
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
 const hermesLog = []
@@ -8274,7 +8295,8 @@ async function spawnPoolBackend(profile, entry) {
 
   if (!wsProbe.ok) {
     throw new Error(
-      `Hermes backend for profile "${profile}" is HTTP-reachable but the WebSocket (/api/ws) rejected the session token: ${wsProbe.reason}`
+      `Hermes backend for profile "${profile}" is HTTP-reachable but the WebSocket (/api/ws) rejected the session token: ${wsProbe.reason} ` +
+        sessionTokenRejectionHint(HERMES_ENV_PATH)
     )
   }
 
@@ -8609,7 +8631,8 @@ async function startHermes() {
 
     if (!wsProbe.ok) {
       throw new Error(
-        `Local Hermes backend is HTTP-reachable but the WebSocket (/api/ws) rejected the session token: ${wsProbe.reason}`
+        `Local Hermes backend is HTTP-reachable but the WebSocket (/api/ws) rejected the session token: ${wsProbe.reason} ` +
+          sessionTokenRejectionHint(HERMES_ENV_PATH)
       )
     }
 
@@ -8625,8 +8648,10 @@ async function startHermes() {
     // chose over a hard reinstall, see #74874) means any in-flight repair
     // attempt counter has been honoured — reset it so the next genuine
     // failure starts fresh from attempt 1 instead of inheriting the
-    // accumulated count of the resolved episode.
+    // accumulated count of the resolved episode. Same for the token-rejection
+    // streak: a clean boot proves the token situation resolved itself.
     bootstrapRepairAttempt = 0
+    tokenRejectionRetryGuard.reset()
 
     return {
       baseUrl,
@@ -8648,6 +8673,23 @@ async function startHermes() {
     }
 
     const message = error instanceof Error ? error.message : String(error)
+
+    // Track the consecutive WS session-token rejection streak. This is the
+    // one local failure class that cannot self-heal across retries (a stale
+    // HERMES_DASHBOARD_SESSION_TOKEN in the .env overrides the injected
+    // token, so every restart fails identically) — once it exhausts the
+    // bound, the reset path holds the latched failure instead of restarting.
+    // Any other failure class breaks the streak and keeps its existing
+    // (unbounded) retry behavior.
+    tokenRejectionRetryGuard.recordFailure(error)
+
+    if (isSessionTokenRejectionError(error) && tokenRejectionRetryGuard.exhausted) {
+      rememberLog(
+        `[boot] WS session-token rejection streak reached ${tokenRejectionRetryGuard.count}; ` +
+          'holding the latched failure — further resets will not restart the backend ' +
+          `(stale HERMES_DASHBOARD_SESSION_TOKEN in ${HERMES_ENV_PATH}?)`
+      )
+    }
 
     // Only latch LOCAL boot failures. A remote failure (lapsed session / mint
     // timeout / host briefly unreachable across sleep) is transient and has no
@@ -9703,6 +9745,23 @@ ipcMain.on('hermes:pet-overlay:control', (_event, payload) => {
   mainWindow.webContents.send('hermes:pet-overlay:control', payload)
 })
 ipcMain.handle('hermes:bootstrap:reset', async () => {
+  // Bound the silent retry loop for the WS session-token rejection class.
+  // The backend comes up HTTP-reachable on every restart and every retry
+  // fails identically, so once the consecutive-rejection streak is exhausted
+  // a reset would only restart the same doomed boot. Refuse to clear the
+  // latched failure: bootProgressState keeps its error, the failure overlay
+  // stays up with the actionable .env hint, and the user can act on it (or
+  // use Repair, which is still available and has its own bounded attempts).
+  if (tokenRejectionRetryGuard.exhausted) {
+    rememberLog(
+      `[bootstrap] reset refused: WS session-token rejection streak ` +
+        `${tokenRejectionRetryGuard.count}/${MAX_TOKEN_REJECTION_BOOT_RETRIES} exhausted; ` +
+        `holding the latched failure (stale HERMES_DASHBOARD_SESSION_TOKEN in ${HERMES_ENV_PATH}?)`
+    )
+
+    return { ok: false, reason: 'token-rejection-retries-exhausted' }
+  }
+
   // Renderer's "Reload and retry" path. Clear the latched failure and
   // reset connection state so the next startHermes() call restarts the
   // full backend flow (including a fresh runBootstrap pass).

@@ -81,12 +81,35 @@ function isForeignBackendToken({ servedToken, spawnToken, childAlive }) {
 }
 
 /**
+ * A 404 whose body is the headless-serve SPA-off message is a known-absent
+ * response, not an error: in headless mode (HERMES_SERVE_HEADLESS=1) the
+ * backend never serves the web UI, so the root-document fetch 404s BY DESIGN
+ * and the session token can only come from the spawn env. Matches the error
+ * thrown by fetchPublicText for a non-ok response: `${status}: ${body}`.
+ */
+function isHeadlessServe404(error) {
+  if (!(error instanceof Error)) {
+    return false
+  }
+
+  const message = error.message
+
+  return message.startsWith('404:') && message.includes('Headless backend') && message.includes('web UI disabled')
+}
+
+/**
  * Resolve the token the backend actually serves, adopting benign drift and
  * failing loudly on a foreign backend. `childAlive` is a thunk so liveness is
  * sampled after the fetch, not before.
  */
 async function adoptServedDashboardToken(baseUrl, spawnToken, { childAlive, label = 'Hermes backend', ...options }) {
   const servedToken = await resolveServedDashboardToken(baseUrl, spawnToken, options).catch(error => {
+    if (isHeadlessServe404(error)) {
+      options.rememberLog?.('[boot] headless Hermes backend: using spawn session token (no web UI served)')
+
+      return spawnToken
+    }
+
     options.rememberLog?.(`[boot] could not read served dashboard token (${label}): ${error.message}`)
 
     return spawnToken
@@ -108,5 +131,6 @@ export {
   extractInjectedDashboardToken,
   fetchPublicText,
   isForeignBackendToken,
+  isHeadlessServe404,
   resolveServedDashboardToken
 }

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { createMainWindowRevealController } from './main-window-reveal'
+import { createWindowRevealController } from './window-reveal'
 
 function createHarness({ visible = false }: { visible?: boolean } = {}) {
   let destroyed = false
@@ -13,7 +13,7 @@ function createHarness({ visible = false }: { visible?: boolean } = {}) {
   let scheduledDelay: number | null = null
   let clearCalls = 0
 
-  const controller = createMainWindowRevealController(
+  const controller = createWindowRevealController(
     {
       isDestroyed: () => destroyed,
       isVisible: () => isVisible,
@@ -127,4 +127,62 @@ test('does not reveal a destroyed window', () => {
   assert.equal(harness.controller.reveal(), false)
   harness.controller.scheduleFallback()
   assert.equal(harness.scheduledCallback, null)
+})
+
+// The pet overlay reveals with showInactive() and the HUD with show() + focus(),
+// so the fallback has to run the caller's action rather than a plain show().
+test('the fallback runs the caller reveal action, not a plain show', () => {
+  const actions: string[] = []
+  let scheduled: (() => void) | null = null
+
+  const controller = createWindowRevealController(
+    {
+      isDestroyed: () => false,
+      isVisible: () => false,
+      show: () => actions.push('showInactive')
+    },
+    {
+      onRevealed: () => actions.push('revealed'),
+      setTimer: callback => {
+        scheduled = callback
+
+        return 1 as unknown as ReturnType<typeof setTimeout>
+      },
+      clearTimer: () => {}
+    }
+  )
+
+  controller.scheduleFallback()
+  scheduled?.()
+
+  assert.deepEqual(actions, ['showInactive', 'revealed'])
+})
+
+// The HUD hides the main window from onRevealed — whichever path wins, that
+// side effect has to happen exactly once.
+test('onRevealed side effects run once when both paths fire', () => {
+  const harness = createHarness()
+
+  harness.controller.scheduleFallback()
+  harness.controller.reveal()
+  harness.scheduledCallback?.()
+  harness.controller.reveal()
+
+  assert.equal(harness.revealCalls, 1)
+})
+
+// Session and instance windows have no post-visible work to do.
+test('reveals without an onRevealed callback', () => {
+  let shown = false
+
+  const controller = createWindowRevealController({
+    isDestroyed: () => false,
+    isVisible: () => shown,
+    show: () => {
+      shown = true
+    }
+  })
+
+  assert.equal(controller.reveal(), true)
+  assert.equal(shown, true)
 })

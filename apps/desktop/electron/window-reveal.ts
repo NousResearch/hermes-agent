@@ -1,4 +1,4 @@
-type MainWindowRevealTarget = {
+type WindowRevealTarget = {
   isDestroyed: () => boolean
   isVisible: () => boolean
   show: () => void
@@ -6,23 +6,23 @@ type MainWindowRevealTarget = {
 
 type TimerHandle = ReturnType<typeof setTimeout>
 
-type MainWindowRevealOptions = {
-  onRevealed: () => void
+type WindowRevealOptions = {
+  onRevealed?: () => void
   delayMs?: number
   setTimer?: (callback: () => void, delayMs: number) => TimerHandle
   clearTimer?: (timer: TimerHandle) => void
 }
 
-export const MAIN_WINDOW_REVEAL_FALLBACK_MS = 4_000
+export const WINDOW_REVEAL_FALLBACK_MS = 4_000
 
-export function createMainWindowRevealController(
-  window: MainWindowRevealTarget,
+export function createWindowRevealController(
+  window: WindowRevealTarget,
   {
-    onRevealed,
-    delayMs = MAIN_WINDOW_REVEAL_FALLBACK_MS,
+    onRevealed = () => {},
+    delayMs = WINDOW_REVEAL_FALLBACK_MS,
     setTimer = (callback, delay) => setTimeout(callback, delay),
     clearTimer = timer => clearTimeout(timer)
-  }: MainWindowRevealOptions
+  }: WindowRevealOptions = {}
 ) {
   let disposed = false
   let revealed = false

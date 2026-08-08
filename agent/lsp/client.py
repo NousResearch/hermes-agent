@@ -94,6 +94,17 @@ def _absolute_path(path: str) -> str:
 
 def _path_key(path: str) -> str:
     """Return a stable key for per-file LSP state."""
+    parsed = urlsplit(path)
+    is_windows_drive = (
+        len(parsed.scheme) == 1 and len(path) >= 2 and path[1] == ":"
+    )
+    if parsed.scheme and parsed.scheme.lower() != "file" and not is_windows_drive:
+        # LSP also permits non-file document URIs such as ``untitled:``.
+        # They are opaque identifiers, not local paths: making them absolute
+        # or case-folding them changes their identity.
+        return path
+    if parsed.scheme.lower() == "file":
+        path = uri_to_path(path)
     normalized = _absolute_path(path)
     return os.path.normcase(normalized) if os.name == "nt" else normalized
 
@@ -254,6 +265,9 @@ class LSPClient:
         # their freshness tags), keyed by canonical absolute file path.
         # See _DocState for the version-based freshness model.
         self._docs: Dict[str, _DocState] = {}
+        # Keep document versions and notification ordering atomic when two
+        # file-tool calls touch the same client concurrently.
+        self._document_lock = asyncio.Lock()
         # Push-sequence baselines are tied to the version returned by
         # ``open_file`` so overlapping edits retain distinct freshness bounds.
         self._diagnostic_baselines: Dict[tuple[str, int], int] = {}
@@ -752,12 +766,18 @@ class LSPClient:
         Returns the new document version number that the agent's
         ``wait_for_diagnostics`` should match against.
         """
+        async with self._document_lock:
+            return await self._open_file_locked(path, language_id=language_id)
+
+    async def _open_file_locked(
+        self, path: str, *, language_id: str = "plaintext"
+    ) -> int:
+        """Implement :meth:`open_file` while ``_document_lock`` is held."""
         if not self.is_running:
             raise LSPProtocolError("client not running")
 
         abs_path = _absolute_path(path)
         path_key = _path_key(abs_path)
-        diagnostic_counter = self._push_counter
         try:
             text = Path(abs_path).read_text(encoding="utf-8", errors="replace")
         except OSError as e:
@@ -772,6 +792,7 @@ class LSPClient:
                 "workspace/didChangeWatchedFiles",
                 {"changes": [{"uri": uri, "type": 2}]},  # 2 = CHANGED
             )
+            diagnostic_counter = self._push_counter
             new_version = doc.version + 1
             old_text = doc.text
             content_changes: List[Dict[str, Any]]
@@ -787,6 +808,12 @@ class LSPClient:
                 ]
             else:
                 content_changes = [{"text": text}]
+            # Advance local state before the write can yield to the reader
+            # task. A fast unversioned push received during ``drain()`` must
+            # be tagged with the version carried by this didChange.
+            doc.version = new_version
+            doc.text = text
+            self._diagnostic_baselines[(path_key, new_version)] = diagnostic_counter
             await self._send_notification(
                 "textDocument/didChange",
                 {
@@ -794,12 +821,6 @@ class LSPClient:
                     "contentChanges": content_changes,
                 },
             )
-            # Bumping the version is the whole invalidation story:
-            # every stored result tagged with an older version is now
-            # stale by definition (see _DocState).
-            doc.version = new_version
-            doc.text = text
-            self._diagnostic_baselines[(path_key, new_version)] = diagnostic_counter
             return new_version
 
         # First open: didChangeWatchedFiles CREATED + didOpen.
@@ -807,9 +828,11 @@ class LSPClient:
             "workspace/didChangeWatchedFiles",
             {"changes": [{"uri": uri, "type": 1}]},  # 1 = CREATED
         )
+        diagnostic_counter = self._push_counter
         # Fresh doc state — anything stashed under this path by a
         # pre-open push (relatedDocuments spillover etc.) is discarded.
         self._docs[path_key] = _DocState(version=0, text=text)
+        self._diagnostic_baselines[(path_key, 0)] = diagnostic_counter
         await self._send_notification(
             "textDocument/didOpen",
             {
@@ -821,7 +844,6 @@ class LSPClient:
                 }
             },
         )
-        self._diagnostic_baselines[(path_key, 0)] = diagnostic_counter
         return 0
 
     async def save_file(self, path: str) -> None:

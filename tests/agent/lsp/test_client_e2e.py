@@ -255,6 +255,17 @@ def test_uri_to_path_preserves_non_file_uri():
     assert uri_to_path(uri) == uri
 
 
+def test_non_file_diagnostic_uri_preserves_opaque_identity(tmp_path: Path):
+    uri = "untitled:CaseSensitive-1"
+    diagnostic = {"message": "virtual document diagnostic"}
+    client = _client(tmp_path, "clean")
+
+    client._handle_publish_diagnostics({"uri": uri, "diagnostics": [diagnostic]})
+
+    assert uri in client._docs
+    assert client.diagnostics_for(uri) == [diagnostic]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX URI behavior")
 def test_posix_file_uri_round_trip_preserves_case():
     path = "/tmp/MixedCase/File Name.ts"
@@ -277,6 +288,54 @@ async def test_edit_baselines_are_tied_to_returned_versions(
 
     assert client._diagnostic_baselines[(key, version_zero)] == 0
     assert client._diagnostic_baselines[(key, version_one)] == 4
+
+
+@pytest.mark.asyncio
+async def test_overlapping_opens_allocate_distinct_versions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    path = tmp_path / "index.ts"
+    path.write_text("const value = 1;\n")
+    client = _client(tmp_path, "clean")
+    await _open_without_server(client, path, monkeypatch)
+
+    async def yield_after_notification(_method: str, _params: object) -> None:
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(client, "_send_notification", yield_after_notification)
+    versions = await asyncio.gather(
+        client.open_file(str(path), language_id="typescript"),
+        client.open_file(str(path), language_id="typescript"),
+    )
+
+    assert versions == [1, 2]
+    key = uri_to_path(file_uri(str(path)))
+    assert (key, 1) in client._diagnostic_baselines
+    assert (key, 2) in client._diagnostic_baselines
+
+
+@pytest.mark.asyncio
+async def test_push_received_during_did_change_is_fresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    path = tmp_path / "index.ts"
+    path.write_text("const value = 1;\n")
+    client = _client(tmp_path, "clean")
+    await _open_without_server(client, path, monkeypatch)
+    path.write_text("const value: string = 1;\n")
+    diagnostic = {"message": "Type 'number' is not assignable to type 'string'"}
+
+    async def publish_during_change(method: str, _params: object) -> None:
+        if method == "textDocument/didChange":
+            client._handle_publish_diagnostics(
+                {"uri": file_uri(str(path)), "diagnostics": [diagnostic]}
+            )
+
+    monkeypatch.setattr(client, "_send_notification", publish_during_change)
+    version = await client.open_file(str(path), language_id="typescript")
+
+    assert await client.wait_for_diagnostics(str(path), version, timeout=0.5)
+    assert client.diagnostics_for(str(path), fresh_only=True) == [diagnostic]
 
 
 def test_seed_first_push_is_not_marked_fresh(tmp_path: Path):

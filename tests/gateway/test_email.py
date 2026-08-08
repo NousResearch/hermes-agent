@@ -332,6 +332,87 @@ class TestDispatchMessage(unittest.TestCase):
             self.assertEqual(len(captured), 1)
 
 
+class TestStandaloneSend(unittest.TestCase):
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "bot@example.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_SMTP_HOST": "smtp.example.com",
+        "EMAIL_SMTP_PORT": "587",
+    }, clear=False)
+    def test_media_files_are_mime_attachments(self):
+        import asyncio
+        import tempfile
+
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import _standalone_send
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as attachment:
+            attachment.write(b"%PDF-1.4 fake")
+            attachment_path = attachment.name
+
+        try:
+            with patch("smtplib.SMTP") as smtp_cls:
+                server = MagicMock()
+                smtp_cls.return_value = server
+
+                result = asyncio.run(
+                    _standalone_send(
+                        PlatformConfig(enabled=True),
+                        "user@example.com",
+                        "See attached.",
+                        media_files=[(attachment_path, False)],
+                    )
+                )
+
+            self.assertTrue(result["success"])
+            sent_msg = server.send_message.call_args.args[0]
+            attachments = [
+                part for part in sent_msg.walk()
+                if part.get_content_disposition() == "attachment"
+            ]
+            self.assertEqual(len(attachments), 1)
+            self.assertEqual(attachments[0].get_filename(), os.path.basename(attachment_path))
+        finally:
+            os.unlink(attachment_path)
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "bot@example.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_SMTP_HOST": "smtp.example.com",
+    }, clear=False)
+    def test_media_only_send_uses_default_body(self):
+        import asyncio
+        import tempfile
+
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import _standalone_send
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as attachment:
+            attachment.write(b"%PDF-1.4 fake")
+            attachment_path = attachment.name
+
+        try:
+            with patch("smtplib.SMTP") as smtp_cls:
+                server = MagicMock()
+                smtp_cls.return_value = server
+
+                result = asyncio.run(
+                    _standalone_send(
+                        PlatformConfig(enabled=True),
+                        "user@example.com",
+                        "",
+                        media_files=[(attachment_path, False)],
+                    )
+                )
+
+            self.assertTrue(result["success"])
+            sent_msg = server.send_message.call_args.args[0]
+            body = next(part for part in sent_msg.walk() if part.get_content_type() == "text/plain")
+            self.assertEqual(body.get_payload(decode=True).decode(body.get_content_charset()), "See attached file(s).")
+        finally:
+            os.unlink(attachment_path)
+
+
 class TestThreadContext(unittest.TestCase):
     """Test email reply threading logic."""
 

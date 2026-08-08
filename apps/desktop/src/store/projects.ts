@@ -11,6 +11,7 @@ import { translateNow } from '@/i18n'
 import { desktopDefaultCwd, isDesktopFsRemoteMode, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
 import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { isUnderPath } from '@/lib/path-compare'
 import { persistentAtom } from '@/lib/persisted'
 import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
@@ -229,27 +230,6 @@ export function resolveNewSessionCwd(): string {
   return workspaceCwdForNewSession()
 }
 
-// Comparison-only path spelling: accept either separator everywhere, trim a
-// trailing separator, and fold case for Windows drive/UNC paths. The backend
-// uses the same host-aware identity rule when assigning sessions to projects.
-const comparisonPath = (path: string): string => {
-  const raw = path.trim()
-  const windows = /^[A-Za-z]:[/\\]/.test(raw) || raw.startsWith('\\') || raw.startsWith('//')
-  const normalized = raw.replace(/\\/g, '/').replace(/\/+$/, '')
-
-  return windows ? normalized.toLowerCase() : normalized
-}
-
-const underPath = (parent: string, child: string): boolean => {
-  const normalizedParent = comparisonPath(parent)
-  const normalizedChild = comparisonPath(child)
-
-  return (
-    normalizedChild === normalizedParent ||
-    normalizedChild.startsWith(normalizedParent.endsWith('/') ? normalizedParent : `${normalizedParent}/`)
-  )
-}
-
 // The project (explicit or auto) that owns `cwd`, by longest path match across
 // the live tree. Null when no project covers it (it'll surface as a fresh
 // auto-project on the next tree refresh).
@@ -266,7 +246,7 @@ export function projectIdForCwd(cwd: string): null | string {
     for (const path of paths) {
       const p = (path || '').trim()
 
-      if (p && underPath(p, cwd) && p.length > bestLen) {
+      if (p && isUnderPath(p, cwd) && p.length > bestLen) {
         bestLen = p.length
         best = project.id
       }
@@ -304,7 +284,7 @@ export function projectNameForCwd(cwd: string): null | string {
     for (const path of paths) {
       const p = (path || '').trim()
 
-      if (p && underPath(p, target) && p.length > bestLen) {
+      if (p && isUnderPath(p, target) && p.length > bestLen) {
         bestLen = p.length
         best = project.label
       }

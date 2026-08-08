@@ -681,7 +681,9 @@ def _start_child_observation(state: TraceState, *, client: Langfuse, name: str, 
 
 
 def _end_observation(observation: Any, *, output: Any = None, metadata: Optional[dict] = None,
-                     usage_details: Optional[dict] = None, cost_details: Optional[dict] = None) -> None:
+                     usage_details: Optional[dict] = None, cost_details: Optional[dict] = None,
+                     status: Optional[str] = None, level: Optional[str] = None,
+                     status_message: Optional[str] = None) -> None:
     if observation is None:
         return
     try:
@@ -694,11 +696,34 @@ def _end_observation(observation: Any, *, output: Any = None, metadata: Optional
             update_kwargs["usage_details"] = usage_details
         if cost_details:
             update_kwargs["cost_details"] = cost_details
+        if status:
+            update_kwargs["status"] = status
+        if level:
+            update_kwargs["level"] = level
+        if status_message:
+            update_kwargs["status_message"] = status_message
         if update_kwargs:
             observation.update(**update_kwargs)
         observation.end()
     except Exception as exc:  # pragma: no cover - fail-open
         _debug(f"end observation failed: {exc}")
+
+
+def _tool_call_status(status: str) -> tuple[Optional[str], Optional[str]]:
+    """Map a Hermes ``post_tool_call`` status to Langfuse status/level.
+
+    Hermes statuses: ``ok`` (derived), ``error`` (derived or explicit),
+    ``blocked`` (guardrail/plugin block), ``cancelled`` (interrupt).
+    Langfuse ``status``/``level`` wire values are ``ERROR`` / ``WARNING``
+    (uppercase enums). Success maps to ``(None, None)`` so the observation
+    stays at the default level — failed calls must be distinguishable in
+    the Langfuse UI, which is exactly what this mapping exists for.
+    """
+    if status == "error":
+        return "ERROR", "ERROR"
+    if status in {"blocked", "cancelled"}:
+        return "WARNING", "WARNING"
+    return None, None
 
 
 def _merge_trace_output(output: Any, state: TraceState) -> Any:
@@ -1073,7 +1098,9 @@ def on_pre_tool_call(*, tool_name: str = "", args: Any = None, task_id: str = ""
 
 def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = None,
                       task_id: str = "", session_id: str = "", tool_call_id: str = "",
-                      turn_id: str = "", api_request_id: str = "", **_: Any) -> None:
+                      turn_id: str = "", api_request_id: str = "", status: str = "",
+                      error_type: Optional[str] = None, error_message: Optional[str] = None,
+                      **_: Any) -> None:
     task_key = _trace_key(
         task_id,
         session_id,
@@ -1118,10 +1145,66 @@ def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = No
                             function_payload["output"] = safe_result_value
                         break
 
+    obs_status, obs_level = _tool_call_status(status)
+    status_message = error_message or error_type
     _end_observation(
         observation,
         output=safe_result_value,
         metadata={"tool_name": tool_name, "args": _safe_value(args, parse_json_strings=True)},
+        status=obs_status,
+        level=obs_level,
+        status_message=status_message if obs_status else None,
+    )
+
+
+def on_api_request_error(*, task_id: str = "", session_id: str = "", api_call_count: int = 0,
+                         error: Any = None, error_type: str = "", error_message: str = "",
+                         reason: str = "", retryable: Optional[bool] = None,
+                         turn_id: str = "", api_request_id: str = "", **_: Any) -> None:
+    """Mark the failed LLM request's generation observation as ERROR.
+
+    The agent loop fires ``api_request_error`` (per failed API attempt, on
+    exception and invalid/refused responses) with the same scoping keys and
+    ``api_call_count`` as ``pre_api_request`` / ``post_api_request``, so the
+    open generation can be resolved and closed as ERROR instead of being
+    silently ended as a success by ``_finish_trace``.  The observation is
+    popped here so a retry's ``pre_api_request`` starts a fresh generation
+    under the same key rather than re-ending the failed one.
+    """
+    client = _get_langfuse()
+    if client is None:
+        return
+
+    task_key = _trace_key(
+        task_id,
+        session_id,
+        turn_id=turn_id,
+        api_request_id=api_request_id,
+    )
+    req_key = _request_key(api_call_count)
+
+    with _STATE_LOCK:
+        state = _TRACE_STATE.get(task_key)
+        generation = state.generations.pop(req_key, None) if state else None
+    if generation is None:
+        return
+
+    if isinstance(error, dict):
+        err_type = str(error.get("type") or error_type or "error")
+        err_message = str(error.get("message") or error_message or "")
+    elif error:
+        err_type = error_type or type(error).__name__
+        err_message = error_message or str(error)
+    else:
+        err_type = error_type or "error"
+        err_message = error_message or ""
+
+    _debug(f"api request error: {err_type}: {err_message}")
+    _end_observation(
+        generation,
+        status="ERROR",
+        level="ERROR",
+        status_message=f"[{err_type}] {err_message}".strip(),
     )
 
 
@@ -1131,6 +1214,7 @@ def register(ctx) -> None:
     # call (preferred); pre_llm_call / post_llm_call fire once per turn.
     ctx.register_hook("pre_api_request", on_pre_llm_request)
     ctx.register_hook("post_api_request", on_post_llm_call)
+    ctx.register_hook("api_request_error", on_api_request_error)
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
     ctx.register_hook("post_llm_call", on_post_llm_call)
     ctx.register_hook("pre_tool_call", on_pre_tool_call)

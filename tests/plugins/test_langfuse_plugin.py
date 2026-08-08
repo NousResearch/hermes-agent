@@ -25,9 +25,9 @@ class TestManifest:
         data = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text())
         assert data["name"] == "langfuse"
         assert data["version"]
-        # All six hooks the plugin implements.
+        # All seven hooks the plugin implements.
         assert set(data["hooks"]) == {
-            "pre_api_request", "post_api_request",
+            "pre_api_request", "post_api_request", "api_request_error",
             "pre_llm_call", "post_llm_call",
             "pre_tool_call", "post_tool_call",
         }
@@ -128,7 +128,7 @@ class TestRuntimeGate:
 
 class TestHooksInert:
     def test_hooks_noop_without_client(self, monkeypatch):
-        """All 6 hooks must return without raising when _get_langfuse() is None."""
+        """All 7 hooks must return without raising when _get_langfuse() is None."""
         for k in (
             "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
             "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
@@ -143,6 +143,7 @@ class TestHooksInert:
         mod.on_pre_llm_call(task_id="t", session_id="s", messages=[{"role": "user", "content": "hi"}])
         mod.on_pre_llm_request(task_id="t", session_id="s", api_call_count=1, request_messages=[])
         mod.on_post_llm_call(task_id="t", session_id="s", api_call_count=1)
+        mod.on_api_request_error(task_id="t", session_id="s", api_call_count=1, error={"type": "x"})
         mod.on_pre_tool_call(tool_name="read_file", args={}, task_id="t", session_id="s")
         mod.on_post_tool_call(tool_name="read_file", args={}, result="ok", task_id="t", session_id="s")
 
@@ -554,7 +555,7 @@ class TestToolCallOutputBackfill:
 
         ended = {}
 
-        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None):
+        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None, **kw):
             ended["observation"] = obs
             ended["output"] = output
             ended["metadata"] = metadata
@@ -779,3 +780,247 @@ class TestUsageFromSanitizedResponse:
 
         assert seen["resp"] is resp
         assert captured["usage_details"] == {"input": 7, "output": 3}
+
+
+# ---------------------------------------------------------------------------
+# Failure status marking (#81731).
+#
+# Before the fix, failed LLM calls and failed/blocked/cancelled tool calls
+# were ended as successful observations — the Langfuse UI showed every
+# generation and tool span green regardless of outcome.  The fix:
+#   * registers an ``api_request_error`` hook that resolves the failed
+#     request's open generation and ends it with status/level ERROR,
+#   * maps the ``post_tool_call`` ``status`` kwarg (error/blocked/cancelled)
+#     onto Langfuse ERROR/WARNING status+level.
+# ---------------------------------------------------------------------------
+
+
+class TestApiRequestErrorMarking:
+    def _make_mod(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    class _RootSpan:
+        def start_observation(self, **kw):
+            return object()
+
+        def end(self, **kw):
+            pass
+
+    def _setup_generation(self, mod, monkeypatch, *, task_id="task-1", session_id="session-1"):
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        observation = object()
+        state = mod.TraceState(trace_id="trace-1", root_ctx=None, root_span=self._RootSpan())
+        state.generations[mod._request_key(1)] = observation
+        task_key = mod._trace_key(task_id, session_id)
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+        ended = {}
+
+        def fake_end_observation(obs, **kw):
+            ended["obs"] = obs
+            ended.update(kw)
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end_observation)
+        return observation, ended
+
+    def test_error_marks_generation_error_and_pops_it(self, monkeypatch):
+        mod = self._make_mod()
+        observation, ended = self._setup_generation(mod, monkeypatch)
+
+        mod.on_api_request_error(
+            task_id="task-1",
+            session_id="session-1",
+            api_call_count=1,
+            error_type="AuthenticationError",
+            error_message="invalid api key",
+            reason="auth",
+            retryable=False,
+        )
+
+        assert ended["obs"] is observation
+        assert ended["status"] == "ERROR"
+        assert ended["level"] == "ERROR"
+        assert "AuthenticationError" in ended["status_message"]
+        assert "invalid api key" in ended["status_message"]
+
+    def test_error_dict_payload_supported(self, monkeypatch):
+        mod = self._make_mod()
+        observation, ended = self._setup_generation(mod, monkeypatch)
+
+        # The agent loop passes a pre-built {"type": ..., "message": ...} dict.
+        mod.on_api_request_error(
+            task_id="task-1",
+            session_id="session-1",
+            api_call_count=1,
+            error={"type": "RateLimitError", "message": "429 too many requests"},
+        )
+
+        assert ended["status"] == "ERROR"
+        assert ended["level"] == "ERROR"
+        assert "RateLimitError" in ended["status_message"]
+
+    def test_error_pops_generation_so_retry_starts_fresh(self, monkeypatch):
+        """A retry re-fires pre_api_request with the same api_call_count; the
+        failed observation must already be gone so the retry does not re-end
+        (and clobber) the ERROR-marked observation with a successful one."""
+        mod = self._make_mod()
+        observation, ended = self._setup_generation(mod, monkeypatch)
+
+        mod.on_api_request_error(
+            task_id="task-1",
+            session_id="session-1",
+            api_call_count=1,
+            error={"type": "RateLimitError", "message": "429"},
+        )
+        assert ended["status"] == "ERROR"
+
+        # Simulate the retry: pre_api_request under the same key starts a NEW
+        # generation (the previous one was popped, not re-ended as success).
+        pre_ended = {}
+        monkeypatch.setattr(
+            mod,
+            "_end_observation",
+            lambda obs, **kw: pre_ended.update({"obs": obs, **kw}),
+        )
+        mod.on_pre_llm_request(
+            task_id="task-1",
+            session_id="session-1",
+            api_call_count=1,
+            request_messages=[{"role": "user", "content": "hi"}],
+        )
+        assert pre_ended.get("obs") is not observation
+
+    def test_noop_when_no_generation_matches(self, monkeypatch):
+        mod = self._make_mod()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        monkeypatch.setattr(mod, "_end_observation", lambda **kw: (_ for _ in ()).throw(AssertionError("must not end")))
+
+        # No state registered at all → nothing to mark.
+        mod.on_api_request_error(
+            task_id="task-x", session_id="session-x",
+            api_call_count=7, error={"type": "X", "message": "y"},
+        )
+
+
+class TestToolCallFailureMarking:
+    def _make_mod(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def _setup_tool(self, mod, monkeypatch, *, task_id="task-1", session_id="session-1",
+                    tool_call_id="call-1"):
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        observation = object()
+        state = mod.TraceState(trace_id="trace-1", root_ctx=None, root_span=None)
+        state.tools[tool_call_id] = observation
+        monkeypatch.setitem(mod._TRACE_STATE, mod._trace_key(task_id, session_id), state)
+        ended = {}
+
+        def fake_end_observation(obs, **kw):
+            ended["obs"] = obs
+            ended.update(kw)
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end_observation)
+        return observation, ended
+
+    def test_error_status_marks_error(self, monkeypatch):
+        mod = self._make_mod()
+        observation, ended = self._setup_tool(mod, monkeypatch)
+
+        mod.on_post_tool_call(
+            tool_name="bash",
+            args={"command": "rm -rf /"},
+            result='{"error": "permission denied"}',
+            task_id="task-1",
+            session_id="session-1",
+            tool_call_id="call-1",
+            status="error",
+            error_type="tool_error",
+            error_message="permission denied",
+        )
+
+        assert ended["obs"] is observation
+        assert ended["status"] == "ERROR"
+        assert ended["level"] == "ERROR"
+        assert ended["status_message"] == "permission denied"
+
+    def test_blocked_status_marks_warning(self, monkeypatch):
+        mod = self._make_mod()
+        observation, ended = self._setup_tool(mod, monkeypatch)
+
+        mod.on_post_tool_call(
+            tool_name="bash",
+            args={"command": "curl http://x"},
+            result='{"error": "blocked by guardrail"}',
+            task_id="task-1",
+            session_id="session-1",
+            tool_call_id="call-1",
+            status="blocked",
+            error_type="guardrail_block",
+            error_message="Tool blocked by guardrail policy",
+        )
+
+        assert ended["status"] == "WARNING"
+        assert ended["level"] == "WARNING"
+        assert ended["status_message"] == "Tool blocked by guardrail policy"
+
+    def test_cancelled_status_marks_warning(self, monkeypatch):
+        mod = self._make_mod()
+        observation, ended = self._setup_tool(mod, monkeypatch)
+
+        mod.on_post_tool_call(
+            tool_name="bash",
+            args={"command": "sleep 100"},
+            result='{"error": "Tool execution cancelled by user interrupt"}',
+            task_id="task-1",
+            session_id="session-1",
+            tool_call_id="call-1",
+            status="cancelled",
+            error_type="keyboard_interrupt",
+            error_message="Tool execution cancelled by user interrupt",
+        )
+
+        assert ended["status"] == "WARNING"
+        assert ended["level"] == "WARNING"
+
+    def test_ok_status_stays_default_no_error_kwargs(self, monkeypatch):
+        """Successful calls must not carry ERROR/WARNING status — the
+        observation keeps the default level so the UI shows it green."""
+        mod = self._make_mod()
+        observation, ended = self._setup_tool(mod, monkeypatch)
+
+        mod.on_post_tool_call(
+            tool_name="bash",
+            args={"command": "echo hi"},
+            result='{"output": "hi"}',
+            task_id="task-1",
+            session_id="session-1",
+            tool_call_id="call-1",
+            status="ok",
+        )
+
+        assert ended["obs"] is observation
+        assert ended.get("status") is None
+        assert ended.get("level") is None
+        assert ended.get("status_message") is None
+        assert ended["output"] == {"output": "hi"}
+
+    def test_error_result_without_status_kwarg_stays_unmarked(self, monkeypatch):
+        """The emitter (model_tools._emit_post_tool_call_hook) derives status
+        from the result before invoking the hook, so the plugin trusts the
+        ``status`` kwarg. A caller that omits it (status="") must not invent a
+        marking — derivation lives in the emitter, not here."""
+        mod = self._make_mod()
+        observation, ended = self._setup_tool(mod, monkeypatch)
+
+        mod.on_post_tool_call(
+            tool_name="bash",
+            args={"command": "false"},
+            result='{"error": "exit code 1"}',
+            task_id="task-1",
+            session_id="session-1",
+            tool_call_id="call-1",
+        )
+
+        assert ended.get("status") is None
+        assert ended["output"] == {"error": "exit code 1"}

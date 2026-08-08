@@ -239,13 +239,19 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 }) => {
   // Keep-alive (tree-group.tsx) keeps every ever-active tab MOUNTED and hides
   // inactive ones with `visibility: hidden` — the pane layer keeps its layout
-  // box so scroll positions survive a tab round-trip. The TRANSCRIPT must not
-  // ride along: a hidden pane's frozen message rows are a second, stale copy
-  // of the conversation that can paint through the visible thread when any
-  // descendant overrides the inherited `visibility` (the "stale snapshot +
-  // live copy" duplication of #81772). The viewport shell stays mounted
-  // (scroll state survives); the rows stand down until this pane is the
-  // active tab again.
+  // box so scroll positions survive a tab round-trip at the PANE level. The
+  // TRANSCRIPT must not ride along: a hidden pane's frozen message rows are a
+  // second, stale copy of the conversation that can paint through the visible
+  // thread when any descendant overrides the inherited `visibility` (the
+  // "stale snapshot + live copy" duplication of #81772).
+  //
+  // Note: unloading the rows means the transcript-level scrollTop is clamped
+  // to ~0 while the pane is hidden (the viewport shell has no content), so
+  // switching back to a tab whose old position was near the bottom can land
+  // at the bottom rather than the exact prior offset — the pane's layout box
+  // preserves coarse placement, not the precise transcript scroll. That is a
+  // deliberate trade: exact per-transcript scroll restoration would require
+  // keeping the (duplicated) rows mounted.
   const visible = usePaneVisible()
 
   // TWO signatures, deliberately split. The STRUCTURAL one (ids/roles/count)

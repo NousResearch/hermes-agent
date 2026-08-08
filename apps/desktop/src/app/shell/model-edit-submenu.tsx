@@ -22,16 +22,31 @@ import { isThinkingEnabled, REASONING_EFFORTS, resolveReasoningEffort } from '@/
 export type FastControl =
   { kind: 'none' } | { kind: 'param'; on: boolean } | { kind: 'variant'; baseId: string; fastId: string; on: boolean }
 
+export interface FastVariantFamily {
+  baseId: string
+  fastId: null | string
+}
+
 /** Resolve the fast mechanism for a model: prefer the speed=fast parameter
- *  when the backend supports it, else fall back to a `…-fast` sibling model. */
+ *  when the backend supports it, else fall back to a speed-variant model. */
 export function resolveFastControl(
   model: string,
   providerModels: readonly string[],
   paramSupported: boolean,
-  currentFastMode: boolean
+  currentFastMode: boolean,
+  variantFamily?: FastVariantFamily
 ): FastControl {
   if (paramSupported) {
     return { kind: 'param', on: currentFastMode }
+  }
+
+  if (variantFamily?.fastId && (model === variantFamily.baseId || model === variantFamily.fastId)) {
+    return {
+      kind: 'variant',
+      baseId: variantFamily.baseId,
+      fastId: variantFamily.fastId,
+      on: model === variantFamily.fastId
+    }
   }
 
   if (/-fast$/i.test(model)) {

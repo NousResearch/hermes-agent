@@ -29,6 +29,22 @@ from tools.registry import tool_error
 logger = logging.getLogger(__name__)
 
 
+_INTERNAL_GATEWAY_TURN_RE = re.compile(
+    r"^\s*(?:"
+    r"\[ASYNC (?:DELEGATION )?(?:BATCH )?COMPLETE[^\]]*\]|"
+    r"\[CONTEXT COMPACTION(?:\s*[—-]\s*REFERENCE ONLY)?\]|"
+    r"\[PRIOR CONTEXT(?:\s*[—-]\s*FOR REFERENCE ONLY)?\]|"
+    r"\[Your active task list was preserved across context compression\]"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _is_internal_gateway_turn(text: str) -> bool:
+    """Return whether text is a machine-generated gateway notification."""
+    return bool(_INTERNAL_GATEWAY_TURN_RE.match(text or ""))
+
+
 # ---------------------------------------------------------------------------
 # Tool schemas (moved from tools/honcho_tools.py)
 # ---------------------------------------------------------------------------
@@ -1322,6 +1338,11 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if self._cron_skipped:
             return
+        if self._config and not getattr(self._config, "save_messages", True):
+            return
+        if _is_internal_gateway_turn(user_content):
+            logger.debug("Honcho sync skipped machine-generated gateway turn")
+            return
         if self._recall_mode == "tools" and not self._session_ready():
             return
         if not self._session_ready():
@@ -1331,6 +1352,8 @@ class HonchoMemoryProvider(MemoryProvider):
         msg_limit = self._config.message_max_chars if self._config else 25000
         clean_user_content = sanitize_context(user_content or "").strip()
         clean_assistant_content = sanitize_context(assistant_content or "").strip()
+        if not clean_user_content or not clean_assistant_content:
+            return
 
         def _sync():
             try:

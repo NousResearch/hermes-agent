@@ -283,6 +283,124 @@ def test_honcho_tools_eager_init_failure_does_not_leave_ready_manager(monkeypatc
     assert provider._manager is None
 
 
+def test_honcho_sync_turn_skips_write_when_save_messages_is_disabled():
+    """The resolved write-disable switch must gate an initialized provider."""
+    provider = HonchoMemoryProvider()
+    cfg = _configured_tools_config(init_on_session_start=True)
+    cfg.save_messages = False
+    manager_calls = []
+
+    class Manager:
+        def get_or_create(self, session_key):
+            manager_calls.append(session_key)
+            return SimpleNamespace()
+
+    provider._config = cfg
+    provider._manager = Manager()
+    provider._session_key = "test-session"
+    provider._session_initialized = True
+
+    provider.sync_turn("a genuine user turn", "a genuine assistant reply")
+
+    assert provider._sync_thread is None
+    assert manager_calls == []
+
+
+def test_honcho_sync_turn_skips_anchored_gateway_notifications():
+    """Known bracketed gateway wrappers must not become durable messages."""
+    wrappers = (
+        "[ASYNC DELEGATION BATCH COMPLETE]\nworker results follow",
+        "[CONTEXT COMPACTION — REFERENCE ONLY]\nsummary follows",
+        "[PRIOR CONTEXT — FOR REFERENCE ONLY]\nprior session details",
+        "[Your active task list was preserved across context compression]",
+    )
+
+    for wrapper in wrappers:
+        provider = HonchoMemoryProvider()
+        manager_calls = []
+
+        class Manager:
+            def get_or_create(self, session_key):
+                manager_calls.append(session_key)
+                return SimpleNamespace()
+
+        provider._config = _configured_tools_config(init_on_session_start=True)
+        provider._manager = Manager()
+        provider._session_key = "test-session"
+        provider._session_initialized = True
+
+        provider.sync_turn(wrapper, "Thanks for the update.")
+
+        assert provider._sync_thread is None
+        assert manager_calls == []
+
+
+def test_honcho_sync_turn_keeps_human_background_status_discussion():
+    """A human discussing a background process is not a gateway wrapper."""
+    provider = HonchoMemoryProvider()
+    manager_calls = []
+
+    class Manager:
+        def get_or_create(self, session_key):
+            manager_calls.append(session_key)
+            return SimpleNamespace()
+
+    provider._config = _configured_tools_config(init_on_session_start=True)
+    provider._manager = Manager()
+    provider._session_key = "test-session"
+    provider._session_initialized = True
+
+    provider.sync_turn(
+        "A background process has finished. I want to discuss its result.",
+        "Let's review it together.",
+    )
+    provider._sync_thread.join(timeout=1)
+
+    assert manager_calls == ["test-session"]
+
+
+def test_honcho_sync_turn_skips_empty_sanitized_turn():
+    """Context-only turns must not create a partial durable record."""
+    provider = HonchoMemoryProvider()
+    manager_calls = []
+
+    class Manager:
+        def get_or_create(self, session_key):
+            manager_calls.append(session_key)
+            return SimpleNamespace()
+
+    provider._config = _configured_tools_config(init_on_session_start=True)
+    provider._manager = Manager()
+    provider._session_key = "test-session"
+    provider._session_initialized = True
+
+    provider.sync_turn("", "A response without a user message.")
+
+    assert provider._sync_thread is None
+    assert manager_calls == []
+
+
+def test_honcho_sync_turn_skips_empty_assistant_content():
+    """A user turn without a usable reply must not be persisted alone."""
+    provider = HonchoMemoryProvider()
+    manager_calls = []
+
+    class Manager:
+        def get_or_create(self, session_key):
+            manager_calls.append(session_key)
+            return SimpleNamespace()
+
+    provider._config = _configured_tools_config(init_on_session_start=True)
+    provider._manager = Manager()
+    provider._session_key = "test-session"
+    provider._session_initialized = True
+
+    provider.sync_turn("A valid user turn.", "   ")
+
+    assert provider._sync_thread is None
+    assert manager_calls == []
+
+
 def test_honcho_tools_lazy_hooks_do_not_prestart_background_init(monkeypatch):
     """tools lazy mode lets the first tool call own session initialization."""
     provider = HonchoMemoryProvider()

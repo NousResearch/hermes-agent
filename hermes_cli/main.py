@@ -450,6 +450,7 @@ from hermes_cli.subcommands.slack import build_slack_parser
 from hermes_cli.subcommands.login import build_login_parser
 from hermes_cli.subcommands.logout import build_logout_parser
 from hermes_cli.subcommands.auth import build_auth_parser
+from hermes_cli.subcommands.credentials import build_credentials_parser
 from hermes_cli.subcommands.status import build_status_parser
 from hermes_cli.subcommands.pause import build_pause_parser
 from hermes_cli.subcommands.webhook import build_webhook_parser
@@ -4607,6 +4608,13 @@ def cmd_auth(args):
     from hermes_cli.auth_commands import auth_command
 
     auth_command(args)
+
+
+def cmd_credentials(args):
+    """Read-only credential dependency map."""
+    from hermes_cli.credential_impact import credentials_command
+
+    return credentials_command(args)
 
 
 def cmd_status(args):
@@ -11522,6 +11530,11 @@ def main():
     # auth command  (parser built in hermes_cli/subcommands/auth.py)
     # =========================================================================
     build_auth_parser(subparsers, cmd_auth=cmd_auth)
+
+    # =========================================================================
+    # credentials command  (parser built in hermes_cli/subcommands/credentials.py)
+    # =========================================================================
+    build_credentials_parser(subparsers, cmd_credentials=cmd_credentials)
 
     # =========================================================================
     # status command  (parser built in hermes_cli/subcommands/status.py)

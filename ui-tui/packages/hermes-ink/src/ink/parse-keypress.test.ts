@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { InputEvent } from './events/input-event.js'
 import { INITIAL_STATE, parseMultipleKeypresses } from './parse-keypress.js'
 import { PASTE_END, PASTE_START } from './termio/csi.js'
 
@@ -129,6 +130,17 @@ describe('flush-boundary SGR mouse reassembly', () => {
     const [[key]] = parseMultipleKeypresses(INITIAL_STATE, tail)
 
     expect(key).toMatchObject({ name: 'wheelup' })
+  })
+
+  it('swallows orphaned X10 hover tails instead of leaking printable coordinate bytes', () => {
+    // DECSET 1003 no-button motion uses button code 35; X10 stores each byte
+    // as value+32, so the payload is all printable text. If the ESC was lost,
+    // those bytes can look like real input (for example RED:RED: fragments).
+    const hoverTail = '[M' + String.fromCharCode(35 + 32) + 'RE'
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, hoverTail)
+
+    expect(key).toMatchObject({ name: 'mouse' })
+    expect(new InputEvent(key).input).toBe('')
   })
 })
 

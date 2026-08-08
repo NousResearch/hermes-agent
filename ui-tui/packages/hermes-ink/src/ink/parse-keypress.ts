@@ -283,13 +283,17 @@ export function parseMultipleKeypresses(
     } else if (token.type === 'text') {
       if (inPaste) {
         pasteBuffer += token.value
-      } else if (/^\[M[\x60-\x7f][\x20-\uffff]{2}$/.test(token.value)) {
-        // Orphaned X10 wheel tail (legacy 1000/1002 terminals, fullscreen
-        // only). If the buffered ESC was flushed as a lone Escape and the X10
-        // payload (`[M` + 3 bytes) arrived as the next text token, re-synthesize
-        // with ESC so the scroll event still fires instead of leaking. SGR mouse
-        // reports no longer reach this branch — the tokenizer keeps an
-        // incomplete CSI buffered across a flush and reassembles it (see
+      } else if (/^\[M[\x20-\uffff]{3}$/.test(token.value)) {
+        // Orphaned X10 mouse tail (legacy 1000/1002/1003 terminals,
+        // fullscreen only). If the buffered ESC was flushed as a lone Escape
+        // and the X10 payload (`[M` + 3 bytes) arrived as the next text token,
+        // re-synthesize with ESC so the mouse event is parsed/suppressed
+        // instead of leaking coordinate bytes into the focused input. This
+        // covers passive hover/no-button motion too — not just wheel events —
+        // because coordinates are printable bytes and can look like user text
+        // (for example `RED:RED:` fragments while moving the pointer).
+        // SGR mouse reports no longer reach this branch — the tokenizer keeps
+        // an incomplete CSI buffered across a flush and reassembles it (see
         // termio/tokenize.ts), so the old fragment/burst recovery is gone.
         const resynthesized = '\x1b' + token.value
         keys.push(parseKeypress(resynthesized))

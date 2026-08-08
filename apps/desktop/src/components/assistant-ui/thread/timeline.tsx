@@ -110,6 +110,29 @@ function jumpScroll(viewport: HTMLElement, top: number, duration = 170): void {
 export const ownViewport = (root: HTMLElement | null): HTMLElement | null =>
   (root?.closest('[data-session-anchor]') ?? document).querySelector<HTMLElement>(VIEWPORT)
 
+// User prompts are `position: sticky` — once scrolled past, the bubble pins to
+// the viewport top (--sticky-human-top), so its OWN rect reads ~4px for every
+// old prompt and a click on its marker would compute delta ≈ 0: the dead-click
+// #81768. Measure the nearest in-flow ancestor (the turn container) instead.
+export function inFlowAncestor(node: HTMLElement): HTMLElement {
+  let el: HTMLElement | null = node
+
+  while (el && getComputedStyle(el).position === 'sticky') {
+    el = el.parentElement
+  }
+
+  return el ?? node
+}
+
+/** Scroll target (viewport-relative scrollTop) that brings the prompt's turn
+ *  into view — measured from its in-flow position, not its stuck rect. */
+export function promptJumpTop(viewport: HTMLElement, node: HTMLElement): number {
+  const anchor = inFlowAncestor(node)
+  const top = viewport.scrollTop + (anchor.getBoundingClientRect().top - viewport.getBoundingClientRect().top) - 8
+
+  return Math.max(0, top)
+}
+
 function scrollToPrompt(root: HTMLElement | null, id: string) {
   const viewport = ownViewport(root)
   const node = viewport?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
@@ -118,10 +141,8 @@ function scrollToPrompt(root: HTMLElement | null, id: string) {
     return
   }
 
-  const top = viewport.scrollTop + (node.getBoundingClientRect().top - viewport.getBoundingClientRect().top) - 8
-
   triggerHaptic('selection')
-  jumpScroll(viewport, Math.max(0, top))
+  jumpScroll(viewport, promptJumpTop(viewport, node))
 }
 
 /**

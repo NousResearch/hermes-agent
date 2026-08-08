@@ -133,6 +133,70 @@ describe('ThreadTimeline below the threshold', () => {
   })
 })
 
+describe('ThreadTimeline marker click', () => {
+  // jumpScroll animates over ~170ms via requestAnimationFrame. Drive each
+  // callback synchronously with a far-future timestamp so one step lands the
+  // final scrollTop (p = min(1, Δt/170) = 1 on the first frame).
+  const stubRaf = () => {
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn((callback: (now: number) => void) => {
+        callback(performance.now() + 1000)
+
+        return 1
+      })
+    )
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('scrolls the viewport to the clicked prompt turn, measured in-flow (#81768)', () => {
+    messages = transcript(6)
+    stubRaf()
+    // jsdom ships no CSS.escape; the rail's measure effect queries
+    // `[data-message-id="…"]` through it on mount.
+    vi.stubGlobal('CSS', { escape: (value: string) => value })
+
+    const { container } = render(
+      <div data-session-anchor="workspace">
+        <div data-slot="aui_thread-viewport" />
+        <ThreadTimeline />
+      </div>
+    )
+
+    const viewport = container.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]')!
+    viewport.getBoundingClientRect = () => ({ top: 100 } as DOMRect)
+    Object.defineProperty(viewport, 'scrollTop', { configurable: true, writable: true, value: 400 })
+
+    // Each prompt is a sticky bubble pinned to the viewport top (~4px); its
+    // turn container keeps the in-flow position (1200px into the transcript).
+    // The regression: the old code measured the PINNED bubble (top ≈ 104) and
+    // computed a ~0px jump, so every old marker's click was a silent no-op.
+    for (const message of messages) {
+      const turn = document.createElement('div')
+      const bubble = document.createElement('div')
+      bubble.style.position = 'sticky'
+      bubble.dataset.messageId = message.id
+      turn.appendChild(bubble)
+      viewport.appendChild(turn)
+      turn.getBoundingClientRect = () => ({ top: 1200 } as DOMRect)
+      bubble.getBoundingClientRect = () => ({ top: 104 } as DOMRect)
+    }
+
+    const ticks = container.querySelectorAll('[data-slot="thread-timeline-ticks"] button')
+    expect(ticks).toHaveLength(6)
+
+    fireEvent.click(ticks[0])
+
+    // 400 + 1200 - 100 - 8 = 1492: the turn's in-flow position, offset 8px
+    // above the viewport top — not the bubble's pinned 104px.
+    expect(viewport.scrollTop).toBe(1492)
+  })
+})
+
 describe('ThreadTimeline while a reply streams', () => {
   it('does not re-derive the rail as assistant content grows', () => {
     messages = [...transcript(6), { content: [{ text: 'th', type: 'text' }], id: 'a1', role: 'assistant' }]

@@ -27,7 +27,7 @@ The easiest path is the interactive manager:
 hermes fallback
 ```
 
-`hermes fallback` reuses the provider picker from `hermes model` — same provider list, same credential prompts, same validation. Use the subcommands `add`, `list` (alias `ls`), `remove` (alias `rm`), and `clear` to manage the chain. Changes persist under the top-level `fallback_providers:` list in `config.yaml`.
+`hermes fallback` reuses the provider picker from `hermes model` — same provider list, same credential prompts, same validation. Use the subcommands `add`, `list` (alias `ls`), `move FROM TO`, `remove` (alias `rm`), and `clear` to manage the chain. `move` reorders entries using the 1-based positions shown by `hermes fallback list`. Changes persist under the top-level `fallback_providers:` list in `config.yaml`.
 
 If you'd rather edit the YAML directly, add a top-level `fallback_providers` list to `~/.hermes/config.yaml`:
 

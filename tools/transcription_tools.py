@@ -2027,6 +2027,42 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+_STT_TRANSCODE_RETRY_EXTENSIONS = {".webm", ".ogg", ".oga", ".opus", ".caf"}
+_STT_TRANSCODE_RETRY_TERMS = (
+    "unsupported file",
+    "unsupported audio",
+    "unsupported audio format",
+    "corrupted",
+    "corrupt",
+    "invalid file",
+    "invalid audio",
+    "container",
+)
+
+
+def _should_retry_stt_after_transcode(exc: Exception, file_path: str) -> bool:
+    """Return whether an OpenAI-compatible STT rejection may be container-specific.
+
+    Some transcription models reject browser/voice-note containers before the
+    audio decoder can inspect the stream. The SDK surfaces those rejections as
+    normal 400s on some endpoints and as APIError/5xx on others, so gate the
+    retry by both the error shape and the source container instead of only the
+    concrete exception class.
+    """
+    suffix = Path(file_path).suffix.lower()
+    message = str(exc).lower()
+    is_bad_request = exc.__class__.__name__ == "BadRequestError"
+
+    if is_bad_request and any(term in message for term in _STT_TRANSCODE_RETRY_TERMS):
+        return True
+
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int) and 500 <= status_code < 600:
+        return suffix in _STT_TRANSCODE_RETRY_EXTENSIONS
+
+    return False
+
+
 def _transcribe_openai(
     file_path: str,
     model_name: str,
@@ -2096,13 +2132,14 @@ def _transcribe_openai(
             with tempfile.TemporaryDirectory(prefix="hermes-stt-") as work_dir:
                 try:
                     transcription = _create_transcription(file_path)
-                except BadRequestError as exc:
-                    message = str(exc).lower()
-                    if not any(k in message for k in ("unsupported", "corrupted", "invalid file")):
+                except (BadRequestError, APIError) as exc:
+                    if not _should_retry_stt_after_transcode(exc, file_path):
                         raise
                     # Newer models (e.g. gpt-4o-transcribe) reject some containers
-                    # whisper-1 accepted (notably Ogg/Opus voice notes). Transcode
-                    # to a compact .m4a and retry once.
+                    # whisper-1 accepted (notably Ogg/Opus/WebM voice notes).
+                    # Some compatible endpoints surface this as a 5xx APIError
+                    # instead of BadRequestError. Transcode to a compact .m4a
+                    # and retry once.
                     converted_path, transcode_error = _transcode_audio_for_stt(file_path, work_dir)
                     if transcode_error:
                         return {"success": False, "transcript": "", "error": transcode_error}

@@ -81,18 +81,45 @@ class TestMattermostConfigLoading:
         assert home.chat_id == "ch_abc123"
         assert home.name == "General"
 
+    def test_config_yaml_mattermost_max_post_length_reaches_platform_extra(
+        self, monkeypatch, tmp_path
+    ):
+        """Top-level config.yaml Mattermost settings should seed runtime extras."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("MATTERMOST_MAX_POST_LENGTH", raising=False)
+        (tmp_path / "config.yaml").write_text(
+            "mattermost:\n"
+            "  enabled: true\n"
+            "  url: https://mm.example.com\n"
+            "  token: mm-tok-abc123\n"
+            "  max_post_length: 16000\n",
+            encoding="utf-8",
+        )
+
+        from gateway.config import load_gateway_config
+
+        config = load_gateway_config()
+
+        mattermost = config.platforms[Platform.MATTERMOST]
+        assert mattermost.enabled is True
+        assert mattermost.extra.get("max_post_length") == 16000
+        assert os.getenv("MATTERMOST_MAX_POST_LENGTH") is None
+
 
 # ---------------------------------------------------------------------------
 # Adapter format / truncate
 # ---------------------------------------------------------------------------
 
-def _make_adapter():
+def _make_adapter(extra=None):
     """Create a MattermostAdapter with mocked config."""
     from plugins.platforms.mattermost.adapter import MattermostAdapter
+    adapter_extra = {"url": "https://mm.example.com"}
+    if extra:
+        adapter_extra.update(extra)
     config = PlatformConfig(
         enabled=True,
         token="test-token",
-        extra={"url": "https://mm.example.com"},
+        extra=adapter_extra,
     )
     adapter = MattermostAdapter(config)
     return adapter
@@ -125,6 +152,137 @@ class TestMattermostTruncateMessage:
         assert len(chunks) >= 2
         for chunk in chunks:
             assert len(chunk) <= 4000
+
+    def test_configured_max_post_length_exposed_to_streaming(self, monkeypatch):
+        monkeypatch.delenv("MATTERMOST_MAX_POST_LENGTH", raising=False)
+        adapter = _make_adapter({"max_post_length": 16000})
+        assert adapter.max_post_length == 16000
+        assert adapter.MAX_MESSAGE_LENGTH == 16000
+
+    def test_max_post_length_clamped_to_mattermost_server_limit(self, monkeypatch):
+        monkeypatch.delenv("MATTERMOST_MAX_POST_LENGTH", raising=False)
+        adapter = _make_adapter({"max_post_length": 999999})
+        assert adapter.max_post_length == 16383
+        assert adapter.MAX_MESSAGE_LENGTH == 16383
+
+    def test_tiny_max_post_length_falls_back_to_safe_default(self, monkeypatch):
+        monkeypatch.delenv("MATTERMOST_MAX_POST_LENGTH", raising=False)
+        adapter = _make_adapter({"max_post_length": 1})
+        assert adapter.max_post_length == 4000
+        assert adapter.MAX_MESSAGE_LENGTH == 4000
+
+    @pytest.mark.parametrize("value", ["not-a-number", float("inf"), float("-inf")])
+    def test_invalid_max_post_length_falls_back_to_safe_default(
+        self, monkeypatch, value
+    ):
+        monkeypatch.delenv("MATTERMOST_MAX_POST_LENGTH", raising=False)
+        adapter = _make_adapter({"max_post_length": value})
+        assert adapter.max_post_length == 4000
+        assert adapter.MAX_MESSAGE_LENGTH == 4000
+
+    def test_environment_does_not_configure_post_length(self, monkeypatch):
+        monkeypatch.setenv("MATTERMOST_MAX_POST_LENGTH", "16000")
+        adapter = _make_adapter({})
+        assert adapter.max_post_length == 4000
+
+    def test_config_max_post_length_ignores_environment_value(self, monkeypatch):
+        monkeypatch.setenv("MATTERMOST_MAX_POST_LENGTH", "16000")
+        adapter = _make_adapter({"max_post_length": 4000})
+        assert adapter.max_post_length == 4000
+
+    def test_apply_yaml_config_maps_max_post_length(self, monkeypatch):
+        monkeypatch.delenv("MATTERMOST_MAX_POST_LENGTH", raising=False)
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+
+        seeded = _apply_yaml_config({}, {"max_post_length": 16000})
+
+        assert os.getenv("MATTERMOST_MAX_POST_LENGTH") is None
+        assert seeded == {"max_post_length": 16000}
+
+    def test_apply_yaml_config_does_not_mutate_environment(self, monkeypatch):
+        monkeypatch.setenv("MATTERMOST_MAX_POST_LENGTH", "16000")
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+
+        seeded = _apply_yaml_config({}, {"max_post_length": 8000})
+
+        assert os.getenv("MATTERMOST_MAX_POST_LENGTH") == "16000"
+        assert seeded == {"max_post_length": 8000}
+
+    def test_apply_yaml_config_tiny_max_post_length_seeds_safe_default(self, monkeypatch):
+        monkeypatch.delenv("MATTERMOST_MAX_POST_LENGTH", raising=False)
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+
+        seeded = _apply_yaml_config({}, {"max_post_length": 1})
+
+        assert os.getenv("MATTERMOST_MAX_POST_LENGTH") is None
+        assert seeded == {"max_post_length": 4000}
+
+    @pytest.mark.asyncio
+    async def test_send_uses_configured_max_post_length(self, monkeypatch):
+        monkeypatch.delenv("MATTERMOST_MAX_POST_LENGTH", raising=False)
+        adapter = _make_adapter({"max_post_length": 16000})
+        adapter._post_preserving_thread = AsyncMock(
+            return_value={"id": "post-1"}
+        )
+
+        result = await adapter.send("channel-id", "x" * 12000)
+
+        assert result.success is True
+        assert adapter._post_preserving_thread.call_count == 1
+        payload = adapter._post_preserving_thread.call_args.args[1]
+        assert payload["message"] == "x" * 12000
+
+    @pytest.mark.asyncio
+    async def test_streaming_preview_over_limit_fails_without_partial_post(
+        self, monkeypatch
+    ):
+        monkeypatch.delenv("MATTERMOST_MAX_POST_LENGTH", raising=False)
+        adapter = _make_adapter({"max_post_length": 500})
+        adapter._post_preserving_thread = AsyncMock(
+            return_value={"id": "must-not-exist"}
+        )
+
+        result = await adapter.send(
+            "channel-id",
+            ("x" * 500) + " ▉",
+            metadata={"expect_edits": True},
+        )
+
+        assert result.success is False
+        assert "streaming preview" in (result.error or "").lower()
+        adapter._post_preserving_thread.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_message_tool_uses_configured_max_post_length(self, monkeypatch):
+        monkeypatch.delenv("MATTERMOST_MAX_POST_LENGTH", raising=False)
+        from tools import send_message_tool
+
+        sent_chunks = []
+
+        async def fake_send_via_adapter(
+            platform,
+            pconfig,
+            chat_id,
+            message,
+            thread_id=None,
+            media_files=None,
+            force_document=False,
+        ):
+            sent_chunks.append(message)
+            return {"success": True, "message_id": f"post-{len(sent_chunks)}"}
+
+        monkeypatch.setattr(send_message_tool, "_send_via_adapter", fake_send_via_adapter)
+        pconfig = PlatformConfig(enabled=True, extra={"max_post_length": 16000})
+
+        result = await send_message_tool._send_to_platform(
+            Platform.MATTERMOST,
+            pconfig,
+            "channel-id",
+            "x" * 12000,
+        )
+
+        assert result == {"success": True, "message_id": "post-1"}
+        assert sent_chunks == ["x" * 12000]
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +380,11 @@ class TestMattermostSend:
         self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
         self.adapter._last_post_status = 400
         self.adapter._last_post_error = "api.context.invalid_param.app_error: invalid root_id"
-        self.adapter._api_post = AsyncMock(side_effect=[{}, {"id": "flat_final"}])
+        self.adapter._api_post = AsyncMock(side_effect=[
+            {},
+            {"id": "flat_warning"},
+            {"id": "flat_final"},
+        ])
 
         result = await self.adapter.send(
             "channel_1",
@@ -233,14 +395,107 @@ class TestMattermostSend:
 
         assert result.success is True
         assert result.message_id == "flat_final"
-        assert self.adapter._api_post.call_count == 2
+        assert self.adapter._api_post.call_count == 3
         threaded_payload = self.adapter._api_post.call_args_list[0][0][1]
-        flat_payload = self.adapter._api_post.call_args_list[1][0][1]
+        warning_payload = self.adapter._api_post.call_args_list[1][0][1]
+        flat_payload = self.adapter._api_post.call_args_list[2][0][1]
         assert threaded_payload["root_id"] == "bad_root"
+        assert "root_id" not in warning_payload
         assert "root_id" not in flat_payload
         assert flat_payload["channel_id"] == "channel_1"
-        assert "Mattermost thread delivery failed" in flat_payload["message"]
-        assert "Final answer body" in flat_payload["message"]
+        assert "Mattermost thread delivery failed" in warning_payload["message"]
+        assert "Final answer body" not in warning_payload["message"]
+        assert flat_payload["message"] == "Final answer body"
+
+    @pytest.mark.asyncio
+    async def test_notify_thread_fallback_separates_warning_from_max_length_body(self):
+        self.adapter = _make_adapter({"max_post_length": 16383})
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_get = AsyncMock(
+            return_value={"id": "bad_root", "root_id": ""}
+        )
+        self.adapter._last_post_status = 400
+        self.adapter._last_post_error = (
+            "api.context.invalid_param.app_error: invalid root_id"
+        )
+        self.adapter._api_post = AsyncMock(side_effect=[
+            {},
+            {"id": "flat_warning"},
+            {"id": "flat_final"},
+        ])
+
+        result = await self.adapter.send(
+            "channel_1",
+            "x" * 16383,
+            reply_to="bad_root",
+            metadata={"notify": True},
+        )
+
+        assert result.success is True
+        assert result.message_id == "flat_final"
+        warning_payload = self.adapter._api_post.call_args_list[1].args[1]
+        body_payload = self.adapter._api_post.call_args_list[2].args[1]
+        assert "Mattermost thread delivery failed" in warning_payload["message"]
+        assert body_payload["message"] == "x" * 16383
+        assert len(warning_payload["message"]) <= self.adapter.max_post_length
+        assert len(body_payload["message"]) <= self.adapter.max_post_length
+
+    @pytest.mark.asyncio
+    async def test_notify_thread_fallback_body_failure_exposes_no_partial_body(self):
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_get = AsyncMock(
+            return_value={"id": "bad_root", "root_id": ""}
+        )
+        self.adapter._last_post_status = 400
+        self.adapter._last_post_error = (
+            "api.context.invalid_param.app_error: invalid root_id"
+        )
+        self.adapter._api_post = AsyncMock(side_effect=[
+            {},
+            {"id": "flat_warning"},
+            {},
+        ])
+
+        result = await self.adapter.send(
+            "channel_1",
+            "Final answer body",
+            reply_to="bad_root",
+            metadata={"notify": True},
+        )
+
+        assert result.success is False
+        warning_payload = self.adapter._api_post.call_args_list[1].args[1]
+        body_payload = self.adapter._api_post.call_args_list[2].args[1]
+        assert "Final answer body" not in warning_payload["message"]
+        assert body_payload["message"] == "Final answer body"
+
+    @pytest.mark.asyncio
+    async def test_notify_thread_fallback_warning_exception_still_posts_body(self):
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_get = AsyncMock(
+            return_value={"id": "bad_root", "root_id": ""}
+        )
+        self.adapter._last_post_status = 400
+        self.adapter._last_post_error = (
+            "api.context.invalid_param.app_error: invalid root_id"
+        )
+        self.adapter._api_post = AsyncMock(side_effect=[
+            {},
+            RuntimeError("warning post failed"),
+            {"id": "flat_final"},
+        ])
+
+        result = await self.adapter.send(
+            "channel_1",
+            "Final answer body",
+            reply_to="bad_root",
+            metadata={"notify": True},
+        )
+
+        assert result.success is True
+        assert result.message_id == "flat_final"
+        body_payload = self.adapter._api_post.call_args_list[2].args[1]
+        assert body_payload["message"] == "Final answer body"
 
 
     @pytest.mark.asyncio

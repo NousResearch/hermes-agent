@@ -158,6 +158,7 @@ class SessionExportTooLargeError(ValueError):
 
 
 _COMPRESSION_LOCK_HOLDER_PID_RE = re.compile(r"(?:^|:)pid=(\d+)(?::|$)")
+_MAX_CACHED_READ_CONNECTIONS = 32
 
 
 def _system_prompt_hash(system_prompt: str) -> str:
@@ -2780,28 +2781,32 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if getattr(self._read_local, "failed", False):
             return None
         try:
-            conn = _connect_tracked_db(
-                f"file:{self.db_path}?mode=ro",
-                tracking_path=self.db_path,
-                uri=True,
-                timeout=5.0,
-                isolation_level=None,
-            )
-            conn.row_factory = sqlite3.Row
-            apply_database_pragmas(conn, db_label="state.db")
-            # Load the CJK tokenizer extension on this connection so
-            # messages_fts_cjk queries work on the read path. The .so
-            # registers the tokenizer in the connection's in-memory
-            # registry, not the database file, so mode=ro is fine.
-            if self._fts_cjk_loaded:
-                load_fts5_cjk_extension(conn)
             with self._read_conns_lock:
                 if self._read_conns_closed:
-                    # close() already drained — don't register; close
-                    # immediately so no tracked fd leaks.
-                    conn.close()
                     self._read_local.failed = True
                     return None
+                if len(self._read_conns) >= _MAX_CACHED_READ_CONNECTIONS:
+                    # Gateway executor threads can be short-lived. Keeping one
+                    # SQLite reader for every thread until SessionDB.close()
+                    # otherwise grows without bound and exhausts RLIMIT_NOFILE.
+                    # Fall back to the existing locked writer read path.
+                    self._read_local.failed = True
+                    return None
+                conn = _connect_tracked_db(
+                    f"file:{self.db_path}?mode=ro",
+                    tracking_path=self.db_path,
+                    uri=True,
+                    timeout=5.0,
+                    isolation_level=None,
+                )
+                conn.row_factory = sqlite3.Row
+                apply_database_pragmas(conn, db_label="state.db")
+                # Load the CJK tokenizer extension on this connection so
+                # messages_fts_cjk queries work on the read path. The .so
+                # registers the tokenizer in the connection's in-memory
+                # registry, not the database file, so mode=ro is fine.
+                if self._fts_cjk_loaded:
+                    load_fts5_cjk_extension(conn)
                 self._read_conns.add(conn)
         except sqlite3.Error:
             # Mark this thread failed so we don't retry the open on every

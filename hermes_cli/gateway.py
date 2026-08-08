@@ -4166,6 +4166,15 @@ def generate_launchd_plist() -> str:
     <key>KeepAlive</key>
     <true/>
 
+    <!-- macOS launchd otherwise inherits a 256-descriptor soft limit. A gateway
+         serving concurrent conversations keeps SQLite, model, Telegram, MCP and
+         tool descriptors open, so retain headroom while leak guards catch growth. -->
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>4096</integer>
+    </dict>
+
     <!-- ThrottleInterval raises launchd's default 10s minimum respawn interval
          to 30s so a crash-looping gateway can't hammer launchd into a rapid
          respawn storm; ExitTimeOut gives the gateway 25s of graceful-drain

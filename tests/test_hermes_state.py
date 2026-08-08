@@ -1,6 +1,7 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
 import sqlite3
+import threading
 import time
 import json
 from unittest import mock
@@ -102,6 +103,28 @@ def _no_fts_rebuild_throttle(monkeypatch):
 
 
 class TestConnectionLifecycle:
+    def test_ephemeral_reader_threads_do_not_grow_connection_pool_without_bound(
+        self, tmp_path
+    ):
+        db_path = tmp_path / "state.db"
+        session_db = SessionDB(db_path=db_path)
+        session_db.create_session("thread-reader", source="gateway")
+        results = []
+
+        def read_session():
+            results.append(session_db.get_session("thread-reader"))
+
+        try:
+            for _ in range(64):
+                thread = threading.Thread(target=read_session)
+                thread.start()
+                thread.join()
+
+            assert all(result is not None for result in results)
+            assert len(session_db._read_conns) <= 32
+        finally:
+            session_db.close()
+
     def test_read_only_close_never_requests_wal_checkpoint(self, tmp_path):
         db_path = tmp_path / "state.db"
         writable = SessionDB(db_path=db_path)

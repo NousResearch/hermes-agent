@@ -469,8 +469,8 @@ def test_kanban_notifier_isolates_per_subscription_failure(tmp_path, monkeypatch
     assert tid_good in adapter.sent[0]["text"]
 
 
-def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch):
-    """A `block_loop_detected` event must reach the subscriber as a triage ping.
+def test_notifier_delivers_block_loop_detected_triage_ping_and_wakes_origin(tmp_path, monkeypatch):
+    """A `block_loop_detected` event must ping and wake its Telegram origin.
 
     Regression for the silent-triage gap (PR #62712): kanban_db routes a task
     to `triage` after BLOCK_RECURRENCE_LIMIT re-blocks for the same cause and
@@ -486,8 +486,19 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
 
     conn = kb.connect()
     try:
-        tid = kb.create_task(conn, title="loops forever", assignee="worker")
-        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        tid = kb.create_task(
+            conn,
+            title="loops forever",
+            assignee="worker",
+            session_id="agent:main:telegram:dm:chat-1",
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+            chat_type="dm",
+        )
         kb._append_event(
             conn, tid, "block_loop_detected",
             {"reason": "needs credentials", "kind": "needs_input",
@@ -506,6 +517,12 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
     assert "TRIAGE" in text
     assert tid in text
     assert "needs credentials" in text
+    assert len(adapter.handled) == 1
+    wake = adapter.handled[0]
+    assert wake.source.platform is Platform.TELEGRAM
+    assert wake.source.chat_id == "chat-1"
+    assert wake.source.chat_type == "dm"
+    assert tid in wake.text
     # Cursor advanced: the event is claimed and not re-delivered.
     conn = kb.connect()
     try:

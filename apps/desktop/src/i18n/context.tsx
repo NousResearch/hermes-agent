@@ -105,6 +105,9 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
     localeRef.current = locale
     setRuntimeI18nLocale(locale)
     applyDocumentLocale(locale)
+    // Keep the native menus (macOS app menu, context menus, tray) in sync with
+    // the configured UI language; no-op outside the Electron shell.
+    window.hermesDesktop?.setUiLanguage?.(locale)
   }, [locale])
 
   useEffect(() => {

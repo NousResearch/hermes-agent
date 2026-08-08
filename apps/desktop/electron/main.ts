@@ -5353,11 +5353,19 @@ function sendWindowStateChanged(nextIsFullscreen?: boolean, target = mainWindow)
   webContents.send('hermes:window-state-changed', state)
 }
 
+// The native menus (macOS app menu, right-click context menu) follow the
+// renderer's configured UI language via the 'hermes:ui-language' IPC. English
+// is the default; only 'pt' switches labels today. Role items keep Electron's
+// default label (OS-localized on macOS) unless Portuguese is active.
+let uiLanguage = 'en'
+const menuLabel = (en, ptBr) => (uiLanguage === 'pt' ? ptBr : en)
+const ptRoleLabel = ptBr => (uiLanguage === 'pt' ? { label: ptBr } : {})
+
 function buildApplicationMenu() {
   const template = []
 
   const checkForUpdatesItem = {
-    label: 'Check for Updates…',
+    label: menuLabel('Check for Updates…', 'Verificar atualizações…'),
     click: () => sendOpenUpdatesRequested()
   }
 
@@ -5365,31 +5373,31 @@ function buildApplicationMenu() {
     template.push({
       label: APP_NAME,
       submenu: [
-        { label: `About ${APP_NAME}`, click: () => showAboutPanelFresh() },
+        { label: menuLabel(`About ${APP_NAME}`, `Sobre o ${APP_NAME}`), click: () => showAboutPanelFresh() },
         checkForUpdatesItem,
         { type: 'separator' },
-        { role: 'services' },
+        { role: 'services', ...ptRoleLabel('Serviços') },
         { type: 'separator' },
-        { role: 'hide' },
-        { role: 'hideOthers' },
-        { role: 'unhide' },
+        { role: 'hide', ...ptRoleLabel('Ocultar') },
+        { role: 'hideOthers', ...ptRoleLabel('Ocultar outros') },
+        { role: 'unhide', ...ptRoleLabel('Mostrar tudo') },
         { type: 'separator' },
-        { role: 'quit' }
+        { role: 'quit', ...ptRoleLabel('Sair') }
       ]
     })
   }
 
   template.push({
-    label: 'File',
+    label: menuLabel('File', 'Arquivo'),
     submenu: [
       // No accelerator: ⌘⇧N is a rebindable renderer keybind (session.newWindow);
       // a menu accelerator would fight the rebind panel and (on macOS) be
       // swallowed before the renderer sees it. Here purely for discoverability.
-      { click: () => createInstanceWindow(), label: 'New Window' },
+      { click: () => createInstanceWindow(), label: menuLabel('New Window', 'Nova janela') },
       // Same no-accelerator rationale: ⌘O is the rebindable renderer keybind
       // (workspace.openFolder). Clicking runs the same open-folder-as-project
       // flow through the renderer.
-      { click: () => sendOpenFolderRequested(), label: 'Open Folder…' },
+      { click: () => sendOpenFolderRequested(), label: menuLabel('Open Folder…', 'Abrir pasta…') },
       { type: 'separator' },
       IS_MAC
         ? {
@@ -5400,46 +5408,46 @@ function buildApplicationMenu() {
             // renderer's close-active-tab. Clicking the item still closes the tab
             // (or window) via the same request.
             click: () => sendClosePreviewRequested(),
-            label: 'Close'
+            label: menuLabel('Close', 'Fechar')
           }
-        : { role: 'quit' }
+        : { role: 'quit', ...ptRoleLabel('Sair') }
     ]
   })
   template.push({
-    label: 'Edit',
+    label: menuLabel('Edit', 'Editar'),
     submenu: [
-      { role: 'undo' },
-      { role: 'redo' },
+      { role: 'undo', ...ptRoleLabel('Desfazer') },
+      { role: 'redo', ...ptRoleLabel('Refazer') },
       { type: 'separator' },
-      { role: 'cut' },
-      { role: 'copy' },
-      { role: 'paste' },
+      { role: 'cut', ...ptRoleLabel('Recortar') },
+      { role: 'copy', ...ptRoleLabel('Copiar') },
+      { role: 'paste', ...ptRoleLabel('Colar') },
       // ⌘⇧V is only wired up by this item existing: an accelerator with no menu
       // entry is never translated into an editor command, so the chord was a
       // no-op in every input in the app. The composer inserts plain text on
       // every paste anyway, so this is the same result as ⌘V there — it's the
       // terminal, preview, and other editable surfaces that need the strip.
-      { role: 'pasteAndMatchStyle' },
-      { role: 'delete' },
-      { role: 'selectAll' }
+      { role: 'pasteAndMatchStyle', ...ptRoleLabel('Colar e combinar estilo') },
+      { role: 'delete', ...ptRoleLabel('Excluir') },
+      { role: 'selectAll', ...ptRoleLabel('Selecionar tudo') }
     ]
   })
   template.push({
-    label: 'View',
+    label: menuLabel('View', 'Exibir'),
     submenu: [
-      { role: 'reload' },
-      { role: 'forceReload' },
-      { role: 'toggleDevTools' },
+      { role: 'reload', ...ptRoleLabel('Recarregar') },
+      { role: 'forceReload', ...ptRoleLabel('Recarregar à força') },
+      { role: 'toggleDevTools', ...ptRoleLabel('Ferramentas do desenvolvedor') },
       { type: 'separator' },
       {
-        label: 'Actual Size',
+        label: menuLabel('Actual Size', 'Tamanho real'),
         accelerator: 'CommandOrControl+0',
         click: () => {
           setAndPersistZoomLevel(mainWindow, DEFAULT_ZOOM_LEVEL)
         }
       },
       {
-        label: 'Zoom In',
+        label: menuLabel('Zoom In', 'Aumentar zoom'),
         accelerator: 'CommandOrControl+Plus',
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
@@ -5448,7 +5456,7 @@ function buildApplicationMenu() {
         }
       },
       {
-        label: 'Zoom Out',
+        label: menuLabel('Zoom Out', 'Diminuir zoom'),
         accelerator: 'CommandOrControl+-',
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
@@ -5457,17 +5465,17 @@ function buildApplicationMenu() {
         }
       },
       { type: 'separator' },
-      { role: 'togglefullscreen' }
+      { role: 'togglefullscreen', ...ptRoleLabel('Alternar tela cheia') }
     ]
   })
   template.push({
-    label: 'Window',
+    label: menuLabel('Window', 'Janela'),
     submenu: IS_MAC
-      ? [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }]
-      : [{ role: 'minimize' }, { role: 'close' }]
+      ? [{ role: 'minimize', ...ptRoleLabel('Minimizar') }, { role: 'zoom', ...ptRoleLabel('Ampliar') }, { role: 'front', ...ptRoleLabel('Trazer para frente') }]
+      : [{ role: 'minimize', ...ptRoleLabel('Minimizar') }, { role: 'close', ...ptRoleLabel('Fechar') }]
   })
   template.push({
-    label: 'Help',
+    label: menuLabel('Help', 'Ajuda'),
     role: 'help',
     submenu: [checkForUpdatesItem]
   })
@@ -5662,7 +5670,7 @@ function installContextMenu(window) {
     if (hasImage) {
       template.push(
         {
-          label: 'Open Image',
+          label: menuLabel('Open Image', 'Abrir imagem'),
           click: () => {
             if (params.srcURL && !params.srcURL.startsWith('data:')) {
               openExternalUrl(params.srcURL)
@@ -5671,17 +5679,17 @@ function installContextMenu(window) {
           enabled: !params.srcURL.startsWith('data:')
         },
         {
-          label: 'Copy Image',
+          label: menuLabel('Copy Image', 'Copiar imagem'),
           click: () => {
             void copyImageFromUrl(params.srcURL).catch(error => rememberLog(`Copy image failed: ${error.message}`))
           }
         },
         {
-          label: 'Copy Image Address',
+          label: menuLabel('Copy Image Address', 'Copiar endereço da imagem'),
           click: () => clipboard.writeText(params.srcURL)
         },
         {
-          label: 'Save Image As...',
+          label: menuLabel('Save Image As...', 'Salvar imagem como…'),
           click: () => {
             void saveImageFromUrl(params.srcURL).catch(error => rememberLog(`Save image failed: ${error.message}`))
           }
@@ -5696,11 +5704,11 @@ function installContextMenu(window) {
 
       template.push(
         {
-          label: 'Open Link',
+          label: menuLabel('Open Link', 'Abrir link'),
           click: () => openExternalUrl(params.linkURL)
         },
         {
-          label: 'Copy Link',
+          label: menuLabel('Copy Link', 'Copiar link'),
           click: () => clipboard.writeText(params.linkURL)
         }
       )
@@ -5725,7 +5733,7 @@ function installContextMenu(window) {
 
       template.push({ type: 'separator' })
       template.push({
-        label: 'Add to dictionary',
+        label: menuLabel('Add to dictionary', 'Adicionar ao dicionário'),
         click: () => window.webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord)
       })
     }
@@ -5737,14 +5745,14 @@ function installContextMenu(window) {
 
       if (isEditable) {
         template.push(
-          { role: 'cut', enabled: params.editFlags.canCut },
-          { role: 'copy', enabled: params.editFlags.canCopy },
-          { role: 'paste', enabled: params.editFlags.canPaste },
+          { role: 'cut', ...ptRoleLabel('Recortar'), enabled: params.editFlags.canCut },
+          { role: 'copy', ...ptRoleLabel('Copiar'), enabled: params.editFlags.canCopy },
+          { role: 'paste', ...ptRoleLabel('Colar'), enabled: params.editFlags.canPaste },
           { type: 'separator' },
-          { role: 'selectAll', enabled: params.editFlags.canSelectAll }
+          { role: 'selectAll', ...ptRoleLabel('Selecionar tudo'), enabled: params.editFlags.canSelectAll }
         )
       } else {
-        template.push({ role: 'copy', enabled: params.editFlags.canCopy })
+        template.push({ role: 'copy', ...ptRoleLabel('Copiar'), enabled: params.editFlags.canCopy })
       }
     }
 
@@ -10989,6 +10997,24 @@ ipcMain.on('hermes:native-theme', (_event, mode) => {
   if (nativeTheme.themeSource !== mode) {
     nativeTheme.themeSource = mode
     writePersistedThemeSource(mode)
+  }
+})
+
+// The renderer reports the configured UI language so the native menus (macOS
+// app menu, right-click context menu) can match it. English is the default;
+// only 'pt' switches labels today. Rebuilds the app menu on change; context
+// menus read uiLanguage lazily at event time.
+ipcMain.on('hermes:ui-language', (_event, lang) => {
+  const next = typeof lang === 'string' && lang.length <= 16 ? lang : 'en'
+
+  if (next === uiLanguage) {
+    return
+  }
+
+  uiLanguage = next
+
+  if (IS_MAC) {
+    Menu.setApplicationMenu(buildApplicationMenu())
   }
 })
 

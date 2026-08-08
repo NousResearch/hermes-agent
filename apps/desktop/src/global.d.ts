@@ -175,6 +175,7 @@ declare global {
       stopPreviewFileWatch: (id: string) => Promise<boolean>
       setActiveWork?: (payload: HermesActiveWork) => void
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
+      setUiLanguage?: (lang: string) => void
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
       setTranslucency?: (payload: { intensity: number }) => void
       setKeepAwake?: (on: boolean) => void

@@ -4426,10 +4426,6 @@ class TurnRunner:
         response), which means the callback has to be attached before the run
         rather than registered after it. The lane predicates and their
         rationale are unchanged from the old post-response registration.
-
-        Gateway auto-title failures must NOT be surfaced as user-visible
-        messages (#23246) — the failure callback is suppressed to debug here,
-        while CLI mode keeps the agent's _emit_auxiliary_failure path.
         """
         try:
             # Gateway auto-title failures must NOT be surfaced as user-visible

@@ -134,13 +134,14 @@ On the **Bot** page, scroll down to **Privileged Gateway Intents**. You'll see t
 | Intent | Purpose | Required? |
 |--------|---------|-----------| 
 | **Presence Intent** | See user online/offline status | Optional |
-| **Server Members Intent** | Access the member list, resolve usernames | **Required** |
+| **Server Members Intent** | Access the member list, resolve usernames, resolve outbound `@Name` mentions | **Required** |
 | **Message Content Intent** | Read the text content of messages | **Required** |
 
 **Enable both Server Members Intent and Message Content Intent** by toggling them **ON**.
 
 - Without **Message Content Intent**, your bot receives message events but the message text is empty — the bot literally cannot see what you typed.
 - Without **Server Members Intent**, the bot cannot resolve usernames for the allowed users list and may fail to identify who is messaging it.
+- **Server Members Intent** is also what `discord.resolve_outbound_mentions` needs: matching a written `@Name` against the server's members requires the member list. With the intent off, that setting silently resolves nothing.
 
 :::warning[This is the #1 reason Discord bots don't work]
 If your bot is online but never responds to messages, the **Message Content Intent** is almost certainly disabled. Go back to the [Developer Portal](https://discord.com/developers/applications), select your application → Bot → Privileged Gateway Intents, and make sure **Message Content Intent** is toggled ON. Click **Save Changes**.
@@ -337,6 +338,9 @@ discord:
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
   reactions: true                 # Add emoji reactions during processing
+  resolve_outbound_mentions: false  # Rewrite a written "@Display Name" into a real
+                                   # <@id> mention so the person is actually pinged.
+                                   # Needs the Server Members Intent (see Step 3).
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)

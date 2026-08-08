@@ -2005,6 +2005,17 @@ DEFAULT_CONFIG = {
         # override: DISCORD_APPROVAL_MENTIONS. Default false avoids surprise
         # pings.
         "approval_mentions": False,
+        # When True, a readable "@Display Name" the agent writes in an OUTGOING
+        # message is rewritten into a real Discord mention (<@id>) by matching
+        # the guild's own members, so the person or bot is actually pinged. A
+        # model reliably writes "@Name" rather than the raw <@id> Discord needs,
+        # which otherwise renders as inert plain text. @everyone and roles stay
+        # governed by the existing allowed_mentions safe defaults.
+        # Requires the privileged Server Members Intent, which the adapter
+        # requests automatically when this is on — it must also be enabled in
+        # the Discord Developer Portal (Bot -> Privileged Gateway Intents) or
+        # the bot will not come online. Default false avoids surprise pings.
+        "resolve_outbound_mentions": False,
         # Discord voice-channel inactivity timeout, in seconds. Set to 0 to
         # keep the bot in VC until an explicit `/voice leave` / disconnect.
         "voice_channel_inactivity_timeout_seconds": 300,

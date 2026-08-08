@@ -311,7 +311,7 @@ In the [Developer Portal](https://discord.com/developers/applications) → your 
 | **Server Members Intent** | Resolve usernames in `DISCORD_ALLOWED_USERS` to numeric IDs (conditional) |
 | **Message Content Intent** | Read text message content in channels |
 
-**Message Content Intent** is required. **Server Members Intent** is only needed if your `DISCORD_ALLOWED_USERS` list uses usernames — if you use numeric user IDs, you can leave it OFF. Voice-channel SSRC → user_id mapping comes from Discord's SPEAKING opcode on the voice websocket and does **not** require the Server Members Intent.
+**Message Content Intent** is required. **Server Members Intent** is only needed if your `DISCORD_ALLOWED_USERS` list uses usernames, you authorize by role, or you enable `discord.resolve_outbound_mentions` — otherwise you can leave it OFF. Voice-channel SSRC → user_id mapping comes from Discord's SPEAKING opcode on the voice websocket and does **not** require the Server Members Intent.
 
 #### 3. Opus Codec
 

@@ -29,6 +29,31 @@ export function isSecondaryWindow(): boolean {
 
 let watchWindowCache: boolean | null = null
 
+// A "hud" window is HUD mode: the chrome-free floating chat. Unlike the pet
+// overlay / quick entry it is a FULL app renderer with its own gateway — the
+// flag only tells the shell to render the slim floating layout (composer +
+// scrollback) instead of the pane tree, so the composer it shows is the real
+// one. Read from location.search for the same reason as the flag above.
+let hudWindowCache: boolean | null = null
+
+export function isHudWindow(): boolean {
+  if (hudWindowCache !== null) {
+    return hudWindowCache
+  }
+
+  let result = false
+
+  try {
+    result = new URLSearchParams(window.location.search).get('win') === 'hud'
+  } catch {
+    result = false
+  }
+
+  hudWindowCache = result
+
+  return result
+}
+
 // A "watch" window spectates a session that is being driven elsewhere (a
 // running subagent). It resumes lazily — the gateway registers history + a
 // transport for the live mirror without building an agent, so opening it is
@@ -50,6 +75,13 @@ export function isWatchWindow(): boolean {
 
   return result
 }
+
+// True for any window that is NOT the primary app instance — a secondary
+// session window or the HUD. Single-claim channels (the quick-entry capture
+// bridge, the pet overlay control bridge) and the install/onboarding overlays
+// belong to the primary alone: two windows answering one channel turns one
+// keystroke into N prompts, and a HUD is the last place to paint onboarding.
+export const isAuxiliaryWindow = (): boolean => isSecondaryWindow() || isHudWindow()
 
 // True when running inside the Electron desktop shell (the preload bridge is
 // present). The "open in new window" affordance is desktop-only.

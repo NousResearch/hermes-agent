@@ -46,6 +46,23 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener('hermes:pet-overlay:control', listener)
     }
   },
+  // HUD mode: the chrome-free floating chat. A full app renderer (own gateway)
+  // sized as a floating bar, so it mounts the real composer. Main owns the
+  // window; `onChanged` keeps every window's toggle truthful.
+  hud: {
+    open: request => ipcRenderer.invoke('hermes:hud:open', request),
+    close: () => ipcRenderer.invoke('hermes:hud:close'),
+    setIgnoreMouse: ignore => ipcRenderer.send('hermes:hud:ignore-mouse', ignore),
+    // The HUD tells main which session it is on; main hands that back to the
+    // app window when the HUD closes, so the app can re-home onto it.
+    setSession: sessionId => ipcRenderer.send('hermes:hud:session', sessionId),
+    onChanged: callback => {
+      const listener = (_event, state) => callback(state)
+      ipcRenderer.on('hermes:hud:changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:hud:changed', listener)
+    }
+  },
   // Quick Entry: the global-hotkey mini composer window. Main owns the OS
   // shortcut + the persisted preference; the quick window only captures text
   // and hands it back, and the primary renderer submits it through the normal

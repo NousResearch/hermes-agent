@@ -7,9 +7,18 @@ that the setup wizard correctly syncs config from disk after the call.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import pytest
+
 from hermes_cli.config import load_config, save_config, save_env_value
 from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
-from hermes_cli.setup import _print_setup_summary, setup_model_provider
+from hermes_cli.setup import (
+    _SetupResult,
+    _print_setup_summary,
+    run_setup_wizard,
+    setup_model_provider,
+)
 
 
 def _maybe_keep_current_tts(question, choices):
@@ -93,6 +102,67 @@ def test_setup_model_provider_preserves_auxiliary_choices_written_by_picker(tmp_
     compression = reloaded["auxiliary"]["compression"]
     assert compression["provider"] == "gemini"
     assert compression["model"] == "gemini-2.5-flash"
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (KeyboardInterrupt(), _SetupResult("cancelled", "execution")),
+        (SystemExit(130), _SetupResult("cancelled", "execution")),
+        (RuntimeError("privacy-canary"), _SetupResult("failed", "execution")),
+    ],
+)
+def test_setup_model_provider_preserves_caught_terminal_outcome(
+    tmp_path, monkeypatch, error, expected
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    def fail():
+        raise error
+
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fail)
+
+    result = setup_model_provider(load_config())
+
+    assert result == expected
+
+
+def test_setup_model_provider_does_not_report_fresh_no_change_as_success(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setattr(
+        "hermes_cli.main.select_provider_and_model", lambda: False
+    )
+
+    result = setup_model_provider(load_config())
+
+    assert result == _SetupResult("cancelled", "none")
+
+
+def test_model_section_propagates_provider_terminal_result(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.setup.is_interactive_stdin", lambda: True)
+    terminal = _SetupResult("failed", "execution")
+    monkeypatch.setattr(
+        "hermes_cli.setup.SETUP_SECTIONS",
+        [("model", "Model & Provider", lambda _config: terminal)],
+    )
+
+    result = run_setup_wizard(
+        SimpleNamespace(
+            non_interactive=False,
+            portal=False,
+            quick=False,
+            reconfigure=False,
+            reset=False,
+            section="model",
+        )
+    )
+
+    assert result == terminal
 
 
 def test_setup_copilot_acp_skips_same_provider_pool_step(tmp_path, monkeypatch):

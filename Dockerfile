@@ -41,14 +41,14 @@ RUN apt-get -o Acquire::Retries=3 update && \
     make install
 
 FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b AS uv_source
-# Node 26 source stage. Debian trixie's bundled nodejs is pinned to 20.x
+# Node 24 LTS source stage. Debian trixie's bundled nodejs is pinned to 20.x
 # which reached EOL in April 2026 — we copy node + npm from the upstream
-# node:26 image instead (Hermes pins its toolchain to Node 26 everywhere).
+# node:24 image instead (Hermes pins its production toolchain to Node 24).
 # Bookworm-based slim image used so the produced binary links
 # against glibc 2.36, which runs cleanly on our Debian 13 (trixie, glibc
 # 2.41) runtime.  Bumping to a new Node major is a one-line ARG change; see
 # #4977.
-FROM node:26-bookworm-slim@sha256:9e6f9357d371591e32ab6f2d8a26d63bdd0d17c29eee3f4f3e7e454d9634bf73 AS node_source
+FROM node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS node_source
 FROM debian:13.4
 
 # Disable Python stdout buffering to ensure logs are printed immediately.
@@ -151,13 +151,13 @@ RUN useradd -u 10000 -m -d /opt/data hermes
 
 COPY --chmod=0755 --from=uv_source /usr/local/bin/uv /usr/local/bin/uvx /usr/local/bin/
 
-# Node 26: copy the node binary plus the bundled npm JS install from the
+# Node 24: copy the node binary plus the bundled npm JS install from the
 # upstream image.  npm and npx are recreated as symlinks because they're
 # symlinks in the source image (and need to live on PATH).
 #
-# No corepack: Node unbundled it upstream, so node:26 ships only npm in
-# /usr/local/lib/node_modules.  Nothing here needs it — no package.json
-# declares a `packageManager`, and no build step shells out to yarn or pnpm.
+# No corepack: the runtime only copies Node and npm from the source image.
+# Nothing here needs it — no package.json declares a `packageManager`, and no
+# build step shells out to yarn or pnpm.
 #
 # See node_source stage at the top of the file for the version-bump
 # rationale (#4977).
@@ -186,7 +186,7 @@ COPY apps/shared/ apps/shared/
 
 # `npm_config_install_links=false` forces npm to install `file:` deps as
 # symlinks instead of copies.  This is the default since npm 10+, which is
-# what the image ships now (via the node:22 source stage).  We set it
+# what the image ships now (via the node:24 source stage).  We set it
 # explicitly anyway as defense-in-depth: the previous Debian-bundled npm
 # 9.x defaulted to install-as-copy, which produced a hidden
 # node_modules/.package-lock.json that permanently disagreed with the root

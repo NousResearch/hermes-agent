@@ -83,7 +83,7 @@ hermes acp --setup-browser --yes     # 非交互式接受下载
 
 具体操作：
 
-- 若缺少 Node.js 22 LTS，将其安装到 `~/.hermes/node/`
+- 若缺少 Node.js 24 LTS，将其安装到 `~/.hermes/node/`
 - 将 `npm install -g agent-browser @askjo/camofox-browser` 安装到该前缀（无需 sudo — `npm` 的 `--prefix` 指向用户可写的 Hermes 管理 Node）
 - 安装 Playwright Chromium，或在检测到系统 Chrome/Chromium 时使用已有版本
 

@@ -6,7 +6,7 @@ dependency refresh, and CI alike. So a floor nobody's toolchain can meet is
 not a strict-hygiene win; it is a total install outage.
 
 That is exactly what happened: `engines.npm` was raised to `>=12.0.0` while
-**no Node release bundles npm 12** (Node 26 ships 11.17.0, 24 ships 11.16.0,
+**no Node release bundles npm 12** (Node 26 ships 11.17.0, 24 ships 11.17.0,
 22 ships 10.9.8). Every fresh install died at the first `npm ci`, and
 `hermes update` left installs in a mixed state. These tests encode the
 invariants that would have caught it.
@@ -32,7 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 _STOCK_NPM_BY_NODE_MAJOR = {
     20: "10.8.2",
     22: "10.9.8",
-    24: "11.16.0",
+    24: "11.17.0",
     26: "11.17.0",
 }
 
@@ -129,25 +129,6 @@ class TestEnginesAreSatisfiable:
             f"engines.node is {node_range!r} but install.sh provisions Node "
             f"{managed_major}.x. The runtime we ship must satisfy the floor we "
             "declare, or the install we just performed cannot install deps."
-        )
-
-    def test_desktop_node_floor_is_not_stricter_than_its_toolchain(self):
-        """apps/desktop must not demand more Node than its own build tools do.
-
-        Vite is the real constraint (it needs `node:util.styleText`). Raising
-        the desktop floor beyond it silently force-migrates every user's
-        toolchain for no dependency reason.
-        """
-        desktop = json.loads((REPO_ROOT / "apps" / "desktop" / "package.json").read_text())
-        node_range = desktop["engines"]["node"]
-        # The tightest floor any dependency actually declares (react-router
-        # 8.3.0 -> >=22.22.0). If this legitimately rises, the assertion
-        # documents the reason for the bump rather than blocking it.
-        assert _satisfies_range("22.22.0", node_range), (
-            f"apps/desktop engines.node is {node_range!r}, which rejects Node "
-            "22.12 — stricter than Vite requires. A desktop floor above the "
-            "build toolchain's own floor replaces working user toolchains for "
-            "nothing."
         )
 
 

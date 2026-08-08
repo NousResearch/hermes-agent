@@ -57,7 +57,7 @@ else
     INSTALL_DIR_EXPLICIT=false
 fi
 PYTHON_VERSION="3.11"
-NODE_VERSION="22"
+NODE_VERSION="24"
 
 # FHS-style root install layout (set by resolve_install_layout when applicable):
 #   code at /usr/local/lib/hermes-agent, command at /usr/local/bin/hermes,
@@ -780,21 +780,15 @@ check_git() {
     exit 1
 }
 
-# The dependency tree's real Node floor is >=22.22.0, set by react-router 8.3.0
-# (`engines.node`), with Vite ^8 next at `^20.19 || >=22.12`. Keep this in sync
-# with the root package.json — a gate looser than the manifest lets an install
-# proceed to a `npm ci` that then dies with EBADENGINE, and a gate stricter than
-# the manifest replaces a working user toolchain for nothing. Returns 0 when the
-# given `node --version` string clears the floor; anything below it is replaced
-# with the Hermes-managed Node $NODE_VERSION.
+# Hermes uses one Node major across the production image, package metadata, and
+# managed installs. Keep this gate driven by NODE_VERSION so those paths cannot
+# drift: a looser gate lets `npm ci` die with EBADENGINE, while a stricter gate
+# replaces a working user toolchain for nothing.
 node_satisfies_build() {
     local ver="${1#v}"
     local major="${ver%%.*}"
-    local minor="${ver#*.}"; minor="${minor%%.*}"
     case "$major" in ''|*[!0-9]*) return 1 ;; esac
-    case "$minor" in ''|*[!0-9]*) minor=0 ;; esac
-    if [ "$major" -ge 22 ] && { [ "$major" -gt 22 ] || [ "$minor" -ge 22 ]; }; then return 0; fi
-    return 1
+    [ "$major" -ge "$NODE_VERSION" ]
 }
 
 # npm 11.10.0–11.16.x honor `min-release-age` but ignore
@@ -850,7 +844,7 @@ check_node() {
     fi
 
     if command -v node &> /dev/null; then
-        log_warn "Node.js $(node --version) is too old (Hermes requires Node >=26) — installing Hermes-managed Node $NODE_VERSION..."
+        log_warn "Node.js $(node --version) is too old (Hermes requires Node >=$NODE_VERSION) — installing Hermes-managed Node $NODE_VERSION..."
     elif [ "$DISTRO" = "termux" ]; then
         log_info "Node.js not found — installing Node.js via pkg..."
     else
@@ -887,6 +881,16 @@ install_node() {
             return 0
             ;;
     esac
+
+    # Node 24 no longer publishes official 32-bit ARM tarballs. Termux is
+    # handled above through pkg; on other armv7 systems, fail explicitly
+    # instead of probing an artifact that cannot exist.
+    if [ "$node_arch" = "armv7l" ]; then
+        log_warn "Node.js $NODE_VERSION does not publish 32-bit ARM binaries"
+        log_info "Install Node >=$NODE_VERSION from your distro, or use a 64-bit OS"
+        HAS_NODE=false
+        return 0
+    fi
 
     local node_os
     case "$OS" in
@@ -2958,7 +2962,7 @@ install_desktop() {
     # with no app and a confusing "couldn't find a built desktop" at launch.
     # Always re-resolve Node here. Stages run in separate processes, so we can't
     # trust an earlier check; more importantly check_node now enforces the build
-    # floor (Node >=26) and prepends the Hermes-managed Node to PATH, so
+    # floor (Node >=24) and prepends the Hermes-managed Node to PATH, so
     # the build never runs on a too-old system Node — the cause of the opaque
     # "Build desktop app … exit code 1" failure (Vite crashes on old Node).
     check_node

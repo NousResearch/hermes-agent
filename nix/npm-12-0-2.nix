@@ -2,7 +2,7 @@
   stdenv,
   makeWrapper,
   fetchurl,
-  nodejs_26,
+  nodejs_24,
 }:
 stdenv.mkDerivation rec {
   pname = "npm";
@@ -21,9 +21,9 @@ stdenv.mkDerivation rec {
     cp -r . $out/lib/npm12/
     mkdir -p $out/bin
 
-    makeWrapper ${nodejs_26}/bin/node $out/bin/npm \
+    makeWrapper ${nodejs_24}/bin/node $out/bin/npm \
       --add-flags "$out/lib/npm12/bin/npm-cli.js"
-    makeWrapper ${nodejs_26}/bin/node $out/bin/npx \
+    makeWrapper ${nodejs_24}/bin/node $out/bin/npx \
       --add-flags "$out/lib/npm12/bin/npx-cli.js"
   '';
 }

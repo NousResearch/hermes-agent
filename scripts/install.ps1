@@ -381,7 +381,7 @@ $PythonVersion = "3.11"
 # interpreters, so this list also matches a pre-existing system Python.  Single
 # source of truth shared by Test-Python's fallback and Resolve-AvailablePythonVersion.
 $PythonFallbackVersions = @("3.12", "3.13", "3.10")
-$NodeVersion = "22"
+$NodeVersion = "24"
 # The npm range the root package.json pins in `engines.npm`.  A constant rather
 # than a manifest read like the POSIX side does: Test-Node runs BEFORE the repo
 # is cloned, so there is usually no package.json on disk yet (and none at all
@@ -818,12 +818,10 @@ function Get-NpmRange {
 
 # Upgrade the Hermes-managed Node tree's bundled npm into $NpmRange.
 #
-# The nodejs.org zip ships whatever npm that Node major bundles -- Node 26.5.1
-# bundles npm 11.17.0, one minor below the root package.json's own
-# `engines.npm` floor of >=12.  The repo .npmrc sets `engine-strict=true`, so
-# that is fatal rather than a warning and a brand-new install dies at the first
-# `npm ci` with EBADENGINE.  Provision the right npm here instead of reacting
-# to the failure later.
+# The nodejs.org zip ships whatever npm that Node major bundles. Node 24's
+# bundled npm can fall in the 11.10-11.16 band excluded by `engines.npm`; with
+# `engine-strict=true`, that is fatal rather than a warning. Provision a
+# matching npm here instead of reacting after the first `npm ci` fails.
 #
 # Three details are load-bearing, mirroring _nb_ensure_bundled_npm_range in
 # scripts/lib/node-bootstrap.sh and upgrade_managed_npm in
@@ -1421,11 +1419,10 @@ function Set-GitBashEnvVar {
     Write-Info "If needed, set HERMES_GIT_BASH_PATH manually to your bash.exe path."
 }
 
-# The dependency tree's real Node floor is >=22.22.0, set by react-router 8.3.0
-# (`engines.node`). Keep this in sync with the root package.json: looser lets an
-# install reach a `npm ci` that dies with EBADENGINE, stricter replaces a working
-# user toolchain for nothing. Returns $true when a `node --version` string
-# clears that floor.
+# Hermes uses one Node major across the production image, package metadata, and
+# managed installs. Keep this gate driven by $NodeVersion so those paths cannot
+# drift: looser lets `npm ci` die with EBADENGINE, while stricter replaces a
+# working user toolchain for nothing.
 function Test-NodeVersionOk {
     param([string]$Version)
     try {
@@ -1433,8 +1430,7 @@ function Test-NodeVersionOk {
     } catch {
         return $false
     }
-    if ($v.Major -eq 22) { return ($v.Minor -ge 22) }
-    return ($v.Major -gt 22)
+    return ($v.Major -ge [int]$NodeVersion)
 }
 
 function Test-Node {
@@ -1448,7 +1444,7 @@ function Test-Node {
             $script:HasNode = $true
             return $true
         }
-        Write-Warn "Node.js $version is too old (Hermes requires Node >=26)"
+        Write-Warn "Node.js $version is too old (Hermes requires Node >=$NodeVersion)"
     }
 
     # Prefer a Hermes-managed Node from a previous run over a too-old system one.
@@ -1545,7 +1541,7 @@ function Test-Node {
             # even after a "successful" install.  The OpenJS manifest does
             # publish an arm64 installer, so this is safe.
             $wingetArgs = @(
-                'install','OpenJS.NodeJS','--silent',
+                'install','OpenJS.NodeJS.LTS','--silent',
                 '--accept-package-agreements','--accept-source-agreements'
             )
             if ((Get-WindowsArch) -eq 'arm64') {
@@ -3260,7 +3256,7 @@ function Install-Desktop {
 
     # Always re-resolve Node here. Stages run in separate PowerShell processes,
     # so $script:HasNode from Stage-Node isn't visible; more importantly Test-Node
-    # enforces the build floor (Node >=26) and prepends the Hermes-managed
+    # enforces the build floor (Node >=24) and prepends the Hermes-managed
     # Node to PATH, so the build never runs on a too-old system Node -- the cause
     # of the opaque "Build desktop app ... exit code 1" failure (Vite crashes on
     # old Node).

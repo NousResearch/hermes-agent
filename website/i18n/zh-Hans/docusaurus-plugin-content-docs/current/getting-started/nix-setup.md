@@ -724,7 +724,7 @@ nix develop
 
 # Shell 提供：
 #   - Python 3.12 + uv（首次进入时将依赖安装到 .venv）
-#   - Node.js 22、ripgrep、git、openssh、ffmpeg 在 PATH 上
+#   - Node.js 24、ripgrep、git、openssh、ffmpeg 在 PATH 上
 #   - 戳记文件优化：依赖未变更时重新进入几乎即时
 
 hermes setup

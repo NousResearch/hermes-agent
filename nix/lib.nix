@@ -24,26 +24,16 @@
   writeShellScript,
   coreutils,
   callPackage,
-  nodejs_26,
-  symlinkJoin,
   buildNpmPackage,
   runCommand,
 }:
 let
   repoRoot = ./..;
 
-  npm12 = callPackage ./npm-12-0-2.nix { };
   node_gyp_11_4_0 = callPackage ./node-gyp-11-4-0.nix { };
-  nodejs_26_npm_12 = symlinkJoin {
-    name = "nodejs-26-npm-12";
-    paths = [
-      npm12
-      nodejs_26
-    ];
-    inherit (nodejs_26) meta passthru;
-  };
+  nodejs_24_npm_12 = callPackage ./nodejs-24-npm-12.nix { };
 
-  nodejs = nodejs_26_npm_12;
+  nodejs = nodejs_24_npm_12;
 
   # Patched hook: just a new derivation that copies and patches the script
   patchedNpmConfigHook = runCommand "npm-config-hook-patched" { } ''

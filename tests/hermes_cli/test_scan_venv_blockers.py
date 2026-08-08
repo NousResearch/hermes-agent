@@ -212,3 +212,32 @@ def test_main_desktop_serve_backend_still_blocks(monkeypatch, capsys):
     assert data["blocked"] is True
     assert [p["pid"] for p in data["processes"]] == [78]
     assert data["pausable_gateways"] == 0
+
+
+def test_main_exempts_gateway_beyond_legacy_cmdline_limit(monkeypatch, capsys):
+    cmdline = (
+        "C:\\" + "deep-path\\" * 14
+        + "venv\\Scripts\\python.exe -m hermes_cli.main gateway run --replace"
+    )
+    assert cmdline.index("gateway run") > 120
+
+    code, data = _run_main_with_detector(
+        monkeypatch, capsys, [(91, "python.exe", cmdline)]
+    )
+
+    assert code == 0
+    assert data["blocked"] is False
+    assert data["processes"] == []
+    assert data["pausable_gateways"] == 1
+
+
+def test_main_truncates_reported_cmdline_at_json_boundary(monkeypatch, capsys):
+    cmdline = "python.exe -m hermes_cli.main serve " + "x" * 160
+
+    code, data = _run_main_with_detector(
+        monkeypatch, capsys, [(92, "python.exe", cmdline)]
+    )
+
+    assert code == 0
+    assert data["blocked"] is True
+    assert data["processes"][0]["cmdline"] == cmdline[:120]

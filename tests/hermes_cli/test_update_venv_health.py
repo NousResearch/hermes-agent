@@ -86,6 +86,28 @@ def test_detect_venv_python_excludes_self_and_ancestors(_winp, tmp_path):
         assert cli_main._detect_venv_python_processes() == []
 
 
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_venv_python_preserves_long_gateway_cmdline(_winp, tmp_path):
+    project_root = tmp_path / ("deep-path-" * 14)
+    venv_py = str(project_root / "venv" / "Scripts" / "python.exe")
+    argv = [venv_py, "-m", "hermes_cli.main", "gateway", "run", "--replace"]
+    cmdline = " ".join(argv)
+    assert cmdline.index("gateway run") > 120
+
+    me = MagicMock()
+    me.parents.return_value = []
+    fake_psutil = types.SimpleNamespace(
+        process_iter=lambda attrs: iter([_proc(4242, venv_py, "python.exe", argv)]),
+        Process=lambda *a, **k: me,
+    )
+    with patch.object(cli_main, "PROJECT_ROOT", project_root), patch.dict(
+        sys.modules, {"psutil": fake_psutil}
+    ):
+        assert cli_main._detect_venv_python_processes() == [
+            (4242, "python.exe", cmdline)
+        ]
+
+
 
 
 # ---------------------------------------------------------------------------

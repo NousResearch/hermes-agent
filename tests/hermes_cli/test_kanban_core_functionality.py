@@ -1378,6 +1378,196 @@ def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
 
 
 
+def test_detect_crashed_workers_protocol_violation_surfaces_worker_error(kanban_home):
+    """When the worker stamped its real error onto the open run before
+    exiting rc=0, the protocol-violation diagnostic surfaces it instead
+    of the bare "protocol violation" message — so a human sees the actual
+    cause (e.g. an inference/model-config failure) rather than a generic
+    handshake complaint.
+
+    Regression test for #46593.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="quiet", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        lock = f"{host_prefix}:mock"
+        kb.claim_task(conn, tid, claimer=lock)
+        fake_pid = 999997
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        # Worker records its real error on the open run before exiting rc=0.
+        real_error = "litellm.AuthenticationError: invalid model 'gpt-bogus'"
+        with _kb.write_txn(conn):
+            stamped = _kb.record_worker_error(conn, tid, real_error)
+        assert stamped, "expected the open run to accept the worker error"
+
+        _kb._record_worker_exit(fake_pid, 0)
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            result_crashed = kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        assert tid in result_crashed
+        task = kb.get_task(conn, tid)
+        # First protocol violation retries (streak budget on main); error still stamped.
+        assert task.status == "ready"
+        # Both the protocol-violation handshake note AND the real error.
+        assert "kanban_complete" in (task.last_failure_error or "")
+        assert real_error in (task.last_failure_error or ""), (
+            f"expected the real worker error to be surfaced, "
+            f"got {task.last_failure_error!r}"
+        )
+
+        events = kb.list_events(conn, tid)
+        pv = [e for e in events if e.kind == "protocol_violation"]
+        assert pv, "expected a protocol_violation event"
+        assert pv[0].payload.get("worker_error") == real_error, (
+            f"expected worker_error in event payload, got {pv[0].payload}"
+        )
+    finally:
+        conn.close()
+
+
+def test_detect_crashed_workers_nonzero_exit_surfaces_worker_error(kanban_home):
+    """A worker that stamped its real error and then exited non-zero gets
+    the error folded into the ``crashed`` diagnostic too — surfacing the
+    actual cause is not special-cased to the protocol-violation branch.
+
+    Regression test for #46593 (whole bug class — clean-exit *and*
+    nonzero-exit reaps both surface the worker's error).
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="crashy", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        lock = f"{host_prefix}:mock"
+        kb.claim_task(conn, tid, claimer=lock)
+        fake_pid = 999995
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        real_error = "RuntimeError: provider returned 400 invalid_request"
+        with _kb.write_txn(conn):
+            assert _kb.record_worker_error(conn, tid, real_error)
+
+        # WIFEXITED with status 1 → raw wait-status (1 << 8).
+        _kb._record_worker_exit(fake_pid, 1 << 8)
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        task = kb.get_task(conn, tid)
+        assert "exited with code 1" in (task.last_failure_error or "")
+        assert real_error in (task.last_failure_error or ""), (
+            f"nonzero-exit diagnostic should surface the worker error, "
+            f"got {task.last_failure_error!r}"
+        )
+        crashed = [e for e in kb.list_events(conn, tid) if e.kind == "crashed"]
+        assert crashed and crashed[0].payload.get("worker_error") == real_error
+    finally:
+        conn.close()
+
+
+def test_record_worker_error_noop_after_terminal_transition(kanban_home):
+    """``record_worker_error`` is a no-op once the run is closed — a worker
+    that already called kanban_complete / kanban_block must not have its
+    terminal run's error column clobbered.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="done", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        lock = f"{host_prefix}:mock"
+        kb.claim_task(conn, tid, claimer=lock)
+        # Worker completed normally — run closed, current_run_id cleared.
+        kb.complete_task(conn, tid, summary="all good")
+        with _kb.write_txn(conn):
+            stamped = _kb.record_worker_error(conn, tid, "spurious late error")
+        assert not stamped, "must not touch a closed run"
+    finally:
+        conn.close()
+
+
+def test_record_worker_error_noop_on_empty_error(kanban_home):
+    """Empty errors are ignored at the DB layer too."""
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="empty", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
+        with _kb.write_txn(conn):
+            assert _kb.record_worker_error(conn, tid, "") is False
+        assert _kb._open_run_error(conn, tid) is None
+    finally:
+        conn.close()
+
+
+def test_record_worker_error_truncates_to_ctx_max(kanban_home):
+    """``record_worker_error`` caps stored text at ``_CTX_MAX_FIELD_BYTES``."""
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="big", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
+        long_error = "X" * (_kb._CTX_MAX_FIELD_BYTES + 100)
+        with _kb.write_txn(conn):
+            assert _kb.record_worker_error(conn, tid, long_error)
+        stored = _kb._open_run_error(conn, tid)
+        assert stored is not None
+        assert len(stored) == _kb._CTX_MAX_FIELD_BYTES
+        assert stored == long_error[: _kb._CTX_MAX_FIELD_BYTES]
+    finally:
+        conn.close()
+
+
+def test_detect_crashed_workers_rate_limited_skips_worker_error(kanban_home, monkeypatch):
+    """Quota-wall requeues must not attach a stamped worker error — the exit
+    is a throttle, not a task failure worth a postmortem."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+    conn = kb.connect()
+    try:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="rl-skip", assignee="worker")
+        kb.claim_task(conn, tid, claimer=f"{host}:w")
+        fake_pid = 888881
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        real_error = "litellm.RateLimitError: quota exhausted"
+        with _kb.write_txn(conn):
+            assert _kb.record_worker_error(conn, tid, real_error)
+
+        _kb._record_worker_exit(
+            fake_pid, _kb.KANBAN_RATE_LIMIT_EXIT_CODE << 8,
+        )
+        kb.detect_crashed_workers(conn)
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert real_error not in (task.last_failure_error or "")
+
+        events = kb.list_events(conn, tid)
+        rl = [e for e in events if e.kind == "rate_limited"]
+        assert rl, "expected a rate_limited event"
+        assert "worker_error" not in (rl[0].payload or {}), (
+            f"rate-limited reap must not carry worker_error, got {rl[0].payload}"
+        )
+    finally:
+        conn.close()
+
+
 def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
     """A new subscription must NOT replay historical terminal events.
 

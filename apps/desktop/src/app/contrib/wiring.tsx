@@ -498,7 +498,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     void refreshCurrentModel(true)
     void refreshHermesConfig(true)
     void refreshActiveProfile()
-  }, [activeGatewayProfile, refreshCurrentModel, refreshHermesConfig])
+    void refreshSessions()
+  }, [activeGatewayProfile, refreshCurrentModel, refreshHermesConfig, refreshSessions])
 
   // New session anchored to a workspace. Seeds cwd + branch from the clicked
   // workspace; an explicit worktree path also drills the sidebar into that

@@ -466,13 +466,21 @@ async def _save_if_ready(raw: str, save_to, started: float) -> str:
         return raw
 
     result = details.get("result")
-    url = result.get("sample") if isinstance(result, dict) else None
+    if not isinstance(result, dict):
+        return raw
+
+    url = result.get("sample")
+    if not isinstance(url, str) or not url.strip():
+        samples = result.get("samples")
+        if isinstance(samples, list):
+            url = next((sample for sample in samples if isinstance(sample, str) and sample.strip()), None)
     if not isinstance(url, str) or not url.strip():
         return raw
 
     # Dropped whether or not the save succeeds. A retry re-polls, which mints a
     # fresh URL, so nothing is lost by not handing this one to the model.
     result.pop("sample", None)
+    result.pop("samples", None)
 
     try:
         target, size = await _download_video(url.strip(), save_to, started)

@@ -624,7 +624,12 @@ class TestPollTransport:
         # re-keyed into a shell command by hand, dropping characters. Neither
         # can happen if the model never sees it.
         signed = "https://cdn.example/container/flux3-clip.mp4?sig=abc%2Bdef%3D&se=2026"
-        response = _FakeResponse(200, {"id": "bfl_job_1", "status": "Ready", "result": {"sample": signed}, "guidance": "Deliver the saved file."})
+        response = _FakeResponse(200, {
+            "id": "bfl_job_1",
+            "status": "Ready",
+            "result": {"sample": signed, "samples": [signed]},
+            "guidance": "Deliver the saved file.",
+        })
 
         with _fake_download(b"x" * (128 * 1024)) as fetched:
             parsed, _requests = _call(
@@ -637,11 +642,33 @@ class TestPollTransport:
         assert saved.read_bytes() == b"x" * (128 * 1024)
         assert parsed["details"]["saved_path"] == str(saved)
         assert parsed["details"]["result"].get("sample") is None
+        assert parsed["details"]["result"].get("samples") is None
         assert signed not in json.dumps(parsed)
         # The gateway still owns the delivery wording; the client only supplies
         # the path it cannot know.
         assert parsed["result"].startswith(f"Saved to {saved}.")
         assert "Deliver the saved file." in parsed["result"]
+        assert fetched == [signed]
+
+    def test_ready_saves_a_clip_from_plural_samples(self, tmp_path):
+        signed = "https://cdn.example/container/flux3-clip.mp4?sig=abc%2Bdef%3D&se=2026"
+        response = _FakeResponse(200, {
+            "id": "bfl_job_1",
+            "status": "Ready",
+            "result": {"samples": [signed]},
+            "guidance": "Deliver the saved file.",
+        })
+
+        with _fake_download(b"x" * (128 * 1024)) as fetched:
+            parsed, _requests = _call(
+                flux3._handle_get_result,
+                {"id": "bfl_job_1", "save_to": str(tmp_path)},
+                response,
+            )
+
+        assert parsed["details"]["saved_path"] == str(tmp_path / "flux3-clip.mp4")
+        assert parsed["details"]["result"].get("samples") is None
+        assert signed not in json.dumps(parsed)
         assert fetched == [signed]
 
     def test_ready_never_overwrites_an_existing_file(self, tmp_path):
@@ -775,7 +802,13 @@ class TestPollTransport:
         # The original bug: a bad signature returns an XML error body, curl
         # writes it to the .mp4 and exits 0, and it reads as success. A short
         # body is not a video whatever the status code said.
-        response = _FakeResponse(200, {"id": "bfl_job_1", "status": "Ready", "result": {"sample": "https://cdn.example/x/flux3-clip.mp4?sig=bad"}, "guidance": "g"})
+        signed = "https://cdn.example/x/flux3-clip.mp4?sig=bad"
+        response = _FakeResponse(200, {
+            "id": "bfl_job_1",
+            "status": "Ready",
+            "result": {"samples": [signed]},
+            "guidance": "g",
+        })
 
         with _fake_download(b"<?xml version='1.0'?><Error>AuthenticationFailed</Error>"):
             parsed, _requests = _call(flux3._handle_get_result, {"id": "bfl_job_1", "save_to": str(tmp_path)}, response)
@@ -785,6 +818,7 @@ class TestPollTransport:
         # Neither a half-written .part nor a plausible-looking .mp4 survives.
         assert [p.name for p in tmp_path.glob("*.mp4*")] == []
         assert "saved_path" not in parsed["details"]
+        assert signed not in json.dumps(parsed)
 
     def test_poll_requires_an_id(self):
         parsed, requests = _call(flux3._handle_get_result, {}, _FakeResponse(200, {}))

@@ -14107,6 +14107,62 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
 
+    @staticmethod
+    def _should_send_standalone_notice(source) -> bool:
+        """Whether a setup/reset notice should be emitted separately."""
+        return getattr(source, "platform", None) != Platform.EMAIL
+
+    async def _deliver_auto_reset_notice(
+        self, source, reset_reason: str, policy, had_activity: bool
+    ) -> None:
+        """Deliver a user-facing auto-reset notice when policy permits."""
+        platform_name = source.platform.value if source.platform else ""
+        # Suspended and restart-recovery-expired sessions always notify
+        # regardless of policy.notify — the user had an active session
+        # that was silently replaced, so they need to know they can
+        # /resume it. Idle/daily resets respect the policy flag.
+        should_notify = reset_reason in {"suspended", "resume_pending_expired"} or (
+            policy.notify
+            and had_activity
+            and platform_name not in policy.notify_exclude_platforms
+        )
+        if not should_notify or not self._should_send_standalone_notice(source):
+            return
+
+        adapter = self._adapter_for_source(source)
+        if not adapter:
+            return
+
+        if reset_reason == "suspended":
+            reason_text = "previous session was stopped or interrupted"
+        elif reset_reason == "resume_pending_expired":
+            reason_text = "gateway restart recovery timed out"
+        elif reset_reason == "daily":
+            reason_text = f"daily schedule at {policy.at_hour}:00"
+        else:
+            hours = policy.idle_minutes // 60
+            mins = policy.idle_minutes % 60
+            duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
+            reason_text = f"inactive for {duration}"
+        notice = (
+            f"◐ Session automatically reset ({reason_text}). "
+            f"Conversation history cleared.\n"
+            f"Use /resume to browse and restore a previous session.\n"
+            f"Adjust reset timing in config.yaml under session_reset."
+        )
+        try:
+            session_info = await asyncio.to_thread(
+                self._reset_notice_session_info, source
+            )
+            if session_info:
+                notice = f"{notice}\n\n{session_info}"
+        except Exception:
+            pass
+        await adapter.send(
+            source.chat_id, notice,
+            metadata=self._thread_metadata_for_source(source),
+        )
+
     async def _deliver_platform_notice(self, source, content: str) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
         adapter = self._adapter_for_source(source)
@@ -16897,49 +16953,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     platform=source.platform,
                     session_type=getattr(source, 'chat_type', 'dm'),
                 )
-                platform_name = source.platform.value if source.platform else ""
                 had_activity = getattr(session_entry, 'reset_had_activity', False)
-                # Suspended and restart-recovery-expired sessions always notify
-                # regardless of policy.notify — the user had an active session
-                # that was silently replaced, so they need to know they can
-                # /resume it.  Idle/daily resets respect the policy flag.
-                should_notify = reset_reason in {"suspended", "resume_pending_expired"} or (
-                    policy.notify
-                    and had_activity
-                    and platform_name not in policy.notify_exclude_platforms
+                await self._deliver_auto_reset_notice(
+                    source, reset_reason, policy, had_activity
                 )
-                if should_notify:
-                    adapter = self._adapter_for_source(source)
-                    if adapter:
-                        if reset_reason == "suspended":
-                            reason_text = "previous session was stopped or interrupted"
-                        elif reset_reason == "resume_pending_expired":
-                            reason_text = "gateway restart recovery timed out"
-                        elif reset_reason == "daily":
-                            reason_text = f"daily schedule at {policy.at_hour}:00"
-                        else:
-                            hours = policy.idle_minutes // 60
-                            mins = policy.idle_minutes % 60
-                            duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
-                            reason_text = f"inactive for {duration}"
-                        notice = (
-                            f"◐ Session automatically reset ({reason_text}). "
-                            f"Conversation history cleared.\n"
-                            f"Use /resume to browse and restore a previous session.\n"
-                            f"Adjust reset timing in config.yaml under session_reset."
-                        )
-                        try:
-                            session_info = await asyncio.to_thread(
-                                self._reset_notice_session_info, source
-                            )
-                            if session_info:
-                                notice = f"{notice}\n\n{session_info}"
-                        except Exception:
-                            pass
-                        await adapter.send(
-                            source.chat_id, notice,
-                            metadata=self._thread_metadata_for_source(source),
-                        )
             except Exception as e:
                 logger.debug("Auto-reset notification failed (non-fatal): %s", e)
 
@@ -17821,7 +17838,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         # One-time prompt if no home channel is set for this platform
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
-        if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
+        if (
+            not history
+            and source.platform
+            and source.platform != Platform.LOCAL
+            and source.platform != Platform.WEBHOOK
+            and self._should_send_standalone_notice(source)
+        ):
             platform_name = source.platform.value
             env_key = _home_target_env_var(platform_name)
             # Multiplex: home channel may live only in the profile secret

@@ -170,11 +170,16 @@ export function useComposerDraft({
   // stays mounted behind the front tab; this covers true unmounts.)
   useEffect(() => () => releaseActiveComposer(target), [target])
 
+  // Stays subscribed while `inputDisabled` (i.e. `gatewayState === 'connecting'`).
+  // The publishers never stop publishing and the keybind layer has already
+  // consumed the keystroke — use-keybinds.ts calls `preventDefault()` *before*
+  // `requestComposerFocus`, so unsubscribing here does not defer the character,
+  // it destroys it. The composer is still mounted and visible at that point
+  // (gateway-connecting-overlay.tsx only covers the very first cold boot, by
+  // design), so this is a live input silently eating what the user types. The
+  // sibling `onComposerInsertRefsRequest` subscription below has always been
+  // unconditional for the same reason.
   useEffect(() => {
-    if (inputDisabled) {
-      return undefined
-    }
-
     const offFocus = onComposerFocusRequest(({ target: requested, typeChar }) => {
       if (requested !== target) {
         return
@@ -182,7 +187,10 @@ export function useComposerDraft({
 
       // Type-to-focus appends at end; bare Enter just focuses.
       if (typeChar) {
-        paintDraft(`${draftRef.current}${typeChar}`, true)
+        // Mid-connect the editor is not contentEditable (`index.tsx`), so don't
+        // ask for focus: the `!inputDisabled` effect above owns that and re-runs
+        // the moment the gateway opens. The text still lands now.
+        paintDraft(`${draftRef.current}${typeChar}`, !inputDisabled)
 
         return
       }

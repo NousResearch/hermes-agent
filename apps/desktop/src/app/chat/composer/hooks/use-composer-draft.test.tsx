@@ -2,10 +2,16 @@ import { act, cleanup, render } from '@testing-library/react'
 import { useLayoutEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { type ComposerAttachment, mainComposerScope, stashSessionDraft } from '@/store/composer'
+import { clearSessionDraft, type ComposerAttachment, mainComposerScope, stashSessionDraft } from '@/store/composer'
 
 import type { QueueEditState } from '../composer-utils'
-import { type ComposerTarget, getActiveComposer, markActiveComposer } from '../focus'
+import {
+  type ComposerTarget,
+  getActiveComposer,
+  markActiveComposer,
+  requestComposerFocus,
+  requestComposerInsert
+} from '../focus'
 import { type ComposerScope, ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 
 import { useComposerDraft } from './use-composer-draft'
@@ -173,5 +179,122 @@ describe('useComposerDraft — a closing composer hands the focus-bus key back',
     unmount()
 
     expect(getActiveComposer()).toBe('tile:other')
+  })
+})
+
+const CONNECTING_SESSION = 'session-connecting'
+
+interface ConnectingHarnessProps {
+  inputDisabled: boolean
+}
+
+/**
+ * A composer with a real contentEditable bound to the hook's `editorRef`, so the
+ * focus/insert buses can be observed end to end: `paintDraft` renders into this
+ * element and `focusInput` focuses it. `ProbeHarness` above renders `null` (and
+ * hardcodes `inputDisabled: false`) because it probes the attachment-scope swap;
+ * these cases need the editor and need `inputDisabled` to be a prop they can flip.
+ */
+function ConnectingHarness({ inputDisabled }: ConnectingHarnessProps) {
+  const { editorRef } = useComposerDraft({
+    activeQueueSessionKey: CONNECTING_SESSION,
+    focusKey: null,
+    inputDisabled,
+    queueEditRef: { current: null as QueueEditState | null },
+    sessionId: CONNECTING_SESSION
+  })
+
+  return (
+    <div>
+      <div contentEditable={!inputDisabled} data-testid="editor" ref={editorRef} suppressContentEditableWarning />
+      <button data-testid="elsewhere" type="button" />
+    </div>
+  )
+}
+
+describe('useComposerDraft — the focus/insert buses survive a connecting gateway', () => {
+  afterEach(() => {
+    // cleanup() unmounts, and the hook's scope-swap cleanup stashes whatever is
+    // in the editor under CONNECTING_SESSION — drop it so the next mount's
+    // takeSessionDraft() doesn't rehydrate the previous case's text.
+    cleanup()
+    clearSessionDraft(CONNECTING_SESSION)
+    mainComposerScope.clear()
+    markActiveComposer('main')
+    mockComposerApi.setText.mockClear()
+  })
+
+  // `focus.ts`'s `dispatch` defers to a macrotask (`setTimeout(…, 0)`) so
+  // synchronous click/keydown handlers finish first. Without draining it every
+  // assertion below would pass vacuously — the event would never be delivered at
+  // all, so "the draft is empty" and "the editor is not focused" would both hold
+  // for the wrong reason.
+  const flushBus = async () => {
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+  }
+
+  const editorOf = (container: HTMLElement) => container.querySelector<HTMLElement>('[data-testid="editor"]')!
+
+  it('lands a type-to-focus keystroke in the draft while the gateway is connecting', async () => {
+    const { container } = render(<ConnectingHarness inputDisabled />)
+    const editor = editorOf(container)
+
+    requestComposerFocus('main', { typeChar: 'h' })
+    await flushBus()
+
+    // The keybind layer already called preventDefault() before dispatching, so
+    // this character has nowhere else to go.
+    expect(editor.textContent).toBe('h')
+    expect(mockComposerApi.setText).toHaveBeenCalledWith('h')
+
+    // …but the editor is not contentEditable yet, so it must NOT be focused.
+    expect(document.activeElement).not.toBe(editor)
+  })
+
+  it('lands an external insert in the draft while the gateway is connecting', async () => {
+    const { container } = render(<ConnectingHarness inputDisabled />)
+    const editor = editorOf(container)
+
+    requestComposerInsert('pasted while connecting', { target: 'main' })
+    await flushBus()
+
+    expect(editor.textContent).toBe('pasted while connecting')
+  })
+
+  it('keeps the mid-connect keystroke and focuses the editor once the gateway opens', async () => {
+    const { container, rerender } = render(<ConnectingHarness inputDisabled />)
+    const editor = editorOf(container)
+
+    requestComposerFocus('main', { typeChar: 'h' })
+    await flushBus()
+    expect(editor.textContent).toBe('h')
+
+    // gatewayState 'connecting' → 'open' flips inputDisabled, which re-runs the
+    // hook's focus effect — the deferral this fix relies on instead of dropping
+    // the keystroke outright.
+    await act(async () => {
+      rerender(<ConnectingHarness inputDisabled={false} />)
+    })
+
+    expect(editor.textContent).toBe('h')
+    expect(document.activeElement).toBe(editor)
+  })
+
+  it('still appends and focuses when the gateway is already open', async () => {
+    const { container } = render(<ConnectingHarness inputDisabled={false} />)
+    const editor = editorOf(container)
+
+    // Mount focuses the composer; move focus away so the assertion below is
+    // about the bus, not the mount.
+    container.querySelector<HTMLElement>('[data-testid="elsewhere"]')!.focus()
+    expect(document.activeElement).not.toBe(editor)
+
+    requestComposerFocus('main', { typeChar: 'x' })
+    await flushBus()
+
+    expect(editor.textContent).toBe('x')
+    expect(document.activeElement).toBe(editor)
   })
 })

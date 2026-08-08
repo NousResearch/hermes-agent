@@ -2763,6 +2763,12 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # ── Reset fallback state ──
     agent._fallback_activated = False
     agent._fallback_index = 0
+    # A manual model switch establishes a new primary, same as a successful
+    # restore_primary_runtime() does — reset the rate-limit backoff counter
+    # too, or the new primary's first 429 inherits the escalated cooldown
+    # from whatever provider the user just switched away from instead of
+    # the intended 60s first-hit cooldown (try_activate_fallback).
+    agent._rate_limit_backoff_count = 0
 
     # When the user deliberately swaps primary providers (e.g. openrouter
     # → anthropic), drop any fallback entries that target the OLD primary

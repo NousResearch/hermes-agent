@@ -93,3 +93,21 @@ def test_switch_within_same_provider_preserves_chain():
         )
 
     assert agent._fallback_chain == chain
+
+
+def test_switch_model_resets_rate_limit_backoff_counter():
+    """A manual /model switch establishes a new primary. Without a reset,
+    the new primary's first 429 would inherit the escalated backoff count
+    from whatever provider the user just switched away from — reintroducing
+    the exact "first rate-limit benches the primary for a long cooldown"
+    regression restore_primary_runtime's own reset exists to prevent.
+    """
+    agent = _make_agent([])
+    agent._fallback_activated = True
+    agent._fallback_index = 2
+    agent._rate_limit_backoff_count = 3
+    agent._rate_limited_until = 99999999999.0
+
+    _switch_to_anthropic(agent)
+
+    assert agent._rate_limit_backoff_count == 0

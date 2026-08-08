@@ -197,7 +197,14 @@ def check_monitor(job: dict) -> MonitorOutcome:
 def _persist_monitor_state(job_id: str, new_hash: str, output: str) -> None:
     from cron.jobs import _hermes_now, update_job
 
-    _write_last_output(job_id, output)
+    # Commit the hash to jobs.json FIRST, then the snapshot file. Writing the
+    # snapshot first desyncs the two: if the hash write fails (lock timeout,
+    # disk full, corrupt jobs.json), the NEW output sits on disk while the
+    # OLD hash stays in jobs.json — the next tick then reports a change with
+    # an EMPTY diff (old==new from the snapshot's perspective) and re-alerts
+    # on identical content every tick, defeating the hash suppression the
+    # monitor exists for. On failure the snapshot keeps the previous output
+    # so the next tick renders a real old->new diff.
     try:
         update_job(
             job_id,
@@ -209,4 +216,10 @@ def _persist_monitor_state(job_id: str, new_hash: str, output: str) -> None:
             },
         )
     except Exception as exc:
-        logger.warning("Monitor: failed to persist state for %r: %s", job_id, exc)
+        logger.warning(
+            "Monitor: failed to persist state for %r (snapshot kept): %s",
+            job_id,
+            exc,
+        )
+        return
+    _write_last_output(job_id, output)

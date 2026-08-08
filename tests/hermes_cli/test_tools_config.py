@@ -259,6 +259,70 @@ def test_first_install_nous_auto_configures_video_gen(monkeypatch):
     # video_gen should NOT appear in the manual configure list — it's auto-configured
     assert "video_gen" not in configured
 
+
+def test_first_install_skips_already_configured_toolsets_across_platforms(monkeypatch):
+    """Toolsets with global config (browser, TTS, etc.) should only be
+    configured once during first_install, even when multiple platforms
+    are enabled (e.g. cli + slack).  Regression test for #24069."""
+    config: dict = {
+        "model": {"provider": "openrouter"},
+        "platform_toolsets": {},
+    }
+    # Clean env so no auto-detection adds extra platforms
+    for env_var in (
+        "TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN", "SLACK_BOT_TOKEN",
+        "WHATSAPP_ENABLED", "QQ_APP_ID",
+        "VOICE_TOOLS_OPENAI_KEY", "OPENAI_API_KEY",
+        "ELEVENLABS_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL",
+        "TAVILY_API_KEY", "PARALLEL_API_KEY",
+        "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID",
+        "BROWSER_USE_API_KEY", "FAL_KEY",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
+
+    # Simulate two enabled platforms: cli and slack
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_enabled_platforms",
+        lambda: ["cli", "slack"],
+    )
+    # Both platforms select the same toolsets
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_toolset_checklist",
+        lambda *args, **kwargs: {"browser", "tts", "image_gen", "web"},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config.apply_nous_managed_defaults",
+        lambda config, enabled_toolsets: set(),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config.managed_nous_tools_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
+
+    configured: list[str] = []
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._configure_toolset",
+        lambda ts_key, cfg: configured.append(ts_key),
+    )
+
+    tools_command(first_install=True, config=config)
+
+    # Each toolset should be configured exactly once, not once per platform
+    assert len(configured) == len(set(configured)), (
+        f"Duplicate toolset configuration detected: {configured}"
+    )
+    assert len(configured) > 0, "Expected at least one toolset to be configured"
+    # Verify no duplicates — each toolset appears exactly once
+    from collections import Counter
+    counts = Counter(configured)
+    for ts_key, count in counts.items():
+        assert count == 1, (
+            f"Toolset {ts_key!r} was configured {count} times "
+            f"(expected 1 — tool settings are global, not per-platform)"
+        )
+
+
 # ── Platform / toolset consistency ────────────────────────────────────────────
 
 

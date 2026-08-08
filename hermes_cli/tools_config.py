@@ -4890,6 +4890,11 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
 
     # ── First-time install: linear flow, no platform menu ──
     if first_install:
+        # Track toolsets already configured in this session to avoid
+        # re-prompting when multiple platforms share the same global
+        # tool config (e.g. browser, TTS, image_gen, firecrawl).
+        already_configured: set[str] = set()
+
         for pkey in enabled_platforms:
             pinfo = PLATFORMS[pkey]
             current_enabled = _get_platform_tools(config, pkey, include_default_mcp_servers=False)
@@ -4930,11 +4935,13 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             # Walk through ALL selected tools that have provider options or
             # need API keys.  This ensures browser (Local vs Browserbase),
             # TTS (Edge vs OpenAI vs ElevenLabs), etc. are shown even when
-            # a free provider exists.
+            # a free provider exists.  Skip toolsets already configured for
+            # a previous platform — their settings are global, not per-platform.
             to_configure = [
                 ts_key for ts_key in sorted(new_enabled)
                 if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key))
                 and ts_key not in auto_configured
+                and ts_key not in already_configured
             ]
 
             if to_configure:
@@ -4947,6 +4954,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                 print()
                 for ts_key in to_configure:
                     _configure_toolset(ts_key, config)
+                    already_configured.add(ts_key)
 
             _save_platform_tools(config, pkey, new_enabled)
             save_config(config)

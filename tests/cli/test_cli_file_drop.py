@@ -2,10 +2,12 @@
 dragged/pasted absolute paths from being mistaken for slash commands."""
 
 import os
+from pathlib import Path
 
 import pytest
 
-from cli import _detect_file_drop
+import cli
+from cli import _detect_file_drop, _is_registered_slash_command
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +182,82 @@ class TestEscapedSpaces:
 
         assert result is not None
         assert result["path"] == image
+
+
+# ---------------------------------------------------------------------------
+# Tests: registered slash command vs. existing file collision
+# ---------------------------------------------------------------------------
+
+class TestRegisteredCommandCollision:
+    """A registered slash command must never be swallowed as a file drop,
+    even when a real file with that name exists. WSL2 ships a binary at
+    /init, so `/init <notes>` used to attach the WSL init daemon instead
+    of dispatching the /init command added in v0.20 (see #79765)."""
+
+    @pytest.fixture()
+    def wsl_init_collision(self, monkeypatch):
+        """Simulate a WSL2 host where `/init` exists as a real file."""
+        real_resolve = cli._resolve_attachment_path
+        fake_init = Path("/init")
+
+        def fake_resolve(raw_path):
+            token = str(raw_path or "").strip()
+            if token in ("/init", '"/init"', "'/init'"):
+                return fake_init
+            return real_resolve(token)
+
+        monkeypatch.setattr("cli._resolve_attachment_path", fake_resolve)
+        return fake_init
+
+    def test_bare_init_dispatches_command(self, wsl_init_collision):
+        assert _detect_file_drop("/init") is None
+
+    def test_init_with_notes_dispatches_command(self, wsl_init_collision):
+        assert _detect_file_drop("/init focus on the test setup") is None
+
+    def test_init_with_trailing_text_dispatches_command(self, wsl_init_collision):
+        assert _detect_file_drop("/init 核实agent.md内容") is None
+
+    def test_quoted_init_explicitly_attaches(self, wsl_init_collision):
+        result = _detect_file_drop('"/init"')
+        assert result is not None
+        assert result["path"] == wsl_init_collision
+        assert result["remainder"] == ""
+
+    def test_other_registered_command_collision(self, monkeypatch):
+        """The guard is generic: any registered command wins over a file
+        that shares its name (e.g. /version), not just /init."""
+        fake_version = Path("/version")
+        monkeypatch.setattr(
+            "cli._resolve_attachment_path",
+            lambda p: fake_version if str(p).strip() == "/version" else None,
+        )
+        assert _detect_file_drop("/version") is None
+
+    def test_multi_component_path_named_init_still_attaches(self, tmp_path):
+        """A real multi-slash path ending in `init` is unaffected — it is
+        not a bare command token, so it still attaches."""
+        f = tmp_path / "init"
+        f.write_text("not the wsl binary\n")
+        result = _detect_file_drop(f"{f} 看看")
+        assert result is not None
+        assert result["path"] == f
+        assert result["remainder"] == "看看"
+
+
+class TestIsRegisteredSlashCommand:
+    def test_registered_command(self):
+        assert _is_registered_slash_command("/init") is True
+        assert _is_registered_slash_command("/help") is True
+
+    def test_real_path_and_quoted_tokens(self):
+        assert _is_registered_slash_command("/home/me/init") is False
+        assert _is_registered_slash_command('"/init"') is False
+        assert _is_registered_slash_command("~/init") is False
+        assert _is_registered_slash_command("") is False
+
+    def test_unregistered_single_segment(self):
+        assert _is_registered_slash_command("/nonexistentcmd") is False
 
 
 # ---------------------------------------------------------------------------

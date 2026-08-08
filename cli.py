@@ -3393,6 +3393,35 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
 
 
 
+def _is_registered_slash_command(token: str) -> bool:
+    """Return True when *token* names a registered slash command.
+
+    Guards :func:`_detect_file_drop` against filesystem files that collide
+    with command names — most notably WSL2's ``/init`` (the WSL init daemon
+    binary), which made ``/init <notes>`` attach the binary instead of
+    dispatching the /init command added in v0.20 (see #79765). Only bare
+    unquoted single-segment tokens are considered: quoted input is an
+    explicit file-attach intent, and a multi-slash token is a real path
+    (``/home/me/init`` must still attach).
+    """
+    if not token or not token.startswith("/"):
+        return False
+    rest = token[1:]
+    if not rest or "/" in rest:
+        return False
+    try:
+        # Lazy import: cli.py is imported very early at startup, and
+        # hermes_cli.commands pulls in the full CommandDef registry — keep
+        # it out of cli's module-import path (startup cost / cycle guard).
+        from hermes_cli.commands import resolve_command
+
+        return resolve_command(token) is not None
+    except Exception:
+        # Fail closed: if the registry is unavailable, never let a file
+        # drop hijack input that may be a command.
+        return False
+
+
 def _detect_file_drop(user_input: str) -> "dict | None":
     """Detect if *user_input* starts with a real local file path.
 
@@ -3438,6 +3467,11 @@ def _detect_file_drop(user_input: str) -> "dict | None":
 
     direct_path = _resolve_attachment_path(stripped)
     if direct_path is not None:
+        # A registered slash command wins over an existing file with the
+        # same name — on WSL2 `/init` is a real binary, so `/init` used to
+        # be attached as a file instead of dispatching the command (#79765).
+        if _is_registered_slash_command(stripped):
+            return None
         return {
             "path": direct_path,
             "is_image": direct_path.suffix.lower() in _IMAGE_EXTENSIONS,
@@ -3446,6 +3480,8 @@ def _detect_file_drop(user_input: str) -> "dict | None":
 
     first_token, remainder = _split_path_input(stripped)
     drop_path = _resolve_attachment_path(first_token)
+    if drop_path is not None and _is_registered_slash_command(first_token):
+        return None
     if drop_path is None and " " in stripped and stripped[0] not in {"'", '"'}:
         space_positions = [idx for idx, ch in enumerate(stripped) if ch == " "]
         for pos in reversed(space_positions):

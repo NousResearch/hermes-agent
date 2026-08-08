@@ -9191,8 +9191,13 @@ function spawnHudWindow(sessionId) {
     hasShadow: false,
     alwaysOnTop: true,
     type: IS_MAC ? 'panel' : undefined,
-    // Clips the window to a rounded silhouette rather than a hard rectangle.
+    // Clips the vibrancy layer to the HUD's silhouette rather than a hard
+    // rectangle — the frost stops where the window's corners do.
     roundedCorners: true,
+    // Vibrancy must keep rendering while the window is BLURRED: streaming under
+    // another app is the whole feature, and the default 'followWindow' kills
+    // the frost the moment something else takes focus.
+    visualEffectState: 'active',
     hiddenInMissionControl: IS_MAC,
     show: false,
     backgroundColor: '#00000000',
@@ -9984,6 +9989,20 @@ ipcMain.on('hermes:pet-overlay:control', (_event, payload) => {
 // --- HUD mode (chrome-free floating chat) -----------------------------------
 ipcMain.handle('hermes:hud:open', async (_event, request) => {
   openHudWindow(typeof request?.sessionId === 'string' ? request.sessionId : null)
+
+  return { ok: true }
+})
+
+// Real frosted glass behind the band — the thing CSS backdrop-filter cannot do,
+// because Chromium composites a transparent window's page against nothing and
+// the desktop is not in its backdrop root. Vibrancy IS the window's content
+// view, so it frosts the whole rectangle; the HUD's layout leaves no dead
+// margins for that reason, and the renderer only turns it on while the band is
+// showing (idle HUD mode must be the bar and nothing else).
+ipcMain.handle('hermes:hud:vibrancy', (_event, on) => {
+  if (hudWindow && !hudWindow.isDestroyed() && IS_MAC) {
+    hudWindow.setVibrancy(on ? 'hud' : null)
+  }
 
   return { ok: true }
 })

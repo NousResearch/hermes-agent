@@ -2285,18 +2285,10 @@ button[data-slot='aui_msg-reactions'] svg {
   /* Empty space drags the window; anything that needs the mouse carves itself
      back out below. */
   -webkit-app-region: drag;
-  /* The band's fade, shared by the glass layer and the transcript so the two
-     can never ramp differently.
- 
-     Bottom-anchored and deliberately NOT linear — the WoW chat frame's shape.
-     A straight ramp starts eating the newest reply immediately, which is the
-     one thing that must stay legible, and it leaves the whole band looking
-     half-dissolved. Instead: most of it is FULLY solid, then it collapses in
-     one short stretch, and the top fifth is nothing at all. That empty cap is
-     what removes the edge — any alpha still alive at the window boundary reads
-     as a line. */
-  --hud-thread-mask-stops: #000 0%, #000 58%, rgb(0 0 0 / 0.42) 71%, transparent 82%;
-  --hud-thread-mask: linear-gradient(to top, var(--hud-thread-mask-stops));
+  /* Arrive decisively and settle; leave gently and get out of the way. Linear
+     both directions is what made this feel mechanical. */
+  --hud-ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
+  --hud-ease-exit: cubic-bezier(0.4, 0, 0.7, 0.2);
 }
 
 /* Chat surface carries nothing in HUD mode — the visual is the BAND below. */
@@ -2323,18 +2315,17 @@ button[data-slot='aui_msg-reactions'] svg {
    fade is furniture leaving the room. */
 [data-hud-shell] [data-slot='composer-bounds'] {
   position: absolute !important;
-  left: 0 !important;
-  right: 0 !important;
-  /* The band and the bar tile the window between them, with no dead margins —
-     the band runs edge to edge and the bar covers the bottom of it. There is
-     then no seam to get wrong: the band does not stop at the bar, it runs the
-     window's FULL height and the opaque bar sits on top of its bottom edge.
-     Every earlier attempt computed that edge from
-     --composer-surface-measured-height, which is the composer's published
-     height, rounded; the real box is fractional, so the math left a hairline
-     that appeared and vanished as the composer grew ("the gap is 0px until two
-     lines"). Nothing to compute, nothing to drift. What keeps the TEXT off the
-     bar is the app's own composer clearance, below. */
+  /* Anchored to the bar and sized to the transcript, exactly like the sheet
+     behind it — same box, same clock — so the text is clipped away as the panel
+     rolls rather than fading in place.
+ 
+     Edge to edge with no dead margins, and it never computes where the bar's
+     top is: the bar simply covers this box's bottom. Every earlier attempt
+     derived that edge from --composer-surface-measured-height, which is the
+     composer's published height, rounded, while the real box is fractional —
+     so the math left a hairline that appeared and vanished as the composer grew
+     ("the gap is 0px until two lines"). What keeps the TEXT off the bar is the
+     app's own composer clearance, below. */
   inset: 0 !important;
   height: auto !important;
   width: 100% !important;
@@ -2348,13 +2339,14 @@ button[data-slot='aui_msg-reactions'] svg {
      ([data-hud-glass]), so it can be sized to the transcript while this box
      stays the full window for the drag region and the scroll container. */
   background: transparent !important;
+  /* Three opacity states: gone at rest, half strength when a turn is recent or
+     you've just let go of the composer (there to glance at, not to demand
+     attention), full while you're actually reading it. */
   opacity: 0;
-  /* WoW linger: reveal is quick, but on losing focus the band HOLDS, then fades
-     out slow. The timings are published by hud-shell.tsx so the two can't
-     drift. Reveal rules zero the delay. */
+  translate: 0 var(--hud-exit-shift, 2.5rem);
   transition:
-    opacity var(--hud-fade) ease var(--hud-fade-delay),
-    background-color 350ms ease;
+    opacity var(--hud-fade) var(--hud-ease-exit),
+    translate var(--hud-collapse) var(--hud-ease-exit);
 }
 
 /* Shown: recent turn / streaming, or a focused composer.
@@ -2387,64 +2379,54 @@ button[data-slot='aui_msg-reactions'] svg {
   right: 0;
   bottom: 0;
   left: 0;
-  /* Grows up from the bar to fit the transcript, capped at the window. An empty
-     session measures 0 and the sheet collapses behind the bar, rather than
-     painting a full-height slab with nothing in it. The extra is breathing room
-     above the first row so the fade has somewhere to land. */
-  height: min(100%, calc(var(--hud-band-height, 0px) + var(--hud-sheet-overhang, 0.75rem)));
   z-index: 0;
   pointer-events: none;
   border-radius: 0.75rem 0.75rem 0 0;
-  background: color-mix(in srgb, var(--dt-background) 62%, transparent);
+  background: color-mix(in srgb, var(--dt-card) 55%, transparent);
+  /* Slides down behind the bar as it fades. A TRANSFORM, not height: it is
+     composited, so it stays smooth where animating height re-lays-out the panel
+     every frame and looked coarse — and it leaves the box alone, which matters
+     because the one time the transcript's own container was collapsed the
+     messages spilled out of a zero-height box. Translate rather than scale: the
+     panel keeps its proportions on the way out instead of being squashed.
+ 
+     The height below still tracks the transcript; only the offset animates on
+     exit, and it finishes ahead of the fade so the panel has left while the last
+     of the text is still going. */
+  height: min(100%, calc(var(--hud-band-height, 0px) + var(--hud-sheet-overhang, 0.75rem)));
+  translate: 0 var(--hud-exit-shift, 2.5rem);
   opacity: 0;
-  /* Height is animated because it changes on every reply. Snapping to each new
-     size reads as the panel twitching; growing into it reads as the transcript
-     filling up. */
   transition:
-    opacity var(--hud-fade) ease var(--hud-fade-delay),
-    height var(--hud-reveal) ease;
-  -webkit-mask-image: var(--hud-thread-mask);
-  mask-image: var(--hud-thread-mask);
-  -webkit-mask-position: bottom;
-  mask-position: bottom;
-  -webkit-mask-repeat: no-repeat;
-  mask-repeat: no-repeat;
-  -webkit-mask-size: 100% 100%;
-  mask-size: 100% 100%;
+    opacity var(--hud-fade) var(--hud-ease-exit),
+    translate var(--hud-collapse) var(--hud-ease-exit),
+    height var(--hud-reveal) var(--hud-ease-enter),
+    background-color var(--hud-dim) var(--hud-ease-enter);
 }
 
+/* Engaged: as tall as the transcript needs, capped at the window. An empty
+   session measures 0, so it stays rolled up. */
 [data-hud-shell][data-hud-recent] [data-hud-glass],
-[data-hud-shell]:focus-within [data-hud-glass] {
+[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
+  translate: none;
   opacity: 1;
   transition-duration: var(--hud-reveal);
-  transition-delay: 0s;
 }
 
-/* Engaged, the ramp gets out of the way: you are reading the transcript, so
-   nothing in it should be dimmed. Done by SCALING the mask rather than swapping
-   it — `mask-image` animates discretely and would snap, while `mask-size`
-   interpolates. Blown up and pinned to the bottom, the band only ever shows the
-   gradient's solid end. Reveal-speed both ways, so letting go of the composer
-   brings the ramp straight back instead of waiting out the fade's hold. */
-[data-hud-shell]:focus-within [data-hud-glass],
-[data-hud-shell]:focus-within [data-slot='aui_thread-viewport'] {
-  -webkit-mask-size: 100% 600%;
-  mask-size: 100% 600%;
+/* Engaged means the caret is in the composer, not merely that the window holds
+   focus somewhere. Activating a window restores focus to whatever had it last,
+   so `:focus-within` counted grabbing the bar to DRAG the HUD as sitting down
+   to use it, and the transcript flew open every time it was moved. Hit-testing
+   below stays on :focus-within — being permissive about what can be clicked is
+   harmless, being permissive about what lights up is not. */
+[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
+  background: color-mix(in srgb, var(--dt-card) 92%, transparent);
 }
 
-/* Engaged: the band goes solid — typing means reading conditions. */
-[data-hud-shell]:focus-within [data-hud-glass] {
-  background: var(--dt-background);
-}
-
-/* Flipped, the sheet hangs from the bar instead of standing on it. The MASK
-   does not flip with it: the transcript still reads oldest-to-newest downward,
-   so the newest turn is at the bottom either way and the fade always runs away
-   from it. Flipping the gradient too faded the newest reply and left the oldest
-   solid, which reads as the band having come apart. */
+/* Flipped, the sheet hangs from the bar instead of standing on it. */
 [data-hud-shell][data-hud-edge='top'] [data-hud-glass] {
   top: 0;
   bottom: auto;
+  --hud-exit-shift: -2.5rem;
   border-radius: 0 0 0.75rem 0.75rem;
 }
 
@@ -2452,13 +2434,32 @@ button[data-slot='aui_msg-reactions'] svg {
   pointer-events: none;
 }
 
+/* Clickable whenever it's actually on screen, not only while the caret is in
+   the composer — a link in the transcript is worth clicking the moment you can
+   see it. Faded out it goes back to `none`, which is what lets clicks over the
+   HUD reach whatever you're really working in. */
+[data-hud-shell][data-hud-recent] [data-slot='composer-bounds'],
 [data-hud-shell]:focus-within [data-slot='composer-bounds'] {
   pointer-events: auto;
 }
 
-[data-hud-shell][data-hud-recent] [data-slot='composer-bounds'],
-[data-hud-shell]:focus-within [data-slot='composer-bounds'] {
+/* Three states, not two. A turn landing brings the transcript up, but only part
+   way — it is there to be glanced at over whatever you are actually doing, and
+   full-strength text over another app reads as the HUD demanding attention it
+   hasn't earned. Focus is what promotes it to properly readable; the hold and
+   fade then take it away from wherever it was. */
+[data-hud-shell][data-hud-recent] [data-slot='composer-bounds'] {
+  opacity: 0.5;
+  translate: none;
+  /* Same duration AND curve as the sheet's tint step, or the two visibly ease
+     apart on the way down. */
+  transition-duration: var(--hud-dim);
+  transition-timing-function: var(--hud-ease-enter);
+}
+
+[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-slot='composer-bounds'] {
   opacity: 1;
+  translate: none;
   transition-duration: var(--hud-reveal);
   transition-delay: 0s;
 }
@@ -2478,7 +2479,7 @@ button[data-slot='aui_msg-reactions'] svg {
    Bubbles going solid on `recent` too made them opaque cards floating on the
    62% band mid-stream — the band only steps solid on focus, so nothing inside
    it may step earlier. */
-[data-hud-shell]:focus-within {
+[data-hud-shell]:has([data-slot='composer-rich-input']:focus) {
   --hud-bubble-fill: var(--dt-user-bubble);
 }
 
@@ -2506,7 +2507,7 @@ button[data-slot='aui_msg-reactions'] svg {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
   transition:
-    background-color 350ms ease,
+    background-color var(--hud-reveal) var(--hud-ease-enter),
     border-color 350ms ease;
 }
 
@@ -2581,40 +2582,6 @@ button[data-slot='aui_msg-reactions'] svg {
   bottom: 0;
 }
 
-/* Depth by age — the WoW chat frame read, as a MASK over the whole band.
-   Anchored at the bottom: the newest turn is fully solid against the bar and
-   everything above it thins out, so older lines read as ghosts and the band's
-   top edge melts into the desktop instead of stopping at a line.
-   (https://polypane.app/blog/my-take-on-fading-content-using-transparent-gradients-in-css/
-   — a mask, not an overlaid gradient, because the HUD has no solid background
-   to fake the fade against.)
-
-   On the BAND, not the thread viewport inside it, so the glass tint fades on
-   the same ramp as the text it is behind. Masking only the text leaves the
-   sheet ending in a hard rectangle with ghost words floating on it.
-
-   The ramp is the DISENGAGED look; focus scales it away (see the glass layer's
-   focus rule, which does the same thing to the sheet).
-
-   On the scroll VIEWPORT, not the band that contains it. A mask on the band
-   stopped reaching the transcript once the glass moved to its own
-   backdrop-filter layer — the text kept painting at full strength while the
-   sheet ramped. The viewport is the box the text actually lives in, and masking
-   it there survives whatever the compositor does with the layer above. */
-[data-hud-shell] [data-slot='aui_thread-viewport'] {
-  -webkit-mask-image: var(--hud-thread-mask);
-  mask-image: var(--hud-thread-mask);
-  -webkit-mask-position: bottom;
-  mask-position: bottom;
-  -webkit-mask-repeat: no-repeat;
-  mask-repeat: no-repeat;
-  -webkit-mask-size: 100% 100%;
-  mask-size: 100% 100%;
-  transition:
-    -webkit-mask-size var(--hud-reveal) ease,
-    mask-size var(--hud-reveal) ease;
-}
-
 /* The drag handle is the top strip of the WINDOW, above the band. The band
    itself scrolls (a drag region eats wheel events, so it can never be the
    handle); this strip is dead space either way, so it drags. */
@@ -2685,12 +2652,26 @@ button[data-slot='aui_msg-reactions'] svg {
   -webkit-app-region: drag;
 }
 
+/* Focusables, not a list of the controls that happen to be in the bar today —
+   a drag region eats the clicks of anything it covers, so anything missed here
+   is a dead control. */
 [data-hud-shell] [data-slot='composer-rich-input'],
-[data-hud-shell] [data-slot='composer-dock'] button,
-[data-hud-shell] [data-slot='composer-dock'] input,
-[data-hud-shell] [data-slot='composer-dock'] textarea,
-[data-hud-shell] [data-slot='composer-dock'] [contenteditable],
-[data-hud-shell] [data-slot='composer-dock'] [role='button'] {
+[data-hud-shell]
+  [data-slot='composer-dock']
+  :is(
+    a[href],
+    button,
+    input,
+    label,
+    select,
+    textarea,
+    [contenteditable],
+    [role='button'],
+    [role='combobox'],
+    [role='menuitem'],
+    [role='switch'],
+    [tabindex]:not([tabindex='-1'])
+  ) {
   -webkit-app-region: no-drag;
 }
 
@@ -2819,13 +2800,15 @@ button[data-slot='aui_msg-reactions'] svg {
      pixels above the bar; revealed on hovering the window it pops up whenever
      the cursor crosses the HUD on its way somewhere else. */
   opacity: 0;
-  transition: opacity var(--hud-fade) ease var(--hud-fade-delay);
-  /* And it is untouchable on exactly the same terms as the band it sits in —
-     engaged or nothing. A faded-out control that still takes clicks is just an
-     invisible button floating over the app behind. */
+  transition: opacity var(--hud-fade) var(--hud-ease-exit);
+  /* And it takes clicks on exactly the same terms as the band it sits in —
+     visible or nothing. A faded-out control that still takes clicks is an
+     invisible button floating over the app behind; a lit one that doesn't is
+     the dead chip you get from keying this to focus alone. */
   pointer-events: none;
 }
 
+[data-hud-shell][data-hud-recent] [data-hud-exit],
 [data-hud-shell]:focus-within [data-hud-exit] {
   pointer-events: auto;
 }
@@ -2837,14 +2820,14 @@ button[data-slot='aui_msg-reactions'] svg {
 }
 
 [data-hud-shell][data-hud-recent] [data-hud-exit],
-[data-hud-shell]:focus-within [data-hud-exit] {
+[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-exit] {
   opacity: 0.75;
   transition-duration: var(--hud-reveal);
   transition-delay: 0s;
 }
 
 [data-hud-shell][data-hud-recent] [data-hud-exit]:hover,
-[data-hud-shell]:focus-within [data-hud-exit]:hover {
+[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-exit]:hover {
   opacity: 1;
 }
 

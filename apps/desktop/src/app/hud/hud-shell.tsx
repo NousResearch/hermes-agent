@@ -1,33 +1,53 @@
+import { useStore } from '@nanostores/react'
 import { type CSSProperties, useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { chatMessageText } from '@/lib/chat-messages'
 import { closeHud } from '@/store/hud'
+import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { $busy, $messages } from '@/store/session'
 
 import { WiredPane } from '../contrib/wiring'
 import { titlebarButtonClass } from '../shell/titlebar'
 
 import { useHudClickThrough } from './click-through'
-import { useReportHudSession } from './handoff'
+import { useHudGlass } from './glass'
+import { useHudGoto, useReportHudSession } from './handoff'
 
-/** How long the thread stays visible after the last activity before it starts
- *  fading (WoW chat frame behavior). Focus holds it open past this. */
-const HUD_RECENT_HOLD_MS = 6_000
+/** How long the transcript lingers at its glanceable opacity — after a turn
+ *  lands, or after you let go of the composer — before it goes. This is the ONLY
+ *  hold: the CSS carries no transition-delay, because two stacked holds read as
+ *  a third fade state that nobody asked for. Focus keeps it open past this. */
+const HUD_RECENT_HOLD_MS = 700
 
 /** Band visibility timings, published to CSS as custom properties so this
  *  module and the stylesheet cannot drift apart. Reveal is quick — it is an
  *  answer to the user; the fade lingers, then goes slowly. */
-const HUD_REVEAL_MS = 150
-const HUD_FADE_DELAY_MS = 3_000
-const HUD_FADE_MS = 1_200
+const HUD_REVEAL_MS = 110
+const HUD_FADE_MS = 180
+
+/** The step DOWN to the glanceable opacity when you let go. Deliberately slower
+ *  than the fade that follows it — easing off is a softer gesture than leaving,
+ *  and matching them made the two read as one long dissolve. */
+const HUD_DIM_MS = Math.round(HUD_FADE_MS * 1.5)
+
+/** The sheet rolling shut. Shorter than the fade so the panel is already gone
+ *  while the last of the text is still going — it reads as the transcript being
+ *  drawn down into the bar rather than the two dissolving in lockstep. */
+const HUD_COLLAPSE_MS = Math.round(HUD_FADE_MS * 0.66)
 
 /** Breathing room the sheet keeps above the first row, so the fade has
  *  somewhere to land. Published to CSS, and used here to work out how much of
  *  the window the HUD actually occupies. */
 const HUD_SHEET_OVERHANG_PX = 12
+
+/** Composer on top, transcript always hanging below it — Spotlight's shape,
+ *  rather than flipping to follow the screen edge the HUD is parked against. */
+const HUD_THREAD_ALWAYS_BELOW = true
 
 /**
  * True for a hold window after any conversation activity (a message landing,
@@ -40,12 +60,16 @@ const HUD_SHEET_OVERHANG_PX = 12
  * window after it finishes, without a per-flush re-render (state only changes
  * on the false↔true edges).
  */
-function useRecentActivity(): boolean {
+function useRecentActivity(): [boolean, () => void] {
   const [recent, setRecent] = useState(false)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  const bumpRef = useRef(() => {})
+
   // eslint-disable-next-line no-restricted-syntax -- timer handle, not an atom mirror
   useEffect(() => {
+    let signature = ''
+
     const bump = () => {
       if (timerRef.current) {
         clearTimeout(timerRef.current)
@@ -55,9 +79,29 @@ function useRecentActivity(): boolean {
       timerRef.current = setTimeout(() => setRecent(false), HUD_RECENT_HOLD_MS)
     }
 
+    // Gated on the transcript actually CHANGING, not on the atom being written.
+    // $messages is republished for plenty of reasons that aren't new content
+    // (session sync, re-renders, relative timestamps), and re-arming the hold on
+    // every one of those latched the band open permanently — the fade simply
+    // never got to start.
+    const onMessages = () => {
+      const messages = $messages.get()
+      const last = messages[messages.length - 1]
+      const next = `${messages.length}:${last?.id ?? ''}:${last ? chatMessageText(last).length : 0}`
+
+      if (next === signature) {
+        return
+      }
+
+      signature = next
+      bump()
+    }
+
+    bumpRef.current = bump
+
     // subscribe() fires immediately, so a HUD opened onto an existing
     // conversation starts with the thread showing, then fades.
-    const offMessages = $messages.subscribe(bump)
+    const offMessages = $messages.subscribe(onMessages)
     const offBusy = $busy.subscribe(busy => busy && bump())
 
     return () => {
@@ -70,7 +114,27 @@ function useRecentActivity(): boolean {
     }
   }, [])
 
-  return recent
+  return [recent, () => bumpRef.current()]
+}
+
+/**
+ * True while the HUD must stay up regardless of the hold timer.
+ *
+ * The fade is built for an idle transcript, and there are states where leaving
+ * is the wrong answer: a clarify/approval/sudo/secret prompt is a question you
+ * have to answer, and a running turn is progress you asked to watch. Letting
+ * either fade hands you a surface you cannot use — the band goes to zero opacity
+ * and the window goes mouse-transparent under it, so the prompt is neither
+ * readable nor clickable.
+ *
+ * `recent` alone doesn't cover it: it re-arms on transcript changes, so a long
+ * tool call with no visible output would time out mid-turn.
+ */
+function useHudHeld(): boolean {
+  const awaitingInput = useStore($activeSessionAwaitingInput)
+  const busy = useStore($busy)
+
+  return awaitingInput || busy
 }
 
 /**
@@ -90,11 +154,13 @@ function useRecentActivity(): boolean {
  */
 export function HudShell() {
   const { t } = useI18n()
-  const recent = useRecentActivity()
+  const [recent, holdBand] = useRecentActivity()
+  const held = useHudHeld()
 
   // Main holds the session id on this window's behalf, so leaving HUD mode can
   // hand the app window back whatever conversation ended up here.
   useReportHudSession()
+  useHudGoto(useNavigate())
 
   // Which screen EDGE the window is parked against. Parked tight to the top,
   // the composer flips to the window's top edge and the thread grows DOWN
@@ -108,33 +174,33 @@ export function HudShell() {
   // flips to 'top' only when the HUD is actually parked against the top, and
   // back once it clearly leaves — the gap between the two thresholds is
   // hysteresis so the layout can't flutter while it's dragged along the line.
-  const [edge, setEdge] = useState<'bottom' | 'top'>('bottom')
-  // How much of the window the HUD actually occupies. The sheet is sized to the
-  // transcript, so a tall window can be mostly empty above it — the flip has to
-  // measure the visible panel, not a window edge that reached the screen top
-  // long before the bar looked anywhere near it.
-  const visibleHeightRef = useRef(0)
+  const [edge, setEdge] = useState<'bottom' | 'top'>('top')
 
   useEffect(() => {
-    // ZERO tolerance by explicit request: top-mode only when the HUD is flush
-    // against the usable top (gap 0 — macOS won't let it overlap the menu bar,
-    // so flush IS availTop). Tiny FLIP_OFF so the 300ms poll can't flutter on
-    // sub-pixel jitter while parked.
-    // Proportional to the display, not an absolute pixel count. The HUD hugs
-    // its bar, so its visible top can never actually reach the screen edge —
-    // an exact-flush rule would simply never fire. "Parked at the top" is a
-    // band near the top instead, with hysteresis so dragging along the line
-    // can't flutter the layout.
-    const usableHeight = (window.screen as { availHeight?: number }).availHeight || window.screen.height || 1
-    const FLIP_ON = usableHeight * 0.12
-    const FLIP_OFF = usableHeight * 0.18
+    // Measured on the WINDOW, and flush-only. Flipping is what lets the bar
+    // reach the top of the screen at all: the window's top edge can sit against
+    // the menu bar, and the flip moves the composer to that edge. Keying it off
+    // the visible panel instead meant it could never fire — the panel hugs the
+    // bar at the bottom of the window — and took the top of the screen away
+    // with it. FLIP_OFF is just enough hysteresis that the 300ms poll can't
+    // flutter on sub-pixel jitter while parked.
+    const FLIP_ON = 0
+    const FLIP_OFF = 4
 
     const measure = () => {
+      // TRYING IT: the bar stays on top and the transcript always hangs below,
+      // wherever the HUD is parked. Flip the constant to re-enable the
+      // edge-aware layout (the CSS for both orientations is still here).
+      if (HUD_THREAD_ALWAYS_BELOW) {
+        setEdge('top')
+
+        return
+      }
+
       // availTop ≈ menu bar / notch inset on macOS; screenY is in full-screen
       // coordinates, so "parked at the top" means screenY ≈ availTop, not 0.
       const availTop = (window.screen as { availTop?: number }).availTop ?? 0
-      const visibleTop = window.screenY + Math.max(0, window.innerHeight - visibleHeightRef.current)
-      const topGap = visibleTop - availTop
+      const topGap = window.screenY - availTop
 
       setEdge(prev => (topGap <= FLIP_ON ? 'top' : topGap >= FLIP_OFF ? 'bottom' : prev))
     }
@@ -231,6 +297,7 @@ export function HudShell() {
     }
   }, [])
 
+  useHudGlass(rootRef, recent || held)
   useHudClickThrough(rootRef)
 
   // Force the HOST layers transparent. index.html's pre-paint script writes an
@@ -252,14 +319,19 @@ export function HudShell() {
     <div
       className="relative flex h-screen w-screen flex-col overflow-hidden"
       data-hud-edge={edge}
-      data-hud-recent={recent ? '' : undefined}
+      data-hud-recent={recent || held ? '' : undefined}
       data-hud-scrollable={scrollable ? '' : undefined}
       data-hud-shell
+      // Letting go of the composer re-arms the hold, so the transcript steps
+      // down to its glanceable opacity and lingers there instead of jumping
+      // straight from full to gone.
+      onBlur={holdBand}
       ref={rootRef}
       style={
         {
-          '--hud-fade-delay': `${HUD_FADE_DELAY_MS}ms`,
           '--hud-fade': `${HUD_FADE_MS}ms`,
+          '--hud-collapse': `${HUD_COLLAPSE_MS}ms`,
+          '--hud-dim': `${HUD_DIM_MS}ms`,
           '--hud-reveal': `${HUD_REVEAL_MS}ms`,
           '--hud-sheet-overhang': `${HUD_SHEET_OVERHANG_PX}px`
         } as CSSProperties

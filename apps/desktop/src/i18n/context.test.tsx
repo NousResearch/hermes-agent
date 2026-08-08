@@ -24,10 +24,82 @@ function LanguageProbe({ target = 'zh' }: { target?: Locale }) {
   )
 }
 
+// Override `navigator.languages` for a test via an own property; `cleanup()`
+// below removes it so jsdom's default (`['en-US']`) applies again.
+function stubSystemLocales(languages: readonly string[]) {
+  Object.defineProperty(window.navigator, 'languages', {
+    configurable: true,
+    get: () => languages
+  })
+}
+
 describe('I18nProvider', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    Reflect.deleteProperty(window.navigator, 'languages')
+  })
+
+  it('detects the system locale on first launch when no language is configured', async () => {
+    stubSystemLocales(['ja-JP', 'en-US'])
+
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({}),
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+    expect(screen.getByTestId('locale').textContent).toBe('ja')
+    expect(screen.getByTestId('save').textContent).toBe('保存')
+    // Detection must not persist anything — the user hasn't chosen a language.
+    expect(configClient.saveConfig).not.toHaveBeenCalled()
+  })
+
+  it('lets an explicit configured language win over the system locale', async () => {
+    stubSystemLocales(['ja-JP'])
+
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'zh-Hans' } }),
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+    expect(screen.getByTestId('locale').textContent).toBe('zh')
+    expect(configClient.saveConfig).not.toHaveBeenCalled()
+  })
+
+  it('falls back to English when the system locale is unsupported and none is configured', async () => {
+    stubSystemLocales(['de-DE', 'fr-FR'])
+
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({}),
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+    expect(screen.getByTestId('locale').textContent).toBe('en')
+    expect(configClient.saveConfig).not.toHaveBeenCalled()
   })
 
   it('defaults to English without a config client', () => {

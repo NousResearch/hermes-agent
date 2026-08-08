@@ -1223,6 +1223,10 @@ Unlike Discord (where reactions are additive), Telegram's Bot API replaces all b
 If the bot doesn't have permission to add reactions in a group, the reaction calls fail silently and message processing continues normally.
 :::
 
+### Intentional reactions
+
+In Telegram conversations, Hermes also has a `telegram_react` tool for reacting naturally to the message that started the current turn. The tool accepts one standard emoji, targets only the current inbound message, cannot select another chat or message, and cannot send text. It is available independently of the automatic processing reactions above, so those lifecycle reactions can remain disabled.
+
 ### Inbound reactions
 
 Hermes can also treat a user's reaction to a Hermes-authored Telegram message as a new turn in the same conversation or forum topic. This is disabled by default because reactions can otherwise trigger unexpected agent usage.

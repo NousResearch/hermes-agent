@@ -3826,15 +3826,12 @@ class TurnRunner:
         if event_type not in {"tool.started",}:
             return
 
-        # Never render a progress bubble for the clarify tool.  The
-        # adapter's send_clarify IS the user-facing rendering (interactive
-        # buttons or the numbered-text fallback), so a progress bubble is
-        # pure duplication — and in verbose mode it dumps the raw
-        # tool-call args JSON ({"question": ..., "choices": [...]}) into
-        # the chat.  Because the progress queue drains on a background
-        # task, that raw JSON typically lands right underneath the
-        # rendered prompt (#52374).
-        if tool_name == "clarify":
+        # Never render a progress bubble for tools whose own side effect is the
+        # complete user-facing interaction. ``clarify`` renders its prompt via
+        # the adapter; ``telegram_react`` applies a native Telegram reaction.
+        # A separate progress message is duplicate output and breaks silent
+        # reaction-only turns (it can also expose raw arguments in verbose mode).
+        if tool_name in {"clarify", "telegram_react"}:
             return
 
         # Suppress tool-progress bubbles once the user has sent `stop`.

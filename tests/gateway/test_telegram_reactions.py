@@ -84,6 +84,22 @@ async def test_lifecycle_reaction_stays_disabled(monkeypatch):
     adapter._bot.set_message_reaction.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_intentional_reaction_ignores_lifecycle_flag(monkeypatch):
+    """The explicit Telegram reaction tool path is independent of lifecycle gating."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
+    adapter = _make_adapter()
+
+    result = await adapter.add_reaction("123", "❤️", "456")
+
+    assert result is True
+    adapter._bot.set_message_reaction.assert_awaited_once_with(
+        chat_id=123,
+        message_id=456,
+        reaction="❤️",
+    )
+
+
 @pytest.mark.parametrize(
     ("enabled", "expected"),
     [(False, False), (True, True), ("yes", True), ("off", False)],

@@ -10396,6 +10396,33 @@ class TelegramAdapter(BasePlatformAdapter):
         """Check if message reactions are enabled via config/env."""
         return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in {"false", "0", "no"}
 
+    async def add_reaction(
+        self,
+        chat_id: str,
+        emoji: str,
+        message_id: Optional[str] = None,
+    ) -> bool:
+        """Intentionally react to a specific Telegram message.
+
+        This public adapter seam is deliberately independent of the lifecycle
+        ``telegram.reactions`` flag; the Telegram-only model tool supplies the
+        current message id and never exposes an arbitrary target.
+        """
+        emoji = (emoji or "").strip()
+        if not emoji or message_id is None:
+            return False
+        return await self._set_reaction(chat_id, str(message_id), emoji)
+
+    async def remove_reaction(
+        self,
+        chat_id: str,
+        message_id: Optional[str] = None,
+    ) -> bool:
+        """Remove the bot's intentional reaction from a Telegram message."""
+        if message_id is None:
+            return False
+        return await self._clear_reactions(chat_id, str(message_id))
+
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Set a single emoji reaction on a Telegram message."""
         if not self._bot:

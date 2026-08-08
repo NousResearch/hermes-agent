@@ -201,6 +201,15 @@ def _core_tool_names() -> frozenset[str]:
         return frozenset()
 
 
+def _eager_tool_names() -> frozenset[str]:
+    """Return core and explicitly platform-eager tool names."""
+    try:
+        from toolsets import _HERMES_PLATFORM_EAGER_TOOLS
+        return _core_tool_names() | frozenset(_HERMES_PLATFORM_EAGER_TOOLS)
+    except Exception:
+        return _core_tool_names()
+
+
 def is_deferrable_tool_name(name: str) -> bool:
     """Return True if a tool with this name is *eligible* for deferral.
 
@@ -211,7 +220,7 @@ def is_deferrable_tool_name(name: str) -> bool:
     """
     if name in BRIDGE_TOOL_NAMES:
         return False
-    if name in _core_tool_names():
+    if name in _eager_tool_names():
         return False
     # Check registry toolset for MCP prefix.
     try:

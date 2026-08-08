@@ -46,6 +46,7 @@ const {
   checkBackendUpdates,
   $backendUpdateStatus,
   applyBackendUpdate,
+  applyRemoteUpdates,
   $backendUpdateApply,
   reportBackendContract,
   applyUpdates,
@@ -857,6 +858,199 @@ describe('applyBackendUpdate recovery', () => {
 
     expect(result.ok).toBe(false)
     expect($backendUpdateApply.get().stage).toBe('error')
+  }, 10000)
+
+  // The observed real-world failure: `hermes update` restarts the gateway that
+  // spawned it, so the new gateway reports running=false with no exit code and
+  // the completion receipt is never written. The update actually succeeded —
+  // /update/check?force=true is the surviving proof.
+  it('proves success via update/check when the restart loses the exit code and receipt', async () => {
+    const actionId = 'g'.repeat(32)
+    updateHermesSpy.mockResolvedValue({ action_id: actionId, ok: true, name: 'hermes-update', pid: 1 })
+    getActionStatusSpy.mockRejectedValueOnce(new Error('ECONNREFUSED')).mockResolvedValue({
+      exit_code: null,
+      lines: ['→ Pulling updates...', '✓ Code updated!'],
+      name: 'hermes-update',
+      pid: null,
+      running: false
+    })
+    checkHermesUpdateSpy.mockResolvedValue({
+      behind: 0,
+      can_apply: true,
+      commits: [],
+      current_version: '0.20.1',
+      install_method: 'git',
+      message: null,
+      update_available: false,
+      update_command: 'hermes update'
+    })
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(20000)
+
+    await expect(promise).resolves.toMatchObject({ ok: true })
+    expect(checkHermesUpdateSpy).toHaveBeenCalledWith(true)
+    expect($backendUpdateApply.get().stage).toBe('idle')
+    expect($backendUpdateApply.get().applying).toBe(false)
+  })
+
+  it('asks the backend one last time before failing when the poll window expires', async () => {
+    updateHermesSpy.mockResolvedValue({ action_id: 'h'.repeat(32), ok: true, name: 'hermes-update', pid: 1 })
+    getActionStatusSpy.mockRejectedValue(new Error('ECONNREFUSED'))
+    checkHermesUpdateSpy.mockResolvedValue({
+      behind: 0,
+      can_apply: true,
+      commits: [],
+      current_version: '0.20.1',
+      install_method: 'git',
+      message: null,
+      update_available: false,
+      update_command: 'hermes update'
+    })
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(250000)
+
+    await expect(promise).resolves.toMatchObject({ ok: true })
+    expect(checkHermesUpdateSpy).toHaveBeenCalledWith(true)
+  }, 10000)
+
+  it('still fails when the verification says the backend stayed behind', async () => {
+    updateHermesSpy.mockResolvedValue({ action_id: 'i'.repeat(32), ok: true, name: 'hermes-update', pid: 1 })
+    getActionStatusSpy.mockResolvedValue({
+      exit_code: null,
+      lines: ['some output'],
+      name: 'hermes-update',
+      pid: null,
+      running: false
+    })
+    checkHermesUpdateSpy.mockResolvedValue({
+      behind: 2,
+      can_apply: true,
+      commits: [],
+      current_version: '0.20.0',
+      install_method: 'git',
+      message: null,
+      update_available: true,
+      update_command: 'hermes update'
+    })
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(6 * 60 * 1000 + 1500)
+
+    await expect(promise).resolves.toMatchObject({ ok: false, error: 'apply-failed' })
+    expect(checkHermesUpdateSpy).toHaveBeenCalledWith(true)
+    expect($backendUpdateApply.get().stage).toBe('error')
+  }, 10000)
+})
+
+// Remote mode has two independent update targets: the remote backend and the
+// local checkout this GUI is built from. applyRemoteUpdates() chains them —
+// backend first, then the client — so the app side no longer silently stays
+// behind after a remote update.
+describe('applyRemoteUpdates chain', () => {
+  const applyClientMock = vi.fn()
+  const checkClientMock = vi.fn()
+
+  const backendCurrent = {
+    behind: 0,
+    can_apply: true,
+    commits: [],
+    current_version: '0.20.1',
+    install_method: 'git',
+    message: null,
+    update_available: false,
+    update_command: 'hermes update'
+  }
+
+  beforeEach(() => {
+    storage.clear()
+    notifySpy.mockClear()
+    dismissSpy.mockClear()
+    applyClientMock.mockReset().mockResolvedValue({ ok: true, handedOff: true })
+    checkClientMock.mockReset().mockResolvedValue(status({ behind: 0 }))
+    updateHermesSpy.mockReset().mockResolvedValue({ ok: true, name: 'hermes-update', pid: 1 })
+    getActionStatusSpy.mockReset().mockResolvedValue({ exit_code: 0, lines: [], name: 'hermes-update', pid: 1, running: false })
+    checkHermesUpdateSpy.mockReset().mockResolvedValue(backendCurrent)
+    resetUpdateApplyState()
+    $updateStatus.set(null)
+    $backendUpdateStatus.set(null)
+    $updateOverlayOpen.set(false)
+    setRemote(true)
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: { updates: { apply: applyClientMock, check: checkClientMock } }
+    }
+    vi.useRealTimers()
+  })
+
+  afterEach(() => {
+    setRemote(false)
+    delete (globalThis as unknown as { window?: unknown }).window
+  })
+
+  it('updates the backend, then chains the local client update', async () => {
+    $backendUpdateStatus.set(status({ behind: 2 }))
+    $updateStatus.set(status({ behind: 1 }))
+
+    const result = await applyRemoteUpdates()
+
+    expect(updateHermesSpy).toHaveBeenCalledTimes(1)
+    expect(applyClientMock).toHaveBeenCalledTimes(1)
+    expect($updateOverlayTarget.get()).toBe('client')
+    expect(result.ok).toBe(true)
+    // The client handed off to the relauncher: hold the overlay open on the
+    // restarting view, exactly like a local-mode update.
+    expect($updateOverlayOpen.get()).toBe(true)
+  }, 10000)
+
+  it('closes the overlay after a backend-only success when the client is already current', async () => {
+    $backendUpdateStatus.set(status({ behind: 2 }))
+    $updateStatus.set(status({ behind: 0, updateAvailable: false }))
+
+    const result = await applyRemoteUpdates()
+
+    expect(updateHermesSpy).toHaveBeenCalledTimes(1)
+    expect(applyClientMock).not.toHaveBeenCalled()
+    expect(result.ok).toBe(true)
+    expect($updateOverlayOpen.get()).toBe(false)
+    expect($backendUpdateApply.get().stage).toBe('idle')
+  }, 10000)
+
+  it('skips the backend phase and updates only the client when the backend is current', async () => {
+    $backendUpdateStatus.set(status({ behind: 0, updateAvailable: false }))
+    $updateStatus.set(status({ behind: 3 }))
+
+    const result = await applyRemoteUpdates()
+
+    expect(updateHermesSpy).not.toHaveBeenCalled()
+    expect(applyClientMock).toHaveBeenCalledTimes(1)
+    expect($updateOverlayTarget.get()).toBe('client')
+    expect(result.ok).toBe(true)
+  })
+
+  it('stops with the error view up on a genuine backend failure, never touching the client', async () => {
+    $backendUpdateStatus.set(status({ behind: 2 }))
+    $updateStatus.set(status({ behind: 1 }))
+    getActionStatusSpy.mockResolvedValue({ exit_code: 1, lines: ['update failed'], name: 'hermes-update', pid: 1, running: false })
+
+    const result = await applyRemoteUpdates()
+
+    expect(result.ok).toBe(false)
+    expect(applyClientMock).not.toHaveBeenCalled()
+    expect($backendUpdateApply.get().stage).toBe('error')
+    expect($updateOverlayOpen.get()).toBe(true)
+  }, 10000)
+
+  it('shares one in-flight chain between concurrent requests', async () => {
+    $backendUpdateStatus.set(status({ behind: 2 }))
+    $updateStatus.set(status({ behind: 0, updateAvailable: false }))
+
+    const first = applyRemoteUpdates()
+    const second = applyRemoteUpdates()
+
+    expect(second).toBe(first)
+    await Promise.all([first, second])
+    expect(updateHermesSpy).toHaveBeenCalledTimes(1)
   }, 10000)
 })
 

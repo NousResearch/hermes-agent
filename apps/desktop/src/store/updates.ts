@@ -248,29 +248,106 @@ export function openUpdatesWindow(): void {
  * only be able to open the changelog overlay.
  */
 export function startActiveUpdate(): void {
-  const target: UpdateTarget = isRemoteMode() ? 'backend' : 'client'
-  $updateOverlayTarget.set(target)
+  if (isRemoteMode()) {
+    void applyRemoteUpdates()
+
+    return
+  }
+
+  $updateOverlayTarget.set('client')
   $updateOverlayOpen.set(true)
-  void (target === 'backend' ? applyBackendUpdate() : applyUpdates())
+  void applyUpdates()
+}
+
+function statusHasUpdate(status: DesktopUpdateStatus | null): boolean {
+  return !!status && status.supported !== false && !status.error && ((status.behind ?? 0) > 0 || !!status.updateAvailable)
 }
 
 /**
  * Command-palette entry point. The About panel's "Update now" only renders once
  * we know an update is waiting; this row is always listed, so it also has to
  * handle "already current" — open the overlay for the active target and let its
- * check answer, and only apply when there's something to install.
+ * check answer, and only apply when there's something to install. In remote
+ * mode both the backend AND the local client are updatable, so either being
+ * behind counts as "update waiting".
  */
 export function requestActiveUpdate(): void {
-  const target: UpdateTarget = isRemoteMode() ? 'backend' : 'client'
-  const status = target === 'backend' ? $backendUpdateStatus.get() : $updateStatus.get()
+  const remote = isRemoteMode()
 
-  if ((status?.behind ?? 0) > 0 || status?.updateAvailable) {
+  const ready = remote
+    ? statusHasUpdate($backendUpdateStatus.get()) || statusHasUpdate($updateStatus.get())
+    : statusHasUpdate($updateStatus.get())
+
+  if (ready) {
     startActiveUpdate()
 
     return
   }
 
-  openUpdateOverlayFor(target)
+  openUpdateOverlayFor(remote ? 'backend' : 'client')
+}
+
+let remoteUpdateChain: Promise<DesktopUpdateApplyResult> | null = null
+
+/**
+ * Remote-mode update: the desktop shell drives a remote backend, but the GUI
+ * itself is still built from the LOCAL checkout — so "Update now" has two
+ * independent targets. Update the backend first, then chain the local client
+ * update (git pull → rebuild → relaunch) so the app side doesn't silently stay
+ * behind. On genuine backend failure the chain stops with the error view up:
+ * advancing the GUI past a backend that stayed old would manufacture exactly
+ * the contract skew reportBackendContract() warns about.
+ */
+export function applyRemoteUpdates(): Promise<DesktopUpdateApplyResult> {
+  if (remoteUpdateChain) {
+    return remoteUpdateChain
+  }
+
+  remoteUpdateChain = runRemoteUpdateChain()
+    // Both phases resolve their own failures into state; anything escaping here
+    // is unexpected. Resolve it (callers `void` this promise) instead of
+    // leaking an unhandled rejection.
+    .catch(error => ({
+      ok: false as const,
+      error: 'apply-failed',
+      message: error instanceof Error ? error.message : String(error)
+    }))
+    .finally(() => {
+      remoteUpdateChain = null
+    })
+
+  return remoteUpdateChain
+}
+
+async function runRemoteUpdateChain(): Promise<DesktopUpdateApplyResult> {
+  const backend = $backendUpdateStatus.get() ?? (await checkBackendUpdates())
+  let result: DesktopUpdateApplyResult = { ok: true }
+
+  if (statusHasUpdate(backend)) {
+    $updateOverlayTarget.set('backend')
+    $updateOverlayOpen.set(true)
+    result = await applyBackendUpdate({ holdOverlay: true })
+
+    if (!result.ok) {
+      return result
+    }
+  }
+
+  const client = $updateStatus.get() ?? (await checkUpdates())
+  const clientReady = !!client && client.supported !== false && !client.error && (client.behind ?? 0) > 0
+
+  if (!clientReady || $updateApply.get().applying) {
+    // Nothing local to install — land where a backend-only success would have.
+    setUpdateOverlayOpen(false)
+    resetUpdateApplyState()
+
+    return result
+  }
+
+  $updateOverlayTarget.set('client')
+  $updateOverlayOpen.set(true)
+
+  return applyUpdates()
 }
 
 /** Re-read the running app's version from the Electron main process and
@@ -490,11 +567,28 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
 const BACKEND_ACTION_POLL_MS = 1500
 const BACKEND_ACTION_MAX_MS = 6 * 60 * 1000
 const BACKEND_RETURN_MAX_MS = 4 * 60 * 1000
+// The completion receipt is written by the gateway process that spawned the
+// action; when the update restarts that gateway, the receipt is never written
+// and polling sees a terminal-but-unproven state (running=false, exit_code
+// null). Give the receipt a few polls to show up, then fall back to asking the
+// backend itself — rate-limited so we don't hammer /update/check.
+const BACKEND_VERIFY_GRACE_POLLS = 4
+const BACKEND_VERIFY_MIN_INTERVAL_MS = 10_000
 
-function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
+interface BackendApplyOptions {
+  /** Keep the overlay open on success so a chained client update can take it
+   *  over without flashing the idle changelog in between. */
+  holdOverlay?: boolean
+}
+
+function finishBackendApply(returned: boolean, opts: BackendApplyOptions = {}): DesktopUpdateApplyResult {
   if (returned) {
     $backendUpdateApply.set(IDLE)
-    setUpdateOverlayOpen(false)
+
+    if (!opts.holdOverlay) {
+      setUpdateOverlayOpen(false)
+    }
+
     void checkBackendUpdates()
 
     return { ok: true, message: 'Backend update applied.' }
@@ -539,7 +633,7 @@ function completedAfterRestart(
   return !!actionId && status.lines.some(line => line === `=== hermes-update completed ${actionId} ===`)
 }
 
-function legacyBackendReachedTarget(
+function backendReachedTarget(
   status: BackendUpdateCheckResponse,
   targetSha: string | undefined,
   previousVersion: string | undefined
@@ -555,9 +649,23 @@ function legacyBackendReachedTarget(
   return !!targetSha && !!status.commits?.length && !status.commits.some(commit => commit.sha === targetSha)
 }
 
+/** Ask the backend itself whether the update landed (`/update/check?force=true`
+ *  busts the server-side cache). The recovery proof when the action's exit code
+ *  and completion receipt were lost to the gateway restart. */
+async function verifyBackendUpdated(
+  targetSha: string | undefined,
+  previousVersion: string | undefined
+): Promise<boolean> {
+  try {
+    return backendReachedTarget(await checkHermesUpdate(true), targetSha, previousVersion)
+  } catch {
+    return false
+  }
+}
+
 let backendUpdateInFlight: Promise<DesktopUpdateApplyResult> | null = null
 
-async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
+async function runBackendUpdate(opts: BackendApplyOptions = {}): Promise<DesktopUpdateApplyResult> {
   dismissNotification(UPDATE_TOAST_ID)
   $backendUpdateApply.set({
     ...IDLE,
@@ -597,6 +705,8 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
     const actionDeadline = Date.now() + BACKEND_ACTION_MAX_MS
     let deadline = actionDeadline
     let reconnecting = false
+    let ambiguousPolls = 0
+    let lastVerifyAt = 0
 
     while (Date.now() < deadline) {
       await new Promise(resolve => globalThis.setTimeout(resolve, BACKEND_ACTION_POLL_MS))
@@ -620,6 +730,8 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       }
 
       if (last.running) {
+        ambiguousPolls = 0
+
         if (reconnecting) {
           reconnecting = false
           deadline = actionDeadline
@@ -635,23 +747,46 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       }
 
       if (last.exit_code === 0 || (last.exit_code === null && completedAfterRestart(last, started.action_id))) {
-        return finishBackendApply(true)
-      }
-
-      if (!started.action_id && last.exit_code === null) {
-        try {
-          const status = await checkHermesUpdate(true)
-
-          if (legacyBackendReachedTarget(status, requestedTargetSha, previousVersion)) {
-            return finishBackendApply(true)
-          }
-        } catch {
-          continue
-        }
+        return finishBackendApply(true, opts)
       }
 
       if (last.exit_code !== null) {
         break
+      }
+
+      // Terminal-but-unproven: not running, no exit code, no receipt — the
+      // gateway that owned the action restarted and lost both. Legacy backends
+      // (no action_id) can't ever produce a receipt, so verify immediately;
+      // otherwise give the receipt a short grace, then ask the backend itself.
+      ambiguousPolls += 1
+
+      const graceElapsed =
+        ambiguousPolls >= BACKEND_VERIFY_GRACE_POLLS && Date.now() - lastVerifyAt >= BACKEND_VERIFY_MIN_INTERVAL_MS
+
+      if (!started.action_id || graceElapsed) {
+        lastVerifyAt = Date.now()
+        $backendUpdateApply.set({
+          ...$backendUpdateApply.get(),
+          message: translateNow('updates.applyStatus.verifying')
+        })
+
+        if (await verifyBackendUpdated(requestedTargetSha, previousVersion)) {
+          return finishBackendApply(true, opts)
+        }
+      }
+    }
+
+    // Last chance before declaring failure: a genuine non-zero exit lands here
+    // via the break above and must stay a hard failure, but a timeout or a
+    // receipt lost to the restart deserves one final answer from the backend.
+    if (!last || (last.exit_code === null && !last.running)) {
+      $backendUpdateApply.set({
+        ...$backendUpdateApply.get(),
+        message: translateNow('updates.applyStatus.verifying')
+      })
+
+      if (await verifyBackendUpdated(requestedTargetSha, previousVersion)) {
+        return finishBackendApply(true, opts)
       }
     }
 
@@ -678,12 +813,12 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
   }
 }
 
-export function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
+export function applyBackendUpdate(opts: BackendApplyOptions = {}): Promise<DesktopUpdateApplyResult> {
   if (backendUpdateInFlight) {
     return backendUpdateInFlight
   }
 
-  backendUpdateInFlight = runBackendUpdate().finally(() => {
+  backendUpdateInFlight = runBackendUpdate(opts).finally(() => {
     backendUpdateInFlight = null
   })
 

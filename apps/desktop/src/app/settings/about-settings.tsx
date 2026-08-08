@@ -7,11 +7,16 @@ import { Codicon } from '@/components/ui/codicon'
 import { type Translations, useI18n } from '@/i18n'
 import { CheckCircle2, ExternalLink, Loader2, RefreshCw } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $connection } from '@/store/session'
 import {
+  $backendUpdateApply,
+  $backendUpdateChecking,
+  $backendUpdateStatus,
   $desktopVersion,
   $updateApply,
   $updateChecking,
   $updateStatus,
+  checkBackendUpdates,
   checkUpdates,
   openUpdatesWindow,
   refreshDesktopVersion,
@@ -51,8 +56,17 @@ export function AboutSettings() {
   const version = useStore($desktopVersion)
   const status = useStore($updateStatus)
   const apply = useStore($updateApply)
-  const checking = useStore($updateChecking)
+  const clientChecking = useStore($updateChecking)
+  const connection = useStore($connection)
+  const backendStatus = useStore($backendUpdateStatus)
+  const backendApply = useStore($backendUpdateApply)
+  const backendChecking = useStore($backendUpdateChecking)
   const [justChecked, setJustChecked] = useState(false)
+
+  // Remote gateway: the desktop shell drives a remote backend, but this app is
+  // still built from the LOCAL checkout. Both are updatable — show both, and
+  // "Update now" (startActiveUpdate) chains backend-then-client.
+  const isRemote = connection?.mode === 'remote'
 
   // The version atom is loaded once at app boot, which makes About show a
   // stale number after a self-update (the running binary is current, the
@@ -64,30 +78,39 @@ export function AboutSettings() {
 
   const behind = status?.behind ?? 0
   const supported = status?.supported !== false
-  const applying = apply.applying || apply.stage === 'restart'
+  const backendBehind = isRemote && backendStatus?.supported !== false && !backendStatus?.error ? (backendStatus?.behind ?? 0) : 0
+  const checking = clientChecking || backendChecking
+  const applying = apply.applying || apply.stage === 'restart' || backendApply.applying || backendApply.stage === 'restart'
+  const updateReady = (behind > 0 && supported) || backendBehind > 0
 
   const handleCheck = async () => {
     setJustChecked(false)
-    const next = await checkUpdates()
+    const [next] = await Promise.all([checkUpdates(), isRemote ? checkBackendUpdates() : Promise.resolve(null)])
     setJustChecked(Boolean(next))
   }
 
   let statusLine: string
   let statusTone: 'idle' | 'available' | 'error' = 'idle'
 
-  if (!supported) {
+  if (!supported && backendBehind <= 0) {
     statusLine = status?.message ?? a.cantUpdate
     statusTone = 'error'
-  } else if (status?.error) {
+  } else if (status?.error && backendBehind <= 0) {
     statusLine = a.cantReach
     statusTone = 'error'
   } else if (applying) {
     statusLine = a.installing
     statusTone = 'available'
+  } else if (behind > 0 && supported && backendBehind > 0) {
+    statusLine = a.updateReadyBoth(backendBehind, behind)
+    statusTone = 'available'
+  } else if (backendBehind > 0) {
+    statusLine = a.backendUpdateReady(backendBehind)
+    statusTone = 'available'
   } else if (behind > 0) {
     statusLine = a.updateReady(behind)
     statusTone = 'available'
-  } else if (status) {
+  } else if (status || (isRemote && backendStatus)) {
     statusLine = a.onLatest
   } else {
     statusLine = a.tapCheck
@@ -133,7 +156,7 @@ export function AboutSettings() {
 
           <div className="mt-3 flex flex-wrap items-center gap-4">
             <Button
-              disabled={checking || applying || !supported}
+              disabled={checking || applying || (!supported && !isRemote)}
               onClick={() => void handleCheck()}
               size="sm"
               variant="textStrong"
@@ -142,7 +165,7 @@ export function AboutSettings() {
               {checking ? a.checking : a.checkNow}
             </Button>
 
-            {behind > 0 && supported && !applying && (
+            {updateReady && !applying && (
               <>
                 <Button onClick={() => startActiveUpdate()} size="sm">
                   {a.updateNow}
@@ -172,7 +195,10 @@ export function AboutSettings() {
 
         <ListRow
           description={a.automaticUpdatesDesc}
-          hint={a.branchCommit(status?.branch ?? 'unknown', status?.currentSha?.slice(0, 7) ?? 'unknown')}
+          hint={
+            a.branchCommit(status?.branch ?? 'unknown', status?.currentSha?.slice(0, 7) ?? 'unknown') +
+            (isRemote && backendStatus?.currentVersion ? ` · ${a.backendVersion(backendStatus.currentVersion)}` : '')
+          }
           title={a.automaticUpdates}
         />
 

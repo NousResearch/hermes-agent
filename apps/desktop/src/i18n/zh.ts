@@ -749,6 +749,9 @@ export const zh: Translations = {
       cantReach: '无法连接更新服务器。',
       tapCheck: '点击"立即检查"以查找更新。',
       updateReady: count => `已准备好新更新 (包含 ${count} 项更改)。`,
+      backendUpdateReady: count => `已准备好后端更新 (包含 ${count} 项更改)。`,
+      updateReadyBoth: (backendCount, appCount) => `更新已就绪:后端 (${backendCount} 项更改) 和本应用 (${appCount} 项更改)。`,
+      backendVersion: value => `已连接的后端 · ${value}`,
       lastChecked: age => `上次检查:${age}`,
       justNowSuffix: ' · 刚刚',
       automaticUpdates: '自动更新',
@@ -2417,6 +2420,7 @@ export const zh: Translations = {
       preparing: '正在更新后端…',
       pulling: '后端更新中…',
       restarting: '后端正在重启以加载更新…',
+      verifying: '正在确认更新已完成…',
       notAvailable: '此后端无法更新。',
       failed: '后端更新失败。',
       noReturn: '后端未恢复在线。更新可能未完成——请检查后端主机。'

@@ -29,7 +29,7 @@ import {
   $updateOverlayOpen,
   $updateOverlayTarget,
   $updateStatus,
-  applyBackendUpdate,
+  applyRemoteUpdates,
   applyUpdates,
   checkBackendUpdates,
   checkUpdates,
@@ -58,7 +58,10 @@ export function UpdatesOverlay() {
   const checking = isBackend ? backendChecking : clientChecking
   const apply = isBackend ? backendApply : clientApply
   const check = isBackend ? checkBackendUpdates : checkUpdates
-  const install = isBackend ? applyBackendUpdate : applyUpdates
+  // The backend target only appears in remote mode, where an update means BOTH
+  // sides: the remote backend and then the local client (which is still built
+  // from the local checkout). applyRemoteUpdates chains the two.
+  const install = isBackend ? applyRemoteUpdates : applyUpdates
 
   useEffect(() => {
     if (open && !status && !checking) {

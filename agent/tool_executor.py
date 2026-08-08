@@ -1955,7 +1955,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     spinner.stop(cute_msg)
                 elif agent._should_emit_quiet_tool_messages():
                     agent._vprint(f"  {cute_msg}")
-        elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
+        elif (
+            function_name
+            in (getattr(agent, "_memory_provider_tool_names", None) or ())
+            and agent._memory_manager
+            and agent._memory_manager.has_tool(function_name)
+        ):
             # Memory provider tools (hindsight_retain, honcho_search, etc.)
             # These are not in the tool registry — route through MemoryManager.
             spinner = None

@@ -2600,42 +2600,9 @@ def init_agent(
     # provider tools — without the gate, `platform_toolsets: telegram: []`
     # would still leak lcm_* tools into the tool surface and incur the
     # same local-model latency penalty.
-    agent._context_engine_tool_names: set = set()
-    if (
-        hasattr(agent, "context_compressor")
-        and agent.context_compressor
-        and agent.tools is not None
-        and (
-            agent.enabled_toolsets is None
-            or "context_engine" in agent.enabled_toolsets
-        )
-    ):
-        _existing_tool_names = {
-            t.get("function", {}).get("name")
-            for t in agent.tools
-            if isinstance(t, dict)
-        }
-        from agent.memory_manager import normalize_tool_schema as _normalize_tool_schema
-        for _raw_schema in agent.context_compressor.get_tool_schemas():
-            _schema = _normalize_tool_schema(_raw_schema)
-            if _schema is None:
-                # A schema with no resolvable name (e.g. an already-wrapped
-                # entry) would append a nameless tool that strict providers
-                # 400 on, disabling the whole toolset (#47707). Skip it.
-                _ra().logger.warning(
-                    "Context engine returned a tool schema with no resolvable "
-                    "name; skipping to avoid poisoning the request (%r)",
-                    _raw_schema,
-                )
-                continue
-            _tname = _schema["name"]
-            if _tname in _existing_tool_names:
-                continue  # already registered via plugin/cache path
-            _wrapped = {"type": "function", "function": _schema}
-            agent.tools.append(_wrapped)
-            agent.valid_tool_names.add(_tname)
-            agent._context_engine_tool_names.add(_tname)
-            _existing_tool_names.add(_tname)
+    from agent.context_engine import inject_context_engine_tools
+
+    inject_context_engine_tools(agent)
 
     # Notify context engine of session start
     if hasattr(agent, "context_compressor") and agent.context_compressor:

@@ -5,7 +5,7 @@ import threading
 import time
 import pytest
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from agent.memory_provider import MemoryProvider
 from agent.memory_manager import MemoryManager, inject_memory_provider_tools
@@ -167,9 +167,17 @@ class TestMemoryManager:
         assert mgr.get_provider("test1") is p
         assert mgr.get_provider("nonexistent") is None
 
+    def test_unfiltered_system_prompt_does_not_enumerate_tool_schemas(self):
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("external")
+        provider._prompt_block = "Passive provider guidance"
+        mgr.add_provider(provider)
+        provider.get_tool_schemas = MagicMock(
+            side_effect=RuntimeError("schemas unavailable")
+        )
 
-
-
+        assert mgr.build_system_prompt() == "Passive provider guidance"
+        provider.get_tool_schemas.assert_not_called()
 
     def test_prefetch_merges_results(self):
         mgr = MemoryManager()
@@ -218,9 +226,19 @@ class TestMemoryManager:
 
     # -- Tool routing -------------------------------------------------------
 
+    def test_strict_tool_schema_collection_propagates_provider_failure(self):
+        mgr = MemoryManager()
+        mgr.add_provider(FakeMemoryProvider("builtin", tools=[{"name": "good"}]))
+        broken = FakeMemoryProvider("broken")
+        mgr.add_provider(broken)
+        broken.get_tool_schemas = lambda: (_ for _ in ()).throw(
+            RuntimeError("schema callback failed")
+        )
 
-        # Should be handled by p1 (first registered)
+        with pytest.raises(RuntimeError, match="schema callback failed"):
+            mgr.get_all_tool_schemas_strict()
 
+        assert {schema["name"] for schema in mgr.get_all_tool_schemas()} == {"good"}
 
     def test_tool_routing(self):
         mgr = MemoryManager()
@@ -874,14 +892,16 @@ class TestMemoryToolToolsetGate:
     These tests exercise the shared gate used by agent init and ACP refreshes.
     The gate condition is:
 
-        disabled_toolsets includes memory → skip injection
+        disabled toolsets include memory → skip injection (deny wins)
         enabled_toolsets is None        → no filter, inject (backward compat)
         selected toolsets include memory → user opted in, inject
         otherwise (incl. [])            → skip injection
     """
 
     @staticmethod
-    def _run_memory_injection(enabled_toolsets, memory_manager, disabled_toolsets=None):
+    def _run_memory_injection(
+        enabled_toolsets, memory_manager, disabled_toolsets=None
+    ):
         """Run the shared memory-tool injection helper against a fake agent."""
         fake_agent = SimpleNamespace(
             _memory_manager=memory_manager,
@@ -915,6 +935,174 @@ class TestMemoryToolToolsetGate:
         mgr = self._mgr_with_tools("fact_store")
         tools, names = self._run_memory_injection(["terminal", "memory", "web"], mgr)
         assert "fact_store" in names
+
+    def test_registry_collision_is_not_provider_owned(self):
+        manager = self._mgr_with_tools("shared_tool")
+        agent = SimpleNamespace(
+            _memory_manager=manager,
+            enabled_toolsets=None,
+            disabled_toolsets=None,
+            tools=[{
+                "type": "function",
+                "function": {
+                    "name": "shared_tool",
+                    "description": "registry",
+                    "parameters": {},
+                },
+            }],
+            valid_tool_names={"shared_tool"},
+            session_id="session",
+            _current_turn_id="turn",
+            _current_api_request_id="request",
+        )
+        inject_memory_provider_tools(agent)
+        assert agent._memory_provider_tool_names == set()
+
+    def test_hidden_registry_route_is_not_claimed_by_provider(self):
+        manager = self._mgr_with_tools("shared_tool")
+        agent = SimpleNamespace(
+            _memory_manager=manager,
+            _tool_registry_routes={"shared_tool": object()},
+            enabled_toolsets=None,
+            disabled_toolsets=None,
+            tools=[],
+            valid_tool_names=set(),
+        )
+
+        inject_memory_provider_tools(agent)
+
+        assert agent.tools == []
+        assert agent.valid_tool_names == set()
+        assert agent._memory_provider_tool_names == set()
+
+    def test_injected_provider_tool_keeps_provider_dispatch(self):
+        manager = self._mgr_with_tools("provider_tool")
+        agent = SimpleNamespace(
+            _memory_manager=manager,
+            enabled_toolsets=None,
+            disabled_toolsets=None,
+            tools=[],
+            valid_tool_names=set(),
+            session_id="session",
+            _current_turn_id="turn",
+            _current_api_request_id="request",
+        )
+        inject_memory_provider_tools(agent)
+        assert agent._memory_provider_tool_names == {"provider_tool"}
+
+        from agent.agent_runtime_helpers import invoke_tool
+        with (
+            patch(
+                "hermes_cli.plugins.resolve_pre_tool_block",
+                return_value=None,
+            ),
+            patch("hermes_cli.middleware.apply_tool_request_middleware") as request_mw,
+            patch(
+                "hermes_cli.middleware.run_tool_execution_middleware",
+                side_effect=lambda _name, args, execute, **_kw: execute(args),
+            ),
+            patch("run_agent.handle_function_call") as generic,
+        ):
+            request_mw.return_value = SimpleNamespace(payload={}, trace=[])
+            result = json.loads(invoke_tool(agent, "provider_tool", {}, "task"))
+            assert result["handled"] == "provider_tool"
+            generic.assert_not_called()
+
+    def test_disabled_memory_toolset_blocks_default_injection(self):
+        """An explicit memory denial overrides the default-open tool surface."""
+        mgr = self._mgr_with_tools("fact_store", "fact_feedback")
+        tools, names = self._run_memory_injection(
+            None, mgr, disabled_toolsets=["memory"]
+        )
+        assert tools == []
+        assert names == set()
+
+    def test_scalar_disabled_memory_toolset_fails_closed(self):
+        """Low-level callers receive the same denial for scalar config input."""
+        from agent.memory_manager import memory_provider_denied_tool_names
+
+        assert memory_provider_denied_tool_names("memory") is None
+
+    def test_disabled_memory_toolset_overrides_explicit_enable(self):
+        """The global disabled-toolset policy takes precedence over enablement."""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(
+            ["memory"], mgr, disabled_toolsets=["memory"]
+        )
+        assert tools == []
+        assert names == set()
+
+    def test_disabled_all_toolsets_blocks_injection(self):
+        """The wildcard global denial also suppresses provider memory tools."""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(
+            None, mgr, disabled_toolsets=["*"]
+        )
+        assert tools == []
+        assert names == set()
+
+    def test_disabled_composite_with_memory_blocks_injection(self):
+        """Composite subtraction also denies its provider-owned equivalent."""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(
+            None, mgr, disabled_toolsets=["coding"]
+        )
+        assert tools == []
+        assert names == set()
+
+    def test_disabled_toolset_resolution_failure_blocks_injection(self, monkeypatch):
+        """Resolver failures must not reopen provider-owned memory tools."""
+        import toolsets
+
+        monkeypatch.setattr(
+            toolsets,
+            "resolve_toolset",
+            lambda _name: (_ for _ in ()).throw(RuntimeError("resolution failed")),
+        )
+        mgr = self._mgr_with_tools("fact_store")
+
+        tools, names = self._run_memory_injection(
+            None, mgr, disabled_toolsets=["terminal"]
+        )
+
+        assert tools == []
+        assert names == set()
+
+    def test_unrelated_disabled_toolset_preserves_injection(self):
+        """A denial outside the memory toolset must not affect provider tools."""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(
+            None, mgr, disabled_toolsets=["terminal"]
+        )
+        assert "fact_store" in names
+        assert any(t["function"]["name"] == "fact_store" for t in tools)
+
+    def test_custom_toolset_subtracts_exact_provider_schema(self, monkeypatch):
+        """Provider schemas participate in ordinary resolved subtraction."""
+        import toolsets
+
+        monkeypatch.setitem(
+            toolsets.TOOLSETS,
+            "deny-fact-store",
+            {"description": "test", "tools": ["fact_store"], "includes": []},
+        )
+        mgr = self._mgr_with_tools("fact_store", "fact_search")
+
+        tools, names = self._run_memory_injection(
+            None, mgr, disabled_toolsets=["deny-fact-store"]
+        )
+
+        assert names == {"fact_search"}
+        assert [tool["function"]["name"] for tool in tools] == ["fact_search"]
+
+    def test_disabled_platform_bundle_preserves_shared_memory_tool(self):
+        """Bundle subtraction preserves core memory just like static tools."""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(
+            None, mgr, disabled_toolsets=["hermes-acp"]
+        )
+        assert "fact_store" in names
+        assert any(t["function"]["name"] == "fact_store" for t in tools)
 
     def test_composite_toolset_with_memory_injects(self):
         """Composite toolsets that include memory should inject provider tools."""
@@ -978,36 +1166,28 @@ class TestContextEngineToolsetGate:
     """
 
     @staticmethod
-    def _run_context_engine_injection(enabled_toolsets, compressor):
-        """Simulate the gated context-engine injection block from agent_init.py."""
-        tools = []
-        valid_tool_names = set()
-        engine_tool_names = set()
+    def _run_context_engine_injection(
+        enabled_toolsets,
+        compressor,
+        *,
+        disabled_toolsets=None,
+    ):
+        """Run the production startup injector against a minimal agent."""
+        from agent.context_engine import inject_context_engine_tools
 
-        if (
-            compressor is not None
-            and tools is not None
-            and (
-                enabled_toolsets is None
-                or "context_engine" in enabled_toolsets
-            )
-        ):
-            _existing = {
-                t.get("function", {}).get("name")
-                for t in tools
-                if isinstance(t, dict)
-            }
-            for _schema in compressor.get_tool_schemas():
-                _tname = _schema.get("name", "")
-                if _tname and _tname in _existing:
-                    continue
-                tools.append({"type": "function", "function": _schema})
-                if _tname:
-                    valid_tool_names.add(_tname)
-                    engine_tool_names.add(_tname)
-                    _existing.add(_tname)
-
-        return tools, valid_tool_names, engine_tool_names
+        agent = SimpleNamespace(
+            context_compressor=compressor,
+            tools=[],
+            valid_tool_names=set(),
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+        )
+        inject_context_engine_tools(agent)
+        return (
+            agent.tools,
+            agent.valid_tool_names,
+            agent._context_engine_tool_names,
+        )
 
     class _FakeCompressor:
         def __init__(self, schemas):
@@ -1020,6 +1200,24 @@ class TestContextEngineToolsetGate:
         return self._FakeCompressor(
             [{"name": n, "description": n, "parameters": {}} for n in tool_names]
         )
+
+    def test_hidden_registry_route_is_not_claimed_by_context_engine(self):
+        from agent.context_engine import inject_context_engine_tools
+
+        agent = SimpleNamespace(
+            context_compressor=self._compressor_with("shared_tool"),
+            _tool_registry_routes={"shared_tool": object()},
+            tools=[],
+            valid_tool_names=set(),
+            enabled_toolsets=None,
+            disabled_toolsets=None,
+        )
+
+        inject_context_engine_tools(agent)
+
+        assert agent.tools == []
+        assert agent.valid_tool_names == set()
+        assert agent._context_engine_tool_names == set()
 
     def test_none_toolsets_injects(self):
         """enabled_toolsets=None injects context-engine tools — backward compat."""
@@ -1035,6 +1233,41 @@ class TestContextEngineToolsetGate:
         )
         assert "lcm_grep" in engine_names
 
+    @pytest.mark.parametrize("enabled_toolsets", [["all"], "*"])
+    def test_global_enabled_aliases_inject_context_engine(
+        self,
+        enabled_toolsets,
+    ):
+        c = self._compressor_with("lcm_grep")
+
+        _tools, _names, engine_names = self._run_context_engine_injection(
+            enabled_toolsets,
+            c,
+        )
+
+        assert engine_names == {"lcm_grep"}
+
+    def test_composite_enabled_toolset_injects_context_engine(self, monkeypatch):
+        import toolsets
+
+        monkeypatch.setitem(
+            toolsets.TOOLSETS,
+            "context-bundle",
+            {
+                "description": "test",
+                "tools": [],
+                "includes": ["context_engine"],
+            },
+        )
+        c = self._compressor_with("lcm_grep")
+
+        _tools, _names, engine_names = self._run_context_engine_injection(
+            ["context-bundle"],
+            c,
+        )
+
+        assert engine_names == {"lcm_grep"}
+
     def test_empty_toolsets_blocks_injection(self):
         """`platform_toolsets: telegram: []` must suppress context-engine tools."""
         c = self._compressor_with("lcm_grep")
@@ -1049,6 +1282,107 @@ class TestContextEngineToolsetGate:
             ["terminal", "memory"], c
         )
         assert tools == []
+        assert engine_names == set()
+
+    @pytest.mark.parametrize(
+        ("enabled_toolsets", "disabled_toolsets"),
+        [
+            ([], None),
+            (["terminal"], None),
+            (None, ["all"]),
+            (None, ["*"]),
+            (None, ["context_engine"]),
+        ],
+    )
+    def test_family_policy_denial_does_not_enumerate_schemas(
+        self,
+        enabled_toolsets,
+        disabled_toolsets,
+    ):
+        """A denied dynamic family must not require disabled plugin code."""
+        calls = []
+
+        def _disabled_schema_callback():
+            calls.append("called")
+            raise RuntimeError("disabled engine touched")
+
+        compressor = SimpleNamespace(get_tool_schemas=_disabled_schema_callback)
+
+        tools, names, engine_names = self._run_context_engine_injection(
+            enabled_toolsets,
+            compressor,
+            disabled_toolsets=disabled_toolsets,
+        )
+
+        assert calls == []
+        assert tools == []
+        assert names == set()
+        assert engine_names == set()
+
+    @pytest.mark.parametrize(
+        "disabled_toolsets",
+        [["all"], ["*"], ["context_engine"]],
+    )
+    def test_final_disabled_subtraction_blocks_dynamic_family(
+        self,
+        disabled_toolsets,
+    ):
+        c = self._compressor_with("lcm_grep")
+
+        tools, names, engine_names = self._run_context_engine_injection(
+            None,
+            c,
+            disabled_toolsets=disabled_toolsets,
+        )
+
+        assert tools == []
+        assert names == set()
+        assert engine_names == set()
+
+    def test_custom_disabled_toolset_subtracts_exact_dynamic_name(
+        self,
+        monkeypatch,
+    ):
+        import toolsets
+
+        monkeypatch.setitem(
+            toolsets.TOOLSETS,
+            "deny-lcm-grep",
+            {"description": "test", "tools": ["lcm_grep"], "includes": []},
+        )
+        c = self._compressor_with("lcm_grep", "lcm_describe")
+
+        tools, names, engine_names = self._run_context_engine_injection(
+            None,
+            c,
+            disabled_toolsets=["deny-lcm-grep"],
+        )
+
+        assert [tool["function"]["name"] for tool in tools] == ["lcm_describe"]
+        assert names == {"lcm_describe"}
+        assert engine_names == {"lcm_describe"}
+
+    def test_disabled_toolset_resolution_failure_fails_closed(
+        self,
+        monkeypatch,
+    ):
+        import toolsets
+
+        monkeypatch.setattr(
+            toolsets,
+            "validate_toolset",
+            lambda _name: (_ for _ in ()).throw(RuntimeError("resolution failed")),
+        )
+        c = self._compressor_with("lcm_grep")
+
+        tools, names, engine_names = self._run_context_engine_injection(
+            None,
+            c,
+            disabled_toolsets=["broken-policy"],
+        )
+
+        assert tools == []
+        assert names == set()
         assert engine_names == set()
 
     def test_no_compressor_no_injection(self):

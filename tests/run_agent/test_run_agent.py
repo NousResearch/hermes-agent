@@ -913,6 +913,24 @@ class TestBuildSystemPrompt:
         prompt = agent_with_memory_tool._build_system_prompt()
         assert MEMORY_GUIDANCE in prompt
 
+    def test_denied_memory_provider_prompt_block_is_not_included(self, agent):
+        denied_block = "Use denied_provider_tool for every memory lookup."
+        provider = SimpleNamespace(
+            name="denied-provider",
+            get_tool_schemas=lambda: [{
+                "name": "denied_provider_tool",
+                "description": "Denied provider tool",
+                "parameters": {},
+            }],
+            system_prompt_block=lambda: denied_block,
+        )
+        manager = MemoryManager()
+        manager._providers.append(provider)
+        agent._memory_manager = manager
+        agent.valid_tool_names = {"web_search"}
+
+        assert denied_block not in agent._build_system_prompt()
+
 
 
     def test_datetime_is_date_only_not_minute_precision(self, agent):
@@ -2139,8 +2157,66 @@ class TestConcurrentToolExecution:
         assert agent_runtime_owns_post_tool_hook(agent, "context_query") is True
 
         agent._memory_manager = SimpleNamespace(has_tool=lambda name: name == "memory_extra")
+        agent._memory_provider_tool_names = {"memory_extra"}
         assert agent_runtime_owns_post_tool_hook(agent, "memory_extra") is True
+        agent._memory_provider_tool_names = set()
+        assert agent_runtime_owns_post_tool_hook(agent, "memory_extra") is False
+        agent._memory_provider_tool_names = None
+        assert agent_runtime_owns_post_tool_hook(agent, "memory_extra") is False
+        del agent._memory_provider_tool_names
+        assert agent_runtime_owns_post_tool_hook(agent, "memory_extra") is False
         assert agent_runtime_owns_post_tool_hook(agent, "web_search") is False
+
+    def test_invoke_tool_does_not_route_unowned_memory_provider_collision(
+        self, agent, monkeypatch
+    ):
+        manager = SimpleNamespace(
+            has_tool=lambda name: name == "web_search",
+            handle_tool_call=MagicMock(return_value='{"provider": true}'),
+        )
+        agent._memory_manager = manager
+        agent._memory_provider_tool_names = None
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *args, **kwargs: None,
+        )
+        with patch(
+            "run_agent.handle_function_call", return_value='{"registry": true}'
+        ) as generic:
+            result = agent._invoke_tool("web_search", {"q": "test"}, "task-1")
+
+        assert json.loads(result) == {"registry": True}
+        generic.assert_called_once()
+        manager.handle_tool_call.assert_not_called()
+
+    def test_sequential_does_not_route_unowned_memory_provider_collision(
+        self, agent
+    ):
+        manager = SimpleNamespace(
+            has_tool=lambda name: name == "web_search",
+            handle_tool_call=MagicMock(return_value='{"provider": true}'),
+        )
+        agent._memory_manager = manager
+        agent._memory_provider_tool_names = set()
+        tc = _mock_tool_call(
+            name="web_search",
+            arguments='{"q":"test"}',
+            call_id="collision-1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+
+        with patch(
+            "run_agent.handle_function_call", return_value='{"registry": true}'
+        ) as generic:
+            agent._execute_tool_calls_sequential(
+                mock_msg, messages, "task-1"
+            )
+
+        assert json.loads(messages[-1]["content"]) == {"registry": True}
+        generic.assert_called_once()
+        manager.handle_tool_call.assert_not_called()
 
     def test_blocked_memory_tool_does_not_reset_counter(self, agent, monkeypatch):
         """Blocked memory tool should not reset the nudge counter."""

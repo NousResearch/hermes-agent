@@ -1955,6 +1955,10 @@ DEFAULT_CONFIG = {
         "ignore_other_user_mentions": False,
         # If True, require @mention in Slack thread replies too.
         "thread_require_mention": False,
+        # Prompt guidance only: declare an authenticated deployment helper for
+        # Slack API work when no native/MCP Slack tool is loaded. This does not
+        # install a helper, grant credentials, or authorize operations.
+        "authenticated_api_helper": False,
         "channel_prompts": {},         # Per-channel ephemeral system prompts
     },
 

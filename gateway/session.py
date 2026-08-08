@@ -324,6 +324,7 @@ class SessionContext:
     connected_platforms: List[Platform]
     home_channels: Dict[Platform, HomeChannel]
     shared_multi_user_session: bool = False
+    authenticated_api_helper: bool = False
     
     # Session metadata
     session_key: str = ""
@@ -339,6 +340,7 @@ class SessionContext:
                 p.value: hc.to_dict() for p, hc in self.home_channels.items()
             },
             "shared_multi_user_session": self.shared_multi_user_session,
+            "authenticated_api_helper": self.authenticated_api_helper,
             "session_key": self.session_key,
             "session_id": self.session_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -377,8 +379,9 @@ def _slack_tools_loaded() -> bool:
          process-wide, this only inspects the small, purpose-built MCP
          server-name map.
 
-    Returns False (safe default — keeps the stale-API disclaimer) on any
-    error so a bad config can never silently promise tools the agent lacks.
+    Returns False when no dedicated model tool is detected or on any error.
+    The caller separately checks the deployment-declared helper capability
+    before making any affirmative API-access claim.
     """
     try:
         from tools.mcp_tool import get_registered_mcp_server_names
@@ -592,11 +595,9 @@ def build_session_context_prompt(
 
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:
-        # Inject the Slack capability note only when the agent actually has
-        # Slack tools loaded this session — native `slack` toolset opt-in,
-        # or a connected MCP server that has registered Slack tools.
-        # Otherwise keep the stale-API disclaimer honest so we never
-        # promise tools the agent lacks. Mirrors the Discord pattern below.
+        # Native/MCP detection selects the preferred interface; it does not
+        # disable the authenticated Slack API route exposed by deployment
+        # skills/CLIs/helpers through existing tools.
         if _slack_tools_loaded():
             lines.append("")
             lines.append(
@@ -607,15 +608,27 @@ def build_session_context_prompt(
                 "for Slack-specific requests, and do not promise Slack actions "
                 "beyond what the loaded tools actually expose."
             )
+        elif context.authenticated_api_helper:
+            lines.append("")
+            lines.append(
+                "**Platform notes:** You are running inside Slack. An authenticated "
+                "Slack API helper is configured for this deployment, so Slack API "
+                "access remains available even though no dedicated native or MCP "
+                "Slack tool is loaded. Consult the loaded deployment skill, CLI, or "
+                "helper and invoke its documented operations through the existing "
+                "tools. Use only operations and targets authorized by that interface, "
+                "and verify writes by reading back the result. The gateway may inline "
+                "the current message's Slack block/attachment payload when available."
+            )
         else:
             lines.append("")
             lines.append(
-                "**Platform notes:** You are running inside Slack. "
-                "You do NOT have access to Slack-specific APIs — you cannot search "
-                "channel history, pin/unpin messages, manage channels, or list users. "
-                "Do not promise to perform these actions. The gateway may inline the "
-                "current message's Slack block/attachment payload when available, but "
-                "you still cannot call Slack APIs yourself."
+                "**Platform notes:** You are running inside Slack. No dedicated "
+                "native or MCP Slack tool is loaded. Inspect the loaded capabilities "
+                "before attempting Slack API work; a deployment skill, CLI, or helper "
+                "may provide it. Do not claim Slack API access unless an authenticated "
+                "path is actually configured and available. The gateway may inline "
+                "the current message's Slack block/attachment payload when available."
             )
         if context.shared_multi_user_session:
             lines.append(
@@ -3698,7 +3711,9 @@ class SessionStore:
 def build_session_context(
     source: SessionSource,
     config: GatewayConfig,
-    session_entry: Optional[SessionEntry] = None
+    session_entry: Optional[SessionEntry] = None,
+    *,
+    authenticated_api_helper: Optional[bool] = None,
 ) -> SessionContext:
     """
     Build a full session context from a source and config.
@@ -3712,6 +3727,15 @@ def build_session_context(
         home = config.get_home_channel(platform)
         if home:
             home_channels[platform] = home
+
+    if authenticated_api_helper is None:
+        platform_config = config.platforms.get(source.platform)
+        authenticated_api_helper = bool(
+            platform_config
+            and platform_config.extra.get("authenticated_api_helper") is True
+        )
+    else:
+        authenticated_api_helper = authenticated_api_helper is True
     
     context = SessionContext(
         source=source,
@@ -3722,6 +3746,7 @@ def build_session_context(
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         ),
+        authenticated_api_helper=authenticated_api_helper,
     )
     
     if session_entry:

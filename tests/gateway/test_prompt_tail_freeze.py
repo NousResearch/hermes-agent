@@ -66,6 +66,7 @@ def _make_context(
     guild_id: str | None = "777888999",
     message_id: str | None = "1357",
     shared_multi_user: bool = False,
+    authenticated_api_helper: bool = False,
     connected: list[Platform] | None = None,
     home_channels: dict | None = None,
 ) -> SessionContext:
@@ -94,6 +95,7 @@ def _make_context(
         connected_platforms=connected,
         home_channels=home_channels,
         shared_multi_user_session=shared_multi_user,
+        authenticated_api_helper=authenticated_api_helper,
     )
 
 
@@ -192,6 +194,28 @@ class TestEphemeralChangeKeyParity:
         t3 = runner._pinned_session_context_prompt(_slack_ctx(), False, "sk-slack")  # noqa: SLF001
         assert t2 is t1 and t3 is t1
         assert hashlib.sha256(t1.encode()).hexdigest() == hashlib.sha256(t3.encode()).hexdigest()
+
+    def test_authenticated_api_helper_flip_changes_slack_key(self):
+        """The prompt pin must refresh when configured helper availability changes."""
+        runner = _make_runner()
+        without_helper = _make_context(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            thread_id=None,
+            parent_chat_id=None,
+            guild_id=None,
+        )
+        with_helper = _make_context(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            thread_id=None,
+            parent_chat_id=None,
+            guild_id=None,
+            authenticated_api_helper=True,
+        )
+
+        assert _render(without_helper) != _render(with_helper)
+        assert _key(runner, without_helper) != _key(runner, with_helper)
 
 
 # ---------------------------------------------------------------------------

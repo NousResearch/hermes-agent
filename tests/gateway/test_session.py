@@ -156,8 +156,8 @@ class TestBuildSessionContextPrompt:
         # Static pointer tells the agent where the volatile id actually lives.
         assert "provided per-turn in the incoming user message" in p1
 
-    def test_slack_prompt_no_tools_shows_disclaimer(self):
-        """Without slack toolset loaded, prompt must show the stale-API disclaimer."""
+    def test_slack_prompt_without_tools_or_helper_does_not_promise_api_access(self):
+        """No detected route must keep the Slack capability note non-promissory."""
         from unittest.mock import patch
         config = GatewayConfig(
             platforms={
@@ -175,11 +175,115 @@ class TestBuildSessionContextPrompt:
         with patch("gateway.session._slack_tools_loaded", return_value=False):
             prompt = build_session_context_prompt(ctx)
 
-        assert "Slack" in prompt
-        assert "cannot search" in prompt.lower()
-        assert "pin" in prompt.lower()
-        assert "current message's slack block/attachment payload" in prompt.lower()
-        assert "you can" not in prompt.lower() or "you cannot" in prompt.lower()
+        normalized = prompt.lower()
+        assert "slack" in normalized
+        assert "slack api access remains available" not in normalized
+        assert "no dedicated native or mcp slack tool is loaded" in normalized
+        assert "inspect the loaded capabilities" in normalized
+        assert "do not claim slack api access unless" in normalized
+        assert "current message's slack block/attachment payload" in normalized
+        assert "you do not have access to slack-specific apis" not in normalized
+        assert "you still cannot call slack apis yourself" not in normalized
+
+    def test_slack_prompt_with_configured_helper_preserves_api_access(self):
+        """A deployment-declared authenticated helper enables affirmative guidance."""
+        from unittest.mock import patch
+
+        config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(
+                    enabled=True,
+                    token="fake",
+                    extra={"authenticated_api_helper": True},
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_name="general",
+            chat_type="group",
+            user_name="bob",
+        )
+
+        ctx = build_session_context(source, config)
+        with patch("gateway.session._slack_tools_loaded", return_value=False):
+            prompt = build_session_context_prompt(ctx).lower()
+
+        assert ctx.authenticated_api_helper is True
+        assert "authenticated slack api helper is configured" in prompt
+        assert "slack api access remains available" in prompt
+        assert "operations and targets authorized" in prompt
+        assert "verify writes by reading back" in prompt
+
+    def test_multiplex_helper_guidance_uses_routed_profile_config(self):
+        """A primary profile declaration must not bleed into a secondary turn."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._gateway_profile_name = "primary"
+        runner.config = GatewayConfig(
+            multiplex_profiles=True,
+            platforms={
+                Platform.SLACK: PlatformConfig(
+                    enabled=True,
+                    extra={"authenticated_api_helper": True},
+                ),
+            },
+        )
+        runner._profile_gateway_configs = {
+            "secondary": GatewayConfig(
+                platforms={
+                    Platform.SLACK: PlatformConfig(
+                        enabled=True,
+                        extra={"authenticated_api_helper": False},
+                    ),
+                },
+            ),
+        }
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="group",
+            profile="secondary",
+        )
+
+        context = runner._session_context_for_source(source, session_entry=None)
+
+        assert context.authenticated_api_helper is False
+
+        primary_source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C999",
+            chat_type="group",
+            profile="primary",
+        )
+
+        context = runner._session_context_for_source(
+            primary_source, session_entry=None
+        )
+
+        assert context.authenticated_api_helper is True
+
+        runner._profile_gateway_configs["secondary"].platforms[
+            Platform.SLACK
+        ].extra["authenticated_api_helper"] = True
+        runner.config.platforms[Platform.SLACK].extra[
+            "authenticated_api_helper"
+        ] = False
+
+        context = runner._session_context_for_source(source, session_entry=None)
+
+        assert context.authenticated_api_helper is True
+
+        runner._profile_gateway_configs.clear()
+        runner.config.platforms[Platform.SLACK].extra[
+            "authenticated_api_helper"
+        ] = True
+
+        context = runner._session_context_for_source(source, session_entry=None)
+
+        assert context.authenticated_api_helper is False
 
 
     def test_slack_tools_loaded_detects_real_mcp_registration(self):

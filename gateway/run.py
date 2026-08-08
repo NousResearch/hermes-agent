@@ -5954,6 +5954,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # sites are untouched when multiplexing is off (this dict is empty).
         # Populated by _start_secondary_profile_adapters().
         self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
+        # Preserve each secondary profile's parsed gateway config for
+        # profile-scoped prompt capability decisions. Never fall back to the
+        # primary config for a profile-stamped turn.
+        self._profile_gateway_configs: Dict[str, GatewayConfig] = {}
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
@@ -6140,7 +6144,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # /reasoning, /fast overrides; per-turn sidecar notes; ephemeral
         # context pin; last-delivered voice-channel context) lives on
         # SessionState.conversation — see gateway/session_state.py.
-        self._kanban_notifier_profile = self._active_profile_name()
+        self._gateway_profile_name = self._active_profile_name()
+        self._kanban_notifier_profile = self._gateway_profile_name
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
         self._teams_pipeline_runtime_error: Optional[str] = None
@@ -13538,6 +13543,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 f"or configure them only on the default profile."
             )
 
+        self._remember_profile_gateway_config(profile_name, profile_cfg)
         profile_map = self._profile_adapters.setdefault(profile_name, {})
         connected = 0
         for platform, platform_config in profile_cfg.platforms.items():
@@ -13664,6 +13670,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         current_task = asyncio.current_task()
         try:
             while self._running:
+                # Reconnect is a config re-read boundary. Drop the prior
+                # profile snapshot first so a malformed/removed declaration
+                # cannot leave stale affirmative capability guidance behind.
+                self._forget_profile_gateway_config(profile_name)
                 adapter = None
                 try:
                     from hermes_cli.profiles import get_profile_dir
@@ -13671,7 +13681,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                     profile_home = get_profile_dir(profile_name)
                     with _profile_runtime_scope(profile_home):
-                        profile_config = load_gateway_config().platforms.get(platform)
+                        profile_cfg = load_gateway_config()
+                        self._remember_profile_gateway_config(profile_name, profile_cfg)
+                        profile_config = profile_cfg.platforms.get(platform)
                         if profile_config is None or not profile_config.enabled:
                             return
                         adapter = self._create_adapter(platform, profile_config)
@@ -16845,8 +16857,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "session_key": session_key,
             })
         
-        # Build session context
-        context = build_session_context(source, self.config, session_entry)
+        # Build session context. Multiplexed turns resolve prompt capability
+        # declarations from the routed profile, never the primary profile.
+        context = self._session_context_for_source(source, session_entry)
         
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
@@ -23746,6 +23759,60 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "[Voice channel now: not connected to a voice channel]"
         return f"[Voice channel now: {vc_now}]"
 
+    def _remember_profile_gateway_config(
+        self, profile_name: str, profile_config: GatewayConfig
+    ) -> None:
+        """Cache a secondary config; tolerate bare runners used by tests/plugins."""
+        profile_configs = getattr(self, "_profile_gateway_configs", None)
+        if not isinstance(profile_configs, dict):
+            profile_configs = {}
+            self._profile_gateway_configs = profile_configs
+        profile_configs[profile_name] = profile_config
+
+    def _forget_profile_gateway_config(self, profile_name: str) -> None:
+        """Drop a secondary config so capability guidance fails closed."""
+        profile_configs = getattr(self, "_profile_gateway_configs", None)
+        if isinstance(profile_configs, dict):
+            profile_configs.pop(profile_name, None)
+
+    def _session_context_for_source(
+        self,
+        source: SessionSource,
+        session_entry: Optional[SessionEntry],
+    ) -> SessionContext:
+        """Build context with profile-local helper guidance in multiplex mode."""
+        helper_override: Optional[bool] = None
+        profile_name = (getattr(source, "profile", "") or "").strip()
+        primary_profile = (
+            getattr(self, "_gateway_profile_name", "")
+            or self._active_profile_name()
+        ).strip()
+        if (
+            getattr(self.config, "multiplex_profiles", False)
+            and profile_name
+            and profile_name != primary_profile
+        ):
+            # A profile-stamped source is a secondary adapter turn. Missing
+            # cached config fails closed instead of inheriting the primary
+            # profile's affirmative capability declaration.
+            helper_override = False
+            profile_cfg = getattr(self, "_profile_gateway_configs", {}).get(
+                profile_name
+            )
+            if profile_cfg is not None:
+                platform_cfg = profile_cfg.platforms.get(source.platform)
+                helper_override = bool(
+                    platform_cfg
+                    and platform_cfg.extra.get("authenticated_api_helper") is True
+                )
+
+        return build_session_context(
+            source,
+            self.config,
+            session_entry,
+            authenticated_api_helper=helper_override,
+        )
+
     def _pinned_session_context_prompt(
         self, context, redact_pii: bool, session_key: Optional[str]
     ) -> str:
@@ -23810,10 +23877,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # MCP-registration flip re-renders once instead of serving a
         # stale pinned note for the rest of the session.
         slack_tools = ""
+        slack_api_helper = ""
         if src.platform == Platform.SLACK:
             from gateway.session import _slack_tools_loaded
 
             slack_tools = "1" if _slack_tools_loaded() else "0"
+            slack_api_helper = "1" if context.authenticated_api_helper else "0"
 
         try:
             from hermes_constants import display_hermes_home
@@ -23836,6 +23905,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             discord_ids,
             discord_tools,
             slack_tools,
+            slack_api_helper,
             tuple(p.value for p in context.connected_platforms),
             tuple(
                 (

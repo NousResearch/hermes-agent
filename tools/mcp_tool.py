@@ -2482,6 +2482,24 @@ class MCPServerTask:
         safe_env = _build_safe_env(user_env)
         command, safe_env = _resolve_stdio_command(command, safe_env)
 
+        # Apply the cua-driver overlay policy to user-configured MCP launches
+        # so a config like ``mcp_servers.cua-driver.args: [mcp]`` cannot
+        # silently bypass ``--no-overlay`` and leave an InputOutput
+        # override-redirect overlay mapped across the X11 virtual root
+        # (#81220). The embedded cua-backend already does this at
+        # ``_resolve_mcp_invocation``; we apply the same normalization here
+        # for user-registered servers so the policy is enforced regardless
+        # of whether the spawn goes through the embedded backend or a
+        # user-configured stdio MCP entry. ``normalize_user_cua_driver_args``
+        # is a no-op when *command* is not a known cua-driver binary.
+        try:
+            from tools.computer_use.cua_backend import normalize_user_cua_driver_args
+            args = normalize_user_cua_driver_args(command, args)
+        except ImportError:
+            # cua_backend is optional — only present when the computer-use
+            # extras are installed. Fall through to the legacy args.
+            pass
+
         # Check package against OSV malware database before spawning.
         # Run off the event loop (the urllib HTTPS call is blocking) and bound
         # it with a wall-clock timeout so a stalled SSL handshake can't freeze

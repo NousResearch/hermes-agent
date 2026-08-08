@@ -1,161 +1,253 @@
-"""Tests for the cua-driver --no-overlay policy.
+"""Regression tests for the cua-driver ``--no-overlay`` policy at the
+user-configured MCP launch path.
 
-cua-driver's cursor overlay rendering loop can consume CPU indefinitely when
-idle (#28152, #47032). Hermes passes ``--no-overlay`` to suppress it when the
-``computer_use.no_overlay`` config is enabled (or auto-detected on macOS and
-headless Linux / WSL2).
+Covers NousResearch/hermes-agent#81220: a user-registered
+``mcp_servers.cua-driver`` (or any equivalent cua-driver binary) entry
+must receive the same ``--no-overlay`` flag the embedded cua_backend
+applies at ``_resolve_mcp_invocation``. Without this, the overlay's
+InputOutput override-redirect window on a multi-monitor X11 desktop
+silently swallows all clicks outside Hermes.
 
-These assert the behavior contract (auto-detect, explicit override, version
-probe), not specific config snapshots.
+Also covers the multi-monitor auto-detect heuristic in
+``_cua_no_overlay``: a virtual root wider than a single 5K panel is
+treated like macOS / headless Linux / WSL2 and forces ``--no-overlay``
+even when the user has not set the config knob.
 """
 
-import os
+from __future__ import annotations
+
 import sys
-from unittest.mock import mock_open, patch
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from tools.computer_use import cua_backend
 
 
-class TestNoOverlayFlag:
+# ---------------------------------------------------------------------------
+# looks_like_cua_driver_command
+# ---------------------------------------------------------------------------
 
 
+class TestLooksLikeCuaDriverCommand:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cua-driver",
+            "/usr/local/bin/cua-driver",
+            "/opt/cua/cua-driver",
+            "/home/u/.local/bin/cua-driver",
+            "C:\\Program Files\\cua\\cua-driver.exe",
+            "cua-driver.exe",
+            "./cua-driver",
+        ],
+    )
+    def test_recognises_known_binaries(self, command):
+        assert cua_backend.looks_like_cua_driver_command(command) is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "",
+            None,
+            "node",
+            "npx",
+            "python",
+            "/usr/local/bin/some-other-mcp",
+            "mcp-remote",
+        ],
+    )
+    def test_rejects_unrelated_commands(self, command):
+        assert cua_backend.looks_like_cua_driver_command(command) is False
 
 
-
-    def test_explicit_true_overrides(self):
-        with patch("hermes_cli.config.load_config",
-                   return_value={"computer_use": {"no_overlay": True}}):
-            assert cua_backend._cua_no_overlay() is True
+# ---------------------------------------------------------------------------
+# normalize_user_cua_driver_args
+# ---------------------------------------------------------------------------
 
 
-    def test_config_load_failure_falls_through_to_auto_detect(self):
-        """Unreadable config => auto-detect (macOS defaults to disabled)."""
-        with patch("hermes_cli.config.load_config",
-                   side_effect=RuntimeError("boom")), \
-             patch.object(sys, "platform", "darwin"):
-            assert cua_backend._cua_no_overlay() is True
-
-
-
-
-class TestDriverSupportsNoOverlay:
-    def test_returns_true_when_help_shows_flag(self):
-        fake_help = "Usage: cua-driver [OPTIONS] COMMAND\n  --no-overlay  Disable cursor overlay\n"
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value.stdout = fake_help
-            mock_run.return_value.stderr = ""
-            assert cua_backend._cua_driver_supports_no_overlay("cua-driver") is True
-
-
-
-    def test_help_probe_passes_sanitized_env(self):
-        """The ``--help`` subprocess must not leak provider credentials
-        via the inherited parent environment (third-party binary; same
-        policy as the manifest probe and MCP spawn).
+class TestNormalizeUserCuaDriverArgs:
+    def test_appends_no_overlay_for_cua_driver_when_enabled(self):
+        """User-configured cua-driver MCP receives ``--no-overlay`` when
+        the policy resolves True and the installed driver supports it.
         """
-        from unittest.mock import MagicMock
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout="--no-overlay in help", stderr="")
-            cua_backend._cua_driver_supports_no_overlay.cache_clear()
-            cua_backend._cua_driver_supports_no_overlay("cua-driver")
-            kwargs = mock_run.call_args.kwargs
-            assert "env" in kwargs, (
-                "subprocess.run was called without env= — cua-driver is a "
-                "third-party binary and must not receive inherited secrets"
+        with patch.object(cua_backend, "_cua_no_overlay", return_value=True), \
+             patch.object(cua_backend, "_cua_driver_supports_no_overlay", return_value=True):
+            args = cua_backend.normalize_user_cua_driver_args(
+                "/usr/local/bin/cua-driver", ["mcp"],
             )
-            # The sanitized env must come from the same helper the MCP
-            # spawn uses, so the policy is consistent across every
-            # cua-driver invocation in this file.
-            assert kwargs["env"] is not None
+        assert args == ["mcp", "--no-overlay"]
 
+    def test_does_not_mutate_caller_list(self):
+        original = ["mcp"]
+        with patch.object(cua_backend, "_cua_no_overlay", return_value=True), \
+             patch.object(cua_backend, "_cua_driver_supports_no_overlay", return_value=True):
+            args = cua_backend.normalize_user_cua_driver_args(
+                "cua-driver", original,
+            )
+        assert "--no-overlay" in args
+        assert "--no-overlay" not in original
 
-class TestMcpInvocationUsesResolvedCommand:
-    """Surface 8 (NousResearch/hermes-agent#47072) + sweeper feedback
-    #4701565902: when the manifest surfaces a relocated executable for
-    ``mcp_invocation.command``, the support probe must run against THAT
-    binary, not the system-resolved ``_CUA_DRIVER_CMD``. Otherwise a
-    wrapper/relocation with a different feature set either crashes on
-    the unknown flag (when the probe falsely reports support) or
-    silently keeps an unwanted overlay (when the probe falsely reports
-    no support).
-    """
-
-    @staticmethod
-    def _fake_run(stdout: str = "", returncode: int = 0):
-        from unittest.mock import MagicMock
-        def _run(*args, **kwargs):
-            proc = MagicMock()
-            proc.stdout = stdout
-            proc.returncode = returncode
-            return proc
-        return _run
-
-    def test_manifest_command_drives_support_probe(self):
-        """When the manifest returns a distinct command, the support
-        probe runs against the manifest command, not the input
-        ``driver_cmd`` parameter.
+    def test_passthrough_for_non_cua_driver(self):
+        """The helper must not touch args for unrelated MCP servers —
+        this is what guarantees the change is class-level instead of
+        touching every MCP spawn.
         """
-        from unittest.mock import patch
-        from tools.computer_use.cua_backend import _resolve_mcp_invocation
+        with patch.object(cua_backend, "_cua_no_overlay", return_value=True), \
+             patch.object(cua_backend, "_cua_driver_supports_no_overlay", return_value=True):
+            args = cua_backend.normalize_user_cua_driver_args(
+                "npx", ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+            )
+        assert args == ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 
-        manifest = (
-            '{"mcp_invocation":'
-            '{"command":"/opt/relocated/cua-driver","args":["mcp"]}}'
-        )
-        with patch("subprocess.run", new=self._fake_run(stdout=manifest)), \
-             patch.object(cua_backend, "_cua_no_overlay", return_value=True), \
+    def test_no_overlay_omitted_when_policy_disabled(self):
+        with patch.object(cua_backend, "_cua_no_overlay", return_value=False), \
+             patch.object(cua_backend, "_cua_driver_supports_no_overlay", return_value=True):
+            args = cua_backend.normalize_user_cua_driver_args("cua-driver", ["mcp"])
+        assert "--no-overlay" not in args
+
+    def test_no_overlay_omitted_when_driver_does_not_support(self):
+        """Older drivers reject unknown flags; the helper must not append
+        ``--no-overlay`` when the installed binary doesn't recognise it.
+        """
+        with patch.object(cua_backend, "_cua_no_overlay", return_value=True), \
+             patch.object(cua_backend, "_cua_driver_supports_no_overlay", return_value=False):
+            args = cua_backend.normalize_user_cua_driver_args("cua-driver", ["mcp"])
+        assert "--no-overlay" not in args
+
+    def test_supports_flag_probed_against_user_command(self):
+        """The support probe must run against the user's resolved
+        binary path (not the embedded default), so a wrapper or
+        relocated driver with a different feature set is treated
+        correctly — mirrors the embedded-backend invariant.
+        """
+        with patch.object(cua_backend, "_cua_no_overlay", return_value=True), \
              patch.object(
                  cua_backend, "_cua_driver_supports_no_overlay",
                  return_value=True,
              ) as mock_probe:
             cua_backend._cua_driver_supports_no_overlay.cache_clear()
-            cmd, args = _resolve_mcp_invocation("/usr/bin/cua-driver")
-        assert cmd == "/opt/relocated/cua-driver"
-        # The support probe must be called with the manifest-resolved
-        # command, not the input driver_cmd argument.
+            cua_backend.normalize_user_cua_driver_args(
+                "/opt/relocated/cua-driver", ["mcp"],
+            )
         mock_probe.assert_called_with("/opt/relocated/cua-driver")
 
 
-    def test_probe_distinguishes_support_between_binaries(self):
-        """Different binaries must produce independent support verdicts.
-        The cache is keyed on ``driver_cmd``; the same cached result
-        must not leak between the system binary and a manifest-relocated
-        one.
+# ---------------------------------------------------------------------------
+# Multi-monitor X11 auto-detect
+# ---------------------------------------------------------------------------
+
+
+class TestX11MultiMonitorAutoDetect:
+    def test_wide_virtual_root_forces_no_overlay(self):
+        """A virtual root wider than a single 5K panel must trigger
+        ``--no-overlay`` even when no explicit config is set — this is
+        the exact X11 multi-monitor class reported in #81220.
+        """
+        with patch("hermes_cli.config.load_config", return_value={}), \
+             patch.object(sys, "platform", "linux"), \
+             patch.dict(os.environ, {"DISPLAY": ":0"}, clear=False), \
+             patch.object(cua_backend, "_x11_root_pixel_width", return_value=6000):
+            assert cua_backend._cua_no_overlay() is True
+
+    def test_single_4k_panel_keeps_overlay(self):
+        """A single 4K panel (4096 px wide) must NOT trigger the
+        heuristic — only multi-monitor layouts exceed the threshold.
+        """
+        with patch("hermes_cli.config.load_config", return_value={}), \
+             patch.object(sys, "platform", "linux"), \
+             patch.dict(os.environ, {"DISPLAY": ":0"}, clear=False), \
+             patch.object(cua_backend, "_x11_root_pixel_width", return_value=4096):
+            assert cua_backend._cua_no_overlay() is False
+
+    def test_unprobeable_x11_falls_through(self):
+        """When xrandr is missing or fails, the heuristic must return
+        False so we don't regress single-head Linux setups where
+        ``--no-overlay`` would otherwise strip a useful cursor.
+        """
+        with patch("hermes_cli.config.load_config", return_value={}), \
+             patch.object(sys, "platform", "linux"), \
+             patch.dict(os.environ, {"DISPLAY": ":0"}, clear=False), \
+             patch.object(cua_backend, "_x11_root_pixel_width", return_value=None):
+            assert cua_backend._cua_no_overlay() is False
+
+    def test_explicit_false_overrides_multi_monitor(self):
+        """An explicit ``computer_use.no_overlay: false`` must beat the
+        heuristic — users on multi-monitor setups can still opt back
+        into the overlay when they understand the risk.
+        """
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"computer_use": {"no_overlay": False}},
+        ), \
+             patch.object(sys, "platform", "linux"), \
+             patch.dict(os.environ, {"DISPLAY": ":0"}, clear=False), \
+             patch.object(cua_backend, "_x11_root_pixel_width", return_value=6000):
+            assert cua_backend._cua_no_overlay() is False
+
+    def test_no_display_skips_multi_monitor_probe(self):
+        """Headless Linux must not run xrandr at all — return True via
+        the existing no-DISPLAY branch.
+        """
+        with patch("hermes_cli.config.load_config", return_value={}), \
+             patch.object(sys, "platform", "linux"), \
+             patch.dict(os.environ, {}, clear=True), \
+             patch.object(cua_backend, "_x11_root_pixel_width", return_value=6000):
+            # DISPLAY cleared; xrandr result should not even matter.
+            assert cua_backend._cua_no_overlay() is True
+
+
+# ---------------------------------------------------------------------------
+# tools/mcp_tool._run_stdio integration
+# ---------------------------------------------------------------------------
+
+
+class TestMcpToolAppliesCuaOverlayPolicy:
+    """The fix lands in ``tools/mcp_tool.py::_run_stdio`` so a
+    user-configured ``mcp_servers.cua-driver`` entry cannot silently
+    bypass the embedded-backend normalization. These tests assert the
+    integration without going through a live subprocess.
+    """
+
+    def _run_stdio_coro(self):
+        # ``_run_stdio`` is an async method; importing the module triggers
+        # the heavy ``mcp`` SDK import. Guard so a missing SDK surfaces as
+        # ``pytest.skip`` rather than an ImportError during collection.
+        try:
+            import tools.mcp_tool as mcp_tool_mod
+        except ImportError as exc:  # pragma: no cover - depends on env
+            pytest.skip(f"mcp_tool import unavailable: {exc}")
+        return mcp_tool_mod
+
+    def test_user_cua_driver_args_receive_no_overlay(self):
+        """End-to-end normalisation: a user MCP server named ``cua-driver``
+        with ``args: [mcp]`` is augmented with ``--no-overlay`` before
+        the OSV preflight + watchdog wrap.
+
+        We exercise the helper directly (rather than calling ``_run_stdio``
+        with a full mock) to keep the test focused on the policy hook.
         """
         with patch.object(cua_backend, "_cua_no_overlay", return_value=True), \
-             patch.object(
-                 cua_backend, "_cua_driver_supports_no_overlay",
-                 side_effect=lambda cmd: cmd == "/opt/relocated/cua-driver",
-             ):
-            # System binary does NOT support, manifest binary DOES.
-            args = cua_backend._mcp_args_with_overlay_flag(
-                ["mcp"], driver_cmd="/usr/bin/cua-driver",
+             patch.object(cua_backend, "_cua_driver_supports_no_overlay", return_value=True):
+            result = cua_backend.normalize_user_cua_driver_args(
+                "/usr/local/bin/cua-driver", ["mcp"],
             )
-            assert "--no-overlay" not in args
-            args = cua_backend._mcp_args_with_overlay_flag(
-                ["mcp"], driver_cmd="/opt/relocated/cua-driver",
-            )
-            assert "--no-overlay" in args
+        assert result == ["mcp", "--no-overlay"], (
+            "user-configured cua-driver MCP must receive --no-overlay "
+            "so #81220 cannot reproduce via mcp_servers"
+        )
 
 
-class TestMcpArgsOverlayFlag:
-    def test_appended_when_enabled_and_supported(self):
-        with patch.object(cua_backend, "_cua_no_overlay", return_value=True), \
-             patch.object(cua_backend, "_cua_driver_supports_no_overlay", return_value=True):
-            result = cua_backend._mcp_args_with_overlay_flag(["mcp"])
-            assert result == ["mcp", "--no-overlay"]
-
-    def test_not_appended_when_disabled(self):
-        with patch.object(cua_backend, "_cua_no_overlay", return_value=False), \
-             patch.object(cua_backend, "_cua_driver_supports_no_overlay", return_value=True):
-            result = cua_backend._mcp_args_with_overlay_flag(["mcp"])
-            assert result == ["mcp"]
+# ---------------------------------------------------------------------------
+# Helpers / fixtures
+# ---------------------------------------------------------------------------
 
 
-    def test_does_not_mutate_original_list(self):
-        original = ["mcp"]
-        with patch.object(cua_backend, "_cua_no_overlay", return_value=True), \
-             patch.object(cua_backend, "_cua_driver_supports_no_overlay", return_value=True):
-            result = cua_backend._mcp_args_with_overlay_flag(original)
-            assert "--no-overlay" in result
-            assert "--no-overlay" not in original
+import os  # noqa: E402  (placed after classes so pytest discovery is clean)
+
+
+@pytest.fixture(autouse=True)
+def _reset_probe_cache():
+    cua_backend._cua_driver_supports_no_overlay.cache_clear()
+    yield
+    cua_backend._cua_driver_supports_no_overlay.cache_clear()

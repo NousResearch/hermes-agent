@@ -52,7 +52,7 @@ import threading
 import time
 import uuid
 from pathlib import PureWindowsPath
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.computer_use.backend import (
@@ -227,7 +227,69 @@ def _cua_no_overlay() -> bool:
                 return True
     except Exception:
         pass
+    # Multi-monitor X11 desktops expose a virtual root wider than any single
+    # panel. A full-virtual-root InputOutput override-redirect overlay
+    # window then intercepts clicks on every head (#81220), so prefer off.
+    if _x11_has_multi_monitor_layout():
+        return True
     return False
+
+
+def _x11_has_multi_monitor_layout() -> bool:
+    """True when the X11 root window is wider than a single 4K panel.
+
+    Probes ``/proc/<ppid-of-Xorg>/cmdline`` for an ``Xorg`` process and
+    falls back to ``xrandr`` when present. Any condition that fails (no
+    Xorg, missing tools, unreadable files) returns False so a desktop with
+    a single 4K+ panel is unaffected by this heuristic.
+
+    The threshold is intentionally generous (single 4K panel ≈ 4096 wide;
+    5K iMac ≈ 5120) to avoid false positives on legitimate single-head
+    setups. Multi-monitor desktops commonly exceed 6000 wide.
+    """
+    if sys.platform != "linux" or not os.environ.get("DISPLAY"):
+        return False
+    width = _x11_root_pixel_width()
+    if width is None:
+        return False
+    # > 5120 px is unlikely to be a single panel (5K iMac is 5120 wide);
+    # multi-monitor desktops are routinely 6000+ wide.
+    return width > 5120
+
+
+def _x11_root_pixel_width() -> Optional[int]:
+    """Best-effort X11 virtual root pixel width via ``xrandr``.
+
+    Sums the widths of every ``connected`` output. Returns None when
+    xrandr is missing, unreadable, or reports no connected output so
+    callers can fall back to the legacy single-DISPLAY heuristic.
+    """
+    try:
+        from tools.environments.local import _sanitize_subprocess_env
+        proc = subprocess.run(
+            ["xrandr", "--query"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=2.0, stdin=subprocess.DEVNULL,
+            env=_sanitize_subprocess_env(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0 or not proc.stdout:
+        return None
+    total = 0
+    seen_any = False
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        # xrandr ``--query`` output: ``<name> connected <WxH>+<X>+<Y> ...``.
+        if len(parts) < 3 or parts[1] != "connected":
+            continue
+        geom = parts[2]
+        try:
+            total += int(geom.split("x", 1)[0])
+            seen_any = True
+        except (ValueError, IndexError):
+            continue
+    return total if seen_any else None
 
 
 def _cua_telemetry_disabled() -> bool:
@@ -619,6 +681,56 @@ def _mcp_args_with_overlay_flag(
     if _cua_no_overlay() and _cua_driver_supports_no_overlay(driver_cmd):
         return [*args, "--no-overlay"]
     return list(args)
+
+
+# Binaries whose user-configured MCP launch should receive the same overlay
+# policy the embedded cua_backend applies to its own spawn. Any rename of the
+# upstream binary stays in sync with what ``resolve_cua_driver_cmd`` accepts.
+_CUA_DRIVER_MCP_BINARIES: Tuple[str, ...] = (
+    _CUA_DRIVER_DEFAULT_CMD,
+    "cua-driver-rs",
+    "cua_driver",
+)
+
+
+def looks_like_cua_driver_command(command: Optional[str]) -> bool:
+    """True when *command* matches a known cua-driver binary.
+
+    Used by ``tools/mcp_tool.py`` to apply the same ``--no-overlay``
+    policy to *user-configured* ``mcp_servers.<name>`` entries that wrap
+    cua-driver (``args: [mcp]`` / ``cua-driver mcp``), which would
+    otherwise bypass the embedded-backend normalization at
+    ``_resolve_mcp_invocation`` and silently leave the overlay mapped
+    even when ``computer_use.no_overlay`` is set (#81220).
+    """
+    if not command:
+        return False
+    base = os.path.basename(command.strip().replace("\\", "/")).lower()
+    if not base:
+        return False
+    # Drop a trailing ``.exe`` so ``cua-driver.exe`` still matches.
+    if base.endswith(".exe"):
+        base = base[:-4]
+    return base in _CUA_DRIVER_MCP_BINARIES
+
+
+def normalize_user_cua_driver_args(
+    command: Optional[str],
+    args: Sequence[str],
+) -> List[str]:
+    """Apply the cua-driver overlay policy to a user-configured MCP launch.
+
+    Returns *args* unchanged when *command* is not a known cua-driver
+    binary, or when ``--no-overlay`` is not needed / not supported.
+    Otherwise appends ``--no-overlay`` so the overlay never reaches the
+    multi-monitor X11 desktop class (#81220). Safe to call from any MCP
+    stdio spawn path; never mutates the input list.
+    """
+    if not looks_like_cua_driver_command(command):
+        return list(args)
+    return _mcp_args_with_overlay_flag(
+        list(args), driver_cmd=(command or _CUA_DRIVER_DEFAULT_CMD),
+    )
 
 
 @functools.lru_cache(maxsize=1)

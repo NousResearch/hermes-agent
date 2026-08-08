@@ -6400,6 +6400,166 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
+    @staticmethod
+    def _valid_plugin_callback_result(result: Any) -> bool:
+        """Validate the narrow result contract for callback-query plugins."""
+        if type(result) is not dict:
+            return False
+        action = result.get("action")
+        if type(action) is not str:
+            return False
+        if action == "unhandled":
+            return set(result) == {"action"}
+        if action != "handled":
+            return False
+        if not set(result).issubset(
+            {"action", "answer", "edit_text", "remove_keyboard"}
+        ):
+            return False
+        if "answer" in result:
+            answer = result["answer"]
+            if type(answer) is not str:
+                return False
+            try:
+                if utf16_len(answer) > 200:
+                    return False
+            except Exception:
+                return False
+        if "edit_text" in result:
+            edit_text = result["edit_text"]
+            if type(edit_text) is not str or not edit_text:
+                return False
+            try:
+                if utf16_len(edit_text) > TelegramAdapter.MAX_MESSAGE_LENGTH:
+                    return False
+            except Exception:
+                return False
+        if "remove_keyboard" in result and type(result["remove_keyboard"]) is not bool:
+            return False
+        return True
+
+    async def _handle_plugin_callback_query(
+        self,
+        query: Any,
+        data: str,
+        *,
+        query_chat_id: Any,
+        query_chat_type: Any,
+        query_thread_id: Any,
+        query_user_name: Any,
+    ) -> None:
+        """Offer an otherwise-unhandled callback to enabled plugins.
+
+        Only extracted Telegram-authenticated scalar fields cross the plugin
+        boundary. ``authorized`` is context, not an authorization grant: the
+        plugin remains responsible for checking it together with the exact
+        source and callback data before returning ``handled``.
+        """
+        from_user = getattr(query, "from_user", None)
+        user_id_raw = getattr(from_user, "id", None)
+        user_id = str(user_id_raw) if user_id_raw is not None else None
+        chat_id = str(query_chat_id) if query_chat_id is not None else None
+        chat_type_value = getattr(query_chat_type, "value", query_chat_type)
+        chat_type = str(chat_type_value) if chat_type_value is not None else None
+        thread_id = str(query_thread_id) if query_thread_id is not None else None
+        message = getattr(query, "message", None)
+        message_id_raw = getattr(message, "message_id", None)
+        message_id = str(message_id_raw) if message_id_raw is not None else None
+        inline_message_id_raw = getattr(query, "inline_message_id", None)
+        inline_message_id = (
+            str(inline_message_id_raw) if inline_message_id_raw is not None else None
+        )
+        authorized = self._is_callback_user_authorized(
+            user_id or "",
+            chat_id=chat_id,
+            chat_type=chat_type,
+            thread_id=thread_id,
+            user_name=str(query_user_name) if query_user_name is not None else None,
+        )
+
+        try:
+            from hermes_cli.lifecycle import invoke_hook
+
+            results = invoke_hook(
+                "telegram_callback_query",
+                data=data,
+                platform="telegram",
+                chat_id=chat_id,
+                chat_type=chat_type,
+                thread_id=thread_id,
+                user_id=user_id,
+                user_name=(
+                    str(query_user_name) if query_user_name is not None else None
+                ),
+                message_id=message_id,
+                inline_message_id=inline_message_id,
+                authorized=authorized,
+            )
+        except Exception:
+            logger.warning(
+                "[Telegram] telegram_callback_query hook invocation failed",
+                exc_info=True,
+            )
+            return
+
+        handled = None
+        for result in results:
+            try:
+                valid_result = self._valid_plugin_callback_result(result)
+            except Exception:
+                valid_result = False
+                logger.warning(
+                    "[Telegram] Plugin callback result validation failed",
+                    exc_info=True,
+                )
+            if not valid_result:
+                logger.warning(
+                    "[Telegram] Ignoring malformed telegram_callback_query result"
+                )
+                continue
+            if result["action"] == "handled":
+                handled = result
+                break
+        if handled is None:
+            return
+
+        try:
+            if "answer" in handled:
+                await query.answer(text=handled["answer"])
+            else:
+                await query.answer()
+        except Exception:
+            logger.debug("[Telegram] Plugin callback answer failed", exc_info=True)
+
+        edit_text = handled.get("edit_text")
+        remove_keyboard = handled.get("remove_keyboard", False)
+        try:
+            if edit_text is not None:
+                edit_kwargs: Dict[str, Any] = {"text": edit_text}
+                if remove_keyboard:
+                    edit_kwargs["reply_markup"] = None
+                elif message is not None:
+                    # PTB defaults reply_markup=None, which removes an existing
+                    # inline keyboard. Preserve the trusted message's current
+                    # keyboard when the plugin requested an edit only.
+                    edit_kwargs["reply_markup"] = getattr(
+                        message, "reply_markup", None
+                    )
+                else:
+                    # Inline-mode callbacks expose no Message/keyboard to
+                    # preserve. Fail closed rather than turning an edit-only
+                    # result into an implicit keyboard-removal capability.
+                    logger.warning(
+                        "[Telegram] Skipping plugin callback edit without "
+                        "message metadata or remove_keyboard=true"
+                    )
+                    return
+                await query.edit_message_text(**edit_kwargs)
+            elif remove_keyboard:
+                await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            logger.debug("[Telegram] Plugin callback edit failed", exc_info=True)
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -6744,6 +6904,14 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):
+            await self._handle_plugin_callback_query(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
             return
         answer = data.split(":", 1)[1]  # "y" or "n"
         caller_id = str(getattr(query.from_user, "id", ""))

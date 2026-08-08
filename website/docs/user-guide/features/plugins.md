@@ -201,6 +201,7 @@ Plugins can register callbacks for these lifecycle events. See the **[Event Hook
 | [`on_session_reset`](/user-guide/features/hooks#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`, `/clear`, idle rotation) |
 | [`subagent_stop`](/user-guide/features/hooks#subagent_stop) | Once per child after `delegate_task` finishes |
 | [`pre_gateway_dispatch`](/user-guide/features/hooks#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch. Return `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow. |
+| [`telegram_callback_query`](/user-guide/features/hooks#telegram_callback_query) | Telegram received an inline-button callback that no built-in prefix claimed. The plugin must validate the supplied authorization and source metadata before returning `handled`. |
 
 ## Plugin types
 

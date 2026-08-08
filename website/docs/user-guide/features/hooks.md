@@ -402,6 +402,7 @@ def register(ctx):
 | [`subagent_start`](#subagent_start) | A `delegate_task` child has been constructed and is about to run | ignored |
 | [`subagent_stop`](#subagent_stop) | A `delegate_task` child has exited | ignored |
 | [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
+| [`telegram_callback_query`](#telegram_callback_query) | Telegram received an inline-button callback not claimed by a built-in prefix | constrained handled/unhandled result |
 | [`pre_approval_request`](#pre_approval_request) | An approval decision is requested, including smart-mode auto decisions | ignored |
 | [`post_approval_response`](#post_approval_response) | An approval decision is made (or a prompt times out) | ignored |
 | [`transform_tool_result`](#transform_tool_result) | After any tool returns, before the result is handed back to the model | `str` to replace the result, `None` to leave unchanged |
@@ -1067,6 +1068,69 @@ def buffer_or_rewrite(event, **kwargs):
 
 def register(ctx):
     ctx.register_hook("pre_gateway_dispatch", buffer_or_rewrite)
+```
+
+---
+
+### `telegram_callback_query`
+
+Fires for a Telegram inline-keyboard callback only when no built-in callback prefix claimed it. Built-in model/choice pickers, approvals, slash confirmations, clarify prompts, Gmail triage, and update prompts always take precedence. Hermes passes extracted scalar metadata rather than the raw Telegram `CallbackQuery` object.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    data: str,
+    platform: str,
+    chat_id: str | None,
+    chat_type: str | None,
+    thread_id: str | None,
+    user_id: str | None,
+    user_name: str | None,
+    message_id: str | None,
+    inline_message_id: str | None,
+    authorized: bool,
+    **kwargs,
+):
+```
+
+`authorized` reports the normal Telegram/gateway authorization decision; it does not authorize the callback by itself. A plugin must fail closed unless `authorized` is true and the callback data and exact source ids match state the plugin created. Inline-mode callbacks can have `chat_id`, `chat_type`, and `message_id` set to `None`; validate `inline_message_id` instead or return `unhandled`.
+
+**Return value:**
+
+| Return | Effect |
+|--------|--------|
+| `{"action": "unhandled"}` / `None` | Leave the callback untouched. Other plugin results may still handle it. |
+| `{"action": "handled", "answer": "Done"}` | Answer the callback. `answer` is optional and limited to Telegram's 200 UTF-16-unit callback-answer limit. |
+| `{"action": "handled", "edit_text": "Confirmed", "remove_keyboard": true}` | Optionally replace the message text and/or remove its inline keyboard. `edit_text` is plain text, non-empty, and limited to 4096 UTF-16 units. |
+
+These are the only accepted keys and types. Malformed results are logged and ignored, callback operations are isolated from adapter flow, and plugin exceptions cannot break Telegram polling.
+
+An edit-only result preserves the message's existing inline keyboard. Telegram inline-mode callbacks provide no message object from which Hermes can recover that keyboard, so `edit_text` without `remove_keyboard: true` is skipped for those callbacks rather than implicitly removing controls.
+
+```python
+EXPECTED_CHAT = "123456789"
+EXPECTED_USER = "987654321"
+
+def handle_button(data, authorized, chat_id, user_id, message_id, **kwargs):
+    if not authorized:
+        return {"action": "handled", "answer": "Not authorized"}
+    if chat_id != EXPECTED_CHAT or user_id != EXPECTED_USER:
+        return {"action": "unhandled"}
+    if not message_id or not data.startswith("myplugin:approve:"):
+        return {"action": "unhandled"}
+    # Validate the callback token against plugin-owned state before mutating it.
+    if not approve_plugin_record(data, message_id):
+        return {"action": "handled", "answer": "Expired"}
+    return {
+        "action": "handled",
+        "answer": "Approved",
+        "edit_text": "Approved by plugin",
+        "remove_keyboard": True,
+    }
+
+def register(ctx):
+    ctx.register_hook("telegram_callback_query", handle_button)
 ```
 
 ---

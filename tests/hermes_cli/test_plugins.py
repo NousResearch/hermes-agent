@@ -458,6 +458,9 @@ class TestPluginLoading:
 class TestPluginHooks:
     """Tests for lifecycle hook registration and invocation."""
 
+    def test_telegram_callback_query_is_a_supported_hook(self):
+        assert "telegram_callback_query" in VALID_HOOKS
+
 
 
     def test_pre_gateway_dispatch_collects_action_dicts(self, tmp_path, monkeypatch):

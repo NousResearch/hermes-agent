@@ -175,6 +175,15 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Telegram adapter hook for callback queries not claimed by a built-in
+    # prefix. The adapter passes only extracted scalar metadata, never the raw
+    # Telegram query object. Plugins must validate ``authorized`` and the
+    # source ids before acting. Return values are strictly constrained to:
+    #   {"action": "unhandled"}
+    #   {"action": "handled", "answer": str?, "edit_text": str?,
+    #    "remove_keyboard": bool?}
+    # Malformed values are ignored. See the hooks documentation for bounds.
+    "telegram_callback_query",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs an approval decision -- fires for CLI-interactive prompts,
     # gateway/ACP approvals, and smart-mode auxiliary-LLM decisions.

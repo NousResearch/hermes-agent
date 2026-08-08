@@ -202,6 +202,29 @@ def test_host_transport_wait_is_interruptible_and_pollable():
     assert polls
 
 
+def test_host_rejects_decision_completed_after_deadline(monkeypatch):
+    import hermes_cli.approval_transport as transport_module
+
+    main_thread = threading.get_ident()
+
+    def clock():
+        # The host starts at t=0 with a one-second budget. The worker reports
+        # completion at t=2 before the host dequeues the result. Acceptance is
+        # bound to completion time, not to a queue/scheduler race.
+        return 0.0 if threading.get_ident() == main_thread else 2.0
+
+    monkeypatch.setattr(transport_module.time, "monotonic", clock)
+
+    result = transport_module.invoke_approval_transport(
+        lambda request: request.respond("once"),
+        _request(),
+        timeout_seconds=1,
+    )
+
+    assert result.choice == "deny"
+    assert result.failure == "timeout"
+
+
 def test_host_caps_hung_transport_workers():
     from hermes_cli.approval_transport import (
         _MAX_ACTIVE_TRANSPORT_WORKERS,
@@ -342,6 +365,34 @@ def test_transport_failure_denies_without_builtin_fallback(monkeypatch):
     assert builtin_calls == []
 
 
+def test_transport_resolution_error_does_not_log_plugin_exception(monkeypatch, caplog):
+    from tools import approval
+
+    monkeypatch.setattr(
+        approval, "_get_approval_transport_config", lambda: ("phone", None)
+    )
+
+    def broken_manager():
+        raise RuntimeError("plugin-owned-secret-value")
+
+    monkeypatch.setattr(approval, "get_plugin_manager", broken_manager)
+
+    result = approval._present_with_selected_transport(
+        command="rm -rf /tmp/example",
+        description="dangerous",
+        pattern_key="rm_recursive",
+        pattern_keys=["rm_recursive"],
+        session_key="session-a",
+        surface="cli",
+        allow_session=True,
+        allow_permanent=True,
+    )
+
+    assert result["choice"] == "deny"
+    assert result["failure"] == "unavailable"
+    assert "plugin-owned-secret-value" not in caplog.text
+
+
 def test_redaction_failure_denies_before_transport_callback(monkeypatch):
     import agent.redact
     from tools import approval
@@ -353,7 +404,8 @@ def test_redaction_failure_denies_before_transport_callback(monkeypatch):
     )
     _configure_manual_guard(monkeypatch, approval, manager)
 
-    def redaction_failed(text):
+    def redaction_failed(text, *, force=False):
+        assert force is True
         if text in {"rm -rf /tmp/example", "dangerous"}:
             raise RuntimeError("redactor unavailable")
         return text
@@ -448,7 +500,6 @@ def register(ctx):
     monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False)
     manager = PluginManager()
     monkeypatch.setattr(plugins_module, "_plugin_manager", manager)
-    manager.discover_and_load()
     token = approval.set_hermes_interactive_context(True)
     approval.clear_session("local")
     approval._permanent_approved.clear()
@@ -474,7 +525,9 @@ def register(ctx):
 
     records = [
         json.loads(line)
-        for line in (home / "transport-invocations.jsonl").read_text().splitlines()
+        for line in (home / "transport-invocations.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
     assert routed["approved"] is True
     assert reloaded["approved"] is True

@@ -150,7 +150,8 @@ def invoke_approval_transport(
         logger.warning("Approval transport worker capacity exhausted")
         return ApprovalTransportResult("deny", "busy")
 
-    results: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
+    results: queue.Queue[tuple[str, object, float]] = queue.Queue(maxsize=1)
+    deadline = time.monotonic() + max(float(timeout_seconds), 0.0)
 
     async def _await_value(value):
         return await value
@@ -160,10 +161,10 @@ def invoke_approval_transport(
             value = present(request)
             if inspect.isawaitable(value):
                 value = asyncio.run(_await_value(value))
-            results.put_nowait(("result", value))
+            results.put_nowait(("result", value, time.monotonic()))
         except BaseException as exc:  # fail closed even for unusual callback exits
             try:
-                results.put_nowait(("error", exc))
+                results.put_nowait(("error", exc, time.monotonic()))
             except queue.Full:
                 pass
         finally:
@@ -180,7 +181,6 @@ def invoke_approval_transport(
         _transport_worker_slots.release()
         logger.warning("Could not start approval transport worker")
         return ApprovalTransportResult("deny", "error")
-    deadline = time.monotonic() + max(float(timeout_seconds), 0.0)
     while True:
         if is_interrupted is not None and is_interrupted():
             logger.info("Approval transport wait interrupted for %s", request.request_id)
@@ -190,7 +190,7 @@ def invoke_approval_transport(
             logger.warning("Approval transport timed out for request %s", request.request_id)
             return ApprovalTransportResult("deny", "timeout")
         try:
-            kind, value = results.get(
+            kind, value, completed_at = results.get(
                 timeout=min(max(float(poll_interval), 0.001), remaining)
             )
             break
@@ -201,6 +201,9 @@ def invoke_approval_transport(
                 except Exception:
                     logger.debug("Approval transport poll callback failed", exc_info=True)
 
+    if completed_at > deadline:
+        logger.warning("Approval transport timed out for request %s", request.request_id)
+        return ApprovalTransportResult("deny", "timeout")
     if kind == "error":
         logger.warning("Approval transport failed for request %s", request.request_id)
         return ApprovalTransportResult("deny", "error")

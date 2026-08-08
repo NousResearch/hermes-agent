@@ -3668,8 +3668,13 @@ def _format_tirith_description(tirith_result: dict) -> str:
 
 def get_plugin_manager():
     """Lazy plugin-manager seam used by tests and early tool-only imports."""
-    from hermes_cli.plugins import get_plugin_manager as _get_manager
+    from hermes_cli.plugins import discover_plugins, get_plugin_manager as _get_manager
 
+    # Approval can be imported before model_tools, whose import normally
+    # triggers general plugin discovery. Ensure an explicitly selected
+    # transport is available on that first approval rather than treating the
+    # still-undiscovered registry as an unavailable transport.
+    discover_plugins()
     return _get_manager()
 
 
@@ -3708,7 +3713,8 @@ def _present_with_selected_transport(
     try:
         registered = get_plugin_manager().get_approval_transport(name)
     except Exception:
-        logger.warning("Could not resolve selected approval transport %r", name, exc_info=True)
+        # Plugin/discovery exception text may contain plugin-owned secrets.
+        logger.warning("Could not resolve selected approval transport %r", name)
         registered = None
     if registered is None:
         logger.warning("Selected approval transport %r is unavailable", name)
@@ -3726,8 +3732,8 @@ def _present_with_selected_transport(
 
         timeout_seconds = _get_approval_timeout()
         request = ApprovalRequest.create(
-            command=redact_sensitive_text(command),
-            description=redact_sensitive_text(description),
+            command=redact_sensitive_text(command, force=True),
+            description=redact_sensitive_text(description, force=True),
             pattern_key=pattern_key,
             pattern_keys=tuple(pattern_keys),
             session_key=session_key,

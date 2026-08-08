@@ -312,3 +312,71 @@ def test_vertex_default_model_estimates_cached_usage(monkeypatch):
 
     assert result.status == "estimated"
     assert result.amount_usd is not None and result.amount_usd > 0
+
+
+# ---------------------------------------------------------------------------
+# #79225: per-token vs per-million pricing units
+# ---------------------------------------------------------------------------
+from decimal import Decimal
+
+def test_openai_compatible_models_pricing_is_per_million_not_scaled():
+    """OpenAI-compatible /models endpoints report dollars per million tokens
+    (e.g. 3.2664 = $3.27/M input). Before this fix the value was treated as a
+    per-token decimal and scaled by 1e6, producing $3,266,400/M and a bogus
+    expensive-model warning (#79225)."""
+    from agent.usage_pricing import _pricing_entry_from_metadata
+
+    entry = _pricing_entry_from_metadata(
+        {
+            "edge/model": {
+                "pricing": {"prompt": "3.2664", "completion": "16.332"}
+            }
+        },
+        "edge/model",
+        source_url="https://edge.example/v1/models",
+        pricing_version="openai-compatible-models-api",
+        pricing_units="per_million",
+    )
+
+    assert entry is not None
+    assert entry.input_cost_per_million == Decimal("3.2664")
+    assert entry.output_cost_per_million == Decimal("16.332")
+
+
+def test_openrouter_models_pricing_is_scaled_from_per_token():
+    """OpenRouter's models API reports per-token decimals; the per-token
+    declaration must still scale to per-million exactly as before."""
+    from agent.usage_pricing import _pricing_entry_from_metadata
+
+    entry = _pricing_entry_from_metadata(
+        {
+            "edge/model": {
+                "pricing": {"prompt": "0.0000032664", "completion": "0.000016332"}
+            }
+        },
+        "edge/model",
+        source_url="https://openrouter.ai/api/v1/models",
+        pricing_version="openrouter-models-api",
+        pricing_units="per_token",
+    )
+
+    assert entry is not None
+    assert entry.input_cost_per_million == Decimal("3.2664")
+    assert entry.output_cost_per_million == Decimal("16.332")
+
+
+def test_default_units_are_per_million():
+    """The default (no explicit units) must be per-million — the
+    OpenAI-compatible standard — so a future caller cannot silently regress
+    to the 1e6 over-scaling."""
+    from agent.usage_pricing import _pricing_entry_from_metadata
+
+    entry = _pricing_entry_from_metadata(
+        {"edge/model": {"pricing": {"prompt": "3.2664", "completion": "16.332"}}},
+        "edge/model",
+        source_url="https://edge.example/v1/models",
+        pricing_version="openai-compatible-models-api",
+    )
+
+    assert entry is not None
+    assert entry.input_cost_per_million == Decimal("3.2664")

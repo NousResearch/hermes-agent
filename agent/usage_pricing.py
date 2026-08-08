@@ -1120,11 +1120,15 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
 
 
 def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
+    # OpenRouter's models API reports per-token decimals
+    # (e.g. 0.0000032664), unlike OpenAI-compatible /models endpoints which
+    # report dollars per million tokens — declare the unit explicitly.
     return _pricing_entry_from_metadata(
         fetch_model_metadata(),
         route.model,
         source_url="https://openrouter.ai/docs/api/api-reference/models/get-models",
         pricing_version="openrouter-models-api",
+        pricing_units="per_token",
     )
 
 
@@ -1134,7 +1138,17 @@ def _pricing_entry_from_metadata(
     *,
     source_url: str,
     pricing_version: str,
+    pricing_units: Literal["per_token", "per_million"] = "per_million",
 ) -> Optional[PricingEntry]:
+    """Build a PricingEntry from a provider /models metadata map.
+
+    ``pricing_units`` declares the unit the source API reports:
+    - ``per_million`` — OpenAI-compatible ``/models`` endpoints (the default;
+      e.g. ``{"pricing": {"prompt": 3.2664}}`` means $3.2664 per million
+      input tokens). Values are used as-is.
+    - ``per_token`` — OpenRouter's models API, which reports per-token
+      decimals (e.g. ``0.0000032664``). Values are scaled to per-million.
+    """
     if model_id not in metadata:
         return None
     pricing = metadata[model_id].get("pricing") or {}
@@ -1155,8 +1169,8 @@ def _pricing_entry_from_metadata(
         return None
 
     def _per_token_to_per_million(value: Optional[Decimal]) -> Optional[Decimal]:
-        if value is None:
-            return None
+        if value is None or pricing_units != "per_token":
+            return value
         return value * _ONE_MILLION
 
     return PricingEntry(
@@ -1196,6 +1210,9 @@ def get_pricing_entry(
             route.model,
             source_url=f"{route.base_url.rstrip('/')}/models",
             pricing_version="openai-compatible-models-api",
+            # OpenAI-compatible /models endpoints report dollars per million
+            # tokens already (e.g. 3.2664 = $3.27/M) — no per-token scaling.
+            pricing_units="per_million",
         )
         if entry:
             return entry

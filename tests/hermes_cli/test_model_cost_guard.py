@@ -23,14 +23,16 @@ def test_no_warning_when_known_prices_are_at_threshold():
 
 
 def test_openai_gpt55_pro_warns_for_nous_portal_pricing(monkeypatch):
+    # OpenAI-compatible /models endpoints report dollars per million tokens
+    # (e.g. 25.0 = $25/M input); per-token decimals are OpenRouter-only.
     monkeypatch.setattr("agent.models_dev.get_model_info", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         "agent.usage_pricing.fetch_endpoint_model_metadata",
         lambda base_url, api_key="": {
             "openai/gpt-5.5-pro": {
                 "pricing": {
-                    "prompt": "0.000025",
-                    "completion": "0.000125",
+                    "prompt": "25.0",
+                    "completion": "125.0",
                 }
             }
         },

@@ -467,3 +467,41 @@ describe('StatusRule idle-since read-out', () => {
     expect(findComponentByName(element, 'IdleSince')).toBeNull()
   })
 })
+
+describe('StatusRule provider disambiguation', () => {
+  it('renders "provider · model" when the same model is offered by multiple providers', () => {
+    const element = StatusRule({
+      ...baseProps,
+      modelAmbiguous: true,
+      provider: 'deepseek'
+    })
+
+    expect(textContent(element)).toContain('deepseek · opus 4.8')
+  })
+
+  it('omits the provider prefix when the model is unambiguous', () => {
+    const element = StatusRule({
+      ...baseProps,
+      modelAmbiguous: false,
+      provider: 'deepseek'
+    })
+
+    const rendered = textContent(element)
+
+    expect(rendered).not.toContain('deepseek')
+    expect(rendered).toContain('opus 4.8')
+  })
+
+  it('omits the provider prefix when the provider label is empty', () => {
+    const element = StatusRule({
+      ...baseProps,
+      modelAmbiguous: true,
+      provider: ''
+    })
+
+    const rendered = textContent(element)
+
+    expect(rendered).not.toContain(' · ')
+    expect(rendered).toContain('opus 4.8')
+  })
+})

@@ -168,8 +168,10 @@ export interface SessionInfo {
   lazy?: boolean
   mcp_servers?: McpServerStatus[]
   model: string
+  model_ambiguous?: boolean
   profile_name?: string
   project?: null | ProjectInfo
+  provider?: string
   reasoning_effort?: string
   release_date?: string
   service_tier?: string

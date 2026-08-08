@@ -957,12 +957,18 @@ class AIAgent:
             and getattr(self, "platform", "") == "cli"
         )
 
-    def _emit_status(self, message: str) -> None:
-        """Emit a lifecycle status message to both CLI and gateway channels.
+    def _emit_status(self, message: str, kind: str = "lifecycle") -> None:
+        """Emit a status message to both CLI and gateway channels.
 
         CLI users see the message via ``_vprint(force=True)`` so it is always
         visible regardless of verbose/quiet mode.  Gateway consumers receive
-        it through ``status_callback("lifecycle", ...)``.
+        it through ``status_callback(kind, ...)``.
+
+        ``kind`` tags the message class so consumers get a deterministic,
+        non-text-matched signal.  The default ``lifecycle`` covers transient
+        turn chatter; durable state changes pass an explicit kind.  A
+        provider/model switch is a durable state change, so
+        ``_emit_pending_fallback_notice`` sends ``kind="model_switch"``.
 
         This helper never raises — exceptions are swallowed so it cannot
         interrupt the retry/fallback logic.
@@ -973,7 +979,7 @@ class AIAgent:
             pass
         if self.status_callback:
             try:
-                self.status_callback("lifecycle", message)
+                self.status_callback(kind, message)
             except Exception:
                 logger.debug("status_callback error in _emit_status", exc_info=True)
 
@@ -1157,7 +1163,7 @@ class AIAgent:
                 # Clear before emitting so a (swallowed) callback error can't
                 # leave the notice set for a stale re-emit on a later turn.
                 self._pending_fallback_notice = None
-                self._emit_status(notice)
+                self._emit_status(notice, kind="model_switch")
         except Exception:
             # Never break the conversation loop on a notice hiccup.
             pass

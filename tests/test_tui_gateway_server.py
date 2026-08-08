@@ -396,6 +396,77 @@ def test_compute_host_turn_end_updates_metadata_mirror(monkeypatch):
         server._sessions.pop("iso-sid", None)
 
 
+def test_session_info_model_ambiguous_true_when_fallback_offers_same_model():
+    """A fallback-chain provider offering the ACTIVE model name makes the
+    model label ambiguous: the TUI cannot tell which provider is serving."""
+    agent = types.SimpleNamespace(
+        model="deepseek-v4-flash",
+        provider="opencode-go",
+        _fallback_chain=[
+            {"provider": "deepseek", "model": "deepseek-v4-flash"},
+            {"provider": "openrouter", "model": "different-model"},
+        ],
+    )
+    session = _session(agent=agent)
+    info = server._session_info(agent, session)
+    assert info["model"] == "deepseek-v4-flash"
+    assert info["provider"] == "opencode-go"
+    assert info["model_ambiguous"] is True
+
+
+def test_session_info_model_ambiguous_false_when_only_primary_offers_model():
+    """Fallbacks offering different models do not make the active model
+    ambiguous."""
+    agent = types.SimpleNamespace(
+        model="deepseek-v4-flash",
+        provider="opencode-go",
+        _fallback_chain=[
+            {"provider": "deepseek", "model": "other-model"},
+        ],
+    )
+    session = _session(agent=agent)
+    info = server._session_info(agent, session)
+    assert info["model_ambiguous"] is False
+
+
+def test_session_info_model_ambiguous_false_without_agent():
+    """agent=None (host sessions, early bootstrap) must not crash and reports
+    no ambiguity."""
+    session = _session(agent=None)
+    info = server._session_info(None, session)
+    assert info["model_ambiguous"] is False
+
+
+def test_status_update_model_switch_reemits_session_info(monkeypatch):
+    """kind='model_switch' must re-emit session.info for the sid so the status
+    bar picks up the new provider/model mid-turn instead of waiting for the
+    end of the first fallback response."""
+    agent = types.SimpleNamespace(model="m1", provider="p1")
+    session = _session(agent=agent)
+    server._sessions["sid-model-switch"] = session
+    emitted = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload)),
+    )
+    try:
+        server._status_update("sid-model-switch", "model_switch", "🔄 switched")
+        assert (
+            "status.update",
+            "sid-model-switch",
+            {"kind": "model_switch", "text": "🔄 switched"},
+        ) in emitted
+        session_events = [e for e in emitted if e[0] == "session.info"]
+        assert len(session_events) == 1
+        assert session_events[0][1] == "sid-model-switch"
+        assert session_events[0][2]["model"] == "m1"
+        assert session_events[0][2]["provider"] == "p1"
+        assert session_events[0][2]["model_ambiguous"] is False
+    finally:
+        server._sessions.pop("sid-model-switch", None)
+
+
 def test_slash_exec_compress_flag_on_applies_host_control_mirror(monkeypatch):
     class _ExplodingWorker:
         def __init__(self, *args, **kwargs):

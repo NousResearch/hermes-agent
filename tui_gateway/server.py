@@ -1858,6 +1858,19 @@ def _status_update(sid: str, kind: str, text: str | None = None):
 
         if COMPACTION_STATUS_MARKER in body:
             out_kind = "compacting"
+    # A fallback switch (kind='model_switch') is a durable state change: the
+    # agent swapped model/provider in place mid-turn. Re-emit session.info so
+    # the status bar picks up the new provider/model immediately instead of
+    # waiting for the end of the first fallback response. Never break the
+    # status path on a re-emit hiccup.
+    if kind == "model_switch":
+        try:
+            session = _sessions.get(sid)
+            if session is not None:
+                agent = session.get("agent")
+                _emit("session.info", sid, _session_info(agent, session))
+        except Exception:
+            logger.debug("failed to re-emit session.info on model_switch", exc_info=True)
     _emit("status.update", sid, {"kind": out_kind, "text": body})
 
 
@@ -5178,10 +5191,44 @@ def _session_info(agent, session: dict | None = None) -> dict:
     pending_switch = (session or {}).get("pending_model_switch") or {}
     pending_model = str(pending_switch.get("display_model") or "").strip()
     pending_provider = str(pending_switch.get("display_provider") or "").strip()
+    # A model name served by more than one provider (the active provider plus
+    # any fallback-chain entry offering the same model) is ambiguous in the
+    # status bar: the user cannot tell which provider is actually serving it.
+    # Report a deterministic boolean (not text) so the TUI can render
+    # "provider · model" only when it adds information.
+    model_ambiguous = False
+    if agent is not None:
+        try:
+            active_model = str(
+                pending_model
+                or mirror.get("model", getattr(agent, "model", ""))
+                or ""
+            ).strip()
+            if active_model:
+                providers = {
+                    str(
+                        pending_provider
+                        or mirror.get("provider", getattr(agent, "provider", ""))
+                        or ""
+                    ).strip()
+                }
+                providers.discard("")
+                for entry in getattr(agent, "_fallback_chain", None) or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    if str(entry.get("model") or "").strip() != active_model:
+                        continue
+                    fb_provider = str(entry.get("provider") or "").strip()
+                    if fb_provider:
+                        providers.add(fb_provider)
+                model_ambiguous = len(providers) > 1
+        except Exception:
+            model_ambiguous = False
     info: dict = {
         "model": pending_model or mirror.get("model", getattr(agent, "model", "")),
         "provider": pending_provider
         or mirror.get("provider", getattr(agent, "provider", "")),
+        "model_ambiguous": model_ambiguous,
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",

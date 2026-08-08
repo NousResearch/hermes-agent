@@ -129,7 +129,7 @@ def test_pending_fallback_notice_emitted_once_on_success():
     though the noisy retry buffer is dropped."""
     agent = _make_bare_agent()
     emitted = []
-    agent._emit_status = lambda msg: emitted.append(msg)
+    agent._emit_status = lambda msg, kind="lifecycle": emitted.append(msg)
 
     # Simulate try_activate_fallback: buffer the noisy switch line AND record
     # the durable one-shot notice.
@@ -161,6 +161,25 @@ def test_pending_fallback_notice_noop_when_unset():
     # No _pending_fallback_notice attribute set at all.
     agent._emit_pending_fallback_notice()
     assert emitted == []
+
+
+def test_pending_fallback_notice_passes_model_switch_kind_to_status_callback():
+    """The one-shot fallback notice must reach status_callback with the
+    deterministic 'model_switch' kind, not the generic 'lifecycle', so
+    consumers (TUI gateway) can react without text-matching the notice."""
+    agent = _make_bare_agent()
+    seen = []
+    agent._vprint = lambda msg, force=False, **kw: None
+    agent.status_callback = lambda kind, msg=None: seen.append((kind, msg))
+
+    agent._pending_fallback_notice = "🔄 Switched to fallback model: m1 via p1 → m2 via p2"
+    agent._emit_pending_fallback_notice()
+
+    assert seen == [
+        ("model_switch", "🔄 Switched to fallback model: m1 via p1 → m2 via p2")
+    ]
+    # Notice is cleared so it cannot re-emit on a later turn.
+    assert agent._pending_fallback_notice is None
 
 
 def test_flush_discards_pending_fallback_notice():

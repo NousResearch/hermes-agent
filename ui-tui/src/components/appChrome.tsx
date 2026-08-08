@@ -472,10 +472,12 @@ export function StatusRule({
   status,
   statusColor,
   model,
+  modelAmbiguous,
   modelFast,
   modelReasoningEffort,
   indicatorStyle = 'kaomoji',
   notice,
+  provider,
   usage,
   bgCount,
   lastTurnEndedAt,
@@ -501,7 +503,14 @@ export function StatusRule({
       : ''
 
   const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
-  const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+
+  // When the same model is offered by more than one provider (primary +
+  // fallback chain), prefix the label so the user can tell which provider is
+  // serving it. Otherwise render the bare model label exactly as before.
+  const modelText =
+    modelAmbiguous && provider
+      ? `${provider} · ${modelLabel(model, modelReasoningEffort, modelFast)}`
+      : modelLabel(model, modelReasoningEffort, modelFast)
 
   // Battery read-out — the first (pinned) status-bar element when enabled.
   const showBattery = !!battery && battery.available && battery.percent != null
@@ -863,10 +872,12 @@ interface StatusRuleProps {
   cols: number
   cwdLabel: string
   model: string
+  modelAmbiguous?: boolean
   modelFast?: boolean
   modelReasoningEffort?: string
   indicatorStyle?: IndicatorStyle
   notice?: Notice | null
+  provider?: string
   sessionStartedAt?: null | number
   status: string
   statusColor: string

@@ -497,10 +497,12 @@ const StatusRulePane = memo(function StatusRulePane({
         lastTurnEndedAt={status.lastTurnEndedAt}
         liveSessionCount={ui.liveSessionCount}
         model={ui.info?.model ?? ''}
+        modelAmbiguous={ui.info?.model_ambiguous ?? false}
         modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
         modelReasoningEffort={ui.info?.reasoning_effort}
         notice={ui.notice}
         onSessionCountClick={() => patchOverlayState({ sessions: true })}
+        provider={ui.info?.provider ?? ''}
         sessionStartedAt={status.sessionStartedAt}
         status={ui.status}
         statusColor={status.statusColor}

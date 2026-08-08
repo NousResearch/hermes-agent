@@ -504,6 +504,7 @@ _PROVIDER_ALIASES = {
     "z.ai": "zai",
     "zhipu": "zai",
     "kimi": "kimi-coding",
+    "kimi-for-coding": "kimi-coding",
     "moonshot": "kimi-coding",
     "kimi-cn": "kimi-coding-cn",
     "moonshot-cn": "kimi-coding-cn",

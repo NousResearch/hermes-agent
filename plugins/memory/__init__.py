@@ -277,25 +277,11 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
         mod = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = mod
 
-        # Register submodules so relative imports work
-        # e.g., "from .store import MemoryStore" in holographic plugin
-        for sub_file in provider_dir.glob("*.py"):
-            if sub_file.name == "__init__.py":
-                continue
-            sub_name = sub_file.stem
-            full_sub_name = f"{module_name}.{sub_name}"
-            if full_sub_name not in sys.modules:
-                sub_spec = importlib.util.spec_from_file_location(
-                    full_sub_name, str(sub_file)
-                )
-                if sub_spec:
-                    sub_mod = importlib.util.module_from_spec(sub_spec)
-                    sys.modules[full_sub_name] = sub_mod
-                    try:
-                        sub_spec.loader.exec_module(sub_mod)
-                    except Exception as e:
-                        logger.debug("Failed to load submodule %s: %s", full_sub_name, e)
-
+        # Execute only the package entrypoint. Because the module is registered
+        # as a package with ``submodule_search_locations`` before execution,
+        # normal relative imports load only siblings requested by __init__.py.
+        # Eagerly executing every ``*.py`` here would also run unrelated build,
+        # test, and migration scripts during provider discovery.
         try:
             spec.loader.exec_module(mod)
         except Exception as e:

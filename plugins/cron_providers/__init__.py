@@ -270,28 +270,10 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["CronScheduler"]:  #
 
         mod = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = mod
-        loaded_submodules = []
 
-        # Register submodules so relative imports work
-        # e.g., "from ._nas_client import NasCronClient" in the chronos plugin
-        for sub_file in provider_dir.glob("*.py"):
-            if sub_file.name == "__init__.py":
-                continue
-            sub_name = sub_file.stem
-            full_sub_name = f"{module_name}.{sub_name}"
-            if full_sub_name not in sys.modules:
-                sub_spec = importlib.util.spec_from_file_location(
-                    full_sub_name, str(sub_file)
-                )
-                if sub_spec:
-                    sub_mod = importlib.util.module_from_spec(sub_spec)
-                    sys.modules[full_sub_name] = sub_mod
-                    try:
-                        sub_spec.loader.exec_module(sub_mod)
-                        loaded_submodules.append((sub_name, sub_mod))
-                    except Exception as e:
-                        logger.debug("Failed to load submodule %s: %s", full_sub_name, e)
-
+        # Execute only the package entrypoint. Standard relative imports work
+        # through the package search location above and load requested siblings
+        # without running arbitrary project scripts during discovery.
         try:
             spec.loader.exec_module(mod)
         except Exception as e:
@@ -306,8 +288,6 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["CronScheduler"]:  #
         parent_mod = sys.modules.get(parent_name)
         if parent_mod is not None:
             setattr(parent_mod, child_name, mod)
-        for sub_name, sub_mod in loaded_submodules:
-            setattr(mod, sub_name, sub_mod)
 
     # Try register(ctx) pattern first (how our plugins are written)
     if hasattr(mod, "register"):

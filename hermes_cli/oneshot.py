@@ -410,6 +410,7 @@ def _run_agent(
     )
 
     session_db = _create_session_db_for_oneshot()
+    ignore_rules = os.environ.get("HERMES_IGNORE_RULES") == "1"
     # The try spans agent construction (not just ``chat``) so the SQLite store
     # opened above is always closed — including when ``AIAgent(...)`` itself
     # raises on a provider/config error. The one-shot exit path hard-exits via
@@ -434,6 +435,8 @@ def _run_agent(
             session_db=session_db,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=_fb or None,
+            skip_context_files=ignore_rules,
+            skip_memory=ignore_rules,
             # Interactive callbacks are intentionally NOT wired beyond this
             # one.  In oneshot mode there's no user sitting at a terminal:
             #   - clarify  → returns a synthetic "pick a default" instruction

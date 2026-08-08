@@ -429,7 +429,9 @@ def load_cli_config() -> Dict[str, Any]:
 
     # --ignore-user-config: force-skip the user config.yaml (still honor project
     # config as a fallback so defaults stay sensible).
-    ignore_user_config = os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1"
+    from hermes_cli.config import should_ignore_user_config
+
+    ignore_user_config = should_ignore_user_config()
 
     # Use user config if it exists, otherwise project config
     if user_config_path.exists() and not ignore_user_config:

@@ -42,6 +42,11 @@ logger = logging.getLogger(__name__)
 _CONFIG_PARSE_WARNED: set = set()
 
 
+def should_ignore_user_config() -> bool:
+    """Return True when user-level config.yaml should be skipped."""
+    return os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1"
+
+
 def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
     """Preserve a corrupted ``config.yaml`` by copying it to a timestamped ``.bak``.
 
@@ -2943,6 +2948,9 @@ def read_raw_config() -> Dict[str, Any]:
     mutate the result before passing to ``save_config()``.
     """
     with _CONFIG_LOCK:
+        if should_ignore_user_config():
+            return {}
+
         try:
             config_path = get_config_path()
             st = config_path.stat()
@@ -3309,12 +3317,16 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         ensure_hermes_home()
         config_path = get_config_path()
         path_key = str(config_path)
+        ignore_user_config = should_ignore_user_config()
 
-        try:
-            st = config_path.stat()
-            user_sig: Optional[Tuple[int, int]] = (st.st_mtime_ns, st.st_size)
-        except FileNotFoundError:
+        if ignore_user_config:
             user_sig = None
+        else:
+            try:
+                st = config_path.stat()
+                user_sig: Optional[Tuple[int, int]] = (st.st_mtime_ns, st.st_size)
+            except FileNotFoundError:
+                user_sig = None
 
         # Managed scope: fold the managed config file's (mtime, size) into the
         # cache signature so editing /etc/hermes/config.yaml invalidates the

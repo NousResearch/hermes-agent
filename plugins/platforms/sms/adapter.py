@@ -69,6 +69,14 @@ DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 _TWILIO_WEBHOOK_MAX_BODY_BYTES = 65_536  # 64 KiB — Twilio payloads are small
 
 
+def _coerce_int(value: object, *, default: int) -> int:
+    """Parse config ints; malformed values must not crash adapter init."""
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
 def check_sms_requirements() -> bool:
     """Check if SMS adapter dependencies are available."""
     try:
@@ -93,8 +101,9 @@ class SmsAdapter(BasePlatformAdapter):
         self._account_sid: str = _get_scoped_secret("TWILIO_ACCOUNT_SID", "")
         self._auth_token: str = _get_scoped_secret("TWILIO_AUTH_TOKEN", "")
         self._from_number: str = os.getenv("TWILIO_PHONE_NUMBER", "")
-        self._webhook_port: int = int(
-            os.getenv("SMS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))
+        self._webhook_port: int = _coerce_int(
+            os.getenv("SMS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT)),
+            default=DEFAULT_WEBHOOK_PORT,
         )
         self._webhook_host: str = os.getenv("SMS_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
         self._webhook_url: str = os.getenv("SMS_WEBHOOK_URL", "").strip()

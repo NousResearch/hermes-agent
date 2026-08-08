@@ -11385,7 +11385,11 @@ def _projects_method(name: str):
     """
 
     def decorator(fn):
+        # Profile-scoped like session.*: in app-global remote mode the desktop
+        # sends ``profile`` so the ContextVar override makes connect_closing()
+        # resolve THAT profile's projects.db instead of the launch profile's.
         @method(name)
+        @_profile_scoped
         def handler(rid, params: dict) -> dict:
             try:
                 from hermes_cli import projects_db as pdb

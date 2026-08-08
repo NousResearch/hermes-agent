@@ -379,6 +379,18 @@ export async function followActiveSessionCwd(cwd: string): Promise<void> {
   }
 }
 
+// Projects are per-profile (each profile owns a projects.db), and in app-global
+// remote mode ONE backend serves every profile — so, exactly like session.*,
+// every projects RPC must carry the profile the sidebar is showing or the
+// backend answers from its launch profile. Omitted for 'default' (the backend
+// treats a missing profile as its launch profile). Callers race-guard against
+// profile switches, so tagging with the active profile at send time is correct.
+function activeProfileParam(): { profile?: string } {
+  const profile = $activeGatewayProfile.get() || 'default'
+
+  return profile !== 'default' ? { profile } : {}
+}
+
 // Issue a request on whichever gateway is currently active, reconnecting once
 // if the socket dropped. Projects are per-profile, so they intentionally follow
 // the active gateway just like the session list does.
@@ -393,7 +405,7 @@ async function gatewayRequest<T>(method: string, params: Record<string, unknown>
     throw new Error('Hermes gateway is not connected')
   }
 
-  return gateway.request<T>(method, params)
+  return gateway.request<T>(method, { ...activeProfileParam(), ...params })
 }
 
 async function gatewayRequestOn<T>(
@@ -401,7 +413,7 @@ async function gatewayRequestOn<T>(
   method: string,
   params: Record<string, unknown> = {}
 ): Promise<T> {
-  return gateway.request<T>(method, params)
+  return gateway.request<T>(method, { ...activeProfileParam(), ...params })
 }
 
 interface ActiveProjectsContext {

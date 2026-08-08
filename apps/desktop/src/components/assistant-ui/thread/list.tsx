@@ -431,8 +431,17 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useEffect(() => onThreadEditOpen(beginEditHold), [beginEditHold])
   useEffect(() => onThreadEditClose(endEditHold), [endEditHold])
   useEffect(() => () => endEditHold(), [endEditHold])
-  // New run → snap to the latest turn.
-  useAuiEvent('thread.runStart', () => void scrollToBottom())
+  // New run → snap to the latest turn, but ONLY if the user is already at (or
+  // near) the bottom. A run start while the user is reading earlier content must
+  // not yank the viewport away from them mid-read (regression: unconditional
+  // scrollToBottom on every runStart interrupted reading of long answers).
+  useAuiEvent('thread.runStart', () => {
+    const el = scrollRef.current
+
+    if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 64) {
+      scrollToBottom()
+    }
+  })
 
   // Reset the cap and pin to bottom on mount + every session switch (messages
   // swap in place on a long-lived runtime, so sessionKey is the only signal).

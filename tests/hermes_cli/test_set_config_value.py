@@ -723,3 +723,85 @@ class TestMalformedYAMLConfigPreservation:
         assert "Cannot parse" in captured.out or "Cannot parse" in captured.err
         raw = _read_config(_isolated_hermes_home)
         assert raw == self.BROKEN_CONFIG
+
+
+class TestUnsetPlatformToolsetEntries:
+    """Regression tests for string-list removal via `config unset`."""
+
+    def test_unset_removes_platform_toolset_list_item_by_value(self, _isolated_hermes_home):
+        import yaml
+
+        config_path = _isolated_hermes_home / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 33,
+                    "platform_toolsets": {
+                        "cli": ["browser", "messaging", "terminal"],
+                    },
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        from hermes_cli.config import unset_config_value
+
+        unset_config_value("platform_toolsets.cli.messaging")
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert saved["platform_toolsets"]["cli"] == ["browser", "terminal"]
+
+    def test_unset_last_platform_toolset_item_restores_default_resolution(self, _isolated_hermes_home):
+        import yaml
+
+        config_path = _isolated_hermes_home / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 33,
+                    "platform_toolsets": {
+                        "cli": ["browser"],
+                    },
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        from hermes_cli.config import unset_config_value
+
+        unset_config_value("platform_toolsets.cli.browser")
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert saved == {"_config_version": 33}
+
+    def test_unset_last_item_preserves_unrelated_explicit_empty_override(self, _isolated_hermes_home):
+        import yaml
+
+        config_path = _isolated_hermes_home / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 33,
+                    "platform_toolsets": {
+                        "cli": ["browser"],
+                        "discord": [],
+                    },
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        from hermes_cli.config import unset_config_value
+
+        unset_config_value("platform_toolsets.cli.browser")
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert saved == {
+            "_config_version": 33,
+            "platform_toolsets": {
+                "discord": [],
+            },
+        }

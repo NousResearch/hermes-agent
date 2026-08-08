@@ -1358,6 +1358,83 @@ class TestCodexAppServerAutoConfig:
             assert raw["compression"]["codex_app_server_auto"] == "hermes"
 
 
+class TestPlatformToolsetMigrationCleanup:
+    """Migration should prune stale toolset names that current Hermes rejects."""
+
+    def test_migrate_config_removes_invalid_platform_toolsets_entries(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": DEFAULT_CONFIG["_config_version"],
+                    "platform_toolsets": {
+                        "cli": ["browser", "messaging", "terminal"],
+                    },
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            results = migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["platform_toolsets"]["cli"] == ["browser", "terminal"]
+        assert any("unknown toolset 'messaging'" in warning for warning in results["warnings"])
+
+    def test_migrate_config_drops_empty_platform_override_after_cleanup(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": DEFAULT_CONFIG["_config_version"],
+                    "platform_toolsets": {
+                        "cli": ["messaging"],
+                    },
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            results = migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert "platform_toolsets" not in raw
+        assert any("unknown toolset 'messaging'" in warning for warning in results["warnings"])
+
+    def test_migrate_config_preserves_configured_mcp_toolsets(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": DEFAULT_CONFIG["_config_version"],
+                    "mcp_servers": {
+                        "github": {
+                            "command": "npx",
+                            "args": ["-y", "@modelcontextprotocol/server-github"],
+                        },
+                    },
+                    "platform_toolsets": {
+                        "cli": ["mcp-github", "messaging"],
+                    },
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            results = migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["platform_toolsets"]["cli"] == ["mcp-github"]
+        assert any("unknown toolset 'messaging'" in warning for warning in results["warnings"])
+        assert not any("unknown toolset 'mcp-github'" in warning for warning in results["warnings"])
+
+
 class TestIsProviderEnabled:
     """``is_provider_enabled`` gates ``providers.<name>`` blocks for the
     model picker, ``/models`` listings and the runtime resolver. Default

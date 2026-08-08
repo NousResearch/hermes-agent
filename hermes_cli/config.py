@@ -1116,8 +1116,14 @@ def _unset_nested(config, dotted_key: str) -> bool:
         try:
             current.pop(int(last))
             removed = True
-        except (TypeError, ValueError, IndexError):
+        except IndexError:
             return False
+        except (TypeError, ValueError):
+            try:
+                current.remove(last)
+                removed = True
+            except ValueError:
+                return False
     elif isinstance(current, dict):
         if last not in current:
             return False
@@ -1147,6 +1153,24 @@ def _unset_nested(config, dotted_key: str) -> bool:
         break
 
     return removed
+
+
+def _drop_empty_platform_toolset_override(config: Dict[str, Any], platform: str) -> bool:
+    """Remove one empty platform_toolsets override so defaults apply again."""
+    platform_toolsets = config.get("platform_toolsets")
+    if not isinstance(platform_toolsets, dict):
+        return False
+
+    if platform_toolsets.get(platform) != []:
+        return False
+
+    cleaned = dict(platform_toolsets)
+    cleaned.pop(platform, None)
+    if cleaned:
+        config["platform_toolsets"] = cleaned
+    else:
+        config.pop("platform_toolsets", None)
+    return True
 
 
 def _is_env_config_key(key: str) -> bool:
@@ -2256,10 +2280,35 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     # error or warning. Surface it loudly instead. See #38798.
     try:
         from toolsets import validate_toolset
-        from hermes_cli.toolset_validation import validate_platform_toolsets
+        from hermes_cli.toolset_validation import (
+            clean_platform_toolsets,
+            validate_platform_toolsets,
+        )
+        configured_mcp_toolsets = {
+            f"mcp-{name}"
+            for name in (config.get("mcp_servers") or {})
+            if isinstance(name, str) and name
+        }
 
-        ts_warnings = validate_platform_toolsets(
-            read_raw_config().get("platform_toolsets"), validate_toolset
+        cleaned_toolsets, ts_warnings, ts_changed = clean_platform_toolsets(
+            config.get("platform_toolsets"),
+            validate_toolset,
+            extra_valid_names=configured_mcp_toolsets,
+            removable_names={"messaging"},
+        )
+        if ts_changed:
+            if cleaned_toolsets:
+                config["platform_toolsets"] = cleaned_toolsets
+            else:
+                config.pop("platform_toolsets", None)
+            _persist_migration(config)
+
+        ts_warnings.extend(
+            validate_platform_toolsets(
+                config.get("platform_toolsets"),
+                validate_toolset,
+                extra_valid_names=configured_mcp_toolsets,
+            )
         )
         for w in ts_warnings:
             results["warnings"].append(w)
@@ -5141,6 +5190,11 @@ def unset_config_value(key: str):
     if not removed:
         print(f"Config key not set: {key}", file=sys.stderr)
         sys.exit(1)
+
+    if key.startswith("platform_toolsets."):
+        parts = key.split(".", 2)
+        if len(parts) >= 3:
+            _drop_empty_platform_toolset_override(user_config, parts[1])
 
     ensure_hermes_home()
     from utils import atomic_yaml_write

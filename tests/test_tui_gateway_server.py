@@ -8935,6 +8935,39 @@ def test_session_info_includes_session_title(monkeypatch):
     assert info["title"] == "Dashboard title"
 
 
+def test_session_info_shows_custom_provider_name_not_bare_custom(monkeypatch):
+    """Custom providers are normalized to bare "custom" at runtime for routing,
+    but session.info must report the original "custom:<name>" identity so the
+    desktop model indicator doesn't jump from custom:<name>:model to custom:model
+    on the first message of a new session."""
+    agent = types.SimpleNamespace(
+        tools=[],
+        model="glm-5.2",
+        provider="custom",
+        requested_provider="custom:volcengine-agent-plan",
+    )
+    session = {"session_key": "", "history": []}
+
+    info = server._session_info(agent, session)
+    assert info["provider"] == "custom:volcengine-agent-plan"
+
+
+def test_session_info_keeps_bare_custom_when_no_requested_provider(monkeypatch):
+    """When requested_provider is also bare "custom" (e.g. a legacy session
+    row), session.info should still report "custom" rather than fabricating
+    a name."""
+    agent = types.SimpleNamespace(
+        tools=[],
+        model="test-model",
+        provider="custom",
+        requested_provider="custom",
+    )
+    session = {"session_key": "", "history": []}
+
+    info = server._session_info(agent, session)
+    assert info["provider"] == "custom"
+
+
 def test_session_info_reports_pending_model_switch(monkeypatch):
     """A model queued mid-turn shows as the session's model in session.info, so
     the end-of-turn settle doesn't blip the UI back to the still-live old model

@@ -5157,10 +5157,27 @@ def _session_info(agent, session: dict | None = None) -> dict:
     pending_switch = (session or {}).get("pending_model_switch") or {}
     pending_model = str(pending_switch.get("display_model") or "").strip()
     pending_provider = str(pending_switch.get("display_provider") or "").strip()
+
+    # Custom providers are normalized to bare "custom" at runtime for routing,
+    # but the display name should retain the "custom:<name>" identity so the
+    # user can distinguish which custom endpoint is active.  Prefer the
+    # requested_provider (the original configured form) when the runtime
+    # provider has been canonicalized to "custom".
+    runtime_provider = getattr(agent, "provider", "")
+    runtime_requested = getattr(agent, "requested_provider", "") or ""
+    if (
+        not pending_provider
+        and runtime_provider == "custom"
+        and runtime_requested.startswith("custom:")
+    ):
+        display_provider = runtime_requested
+    else:
+        display_provider = runtime_provider
+
     info: dict = {
         "model": pending_model or mirror.get("model", getattr(agent, "model", "")),
         "provider": pending_provider
-        or mirror.get("provider", getattr(agent, "provider", "")),
+        or mirror.get("provider", display_provider),
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",
@@ -6538,6 +6555,7 @@ def _make_agent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 500),
         provider=runtime.get("provider"),
+        requested_provider=runtime.get("requested_provider"),
         base_url=runtime.get("base_url"),
         api_key=runtime.get("api_key"),
         api_mode=runtime.get("api_mode"),

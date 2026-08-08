@@ -7187,6 +7187,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
         runtime = {
             "provider": getattr(agent, "provider", None),
+            "requested_provider": getattr(agent, "requested_provider", None),
             "base_url": getattr(agent, "base_url", None),
             "api_mode": getattr(agent, "api_mode", None),
             "fallback_active": bool(getattr(agent, "_fallback_activated", False)),
@@ -18683,7 +18684,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Resolve runtime credentials for probing
         try:
             runtime = _resolve_runtime_agent_kwargs()
-            provider = runtime.get("provider") or provider
+            runtime_provider = runtime.get("provider") or ""
+            # Custom providers are normalized to bare "custom" at runtime
+            # (the canonical form is "custom:<name>").  For display, prefer
+            # the original configured provider ("custom:<name>") so the user
+            # can distinguish which custom endpoint is active.
+            if runtime_provider == "custom":
+                runtime_requested = runtime.get("requested_provider") or ""
+                if runtime_requested and runtime_requested.startswith("custom:"):
+                    provider = runtime_requested
+                elif provider and provider.startswith("custom:"):
+                    pass  # keep the config value
+                else:
+                    provider = runtime_provider or provider
+            else:
+                provider = runtime_provider or provider
             base_url = runtime.get("base_url") or base_url
             api_key = runtime.get("api_key")
         except Exception:

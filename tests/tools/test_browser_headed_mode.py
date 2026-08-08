@@ -43,6 +43,29 @@ class TestIsHeadedMode:
         with patch("hermes_cli.config.read_raw_config", return_value=cfg):
             assert _is_headed_mode() is True
 
+    @pytest.mark.parametrize("raw", ["on", "ON", "yes", "1", " true "])
+    def test_config_accepts_truthy_aliases(self, raw):
+        from tools.browser_tool import _is_headed_mode
+        cfg = {"browser": {"headed": raw}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _is_headed_mode() is True
+
+    @pytest.mark.parametrize("raw", ["off", "false", "0", "no"])
+    def test_config_rejects_falsy_aliases(self, raw):
+        from tools.browser_tool import _is_headed_mode
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AGENT_BROWSER_HEADED", None)
+            cfg = {"browser": {"headed": raw}}
+            with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+                assert _is_headed_mode() is False
+
+    @pytest.mark.parametrize("raw", ["on", "1", "yes", "TRUE"])
+    def test_env_accepts_truthy_aliases(self, raw):
+        from tools.browser_tool import _is_headed_mode
+        with patch("hermes_cli.config.read_raw_config", return_value={}):
+            with patch.dict(os.environ, {"AGENT_BROWSER_HEADED": raw}):
+                assert _is_headed_mode() is True
+
 
     def test_caching(self):
         from tools.browser_tool import _is_headed_mode

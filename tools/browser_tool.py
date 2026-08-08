@@ -977,13 +977,15 @@ def _is_headed_mode() -> bool:
         cfg = read_raw_config()
         val = cfg.get("browser", {}).get("headed")
         if val is not None:
-            _cached_headed_mode = str(val).strip().lower() in ("true", "1", "yes")
+            # Shared truthy contract (1/true/yes/on) — "on" is common in
+            # config.yaml / docs and was previously treated as headless.
+            _cached_headed_mode = is_truthy_value(val)
     except Exception as e:
         logger.debug("Could not read browser.headed from config: %s", e)
 
     if not _cached_headed_mode:
         env_val = os.environ.get("AGENT_BROWSER_HEADED", "").strip()
-        if env_val and env_val.lower() in ("true", "1", "yes"):
+        if env_val and is_truthy_value(env_val):
             _cached_headed_mode = True
 
     return _cached_headed_mode

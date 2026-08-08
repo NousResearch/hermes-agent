@@ -22,6 +22,21 @@ def test_final_assistant_content_uses_markdown_renderable():
     assert "two" in output
 
 
+def test_final_assistant_content_uses_requested_code_theme():
+    renderable = _render_final_assistant_content(
+        "```python\nprint('hi')\n```",
+        code_theme="friendly",
+    )
+
+    assert isinstance(renderable, Markdown)
+    assert renderable.code_theme == "friendly"
+
+
+def test_final_assistant_content_preserves_windows_dot_segments():
+    path = r"C:\repo\.ai\settings.yaml"
+    renderable = _render_final_assistant_content(path)
+
+    assert path in _render_to_text(renderable)
 
 
 def test_final_assistant_content_keeps_non_path_markdown_escapes():

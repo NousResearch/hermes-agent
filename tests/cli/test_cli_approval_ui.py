@@ -191,6 +191,8 @@ class TestCliApprovalUi:
         prompt_toolkit.
         """
         cli = _make_background_cli_stub()
+        cli.final_response_markdown = "render"
+        cli._pygments_theme = "friendly"
         seen = {}
 
         class FakeAgent:
@@ -215,6 +217,11 @@ class TestCliApprovalUi:
 
         with patch.object(cli_module, "AIAgent", FakeAgent), \
              patch.object(cli_module, "_cprint"), \
+             patch.object(
+                 cli_module,
+                 "_render_final_assistant_content",
+                 return_value="rendered",
+             ) as render_final, \
              patch.object(cli_module, "ChatConsole") as chat_console:
             chat_console.return_value.print = MagicMock()
             cli._handle_background_command("/btw check weather")
@@ -229,6 +236,11 @@ class TestCliApprovalUi:
         assert seen["approval"].__func__ is HermesCLI._approval_callback
         assert seen["sudo"].__self__ is cli
         assert seen["sudo"].__func__ is HermesCLI._sudo_password_callback
+        render_final.assert_called_once_with(
+            "done",
+            mode="render",
+            code_theme="friendly",
+        )
         assert not cli._background_tasks
 
 

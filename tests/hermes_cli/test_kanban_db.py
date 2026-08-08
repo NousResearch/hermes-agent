@@ -16,6 +16,7 @@ import pytest
 
 import hermes_state
 from hermes_cli import kanban_db as kb
+from hermes_cli.sqlite_safe_read import file_length_matches_header
 
 
 @pytest.fixture
@@ -1583,3 +1584,51 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# Post-commit file-length invariant (torn-extend detector)
+# ---------------------------------------------------------------------------
+
+
+def test_write_txn_tolerates_wal_lagging_the_main_file(kanban_home):
+    """A committed page still sitting in the -wal is not a torn extend.
+
+    ``_check_file_length_invariant`` runs *after* COMMIT, so a false positive
+    here raises ``sqlite3.DatabaseError`` for a transaction that is already
+    durable -- and anything retrying on ``DatabaseError`` writes it twice.
+    Under WAL the main file lags its page count by design until a checkpoint,
+    which is the normal state of a busy board, so the invariant must not fire.
+
+    Reported from two platforms on #53819 (ext4/NVMe and APFS/NVMe), always
+    off by exactly one page with ``integrity_check`` clean. The WAL exemption
+    in ``_check_file_length_invariant`` is what prevents it; this locks it in.
+    """
+    conn = kb.connect()
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0].lower()
+        if mode != "wal":
+            pytest.skip(
+                f"runtime keeps journal_mode={mode} (WAL is withheld on SQLite "
+                f"{sqlite3.sqlite_version}); this false positive is WAL-only"
+            )
+        # Stop the -wal draining, so the main file stays behind its page count.
+        conn.execute("PRAGMA wal_autocheckpoint=0")
+
+        with kb.write_txn(conn) as c:
+            c.executemany(
+                "INSERT INTO task_events (task_id, kind, payload, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                [("t_lag", "heartbeat", "x" * 2000, 0) for _ in range(400)],
+            )
+
+        # Guard the guard: if the write stops producing the lag, this test
+        # would keep passing while covering nothing.
+        assert file_length_matches_header(conn) is False, (
+            "expected the main file to lag its page count under WAL -- "
+            "without that lag this test no longer covers the false positive"
+        )
+        assert conn.execute("SELECT COUNT(*) FROM task_events").fetchone()[0] == 400
+    finally:
+        conn.close()

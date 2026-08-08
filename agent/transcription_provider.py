@@ -8,14 +8,16 @@ register instances via
 (selected via ``stt.provider`` in ``config.yaml``) services every
 :func:`tools.transcription_tools.transcribe_audio` call **when the
 configured name is neither a built-in (``local``, ``local_command``,
-``groq``, ``openai``, ``mistral``, ``xai``) nor disabled**.
+``groq``, ``openai``, ``mistral``, ``xai``, ``elevenlabs``,
+``deepinfra``) nor disabled**.
 
 Two coexisting STT extension surfaces — in resolution order:
 
 1. **Built-in providers** (``BUILTIN_STT_PROVIDERS`` in
    :mod:`tools.transcription_tools`) — native Python implementations
-   for the 6 backends shipped today (faster-whisper, local_command,
-   Groq, OpenAI, Mistral, xAI). **Always win** — plugins cannot
+   for the 8 backends shipped today (faster-whisper, local_command,
+   Groq, OpenAI, Mistral, xAI, ElevenLabs, DeepInfra). **Always win**
+   — plugins cannot
    shadow them. The single-env-var shell escape hatch
    ``HERMES_LOCAL_STT_COMMAND`` is preserved via the built-in
    ``local_command`` path.
@@ -74,7 +76,8 @@ class TranscriptionProvider(abc.ABC):
         Lowercase, no spaces. Examples: ``openrouter``, ``sensaudio``,
         ``gemini``, ``deepgram``. Names that collide with a built-in STT
         provider (``local``, ``local_command``, ``groq``, ``openai``,
-        ``mistral``, ``xai``) are rejected at registration time.
+        ``mistral``, ``xai``, ``elevenlabs``, ``deepinfra``) are rejected
+        at registration time.
         """
 
     @property

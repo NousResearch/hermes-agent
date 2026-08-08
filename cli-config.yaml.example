@@ -1226,6 +1226,14 @@ stt:
   #   # by the `stt` surface tag — leave `model` blank to take the first
   #   # live result. Pin only when you need a specific Whisper variant.
   #   model: ""
+  # Custom command providers can normalize browser WebM/Opus and other input
+  # formats to 16 kHz mono PCM WAV before substituting {input_path}. This is
+  # opt-in so CLIs that already accept arbitrary containers remain unchanged.
+  # providers:
+  #   custom-asr:
+  #     type: "command"
+  #     command: "custom-asr --input {input_path} --output {output_path}"
+  #     normalize_audio: true  # requires ffmpeg
 
 # Text-to-speech. Only the deepinfra block is documented here — the
 # remaining providers (edge, openai, xai, minimax, mistral, gemini,

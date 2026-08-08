@@ -240,6 +240,12 @@ _STT_M4A_ENCODE_ARGS = (
     "-c:a", "aac", "-b:a", "32k", "-movflags", "+faststart",
 )
 
+# Provider-neutral input profile for command STT backends that require a
+# predictable container and sample format (for example Tencent 16k_zh).
+_COMMAND_STT_WAV_ENCODE_ARGS = (
+    "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
+)
+
 
 def _run_ffmpeg_stt_encode(
     ffmpeg: str, input_path: str, output_path: str, *, audio_filter: Optional[str] = None
@@ -257,6 +263,32 @@ def _run_ffmpeg_stt_encode(
         command, check=True, capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=120,
         stdin=subprocess.DEVNULL, creationflags=windows_hide_flags(),
+    )
+
+
+def _run_ffmpeg_command_stt_normalize(
+    ffmpeg: str,
+    input_path: str,
+    output_path: str,
+) -> None:
+    """Normalize command-provider input to 16 kHz mono PCM WAV."""
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-i",
+            input_path,
+            *_COMMAND_STT_WAV_ENCODE_ARGS,
+            output_path,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+        stdin=subprocess.DEVNULL,
+        creationflags=windows_hide_flags(),
     )
 
 
@@ -533,6 +565,37 @@ def _get_command_stt_output_format(config: Dict[str, Any]) -> str:
     )
     fmt = str(raw).lower().strip().lstrip(".")
     return fmt if fmt in COMMAND_STT_OUTPUT_FORMATS else DEFAULT_COMMAND_STT_OUTPUT_FORMAT
+
+
+def _normalize_command_stt_input(
+    file_path: Path,
+    work_dir: Path,
+) -> tuple[Optional[Path], Optional[str]]:
+    """Return a normalized PCM WAV path or an actionable conversion error."""
+    ffmpeg = _find_ffmpeg_binary()
+    if not ffmpeg:
+        return None, (
+            "input normalization requires ffmpeg, but ffmpeg was not found"
+        )
+
+    normalized_path = work_dir / f"{file_path.stem or 'audio'}-stt.wav"
+    try:
+        _run_ffmpeg_command_stt_normalize(
+            ffmpeg,
+            str(file_path),
+            str(normalized_path),
+        )
+    except subprocess.TimeoutExpired:
+        return None, "input normalization timed out after 120s"
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "no ffmpeg output").strip()
+        return None, f"input normalization failed: {detail}"
+    except OSError as exc:
+        return None, f"input normalization failed: {exc}"
+
+    if not normalized_path.is_file() or normalized_path.stat().st_size == 0:
+        return None, "input normalization failed: ffmpeg produced no audio"
+    return normalized_path, None
 
 
 def _shell_quote_context_stt(command_template: str, position: int) -> Optional[str]:
@@ -883,7 +946,7 @@ def _transcribe_command_stt(
 
     | Placeholder       | Substituted with                                          |
     |-------------------|-----------------------------------------------------------|
-    | ``{input_path}``  | absolute path to the audio file (original location)       |
+    | ``{input_path}``  | absolute path to the original or normalized audio file    |
     | ``{output_path}`` | absolute path the provider should write its transcript to |
     | ``{output_dir}``  | parent dir of ``{output_path}``                           |
     | ``{format}``      | configured output format (``txt`` / ``json`` / ``srt`` / ``vtt``) |
@@ -925,9 +988,27 @@ def _transcribe_command_stt(
 
     try:
         with tempfile.TemporaryDirectory(prefix=f"hermes-cmd-stt-{provider_name}-") as tmpdir:
+            command_audio = audio.resolve()
+            if is_truthy_value(config.get("normalize_audio"), default=False):
+                normalized_audio, normalize_error = _normalize_command_stt_input(
+                    command_audio,
+                    Path(tmpdir),
+                )
+                if normalize_error or normalized_audio is None:
+                    return {
+                        "success": False,
+                        "transcript": "",
+                        "provider": provider_name,
+                        "error": (
+                            f"STT command provider '{provider_name}' "
+                            f"{normalize_error or 'input normalization produced no path'}"
+                        ),
+                    }
+                command_audio = normalized_audio
+
             output_path = Path(tmpdir) / f"transcript.{output_format}"
             placeholders = {
-                "input_path": str(audio.resolve()),
+                "input_path": str(command_audio),
                 "output_path": str(output_path),
                 "output_dir": str(output_path.parent),
                 "format": output_format,

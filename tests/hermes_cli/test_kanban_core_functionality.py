@@ -29,6 +29,7 @@ from hermes_cli.kanban import run_slash
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
@@ -56,25 +57,9 @@ def kanban_home(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-
 # ---------------------------------------------------------------------------
 # Spawn-failure circuit breaker
 # ---------------------------------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -82,13 +67,9 @@ def kanban_home(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-
-
-
 # ---------------------------------------------------------------------------
 # Daemon loop
 # ---------------------------------------------------------------------------
-
 
 
 # ---------------------------------------------------------------------------
@@ -96,19 +77,246 @@ def kanban_home(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_task_age_treats_zero_timestamp_as_real_epoch(kanban_home, monkeypatch):
+    monkeypatch.setattr(kb.time, "time", lambda: 100)
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="epoch task")
+        conn.execute("UPDATE tasks SET created_at = 0 WHERE id = ?", (task_id,))
+        conn.commit()
+        task = kb.get_task(conn, task_id)
 
+    assert task is not None
+    assert kb.task_age(task)["created_age_seconds"] == 100
+
+
+@pytest.mark.parametrize("parents", [0, False, "", {}, [""], [False], ["p", "p"]])
+def test_create_task_rejects_malformed_parent_values(kanban_home, parents):
+    with kb.connect() as conn:
+        before = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        with pytest.raises(ValueError, match="parents"):
+            kb.create_task(conn, title="Strict parents", parents=parents)
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == before
+
+
+def test_claim_review_task_rechecks_dependency_gates(kanban_home):
+    with kb.connect() as conn:
+        verifier = kb.create_task(conn, title="Verifier")
+        synth = kb.create_task(
+            conn,
+            title="Synth",
+            parents=[verifier],
+            parent_gates={verifier: "metadata_gate_pass"},
+        )
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (synth,))
+        conn.commit()
+
+        assert kb.claim_review_task(conn, synth) is None
+
+        assert kb.claim_task(conn, verifier) is not None
+        assert kb.complete_task(
+            conn, verifier, summary="verified", metadata={"gate": "pass"}
+        )
+        conn.execute(
+            "UPDATE tasks SET status = 'review', claim_lock = NULL WHERE id = ?",
+            (synth,),
+        )
+        conn.commit()
+
+        assert kb.claim_review_task(conn, synth) is not None
+
+        unknown = kb.create_task(conn, title="Unknown gate", parents=[verifier])
+        conn.execute(
+            "UPDATE task_links SET gate_kind = 'unknown' "
+            "WHERE parent_id = ? AND child_id = ?",
+            (verifier, unknown),
+        )
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (unknown,))
+        conn.commit()
+
+        assert kb.claim_review_task(conn, unknown) is None
+
+
+@pytest.mark.parametrize("gate_kind", ["metadata_gate_pass", "unknown_gate"])
+def test_manual_promotion_rechecks_dependency_gates(kanban_home, gate_kind):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="Verifier")
+        child = kb.create_task(conn, title="Synth", parents=[parent])
+        kb.complete_task(conn, parent, summary="failed gate", metadata={"gate": "fail"})
+        conn.execute(
+            "UPDATE task_links SET gate_kind = ? WHERE parent_id = ? AND child_id = ?",
+            (gate_kind, parent, child),
+        )
+        conn.execute("UPDATE tasks SET status = 'todo' WHERE id = ?", (child,))
+        conn.commit()
+
+        promoted, reason = kb.promote_task(conn, child, actor="test", dry_run=True)
+        assert promoted is False
+        assert parent in (reason or "")
+
+
+def test_manual_promotion_gate_check_occurs_inside_write_transaction(
+    kanban_home, monkeypatch
+):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="Verifier")
+        child = kb.create_task(conn, title="Synth", parents=[parent])
+        kb.complete_task(conn, parent, summary="passed", metadata={"gate": "pass"})
+        conn.execute(
+            "UPDATE task_links SET gate_kind = 'metadata_gate_pass' "
+            "WHERE parent_id = ? AND child_id = ?",
+            (parent, child),
+        )
+        conn.execute("UPDATE tasks SET status = 'todo' WHERE id = ?", (child,))
+        conn.commit()
+        original = kb._parent_satisfies_dependency_gate
+
+        def assert_in_transaction(*args, **kwargs):
+            assert conn.in_transaction
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(
+            kb, "_parent_satisfies_dependency_gate", assert_in_transaction
+        )
+        promoted, reason = kb.promote_task(conn, child, actor="test")
+        assert promoted is True
+        assert reason is None
+
+
+@pytest.mark.parametrize("metadata", [{}, {"gate": "fail"}, {"gate": {"bad": True}}])
+def test_create_task_does_not_initially_ready_unsatisfied_typed_gate(
+    kanban_home, metadata
+):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="Verifier")
+        kb.complete_task(conn, parent, summary="not passed", metadata=metadata)
+        child = kb.create_task(
+            conn,
+            title="Synth",
+            parents=[parent],
+            parent_gates={parent: "metadata_gate_pass"},
+        )
+        task = kb.get_task(conn, child)
+        assert task is not None
+        assert task.status == "todo"
+
+
+@pytest.mark.parametrize(
+    "recovery",
+    [
+        "stale_claim",
+        "manual_reclaim",
+        "max_runtime",
+        "stale_running",
+        "crash",
+        "failure",
+    ],
+)
+def test_recovery_paths_do_not_publish_ready_after_gate_revocation(
+    kanban_home, monkeypatch, recovery
+):
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="Verifier")
+        kb.complete_task(conn, parent, summary="passed", metadata={"gate": "pass"})
+        child = kb.create_task(
+            conn,
+            title=f"Recovery child: {recovery}",
+            parents=[parent],
+            parent_gates={parent: "metadata_gate_pass"},
+            max_runtime_seconds=1 if recovery == "max_runtime" else None,
+        )
+        assert kb.claim_task(conn, child)
+        parent_run = kb.latest_run(conn, parent)
+        assert parent_run is not None
+        conn.execute(
+            "UPDATE task_runs SET metadata = ? WHERE id = ?",
+            (json.dumps({"gate": "fail"}), parent_run.id),
+        )
+        if recovery == "stale_claim":
+            conn.execute(
+                "UPDATE tasks SET claim_expires = 0, worker_pid = 999999 WHERE id = ?",
+                (child,),
+            )
+        elif recovery in {"max_runtime", "stale_running"}:
+            stale_at = int(time.time()) - 100_000
+            child_run = kb.latest_run(conn, child)
+            assert child_run is not None
+            conn.execute(
+                "UPDATE tasks SET started_at = ?, last_heartbeat_at = ?, "
+                "worker_pid = 999999 WHERE id = ?",
+                (stale_at, stale_at, child),
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? WHERE id = ?",
+                (stale_at, child_run.id),
+            )
+        elif recovery == "crash":
+            conn.execute("UPDATE tasks SET worker_pid = 999999 WHERE id = ?", (child,))
+        conn.commit()
+
+        if recovery == "stale_claim":
+            assert kb.release_stale_claims(conn, signal_fn=lambda *_: None) == 1
+        elif recovery == "manual_reclaim":
+            assert kb.reclaim_task(conn, child, signal_fn=lambda *_: None)
+        elif recovery == "max_runtime":
+            assert child in kb.enforce_max_runtime(conn, signal_fn=lambda *_: None)
+        elif recovery == "stale_running":
+            assert child in kb.detect_stale_running(
+                conn, stale_timeout_seconds=1, signal_fn=lambda *_: None
+            )
+        elif recovery == "crash":
+            assert child in kb.detect_crashed_workers(conn)
+        else:
+            kb._record_task_failure(
+                conn,
+                child,
+                "spawn failed",
+                outcome="spawn_failed",
+                failure_limit=99,
+                release_claim=True,
+                end_run=True,
+            )
+
+        task = kb.get_task(conn, child)
+        assert task is not None
+        assert task.status == "todo"
+
+
+@pytest.mark.parametrize("gate_kind", ["metadata_gate_pass", "unknown_gate"])
+def test_unblock_rechecks_dependency_gates(kanban_home, gate_kind):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="Verifier")
+        child = kb.create_task(conn, title="Synth", parents=[parent])
+        kb.complete_task(conn, parent, summary="failed gate", metadata={"gate": "fail"})
+        conn.execute(
+            "UPDATE task_links SET gate_kind = ? WHERE parent_id = ? AND child_id = ?",
+            (gate_kind, parent, child),
+        )
+        conn.execute("UPDATE tasks SET status = 'blocked' WHERE id = ?", (child,))
+        conn.commit()
+
+        assert kb.unblock_task(conn, child) is True
+        task = kb.get_task(conn, child)
+        assert task is not None
+        assert task.status == "todo"
 
 
 # ---------------------------------------------------------------------------
 # Notify subscriptions
 # ---------------------------------------------------------------------------
 
+
 def test_notify_sub_crud(kanban_home):
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="x")
         kb.add_notify_sub(
-            conn, task_id=tid, platform="telegram", chat_id="123", user_id="u1",
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
+            user_id="u1",
             notifier_profile="default",
             delivery_metadata={
                 "chat_type": "dm",
@@ -125,25 +333,37 @@ def test_notify_sub_crud(kanban_home):
         }
         # Duplicate add is a no-op.
         kb.add_notify_sub(
-            conn, task_id=tid, platform="telegram", chat_id="123",
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
             delivery_metadata={
                 "chat_type": "dm",
                 "telegram_reply_to_message_id": "43",
             },
         )
         assert len(kb.list_notify_subs(conn, tid)) == 1
-        assert kb.list_notify_subs(conn, tid)[0]["delivery_metadata"][
-            "telegram_reply_to_message_id"
-        ] == "43"
+        assert (
+            kb.list_notify_subs(conn, tid)[0]["delivery_metadata"][
+                "telegram_reply_to_message_id"
+            ]
+            == "43"
+        )
         # Distinct thread is a new row.
         kb.add_notify_sub(
-            conn, task_id=tid, platform="telegram", chat_id="123",
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
             thread_id="5",
         )
         assert len(kb.list_notify_subs(conn, tid)) == 2
         # Remove one.
         ok = kb.remove_notify_sub(
-            conn, task_id=tid, platform="telegram", chat_id="123",
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
         )
         assert ok is True
         assert len(kb.list_notify_subs(conn, tid)) == 1
@@ -184,14 +404,17 @@ def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
         )
         assert duplicate_events == []
 
-        assert kb.rewind_notify_cursor(
-            conn1,
-            task_id=tid,
-            platform="telegram",
-            chat_id="123",
-            claimed_cursor=claimed_cursor,
-            old_cursor=old_cursor,
-        ) is True
+        assert (
+            kb.rewind_notify_cursor(
+                conn1,
+                task_id=tid,
+                platform="telegram",
+                chat_id="123",
+                claimed_cursor=claimed_cursor,
+                old_cursor=old_cursor,
+            )
+            is True
+        )
         _, retried_events = kb.unseen_events_for_sub(
             conn2,
             task_id=tid,
@@ -210,15 +433,9 @@ def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
 # ---------------------------------------------------------------------------
 
 
-
-
-
 # ---------------------------------------------------------------------------
 # Log rotation + accessor
 # ---------------------------------------------------------------------------
-
-
-
 
 
 def test_read_worker_log_tail(kanban_home):
@@ -242,7 +459,6 @@ def test_read_worker_log_tail(kanban_home):
 # ---------------------------------------------------------------------------
 
 
-
 # ---------------------------------------------------------------------------
 # CLI stats / watch / log / notify / daemon parity
 # ---------------------------------------------------------------------------
@@ -253,20 +469,22 @@ def test_read_worker_log_tail(kanban_home):
 # ---------------------------------------------------------------------------
 
 
-
 # ---------------------------------------------------------------------------
 # Max-runtime enforcement (item 1 from the Multica audit)
 # ---------------------------------------------------------------------------
+
 
 def test_max_runtime_terminates_overrun_worker(kanban_home):
     """A running task whose elapsed time exceeds max_runtime_seconds gets
     SIGTERM'd, emits a ``timed_out`` event, and goes back to ready."""
     killed = []
+
     def _signal_fn(pid, sig):
         killed.append((pid, sig))
 
     # We bypass _pid_alive by stubbing it so the grace-poll exits fast.
     import hermes_cli.kanban_db as _kb
+
     original_alive = _kb._pid_alive
     _kb._pid_alive = lambda pid: False  # pretend SIGTERM worked immediately
 
@@ -274,12 +492,14 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
         conn = kb.connect()
         try:
             tid = kb.create_task(
-                conn, title="long job", assignee="worker",
+                conn,
+                title="long job",
+                assignee="worker",
                 max_runtime_seconds=1,  # one second cap
             )
             # Spawn by hand: claim + set pid + set active run start to the past.
             kb.claim_task(conn, tid)
-            kb._set_worker_pid(conn, tid, os.getpid())   # any live pid works
+            kb._set_worker_pid(conn, tid, os.getpid())  # any live pid works
             # Backdate both the task-level first-start timestamp and the active
             # run timestamp so elapsed > limit under the per-run runtime model.
             old_started = int(time.time()) - 30
@@ -299,7 +519,9 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
             assert killed and killed[0][0] == os.getpid()
 
             task = kb.get_task(conn, tid)
-            assert task.status == "ready",                 f"timed-out task should reset to ready, got {task.status}"
+            assert task.status == "ready", (
+                f"timed-out task should reset to ready, got {task.status}"
+            )
             assert task.worker_pid is None
             assert task.last_heartbeat_at is None
 
@@ -314,26 +536,14 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
         _kb._pid_alive = original_alive
 
 
-
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # Heartbeat (item 2 from the Multica audit)
 # ---------------------------------------------------------------------------
 
 
-
 # ---------------------------------------------------------------------------
 # Event vocab rename + spawned event (item 3 from Multica)
 # ---------------------------------------------------------------------------
-
-
-
-
-
 
 
 def test_migration_renames_legacy_event_kinds(tmp_path, monkeypatch):
@@ -360,7 +570,8 @@ def test_migration_renames_legacy_event_kinds(tmp_path, monkeypatch):
         # Re-run init_db — the migration pass should rename them.
         kb.init_db()
         rows = conn.execute(
-            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id", (tid,),
+            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
+            (tid,),
         ).fetchall()
         kinds = [r["kind"] for r in rows]
         assert "ready" not in kinds
@@ -378,28 +589,14 @@ def test_migration_renames_legacy_event_kinds(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # CLI --max-runtime flag + duration parser
 # ---------------------------------------------------------------------------
 
 
-
-
-
 # ---------------------------------------------------------------------------
 # Runs as first-class (vulcan-artivus RFC feedback)
 # ---------------------------------------------------------------------------
-
-
-
-
-
-
 
 
 def test_stale_run_cannot_block_or_heartbeat_new_attempt(kanban_home, monkeypatch):
@@ -421,7 +618,9 @@ def test_stale_run_cannot_block_or_heartbeat_new_attempt(kanban_home, monkeypatc
         assert run2.id != run1.id
 
         assert not kb.heartbeat_worker(conn, tid, note="late", expected_run_id=run1.id)
-        assert not kb.block_task(conn, tid, reason="late block", expected_run_id=run1.id)
+        assert not kb.block_task(
+            conn, tid, reason="late block", expected_run_id=run1.id
+        )
         task = kb.get_task(conn, tid)
         assert task.status == "running"
         assert task.current_run_id == run2.id
@@ -432,12 +631,6 @@ def test_stale_run_cannot_block_or_heartbeat_new_attempt(kanban_home, monkeypatc
         assert kb.get_task(conn, tid).status == "blocked"
     finally:
         conn.close()
-
-
-
-
-
-
 
 
 def test_relative_age_renders_coarse_buckets():
@@ -502,30 +695,14 @@ def test_migration_backfills_inflight_run_for_legacy_db(kanban_home):
         conn.close()
 
 
-
-
-
-
 # -------------------------------------------------------------------------
 # Integration hardening (Apr 2026 audit fixes)
 # -------------------------------------------------------------------------
 
 
-
-
-
-
-
-
-
 # -------------------------------------------------------------------------
 # Deep-scan fixes (Apr 2026 second audit)
 # -------------------------------------------------------------------------
-
-
-
-
-
 
 
 def test_claim_task_recovers_from_invariant_leak(kanban_home):
@@ -542,7 +719,8 @@ def test_claim_task_recovers_from_invariant_leak(kanban_home):
         conn.execute(
             "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
             "claim_expires = NULL "
-            "WHERE id = ?", (tid,),
+            "WHERE id = ?",
+            (tid,),
         )
         conn.commit()
         # The leaked run is still open.
@@ -567,11 +745,10 @@ def test_claim_task_recovers_from_invariant_leak(kanban_home):
 # -------------------------------------------------------------------------
 
 
-
-
 # -------------------------------------------------------------------------
 # Pre-merge audit by @erosika (issue #16102 comment 4331125835) — fixes
 # -------------------------------------------------------------------------
+
 
 def test_unblock_invariant_recovery(kanban_home):
     """unblock_task must leave current_run_id NULL even if some other
@@ -586,7 +763,8 @@ def test_unblock_invariant_recovery(kanban_home):
         leaked_run_id = kb.latest_run(conn, tid).id
         # Force the bad state.
         conn.execute(
-            "UPDATE tasks SET status = 'blocked' WHERE id = ?", (tid,),
+            "UPDATE tasks SET status = 'blocked' WHERE id = ?",
+            (tid,),
         )
         conn.commit()
         # current_run_id is still set; run is still open.
@@ -643,14 +821,15 @@ def test_migration_backfill_idempotent_under_re_run(tmp_path, monkeypatch):
         conn.close()
 
 
-
-
 # -------------------------------------------------------------------------
 # Battle-test findings (May 2026: stress/ suite exposed zombie + id collision)
 # -------------------------------------------------------------------------
 
-@pytest.mark.skipif("linux" not in __import__("sys").platform,
-                    reason="zombie detection is Linux-specific")
+
+@pytest.mark.skipif(
+    "linux" not in __import__("sys").platform,
+    reason="zombie detection is Linux-specific",
+)
 def test_pid_alive_detects_zombie(kanban_home):
     """_pid_alive must return False for a zombie process.
 
@@ -660,9 +839,12 @@ def test_pid_alive_detects_zombie(kanban_home):
     worker that exited normally but whose parent hasn't called wait().
     """
     import subprocess as _sp
+
     proc = _sp.Popen(
         ["sleep", "3600"],
-        stdin=_sp.DEVNULL, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+        stdin=_sp.DEVNULL,
+        stdout=_sp.DEVNULL,
+        stderr=_sp.DEVNULL,
     )
     pid = proc.pid
     try:
@@ -672,9 +854,7 @@ def test_pid_alive_detects_zombie(kanban_home):
         # Verify /proc reports zombie state so the test is actually
         # exercising the zombie path and not some other liveness failure
         with open(f"/proc/{pid}/status") as f:
-            state_line = next(
-                (l for l in f if l.startswith("State:")), ""
-            )
+            state_line = next((l for l in f if l.startswith("State:")), "")
         assert "Z" in state_line, f"expected zombie, got {state_line!r}"
         # And _pid_alive must see through it.
         assert kb._pid_alive(pid) is False
@@ -683,14 +863,6 @@ def test_pid_alive_detects_zombie(kanban_home):
             proc.wait(timeout=1)
         except Exception:
             pass
-
-
-
-
-
-
-
-
 
 
 def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
@@ -719,8 +891,7 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
 
     conn = kb.connect()
     try:
-        tid = kb.create_task(conn, title="skill-loading test",
-                             assignee="some-profile")
+        tid = kb.create_task(conn, title="skill-loading test", assignee="some-profile")
         task = kb.get_task(conn, tid)
         workspace = kb.resolve_workspace(task)
         pid = kb._default_spawn(task, str(workspace))
@@ -729,9 +900,7 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
         conn.close()
 
     cmd = captured["cmd"]
-    assert "--skills" not in cmd, (
-        f"spawn argv should not auto-load any skill: {cmd}"
-    )
+    assert "--skills" not in cmd, f"spawn argv should not auto-load any skill: {cmd}"
     assert "--accept-hooks" in cmd, f"spawn argv missing --accept-hooks: {cmd}"
     assert cmd.index("--accept-hooks") < cmd.index("chat"), (
         f"--accept-hooks must come before 'chat' in argv: {cmd}"
@@ -748,15 +917,11 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
-
 def test_legacy_db_without_skills_column_migrates(tmp_path):
     """_migrate_add_optional_columns is idempotent and adds skills
     when absent. Run it twice on a pared-down schema to confirm."""
     import sqlite3
+
     db_path = tmp_path / "legacy.db"
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -812,6 +977,7 @@ def test_legacy_db_without_skills_column_migrates(tmp_path):
 def test_legacy_spawn_failure_columns_are_copied_not_renamed(tmp_path):
     """Legacy failure counters survive migration without fragile column renames."""
     import sqlite3
+
     db_path = tmp_path / "legacy-failures.db"
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -947,11 +1113,13 @@ def test_legacy_migration_no_legacy_columns_at_all(tmp_path):
 # Gateway-embedded dispatcher: config, CLI warnings, daemon deprecation stub
 # ---------------------------------------------------------------------------
 
+
 def test_config_default_dispatch_in_gateway_is_true():
     """Default config must enable gateway-embedded dispatch out of the box.
     Flipping this default to false is a user-visible behaviour change and
     should require a conscious migration."""
     from hermes_cli.config import DEFAULT_CONFIG
+
     kanban = DEFAULT_CONFIG.get("kanban", {})
     assert kanban.get("dispatch_in_gateway") is True, (
         "kanban.dispatch_in_gateway default should be True; got "
@@ -963,17 +1131,21 @@ def test_config_default_dispatch_in_gateway_is_true():
     )
 
 
-
-
-
-
 def _make_create_ns(**overrides):
     """Build a Namespace suitable for kb_cli._cmd_create()."""
     ns = argparse.Namespace(
-        title="x", body=None, assignee="worker",
-        created_by="user", workspace="scratch", tenant=None,
-        priority=0, parent=None, triage=False,
-        idempotency_key=None, max_runtime=None, skills=None,
+        title="x",
+        body=None,
+        assignee="worker",
+        created_by="user",
+        workspace="scratch",
+        tenant=None,
+        priority=0,
+        parent=None,
+        triage=False,
+        idempotency_key=None,
+        max_runtime=None,
+        skills=None,
         json=False,
     )
     for k, v in overrides.items():
@@ -986,6 +1158,7 @@ def test_cli_daemon_help_marks_deprecated():
     scanning `--help` see the migration before running the stub."""
     import argparse as _ap
     from hermes_cli import kanban as kb_cli
+
     root = _ap.ArgumentParser()
     subs = root.add_subparsers()
     kb_cli.build_parser(subs)
@@ -1018,7 +1191,6 @@ def test_cli_daemon_help_marks_deprecated():
 # ---------------------------------------------------------------------------
 # Gateway embedded dispatcher watcher
 # ---------------------------------------------------------------------------
-
 
 
 @pytest.mark.parametrize("corrupt_exc", ["sqlite", "guard"])
@@ -1120,8 +1292,6 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
 # ---------------------------------------------------------------------------
 
 
-
-
 def test_complete_can_retry_after_phantom_rejection(kanban_home):
     """A worker that hits the hallucinated-card gate must be able to
     retry kanban_complete on the same task — both with a corrected
@@ -1138,13 +1308,17 @@ def test_complete_can_retry_after_phantom_rejection(kanban_home):
         parent_b = kb.create_task(conn, title="retry-corrected", assignee="alice")
         kb.claim_task(conn, parent_b)
         real = kb.create_task(
-            conn, title="real-child", assignee="x", created_by="alice",
+            conn,
+            title="real-child",
+            assignee="x",
+            created_by="alice",
         )
 
         # First attempt: phantom in the list rejects, task stays running.
         with pytest.raises(kb.HallucinatedCardsError):
             kb.complete_task(
-                conn, parent_a,
+                conn,
+                parent_a,
                 summary="oops",
                 created_cards=["t_phantomdeadbeef"],
             )
@@ -1152,7 +1326,8 @@ def test_complete_can_retry_after_phantom_rejection(kanban_home):
 
         # Retry with [] (escape hatch): gate is skipped, completion lands.
         ok = kb.complete_task(
-            conn, parent_a,
+            conn,
+            parent_a,
             summary="retry without claims",
             created_cards=[],
         )
@@ -1163,14 +1338,16 @@ def test_complete_can_retry_after_phantom_rejection(kanban_home):
         # than the empty escape hatch.
         with pytest.raises(kb.HallucinatedCardsError):
             kb.complete_task(
-                conn, parent_b,
+                conn,
+                parent_b,
                 summary="oops",
                 created_cards=[real, "t_anotherphantom"],
             )
         assert kb.get_task(conn, parent_b).status == "running"
 
         ok = kb.complete_task(
-            conn, parent_b,
+            conn,
+            parent_b,
             summary="retry with corrected list",
             created_cards=[real],
         )
@@ -1181,7 +1358,8 @@ def test_complete_can_retry_after_phantom_rejection(kanban_home):
         # also present on each task.
         for parent in (parent_a, parent_b):
             kinds = [
-                r["kind"] for r in conn.execute(
+                r["kind"]
+                for r in conn.execute(
                     "SELECT kind FROM task_events WHERE task_id=? ORDER BY id",
                     (parent,),
                 )
@@ -1192,11 +1370,10 @@ def test_complete_can_retry_after_phantom_rejection(kanban_home):
         conn.close()
 
 
-
-
 # ---------------------------------------------------------------------------
 # Recovery helpers (reclaim + reassign)
 # ---------------------------------------------------------------------------
+
 
 def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
     """Manual reclaim releases the claim, resets status, and emits a
@@ -1205,6 +1382,7 @@ def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
     import time
     import secrets
     import hermes_cli.kanban_db as _kb
+
     conn = kb.connect()
     try:
         t = kb.create_task(conn, title="stuck", assignee="broken")
@@ -1249,6 +1427,7 @@ def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
         assert row["worker_pid"] is None
 
         import json as _json
+
         reclaim_evs = [
             _json.loads(r["payload"])
             for r in conn.execute(
@@ -1266,17 +1445,11 @@ def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
         conn.close()
 
 
-
-
-
-
 # ---------------------------------------------------------------------------
 # Unified failure counter — timeout + crash paths increment the same counter
 # as spawn failures, and the circuit breaker trips after N consecutive
 # failures regardless of which outcome caused them.
 # ---------------------------------------------------------------------------
-
-
 
 
 def _drive_worker_exit(conn, tid, fake_pid, raw_status):
@@ -1291,6 +1464,7 @@ def _drive_worker_exit(conn, tid, fake_pid, raw_status):
     a clean-exit protocol violation into a plain crash.
     """
     import hermes_cli.kanban_db as _kb
+
     host_prefix = _kb._claimer_id().split(":", 1)[0]
     claimed = _kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
     assert claimed is not None, "task was not claimable for the next attempt"
@@ -1331,6 +1505,7 @@ def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
     untouched (so the two budgets stay independent).
     """
     import hermes_cli.kanban_db as _kb
+
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="mixed", assignee="worker")
@@ -1349,8 +1524,7 @@ def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
             _drive_protocol_violation(conn, tid, pid)
             task = kb.get_task(conn, tid)
             assert task.status == "ready", (
-                f"violation {i + 1} after a crash must still retry, "
-                f"got {task.status}"
+                f"violation {i + 1} after a crash must still retry, got {task.status}"
             )
             assert task.consecutive_failures == 1, (
                 "below-budget violations must not tick the unified counter"
@@ -1362,20 +1536,11 @@ def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
         assert task.status == "blocked"
         gave_up = [e for e in kb.list_events(conn, tid) if e.kind == "gave_up"]
         assert len(gave_up) == 1
-        assert (gave_up[0].payload or {}).get("protocol_violations") == \
-            _kb._PROTOCOL_VIOLATION_FAILURE_LIMIT
+        assert (gave_up[0].payload or {}).get(
+            "protocol_violations"
+        ) == _kb._PROTOCOL_VIOLATION_FAILURE_LIMIT
     finally:
         conn.close()
-
-
-
-
-
-
-
-
-
-
 
 
 def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
@@ -1400,11 +1565,12 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
             "cursor must snap to MAX(task_events.id) at subscription time"
         )
         _, events = kb.unseen_events_for_sub(
-            conn, task_id=tid, platform="telegram", chat_id="123",
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
             kinds=["completed", "blocked", "gave_up", "crashed", "timed_out"],
         )
         assert events == [], "historical events must not replay to a new sub"
     finally:
         conn.close()
-
-

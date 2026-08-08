@@ -39,14 +39,21 @@ def worker_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    for var in ("HERMES_KANBAN_DB", "HERMES_KANBAN_WORKSPACES_ROOT", "HERMES_KANBAN_HOME", "HERMES_KANBAN_BOARD"):
+    for var in (
+        "HERMES_KANBAN_DB",
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+        "HERMES_KANBAN_HOME",
+        "HERMES_KANBAN_BOARD",
+    ):
         monkeypatch.delenv(var, raising=False)
     try:
         import hermes_constants
+
         hermes_constants._cached_default_hermes_root = None  # type: ignore[attr-defined]
     except Exception:
         pass
     kb._INITIALIZED_PATHS.clear()
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(kb.kanban_db_path()))
     # Reset module-level poll state so tests don't leak into each other.
     kt._comment_watermark.clear()
     kt._comment_poll_last_attempt = 0.0

@@ -1,0 +1,70 @@
+name: Kanban formal verification
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/kanban-formal.yml"
+      - "formal/kanban_swarm/**"
+      - "hermes_cli/kanban_db.py"
+      - "hermes_cli/kanban_decompose.py"
+      - "hermes_cli/kanban_swarm.py"
+      - "tools/kanban_tools.py"
+      - "scripts/*kanban_swarm*.py"
+      - "tests/formal/test_kanban_swarm_tla.py"
+  push:
+    paths:
+      - ".github/workflows/kanban-formal.yml"
+      - "formal/kanban_swarm/**"
+      - "hermes_cli/kanban_db.py"
+      - "hermes_cli/kanban_decompose.py"
+      - "hermes_cli/kanban_swarm.py"
+      - "tools/kanban_tools.py"
+      - "scripts/*kanban_swarm*.py"
+      - "tests/formal/test_kanban_swarm_tla.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tlc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-java@d7793b545071e98d581d3bf084a51c3213318a07 # v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: python -m pip install -e ".[dev]"
+      - name: Fetch pinned TLC
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 -o "$RUNNER_TEMP/tla2tools.jar" \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
+          printf '%s  %s\n' \
+            e22f8ffb4bacdea0a871f444dd94fe5fb0d8013b3388ae39e82e26f852c735d5 \
+            "$RUNNER_TEMP/tla2tools.jar" | sha256sum --check
+      - name: Export production semantics and run TLC
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/export_kanban_swarm_semantics.py \
+            --source-root "$PWD" \
+            --output "$RUNNER_TEMP/production-semantics.json"
+          python scripts/verify_kanban_swarm_tla.py \
+            --java "$(command -v java)" \
+            --jar "$RUNNER_TEMP/tla2tools.jar" \
+            --semantics "$RUNNER_TEMP/production-semantics.json" \
+            --receipt "$RUNNER_TEMP/kanban-swarm-tlc.json"
+          python scripts/verify_kanban_swarm_receipt.py \
+            --receipt "$RUNNER_TEMP/kanban-swarm-tlc.json"
+      - name: Execute formal binding regression
+        env:
+          KANBAN_TLA_JAVA: ${{ env.JAVA_HOME }}/bin/java
+          TLA2TOOLS_JAR: ${{ runner.temp }}/tla2tools.jar
+        run: python -m pytest -o addopts= -q tests/formal/test_kanban_swarm_tla.py

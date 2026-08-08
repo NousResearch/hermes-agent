@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
@@ -35,14 +36,6 @@ def _assert_inherited_notify_sub(subs: list[dict]) -> None:
     assert subs[0]["notifier_profile"] == "default"
 
 
-
-
-
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # Regression: gateway watchers must not double-init the kanban DB.
 #
@@ -60,8 +53,6 @@ def _assert_inherited_notify_sub(subs: list[dict]) -> None:
 # The fix removes the `init_db()` calls in both watchers; this regression
 # test pins that behaviour so we don't reintroduce them.
 # ---------------------------------------------------------------------------
-
-
 
 
 @pytest.mark.asyncio
@@ -124,7 +115,9 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
 
 
 @pytest.mark.asyncio
-async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_path, monkeypatch):
+async def test_notifier_artifact_delivery_skips_missing_files(
+    kanban_home, tmp_path, monkeypatch
+):
     """Missing artifact paths are silently skipped — they may have been
     referenced by name only. The notifier must not crash and must still
     deliver any artifacts that do exist."""
@@ -148,7 +141,9 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
         conn.close()
 
     import os
+
     os.environ["HERMES_KANBAN_TASK"] = tid
+    os.environ["HERMES_KANBAN_DB"] = str(kb.kanban_db_path())
     try:
         kt._handle_complete({
             "summary": "one real, one ghost",
@@ -156,6 +151,7 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
         })
     finally:
         os.environ.pop("HERMES_KANBAN_TASK", None)
+        os.environ.pop("HERMES_KANBAN_DB", None)
 
     runner = object.__new__(GatewayRunner)
     runner._running = True
@@ -177,6 +173,7 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     fake_adapter.send_document = AsyncMock(side_effect=_send_document)
     fake_adapter.send_multiple_images = AsyncMock()
     from gateway.platforms.base import BasePlatformAdapter
+
     fake_adapter.extract_local_files = BasePlatformAdapter.extract_local_files
 
     runner.adapters = {Platform.TELEGRAM: fake_adapter}

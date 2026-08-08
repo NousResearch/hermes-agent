@@ -27,6 +27,7 @@ act/
 .uv-cache/
 compose.hermes.local.yml
 export*
+!scripts/export_kanban_swarm_semantics.py
 __pycache__/model_tools.cpython-310.pyc
 __pycache__/web_tools.cpython-310.pyc
 logs/

@@ -387,7 +387,7 @@ class _SlashWorker:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
-            cwd=os.getcwd(),
+            cwd=_safe_getcwd(),
             env=env,
             creationflags=windows_hide_flags(),
             start_new_session=True,
@@ -1531,6 +1531,37 @@ def _launch_configured_cwd() -> str | None:
         return None
 
 
+def _safe_getcwd() -> str:
+    """Return the current working directory, tolerating a deleted CWD.
+
+    ``os.getcwd()`` raises FileNotFoundError when the process's working
+    directory has been removed out from under it (e.g. the folder Hermes was
+    launched in was deleted, rebuilt, or ``git worktree remove``'d mid-session).
+    This guards the seven *fallback* sites that resolve a cwd only after their
+    explicit sources are exhausted — ``_SlashWorker``, ``_default_session_cwd``
+    and both ``_completion_cwd`` returns here, plus ``cli.exec``,
+    ``config.show`` and ``shell.exec`` in ``methods_tools.py`` — where a raise
+    is never recoverable locally: ``session.create``/``session.resume`` run
+    inline (they are not in ``_LONG_HANDLERS``) and ``tui_gateway/entry.py``
+    does not guard ``dispatch()``, so the stdio gateway process exits.
+
+    ``compute_host.py`` (:520, :752) still calls ``os.getcwd()`` directly, by
+    design: ``host_supervisor.py`` starts that child with ``cwd=str(self.cwd)``
+    (:328), which defaults to ``_repo_root()`` (:150), so the compute host
+    cannot observe the deleted launch directory — ``Popen`` would fail first if
+    it could.
+
+    The body is identical to :func:`tools.terminal_tool._safe_getcwd` (added in
+    #39491), including the TERMINAL_CWD -> home fallback chain, but they are
+    two independent copies with nothing enforcing the mirror — change both
+    together.
+    """
+    try:
+        return os.getcwd()
+    except FileNotFoundError:
+        return os.getenv("TERMINAL_CWD") or os.path.expanduser("~")
+
+
 def _default_session_cwd() -> str:
     """Fallback cwd for a session with no explicit / stored / profile cwd.
 
@@ -1539,7 +1570,7 @@ def _default_session_cwd() -> str:
     than ``os.getcwd()`` when the in-memory gateway's process env has no bridged
     ``TERMINAL_CWD``.
     """
-    return _launch_configured_cwd() or os.getenv("TERMINAL_CWD") or os.getcwd()
+    return _launch_configured_cwd() or os.getenv("TERMINAL_CWD") or _safe_getcwd()
 
 
 def write_json(obj: dict) -> bool:
@@ -2391,7 +2422,7 @@ def _completion_cwd(params: dict | None = None) -> str:
         # configured terminal.cwd wins over a stale process env / launch dir.
         or _launch_configured_cwd()
         or os.environ.get("TERMINAL_CWD")
-        or os.getcwd()
+        or _safe_getcwd()
     )
     try:
         resolved = os.path.abspath(os.path.expanduser(str(raw)))
@@ -2399,7 +2430,10 @@ def _completion_cwd(params: dict | None = None) -> str:
             return resolved
     except Exception:
         pass
-    return os.getcwd()
+    # Reached whenever ``raw`` is not a live directory — which is exactly the
+    # deleted-CWD case, since the client's last-known cwd IS the deleted dir.
+    # The ``except`` above does not cover this return.
+    return _safe_getcwd()
 
 
 def _terminal_task_cwd(session: dict | None) -> str:

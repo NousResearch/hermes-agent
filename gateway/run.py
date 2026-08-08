@@ -13594,10 +13594,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 owner = claimed.get(listener_claim)
                 if owner is not None:
                     bind, port = listener_claim[-2:]
+                    port_key = (
+                        "bridge_port"
+                        if platform is Platform.WHATSAPP
+                        else "sidecar_port"
+                    )
                     logger.error(
                         "Profile '%s' and '%s' both configure %s sidecars on "
                         "%s:%s — refusing to start the duplicate listener. "
-                        "Set platforms.%s.extra.sidecar_port to a distinct port "
+                        "Set platforms.%s.extra.%s to a distinct port "
                         "for profile '%s'.",
                         owner,
                         profile_name,
@@ -13605,6 +13610,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         bind,
                         port,
                         platform.value,
+                        port_key,
                         profile_name,
                     )
                     # Like credential conflicts, this adapter never connected
@@ -13881,13 +13887,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _adapter_listener_claim(platform: Platform, adapter: Any) -> Optional[tuple]:
         """Return the exclusive listener resource claimed by an adapter.
 
-        Photon sidecars are per-profile processes. Even when two profiles use
-        different project credentials, their sidecars cannot share a bind and
-        port. Represent that endpoint as a claim so multiplex startup rejects
-        the later adapter before either ``connect()`` or ``disconnect()`` can
-        disturb the first profile.
+        Per-profile sidecars cannot share their configured endpoint identity.
+        Represent Photon and WhatsApp endpoints as claims so multiplex startup
+        rejects a later colliding adapter before either ``connect()`` or
+        ``disconnect()`` can disturb the first profile.
         """
-        if getattr(platform, "value", None) != "photon":
+        platform_value = getattr(platform, "value", None)
+        if platform_value == "whatsapp":
+            port = getattr(adapter, "_bridge_port", None)
+            try:
+                port = int(port)
+            except (TypeError, ValueError):
+                return None
+            return ("listener", "whatsapp", "127.0.0.1", port)
+        if platform_value != "photon":
             return None
         bind = getattr(adapter, "_sidecar_bind", None)
         port = getattr(adapter, "_sidecar_port", None)

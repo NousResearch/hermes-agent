@@ -1,6 +1,101 @@
 import path from 'path';
 import { mkdirSync, writeFileSync } from 'fs';
-import { randomBytes } from 'crypto';
+import { randomBytes, timingSafeEqual } from 'crypto';
+
+export function createBridgeAuthMiddleware(expectedToken) {
+  const expected = typeof expectedToken === 'string'
+    ? Buffer.from(expectedToken, 'utf8')
+    : Buffer.alloc(0);
+
+  return function bridgeAuth(req, res, next) {
+    const authorization = req?.headers?.authorization;
+    const prefix = 'Bearer ';
+    const suppliedToken = typeof authorization === 'string'
+      && authorization.startsWith(prefix)
+      ? authorization.slice(prefix.length)
+      : '';
+    const supplied = Buffer.from(suppliedToken, 'utf8');
+    const authorized = expected.length > 0
+      && supplied.length === expected.length
+      && timingSafeEqual(supplied, expected);
+
+    if (!authorized) {
+      return res
+        .status(401)
+        .set('WWW-Authenticate', 'Bearer')
+        .json({ error: 'Unauthorized' });
+    }
+    return next();
+  };
+}
+
+export function installBridgeHttpSecurity(app, expectedToken, jsonParser) {
+  // Keep authentication ahead of body parsing. This function owns the
+  // ordering as runtime composition rather than leaving it as a convention at
+  // the bridge call site.
+  app.use(createBridgeAuthMiddleware(expectedToken));
+  app.use(jsonParser);
+}
+
+const ACCEPTED_BRIDGE_HOSTS = new Set([
+  'localhost',
+  '127.0.0.1',
+  '[::1]',
+  '::1',
+]);
+
+export function createBridgeHostMiddleware() {
+  return function bridgeHost(req, res, next) {
+    const raw = (req.headers.host || '').trim();
+    if (!raw) {
+      return res.status(400).json({ error: 'Missing Host header' });
+    }
+    const hostOnly = (raw.includes(':')
+      ? raw.substring(0, raw.lastIndexOf(':'))
+      : raw
+    ).replace(/^\[|\]$/g, '').toLowerCase();
+    if (!ACCEPTED_BRIDGE_HOSTS.has(hostOnly)) {
+      return res.status(400).json({
+        error: 'Invalid Host header. Bridge accepts loopback hosts only.',
+      });
+    }
+    return next();
+  };
+}
+
+export function createAuthenticatedBridgeApp(expressModule, expectedToken) {
+  // Production obtains its only Express app through this factory. Therefore no
+  // route can be registered before Host validation, bearer authentication, and
+  // the authenticated-only JSON parser are installed.
+  const app = expressModule();
+  app.use(createBridgeHostMiddleware());
+  installBridgeHttpSecurity(app, expectedToken, expressModule.json());
+  return app;
+}
+
+export const WINDOWS_BRIDGE_UNSUPPORTED =
+  'Native Windows WhatsApp gateway serving is unsupported because the bundled '
+  + 'named-pipe runtimes cannot authenticate the server before protected data '
+  + 'is sent. Use WSL2/Linux; pairing-only mode remains available.';
+
+export function validateBridgeLaunch({
+  platform,
+  pairOnly,
+  endpoint,
+  token,
+}) {
+  if (pairOnly) return;
+  if (platform === 'win32') {
+    throw new Error(WINDOWS_BRIDGE_UNSUPPORTED);
+  }
+  if (!endpoint || !token) {
+    throw new Error(
+      'WhatsApp gateway serving is managed by Hermes and requires a private '
+      + 'authenticated IPC endpoint. Run `hermes gateway`; use `hermes whatsapp` '
+      + 'for pairing-only mode.',
+    );
+  }
+}
 
 export const MIME_MAP = {
   jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',

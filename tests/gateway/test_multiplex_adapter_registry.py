@@ -467,6 +467,108 @@ class TestSecondaryProfileConfigHandling:
         assert second == 1
         assert runner._profile_adapters["later"][photon] is later
 
+    @pytest.mark.asyncio
+    async def test_secondary_whatsapp_default_port_collision_never_connects_or_disconnects(
+        self, monkeypatch
+    ):
+        """A second default-port profile cannot disturb the active bridge."""
+        class _WhatsAppAdapter:
+            def __init__(self, port=3000):
+                self._bridge_port = port
+                self.platform = Platform.WHATSAPP
+                self.config = PlatformConfig(enabled=True)
+                self.connect_calls = 0
+                self.disconnect_calls = 0
+
+            def __getattr__(self, name):
+                if name.startswith("set_"):
+                    return lambda *args, **kwargs: None
+                raise AttributeError(name)
+
+            async def disconnect(self):
+                self.disconnect_calls += 1
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+        runner.session_store = None
+        runner._busy_text_mode = "queue"
+        whatsapp = Platform.WHATSAPP
+        profile_cfg = GatewayConfig(multiplex_profiles=True)
+        profile_cfg.platforms = {whatsapp: PlatformConfig(enabled=True)}
+        primary = _WhatsAppAdapter()
+        secondary = _WhatsAppAdapter()
+        claimed = {
+            GatewayRunner._adapter_listener_claim(whatsapp, primary): "default"
+        }
+
+        async def _connect(adapter, platform):
+            adapter.connect_calls += 1
+            return True
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: profile_cfg)
+        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: secondary)
+        monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", _connect)
+
+        connected = await runner._start_one_profile_adapters(
+            "reviewer", Path("/tmp/reviewer"), claimed
+        )
+
+        assert connected == 0
+        assert primary.connect_calls == primary.disconnect_calls == 0
+        assert secondary.connect_calls == secondary.disconnect_calls == 0
+        assert "reviewer" not in runner._profile_adapters or not runner._profile_adapters["reviewer"]
+
+    @pytest.mark.asyncio
+    async def test_secondary_whatsapp_distinct_port_connects(self, monkeypatch):
+        """Explicitly separate WhatsApp bridge ports remain multiplexable."""
+        class _WhatsAppAdapter:
+            def __init__(self, port):
+                self._bridge_port = port
+                self.platform = Platform.WHATSAPP
+                self.config = PlatformConfig(enabled=True)
+                self.connected = False
+                self.disconnected = False
+
+            def __getattr__(self, name):
+                if name.startswith("set_"):
+                    return lambda *args, **kwargs: None
+                raise AttributeError(name)
+
+            async def disconnect(self):
+                self.disconnected = True
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+        runner.session_store = None
+        runner._busy_text_mode = "queue"
+        whatsapp = Platform.WHATSAPP
+        profile_cfg = GatewayConfig(multiplex_profiles=True)
+        profile_cfg.platforms = {whatsapp: PlatformConfig(enabled=True)}
+        primary = _WhatsAppAdapter(3000)
+        secondary = _WhatsAppAdapter(3001)
+        claimed = {
+            GatewayRunner._adapter_listener_claim(whatsapp, primary): "default"
+        }
+
+        async def _connect(adapter, platform):
+            adapter.connected = True
+            return True
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: profile_cfg)
+        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: secondary)
+        monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", _connect)
+
+        connected = await runner._start_one_profile_adapters(
+            "reviewer", Path("/tmp/reviewer"), claimed
+        )
+
+        assert connected == 1
+        assert secondary.connected is True
+        assert secondary.disconnected is False
+        assert runner._profile_adapters["reviewer"][whatsapp] is secondary
+
 
 class TestFeishuPortBindingConditional:
     """Feishu websocket mode does NOT bind a port; only webhook mode does (#52563)."""
@@ -493,5 +595,4 @@ class TestFeishuPortBindingConditional:
 
         connected = await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
         assert connected == 0  # no error, just nothing connected
-
 

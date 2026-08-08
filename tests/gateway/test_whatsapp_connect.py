@@ -99,6 +99,9 @@ def _connect_patches(mock_proc, mock_fh, mock_client_cls=None):
         patch("builtins.open", return_value=mock_fh),
         patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock),
         patch("plugins.platforms.whatsapp.adapter.asyncio.create_task"),
+        patch("plugins.platforms.whatsapp.adapter._rotate_bridge_token", return_value="test-session-token"),
+        patch("plugins.platforms.whatsapp.adapter._ensure_private_bridge_directory"),
+        patch("plugins.platforms.whatsapp.adapter._validate_bridge_endpoint"),
     ]
     if mock_client_cls is not None:
         base.append(patch("aiohttp.ClientSession", mock_client_cls))
@@ -159,6 +162,7 @@ class TestDataInitialized:
 
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
              patches[5], patches[6], patches[7], patches[8], \
+             patches[9], patches[10], patches[11], \
              patch.object(type(adapter), "_poll_messages", return_value=MagicMock()):
             # Must NOT raise NameError
             result = await adapter.connect()
@@ -188,7 +192,8 @@ class TestFileHandleClosedOnError:
         patches = _connect_patches(mock_proc, mock_fh)
 
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7]:
+             patches[5], patches[6], patches[7], patches[8], patches[9], \
+             patches[10]:
             result = await adapter.connect()
 
         assert result is False
@@ -297,7 +302,8 @@ class TestBridgeRuntimeFailure:
         patches = _connect_patches(mock_proc, mock_fh, mock_client_cls)
 
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7], patches[8]:
+             patches[5], patches[6], patches[7], patches[8], patches[9], \
+             patches[10], patches[11]:
             result = await adapter.connect()
 
         assert result is False

@@ -351,6 +351,7 @@ class TestImport:
             "auth.json": '{"providers": {"nous": "token"}}',
             "state.db": b"SQLite format 3\x00",
             "profiles/coder/.env": "ANTHROPIC_API_KEY=sk-ant-secret\n",
+            "platforms/whatsapp/session/.bridge-token": "A" * 43,
         })
 
         args = Namespace(zipfile=str(zip_path), force=True)
@@ -358,7 +359,13 @@ class TestImport:
         from hermes_cli.backup import run_import
         run_import(args)
 
-        for rel in (".env", "auth.json", "state.db", "profiles/coder/.env"):
+        for rel in (
+            ".env",
+            "auth.json",
+            "state.db",
+            "profiles/coder/.env",
+            "platforms/whatsapp/session/.bridge-token",
+        ):
             mode = (hermes_home / rel).stat().st_mode & 0o777
             assert mode == 0o600, f"{rel} restored with mode {oct(mode)}, expected 0o600"
 
@@ -1242,7 +1249,6 @@ class TestMemoryProviderExternalPaths:
         assert (restored.stat().st_mode & 0o777) == 0o600
         # External state did NOT leak into HERMES_HOME.
         assert not (hermes_home / "_external").exists()
-
 
 
 

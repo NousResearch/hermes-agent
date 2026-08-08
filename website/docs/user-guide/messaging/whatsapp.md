@@ -18,6 +18,17 @@ If you're running a real business bot and want stability, see the **[WhatsApp Bu
 The two adapters can also run in parallel against different phone numbers if you have a reason to.
 :::
 
+:::warning Platform support for the personal-account gateway
+The Baileys gateway can serve WhatsApp on **Linux, macOS, and WSL2**. On native
+Windows, `hermes whatsapp` pairing remains supported, but serving the paired
+account through `hermes gateway` is not supported. Run Hermes inside WSL2 or on
+Linux to serve this integration.
+
+This limitation applies only to the personal-account Baileys bridge documented
+on this page. It does not describe the separate
+[WhatsApp Business Cloud API adapter](./whatsapp-cloud.md).
+:::
+
 :::warning Unofficial API — Ban Risk
 WhatsApp does **not** officially support third-party bots outside the Business API. Using a third-party bridge carries a small risk of account restrictions. To minimize risk:
 - **Use a dedicated phone number** for the bot (not your personal number)
@@ -142,6 +153,25 @@ The gateway starts the WhatsApp bridge automatically using the saved session.
 
 ---
 
+## Multiple Profiles and `bridge_port`
+
+When one gateway [multiplexes multiple profiles](../multi-profile-gateways.md),
+each WhatsApp profile must set a distinct
+`gateway.platforms.whatsapp.extra.bridge_port` value. The default is `3000`, so
+only one multiplexed WhatsApp profile can rely on the default.
+
+Despite its historical name, `bridge_port` is not a TCP bind for the current
+Baileys gateway. It is a stable per-profile bridge instance and multiplex
+discriminator. Keep each profile's value stable across restarts. If two
+profiles use the same value, including two omitted values that both default to
+`3000`, the later profile is rejected before its adapter's lifecycle methods
+run. The first profile continues to serve normally.
+
+See [the two-profile configuration example](../multi-profile-gateways.md#whatsapp-bridge-instance-discriminators)
+for complete default-profile and named-profile YAML.
+
+---
+
 ## Session Persistence
 
 The Baileys bridge saves its session under `~/.hermes/platforms/whatsapp/session`. This means:
@@ -250,6 +280,7 @@ Set `text_batch_delay_seconds: 0` to dispatch each message immediately (disables
 | **Logged out unexpectedly** | WhatsApp unlinks devices after long inactivity. Keep the phone on and connected to the network, then re-pair with `hermes whatsapp` if needed. |
 | **Bridge crashes or reconnect loops** | Restart the gateway, update Hermes, and re-pair if the session was invalidated by a WhatsApp protocol change. |
 | **Bot stops working after WhatsApp update** | Update Hermes to get the latest bridge version, then re-pair. |
+| **Native Windows pairs successfully but the gateway says serving is unsupported** | Pairing-only mode works on native Windows, but the personal-account Baileys gateway must run inside WSL2 or on Linux to serve messages. This does not apply to the separate WhatsApp Business Cloud API adapter. |
 | **macOS: "Node.js not installed" but node works in terminal** | launchd services don't inherit your shell PATH. Run `hermes gateway install` to re-snapshot your current PATH into the plist, then `hermes gateway start`. See the [Gateway Service docs](./index.md#macos-launchd) for details. |
 | **Messages not being received** | Verify `WHATSAPP_ALLOWED_USERS` includes the sender's number (with country code, no `+` or spaces), or set it to `*` to allow everyone. Set `WHATSAPP_DEBUG=true` in `.env` and restart the gateway to see raw message events in `bridge.log`. |
 | **Bot replies to strangers with a pairing code** | Set `whatsapp.unauthorized_dm_behavior: ignore` in `~/.hermes/config.yaml` if you want unauthorized DMs to be silently ignored instead. |

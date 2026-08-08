@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
@@ -503,6 +504,102 @@ class WhatsAppBehaviorMixin:
 # Shared bridge directory resolution for CLI and adapter
 # ---------------------------------------------------------------------------
 
+_WHATSAPP_BRIDGE_MANIFEST = ".hermes-source-manifest.json"
+_WHATSAPP_BRIDGE_SHIPPED_FILES = (
+    "README.md",
+    "allowlist.js",
+    "bridge-launcher.js",
+    "bridge.js",
+    "bridge_helpers.js",
+    "outbound_ids.js",
+    "owner_message_gate.js",
+    "package-lock.json",
+    "package.json",
+)
+
+
+def _whatsapp_bridge_source_manifest(source: Path) -> dict[str, str]:
+    """Hash the shipped bridge contract without touching runtime-owned data."""
+    import hashlib
+
+    manifest: dict[str, str] = {}
+    for name in _WHATSAPP_BRIDGE_SHIPPED_FILES:
+        path = source / name
+        if not path.exists():
+            continue
+        if path.is_symlink() or not path.is_file():
+            raise OSError(f"WhatsApp bridge source is not a regular file: {path}")
+        manifest[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    if "bridge.js" not in manifest or "package.json" not in manifest:
+        raise OSError("WhatsApp bridge source is missing bridge.js or package.json")
+    return manifest
+
+
+def _atomic_write_bridge_file(path: Path, data: bytes) -> None:
+    """Replace one mirror file atomically, cleaning an incomplete temp file."""
+    import tempfile
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "wb") as temp_file:
+            fd = -1
+            temp_file.write(data)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _refresh_whatsapp_bridge_mirror(source: Path, mirror: Path) -> None:
+    """Synchronize shipped source and commit freshness with a final manifest.
+
+    Each source file is replaced atomically and the content manifest is written
+    last. If any step fails, callers reject the mirror. ``node_modules`` and
+    unrecognized files are never copied, removed, or traversed, preserving npm
+    state and any runtime-owned data without treating it as shipped source.
+    """
+    import hashlib
+
+    expected = _whatsapp_bridge_source_manifest(source)
+    if mirror.is_symlink() or (mirror.exists() and not mirror.is_dir()):
+        raise OSError(f"WhatsApp bridge mirror is not a real directory: {mirror}")
+    mirror.mkdir(parents=True, exist_ok=True)
+    for name, expected_hash in expected.items():
+        destination = mirror / name
+        try:
+            current_hash = hashlib.sha256(destination.read_bytes()).hexdigest()
+        except OSError:
+            current_hash = ""
+        if current_hash != expected_hash:
+            _atomic_write_bridge_file(destination, (source / name).read_bytes())
+
+    # Verify the complete source set before publishing the freshness gate.
+    if _whatsapp_bridge_source_manifest(mirror) != expected:
+        raise OSError("WhatsApp bridge mirror failed source verification")
+
+    manifest_payload = json.dumps(
+        {"format": 1, "files": expected}, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8") + b"\n"
+    _atomic_write_bridge_file(mirror / _WHATSAPP_BRIDGE_MANIFEST, manifest_payload)
+
+    try:
+        recorded = json.loads(
+            (mirror / _WHATSAPP_BRIDGE_MANIFEST).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError, TypeError) as exc:
+        raise OSError("WhatsApp bridge mirror manifest is unreadable") from exc
+    if recorded != {"format": 1, "files": expected}:
+        raise OSError("WhatsApp bridge mirror manifest does not match its source")
+
+
 def resolve_whatsapp_bridge_dir() -> Path:
     """Resolve the WhatsApp bridge directory, mirroring to HERMES_HOME if needed.
 
@@ -512,7 +609,6 @@ def resolve_whatsapp_bridge_dir() -> Path:
 
     Returns the resolved bridge directory path.
     """
-    import shutil
     from pathlib import Path as _Path
 
     # Default location in install tree (may be read-only)
@@ -535,18 +631,19 @@ def resolve_whatsapp_bridge_dir() -> Path:
     if install_writable:
         return install_bridge
 
-    # Install dir is read-only, mirror to HERMES_HOME if needed
-    if hermes_home_bridge.exists():
-        return hermes_home_bridge
-
-    # Mirror the bridge source to HERMES_HOME
+    # Install dir is read-only. Refresh the writable mirror on every resolve:
+    # HERMES_HOME persists across Docker/image upgrades, so existence alone is
+    # not evidence that bridge.js implements the current authenticated IPC
+    # contract. A final manifest gates selection after atomic file replacement.
     try:
         hermes_home_bridge.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(
-            install_bridge,
-            hermes_home_bridge,
-            dirs_exist_ok=False,
-        )
+        _refresh_whatsapp_bridge_mirror(install_bridge, hermes_home_bridge)
         return hermes_home_bridge
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "[whatsapp] Could not refresh read-only bridge mirror at %s (%s); "
+            "using the current install source instead",
+            hermes_home_bridge,
+            exc,
+        )
         return install_bridge

@@ -30,12 +30,15 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
+import type { SessionInfo } from '@/types/hermes'
 
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import {
   $activeSessionId,
   $selectedStoredSessionId,
+  $sessions,
   $unreadFinishedSessionIds,
+  lineageAliases,
   setActiveSessionStoredIdRotation
 } from './session'
 import { isSecondaryWindow } from './windows'
@@ -67,8 +70,13 @@ export function setSessionStalled(storedSessionId: string | null | undefined, st
   }
 }
 
-// --- Watchdog: marks busy sessions quiet after 8 min of stream silence -----
-export const SESSION_WATCHDOG_TIMEOUT_MS = 8 * 60 * 1000
+// --- Watchdog: marks busy sessions quiet after a long stream silence -------
+// Tuned against what this app actually does rather than a round number: a
+// typecheck or a full test run here goes quiet for minutes at a stretch and is
+// perfectly healthy, so anything under ~4 min would paint normal work as
+// suspect. Eight minutes was the other failure — longer than a user is willing
+// to sit and wonder, so the hint arrived after they had already given up on it.
+export const SESSION_WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000
 const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 function armWatchdog(runtimeId: string) {
@@ -249,28 +257,54 @@ export function clearAllSessionStates() {
 // a turn), but these sets only change on busy/needsInput edges. `stableArray`
 // keeps the prior reference when membership is unchanged so `computed` skips the
 // emit — otherwise the whole sidebar + every row re-renders per token.
-const storedIds = (states: Record<string, ClientSessionState>, pred: (s: ClientSessionState) => boolean) =>
-  Object.values(states)
-    .filter(s => pred(s) && s.storedSessionId)
-    .map(s => s.storedSessionId!)
+// Published under every id the conversation answers to, not just its current
+// tip: consumers hold whichever id they were created with, and compression
+// rotates the tip out from under them (see lineageAliases).
+//
+// A conversation that has not been persisted yet has no stored id at all, and
+// dropping it here is what left the FIRST turn of a new chat with no running
+// indicator anywhere — no dot, no row arc — for as long as it took the backend
+// to hand one back. Its runtime id is the right fallback because until a stored
+// id exists the two are the same value (submit.ts: "an unpersisted
+// conversation's queue key IS its runtime id"), so the row matches; once a
+// session is persisted its runtime id is nobody's key and the fallback is inert.
+const storedIds = (
+  states: Record<string, ClientSessionState>,
+  sessions: readonly SessionInfo[],
+  pred: (s: ClientSessionState) => boolean
+) => {
+  const ids = new Set<string>()
+
+  for (const [runtimeId, state] of Object.entries(states)) {
+    if (!pred(state)) {
+      continue
+    }
+
+    for (const alias of lineageAliases(state.storedSessionId ?? runtimeId, sessions)) {
+      ids.add(alias)
+    }
+  }
+
+  return [...ids]
+}
 
 let workingIds: readonly string[] = []
 export const $workingSessionIds = computed(
-  $sessionStates,
-  states =>
+  [$sessionStates, $sessions],
+  (states, sessions) =>
     (workingIds = stableArray(
       workingIds,
-      storedIds(states, s => s.busy)
+      storedIds(states, sessions, s => s.busy)
     ))
 )
 
 let attentionIds: readonly string[] = []
 export const $attentionSessionIds = computed(
-  $sessionStates,
-  states =>
+  [$sessionStates, $sessions],
+  (states, sessions) =>
     (attentionIds = stableArray(
       attentionIds,
-      storedIds(states, s => s.needsInput)
+      storedIds(states, sessions, s => s.needsInput)
     ))
 )
 

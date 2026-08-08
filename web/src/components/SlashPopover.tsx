@@ -83,7 +83,19 @@ export const SlashPopover = forwardRef<SlashPopoverHandle, Props>(
 
     const apply = useCallback(
       (item: CompletionItem) => {
-        onApply(input.slice(0, replaceFrom) + item.text);
+        // The server's "extras" completions (/compact, /details, /logs, etc.)
+        // return their text WITH a leading "/" while plain commands return bare
+        // names ("exit", "help"). replaceFrom is always 1 for slash completions
+        // (the gateway's replace_from field), so the reconstructed value would
+        // be "/" + "/compact" = "//compact" without the strip below.
+        // Mirror the logic the TUI's Tab handler applies in useInputHandlers.ts.
+        const text =
+          input.startsWith("/") &&
+          item.text.startsWith("/") &&
+          replaceFrom > 0
+            ? item.text.slice(1)
+            : item.text;
+        onApply(input.slice(0, replaceFrom) + text);
       },
       [input, replaceFrom, onApply],
     );

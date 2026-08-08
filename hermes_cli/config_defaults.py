@@ -9,6 +9,10 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
+    # Optional per-provider override of the credential-source resolution order.
+    # Empty = each provider's built-in default order. See
+    # agent.anthropic_adapter.get_anthropic_resolve_order for the source names.
+    "credential_resolve_order": {},
     "toolsets": ["hermes-cli"],
     # SQLite journal mode used by every Hermes database opener. WAL is the
     # normal default; set DELETE for weak-fsync/shared filesystems where WAL is

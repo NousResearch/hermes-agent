@@ -134,6 +134,41 @@ credential_pool_strategies:
 | `least_used` | Always pick the key with the lowest request count |
 | `random` | Random selection among healthy keys |
 
+## Credential Resolution Order
+
+Rotation decides *which pool entry* is selected. A separate question is *whether
+the pool is consulted at all* — Hermes resolves a provider token from several
+sources, and for Anthropic the Claude Code credentials file
+(`~/.claude/.credentials.json`) is checked **before** the credential pool by
+default.
+
+That default is right for single-account setups, but it surprises multi-account
+pool users: any code path that falls back to a bare token resolve (rather than
+being handed an explicit key) bills whichever account that static file holds,
+regardless of which entry the pool just rotated to. The pool's *selections* stay
+perfectly balanced while the *traffic* lands on one account.
+
+Override the order in `config.yaml`:
+
+```yaml
+credential_resolve_order:
+  anthropic:
+    - credential_pool          # consult the rotating pool first
+```
+
+| Source | Reads |
+|--------|-------|
+| `env_anthropic_token` | `ANTHROPIC_TOKEN` |
+| `env_claude_code_oauth_token` | `CLAUDE_CODE_OAUTH_TOKEN` |
+| `env_anthropic_api_key` | `ANTHROPIC_API_KEY` |
+| `claude_code_credentials` | `~/.claude.json`, `~/.claude/.credentials.json` |
+| `credential_pool` | `~/.hermes/auth.json` |
+
+Sources you omit keep their default relative position at the end of the list, so
+a one-line override only *promotes* what it names and never drops a fallback.
+Unknown names are ignored, and an absent or unusable key leaves the default
+order untouched.
+
 ## Error Recovery
 
 The pool handles different errors differently:

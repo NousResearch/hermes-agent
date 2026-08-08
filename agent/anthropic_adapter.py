@@ -1354,16 +1354,86 @@ def _resolve_anthropic_pool_token() -> Optional[str]:
     return None
 
 
+# Named credential sources for ``resolve_anthropic_token``, in the order they
+# are consulted by default. Users may reorder them via the
+# ``credential_resolve_order.anthropic`` config key.
+SOURCE_ENV_ANTHROPIC_TOKEN = "env_anthropic_token"
+SOURCE_ENV_CLAUDE_CODE_OAUTH_TOKEN = "env_claude_code_oauth_token"
+SOURCE_ENV_ANTHROPIC_API_KEY = "env_anthropic_api_key"
+SOURCE_CLAUDE_CODE_CREDENTIALS = "claude_code_credentials"
+SOURCE_CREDENTIAL_POOL = "credential_pool"
+
+DEFAULT_ANTHROPIC_RESOLVE_ORDER = (
+    SOURCE_ENV_ANTHROPIC_TOKEN,
+    SOURCE_ENV_CLAUDE_CODE_OAUTH_TOKEN,
+    SOURCE_ENV_ANTHROPIC_API_KEY,
+    SOURCE_CLAUDE_CODE_CREDENTIALS,
+    SOURCE_CREDENTIAL_POOL,
+)
+
+SUPPORTED_ANTHROPIC_RESOLVE_SOURCES = frozenset(DEFAULT_ANTHROPIC_RESOLVE_ORDER)
+
+
+def get_anthropic_resolve_order() -> tuple[str, ...]:
+    """Return the configured credential-source order for Anthropic.
+
+    Reads ``credential_resolve_order.anthropic`` from config.yaml. Any source
+    the user omits keeps its default relative position at the end, so a partial
+    list only *promotes* the sources it names and never silently drops a
+    fallback. Unknown entries are ignored.
+
+    Returns ``DEFAULT_ANTHROPIC_RESOLVE_ORDER`` when unset or unreadable, so
+    behaviour is unchanged for anyone who never touches the key.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+    except Exception:
+        return DEFAULT_ANTHROPIC_RESOLVE_ORDER
+
+    if not isinstance(config, dict):
+        return DEFAULT_ANTHROPIC_RESOLVE_ORDER
+
+    configured = config.get("credential_resolve_order")
+    if not isinstance(configured, dict):
+        return DEFAULT_ANTHROPIC_RESOLVE_ORDER
+
+    requested = configured.get("anthropic")
+    if not isinstance(requested, (list, tuple)):
+        return DEFAULT_ANTHROPIC_RESOLVE_ORDER
+
+    order: list[str] = []
+    for item in requested:
+        name = str(item or "").strip().lower()
+        if name in SUPPORTED_ANTHROPIC_RESOLVE_SOURCES and name not in order:
+            order.append(name)
+
+    if not order:
+        return DEFAULT_ANTHROPIC_RESOLVE_ORDER
+
+    # Append any source the user did not mention, preserving default order.
+    for name in DEFAULT_ANTHROPIC_RESOLVE_ORDER:
+        if name not in order:
+            order.append(name)
+    return tuple(order)
+
+
 def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
-    Priority:
+    Default priority:
       1. ANTHROPIC_TOKEN env var (OAuth/setup token saved by Hermes)
       2. CLAUDE_CODE_OAUTH_TOKEN env var
       3. ANTHROPIC_API_KEY env var (explicit regular API key)
       4. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
          — with automatic refresh if expired and a refresh token is available
       5. Anthropic credential_pool OAuth entry (~/.hermes/auth.json)
+
+    The order is user-overridable via ``credential_resolve_order.anthropic`` in
+    config.yaml — see ``get_anthropic_resolve_order``. Multi-account pool users
+    typically promote ``credential_pool`` above ``claude_code_credentials`` so
+    that rotation, not a static file, decides which account is billed.
 
     Returns the token string or None.
     """
@@ -1377,37 +1447,40 @@ def resolve_anthropic_token() -> Optional[str]:
             creds_loaded = True
         return creds
 
-    # 1. Hermes-managed OAuth/setup token env var
-    token = _getenv("ANTHROPIC_TOKEN").strip()
-    if token:
-        preferred = _prefer_refreshable_claude_code_token(token, _read_creds())
-        if preferred:
-            return preferred
-        return token
+    def _from_env_anthropic_token() -> Optional[str]:
+        # Hermes-managed OAuth/setup token env var
+        token = _getenv("ANTHROPIC_TOKEN").strip()
+        if not token:
+            return None
+        return _prefer_refreshable_claude_code_token(token, _read_creds()) or token
 
-    # 2. CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
-    cc_token = _getenv("CLAUDE_CODE_OAUTH_TOKEN").strip()
-    if cc_token:
-        preferred = _prefer_refreshable_claude_code_token(cc_token, _read_creds())
-        if preferred:
-            return preferred
-        return cc_token
+    def _from_env_claude_code_oauth_token() -> Optional[str]:
+        # CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
+        token = _getenv("CLAUDE_CODE_OAUTH_TOKEN").strip()
+        if not token:
+            return None
+        return _prefer_refreshable_claude_code_token(token, _read_creds()) or token
 
-    # 3. Regular API key. An explicit user-configured key must not be shadowed
-    # by auto-discovered Claude Code or credential-pool OAuth credentials.
-    api_key = _getenv("ANTHROPIC_API_KEY").strip()
-    if api_key:
-        return api_key
+    def _from_env_anthropic_api_key() -> Optional[str]:
+        # Regular API key. An explicit user-configured key must not be shadowed
+        # by auto-discovered Claude Code or credential-pool OAuth credentials.
+        return _getenv("ANTHROPIC_API_KEY").strip() or None
 
-    # 4. Claude Code credential file
-    resolved_claude_token = _resolve_claude_code_token_from_credentials(_read_creds())
-    if resolved_claude_token:
-        return resolved_claude_token
+    def _from_claude_code_credentials() -> Optional[str]:
+        return _resolve_claude_code_token_from_credentials(_read_creds())
 
-    # 5. Hermes credential_pool OAuth entry.
-    resolved_pool_token = _resolve_anthropic_pool_token()
-    if resolved_pool_token:
-        return resolved_pool_token
+    resolvers = {
+        SOURCE_ENV_ANTHROPIC_TOKEN: _from_env_anthropic_token,
+        SOURCE_ENV_CLAUDE_CODE_OAUTH_TOKEN: _from_env_claude_code_oauth_token,
+        SOURCE_ENV_ANTHROPIC_API_KEY: _from_env_anthropic_api_key,
+        SOURCE_CLAUDE_CODE_CREDENTIALS: _from_claude_code_credentials,
+        SOURCE_CREDENTIAL_POOL: _resolve_anthropic_pool_token,
+    }
+
+    for source in get_anthropic_resolve_order():
+        resolved = resolvers[source]()
+        if resolved:
+            return resolved
 
     return None
 

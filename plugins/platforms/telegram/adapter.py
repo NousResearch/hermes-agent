@@ -2177,7 +2177,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         self._polling_progress_event.set()
         self._polling_network_error_count = 0
-        if generation == self._polling_conflict_recovery_generation:
+        # Bare/test adapters may not have run ``__init__``; treat missing as
+        # "no conflict recovery in flight" (same defensive shape as teardown).
+        if generation == getattr(self, "_polling_conflict_recovery_generation", None):
             self._polling_conflict_recovery_generation = None
         else:
             self._polling_conflict_count = 0

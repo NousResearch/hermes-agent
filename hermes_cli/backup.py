@@ -1581,7 +1581,20 @@ def restore_cron_jobs_if_emptied(
 
 
 def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
-    """Remove oldest quick snapshots beyond the keep limit. Returns count deleted."""
+    """Remove oldest quick snapshots beyond the keep limit. Returns count deleted.
+
+    ``keep`` is floored to 1 because this helper is also called immediately
+    after ``create_quick_snapshot`` writes a fresh snapshot: ``keep=0`` would
+    delete *every* snapshot including the one just created (``dirs[0:]``),
+    leaving the user with nothing to restore. Same floor as
+    ``_prune_pre_update_backups``.
+    """
+    try:
+        keep_n = int(keep)
+    except (TypeError, ValueError):
+        keep_n = _QUICK_DEFAULT_KEEP
+    keep_n = max(keep_n, 1)
+
     if not root.exists():
         return 0
 
@@ -1596,7 +1609,7 @@ def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
     )
 
     deleted = 0
-    for d in dirs[keep:]:
+    for d in dirs[keep_n:]:
         try:
             shutil.rmtree(d)
             deleted += 1

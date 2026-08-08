@@ -382,6 +382,24 @@ class ContextEngine(ABC):
         """
         return True
 
+    # -- Optional: host-owned compression budget ----------------------------
+
+    def set_compression_budget(
+        self,
+        context_capacity: int,
+        trigger_tokens: int,
+        *,
+        reason: str = "",
+    ) -> bool:
+        """Accept Hermes' effective input capacity and compression trigger.
+
+        Engines can override this opt-in hook to synchronize private context
+        management with a model or runtime transition.  The default deliberately
+        declines the handoff, preserving the policy of existing third-party
+        engines.
+        """
+        return False
+
     # -- Optional: session lifecycle ---------------------------------------
 
     def on_session_start(self, session_id: str, **kwargs) -> None:

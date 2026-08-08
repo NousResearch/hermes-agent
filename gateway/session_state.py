@@ -140,6 +140,11 @@ class PersistentState:
     update_prompt_pending: bool = False
     # Image paths staged for native (inline) attachment; consumed one-shot.
     native_image_paths: List[str] = field(default_factory=list)
+    # Remote image URLs staged for native (inline) attachment; consumed
+    # one-shot.  Kept separate from ``native_image_paths`` because native
+    # attachment treats the two differently: local paths are embedded as
+    # base64 data URLs, remote URLs are passed through verbatim.
+    native_image_urls: List[str] = field(default_factory=list)
     # Legacy runner-level pending message text (write-mostly; flushed to
     # disk on shutdown — see #72680).  NOTE: distinct from the adapter-level
     # ``_pending_messages`` (Dict[str, MessageEvent]) in gateway/base.py,
@@ -406,6 +411,9 @@ LEGACY_FIELD_SPECS: Dict[str, _FieldSpec] = {
     ),
     "_pending_native_image_paths_by_session": _FieldSpec(
         "persistent", "native_image_paths", list, _present_nonzero
+    ),
+    "_pending_native_image_urls_by_session": _FieldSpec(
+        "persistent", "native_image_urls", list, _present_nonzero
     ),
     "_pending_messages": _FieldSpec(
         "persistent", "pending_command_text", lambda: None, _present_not_none

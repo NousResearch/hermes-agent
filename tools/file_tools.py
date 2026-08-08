@@ -649,6 +649,13 @@ _SENSITIVE_PATH_PREFIXES = (
     # symlinks), and /private/var/tmp is a normal temp dir.
     "/private/var/db/", "/private/var/root/",
 )
+# macOS resolves pytest/tmpdir paths under /private/var/folders. That is a
+# user temp area, not a system config target, and blocking it breaks file-tool
+# tests plus legitimate temporary artifact writes.
+_SENSITIVE_PATH_EXEMPT_PREFIXES = (
+    "/private/var/folders/",
+    "/var/folders/",
+)
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
 _hermes_config_resolved: str | None = None
@@ -683,6 +690,9 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
+    for prefix in _SENSITIVE_PATH_EXEMPT_PREFIXES:
+        if resolved.startswith(prefix) or normalized.startswith(prefix):
+            return None
     for prefix in _SENSITIVE_PATH_PREFIXES:
         if resolved.startswith(prefix) or normalized.startswith(prefix):
             return _err

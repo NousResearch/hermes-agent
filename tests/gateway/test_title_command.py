@@ -105,7 +105,10 @@ class TestHandleTitleCommand:
 
         assert "My Topic Name" in result
         runner._schedule_telegram_topic_title_rename.assert_called_once_with(
-            event.source, "test_session_123", "My Topic Name"
+            event.source,
+            "test_session_123",
+            "My Topic Name",
+            registry_provenance="user_confirmed",
         )
         db.close()
 

@@ -9556,6 +9556,33 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return self._execute_write(_do)
 
+    @staticmethod
+    def _ensure_telegram_topic_title_registry(conn) -> None:
+        """Create the Verified-title Registry and advance topic schema to v3."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS telegram_dm_topic_title_registry (
+                chat_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                provenance TEXT NOT NULL CHECK (provenance = 'user_confirmed'),
+                confirmed_at REAL NOT NULL,
+                PRIMARY KEY (chat_id, thread_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO state_meta (key, value) VALUES (?, '3')
+            ON CONFLICT(key) DO UPDATE SET value =
+                CASE
+                    WHEN CAST(value AS INTEGER) < 3 THEN excluded.value
+                    ELSE value
+                END
+            """,
+            ("telegram_dm_topic_schema_version",),
+        )
+
     def apply_telegram_topic_migration(self) -> None:
         """Create Telegram DM topic-mode tables on explicit /topic opt-in.
 
@@ -9568,6 +9595,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
           v1 — initial shape (no ON DELETE CASCADE on session_id FK)
           v2 — session_id FK gets ON DELETE CASCADE so session pruning
                automatically clears bindings.
+          v3 — Verified Telegram topic-title Registry.
         """
         def _do(conn):
             conn.executescript(
@@ -9602,6 +9630,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
                 CREATE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_user
                 ON telegram_dm_topic_bindings(user_id, chat_id);
+
                 """
             )
 
@@ -9649,11 +9678,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         """
                     )
 
-            conn.execute(
-                "INSERT INTO state_meta (key, value) VALUES (?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                ("telegram_dm_topic_schema_version", "2"),
-            )
+            self._ensure_telegram_topic_title_registry(conn)
         self._execute_write(_do)
 
     def enable_telegram_topic_mode(
@@ -9775,6 +9800,78 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             except sqlite3.OperationalError:
                 return None
         return dict(row) if row else None
+
+    def get_verified_telegram_topic_title(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the user-confirmed topic title without creating schema."""
+        with self._lock:
+            try:
+                row = self._conn.execute(
+                    "SELECT title, provenance, confirmed_at "
+                    "FROM telegram_dm_topic_title_registry "
+                    "WHERE chat_id = ? AND thread_id = ?",
+                    (str(chat_id), str(thread_id)),
+                ).fetchone()
+            except sqlite3.OperationalError as exc:
+                message = str(exc).strip().lower()
+                if message in {
+                    "no such table: telegram_dm_topic_title_registry",
+                    "no such table: main.telegram_dm_topic_title_registry",
+                }:
+                    return None
+                raise
+        return dict(row) if row else None
+
+    def record_verified_telegram_topic_title(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        title: str,
+        provenance: str,
+        expected_session_id: str,
+    ) -> bool:
+        """Record a verified title if the topic still belongs to the session."""
+        if not title:
+            raise ValueError("Verified topic titles require a title")
+        if provenance != "user_confirmed":
+            raise ValueError("Verified topic title provenance must be user_confirmed")
+        if not expected_session_id:
+            raise ValueError("Verified topic titles require an expected session ID")
+        now = time.time()
+
+        def _do(conn):
+            # Existing installations may already carry topic schema v2 and
+            # therefore never re-run /topic after upgrading. Create the v3
+            # Registry lazily on the first verified rename write rather than
+            # mutating topic-mode state during ordinary SessionDB startup.
+            self._ensure_telegram_topic_title_registry(conn)
+            binding = conn.execute(
+                "SELECT session_id FROM telegram_dm_topic_bindings "
+                "WHERE chat_id = ? AND thread_id = ?",
+                (str(chat_id), str(thread_id)),
+            ).fetchone()
+            if binding is None or str(binding[0]) != str(expected_session_id):
+                return False
+            conn.execute(
+                """
+                INSERT INTO telegram_dm_topic_title_registry (
+                    chat_id, thread_id, title, provenance, confirmed_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id, thread_id) DO UPDATE SET
+                    title = excluded.title,
+                    provenance = excluded.provenance,
+                    confirmed_at = excluded.confirmed_at
+                """,
+                (str(chat_id), str(thread_id), str(title), str(provenance), now),
+            )
+            return True
+
+        return bool(self._execute_write(_do))
 
     def list_telegram_topic_bindings_for_chat(
         self,
@@ -10387,6 +10484,25 @@ class AsyncSessionDB:
 
     def __init__(self, db: "SessionDB") -> None:
         self._db = db
+
+    async def record_verified_telegram_topic_title(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        title: str,
+        provenance: str,
+        expected_session_id: str,
+    ) -> bool:
+        """Offload the fail-closed Verified-title write explicitly."""
+        return await asyncio.to_thread(
+            self._db.record_verified_telegram_topic_title,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            title=title,
+            provenance=provenance,
+            expected_session_id=expected_session_id,
+        )
 
     def __getattr__(self, name: str):
         attr = getattr(self._db, name)

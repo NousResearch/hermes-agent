@@ -8,6 +8,7 @@ facade's contract and lock the gateway boundary so a 39th raw call can't regress
 
 import ast
 import asyncio
+import inspect
 import threading
 from pathlib import Path
 
@@ -47,6 +48,10 @@ class _SpyDB:
         self._ran_on("returns_list")
         return [{"id": "s1"}, {"id": "s2"}]
 
+    def record_verified_telegram_topic_title(self, **_kwargs):
+        self._ran_on("record_verified_telegram_topic_title")
+        return True
+
     def raises(self):
         self._ran_on("raises")
         raise ValueError("boom")
@@ -85,6 +90,34 @@ async def test_offload_goes_through_to_thread(monkeypatch):
     monkeypatch.setattr(hermes_state.asyncio, "to_thread", _spy)
     await facade.returns_str()
     assert "returns_str" in seen
+
+
+@pytest.mark.asyncio
+async def test_verified_title_write_is_an_explicit_offloaded_async_contract():
+    declared = inspect.getattr_static(
+        AsyncSessionDB,
+        "record_verified_telegram_topic_title",
+    )
+    assert inspect.iscoroutinefunction(declared)
+
+    db = _SpyDB()
+    facade = AsyncSessionDB(db)
+    caller_ident = threading.get_ident()
+    recorded = await facade.record_verified_telegram_topic_title(
+        chat_id="1",
+        thread_id="2",
+        title="Title",
+        provenance="user_confirmed",
+        expected_session_id="session",
+    )
+
+    assert recorded is True
+    ran_idents = [
+        ident
+        for name, ident in db.calls
+        if name == "record_verified_telegram_topic_title"
+    ]
+    assert ran_idents and all(ident != caller_ident for ident in ran_idents)
 
 
 # --------------------------------------------------------------------------

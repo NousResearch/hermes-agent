@@ -1558,8 +1558,36 @@ class TestSchemaInit:
         assert binding["user_id"] == "208214988"
         assert binding["session_key"] == "telegram:dm:208214988:thread:17585"
         assert binding["session_id"] == "topic-session"
-        assert db.get_meta("telegram_dm_topic_schema_version") == "2"
+        assert int(db.get_meta("telegram_dm_topic_schema_version")) >= 3
+        registry = db._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'telegram_dm_topic_title_registry'"
+        ).fetchone()
+        assert registry is not None
         db.close()
+
+    def test_verified_title_read_propagates_unexpected_operational_error(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        assert db.get_verified_telegram_topic_title(
+            chat_id="208214988",
+            thread_id="42",
+        ) is None
+        original_connection = db._conn
+
+        class FailingConnection:
+            def execute(self, *_args, **_kwargs):
+                raise sqlite3.OperationalError("database is locked")
+
+        db._conn = FailingConnection()
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+                db.get_verified_telegram_topic_title(
+                    chat_id="208214988",
+                    thread_id="42",
+                )
+        finally:
+            db._conn = original_connection
+            db.close()
 
 
 

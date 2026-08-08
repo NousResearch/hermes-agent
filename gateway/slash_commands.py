@@ -4484,7 +4484,13 @@ class GatewaySlashCommandsMixin:
                     )
                     if callable(schedule_rename):
                         try:
-                            await asyncio.to_thread(schedule_rename, source, session_id, sanitized)
+                            await asyncio.to_thread(
+                                schedule_rename,
+                                source,
+                                session_id,
+                                sanitized,
+                                registry_provenance="user_confirmed",
+                            )
                         except Exception:
                             logger.debug(
                                 "Failed to rename Telegram topic from /title",

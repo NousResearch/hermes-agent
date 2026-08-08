@@ -5,6 +5,8 @@ Telegram topics act as independent Hermes session lanes.
 """
 
 from datetime import datetime
+import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -66,7 +68,7 @@ def _make_runner(session_db=None):
     adapter.send_image_file = AsyncMock()
     adapter._bot = None
     adapter._create_dm_topic = AsyncMock(return_value=None)
-    adapter.rename_dm_topic = AsyncMock()
+    adapter.rename_dm_topic = AsyncMock(return_value=True)
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(
@@ -618,6 +620,625 @@ async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
         thread_id="42",
         name="Build Telegram Topic UX",
     )
+
+
+@pytest.mark.asyncio
+async def test_explicit_title_scheduler_bypasses_auto_rename_disable(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner.config.platforms[Platform.TELEGRAM].extra = {
+        "disable_topic_auto_rename": True,
+    }
+    runner._gateway_loop = asyncio.get_running_loop()
+
+    runner._schedule_telegram_topic_title_rename(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "Eng Training 1",
+        registry_provenance="user_confirmed",
+    )
+
+    row = None
+    for _ in range(100):
+        with db._lock:
+            row = db._conn.execute(
+                "SELECT title, provenance FROM telegram_dm_topic_title_registry "
+                "WHERE chat_id = ? AND thread_id = ?",
+                ("208214988", "42"),
+            ).fetchone()
+        if row is not None:
+            break
+        await asyncio.sleep(0.01)
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_awaited_once()
+    assert row is not None
+    assert tuple(row) == ("Eng Training 1", "user_confirmed")
+
+
+@pytest.mark.asyncio
+async def test_newer_scheduled_title_cannot_be_overwritten_by_stale_completion(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner._gateway_loop = asyncio.get_running_loop()
+    old_started = asyncio.Event()
+    release_old = asyncio.Event()
+    calls = []
+
+    async def _rename(*, name, **_kwargs):
+        calls.append(name)
+        if name == "Old Title":
+            old_started.set()
+            await release_old.wait()
+        return True
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.side_effect = _rename
+
+    runner._schedule_telegram_topic_title_rename(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "Old Title",
+        registry_provenance="user_confirmed",
+    )
+    await asyncio.wait_for(old_started.wait(), timeout=1)
+
+    runner._schedule_telegram_topic_title_rename(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "New Title",
+        registry_provenance="user_confirmed",
+    )
+
+    await asyncio.sleep(0.05)
+    assert calls == ["Old Title"]
+    release_old.set()
+
+    for _ in range(100):
+        with db._lock:
+            row = db._conn.execute(
+                "SELECT title FROM telegram_dm_topic_title_registry "
+                "WHERE chat_id = ? AND thread_id = ?",
+                ("208214988", "42"),
+            ).fetchone()
+        if row is not None and row[0] == "New Title":
+            break
+        await asyncio.sleep(0.01)
+
+    assert row[0] == "New Title"
+    assert calls == ["Old Title", "New Title"]
+
+
+@pytest.mark.asyncio
+async def test_later_automatic_title_cannot_supersede_inflight_explicit_title(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner._gateway_loop = asyncio.get_running_loop()
+    explicit_started = asyncio.Event()
+    release_explicit = asyncio.Event()
+    calls = []
+
+    async def _rename(*, name, **_kwargs):
+        calls.append(name)
+        if name == "Explicit Title":
+            explicit_started.set()
+            await release_explicit.wait()
+        return True
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.side_effect = _rename
+    runner._schedule_telegram_topic_title_rename(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "Explicit Title",
+        registry_provenance="user_confirmed",
+    )
+    await asyncio.wait_for(explicit_started.wait(), timeout=1)
+
+    runner._schedule_telegram_topic_title_rename(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "Automatic Title",
+    )
+    release_explicit.set()
+
+    for _ in range(100):
+        with db._lock:
+            row = db._conn.execute(
+                "SELECT title FROM telegram_dm_topic_title_registry "
+                "WHERE chat_id = ? AND thread_id = ?",
+                ("208214988", "42"),
+            ).fetchone()
+        if row is not None:
+            break
+        await asyncio.sleep(0.01)
+
+    assert row is not None
+    assert row[0] == "Explicit Title"
+    assert calls == ["Explicit Title"]
+
+
+@pytest.mark.asyncio
+async def test_automatic_title_after_restart_respects_verified_registry(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    db.record_verified_telegram_topic_title(
+        chat_id="208214988",
+        thread_id="42",
+        title="Explicit Title",
+        provenance="user_confirmed",
+        expected_session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "Automatic Title",
+    )
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_automatic_title_scheduler_respects_auto_rename_disable(tmp_path):
+    runner = _make_runner()
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner.config.platforms[Platform.TELEGRAM].extra = {
+        "disable_topic_auto_rename": True,
+    }
+    runner._gateway_loop = asyncio.get_running_loop()
+
+    runner._schedule_telegram_topic_title_rename(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "Automatic Title",
+    )
+    await asyncio.sleep(0.02)
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provenance", ["", "automatic", "plugin"])
+async def test_only_user_confirmed_provenance_bypasses_auto_rename_disable(
+    provenance,
+):
+    runner = _make_runner()
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner.config.platforms[Platform.TELEGRAM].extra = {
+        "disable_topic_auto_rename": True,
+    }
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "Untrusted Title",
+        registry_provenance=provenance,
+    )
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_real_telegram_adapter_reports_no_api_call_without_bot():
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    adapter = object.__new__(TelegramAdapter)
+    adapter._bot = None
+
+    renamed = await adapter.rename_dm_topic(
+        chat_id=208214988,
+        thread_id=42,
+        name="Eng Training 1",
+    )
+
+    assert renamed is False
+
+
+@pytest.mark.asyncio
+async def test_real_telegram_adapter_propagates_false_api_result():
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    adapter = object.__new__(TelegramAdapter)
+    adapter.platform = Platform.TELEGRAM
+    adapter._bot = SimpleNamespace(edit_forum_topic=AsyncMock(return_value=False))
+
+    renamed = await adapter.rename_dm_topic(
+        chat_id=208214988,
+        thread_id=42,
+        name="Eng Training 1",
+    )
+
+    assert renamed is False
+
+
+@pytest.mark.asyncio
+async def test_explicit_title_does_not_register_when_adapter_reports_no_rename(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner.config.platforms[Platform.TELEGRAM].extra = {
+        "disable_topic_auto_rename": True,
+    }
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.return_value = False
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "Eng Training 1",
+        registry_provenance="user_confirmed",
+    )
+
+    row = db._conn.execute(
+        "SELECT 1 FROM telegram_dm_topic_title_registry "
+        "WHERE chat_id = ? AND thread_id = ?",
+        ("208214988", "42"),
+    ).fetchone()
+    assert row is None
+
+
+@pytest.mark.asyncio
+async def test_explicit_title_does_not_register_false_legacy_bot_result(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    bot = SimpleNamespace(edit_forum_topic=AsyncMock(return_value=False))
+    runner.adapters[Platform.TELEGRAM] = SimpleNamespace(_bot=bot)
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "Eng Training 1",
+        registry_provenance="user_confirmed",
+    )
+
+    with db._lock:
+        row = db._conn.execute(
+            "SELECT 1 FROM telegram_dm_topic_title_registry "
+            "WHERE chat_id = ? AND thread_id = ?",
+            ("208214988", "42"),
+        ).fetchone()
+    assert row is None
+
+
+def test_verified_title_write_lazily_upgrades_existing_v2_topic_schema(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+
+    # Simulate an installation that opted into topic mode before the Verified
+    # title Registry existed. Its v2 marker remains, so startup and /topic do
+    # not run again before the next successful title rename.
+    conn = db._conn
+    assert conn is not None
+    with db._lock:
+        conn.execute("DROP TABLE telegram_dm_topic_title_registry")
+        conn.execute(
+            "UPDATE state_meta SET value = '2' "
+            "WHERE key = 'telegram_dm_topic_schema_version'"
+        )
+        conn.commit()
+
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    db.record_verified_telegram_topic_title(
+        chat_id="208214988",
+        thread_id="42",
+        title="Eng Training 1",
+        provenance="user_confirmed",
+        expected_session_id="sess-topic",
+    )
+
+    with db._lock:
+        row = conn.execute(
+            "SELECT title, provenance FROM telegram_dm_topic_title_registry "
+            "WHERE chat_id = ? AND thread_id = ?",
+            ("208214988", "42"),
+        ).fetchone()
+        version = conn.execute(
+            "SELECT value FROM state_meta "
+            "WHERE key = 'telegram_dm_topic_schema_version'"
+        ).fetchone()
+
+    assert tuple(row) == ("Eng Training 1", "user_confirmed")
+    assert version[0] == "3"
+
+
+def test_verified_registry_rejects_untrusted_provenance_at_storage_boundary(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+
+    with pytest.raises(ValueError, match="user_confirmed"):
+        db.record_verified_telegram_topic_title(
+            chat_id="208214988",
+            thread_id="42",
+            title="Untrusted",
+            provenance="plugin",
+            expected_session_id="sess-topic",
+        )
+
+
+def test_verified_registry_requires_expected_session_id(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+
+    with pytest.raises(TypeError):
+        db.record_verified_telegram_topic_title(
+            chat_id="208214988",
+            thread_id="42",
+            title="Unbound",
+            provenance="user_confirmed",
+        )
+
+
+@pytest.mark.asyncio
+async def test_explicit_title_bypasses_auto_rename_disable_and_registers_after_success(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner.config.platforms[Platform.TELEGRAM].extra = {
+        "disable_topic_auto_rename": True,
+    }
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "Eng Training 1",
+        registry_provenance="user_confirmed",
+    )
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988",
+        thread_id="42",
+        name="Eng Training 1",
+    )
+    row = db._conn.execute(
+        "SELECT title, provenance FROM telegram_dm_topic_title_registry "
+        "WHERE chat_id = ? AND thread_id = ?",
+        ("208214988", "42"),
+    ).fetchone()
+    assert tuple(row) == ("Eng Training 1", "user_confirmed")
+
+
+@pytest.mark.asyncio
+async def test_failed_explicit_title_rename_does_not_register(tmp_path, caplog):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner.config.platforms[Platform.TELEGRAM].extra = {
+        "disable_topic_auto_rename": True,
+    }
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.side_effect = RuntimeError(
+        "Telegram rejected rename"
+    )
+    with caplog.at_level(logging.WARNING):
+        await runner._rename_telegram_topic_for_session_title(
+            _make_source(thread_id="42"),
+            "sess-topic",
+            "Eng Training 1",
+            registry_provenance="user_confirmed",
+        )
+
+    row = db._conn.execute(
+        "SELECT title, provenance FROM telegram_dm_topic_title_registry "
+        "WHERE chat_id = ? AND thread_id = ?",
+        ("208214988", "42"),
+    ).fetchone()
+    assert row is None
+    assert "Explicit Telegram topic rename failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_registry_failure_after_successful_rename_is_observable(
+    tmp_path, monkeypatch
+):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    registry_error = RuntimeError("registry unavailable")
+    monkeypatch.setattr(
+        db,
+        "record_verified_telegram_topic_title",
+        MagicMock(side_effect=registry_error),
+    )
+
+    with pytest.raises(RuntimeError, match="registry unavailable"):
+        await runner._rename_telegram_topic_for_session_title(
+            _make_source(thread_id="42"),
+            "sess-topic",
+            "Eng Training 1",
+            registry_provenance="user_confirmed",
+        )
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_registry_failure_does_not_release_automatic_overwrite(tmp_path, monkeypatch):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner._gateway_loop = asyncio.get_running_loop()
+    calls = []
+
+    async def _rename(*, name, **_kwargs):
+        calls.append(name)
+        return True
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.side_effect = _rename
+    monkeypatch.setattr(
+        db,
+        "record_verified_telegram_topic_title",
+        MagicMock(side_effect=RuntimeError("registry unavailable")),
+    )
+
+    runner._schedule_telegram_topic_title_rename(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "Explicit Title",
+        registry_provenance="user_confirmed",
+    )
+    runner._schedule_telegram_topic_title_rename(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "Automatic Title",
+    )
+
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if calls:
+            break
+    await asyncio.sleep(0.05)
+
+    assert calls == ["Explicit Title"]
+
+
+@pytest.mark.asyncio
+async def test_rebind_during_rename_prevents_stale_verified_registry_write(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("old-session", source="telegram", user_id="208214988")
+    db.create_session("new-session", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="old-session",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+
+    async def _rename_and_rebind(**_kwargs):
+        db.bind_telegram_topic(
+            chat_id="208214988",
+            thread_id="42",
+            user_id="208214988",
+            session_key="agent:main:telegram:dm:208214988:42",
+            session_id="new-session",
+        )
+        return True
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.side_effect = _rename_and_rebind
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"),
+        "old-session",
+        "Stale Title",
+        registry_provenance="user_confirmed",
+    )
+
+    with db._lock:
+        row = db._conn.execute(
+            "SELECT title FROM telegram_dm_topic_title_registry "
+            "WHERE chat_id = ? AND thread_id = ?",
+            ("208214988", "42"),
+        ).fetchone()
+    assert row is None
 
 
 @pytest.mark.asyncio

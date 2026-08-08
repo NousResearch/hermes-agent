@@ -20375,21 +20375,68 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         future.add_done_callback(_log_rename_failure)
 
+    _TELEGRAM_TOPIC_TITLE_GENERATION_LOCK = threading.Lock()
+
+    def _telegram_topic_title_generation_is_current(
+        self,
+        generation_key: tuple[str, str],
+        token: Optional[tuple[str, int, int]],
+    ) -> bool:
+        """Check a priority-aware per-topic title-operation token."""
+        if token is None:
+            return True
+        kind, counter, explicit_epoch = token
+        with self._TELEGRAM_TOPIC_TITLE_GENERATION_LOCK:
+            states = getattr(self, "_telegram_topic_title_generation_states", {})
+            state = states.get(generation_key, {})
+            if kind == "explicit":
+                return state.get("explicit", 0) == counter
+            return (
+                kind == "automatic"
+                and explicit_epoch == 0
+                and state.get("explicit", 0) == 0
+                and state.get("automatic", 0) == counter
+            )
+
     async def _rename_telegram_topic_for_session_title(
         self,
         source: SessionSource,
         session_id: str,
         title: str,
+        *,
+        registry_provenance: Optional[str] = None,
+        rename_generation: Optional[tuple[str, int, int]] = None,
     ) -> None:
-        """Best-effort rename of a Telegram DM topic when Hermes auto-titles a session."""
+        """Best-effort rename of a Telegram DM topic for auto or explicit titles."""
         if not await asyncio.to_thread(self._is_telegram_topic_lane, source) or not source.chat_id or not source.thread_id:
             return
 
-        # Operator can fully disable per-topic auto-rename via
-        # extra.disable_topic_auto_rename. Useful when topics are managed
-        # by the user (ad-hoc Threaded Mode) and auto-rename would
-        # overwrite their chosen names every time the auto-title fires.
-        if self._telegram_topic_auto_rename_disabled(source):
+        # The operator flag disables only automatic title changes. Exactly one
+        # trusted provenance value identifies an explicit /title. Reject other
+        # non-None values so callers cannot manufacture a bypass (including an
+        # empty string that would bypass the flag without writing the Registry).
+        is_user_confirmed = registry_provenance == "user_confirmed"
+        if registry_provenance is not None and not is_user_confirmed:
+            logger.warning(
+                "Rejected unrecognized Telegram title Registry provenance: %r",
+                registry_provenance,
+            )
+            return
+        if (
+            self._telegram_topic_auto_rename_disabled(source)
+            and not is_user_confirmed
+        ):
+            return
+
+        generation_key = (str(source.chat_id), str(source.thread_id))
+
+        def _is_current_generation() -> bool:
+            return self._telegram_topic_title_generation_is_current(
+                generation_key,
+                rename_generation,
+            )
+
+        if not _is_current_generation():
             return
 
         # Skip rename when the topic is operator-declared via
@@ -20426,39 +20473,107 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("Failed to verify Telegram topic binding before rename", exc_info=True)
                 return
 
+            if not is_user_confirmed:
+                try:
+                    verified_title = await session_db.get_verified_telegram_topic_title(
+                        chat_id=str(source.chat_id),
+                        thread_id=str(source.thread_id),
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to check Verified Telegram title before automatic rename",
+                        exc_info=True,
+                    )
+                    return
+                if verified_title is not None:
+                    return
+
+        if not _is_current_generation():
+            return
+
         if adapter is None:
             return
         topic_name = self._sanitize_telegram_topic_title(title)
-        try:
-            rename_topic = getattr(adapter, "rename_dm_topic", None)
-            if rename_topic is not None:
-                await rename_topic(
+
+        async def _record_verified_title() -> None:
+            if not is_user_confirmed or session_db is None:
+                return
+            try:
+                recorded = await session_db.record_verified_telegram_topic_title(
+                    chat_id=str(source.chat_id),
+                    thread_id=str(source.thread_id),
+                    title=topic_name,
+                    provenance=registry_provenance,
+                    expected_session_id=str(session_id),
+                )
+            except Exception:
+                logger.error(
+                    "Telegram topic rename succeeded but Verified title Registry write failed",
+                    exc_info=True,
+                )
+                raise
+            if recorded is not True:
+                logger.warning(
+                    "Telegram topic binding changed during rename; skipped Verified Registry write"
+                )
+
+        rename_topic = getattr(adapter, "rename_dm_topic", None)
+        if rename_topic is not None:
+            try:
+                renamed = await rename_topic(
                     chat_id=str(source.chat_id),
                     thread_id=str(source.thread_id),
                     name=topic_name,
                 )
+            except Exception:
+                if is_user_confirmed:
+                    logger.warning("Explicit Telegram topic rename failed", exc_info=True)
+                else:
+                    logger.debug("Failed to rename Telegram topic", exc_info=True)
                 return
+            if renamed is not True:
+                log = logger.warning if is_user_confirmed else logger.debug
+                log("Telegram adapter did not confirm topic rename")
+                return
+            if not _is_current_generation():
+                logger.info("Skipped stale Telegram title Registry write")
+                return
+            await _record_verified_title()
+            return
 
-            bot = getattr(adapter, "_bot", None)
-            edit_forum_topic = getattr(bot, "edit_forum_topic", None) if bot is not None else None
-            if edit_forum_topic is None:
-                edit_forum_topic = getattr(bot, "editForumTopic", None) if bot is not None else None
-            if edit_forum_topic is None:
-                return
+        bot = getattr(adapter, "_bot", None)
+        edit_forum_topic = getattr(bot, "edit_forum_topic", None) if bot is not None else None
+        if edit_forum_topic is None:
+            edit_forum_topic = getattr(bot, "editForumTopic", None) if bot is not None else None
+        if edit_forum_topic is None:
+            return
+        try:
             try:
-                await edit_forum_topic(
+                renamed = await edit_forum_topic(
                     chat_id=int(source.chat_id),
                     message_thread_id=int(source.thread_id),
                     name=topic_name,
                 )
             except (TypeError, ValueError):
-                await edit_forum_topic(
+                renamed = await edit_forum_topic(
                     chat_id=source.chat_id,
                     message_thread_id=source.thread_id,
                     name=topic_name,
                 )
         except Exception:
-            logger.debug("Failed to rename Telegram topic for auto-generated title", exc_info=True)
+            if is_user_confirmed:
+                logger.warning("Explicit Telegram topic rename failed", exc_info=True)
+            else:
+                logger.debug("Failed to rename Telegram topic", exc_info=True)
+            return
+        if renamed is not True:
+            log = logger.warning if is_user_confirmed else logger.debug
+            log("Telegram bot API did not confirm topic rename")
+            return
+        if not _is_current_generation():
+            logger.info("Skipped stale Telegram title Registry write")
+            return
+        await _record_verified_title()
 
     def _telegram_topic_auto_rename_disabled(self, source: SessionSource) -> bool:
         """Return True when operator disabled per-topic auto-rename for this Telegram chat.
@@ -20488,11 +20603,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         source: SessionSource,
         session_id: str,
         title: str,
+        *,
+        registry_provenance: Optional[str] = None,
     ) -> None:
-        """Schedule a topic rename from the auto-title background thread."""
+        """Schedule a Telegram topic rename from auto-title or explicit /title."""
         if not title or not self._is_telegram_topic_lane(source):
             return
-        if self._telegram_topic_auto_rename_disabled(source):
+        is_user_confirmed = registry_provenance == "user_confirmed"
+        if registry_provenance is not None and not is_user_confirmed:
+            logger.warning(
+                "Rejected unrecognized Telegram title Registry provenance: %r",
+                registry_provenance,
+            )
+            return
+        if self._telegram_topic_auto_rename_disabled(source) and not is_user_confirmed:
             return
         try:
             loop = asyncio.get_running_loop()
@@ -20504,8 +20628,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             copied_source = dataclasses.replace(source)
         except Exception:
             copied_source = source
+        generation_key = (str(copied_source.chat_id), str(copied_source.thread_id))
+        with self._TELEGRAM_TOPIC_TITLE_GENERATION_LOCK:
+            states = getattr(self, "_telegram_topic_title_generation_states", None)
+            if states is None:
+                states = {}
+                self._telegram_topic_title_generation_states = states
+            state = states.setdefault(
+                generation_key,
+                {"explicit": 0, "automatic": 0},
+            )
+            if is_user_confirmed:
+                state["explicit"] += 1
+                state["automatic"] += 1
+                generation = ("explicit", state["explicit"], 0)
+            else:
+                state["automatic"] += 1
+                generation = (
+                    "automatic",
+                    state["automatic"],
+                    state["explicit"],
+                )
+
+        async def _run_latest_title_operation() -> None:
+            topic_locks = getattr(self, "_telegram_topic_title_locks", None)
+            if topic_locks is None:
+                topic_locks = {}
+                self._telegram_topic_title_locks = topic_locks
+            topic_lock = topic_locks.get(generation_key)
+            if topic_lock is None:
+                topic_lock = asyncio.Lock()
+                topic_locks[generation_key] = topic_lock
+            async with topic_lock:
+                if not self._telegram_topic_title_generation_is_current(
+                    generation_key,
+                    generation,
+                ):
+                    return
+                await self._rename_telegram_topic_for_session_title(
+                    copied_source,
+                    session_id,
+                    title,
+                    registry_provenance=registry_provenance,
+                    rename_generation=generation,
+                )
+
         future = safe_schedule_threadsafe(
-            self._rename_telegram_topic_for_session_title(copied_source, session_id, title),
+            _run_latest_title_operation(),
             loop,
             logger=logger,
             log_message="Telegram topic title rename failed to schedule",

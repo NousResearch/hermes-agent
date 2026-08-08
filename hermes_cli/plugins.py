@@ -718,6 +718,23 @@ class PluginContext:
         except Exception:
             return "default"
 
+    # -- approval transport registration ------------------------------------
+
+    def register_approval_transport(self, name: str, present_fn: Callable) -> None:
+        """Register a human approval presentation transport.
+
+        The transport is inactive until the operator explicitly selects
+        ``security.approval.transport: <name>``. It receives a host-created,
+        redacted ``ApprovalRequest`` and may only return a correlated human
+        decision; command policy and approval persistence remain host-owned.
+        ``present_fn`` may be synchronous or async.
+        """
+        self._manager.register_approval_transport(
+            name,
+            present_fn,
+            plugin_id=self.manifest.key or self.manifest.name,
+        )
+
     # -- tool registration --------------------------------------------------
 
     def register_tool(
@@ -1613,6 +1630,8 @@ class PluginManager:
         # Plugin-registered auxiliary tasks: key → {key, display_name,
         # description, defaults, plugin}. See PluginContext.register_auxiliary_task.
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
+        # Explicitly-selected, profile-scoped human approval transports.
+        self._approval_transports: Dict[str, Any] = {}
         # Slack Block Kit action handlers registered by plugins. Each entry
         # is (matcher, callback, plugin_name); the Slack adapter wires them
         # into its slack_bolt App at connect() time. ``matcher`` is whatever
@@ -1649,6 +1668,7 @@ class PluginManager:
             self._plugin_skills.clear()
             self._portable_mcp_servers.clear()
             self._aux_tasks.clear()
+            self._approval_transports.clear()
             self._slack_action_handlers.clear()
             self._context_engine = None
         # Set the flag up front as a re-entrancy guard (a plugin's register()
@@ -1838,6 +1858,49 @@ class PluginManager:
                 len(self._plugins),
                 sum(1 for p in self._plugins.values() if p.enabled),
             )
+
+    def register_approval_transport(
+        self,
+        name: str,
+        present_fn: Callable,
+        *,
+        plugin_id: str,
+    ) -> None:
+        """Register one plugin-owned approval transport for this profile."""
+        import re
+
+        from hermes_cli.approval_transport import RegisteredApprovalTransport
+
+        clean = str(name).strip().lower()
+        if clean == "builtin":
+            raise ValueError("approval transport name 'builtin' is reserved")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", clean):
+            raise ValueError(
+                "approval transport name must match [a-z0-9][a-z0-9_-]{0,63}"
+            )
+        if not callable(present_fn):
+            raise TypeError("approval transport present_fn must be callable")
+        if clean in self._approval_transports:
+            owner = self._approval_transports[clean].plugin_id
+            raise ValueError(
+                f"approval transport {clean!r} is already registered by {owner!r}"
+            )
+        self._approval_transports[clean] = RegisteredApprovalTransport(
+            name=clean,
+            present=present_fn,
+            plugin_id=plugin_id,
+            profile_home=str(get_hermes_home().resolve()),
+        )
+        logger.info("Plugin %s registered approval transport: %s", plugin_id, clean)
+
+    def get_approval_transport(self, name: str):
+        """Return a transport only inside the profile that registered it."""
+        registered = self._approval_transports.get(str(name).strip().lower())
+        if registered is None:
+            return None
+        if registered.profile_home != str(get_hermes_home().resolve()):
+            return None
+        return registered
 
     def _collect_directory_manifests(self) -> List[PluginManifest]:
         """Collect directory manifests in the same order as full discovery.

@@ -3666,6 +3666,160 @@ def _format_tirith_description(tirith_result: dict) -> str:
     return "Security scan — " + "; ".join(parts)
 
 
+def get_plugin_manager():
+    """Lazy plugin-manager seam used by tests and early tool-only imports."""
+    from hermes_cli.plugins import get_plugin_manager as _get_manager
+
+    return _get_manager()
+
+
+def _get_approval_transport_config() -> tuple[str, str | None]:
+    """Return explicitly selected transport and fail-closed fallback mode."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly() or {}
+        approval_config = ((config.get("security") or {}).get("approval") or {})
+        selected = str(approval_config.get("transport") or "builtin").strip().lower()
+        fallback = str(approval_config.get("transport_fallback") or "").strip().lower()
+    except Exception:
+        # An unreadable/malformed selection must not silently materialize a
+        # prompt on a built-in surface the operator may not be watching.
+        return "config-error", None
+    return selected or "builtin", "builtin" if fallback == "builtin" else None
+
+
+def _present_with_selected_transport(
+    *,
+    command: str,
+    description: str,
+    pattern_key: str,
+    pattern_keys: list[str],
+    session_key: str,
+    surface: str,
+    allow_session: bool,
+    allow_permanent: bool,
+) -> dict:
+    """Present through an explicitly selected plugin transport, if any."""
+    name, fallback = _get_approval_transport_config()
+    if name == "builtin":
+        return {"selected": False}
+
+    try:
+        registered = get_plugin_manager().get_approval_transport(name)
+    except Exception:
+        logger.warning("Could not resolve selected approval transport %r", name, exc_info=True)
+        registered = None
+    if registered is None:
+        logger.warning("Selected approval transport %r is unavailable", name)
+        return {
+            "selected": True,
+            "choice": "deny",
+            "failure": "unavailable",
+            "fallback": fallback,
+            "name": name,
+        }
+
+    try:
+        from agent.redact import redact_sensitive_text
+        from hermes_cli.approval_transport import ApprovalRequest, invoke_approval_transport
+
+        timeout_seconds = _get_approval_timeout()
+        request = ApprovalRequest.create(
+            command=redact_sensitive_text(command),
+            description=redact_sensitive_text(description),
+            pattern_key=pattern_key,
+            pattern_keys=tuple(pattern_keys),
+            session_key=session_key,
+            surface=surface,
+            allow_session=allow_session,
+            allow_permanent=allow_permanent,
+            timeout_seconds=timeout_seconds,
+        )
+    except Exception:
+        # Never fall back to raw text if redaction or request construction
+        # fails. The selected boundary exists, so fail closed without calling
+        # the plugin or leaking the unredacted payload to logs/hooks.
+        logger.warning("Could not build redacted plugin approval request")
+        return {
+            "selected": True,
+            "choice": "deny",
+            "failure": "error",
+            "fallback": None,
+            "name": name,
+        }
+    hook_surface = f"transport:{name}"
+    _fire_approval_hook(
+        "pre_approval_request",
+        command=request.command,
+        description=request.description,
+        pattern_key=pattern_key,
+        pattern_keys=list(pattern_keys),
+        session_key=session_key,
+        surface=hook_surface,
+        request_id=request.request_id,
+        request_digest=request.digest,
+    )
+    try:
+        from tools.environments.base import touch_activity_if_due
+    except Exception:  # pragma: no cover - minimal tool-only environments
+        touch_activity_if_due = None
+    now = time.monotonic()
+    activity_state = {"last_touch": now, "start": now}
+
+    def _poll() -> None:
+        if touch_activity_if_due is not None:
+            touch_activity_if_due(activity_state, "waiting for plugin approval transport")
+
+    with human_wait_window(session_key):
+        result = invoke_approval_transport(
+            registered.present,
+            request,
+            timeout_seconds=timeout_seconds,
+            on_poll=_poll,
+            is_interrupted=is_interrupted,
+        )
+    hook_choice = result.choice if result.failure is None else f"transport_{result.failure}"
+    _fire_approval_hook(
+        "post_approval_response",
+        command=request.command,
+        description=request.description,
+        pattern_key=pattern_key,
+        pattern_keys=list(pattern_keys),
+        session_key=session_key,
+        surface=hook_surface,
+        choice=hook_choice,
+        request_id=request.request_id,
+        request_digest=request.digest,
+    )
+    return {
+        "selected": True,
+        "choice": result.choice,
+        "failure": result.failure,
+        "fallback": fallback,
+        "name": name,
+    }
+
+
+def _transport_denied_result(
+    *, pattern_key: str, description: str, failure: str
+) -> dict:
+    breaker_addendum = _denial_breaker_addendum(get_current_session_key())
+    return {
+        "approved": False,
+        "message": (
+            f"BLOCKED: Selected approval transport failed ({failure}); the user "
+            "has NOT consented to this action. Do NOT retry this command or "
+            "attempt the same outcome through another route."
+            f"{breaker_addendum}"
+        ),
+        "pattern_key": pattern_key,
+        "description": description,
+        "outcome": f"transport_{failure}",
+        "user_consent": False,
+    }
+
+
 def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
                             *, surface: str = "gateway") -> dict:
     """Enqueue *approval_data*, notify the user, and block the calling agent
@@ -4060,6 +4214,70 @@ def check_all_command_guards(command: str, env_type: str,
     # session — the UI was stricter than the persistence layer.
     has_permanent_capable = any(not is_t for _, _, is_t in warnings)
 
+    # An explicitly selected plugin transport replaces every built-in prompt
+    # surface (CLI/TUI/gateway/ACP). Detection, allowed scopes, persistence,
+    # timeout, and final authorization remain host-owned. A failed transport
+    # reaches a built-in surface only under the explicit fallback opt-in.
+    transport_attempt = _present_with_selected_transport(
+        command=command,
+        description=combined_desc,
+        pattern_key=primary_key,
+        pattern_keys=all_keys,
+        session_key=session_key,
+        surface="gateway" if (is_gateway or is_ask) else "cli",
+        allow_session=not smart_denied_for_owner,
+        allow_permanent=has_permanent_capable and not smart_denied_for_owner,
+    )
+    if transport_attempt.get("selected"):
+        transport_failure = transport_attempt.get("failure")
+        if transport_failure and transport_attempt.get("fallback") == "builtin":
+            logger.warning(
+                "Approval transport %r failed (%s); using explicit builtin fallback",
+                transport_attempt.get("name"),
+                transport_failure,
+            )
+        elif transport_failure:
+            return _transport_denied_result(
+                pattern_key=primary_key,
+                description=combined_desc,
+                failure=transport_failure,
+            )
+        else:
+            transport_choice = transport_attempt.get("choice")
+            if transport_choice == "deny":
+                _record_denial(session_key)
+                breaker_addendum = _denial_breaker_addendum(session_key)
+                return {
+                    "approved": False,
+                    "message": (
+                        "BLOCKED: User denied this command through the selected "
+                        "approval transport. The user has NOT consented to this "
+                        "action. Do NOT retry or attempt the same outcome through "
+                        f"another route.{breaker_addendum}"
+                    ),
+                    "pattern_key": primary_key,
+                    "description": combined_desc,
+                    "outcome": "denied",
+                    "user_consent": False,
+                }
+            if not smart_denied_for_owner:
+                for key, _, is_tirith in warnings:
+                    if transport_choice == "session" or (
+                        transport_choice == "always" and is_tirith
+                    ):
+                        approve_session(session_key, key)
+                    elif transport_choice == "always":
+                        approve_session(session_key, key)
+                        approve_permanent(key)
+                        save_permanent_allowlist(_permanent_approved)
+            _reset_denials(session_key)
+            return {
+                "approved": True,
+                "message": None,
+                "user_approved": True,
+                "description": combined_desc,
+            }
+
     # Gateway/async approval — block the agent thread until the user
     # responds with /approve or /deny, mirroring the CLI's synchronous
     # input() flow.  The agent never sees "approval_required"; it either
@@ -4422,6 +4640,60 @@ def check_execute_code_guard(code: str, env_type: str,
     display_command = redact_sensitive_text(command)
     display_code = redact_sensitive_text(code)
     display_description = redact_sensitive_text(description)
+
+    transport_attempt = _present_with_selected_transport(
+        command=command,
+        description=description,
+        pattern_key=pattern_key,
+        pattern_keys=[pattern_key],
+        session_key=session_key,
+        surface="gateway",
+        allow_session=not smart_denied_for_owner,
+        allow_permanent=not smart_denied_for_owner,
+    )
+    if transport_attempt.get("selected"):
+        transport_failure = transport_attempt.get("failure")
+        if transport_failure and transport_attempt.get("fallback") == "builtin":
+            logger.warning(
+                "Approval transport %r failed (%s); using explicit builtin fallback",
+                transport_attempt.get("name"),
+                transport_failure,
+            )
+        elif transport_failure:
+            return _transport_denied_result(
+                pattern_key=pattern_key,
+                description=description,
+                failure=transport_failure,
+            )
+        else:
+            choice = transport_attempt.get("choice")
+            if choice == "deny":
+                _record_denial(session_key)
+                return {
+                    "approved": False,
+                    "message": (
+                        "BLOCKED: User denied execute_code through the selected "
+                        "approval transport. The user has NOT consented."
+                    ),
+                    "pattern_key": pattern_key,
+                    "description": description,
+                    "outcome": "denied",
+                    "user_consent": False,
+                }
+            if not smart_denied_for_owner:
+                if choice == "session":
+                    approve_session(session_key, pattern_key)
+                elif choice == "always":
+                    approve_session(session_key, pattern_key)
+                    approve_permanent(pattern_key)
+                    save_permanent_allowlist(_permanent_approved)
+            _reset_denials(session_key)
+            return {
+                "approved": True,
+                "message": None,
+                "user_approved": True,
+                "description": description,
+            }
 
     notify_cb = None
     with _lock:

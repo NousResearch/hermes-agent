@@ -2205,6 +2205,16 @@ DEFAULT_CONFIG = {
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
         "redact_secrets": True,
+        # Human approval presentation transport. "builtin" preserves the
+        # current CLI/TUI/gateway/ACP surfaces. A plugin transport is used only
+        # when named explicitly here. Transport timeout/error/invalid response
+        # denies unless transport_fallback is explicitly set to "builtin".
+        # This is presentation only: plugins cannot detect, suppress, or
+        # auto-approve commands outside a correlated human response.
+        "approval": {
+            "transport": "builtin",
+            "transport_fallback": "deny",
+        },
         # Writes to agent-instruction files (AGENTS.md/CLAUDE.md/SOUL.md/
         # .cursorrules, project-local .hermes config) always require human
         # approval — even under auto-approve/yolo. Extra patterns are

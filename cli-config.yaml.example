@@ -396,6 +396,9 @@ terminal:
 #   tirith_path: "tirith"       # Path to tirith binary (supports ~ expansion)
 #   tirith_timeout: 5           # Scan timeout in seconds
 #   tirith_fail_open: true      # Allow commands if tirith unavailable
+#   approval:
+#     transport: builtin        # Or an explicitly enabled plugin transport name
+#     transport_fallback: deny  # Set builtin to opt into fallback on transport failure
 
 # =============================================================================
 # Browser Tool Configuration

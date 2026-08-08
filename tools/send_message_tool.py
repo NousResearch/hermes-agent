@@ -788,6 +788,22 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     (preserves code-block boundaries, adds part indicators).
     """
     from gateway.config import Platform
+    from gateway.send_gate import is_send_blocked, platform_name_of, send_gate_message
+
+    # Structural send gate, second chokepoint. The adapter-level gate in
+    # gateway/platforms/base.py covers every live in-process adapter, but this
+    # function also reaches platforms with no adapter instance at all: the
+    # out-of-process path via a plugin's ``standalone_sender_fn`` (and
+    # ``_registry_standalone_send`` below), plus native helpers such as
+    # ``_send_weixin`` that never construct an adapter. Gating here -- above
+    # every per-platform branch -- closes that bypass in one place.
+    #
+    # This is a tool entrypoint, so it reports the block as a result dict
+    # rather than raising; callers surface ``error`` to the agent.
+    if is_send_blocked(pconfig):
+        name = platform_name_of(platform)
+        logger.info("send_message blocked by send_gate for platform %s", name)
+        return {"error": send_gate_message(name)}
 
     media_files = media_files or []
 

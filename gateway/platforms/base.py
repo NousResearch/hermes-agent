@@ -6,6 +6,7 @@ and implement the required methods.
 """
 
 import asyncio
+import functools
 import inspect
 import ipaddress
 import logging
@@ -23,9 +24,80 @@ import weakref
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
+from gateway.send_gate import (
+    SEND_GATE_EXEMPT_METHODS,
+    SendGateDisabledError,
+    assert_send_allowed,
+    platform_name_of,
+)
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
+
+# --- Structural send gate -------------------------------------------------
+# Every outbound path in the gateway ends at a ``send*`` coroutine on a
+# ``BasePlatformAdapter`` subclass: the live plugin adapters under
+# ``plugins/platforms/*/adapter.py``, the built-in adapters in this package,
+# ``RelayAdapter``, ``APIServerAdapter``, and the native media helpers
+# (``send_voice``/``send_video``/``send_image_file``/``send_document``) that
+# ``cron/scheduler.py::_send_media_via_adapter`` invokes directly.
+#
+# Rather than asking each of those ~30 adapters to remember a gate check --
+# which rots the moment someone adds an adapter or a ``send_*`` helper -- the
+# gate is installed once, here, and applied automatically at class-creation
+# time by ``BasePlatformAdapter.__init_subclass__``. Adding a new adapter or a
+# new outbound method inherits the gate with no further action.
+
+_SEND_GATE_MARK = "__send_gate_wrapped__"
+
+
+def _is_gated_send_name(name: str) -> bool:
+    """True for public outbound coroutines the gate should cover."""
+    return (
+        name.startswith("send")
+        and not name.startswith("_")
+        and name not in SEND_GATE_EXEMPT_METHODS
+    )
+
+
+def _wrap_send_with_gate(func, name: str):
+    """Return *func* wrapped so it consults the adapter's send gate first."""
+
+    @functools.wraps(func)
+    async def _gated(self, *args, **kwargs):
+        # getattr-guarded: gateway tests routinely build adapters via
+        # ``object.__new__()`` without running ``__init__``, so ``config`` and
+        # ``platform`` may be absent. A missing config fails open.
+        assert_send_allowed(platform_name_of(self), getattr(self, "config", None), name)
+        return await func(self, *args, **kwargs)
+
+    setattr(_gated, _SEND_GATE_MARK, True)
+    return _gated
+
+
+def install_send_gate(cls) -> None:
+    """Wrap every gated outbound coroutine reachable on *cls*.
+
+    Walks the full MRO rather than ``cls.__dict__`` so methods contributed by
+    non-adapter mixins (e.g. ``WhatsAppBehaviorMixin``) are covered too, and
+    installs the wrapper onto *cls* itself so the base class's own wrapper is
+    never applied twice to an inherited method.
+    """
+    seen = set()
+    for klass in cls.__mro__:
+        for name, attr in vars(klass).items():
+            if name in seen or not _is_gated_send_name(name):
+                continue
+            seen.add(name)
+            if not inspect.iscoroutinefunction(attr):
+                continue
+            if getattr(attr, _SEND_GATE_MARK, False):
+                continue
+            # Abstract declarations have no body worth gating; the concrete
+            # override on the subclass gets wrapped instead.
+            if getattr(attr, "__isabstractmethod__", False):
+                continue
+            setattr(cls, name, _wrap_send_with_gate(attr, name))
 
 # Audio file extensions Hermes recognizes for native audio delivery.
 # Keep Telegram's narrower attachment/voice sets below separate: formats such
@@ -2676,6 +2748,16 @@ class BasePlatformAdapter(ABC):
     # never see these calls.
     supports_status_text: bool = False
 
+    def __init_subclass__(cls, **kwargs):
+        """Install the structural send gate on every adapter subclass.
+
+        This is the single chokepoint that makes ``send_gate: disabled``
+        enforceable without per-adapter cooperation -- see the module-level
+        notes above ``install_send_gate``.
+        """
+        super().__init_subclass__(**kwargs)
+        install_send_gate(cls)
+
     def set_status_text(self, chat_id: str, text: Optional[str]) -> None:
         """Set or clear (``None``) the live working-state phrase for a chat.
 
@@ -5168,12 +5250,24 @@ class BasePlatformAdapter(ABC):
         know to retry rather than waiting indefinitely.
         """
 
-        result = await self.send(
-            chat_id=chat_id,
-            content=content,
-            reply_to=reply_to,
-            metadata=metadata,
-        )
+        try:
+            result = await self.send(
+                chat_id=chat_id,
+                content=content,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        except SendGateDisabledError as gate_err:
+            # A closed send gate is a permanent, operator-chosen decision, not a
+            # transient fault. Translate it into a non-retryable failure here so
+            # the agent-reply path degrades the same way any other permanent
+            # send failure does: no backoff loop, no plain-text fallback, and --
+            # importantly -- the caller's delivery-ledger obligation gets closed
+            # via mark_failed() instead of being stranded in "attempting" and
+            # replayed on the next restart. Raw ``adapter.send()`` call sites
+            # still see the exception; that is deliberate.
+            logger.info("[%s] Send blocked by send_gate: %s", self.name, gate_err)
+            return SendResult(success=False, error=str(gate_err), retryable=False)
 
         if result.success:
             return result
@@ -6974,3 +7068,10 @@ class BasePlatformAdapter(ABC):
             ]
 
         return chunks
+
+
+# Gate the base class's own concrete outbound helpers (send_image, send_voice,
+# send_video, send_document, send_image_file, send_draft, ...). Subclasses are
+# handled by __init_subclass__ above; the base itself is not, so it is done
+# once here, at import time, after the class body is complete.
+install_send_gate(BasePlatformAdapter)

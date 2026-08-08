@@ -3,6 +3,7 @@ import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { isTargetSessionBusy } from '@/app/session/hooks/use-prompt-actions/utils'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
@@ -21,16 +22,20 @@ const ACTIVE_PROFILE = 'compass'
 let handleEvent: ((event: RpcEvent) => void) | null = null
 let refreshHermesConfig: ReturnType<typeof vi.fn<() => Promise<void>>>
 let refreshSessions: ReturnType<typeof vi.fn<() => Promise<void>>>
+let hydrateFromStoredSession: ReturnType<typeof vi.fn<() => Promise<void>>>
 let queryClient: QueryClient
+let sessionStates: Map<string, ClientSessionState> | null = null
 
 function Harness() {
   const activeSessionIdRef = useRef<string | null>(ACTIVE_SID)
   const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
 
+  sessionStates = sessionStateByRuntimeIdRef.current
+
   const stream = useMessageStream({
     activeGatewayProfile: ACTIVE_PROFILE,
     activeSessionIdRef,
-    hydrateFromStoredSession: vi.fn(async () => undefined),
+    hydrateFromStoredSession,
     queryClient,
     refreshHermesConfig,
     refreshSessions,
@@ -61,8 +66,10 @@ const sessionInfo = (sessionId: string, payload: Record<string, unknown>) =>
 
 beforeEach(() => {
   handleEvent = null
+  sessionStates = null
   refreshHermesConfig = vi.fn<() => Promise<void>>(async () => undefined)
   refreshSessions = vi.fn<() => Promise<void>>(async () => undefined)
+  hydrateFromStoredSession = vi.fn<() => Promise<void>>(async () => undefined)
   queryClient = new QueryClient()
   setCurrentModel('')
   setCurrentProvider('')
@@ -136,6 +143,95 @@ describe('session.info model-options invalidation gating', () => {
     sessionInfo(ACTIVE_SID, { model: 'm2', provider: 'p1', running: true })
 
     expect(invalidate).toHaveBeenCalledWith({ queryKey: modelOptionsQueryKey(ACTIVE_PROFILE, ACTIVE_SID) })
+  })
+})
+
+describe('session.info settles a turn that produced no assistant payload', () => {
+  // #46517: a turn that ends without ever emitting an assistant payload (gateway
+  // crash mid-stream, provider error before the first delta, agent-build
+  // failure) never reaches message.complete, so session.info running=false is
+  // the only event that can release it. It used to return state unchanged,
+  // latching awaitingResponse/busy until app restart — and because
+  // isTargetSessionBusy reads the per-session busy flag as authoritative,
+  // submitPrompt and the slash dispatcher then silently refused every send.
+  const busyFor = (sessionId: string) =>
+    isTargetSessionBusy(Object.fromEntries(sessionStates!), sessionId, false)
+
+  const startTurn = (sessionId: string) =>
+    act(() => handleEvent!({ payload: {}, session_id: sessionId, type: 'message.start' }))
+
+  it('leaves the session sendable after a started turn ends with no payload', async () => {
+    await mountStream()
+
+    startTurn(ACTIVE_SID)
+    expect(busyFor(ACTIVE_SID)).toBe(true)
+
+    sessionInfo(ACTIVE_SID, { running: false })
+
+    const state = sessionStates!.get(ACTIVE_SID)!
+    expect(state.awaitingResponse).toBe(false)
+    expect(state.busy).toBe(false)
+    expect(state.streamId).toBeNull()
+    expect(state.turnStartedAt).toBeNull()
+    // The predicate submit.ts and slash.ts actually gate on.
+    expect(busyFor(ACTIVE_SID)).toBe(false)
+  })
+
+  it('keeps waiting when running=false lands before the turn ever started', async () => {
+    await mountStream()
+
+    // submit arms busy/awaitingResponse optimistically; this heartbeat is the
+    // pre-start report, not a finished turn, so the spinner must stay up and
+    // the send guard must stay closed.
+    act(() => {
+      sessionStates!.set(ACTIVE_SID, {
+        ...createClientSessionState(),
+        awaitingResponse: true,
+        busy: true,
+        sawAssistantPayload: false,
+        turnStartedAt: null
+      })
+    })
+
+    sessionInfo(ACTIVE_SID, { running: false })
+
+    const state = sessionStates!.get(ACTIVE_SID)!
+    expect(state.awaitingResponse).toBe(true)
+    expect(busyFor(ACTIVE_SID)).toBe(true)
+    expect(hydrateFromStoredSession).not.toHaveBeenCalled()
+  })
+
+  it('un-latches a background session but does not hydrate its transcript', async () => {
+    await mountStream()
+
+    startTurn('session-background')
+    sessionInfo('session-background', { running: false })
+
+    // The settle is unscoped — a background session's sidebar dot must clear
+    // without the user opening it.
+    expect(busyFor('session-background')).toBe(false)
+    // The transcript refetch is scoped to the session on screen, so an idle
+    // background session does not cost a REST fan-out.
+    expect(hydrateFromStoredSession).not.toHaveBeenCalled()
+  })
+
+  it('hydrates the foreground transcript once and coalesces the sidebar refresh', async () => {
+    await mountStream()
+
+    startTurn(ACTIVE_SID)
+    vi.useFakeTimers()
+
+    sessionInfo(ACTIVE_SID, { running: false })
+    // Later heartbeats hit the unchanged-state guard, so recovery is edge-only.
+    sessionInfo(ACTIVE_SID, { running: false })
+    sessionInfo(ACTIVE_SID, { running: false })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400)
+    })
+
+    expect(hydrateFromStoredSession).toHaveBeenCalledTimes(1)
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
   })
 })
 

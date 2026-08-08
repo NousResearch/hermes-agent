@@ -5677,6 +5677,20 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 return
 
+            if (
+                is_thread_reply
+                and channel_id in self._slack_require_mention_channel_threads()
+                and not is_mentioned
+                and not force_process
+            ):
+                logger.debug(
+                    "[Slack] Ignoring thread reply without mention "
+                    "(require_mention_channel_threads): channel=%s thread_ts=%s",
+                    channel_id,
+                    event_thread_ts,
+                )
+                return
+
             if force_process:
                 pass  # Explicit internal routing path (reaction trigger).
             elif (
@@ -8414,6 +8428,17 @@ class SlackAdapter(BasePlatformAdapter):
         raw = self.config.extra.get("require_mention_channels")
         if raw is None:
             raw = os.getenv("SLACK_REQUIRE_MENTION_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        if isinstance(raw, str) and raw.strip():
+            return {part.strip() for part in raw.split(",") if part.strip()}
+        return set()
+
+    def _slack_require_mention_channel_threads(self) -> set:
+        """Return channel IDs where thread replies require a bot @mention."""
+        raw = self.config.extra.get("require_mention_channel_threads")
+        if raw is None:
+            raw = os.getenv("SLACK_REQUIRE_MENTION_CHANNEL_THREADS", "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         if isinstance(raw, str) and raw.strip():

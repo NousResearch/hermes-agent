@@ -570,6 +570,12 @@ slack:
   # Env: SLACK_REQUIRE_MENTION_CHANNELS.
   require_mention_channels: ""
 
+  # Per-channel thread-only force-mention override. Thread replies in
+  # listed channels require an explicit @mention even when the thread
+  # would otherwise auto-engage. Top-level messages are unaffected.
+  # Comma-separated IDs or a list. Env: SLACK_REQUIRE_MENTION_CHANNEL_THREADS.
+  require_mention_channel_threads: ""
+
   # Custom mention patterns that trigger the bot
   # (in addition to the default @mention detection)
   mention_patterns:
@@ -605,6 +611,7 @@ The gating options compose — each answers a different question:
 | `require_mention` | Do **top-level channel messages** need an @mention? | `true` | All channels |
 | `free_response_channels` | Which channels are exempt from `require_mention`? | none | Listed channels |
 | `require_mention_channels` | Which channels ALWAYS need an @mention, even when `require_mention` is `false` or the channel is free-response? Wins over both. | none | Listed channels |
+| `require_mention_channel_threads` | Which channels require an @mention for THREAD replies even in auto-engaging threads? | none | Listed channels / threads |
 | `thread_require_mention` | Do **thread replies** need an @mention, even when top-level messages don't? Mentioned threads are not remembered. | `false` | Threads only |
 | `strict_mention` | Does **every** channel message (top-level and thread) need a fresh @mention? Disables all auto-follow: mentioned-thread memory, bot-reply follow-ups, active-session resume. | `false` | All channels + threads |
 | `ignore_other_user_mentions` | Should a message that **opens by @mentioning someone else** (`@rasha can you take this?`) be skipped? Overrides free-response and thread auto-follow; mid-sentence references still reach the bot. | `false` | Channels + group DMs |

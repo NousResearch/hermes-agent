@@ -278,7 +278,12 @@ class ToolCallGuardrailController:
         self.reset_for_turn()
 
     def reset_for_turn(self) -> None:
-        self._exact_failure_counts: dict[ToolCallSignature, int] = {}
+        # Exact failure state contains canonical-argument and result hashes only;
+        # no raw arguments or results are retained. A successful landed file
+        # mutation advances the generation, making prior terminal failures stale.
+        self._exact_failure_generation = 0
+        self._exact_failure_counts: dict[tuple[ToolCallSignature, str, int], int] = {}
+        self._last_exact_failure: dict[ToolCallSignature, tuple[str, int]] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
@@ -308,7 +313,7 @@ class ToolCallGuardrailController:
         if not self.config.hard_stop_enabled:
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
-        exact_count = self._exact_failure_counts.get(signature, 0)
+        exact_count = self._exact_failure_count(signature)
         if exact_count >= self.config.exact_failure_block_after:
             decision = ToolGuardrailDecision(
                 action="block",
@@ -361,8 +366,7 @@ class ToolCallGuardrailController:
             failed, _ = classify_tool_failure(tool_name, result)
 
         if failed:
-            exact_count = self._exact_failure_counts.get(signature, 0) + 1
-            self._exact_failure_counts[signature] = exact_count
+            exact_count = self._record_exact_failure(signature, result)
             self._no_progress.pop(signature, None)
 
             same_count = self._same_tool_failure_counts.get(tool_name, 0) + 1
@@ -409,7 +413,10 @@ class ToolCallGuardrailController:
 
             return ToolGuardrailDecision(tool_name=tool_name, count=exact_count, signature=signature)
 
-        self._exact_failure_counts.pop(signature, None)
+        if file_mutation_result_landed(tool_name, result):
+            self._advance_exact_failure_generation()
+        else:
+            self._clear_exact_failure(signature)
         self._same_tool_failure_counts.pop(tool_name, None)
 
         if not self._is_idempotent(tool_name):
@@ -438,6 +445,37 @@ class ToolCallGuardrailController:
             )
 
         return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
+
+    def _exact_failure_count(self, signature: ToolCallSignature) -> int:
+        latest = self._last_exact_failure.get(signature)
+        if latest is None:
+            return 0
+        result_hash, generation = latest
+        if generation != self._exact_failure_generation:
+            return 0
+        return self._exact_failure_counts.get((signature, result_hash, generation), 0)
+
+    def _record_exact_failure(self, signature: ToolCallSignature, result: str | None) -> int:
+        result_hash = _result_hash(result)
+        key = (signature, result_hash, self._exact_failure_generation)
+        previous = self._last_exact_failure.get(signature)
+        if previous != (result_hash, self._exact_failure_generation):
+            self._clear_exact_failure(signature)
+        exact_count = self._exact_failure_counts.get(key, 0) + 1
+        self._exact_failure_counts[key] = exact_count
+        self._last_exact_failure[signature] = (result_hash, self._exact_failure_generation)
+        return exact_count
+
+    def _clear_exact_failure(self, signature: ToolCallSignature) -> None:
+        latest = self._last_exact_failure.pop(signature, None)
+        if latest is not None:
+            result_hash, generation = latest
+            self._exact_failure_counts.pop((signature, result_hash, generation), None)
+
+    def _advance_exact_failure_generation(self) -> None:
+        self._exact_failure_generation += 1
+        self._exact_failure_counts.clear()
+        self._last_exact_failure.clear()
 
     def _is_idempotent(self, tool_name: str) -> bool:
         if tool_name in self.config.mutating_tools:

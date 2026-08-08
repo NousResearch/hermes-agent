@@ -420,3 +420,56 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+
+def test_sequential_runtime_allows_failed_terminal_retry_after_landed_write_mutation():
+    agent = _make_agent("write_file", "terminal", config=_hard_stop_config())
+    command = {"command": "pytest tests/agent/test_tool_guardrails.py"}
+    _seed_exact_failures(agent, "terminal", command)
+    calls = [
+        _mock_tool_call("write_file", json.dumps({"path": "/tmp/fix.py", "content": "fixed"}), "c-write"),
+        _mock_tool_call("terminal", json.dumps(command), "c-terminal"),
+    ]
+    messages = []
+
+    with patch(
+        "run_agent.handle_function_call",
+        side_effect=[json.dumps({"bytes_written": 5}), json.dumps({"exit_code": 1, "stderr": "still failing"})],
+    ) as handle:
+        agent._execute_tool_calls_sequential(SimpleNamespace(content="", tool_calls=calls), messages, "task-1")
+
+    assert handle.call_count == 2
+    assert [message["tool_call_id"] for message in messages] == ["c-write", "c-terminal"]
+    assert "repeated_exact_failure_block" not in messages[1]["content"]
+
+
+def test_concurrent_runtime_allows_failed_terminal_retry_after_landed_write_mutation():
+    agent = _make_agent("write_file", "terminal", config=_hard_stop_config())
+    command = {"command": "pytest tests/agent/test_tool_guardrails.py"}
+    _seed_exact_failures(agent, "terminal", command)
+    agent._tool_guardrails.after_call(
+        "write_file",
+        {"path": "/tmp/fix.py", "content": "fixed"},
+        json.dumps({"bytes_written": 5}),
+        failed=False,
+    )
+    calls = [
+        _mock_tool_call("terminal", json.dumps(command), "c-terminal"),
+        _mock_tool_call("web_search", json.dumps({"query": "unrelated"}), "c-search"),
+    ]
+    messages = []
+    executed = []
+
+    def fake_handle(name, args, task_id, **kwargs):
+        executed.append((name, kwargs["tool_call_id"]))
+        if name == "terminal":
+            return json.dumps({"exit_code": 1, "stderr": "still failing"})
+        return json.dumps({"ok": True})
+
+    with patch("run_agent.handle_function_call", side_effect=fake_handle):
+        agent._execute_tool_calls_concurrent(SimpleNamespace(content="", tool_calls=calls), messages, "task-1")
+
+    assert {name for name, _ in executed} == {"terminal", "web_search"}
+    assert [message["tool_call_id"] for message in messages] == ["c-terminal", "c-search"]
+    assert "repeated_exact_failure_block" not in messages[0]["content"]

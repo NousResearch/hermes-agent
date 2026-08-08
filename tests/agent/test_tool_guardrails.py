@@ -177,3 +177,44 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
 
 
 
+
+
+
+def test_exact_failure_requires_same_result_identity_and_resets_after_landed_file_mutation():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            exact_failure_warn_after=2,
+            exact_failure_block_after=2,
+            same_tool_failure_warn_after=99,
+            same_tool_failure_halt_after=99,
+        )
+    )
+    command = {"command": "pytest tests/agent/test_tool_guardrails.py"}
+    first_failure = json.dumps({"exit_code": 1, "stderr": "first failure"})
+    changed_failure = json.dumps({"exit_code": 1, "stderr": "different failure"})
+
+    controller.after_call("terminal", command, first_failure, failed=True)
+    controller.after_call("terminal", command, first_failure, failed=True)
+    assert controller.before_call("terminal", command).code == "repeated_exact_failure_block"
+
+    controller.after_call(
+        "write_file",
+        {"path": "/tmp/fix.py", "content": "fixed"},
+        json.dumps({"bytes_written": 5}),
+        failed=False,
+    )
+    assert controller.before_call("terminal", command).action == "allow"
+
+    first_after_progress = controller.after_call("terminal", command, first_failure, failed=True)
+    assert first_after_progress.action == "allow"
+    assert first_after_progress.count == 1
+
+    changed_result = controller.after_call("terminal", command, changed_failure, failed=True)
+    assert changed_result.action == "allow"
+    assert changed_result.count == 1
+    assert controller.before_call("terminal", command).action == "allow"
+
+    repeated_changed_result = controller.after_call("terminal", command, changed_failure, failed=True)
+    assert repeated_changed_result.code == "repeated_exact_failure_warning"
+    assert controller.before_call("terminal", command).code == "repeated_exact_failure_block"

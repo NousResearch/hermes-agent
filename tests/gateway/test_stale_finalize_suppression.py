@@ -569,6 +569,99 @@ async def test_failed_final_edit_after_split_records_visible_payload():
     assert consumer.delivered_final_matches(full) is True
 
 
+class _TruncatingOverflowPreviewAdapter(_SplittingAdapter):
+    """Telegram-like adapter: mid-stream oversized edits show only chunk 1.
+
+    The real Telegram adapter deliberately truncates saturated previews instead
+    of sending continuation messages mid-stream; only finalize=True is allowed
+    to split and deliver the complete reply.
+    """
+
+    async def edit_message(
+        self, chat_id, message_id, content, *, finalize: bool = False, metadata=None
+    ) -> SendResult:
+        if self.fail_edits:
+            return SendResult(
+                success=False, error="Flood control exceeded. Retry in 12 seconds"
+            )
+        if len(content) > self.MAX_MESSAGE_LENGTH and not finalize:
+            preview = self.truncate_message(content, self.MAX_MESSAGE_LENGTH)[0]
+            self.edits.append(
+                {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "content": preview,
+                    "finalize": finalize,
+                }
+            )
+            return SendResult(
+                success=True,
+                message_id=message_id,
+                raw_response={
+                    "truncated_preview": True,
+                    "delivered_text": preview,
+                },
+            )
+        if len(content) > self.MAX_MESSAGE_LENGTH and finalize:
+            chunks = self.truncate_message(content, self.MAX_MESSAGE_LENGTH)
+            self.edits.append(
+                {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "content": chunks[0],
+                    "finalize": finalize,
+                }
+            )
+            continuation_ids = []
+            for chunk in chunks[1:]:
+                msg_id = self._mint_id()
+                self.sent.append(
+                    {"chat_id": chat_id, "content": chunk, "metadata": metadata}
+                )
+                continuation_ids.append(msg_id)
+            return SendResult(
+                success=True,
+                message_id=continuation_ids[-1] if continuation_ids else message_id,
+                continuation_message_ids=tuple(continuation_ids),
+            )
+        return await super().edit_message(
+            chat_id, message_id, content, finalize=finalize, metadata=metadata
+        )
+
+
+@pytest.mark.asyncio
+async def test_truncated_overflow_preview_does_not_claim_final_delivery():
+    """A successful saturated preview edit is not final delivery.
+
+    Telegram mid-stream overflow previews return success after showing only the
+    first chunk.  On got_done the consumer must still issue a finalize=True edit
+    that splits/delivers the complete answer, instead of recording the unsent
+    accumulated text and suppressing gateway delivery.
+    """
+    adapter = _TruncatingOverflowPreviewAdapter()
+    consumer = GatewayStreamConsumer(
+        adapter,
+        "chat-split",
+        StreamConsumerConfig(
+            edit_interval=0.0, buffer_threshold=1, cursor="",
+            fresh_final_after_seconds=999.0,
+        ),
+    )
+    full = ""
+    task = asyncio.create_task(consumer.run())
+    for i in range(12):
+        delta = f"line {i} " + "x" * 60 + "\n"
+        full += delta
+        consumer.on_delta(delta)
+        await asyncio.sleep(0.005)
+    consumer.finish()
+    await asyncio.wait_for(task, timeout=10)
+
+    assert any(edit["finalize"] for edit in adapter.edits)
+    assert adapter.sent, "final overflow continuations were never delivered"
+    assert consumer.delivered_final_matches(full) is True
+
+
 @pytest.mark.asyncio
 async def test_empty_fallback_final_after_split_records_only_what_survives():
     """A recovery that DELETES the sealed heads must not claim them as delivered.

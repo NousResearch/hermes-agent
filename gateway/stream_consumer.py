@@ -1078,17 +1078,21 @@ class GatewayStreamConsumer:
                                 not self._adapter_requires_finalize
                                 or self._last_edit_overflowed
                             )
+                            and (
+                                self._last_edit_overflowed
+                                or self.has_delivered_text(self._accumulated)
+                            )
                         ):
                             # Mid-stream edit above already delivered the
                             # final accumulated content.  Skip the redundant
-                            # final edit for adapters that don't need an
-                            # explicit finalize signal, and for any adapter
-                            # when that edit split-and-delivered across
-                            # continuations: the split edit carried
-                            # finalize=True itself, and re-finalizing with
-                            # the full text would overflow-split again into
-                            # the adopted continuation, duplicating chunks
-                            # on screen.
+                            # final edit only when we can prove the visible
+                            # payload equals the accumulated final text, or
+                            # when the adapter reported an overflow split that
+                            # delivered continuations.  Telegram's mid-stream
+                            # overflow preview can return success after showing
+                            # only a truncated prefix; treating that success as
+                            # final delivery records unsent text and makes the
+                            # gateway suppress the real final send.
                             self._final_response_sent = True
                             self._final_content_delivered = True
                             self._record_turn_final_payload(self._accumulated)
@@ -2239,7 +2243,13 @@ class GatewayStreamConsumer:
                             self._last_sent_text = ""
                             self._notify_new_message()
                         else:
-                            self._last_sent_text = text
+                            raw_response = getattr(result, "raw_response", None)
+                            delivered_text = None
+                            if isinstance(raw_response, dict):
+                                delivered_text = raw_response.get("delivered_text")
+                            self._last_sent_text = (
+                                delivered_text if isinstance(delivered_text, str) else text
+                            )
                         # Successful edit — reset flood strike counter
                         self._flood_strikes = 0
                         return True

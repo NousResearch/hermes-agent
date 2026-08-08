@@ -4949,7 +4949,14 @@ class TelegramAdapter(BasePlatformAdapter):
             # stream trips flood control (200s+ penalties) and hangs the final
             # delivery. Skip silently until finalize.
             if self._last_overflow_preview.get(_preview_key) == content:
-                return SendResult(success=True, message_id=message_id)
+                return SendResult(
+                    success=True,
+                    message_id=message_id,
+                    raw_response={
+                        "truncated_preview": True,
+                        "delivered_text": content,
+                    },
+                )
         elif not finalize:
             # Content shrank back under the cap (segment break / new message
             # id) — clear stale saturation state so dedup can't mask a real
@@ -4965,7 +4972,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = content
-                return SendResult(success=True, message_id=message_id)
+                return SendResult(
+                    success=True,
+                    message_id=message_id,
+                    raw_response={
+                        "truncated_preview": True,
+                        "delivered_text": content,
+                    },
+                )
 
             formatted = self.format_message(content)
             try:

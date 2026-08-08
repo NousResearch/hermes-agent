@@ -157,6 +157,23 @@ class TestLookupSupportsVisionOverride:
         with patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert _lookup_supports_vision("openrouter", "x", None) is None
 
+    def test_provider_prefixed_model_slug_resolves_via_models_dev(self):
+        """Prefixed runtime slugs resolve via the shared models.dev lookup.
+
+        Prefix-on-miss lives in ``_find_model_entry`` (covered in
+        test_models_dev); image routing must not retry locally — it just
+        asks ``get_model_capabilities`` once with the raw slug.
+        """
+        fake_caps = type("Caps", (), {"supports_vision": True})()
+        with patch(
+            "agent.models_dev.get_model_capabilities",
+            return_value=fake_caps,
+        ) as mock_caps:
+            assert _lookup_supports_vision(
+                "openai-codex", "openai-codex/gpt-5.5", {}
+            ) is True
+            mock_caps.assert_called_once_with("openai-codex", "openai-codex/gpt-5.5")
+
 
 # ─── decide_image_input_mode with auto + override ────────────────────────────
 

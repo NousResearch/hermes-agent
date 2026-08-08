@@ -127,10 +127,23 @@ class TestLookupModelsDevContext:
         mock_fetch.return_value = SAMPLE_REGISTRY
         assert lookup_models_dev_context("anthropic", "claude-opus-4-6") == 1000000
 
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_vendor_prefix_stripped_for_direct_provider(self, mock_fetch):
+        """Users sometimes copy aggregator-style ``vendor/model`` slugs into
+        a direct provider's config (e.g. ``openai-codex/gpt-5.5`` against a
+        provider whose cache is keyed by bare names). The lookup must strip a
+        leading ``vendor/`` prefix on miss so context-length auto-detection
+        still works."""
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        assert lookup_models_dev_context("anthropic", "anthropic/claude-opus-4-6") == 1000000
 
-
-
-
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_aggregator_slug_match_unchanged(self, mock_fetch):
+        """Aggregator caches (e.g. kilocode→kilo) are keyed by the full
+        ``vendor/model`` slug. Exact match must still win — prefix-strip
+        is only a fallback."""
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        assert lookup_models_dev_context("kilocode", "anthropic/claude-sonnet-4.6") == 1000000
 
     @patch("agent.models_dev.fetch_models_dev")
     def test_zero_context_filtered(self, mock_fetch):
@@ -371,8 +384,27 @@ class TestGetModelCapabilities:
         assert caps is not None
         assert caps.supports_vision is True
 
+    def test_vendor_prefix_stripped_for_direct_provider(self):
+        """Capability lookup must accept ``vendor/model`` form against direct
+        providers whose cache is keyed by bare names. Without this fallback,
+        a prefixed runtime slug (e.g. ``openai-codex/gpt-5.5``) silently loses
+        vision/tools detection on gateway and web paths that bypass in-memory
+        normalization."""
+        with patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
+            caps = get_model_capabilities("anthropic", "anthropic/claude-sonnet-4")
+        assert caps is not None
+        assert caps.supports_vision is True
+        assert caps.supports_tools is True
 
-
+    def test_prefix_strip_does_not_cross_providers(self):
+        """The strip is harmless even when the prefix names another vendor —
+        because ``_get_provider_models`` has already scoped the search to a
+        single provider's catalog, a non-existent bare name still returns
+        None. The strip only succeeds when the bare name happens to exist
+        in the configured provider's catalog."""
+        with patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
+            caps = get_model_capabilities("anthropic", "openai/gpt-5")
+        assert caps is None
 
     def test_modalities_non_dict_handled(self):
         """Non-dict modalities field should not crash."""

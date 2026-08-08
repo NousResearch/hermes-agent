@@ -491,57 +491,51 @@ def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
     """Look up context_length for a provider+model combo in models.dev.
 
     Returns the context window in tokens, or None if not found.
-    Handles case-insensitive matching and filters out context=0 entries.
+    Delegates primary lookup to ``_find_model_entry`` so vendor-prefix
+    stripping and case-insensitive matching apply uniformly with capability
+    lookups. Filters out context=0 entries.
+
+    Also applies a suffix-aware fallback: some providers (e.g. ollama-cloud)
+    store model IDs with ``:cloud`` / ``-cloud`` suffixes in models.dev while
+    the live API returns bare names. Without this, ``kimi-k2.6`` misses the
+    ``kimi-k2.6:cloud`` entry and falls through to stale OpenRouter metadata
+    reporting 32768 — tripping the 64k minimum-context guard. The
+    suffix-stripping in ``fetch_ollama_cloud_models()`` handles the
+    model-picker UX; this handles the context-length lookup path.
     """
-    mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
-    if not mdev_provider_id:
+    models = _get_provider_models(provider)
+    if models is None:
         return None
 
-    data = fetch_models_dev()
-    provider_data = data.get(mdev_provider_id)
-    if not isinstance(provider_data, dict):
-        return None
-
-    models = provider_data.get("models", {})
-    if not isinstance(models, dict):
-        return None
-
-    # Exact match
-    entry = models.get(model)
-    if entry:
+    entry = _find_model_entry(models, model)
+    if entry is not None:
         ctx = _extract_context(entry)
         if ctx:
             return ctx
 
-    # Case-insensitive match
-    model_lower = model.lower()
-    for mid, mdata in models.items():
-        if mid.lower() == model_lower:
-            ctx = _extract_context(mdata)
-            if ctx:
-                return ctx
+    # Build suffix candidates from the raw slug and, on miss, the bare name
+    # after a leading vendor/ prefix (same candidate set as _find_model_entry).
+    suffix_bases = [model]
+    if "/" in model:
+        bare = model.split("/", 1)[1]
+        if bare and bare not in suffix_bases:
+            suffix_bases.append(bare)
 
-    # Suffix-aware fallback: some providers (e.g. ollama-cloud) store
-    # model IDs with :cloud / -cloud suffixes in models.dev while the
-    # live API returns bare names.  Without this, kimi-k2.6 misses the
-    # kimi-k2.6:cloud entry and falls through to stale OpenRouter metadata
-    # reporting 32768 — tripping the 64k minimum-context guard.
-    # The suffix-stripping in fetch_ollama_cloud_models() handles the
-    # model-picker UX; this handles the context-length lookup path.
-    for suffix in (":cloud", "-cloud"):
-        suffixed_key = model + suffix
-        entry = models.get(suffixed_key)
-        if entry:
-            ctx = _extract_context(entry)
-            if ctx:
-                return ctx
-        # Also try case-insensitive
-        suffixed_lower = model_lower + suffix
-        for mid, mdata in models.items():
-            if mid.lower() == suffixed_lower:
-                ctx = _extract_context(mdata)
+    for base in suffix_bases:
+        base_lower = base.lower()
+        for suffix in (":cloud", "-cloud"):
+            suffixed_key = base + suffix
+            entry = models.get(suffixed_key)
+            if entry:
+                ctx = _extract_context(entry)
                 if ctx:
                     return ctx
+            suffixed_lower = base_lower + suffix
+            for mid, mdata in models.items():
+                if mid.lower() == suffixed_lower:
+                    ctx = _extract_context(mdata)
+                    if ctx:
+                        return ctx
 
     return None
 
@@ -601,16 +595,30 @@ def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
 
 
 def _find_model_entry(models: Dict[str, Any], model: str) -> Optional[Dict[str, Any]]:
-    """Find a model entry by exact match, then case-insensitive fallback."""
-    # Exact match
-    entry = models.get(model)
-    if isinstance(entry, dict):
-        return entry
+    """Find a model entry by exact match, vendor-prefix strip, or
+    case-insensitive fallback.
 
-    # Case-insensitive match
-    model_lower = model.lower()
+    The prefix-strip fallback accepts inputs like ``openai-codex/gpt-5.5`` or
+    ``xiaomi/mimo-v2.5`` against a provider whose cache is keyed by bare names
+    (``gpt-5.5``, ``mimo-v2.5``). Aggregator caches are keyed by full
+    ``vendor/model`` slugs and matched by the exact path first — prefix-strip
+    is only tried on a complete miss. Callers pre-constrain the search to one
+    provider's catalog, so a non-matching prefix simply falls through to None.
+    """
+    candidates = [model]
+    if "/" in model:
+        bare = model.split("/", 1)[1]
+        if bare and bare not in candidates:
+            candidates.append(bare)
+
+    for candidate in candidates:
+        entry = models.get(candidate)
+        if isinstance(entry, dict):
+            return entry
+
+    candidates_lower = {c.lower() for c in candidates}
     for mid, mdata in models.items():
-        if mid.lower() == model_lower and isinstance(mdata, dict):
+        if mid.lower() in candidates_lower and isinstance(mdata, dict):
             return mdata
 
     return None

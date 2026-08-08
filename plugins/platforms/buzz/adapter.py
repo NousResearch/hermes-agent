@@ -1032,8 +1032,10 @@ class BuzzAdapter(BasePlatformAdapter):
         is_dm = state["chat_type"] == "dm"
         # In shared channels, respond only when addressed — unless
         # require_mention is disabled, in which case respond to every message.
-        # DMs always dispatch.
-        if not is_dm and self.require_mention and not self._is_mentioned(content):
+        # DMs always dispatch. An explicit mention (npub, hex, or @display
+        # name) is required — a bare display-name word in prose does NOT
+        # count, matching Discord/Slack/Chatto mention semantics.
+        if not is_dm and self.require_mention and not self._is_explicitly_mentioned(content):
             return
 
         # Adapter-level allow-list (the gateway applies BUZZ_ALLOWED_USERS /
@@ -1124,7 +1126,10 @@ class BuzzAdapter(BasePlatformAdapter):
         if not p_tagged_to_self:
             return False
         content = event.get("content")
-        return isinstance(content, str) and not self._is_mentioned(content)
+        # Loose check on purpose: a p-tagged message whose text visibly
+        # addresses us (bare name OR @name) is a channel message, not a
+        # structural DM — only a p-tag WITHOUT any visible address latches.
+        return isinstance(content, str) and not self._mentions_us_loose(content)
 
     def _maybe_latch_dm(self, channel_id: str, state: dict, event: dict) -> None:
         """Latch a group conversation to chat_type="dm" once any direct
@@ -1136,8 +1141,15 @@ class BuzzAdapter(BasePlatformAdapter):
         self._channel_names.setdefault(channel_id, "DM")
         logger.info("Buzz: conversation %s reclassified as DM (message p-tagged to self)", channel_id)
 
-    def _is_mentioned(self, content: str) -> bool:
-        """True when the message addresses this agent (npub, hex, or name)."""
+    def _mentions_us_loose(self, content: str) -> bool:
+        """True when the message text visibly addresses this agent in any form:
+        npub, hex pubkey, or display name with OR without a leading ``@``.
+
+        Used for DM-vs-channel classification, where the question is "did the
+        author visibly address us" — a bare name still counts as addressing,
+        so a p-tagged message saying our name is a channel message, not a
+        structural DM.
+        """
         lowered = content.lower()
         if self._self_pubkey and self._self_pubkey in lowered:
             return True
@@ -1145,6 +1157,27 @@ class BuzzAdapter(BasePlatformAdapter):
             return True
         if self._display_name:
             pattern = rf"(?<!\w)@?{re.escape(self._display_name.lower())}(?!\w)"
+            if re.search(pattern, lowered):
+                return True
+        return False
+
+    def _is_explicitly_mentioned(self, content: str) -> bool:
+        """True when the message explicitly mentions this agent: npub, hex
+        pubkey, or ``@display name``.
+
+        Requires the ``@`` for the display name — a bare name in prose (e.g.
+        "max volume") does NOT count. This mirrors Discord (``<@id>`` tokens),
+        Slack (``<@uid>``), and Chatto (``@login``/``@displayName``) mention
+        semantics: an explicit address is required to wake the bot in
+        mention-gated channels.
+        """
+        lowered = content.lower()
+        if self._self_pubkey and self._self_pubkey in lowered:
+            return True
+        if self._self_npub and self._self_npub in lowered:
+            return True
+        if self._display_name:
+            pattern = rf"(?<!\w)@{re.escape(self._display_name.lower())}(?!\w)"
             if re.search(pattern, lowered):
                 return True
         return False

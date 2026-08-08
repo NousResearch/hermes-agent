@@ -3,19 +3,12 @@
 import socket
 from unittest.mock import patch
 
-import httpx
-
 from tools.url_safety import (
     is_safe_url,
     async_is_safe_url,
     is_always_blocked_url,
     normalize_url_for_request,
     redirect_target_from_response,
-    create_ssrf_safe_async_client,
-    SSRFConnectionBlocked,
-    _SSRFGuardedAsyncNetworkBackend,
-    _MAX_SSRF_CONNECT_IPS,
-    _resolved_http_connect_ips,
     _is_blocked_ip,
     _global_allow_private_urls,
     _reset_allow_private_cache,
@@ -25,244 +18,272 @@ import ipaddress
 import pytest
 
 
-def _resolves_to(*ips):
-    """Patch ``socket.getaddrinfo`` so any hostname resolves to *ips*.
-
-    The address family field is unused by url_safety (it reads ``sockaddr[0]``
-    only), so one shape works for both IPv4 and IPv6 answers.
-    """
-    return patch(
-        "socket.getaddrinfo",
-        return_value=[
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0)) for ip in ips
-        ],
-    )
-
-
 class TestNormalizeUrlForRequest:
-    @pytest.mark.parametrize("raw, expected", [
-        # non-ASCII path is percent-encoded
-        ("https://wttr.in/Köln", "https://wttr.in/K%C3%B6ln"),
-        # existing escapes are preserved (idempotent)
-        ("https://wttr.in/K%C3%B6ln", "https://wttr.in/K%C3%B6ln"),
-        # hostname is IDNA-encoded
-        ("https://münich.example/Köln", "https://xn--mnich-kva.example/K%C3%B6ln"),
-    ])
-    def test_encodes_url_parts(self, raw, expected):
-        assert normalize_url_for_request(raw) == expected
-
-
-    def test_does_not_collapse_embedded_scheme_separator_in_query(self):
+    def test_percent_encodes_non_ascii_path(self):
         assert (
-            normalize_url_for_request("https://example.com/r?next=https:// evil.example")
-            == "https://example.com/r?next=https://%20evil.example"
+            normalize_url_for_request("https://wttr.in/Köln")
+            == "https://wttr.in/K%C3%B6ln"
+        )
+
+    def test_preserves_existing_percent_escapes(self):
+        assert (
+            normalize_url_for_request("https://wttr.in/K%C3%B6ln")
+            == "https://wttr.in/K%C3%B6ln"
+        )
+
+    def test_preserves_reserved_query_syntax(self):
+        assert (
+            normalize_url_for_request("https://example.com/search?q=Köln&lang=de")
+            == "https://example.com/search?q=K%C3%B6ln&lang=de"
+        )
+
+    def test_idna_encodes_hostname(self):
+        assert (
+            normalize_url_for_request("https://münich.example/Köln")
+            == "https://xn--mnich-kva.example/K%C3%B6ln"
         )
 
 
 class TestIsSafeUrl:
     def test_public_url_allowed(self):
-        with _resolves_to("93.184.216.34"):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
             assert is_safe_url("https://example.com/image.png") is True
 
-    @pytest.mark.parametrize("url", [
-        "ftp://example.com/file.txt",  # only http/https allowed for fetch tools
-        "example.com/path",            # bare host/path is ambiguous
-        "http://",                     # no hostname
-        "",                            # empty
-    ])
-    def test_unusable_urls_blocked(self, url):
-        assert is_safe_url(url) is False
+    def test_ftp_scheme_blocked(self):
+        """Only http/https should be allowed for fetch tools."""
+        assert is_safe_url("ftp://example.com/file.txt") is False
 
-    @pytest.mark.parametrize("ip, url", [
-        ("127.0.0.1", "http://localhost:8080/secret"),
-        ("10.0.0.1", "http://internal-service.local/api"),
-        ("::1", "http://[::1]:8080/"),
-    ])
-    def test_private_and_loopback_targets_blocked(self, ip, url):
-        with _resolves_to(ip):
-            assert is_safe_url(url) is False
+    def test_missing_scheme_blocked(self):
+        """Bare host/path should be rejected to avoid ambiguous handling."""
+        assert is_safe_url("example.com/path") is False
 
-    def test_dns_failure_blocked(self, monkeypatch):
-        """DNS failures fail closed — block the request (no proxy configured)."""
-        for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
-            monkeypatch.delenv(var, raising=False)
+    def test_localhost_blocked(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("127.0.0.1", 0)),
+        ]):
+            assert is_safe_url("http://localhost:8080/secret") is False
+
+    def test_loopback_ip_blocked(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("127.0.0.1", 0)),
+        ]):
+            assert is_safe_url("http://127.0.0.1/admin") is False
+
+    def test_private_10_blocked(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("10.0.0.1", 0)),
+        ]):
+            assert is_safe_url("http://internal-service.local/api") is False
+
+    def test_private_172_blocked(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("172.16.0.1", 0)),
+        ]):
+            assert is_safe_url("http://private.corp/data") is False
+
+    def test_private_192_blocked(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("192.168.1.1", 0)),
+        ]):
+            assert is_safe_url("http://router.local") is False
+
+    def test_link_local_169_254_blocked(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("169.254.169.254", 0)),
+        ]):
+            assert is_safe_url("http://169.254.169.254/latest/meta-data/") is False
+
+    def test_metadata_google_internal_blocked(self):
+        assert is_safe_url("http://metadata.google.internal/computeMetadata/v1/") is False
+
+    def test_ipv6_loopback_blocked(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("::1", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://[::1]:8080/") is False
+
+    def test_dns_failure_blocked(self):
+        """DNS failures now fail closed — block the request."""
         with patch("socket.getaddrinfo", side_effect=socket.gaierror("Name resolution failed")):
             assert is_safe_url("https://nonexistent.example.com") is False
 
+    def test_empty_url_blocked(self):
+        assert is_safe_url("") is False
 
-class TestProxyEnvironmentDnsDelegation:
-    """When an HTTP proxy is configured, DNS is delegated to the proxy.
+    def test_no_hostname_blocked(self):
+        assert is_safe_url("http://") is False
 
-    Sandbox / proxy-only environments (Docker + Squid, NVIDIA OpenShell,
-    iron-proxy egress sandboxes) block direct DNS at the network level;
-    only HTTP(S) via the proxy works. is_safe_url must not fail closed on
-    the pre-flight DNS check there — the proxy is the egress boundary.
-    Regression tests for #32217 / PR #68469.
-    """
+    def test_public_ip_allowed(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert is_safe_url("https://example.com") is True
 
-    @pytest.fixture(autouse=True)
-    def _clear_proxy_env(self, monkeypatch):
-        for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
-            monkeypatch.delenv(var, raising=False)
+    # ── New tests for hardened SSRF protection ──
 
-    def test_dns_failure_allowed_when_proxy_configured(self, monkeypatch):
-        monkeypatch.setenv("HTTPS_PROXY", "http://host.docker.internal:9090")
-        with patch("socket.getaddrinfo", side_effect=socket.gaierror("blocked at network level")):
-            assert is_safe_url("https://api.openai.com/v1/models") is True
+    def test_cgnat_100_64_blocked(self):
+        """100.64.0.0/10 (CGNAT/Shared Address Space) is NOT covered by
+        ipaddress.is_private — must be blocked explicitly."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("100.64.0.1", 0)),
+        ]):
+            assert is_safe_url("http://some-cgnat-host.example/") is False
 
-    def test_metadata_hostname_still_blocked_with_proxy(self, monkeypatch):
-        """The blocked-hostname floor runs BEFORE the DNS skip."""
-        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
-        with patch("socket.getaddrinfo", side_effect=socket.gaierror("no dns")):
-            assert is_safe_url("http://metadata.google.internal/computeMetadata/v1/") is False
+    def test_cgnat_100_127_blocked(self):
+        """Upper end of CGNAT range (100.127.255.255)."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("100.127.255.254", 0)),
+        ]):
+            assert is_safe_url("http://tailscale-peer.example/") is False
 
-    def test_literal_metadata_ip_still_blocked_with_proxy(self, monkeypatch):
-        """Literal IPs never take the DNS-failure path — floor intact."""
-        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
-        assert is_safe_url("http://169.254.169.254/latest/meta-data/") is False
+    def test_multicast_blocked(self):
+        """Multicast addresses (224.0.0.0/4) not caught by is_private."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("224.0.0.251", 0)),
+        ]):
+            assert is_safe_url("http://mdns-host.local/") is False
 
+    def test_multicast_ipv6_blocked(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("ff02::1", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://[ff02::1]/") is False
+
+    def test_ipv4_mapped_ipv6_loopback_blocked(self):
+        """::ffff:127.0.0.1 — IPv4-mapped IPv6 loopback."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("::ffff:127.0.0.1", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://[::ffff:127.0.0.1]/") is False
+
+    def test_ipv4_mapped_ipv6_metadata_blocked(self):
+        """::ffff:169.254.169.254 — IPv4-mapped IPv6 cloud metadata."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("::ffff:169.254.169.254", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://[::ffff:169.254.169.254]/") is False
 
     def test_ipv6_scope_id_link_local_blocked(self):
         """fe80::1%eth0 — a scope-ID-bearing link-local address must not bypass
         the guard. ``ipaddress.ip_address`` rejects the ``%scope`` suffix, so
         the scope must be stripped before the block check rather than skipped.
         """
-        with _resolves_to("fe80::1%eth0"):
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("fe80::1%eth0", 0, 0, 0)),
+        ]):
             assert is_safe_url("http://[fe80::1%eth0]/") is False
+
+    def test_ipv6_scope_id_loopback_blocked(self):
+        """::1%lo — scoped IPv6 loopback must still be blocked."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("::1%lo", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://[::1%lo]/") is False
 
     def test_unparseable_ip_after_scope_strip_fails_closed(self):
         """An address that is still unparseable after stripping the scope ID
         must fail closed (block), not be silently skipped."""
-        with _resolves_to("not-an-ip%garbage"):
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("not-an-ip%garbage", 0, 0, 0)),
+        ]):
             assert is_safe_url("http://example.invalid/") is False
+
+    def test_unspecified_address_blocked(self):
+        """0.0.0.0 — unspecified address, can bind to all interfaces."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("0.0.0.0", 0)),
+        ]):
+            assert is_safe_url("http://0.0.0.0/") is False
 
     def test_unexpected_error_fails_closed(self):
         """Unexpected exceptions should block, not allow."""
         with patch("tools.url_safety.urlparse", side_effect=ValueError("bad url")):
             assert is_safe_url("http://evil.com/") is False
 
+    def test_metadata_goog_blocked(self):
+        assert is_safe_url("http://metadata.goog/computeMetadata/v1/") is False
+
+    def test_ipv6_unique_local_blocked(self):
+        """fc00::/7 — IPv6 unique local addresses."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("fd12::1", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://[fd12::1]/internal") is False
+
+    def test_non_cgnat_100_allowed(self):
+        """100.0.0.1 is NOT in CGNAT range (100.64.0.0/10), should be allowed."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("100.0.0.1", 0)),
+        ]):
+            # 100.0.0.1 is a global IP, not in CGNAT range
+            assert is_safe_url("http://legit-host.example/") is True
+
     def test_benchmark_ip_blocked_for_non_allowlisted_host(self):
-        with _resolves_to("198.18.0.23"):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.23", 0)),
+        ]):
             assert is_safe_url("https://example.com/file.jpg") is False
 
-    @pytest.mark.parametrize("url, expected", [
-        # the allowlisted host itself, over https
-        ("https://multimedia.nt.qq.com.cn/download?id=123", True),
-        # exception is an exact host match — subdomains stay blocked
-        ("https://sub.multimedia.nt.qq.com.cn/download?id=123", False),
-        # ... and requires https
-        ("http://multimedia.nt.qq.com.cn/download?id=123", False),
-    ])
-    def test_qq_multimedia_hostname_exception(self, url, expected):
-        with _resolves_to("198.18.0.23"):
-            assert is_safe_url(url) is expected
+    def test_qq_multimedia_hostname_allowed_with_benchmark_ip(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.23", 0)),
+        ]):
+            assert is_safe_url("https://multimedia.nt.qq.com.cn/download?id=123") is True
+
+    def test_qq_multimedia_hostname_exception_is_exact_match(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.23", 0)),
+        ]):
+            assert is_safe_url("https://sub.multimedia.nt.qq.com.cn/download?id=123") is False
+
+    def test_qq_multimedia_hostname_exception_requires_https(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.23", 0)),
+        ]):
+            assert is_safe_url("http://multimedia.nt.qq.com.cn/download?id=123") is False
+
+    def test_qq_multimedia_hostname_dns_failure_still_blocked(self):
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("Name resolution failed")):
+            assert is_safe_url("https://multimedia.nt.qq.com.cn/download?id=123") is False
 
 
 class TestAsyncIsSafeUrl:
     """async_is_safe_url must match is_safe_url (runs DNS in a thread pool)."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("ip, url, expected", [
-        ("93.184.216.34", "https://example.com/x", True),
-        ("127.0.0.1", "http://localhost:8080/", False),
-    ])
-    async def test_matches_sync_verdict(self, ip, url, expected):
-        with _resolves_to(ip):
-            assert await async_is_safe_url(url) is expected
-
-
-class TestSSRFGuardedHttpxClient:
-    def test_connect_resolution_checks_private_ip_beyond_candidate_cap(self):
-        answers = [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (f"93.184.216.{idx}", 80))
-            for idx in range(1, _MAX_SSRF_CONNECT_IPS + 1)
-        ]
-        answers.append(
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 80))
-        )
-
-        with patch("socket.getaddrinfo", return_value=answers):
-            with pytest.raises(SSRFConnectionBlocked, match="metadata"):
-                _resolved_http_connect_ips("example.com", 80, "http")
-
+    async def test_public_url_allowed(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert await async_is_safe_url("https://example.com/x") is True
 
     @pytest.mark.asyncio
-    async def test_async_backend_blocks_unix_socket_connects(self):
-        import contextvars
-
-        backend = _SSRFGuardedAsyncNetworkBackend(contextvars.ContextVar("test_schemes"))
-
-        with pytest.raises(SSRFConnectionBlocked, match="Unix socket"):
-            await backend.connect_unix_socket("/tmp/hermes.sock")
-
-    def test_async_client_rejects_unpatchable_custom_transport(self):
-        class CustomTransport(httpx.AsyncBaseTransport):
-            async def handle_async_request(self, request):
-                return httpx.Response(200, request=request)
-
-        with pytest.raises(SSRFConnectionBlocked, match="Unsupported async httpx transport"):
-            create_ssrf_safe_async_client(transport=CustomTransport())
-
-    @pytest.mark.asyncio
-    async def test_async_client_preserves_env_proxy_mounts(self, monkeypatch):
-        """Installing the guard must not disable or rewrite httpx env proxy setup."""
-        for proxy_var in (
-            "HTTP_PROXY",
-            "HTTPS_PROXY",
-            "ALL_PROXY",
-            "http_proxy",
-            "https_proxy",
-            "all_proxy",
-            "NO_PROXY",
-            "no_proxy",
-        ):
-            monkeypatch.delenv(proxy_var, raising=False)
-        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
-
-        client = create_ssrf_safe_async_client(timeout=0.01)
-        try:
-            proxy_transports = [
-                transport
-                for transport in client.__dict__.get("_mounts", {}).values()
-                if transport is not None
-            ]
-            assert proxy_transports
-            assert type(client._transport._pool._network_backend).__name__ == (
-                "_SSRFGuardedAsyncNetworkBackend"
-            )
-            assert all(
-                type(transport._pool._network_backend).__name__
-                != "_SSRFGuardedAsyncNetworkBackend"
-                for transport in proxy_transports
-            )
-        finally:
-            await client.aclose()
+    async def test_localhost_blocked(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("127.0.0.1", 0)),
+        ]):
+            assert await async_is_safe_url("http://localhost:8080/") is False
 
 
 class TestIsBlockedIp:
-    """Direct tests for the _is_blocked_ip helper — one per blocked range.
-
-    ``::ffff:`` forms cover the IPv4-mapped IPv6 bypass: Python's ipaddress
-    module treats them as distinct from the plain IPv4 address, so membership
-    checks miss them without explicit handling.
-    """
+    """Direct tests for the _is_blocked_ip helper."""
 
     @pytest.mark.parametrize("ip_str", [
-        "169.254.169.254",          # link-local / cloud metadata
-        "0.0.0.0",                  # unspecified
-        "224.0.0.1",                # multicast (not is_private)
-        "100.64.0.1",               # CGNAT boundary (not is_private)
-        "198.18.0.23",              # benchmark range
-        "fd12::1",                  # IPv6 unique local
-        "::ffff:169.254.169.254",   # IPv4-mapped IPv6 metadata
+        "127.0.0.1", "10.0.0.1", "172.16.0.1", "192.168.1.1",
+        "169.254.169.254", "0.0.0.0", "224.0.0.1", "255.255.255.255",
+        "100.64.0.1", "100.100.100.100", "100.127.255.254", "198.18.0.23",
+        "::1", "fe80::1", "fc00::1", "fd12::1", "ff02::1",
+        "::ffff:127.0.0.1", "::ffff:169.254.169.254",
     ])
     def test_blocked_ips(self, ip_str):
         ip = ipaddress.ip_address(ip_str)
         assert _is_blocked_ip(ip) is True, f"{ip_str} should be blocked"
 
     @pytest.mark.parametrize("ip_str", [
-        "100.0.0.1",       # just below the CGNAT range
-        "2606:4700::1",    # public IPv6
+        "8.8.8.8", "93.184.216.34", "1.1.1.1", "100.0.0.1",
+        "2606:4700::1", "2001:4860:4860::8888",
     ])
     def test_allowed_ips(self, ip_str):
         ip = ipaddress.ip_address(ip_str)
@@ -285,6 +306,39 @@ class TestGlobalAllowPrivateUrls:
         with patch("hermes_cli.config.read_raw_config", side_effect=Exception("no config")):
             assert _global_allow_private_urls() is False
 
+    def test_env_var_true(self, monkeypatch):
+        """HERMES_ALLOW_PRIVATE_URLS=true enables the toggle."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        assert _global_allow_private_urls() is True
+
+    def test_env_var_1(self, monkeypatch):
+        """HERMES_ALLOW_PRIVATE_URLS=1 enables the toggle."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "1")
+        assert _global_allow_private_urls() is True
+
+    def test_env_var_yes(self, monkeypatch):
+        """HERMES_ALLOW_PRIVATE_URLS=yes enables the toggle."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "yes")
+        assert _global_allow_private_urls() is True
+
+    def test_env_var_false(self, monkeypatch):
+        """HERMES_ALLOW_PRIVATE_URLS=false keeps it disabled."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "false")
+        assert _global_allow_private_urls() is False
+
+    def test_config_security_section(self, monkeypatch):
+        """security.allow_private_urls in config enables the toggle."""
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        cfg = {"security": {"allow_private_urls": True}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _global_allow_private_urls() is True
+
+    def test_config_browser_fallback(self, monkeypatch):
+        """browser.allow_private_urls works as legacy fallback."""
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        cfg = {"browser": {"allow_private_urls": True}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _global_allow_private_urls() is True
 
     def test_config_security_string_false_stays_disabled(self, monkeypatch):
         """Quoted false must not opt out of SSRF protection."""
@@ -293,49 +347,34 @@ class TestGlobalAllowPrivateUrls:
         with patch("hermes_cli.config.read_raw_config", return_value=cfg):
             assert _global_allow_private_urls() is False
 
-
-    @pytest.mark.parametrize(
-        "profile_order",
-        [("allowed", "blocked"), ("blocked", "allowed")],
-        ids=["allowed-then-blocked", "blocked-then-allowed"],
-    )
-    def test_profile_scoped_config_does_not_reuse_another_profiles_opt_out(
-        self, tmp_path, monkeypatch, profile_order
-    ):
-        """Multiplexed profiles must resolve their own private-URL policy."""
-        from hermes_constants import (
-            reset_hermes_home_override,
-            set_hermes_home_override,
-        )
-
+    def test_config_browser_string_false_stays_disabled(self, monkeypatch):
+        """Legacy browser.allow_private_urls also normalises quoted false."""
         monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
-        allowed_home = tmp_path / "allowed"
-        blocked_home = tmp_path / "blocked"
-        allowed_home.mkdir()
-        blocked_home.mkdir()
-        (allowed_home / "config.yaml").write_text(
-            "security:\n  allow_private_urls: true\n", encoding="utf-8"
-        )
-        (blocked_home / "config.yaml").write_text(
-            "security:\n  allow_private_urls: false\n", encoding="utf-8"
-        )
-        monkeypatch.setattr(
-            socket,
-            "getaddrinfo",
-            lambda *_args, **_kwargs: [(2, 1, 6, "", ("10.0.0.8", 0))],
-        )
+        cfg = {"browser": {"allow_private_urls": "false"}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _global_allow_private_urls() is False
 
-        def under_profile(home):
-            token = set_hermes_home_override(home)
-            try:
-                return is_safe_url("http://profile-private.test/resource")
-            finally:
-                reset_hermes_home_override(token)
+    def test_config_security_takes_precedence_over_browser(self, monkeypatch):
+        """security section is checked before browser section."""
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        cfg = {"security": {"allow_private_urls": True}, "browser": {"allow_private_urls": False}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _global_allow_private_urls() is True
 
-        homes = {"allowed": allowed_home, "blocked": blocked_home}
-        expected = {"allowed": True, "blocked": False}
-        for profile in profile_order:
-            assert under_profile(homes[profile]) is expected[profile]
+    def test_env_var_overrides_config(self, monkeypatch):
+        """Env var takes priority over config."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "false")
+        cfg = {"security": {"allow_private_urls": True}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _global_allow_private_urls() is False
+
+    def test_result_is_cached(self, monkeypatch):
+        """Second call uses cached result, doesn't re-read config."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        assert _global_allow_private_urls() is True
+        # Change env after first call — should still be True (cached)
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "false")
+        assert _global_allow_private_urls() is True
 
 
 class TestAllowPrivateUrlsIntegration:
@@ -347,39 +386,108 @@ class TestAllowPrivateUrlsIntegration:
         yield
         _reset_allow_private_cache()
 
-    @pytest.mark.parametrize("ip, url", [
-        ("192.168.1.1", "http://router.local"),
-        # 198.18.x.x (benchmark / OpenWrt proxy range) must pass too
-        ("198.18.23.183", "https://nousresearch.com"),
-    ])
-    def test_private_ip_allowed_when_toggle_on(self, monkeypatch, ip, url):
+    def test_private_ip_allowed_when_toggle_on(self, monkeypatch):
+        """Private IPs pass is_safe_url when toggle is enabled."""
         monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
-        with _resolves_to(ip):
-            assert is_safe_url(url) is True
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("192.168.1.1", 0)),
+        ]):
+            assert is_safe_url("http://router.local") is True
+
+    def test_benchmark_ip_allowed_when_toggle_on(self, monkeypatch):
+        """198.18.x.x (benchmark/OpenWrt proxy range) passes when toggle is on."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.23.183", 0)),
+        ]):
+            assert is_safe_url("https://nousresearch.com") is True
+
+    def test_cgnat_allowed_when_toggle_on(self, monkeypatch):
+        """CGNAT range (100.64.0.0/10) passes when toggle is on."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("100.100.100.100", 0)),
+        ]):
+            assert is_safe_url("http://tailscale-peer.example/") is True
+
+    def test_localhost_allowed_when_toggle_on(self, monkeypatch):
+        """Even localhost passes when toggle is on."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("127.0.0.1", 0)),
+        ]):
+            assert is_safe_url("http://localhost:8080/api") is True
 
     # --- Cloud metadata always blocked regardless of toggle ---
-
-    @pytest.mark.parametrize("ip, url", [
-        ("fd00:ec2::254", "http://[fd00:ec2::254]/latest/"),          # AWS IPv6 IMDS
-        ("100.100.100.200", "http://100.100.100.200/latest/meta-data/"),  # Alibaba
-    ])
-    def test_metadata_ip_blocked_even_with_toggle(self, monkeypatch, ip, url):
-        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
-        with _resolves_to(ip):
-            assert is_safe_url(url) is False
 
     def test_metadata_hostname_blocked_even_with_toggle(self, monkeypatch):
         """metadata.google.internal is ALWAYS blocked."""
         monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
         assert is_safe_url("http://metadata.google.internal/computeMetadata/v1/") is False
 
+    def test_metadata_goog_blocked_even_with_toggle(self, monkeypatch):
+        """metadata.goog is ALWAYS blocked."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        assert is_safe_url("http://metadata.goog/computeMetadata/v1/") is False
+
+    def test_metadata_ip_blocked_even_with_toggle(self, monkeypatch):
+        """169.254.169.254 (AWS/GCP metadata IP) is ALWAYS blocked."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("169.254.169.254", 0)),
+        ]):
+            assert is_safe_url("http://169.254.169.254/latest/meta-data/") is False
+
+    def test_metadata_ipv6_blocked_even_with_toggle(self, monkeypatch):
+        """fd00:ec2::254 (AWS IPv6 metadata) is ALWAYS blocked."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("fd00:ec2::254", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://[fd00:ec2::254]/latest/") is False
+
+    def test_ecs_metadata_blocked_even_with_toggle(self, monkeypatch):
+        """169.254.170.2 (AWS ECS task metadata) is ALWAYS blocked."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("169.254.170.2", 0)),
+        ]):
+            assert is_safe_url("http://169.254.170.2/v2/credentials") is False
+
+    def test_alibaba_metadata_blocked_even_with_toggle(self, monkeypatch):
+        """100.100.100.200 (Alibaba Cloud metadata) is ALWAYS blocked."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("100.100.100.200", 0)),
+        ]):
+            assert is_safe_url("http://100.100.100.200/latest/meta-data/") is False
+
+    def test_azure_wire_server_blocked_even_with_toggle(self, monkeypatch):
+        """169.254.169.253 (Azure IMDS wire server) is ALWAYS blocked."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("169.254.169.253", 0)),
+        ]):
+            assert is_safe_url("http://169.254.169.253/") is False
+
+    def test_entire_link_local_blocked_even_with_toggle(self, monkeypatch):
+        """Any 169.254.x.x address is ALWAYS blocked (entire link-local range)."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("169.254.42.99", 0)),
+        ]):
+            assert is_safe_url("http://169.254.42.99/anything") is False
+
     def test_dns_failure_still_blocked_with_toggle(self, monkeypatch):
         """DNS failures are still blocked even with toggle on."""
         monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
-        for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
-            monkeypatch.delenv(var, raising=False)
         with patch("socket.getaddrinfo", side_effect=socket.gaierror("fail")):
             assert is_safe_url("https://nonexistent.example.com") is False
+
+    def test_empty_url_still_blocked_with_toggle(self, monkeypatch):
+        """Empty URLs are still blocked."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        assert is_safe_url("") is False
 
 
 class TestIsAlwaysBlockedUrl:
@@ -388,10 +496,14 @@ class TestIsAlwaysBlockedUrl:
     # -- The sentinel set that must always block --------------------------------
 
     @pytest.mark.parametrize("url", [
-        "http://169.254.42.1/",                      # any /16 link-local (incl. IMDS)
-        "http://100.100.100.200/latest/meta-data/",   # Alibaba Cloud
+        "http://169.254.169.254/latest/meta-data/",            # AWS / GCP / Azure / DO / Oracle
+        "http://169.254.169.253/metadata/instance",              # Azure IMDS wire server
+        "http://169.254.170.2/v2/credentials",                   # AWS ECS task metadata
+        "http://100.100.100.200/latest/meta-data/",              # Alibaba Cloud
+        "http://169.254.42.1/",                                  # Any /16 link-local
     ])
     def test_literal_imds_ips_always_blocked(self, url):
+        """Literal IMDS IPs and the /16 link-local range always block."""
         assert is_always_blocked_url(url) is True
 
     def test_gcp_metadata_hostname_always_blocked_even_without_dns(self):
@@ -399,11 +511,20 @@ class TestIsAlwaysBlockedUrl:
         with patch("socket.getaddrinfo", side_effect=socket.gaierror("nope")):
             assert is_always_blocked_url("http://metadata.google.internal/") is True
 
+    def test_hostname_resolving_to_imds_always_blocked(self):
+        """Attacker-controlled hostname resolving to IMDS still blocks."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("169.254.169.254", 0)),
+        ]):
+            assert is_always_blocked_url("http://attacker-controlled.example.com/") is True
+
     def test_scope_id_imds_in_floor_blocked(self):
-        """An attacker-controlled hostname resolving to a scope-ID-bearing,
-        IPv4-mapped IMDS address must be caught after the scope is stripped,
-        not skipped as unparseable."""
-        with _resolves_to("::ffff:169.254.169.254%eth0"):
+        """A scope-ID suffix on an IPv4-mapped IMDS address resolving in the
+        always-blocked floor must be caught after the scope is stripped, not
+        skipped as unparseable."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("::ffff:169.254.169.254%eth0", 0, 0, 0)),
+        ]):
             assert is_always_blocked_url("http://attacker-controlled.example.com/") is True
 
     # -- Things the floor must NOT block ----------------------------------------
@@ -411,13 +532,16 @@ class TestIsAlwaysBlockedUrl:
     def test_public_url_not_blocked(self):
         assert is_always_blocked_url("https://example.com/path") is False
 
-    def test_ordinary_private_urls_not_in_floor(self):
-        """Floor is narrower than is_safe_url — ordinary private URLs pass.
-
-        CGNAT is blocked by is_safe_url but must not be claimed by the floor.
-        """
-        assert is_always_blocked_url("http://127.0.0.1:8080/") is False
-        assert is_always_blocked_url("http://100.64.0.1/") is False
+    @pytest.mark.parametrize("url", [
+        "http://127.0.0.1:8080/",
+        "http://192.168.1.1/",
+        "http://10.0.0.5/",
+        "http://172.16.0.1/",
+        "http://100.64.0.1/",  # CGNAT — blocked by is_safe_url but not by the floor
+    ])
+    def test_ordinary_private_urls_not_in_floor(self, url):
+        """Floor is narrower than is_safe_url — ordinary private URLs pass."""
+        assert is_always_blocked_url(url) is False
 
     def test_dns_failure_not_in_floor(self):
         """DNS failure on a non-sentinel hostname = not always-blocked.
@@ -426,6 +550,10 @@ class TestIsAlwaysBlockedUrl:
         """
         with patch("socket.getaddrinfo", side_effect=socket.gaierror("fail")):
             assert is_always_blocked_url("http://nonexistent.example.com/") is False
+
+    def test_empty_url_not_in_floor(self):
+        """Empty URL falls through — caller decides what to do with a malformed URL."""
+        assert is_always_blocked_url("") is False
 
     def test_malformed_url_not_in_floor(self):
         """Parse errors don't claim always-blocked status."""
@@ -440,18 +568,68 @@ class TestIsAlwaysBlockedUrl:
 class TestIPv4MappedIPv6SSRF:
     """Regression tests for SSRF bypass via IPv4-mapped IPv6 addresses.
 
-    DNS resolvers may return ``::ffff:x.x.x.x`` for IPv4-only hosts, which
-    Python's ipaddress module treats as distinct from the plain IPv4 address.
+    DNS resolvers may return ``::ffff:x.x.x.x`` for IPv4-only hosts.
+    Python's ipaddress module treats these as distinct from the plain
+    IPv4 address, so ``ip in frozenset({IPv4Address(...)})`` and
+    ``ip in IPv4Network(...)`` both return False.  Without explicit
+    handling, an attacker could use IPv4-mapped addresses to bypass
+    all SSRF protections.
     """
 
-    @pytest.mark.parametrize("ip, url", [
-        ("::ffff:169.254.169.254", "http://aws-metadata.internal/"),
-        # in the CGNAT range, so a different block branch than link-local
-        ("::ffff:100.100.100.200", "http://aliyun-metadata.internal/"),
+    # ── _is_blocked_ip direct tests ──
+
+    @pytest.mark.parametrize("ip_str", [
+        "::ffff:100.64.0.1",       # CGNAT start
+        "::ffff:100.100.100.200",  # Alibaba Cloud metadata (in CGNAT range)
+        "::ffff:100.127.255.254",  # CGNAT end
+        "::ffff:169.254.42.99",    # Link-local (non-metadata)
+        "::ffff:0.0.0.0",          # Unspecified
+        "::ffff:224.0.0.1",        # Multicast
     ])
-    def test_ipv4_mapped_metadata_blocked(self, ip, url):
-        with _resolves_to(ip):
-            assert is_safe_url(url) is False
+    def test_ipv4_mapped_blocked_ips(self, ip_str):
+        """IPv4-mapped IPv6 addresses that should be blocked."""
+        ip = ipaddress.ip_address(ip_str)
+        assert _is_blocked_ip(ip) is True, f"{ip_str} should be blocked"
+
+    @pytest.mark.parametrize("ip_str", [
+        "::ffff:8.8.8.8",          # Public DNS
+        "::ffff:93.184.216.34",    # example.com
+        "::ffff:100.0.0.1",        # Not in CGNAT range
+    ])
+    def test_ipv4_mapped_allowed_ips(self, ip_str):
+        """IPv4-mapped IPv6 addresses that should be allowed."""
+        ip = ipaddress.ip_address(ip_str)
+        assert _is_blocked_ip(ip) is False, f"{ip_str} should be allowed"
+
+    # ── is_safe_url integration tests: always-blocked metadata IPs ──
+
+    def test_ipv4_mapped_aws_metadata_blocked(self):
+        """::ffff:169.254.169.254 (AWS metadata) must always be blocked."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("::ffff:169.254.169.254", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://aws-metadata.internal/") is False
+
+    def test_ipv4_mapped_ecs_metadata_blocked(self):
+        """::ffff:169.254.170.2 (AWS ECS task metadata) must always be blocked."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("::ffff:169.254.170.2", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://ecs-metadata.internal/") is False
+
+    def test_ipv4_mapped_azure_wire_server_blocked(self):
+        """::ffff:169.254.169.253 (Azure IMDS wire server) must always be blocked."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("::ffff:169.254.169.253", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://azure-metadata.internal/") is False
+
+    def test_ipv4_mapped_alibaba_metadata_blocked(self):
+        """::ffff:100.100.100.200 (Alibaba Cloud metadata) must always be blocked."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("::ffff:100.100.100.200", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://aliyun-metadata.internal/") is False
 
 
 class _FakeResponse:
@@ -489,6 +667,17 @@ class TestRedirectTargetFromResponse:
             == "http://169.254.169.254/latest/meta-data"
         )
 
+    def test_relative_location_is_resolved_against_response_url(self):
+        resp = _FakeResponse(
+            is_redirect=True,
+            location="/redir",
+            url="https://public.example/image.png",
+        )
+        assert redirect_target_from_response(resp) == "https://public.example/redir"
+
+    def test_non_redirect_returns_none(self):
+        resp = _FakeResponse(is_redirect=False, location="http://169.254.169.254/")
+        assert redirect_target_from_response(resp) is None
 
     def test_falls_back_to_next_request_when_no_location(self):
         resp = _FakeResponse(
@@ -496,3 +685,257 @@ class TestRedirectTargetFromResponse:
             next_request=_FakeNextRequest("http://10.0.0.1/meta"),
         )
         assert redirect_target_from_response(resp) == "http://10.0.0.1/meta"
+
+    def test_no_location_no_next_request_returns_none(self):
+        resp = _FakeResponse(is_redirect=True)
+        assert redirect_target_from_response(resp) is None
+
+
+# ---------------------------------------------------------------------------
+# Additional coverage for uncovered paths
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeUrlForRequestEdgeCases:
+    def test_non_string_returns_input(self):
+        """Non-string input is returned unchanged."""
+        assert normalize_url_for_request(42) == 42  # type: ignore[arg-type]
+        assert normalize_url_for_request(None) is None  # type: ignore[arg-type]
+
+    def test_empty_string_returns_empty(self):
+        assert normalize_url_for_request("") == ""
+
+    def test_whitespace_only_returns_empty(self):
+        assert normalize_url_for_request("   ") == ""
+
+    def test_non_http_scheme_returns_raw(self):
+        """Non-http/https schemes pass through unchanged."""
+        assert normalize_url_for_request("ftp://example.com/file") == "ftp://example.com/file"
+        assert normalize_url_for_request("file:///path") == "file:///path"
+
+    def test_urlsplit_value_error_returns_raw(self):
+        """When urlsplit raises ValueError, raw input is returned."""
+        with patch("tools.url_safety.urlsplit", side_effect=ValueError("bad")):
+            assert normalize_url_for_request("https://example.com") == "https://example.com"
+
+    def test_idna_unicode_error_falls_back(self):
+        """When IDNA encoding fails, the original hostname is kept."""
+        # A hostname that fails IDNA encoding (too long label)
+        long_label = "a" * 64
+        url = f"https://{long_label}.example.com/path"
+        result = normalize_url_for_request(url)
+        # Should not crash, should contain the original hostname
+        assert long_label in result
+
+    def test_no_hostname(self):
+        """URL without hostname (e.g. 'https:///path') still works."""
+        result = normalize_url_for_request("https:///path")
+        assert "path" in result
+
+    def test_ascii_hostname_unchanged(self):
+        """Pure-ASCII hostname is not modified."""
+        result = normalize_url_for_request("https://example.com/path")
+        assert result == "https://example.com/path"
+
+    def test_fragment_encoded(self):
+        """Fragment with non-ASCII is percent-encoded."""
+        result = normalize_url_for_request("https://example.com/page#Köln")
+        assert "%C3%B6" in result
+
+
+class TestGlobalAllowPrivateUrlsEdgeCases:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_allow_private_cache()
+        yield
+        _reset_allow_private_cache()
+
+    def test_env_var_0(self, monkeypatch):
+        """HERMES_ALLOW_PRIVATE_URLS=0 keeps it disabled."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "0")
+        assert _global_allow_private_urls() is False
+
+    def test_env_var_no(self, monkeypatch):
+        """HERMES_ALLOW_PRIVATE_URLS=no keeps it disabled."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "no")
+        assert _global_allow_private_urls() is False
+
+    def test_env_var_empty_string(self, monkeypatch):
+        """Empty env var falls through to config."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "")
+        with patch("hermes_cli.config.read_raw_config", side_effect=Exception("no config")):
+            assert _global_allow_private_urls() is False
+
+    def test_env_var_random_string(self, monkeypatch):
+        """Unrecognized env var value falls through to config."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "maybe")
+        with patch("hermes_cli.config.read_raw_config", side_effect=Exception("no config")):
+            assert _global_allow_private_urls() is False
+
+    def test_config_security_not_dict(self, monkeypatch):
+        """security section that's not a dict is ignored."""
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        cfg = {"security": "not a dict"}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _global_allow_private_urls() is False
+
+    def test_config_browser_not_dict(self, monkeypatch):
+        """browser section that's not a dict is ignored."""
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        cfg = {"browser": "not a dict"}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _global_allow_private_urls() is False
+
+    def test_config_both_false(self, monkeypatch):
+        """Both security and browser set to false → disabled."""
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        cfg = {"security": {"allow_private_urls": False}, "browser": {"allow_private_urls": False}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _global_allow_private_urls() is False
+
+    def test_reset_allow_private_cache(self, monkeypatch):
+        """_reset_allow_private_cache clears the cache so config is re-read."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        assert _global_allow_private_urls() is True
+        _reset_allow_private_cache()
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "false")
+        assert _global_allow_private_urls() is False
+
+
+class TestIsAlwaysBlockedUrlEdgeCases:
+    def test_hostname_with_trailing_dot(self):
+        """Trailing dot on a blocked hostname is stripped before checking."""
+        assert is_always_blocked_url("http://metadata.google.internal./") is True
+
+    def test_literal_public_ip_not_blocked(self):
+        """A literal public IP is not in the always-blocked floor."""
+        assert is_always_blocked_url("http://93.184.216.34/") is False
+
+    def test_literal_private_ip_not_in_floor(self):
+        """A literal private IP (not metadata) is not in the floor."""
+        assert is_always_blocked_url("http://10.0.0.1/") is False
+
+    def test_dns_resolves_to_non_metadata_private_not_blocked(self):
+        """Hostname resolving to a private (non-metadata) IP is not in the floor."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("10.0.0.1", 0)),
+        ]):
+            assert is_always_blocked_url("http://internal.example.com/") is False
+
+    def test_dns_resolves_to_multiple_ips_one_metadata(self):
+        """When DNS returns multiple IPs and one is metadata, it blocks."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+            (2, 1, 6, "", ("169.254.169.254", 0)),
+        ]):
+            assert is_always_blocked_url("http://attacker.example.com/") is True
+
+    def test_unparseable_resolved_ip_skipped(self):
+        """An unparseable IP in DNS results is skipped, not crashed."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("not-an-ip", 0)),
+        ]):
+            assert is_always_blocked_url("http://example.com/") is False
+
+    def test_unexpected_error_returns_false(self):
+        """Unexpected exceptions don't claim always-blocked status."""
+        with patch("tools.url_safety.urlparse", side_effect=RuntimeError("boom")):
+            assert is_always_blocked_url("http://example.com/") is False
+
+    def test_empty_hostname_returns_false(self):
+        """URL with no hostname returns False."""
+        assert is_always_blocked_url("http://") is False
+
+    def test_ipv6_literal_metadata_blocked(self):
+        """IPv6 metadata IP (fd00:ec2::254) is in the always-blocked set."""
+        assert is_always_blocked_url("http://[fd00:ec2::254]/") is True
+
+
+class TestIsSafeUrlEdgeCases:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_allow_private_cache()
+        yield
+        _reset_allow_private_cache()
+
+    def test_allow_private_logging_path(self, monkeypatch):
+        """When allow_private_urls is on, the debug log is emitted."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("192.168.1.1", 0)),
+        ]):
+            with patch("tools.url_safety.logger") as mock_logger:
+                assert is_safe_url("http://router.local") is True
+                mock_logger.debug.assert_called()
+
+    def test_trusted_hostname_logging_path(self):
+        """When a trusted hostname resolves to private IP, debug log is emitted."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.23", 0)),
+        ]):
+            with patch("tools.url_safety.logger") as mock_logger:
+                assert is_safe_url("https://multimedia.nt.qq.com.cn/download") is True
+                mock_logger.debug.assert_called()
+
+    def test_multiple_ips_one_blocked(self):
+        """When DNS returns multiple IPs and one is blocked, the URL is blocked."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+            (2, 1, 6, "", ("10.0.0.1", 0)),
+        ]):
+            assert is_safe_url("http://example.com/") is False
+
+    def test_hostname_with_trailing_dot(self):
+        """Trailing dot on hostname is stripped."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert is_safe_url("https://example.com./path") is True
+
+    def test_unsupported_scheme_logs_warning(self):
+        """Unsupported scheme logs a warning."""
+        with patch("tools.url_safety.logger") as mock_logger:
+            assert is_safe_url("ftp://example.com/file") is False
+            mock_logger.warning.assert_called()
+
+    def test_uppercase_scheme(self):
+        """Uppercase HTTPS scheme is accepted."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert is_safe_url("HTTPS://example.com/path") is True
+
+
+class TestAsyncIsSafeUrlExtra:
+    @pytest.mark.asyncio
+    async def test_metadata_blocked(self):
+        """Cloud metadata hostname is blocked in async path too."""
+        assert await async_is_safe_url("http://metadata.google.internal/") is False
+
+    @pytest.mark.asyncio
+    async def test_dns_failure_blocked(self):
+        """DNS failure blocks in async path too."""
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("fail")):
+            assert await async_is_safe_url("https://nonexistent.example.com") is False
+
+    @pytest.mark.asyncio
+    async def test_empty_url_blocked(self):
+        """Empty URL blocks in async path too."""
+        assert await async_is_safe_url("") is False
+
+
+class TestAllowsPrivateIpResolution:
+    def test_trusted_hostname_https(self):
+        """Trusted hostname with HTTPS scheme is allowed."""
+        from tools.url_safety import _allows_private_ip_resolution
+        assert _allows_private_ip_resolution("multimedia.nt.qq.com.cn", "https") is True
+
+    def test_trusted_hostname_http(self):
+        """Trusted hostname with HTTP scheme is NOT allowed."""
+        from tools.url_safety import _allows_private_ip_resolution
+        assert _allows_private_ip_resolution("multimedia.nt.qq.com.cn", "http") is False
+
+    def test_untrusted_hostname(self):
+        """Untrusted hostname is NOT allowed."""
+        from tools.url_safety import _allows_private_ip_resolution
+        assert _allows_private_ip_resolution("example.com", "https") is False

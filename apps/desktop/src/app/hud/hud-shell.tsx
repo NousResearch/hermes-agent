@@ -224,8 +224,9 @@ export function HudShell() {
   // native vibrancy and therefore the WINDOW's content view — it fills the whole
   // rectangle and nothing in the page can clip it to the sheet. Whenever the
   // sheet is shorter than the window, the difference is frost over empty space:
-  // a grey slab hanging under the bar with nothing in it, worst on a fresh
-  // thread where the sheet is zero and the slab is the entire window.
+  // a grey slab hanging under the bar with nothing in it. Now that the band is
+  // capped it almost never covers the window, so this is almost always false —
+  // which is correct, and asking anything looser paints the slab back.
   const [filled, setFilled] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
 
@@ -333,7 +334,6 @@ export function HudShell() {
       className="relative flex h-screen w-screen flex-col overflow-hidden"
       data-hud-edge={edge}
       data-hud-recent={recent || held ? '' : undefined}
-      data-hud-scrollable={scrollable ? '' : undefined}
       data-hud-shell
       // Letting go of the composer re-arms the hold, so the transcript steps
       // down to its glanceable opacity and lingers there instead of jumping
@@ -356,23 +356,8 @@ export function HudShell() {
 
       <WiredPane part="chatRoutes" />
 
-      {/* The top fade band, as a drag handle. Its text is masked to nothing up
-          there, so handing the band's mouse input to the window manager costs
-          no readable content — and it gives the HUD a grab area that isn't the
-          composer.
-
-          LAST child on purpose. Electron collects draggable regions by walking
-          the layout tree in order, uniting `drag` rects and subtracting
-          `no-drag` ones, so later elements win. Above `WiredPane` this strip
-          was silently subtracted away by the scrollback's full-height `no-drag`
-          rect (z-index does not enter into it — the region math is rect-based,
-          not paint-order-based). */}
-      <div aria-hidden data-hud-drag-strip />
-
-      {/* The way back. HUD mode has no titlebar, so without this the only
-          exits are ⌘⇧H and ⌘W — both invisible. Floats over the scrollback
-          (which is short and top-fades, so it rarely collides with text) and
-          carves itself out of the drag region so the click lands. */}
+      {/* The way back — without it the only exits are ⌘⇧H and ⌘W, both
+          invisible. Placed and revealed entirely from styles.css. */}
       <Tip label={t.titlebar.exitHud}>
         <Button
           aria-label={t.titlebar.exitHud}

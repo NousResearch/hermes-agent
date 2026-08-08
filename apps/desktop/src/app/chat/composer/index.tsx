@@ -2,6 +2,7 @@ import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef } from 'react'
 
+import { useHudComposerDrag } from '@/app/hud/composer-drag'
 import { composerFill, composerFloatingStrip, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
@@ -16,6 +17,7 @@ import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
+import { $hudMode } from '@/store/hud'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
@@ -100,6 +102,9 @@ export function ChatBar({
   onSubmit: onSubmitProp,
   onTranscribeAudio
 }: ChatBarProps) {
+  const hudMode = useStore($hudMode)
+  const { grabbing: hudGrabbing, onPointerDown: onHudDragPointerDown } = useHudComposerDrag(hudMode)
+
   // Typed stop phrase during an active voice conversation ends it — same
   // semantics as SAYING "stop" (voice-stop-word.ts) or clicking the pill's
   // end control. Populated after useComposerVoice below (the submit wrapper
@@ -1123,11 +1128,14 @@ export function ChatBar({
             data-slot="composer-root"
             data-status-stack={statusStackVisible ? '' : undefined}
             data-thread-scrolled-up={scrolledUp ? '' : undefined}
+            data-hud-grabbing={hudGrabbing ? '' : undefined}
             onDragEnter={handleDragEnter}
             onDragLeave={handleDragLeave}
             onDragOver={handleDragOver}
             onDrop={handleDrop}
-            onPointerDown={popoutAllowed ? onComposerGesturePointerDown : undefined}
+            onPointerDown={
+              hudMode ? onHudDragPointerDown : popoutAllowed ? onComposerGesturePointerDown : undefined
+            }
             onSubmit={e => {
               e.preventDefault()
 

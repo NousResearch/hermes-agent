@@ -2251,9 +2251,6 @@ button[data-slot='aui_msg-reactions'] svg {
 
 [data-hud-shell] {
   background: transparent;
-  /* Empty space drags the window; anything that needs the mouse carves itself
-     back out below. */
-  -webkit-app-region: drag;
   /* Arrive decisively and settle; leave gently and get out of the way. Linear
      both directions is what made this feel mechanical. */
   --hud-ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
@@ -2524,21 +2521,6 @@ button[data-slot='aui_msg-reactions'] svg {
   display: none !important;
 }
 
-/* SCROLLING vs DRAGGING — pick one, per element, per STATE.
-   `-webkit-app-region: drag` hands an element's mouse input to the window
-   manager, wheel included — and the region math is rect-based, so a `no-drag`
-   band subtracts its rectangle even when it's pointer-transparent. The band is
-   most of the window, so giving its rect away permanently made the HUD nearly
-   immovable in practice (the composer almost always has focus while in use).
-
-   So the carve-out needs BOTH: composer focused AND actual overflow to scroll
-   (data-hud-scrollable, set by HudShell). A short conversation leaves the
-   whole window grabbable; the band only becomes a scroll surface when
-   scrolling is a real thing you could do with it. */
-[data-hud-shell][data-hud-scrollable]:focus-within [data-slot='composer-bounds'] {
-  -webkit-app-region: no-drag;
-}
-
 /* ── Edge flip ───────────────────────────────────────────────────────────────
    Parked in the top half of the screen (data-hud-edge='top', broadcast by
    main on move/resize), the whole HUD mirrors vertically: composer hugs the
@@ -2563,27 +2545,6 @@ button[data-slot='aui_msg-reactions'] svg {
 
 [data-hud-shell][data-hud-edge='top'] [data-slot='aui_thread-content'] {
   padding-block-start: calc(var(--hud-bar-height, var(--composer-fallback-height)) + 0.25rem) !important;
-}
-
-[data-hud-shell][data-hud-edge='top'] [data-hud-drag-strip] {
-  top: auto;
-  bottom: 0;
-}
-
-/* The drag handle is the top strip of the WINDOW, above the band. The band
-   itself scrolls (a drag region eats wheel events, so it can never be the
-   handle); this strip is dead space either way, so it drags. */
-[data-hud-shell] [data-hud-drag-strip] {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 2rem;
-  z-index: 10;
-  -webkit-app-region: drag;
-  /* Blank to the eye, but this is the grab handle: a strip the window ignores
-     is a strip you cannot drag the HUD by. */
-  pointer-events: auto;
 }
 
 /* Tighten the thread on every side. The docked chat's gutters (px-6 py-8 plus
@@ -2636,37 +2597,19 @@ button[data-slot='aui_msg-reactions'] svg {
   --thread-viewport-height: 100%;
 }
 
-/* The composer BAR is the drag handle: it's the one surface that isn't a
-   scroll container, so it's the only one that can be. Its frame drags; the
-   controls carve themselves back out (a drag region eats their clicks too). */
+/* NOTHING in HUD mode declares `-webkit-app-region: drag`. The window manager
+   takes a draggable region's mouse input whole, so the page never sees the
+   cursor arrive there — and `useHudClickThrough`, which decides whether the
+   window is solid from exactly those moves, has already handed the window away
+   by the time you press. Every version of the app-region handle was therefore
+   both unusable (the press fell through to the app behind) and the reason the
+   HUD stayed solid over dead space once you left it. The two mechanisms cannot
+   share a window; click-through wins, and dragging is `useHudComposerDrag` —
+   press and hold the bar, then move. */
 [data-hud-shell] [data-slot='composer-dock'] {
-  -webkit-app-region: drag;
   /* The one surface that is always there, so the one that always takes the
      mouse — everything else in the shell earns it by being on screen. */
   pointer-events: auto;
-}
-
-/* Focusables, not a list of the controls that happen to be in the bar today —
-   a drag region eats the clicks of anything it covers, so anything missed here
-   is a dead control. */
-[data-hud-shell] [data-slot='composer-rich-input'],
-[data-hud-shell]
-  [data-slot='composer-dock']
-  :is(
-    a[href],
-    button,
-    input,
-    label,
-    select,
-    textarea,
-    [contenteditable],
-    [role='button'],
-    [role='combobox'],
-    [role='menuitem'],
-    [role='switch'],
-    [tabindex]:not([tabindex='-1'])
-  ) {
-  -webkit-app-region: no-drag;
 }
 
 /* HUD mode is the input and the log — nothing else. The dock stacks
@@ -2829,17 +2772,6 @@ button[data-slot='aui_msg-reactions'] svg {
    transparent HUD it's a grey smear. */
 [data-hud-shell] [data-slot='composer-root'] > .pointer-events-none {
   display: none !important;
-}
-
-/* Portaled overlays (model picker, menus, dialogs, tooltips, the command
-   palette) mount into <body>, OUTSIDE [data-hud-shell] — so they never inherit
-   its `no-drag` carve-outs. And Electron's draggable region is RECT math, not
-   paint order: the shell's window-sized `drag` rect covers wherever the menu
-   opens, and anything that doesn't explicitly subtract itself is handed to the
-   window manager. The menu rendered, sat correctly, and swallowed every click
-   ("I can't even select a model"). Carve every portal back out. */
-html:has([data-hud-shell]) body > *:not(#root) {
-  -webkit-app-region: no-drag;
 }
 
 /* Popovers in a ~320px-tall window. Two separate problems:

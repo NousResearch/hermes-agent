@@ -26,6 +26,13 @@ export function hudIgnoresMouse(
   active: Element | null,
   windowFocused: boolean
 ): boolean {
+  // A long-press drag in progress owns the window until it lets go. The cursor
+  // outruns the window it is moving, so the hit test goes empty mid-drag and
+  // would otherwise hand the mouse away underneath the user's own hand.
+  if (root.querySelector('[data-hud-grabbing]') !== null) {
+    return false
+  }
+
   const overSomething = hit !== null && !hit.contains(root)
   // `windowFocused` is what stops a stale `active` — the composer keeps focus
   // after you click away to another app — pinning the HUD solid forever.
@@ -52,6 +59,12 @@ export function hudIgnoresMouse(
  * whenever a portalled overlay holds focus. `forward: true` keeps mousemove
  * flowing while ignoring, which is what lets it re-arm when the cursor comes
  * back to the bar.
+ *
+ * It follows that nothing in HUD mode may declare `-webkit-app-region: drag`
+ * at all: a draggable region swallows the page's mouse events, so the moves
+ * never arrive and the window is stranded on whatever it last decided —
+ * usually transparent, which is also why pressing the handle fell through to
+ * the app behind. Dragging is `useHudComposerDrag` instead.
  */
 export function useHudClickThrough(rootRef: RefObject<HTMLElement | null>): void {
   useEffect(() => {
@@ -89,14 +102,31 @@ export function useHudClickThrough(rootRef: RefObject<HTMLElement | null>): void
       apply()
     }
 
+    // Whenever we stop knowing where the cursor is, hand the window back. Solid
+    // is only ever right under a cursor we can still see: the last point we saw
+    // is usually the bar, and holding that answer means the whole rectangle
+    // keeps eating clicks long after the cursor has left for another app. It
+    // costs nothing to give up — `forward: true` keeps the moves arriving while
+    // ignoring, so the bar is solid again well before a click reaches it.
+    const onLost = () => {
+      point = null
+      apply()
+    }
+
     apply()
     window.addEventListener('mousemove', onMove)
+    window.addEventListener('blur', onLost)
+    window.addEventListener('focus', apply)
+    document.addEventListener('mouseleave', onLost)
     document.addEventListener('focusin', apply)
     document.addEventListener('focusout', apply)
 
     return () => {
       setIgnoreMouse(false)
       window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('blur', onLost)
+      window.removeEventListener('focus', apply)
+      document.removeEventListener('mouseleave', onLost)
       document.removeEventListener('focusin', apply)
       document.removeEventListener('focusout', apply)
     }

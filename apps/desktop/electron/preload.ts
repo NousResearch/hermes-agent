@@ -53,6 +53,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     open: request => ipcRenderer.invoke('hermes:hud:open', request),
     close: () => ipcRenderer.invoke('hermes:hud:close'),
     setIgnoreMouse: ignore => ipcRenderer.send('hermes:hud:ignore-mouse', ignore),
+    moveBy: delta => ipcRenderer.send('hermes:hud:move-by', delta),
     setVibrancy: on => ipcRenderer.invoke('hermes:hud:vibrancy', on),
     // The HUD tells main which session it is on; main hands that back to the
     // app window when the HUD closes, so the app can re-home onto it.

@@ -182,9 +182,19 @@ def _canonical(name: str) -> str:
 
 
 def _pins_from_specs(specs):
-    """Map canonical package name -> set of exact-pinned versions seen."""
+    """Map canonical package name -> set of exact-pinned versions seen.
+
+    Specs carrying a PEP 508 environment marker (``name==1.0; sys_platform
+    == ...``) are skipped: the marker makes the pin platform-specific, so
+    two differently-marked versions of the same package are legal (e.g.
+    ``onnxruntime==1.23.2; platform_machine == 'x86_64' ...`` vs
+    ``onnxruntime==1.27.0; ...`` — #81577) and must not count as a
+    same-environment conflict.
+    """
     pins: dict[str, set[str]] = {}
     for spec in specs:
+        if ";" in spec:
+            continue
         m = _PIN_RE.match(spec)
         if not m:
             continue

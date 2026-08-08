@@ -199,7 +199,8 @@ voice = [
 # first /wake; mirrored in tools/lazy_deps.py.
 wake = [
   "openwakeword==0.6.0",
-  "onnxruntime==1.27.0",
+  "onnxruntime==1.23.2; platform_machine == 'x86_64' and platform_system == 'Darwin'",
+  "onnxruntime==1.27.0; platform_machine != 'x86_64' or platform_system != 'Darwin'",
   "sherpa-onnx==1.13.4",
   "sentencepiece==0.2.2",
   "pvporcupine==4.0.3",
@@ -209,7 +210,12 @@ wake = [
   # (dscripka/openWakeWord#336), so the wake word runs on tflite there.
   # Upstream declares tflite-runtime for Linux only; ai-edge-litert is the
   # macOS equivalent, bridged in tools/wake_word.py.
-  "ai-edge-litert==2.1.6; platform_system == 'Darwin'",
+  # onnxruntime==1.27.0 has no x86_64 macOS wheel (#81560), so on
+  # Intel macOS we pin 1.23.2 — the last release with a Darwin x86_64
+  # wheel (#81577). tflite also has no x86_64 macOS wheel, so the
+  # previous "Intel macOS → tflite" coercion gave the user a dead ear;
+  # the default is now back to onnx with the platform-correct pin.
+  "ai-edge-litert==2.1.6; platform_machine == 'arm64' and platform_system == 'Darwin'",
 ]
 honcho = ["honcho-ai==2.2.0"]
 # Cloud memory providers — opt-in, lazy-installed via tools/lazy_deps.py

@@ -100,10 +100,29 @@ def _bundled_wakeword_path(framework: str = "onnx") -> str:
     return os.path.join(os.path.dirname(__file__), "wakewords", f"{_BUNDLED_MODEL_NAME}.{ext}")
 
 
+def _is_macos() -> bool:
+    import platform
+
+    return sys.platform == "darwin"
+
+
 def _is_macos_arm64() -> bool:
     import platform
 
-    return sys.platform == "darwin" and platform.machine() == "arm64"
+    return _is_macos() and platform.machine() == "arm64"
+
+
+def _is_macos_intel() -> bool:
+    """True on macOS running on an Intel (x86_64) CPU.
+
+    The openWakeWord ONNX stack pins ``onnxruntime==1.27.0``, which ships no
+    x86_64 macOS wheel, so the lazy install fails outright on Intel Macs
+    (#81560). The tflite backend (``ai-edge-litert``) has macOS wheels for
+    both arches, so it is the only installable openWakeWord backend there.
+    """
+    import platform
+
+    return _is_macos() and platform.machine() in {"x86_64", "i386", "i686"}
 
 
 def default_inference_framework() -> str:
@@ -114,6 +133,14 @@ def default_inference_framework() -> str:
     and the wake classifier both match tflite exactly). The detector arms, the
     microphone works, and no phrase can ever cross the threshold. Prefer the
     tflite backend there; ONNX stays the default everywhere else.
+
+    On Intel macOS the pinned ``onnxruntime==1.27.0`` has no x86_64 wheel
+    so the lazy install fails. The previously-suggested tflite route is
+    not viable either: ``ai-edge-litert==2.1.6`` only publishes arm64
+    macOS wheels (no x86_64 either, no sdist). Pin ``onnxruntime==1.23.2``
+    — the last release with an x86_64 macOS wheel — for the Intel-macOS
+    path, and keep the ONNX backend as the default there (#81560,
+    #81577).
 
     Upstream: https://github.com/dscripka/openWakeWord/issues/336
     """
@@ -126,14 +153,24 @@ _warned_onnx_coerced = False
 def resolve_inference_framework(cfg: Dict[str, Any]) -> str:
     """Resolve the effective openWakeWord backend from config.
 
-    Honors an explicit ``openwakeword.inference_framework`` — EXCEPT the one
-    combination that is provably dead: an explicit ``onnx`` on macOS ARM64,
-    where ONNX's embedding model never lets a phrase cross threshold (upstream
-    #336). Existing macOS users who pinned ``onnx`` before the tflite fix landed
-    would otherwise keep a wake word that arms but never fires. Coerce that one
-    case to tflite (with a one-time warning) instead of silently shipping a dead
-    ear. Every other explicit value is respected as-is; empty falls back to the
-    platform default.
+    Honors an explicit ``openwakeword.inference_framework`` — EXCEPT the
+    combinations that are provably dead on the host:
+
+    - explicit ``onnx`` on macOS ARM64: ONNX's embedding model never lets a
+      phrase cross threshold (upstream #336). Existing macOS users who pinned
+      ``onnx`` before the tflite fix landed would otherwise keep a wake word
+      that arms but never fires.
+    - explicit ``onnx`` on macOS ARM64: the embedding model never fires
+      (upstream #336). Existing macOS users who pinned ``onnx`` before the
+      tflite fix landed would otherwise keep a wake word that arms but
+      never fires.
+
+    Coerce that case to tflite (with a one-time warning) instead of
+    silently shipping a dead ear. macOS Intel is left to the platform
+    default (onnx with the platform-pinned onnxruntime wheel) — both
+    ``onnxruntime==1.27.0`` *and* the tflite runtime have no x86_64
+    macOS wheel, so the previous "coerce to tflite" route gave the user
+    a dead ear too (#81577).
     """
     global _warned_onnx_coerced
 
@@ -535,14 +572,25 @@ class _OpenWakeWordEngine(_Engine):
     def __init__(self, cfg: Dict[str, Any]):
         from tools import lazy_deps
 
-        lazy_deps.ensure("wake.openwakeword", prompt=False)
+        framework = resolve_inference_framework(cfg)
+        # The platform-correct onnxruntime wheel is pinned in pyproject.toml:
+        # 1.23.2 on Intel macOS (the last release with a Darwin x86_64 wheel),
+        # 1.27.0 elsewhere. lazy_deps specs cannot carry PEP 508 markers, so
+        # ``wake.openwakeword`` hard-pins 1.27.0 and would fail its version
+        # match on Intel macOS (where 1.23.2 is installed via the [wake]
+        # extra). Use the slim feature there — it omits onnxruntime, which the
+        # extra already provides at the platform-correct version (#81560,
+        # #81577).
+        if _is_macos_intel():
+            lazy_deps.ensure("wake.openwakeword.slim", prompt=False)
+        else:
+            lazy_deps.ensure("wake.openwakeword", prompt=False)
 
         import openwakeword
         from openwakeword.model import Model
 
         sub = cfg.get("openwakeword") if isinstance(cfg.get("openwakeword"), dict) else {}
         model_ref = str(sub.get("model") or _BUNDLED_MODEL_NAME).strip()
-        framework = resolve_inference_framework(cfg)
         # openWakeWord returns a 0..1 score per frame; sensitivity IS the raw
         # threshold a score must clear. Higher = stricter (fewer false fires).
         # Default 0.6 sits above openWakeWord's permissive 0.5 baseline, which
@@ -907,7 +955,10 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
     elif provider in ("sherpa", "sherpa-onnx", "kws", "open"):
         feature = "wake.sherpa"
     else:
-        feature = "wake.openwakeword"
+        # All supported platforms install the default wake.openwakeword
+        # feature; pyproject.toml pins the right onnxruntime wheel per
+        # platform (1.23.2 on Intel macOS, 1.27.0 elsewhere — #81560, #81577).
+        feature = "wake.openwakeword.slim" if _is_macos_intel() else "wake.openwakeword"
     deps_ok = lazy_deps.is_available(feature)
     lazy_ok = lazy_deps._allow_lazy_installs()
     # The audio probe imports sounddevice + numpy — two of the very packages

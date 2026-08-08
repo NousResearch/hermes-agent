@@ -788,14 +788,26 @@ export function usePromptActions({
       updateSessionState(sessionId, state => applyReloadOptimistic(state, plan))
 
       try {
-        await requestGateway(
-          'prompt.submit',
+        await withSessionNotFoundResume(
+          sessionId,
+          selectedStoredSessionIdRef.current,
+          liveId =>
+            requestGateway(
+              'prompt.submit',
+              {
+                session_id: liveId,
+                text: plan.text,
+                ...truncateSubmitParams(plan.truncateOrdinal)
+              },
+              PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+            ),
           {
-            session_id: sessionId,
-            text: plan.text,
-            ...truncateSubmitParams(plan.truncateOrdinal)
-          },
-          PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+            requestGateway,
+            onRecovered: recoveredId => {
+              activeSessionIdRef.current = recoveredId
+              setActiveSessionId(recoveredId)
+            }
+          }
         )
       } catch (err) {
         updateSessionState(sessionId, state => ({
@@ -806,7 +818,7 @@ export function usePromptActions({
         notifyError(err, copy.regenerateFailed)
       }
     },
-    [activeSessionIdRef, copy.regenerateFailed, requestGateway, updateSessionState]
+    [activeSessionIdRef, copy.regenerateFailed, requestGateway, selectedStoredSessionIdRef, updateSessionState]
   )
 
   // Cursor-style "restore checkpoint": rewind the conversation to a past user

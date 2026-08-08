@@ -45,7 +45,7 @@ import {
   truncateSubmitParams
 } from '../session/hooks/use-prompt-actions/rewind'
 import { useSubmitPrompt } from '../session/hooks/use-prompt-actions/submit'
-import { type SubmitTextOptions } from '../session/hooks/use-prompt-actions/utils'
+import { type SubmitTextOptions, withSessionNotFoundResume } from '../session/hooks/use-prompt-actions/utils'
 import { upsertOptimisticSession } from '../session/hooks/use-session-actions/utils'
 
 import type { ComposerScope } from './composer/scope'
@@ -274,7 +274,17 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
     clearClarifyRequest(undefined, sessionId)
 
     try {
-      await requestGateway('session.interrupt', { session_id: sessionId })
+      await withSessionNotFoundResume(
+        sessionId,
+        storedIdRef.current,
+        liveId => requestGateway('session.interrupt', { session_id: liveId }),
+        {
+          requestGateway,
+          onRecovered: recoveredId => {
+            runtimeIdRef.current = recoveredId
+          }
+        }
+      )
     } catch (err) {
       notifyError(err, copy.stopFailed)
     }
@@ -332,10 +342,17 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
         })
 
       try {
-        const result = await requestGateway<{ status?: string }>('session.redirect', {
-          session_id: sessionId,
-          text
-        })
+        const { result } = await withSessionNotFoundResume(
+          sessionId,
+          storedIdRef.current,
+          liveId => requestGateway<{ status?: string }>('session.redirect', { session_id: liveId, text }),
+          {
+            requestGateway,
+            onRecovered: recoveredId => {
+              runtimeIdRef.current = recoveredId
+            }
+          }
+        )
 
         if (result?.status === 'redirected') {
           triggerHaptic('submit')
@@ -393,14 +410,25 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       update(current => applyReloadOptimistic(current, plan))
 
       try {
-        await requestGateway(
-          'prompt.submit',
+        await withSessionNotFoundResume(
+          runtimeIdRef.current,
+          storedIdRef.current,
+          liveId =>
+            requestGateway(
+              'prompt.submit',
+              {
+                session_id: liveId,
+                text: plan.text,
+                ...truncateSubmitParams(plan.truncateOrdinal)
+              },
+              PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+            ),
           {
-            session_id: runtimeIdRef.current,
-            text: plan.text,
-            ...truncateSubmitParams(plan.truncateOrdinal)
-          },
-          PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+            requestGateway,
+            onRecovered: recoveredId => {
+              runtimeIdRef.current = recoveredId
+            }
+          }
         )
       } catch (err) {
         update(current => ({ ...current, busy: false, awaitingResponse: false }))

@@ -1341,6 +1341,93 @@ class TestMatrixSyncLoop:
         assert captured[0].source.chat_type == "dm"
 
     @pytest.mark.asyncio
+    async def test_sync_loop_connection_error_with_401_in_url_retries_not_stops(self):
+        """A transient connection error whose string contains '401' (e.g. a
+        `since` token like '...11340138189...' embedded in the sync URL) must
+        NOT be treated as a permanent auth failure. Regression for the bug
+        where the old substring match on str(exc) killed the sync loop."""
+        from mautrix.errors import MatrixConnectionError
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        adapter = MatrixAdapter.__new__(MatrixAdapter)
+        adapter._closing = False
+        adapter._user_id = "@bot:example.org"
+        adapter._startup_ts = time.time() - 10
+        adapter._dm_rooms = {}
+        adapter._text_batch_delay_seconds = 0
+        adapter._background_read_receipt = MagicMock()
+
+        sync_count = 0
+
+        async def _sync_once(**kwargs):
+            nonlocal sync_count
+            sync_count += 1
+            if sync_count == 1:
+                # First call raises a connection error whose message contains
+                # "401" (the exact failure mode from the bug report).
+                raise MatrixConnectionError(
+                    "Connection timeout to host https://matrix.org/_matrix/client/v3/sync"
+                    "?timeout=30000&since=s7229943229_757284980_13700910_4939298983_"
+                    "5746160314_269792054_1667497935_11340138189_0_733956_34_1_2397457"
+                )
+            # Second call succeeds and ends the loop.
+            adapter._closing = True
+            return {"rooms": {"join": {}}, "next_batch": "s1234"}
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync_once)
+        fake_client.sync_store = mock_sync_store
+        fake_client.handle_sync = MagicMock(return_value=[])
+        adapter._client = fake_client
+
+        await adapter._sync_loop()
+
+        # The loop must have retried (2 sync calls), not stopped after the
+        # first connection error.
+        assert sync_count == 2
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_real_auth_error_stops(self):
+        """A genuine MForbidden/MUnknownToken/MUnauthorized error must still
+        stop the sync loop (permanent auth failure)."""
+        from mautrix.errors import MForbidden
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        adapter = MatrixAdapter.__new__(MatrixAdapter)
+        adapter._closing = False
+        adapter._user_id = "@bot:example.org"
+        adapter._startup_ts = time.time() - 10
+        adapter._dm_rooms = {}
+        adapter._text_batch_delay_seconds = 0
+        adapter._background_read_receipt = MagicMock()
+
+        sync_count = 0
+
+        async def _sync_once(**kwargs):
+            nonlocal sync_count
+            sync_count += 1
+            raise MForbidden(403, "forbidden")
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync_once)
+        fake_client.sync_store = mock_sync_store
+        fake_client.handle_sync = MagicMock(return_value=[])
+        adapter._client = fake_client
+
+        await adapter._sync_loop()
+
+        # Loop must stop after the first auth error: no retry.
+        assert sync_count == 1
+
+    @pytest.mark.asyncio
     async def test_connect_receives_dm_from_initial_sync_dispatch(self):
         """A DM delivered by initial sync should reach the message handler after connect."""
         from plugins.platforms.matrix.adapter import MatrixAdapter

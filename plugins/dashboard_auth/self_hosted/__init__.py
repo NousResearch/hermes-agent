@@ -291,13 +291,43 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         # rejects the rotation with invalid_client.
         extra_data, extra_headers = self._token_endpoint_auth(disco)
         data.update(extra_data)
-        return self._exchange(
-            disco["token_endpoint"],
-            data,
-            bad_request_exc=RefreshExpiredError,
-            previous_refresh_token=refresh_token,
-            extra_headers=extra_headers,
-        )
+        try:
+            return self._exchange(
+                disco["token_endpoint"],
+                data,
+                bad_request_exc=RefreshExpiredError,
+                previous_refresh_token=refresh_token,
+                extra_headers=extra_headers,
+            )
+        except RefreshExpiredError:
+            # Providers disagree about `scope` on a refresh grant, in opposite
+            # directions: some narrow the granted scope when it is omitted
+            # (hence sending it above), while others -- WSO2 IS among them --
+            # reject a refresh that repeats the scope string at all. RFC 6749
+            # §6 makes the parameter optional, so both are defensible readings.
+            #
+            # Sending it unconditionally strands the second group: their
+            # rejection surfaces as an expired refresh token and forces a full
+            # interactive re-login on every access-token expiry. Omitting it
+            # unconditionally would strand the first group instead.
+            #
+            # So: keep sending it by default, and retry once without it when
+            # the grant is refused. The retry costs one request on a path that
+            # otherwise ends in interactive login, and it cannot turn a working
+            # refresh into a broken one -- we only get here after a failure. A
+            # genuinely expired refresh token simply fails twice and raises as
+            # before.
+            # Build a fresh payload rather than mutating the one already handed
+            # to the first request: nothing should be able to observe the first
+            # attempt's body changing after the fact.
+            retry_data = {k: v for k, v in data.items() if k != "scope"}
+            return self._exchange(
+                disco["token_endpoint"],
+                retry_data,
+                bad_request_exc=RefreshExpiredError,
+                previous_refresh_token=refresh_token,
+                extra_headers=extra_headers,
+            )
 
     def verify_session(self, *, access_token: str) -> Optional[Session]:
         # The session cookie stores the ID token in the access-token slot (see

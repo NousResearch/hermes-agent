@@ -2096,7 +2096,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if all([email_addr, email_pwd, email_imap, email_smtp]):
         if Platform.EMAIL not in config.platforms:
             config.platforms[Platform.EMAIL] = PlatformConfig()
-        config.platforms[Platform.EMAIL].enabled = True
+        if not config.platforms[Platform.EMAIL].extra.get("_enabled_explicit", False):
+            config.platforms[Platform.EMAIL].enabled = True
         config.platforms[Platform.EMAIL].extra.update({
             "address": email_addr,
             "imap_host": email_imap,

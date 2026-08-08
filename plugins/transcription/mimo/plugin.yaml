@@ -1,0 +1,7 @@
+name: mimo
+version: 1.0.0
+description: "Xiaomi MiMo ASR backend — /v1/chat/completions with base64 audio input."
+author: zpljd258
+kind: backend
+requires_env:
+  - MIMO_API_KEY

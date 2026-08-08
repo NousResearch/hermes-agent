@@ -6215,6 +6215,20 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
 
     request.on('response', res => {
       const chunks = []
+
+      // A remote that drops the connection mid-response (gateway restart, tunnel
+      // teardown) emits 'error' on the response stream, not the request. Without
+      // this the promise never settles and the caller hangs until its own timeout,
+      // which for the liveness probe means a stalled reconnect rather than a
+      // reported failure.
+      res.on('error', error => {
+        if (timedOut) {
+          return
+        }
+
+        clearTimeout(timer)
+        reject(error)
+      })
       res.on('data', chunk => chunks.push(Buffer.from(chunk)))
       res.on('end', () => {
         if (timedOut) {
@@ -9779,7 +9793,13 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
         connectionPromise,
         currentConnectionPromise: () => backendConnectionState.getPromise(),
         log: rememberLog,
-        probe: fetchPublicJson,
+        // Probe through Electron's network stack, not Node's. fetchPublicJson uses
+        // Node's https client and therefore Node's own CA bundle, which rejects a
+        // remote fronted by a private/internal CA that the OS trusts -- the liveness
+        // probe then fails forever and drops a perfectly healthy connection. Going
+        // through the OAuth session makes the probe honour exactly the same trust
+        // store as the OAuth ticket and the REST requests that follow it.
+        probe: fetchJsonViaOauthSession,
         resetConnection: resetHermesConnection,
         tracker: remoteLiveness
       }),

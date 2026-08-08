@@ -467,6 +467,22 @@ def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
     return normalized.rstrip("/").lower().startswith("https://api.kimi.com/coding")
 
 
+# AgentRouter (https://agentrouter.org) is a New API-style Anthropic-compatible
+# proxy that rejects any request whose User-Agent is not exactly
+# ``claude-cli/1.0.0 (external, cli)``. Without that fingerprint it returns
+# ``unauthorized_client_error`` / ``content-blocked`` / HTTP 405 even for a
+# valid API key. Mirror the Kimi /coding handling and pin the required UA.
+_AGENTROUTER_USER_AGENT = "claude-cli/1.0.0 (external, cli)"
+
+
+def _is_agentrouter_endpoint(base_url: str | None) -> bool:
+    """Return True for the AgentRouter proxy (agentrouter.org)."""
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return False
+    return base_url_host_matches(normalized, "agentrouter.org")
+
+
 # Model-name prefixes that identify the Kimi / Moonshot family.  Covers
 # - official slugs: ``kimi-k2.5``, ``kimi_thinking``, ``moonshot-v1-8k``
 # - common release lines: ``k1.5-...``, ``k2-thinking``, ``k25-...``, ``k2.5-...``,
@@ -875,6 +891,16 @@ def build_anthropic_client(
         kwargs["auth_token"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+    elif _is_agentrouter_endpoint(base_url):
+        # AgentRouter requires the exact claude-cli User-Agent fingerprint;
+        # any other UA (including the Anthropic SDK default) is rejected with
+        # ``unauthorized_client_error``. Check BEFORE the generic third-party
+        # branch so the required UA is pinned.
+        kwargs["api_key"] = api_key
+        kwargs["default_headers"] = {
+            "User-Agent": _AGENTROUTER_USER_AGENT,
+            **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
+        }
     elif _is_third_party_anthropic_endpoint(base_url):
         # Third-party proxies (Microsoft Foundry, AWS Bedrock, etc.) use their
         # own API keys with x-api-key auth. Skip OAuth detection — their keys

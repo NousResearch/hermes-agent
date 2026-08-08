@@ -25,6 +25,30 @@ from agent.i18n import t
 logger = logging.getLogger("gateway.run")
 
 
+def _parse_notification_sources(raw: Any) -> tuple[bool, set[str]]:
+    """Parse the documented cross-profile Kanban notification allowlist."""
+    if isinstance(raw, str):
+        values = [part.strip() for part in raw.split(",")]
+    elif isinstance(raw, (list, tuple, set)):
+        values = [str(part).strip() for part in raw]
+    else:
+        values = []
+    sources = {value for value in values if value}
+    return "*" in sources, {value for value in sources if value != "*"}
+
+
+def _notification_source_allowed(
+    owner_profile: Optional[str],
+    notifier_profile: str,
+    *,
+    allow_all: bool,
+    allowed_profiles: set[str],
+) -> bool:
+    if not owner_profile or owner_profile == notifier_profile:
+        return True
+    return allow_all or owner_profile in allowed_profiles
+
+
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
 ) -> "tuple[bool, int]":
@@ -203,6 +227,9 @@ class GatewayKanbanWatchersMixin:
         if not notifier_profile:
             notifier_profile = self._active_profile_name()
             self._kanban_notifier_profile = notifier_profile
+        notify_all_profiles, notification_sources = _parse_notification_sources(
+            cfg.get("notification_sources") if isinstance(cfg, dict) else None
+        )
 
         # Initial delay so the gateway can finish wiring adapters.
         await asyncio.sleep(5)
@@ -320,12 +347,26 @@ class GatewayKanbanWatchersMixin:
                             for sub in subs:
                                 try:
                                     owner_profile = sub.get("notifier_profile") or None
-                                    if owner_profile and owner_profile != notifier_profile:
-                                        _owner_adapters = getattr(self, "_profile_adapters", {}).get(owner_profile)
+                                    if not _notification_source_allowed(
+                                        owner_profile,
+                                        notifier_profile,
+                                        allow_all=notify_all_profiles,
+                                        allowed_profiles=notification_sources,
+                                    ):
+                                        # Preserve the existing multiplex path when the
+                                        # foreign owner has its own adapter registry. The
+                                        # delivery-time authorization chokepoint still
+                                        # forbids borrowing the default profile's bot.
+                                        _owner_adapters = (
+                                            getattr(self, "_profile_adapters", {}) or {}
+                                        ).get(owner_profile)
                                         if not _owner_adapters:
                                             logger.debug(
-                                                "kanban notifier: subscription for %s owned by profile %s; current profile %s has no adapter for it, skipping",
-                                                sub.get("task_id"), owner_profile, notifier_profile,
+                                                "kanban notifier: subscription for %s owned by profile %s; allowed sources %s; current profile %s has no adapter registry for it, skipping",
+                                                sub.get("task_id"),
+                                                owner_profile,
+                                                ["*"] if notify_all_profiles else sorted(notification_sources),
+                                                notifier_profile,
                                             )
                                             continue
                                     platform = (sub.get("platform") or "").lower()
@@ -396,6 +437,24 @@ class GatewayKanbanWatchersMixin:
                     # exists to fix). The helper returns None only when the profile
                     # (or default) genuinely has no adapter for the platform.
                     adapter = self._authorization_adapter(plat, sub_profile or None)
+                    # A configured foreign source without a multiplex registry
+                    # entry is a single-gateway workflow. Deliver through the
+                    # active adapter only when no owner registry exists; a partial
+                    # owner registry must remain fail-closed for this platform.
+                    profile_adapters = getattr(self, "_profile_adapters", {}) or {}
+                    source_allowed = _notification_source_allowed(
+                        sub_profile or None,
+                        notifier_profile,
+                        allow_all=notify_all_profiles,
+                        allowed_profiles=notification_sources,
+                    )
+                    if (
+                        adapter is None
+                        and source_allowed
+                        and sub_profile
+                        and sub_profile not in profile_adapters
+                    ):
+                        adapter = (getattr(self, "adapters", None) or {}).get(plat)
                     if adapter is None:
                         logger.debug(
                             "kanban notifier: adapter %s disconnected before delivery for %s; rewinding claim",

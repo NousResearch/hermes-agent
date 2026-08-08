@@ -120,3 +120,8 @@ class TestUnknownTopLevelKeys:
         assert any("base_url" in i.message for i in misplaced)
         assert any("api_key" in i.message for i in misplaced)
 
+
+def test_notification_sources_is_a_known_root_config_key():
+    assert "notification_sources" in DEFAULT_CONFIG
+    issues = validate_config_structure({"notification_sources": ["coder", "creator"]})
+    assert not [issue for issue in issues if "notification_sources" in issue.path]

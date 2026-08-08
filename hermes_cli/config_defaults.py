@@ -2299,6 +2299,10 @@ DEFAULT_CONFIG = {
         "session_db_timeout_seconds": 10,
     },
 
+    # Profiles whose Kanban subscriptions this gateway may deliver. Missing
+    # means current profile only; ["*"] allows every profile.
+    "notification_sources": [],
+
     # Kanban multi-agent coordination — controls the dispatcher loop that
     # spawns workers for ready tasks. The dispatcher ticks every N seconds
     # (default 60), reclaims stale claims, promotes dependency-satisfied

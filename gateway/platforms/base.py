@@ -1757,179 +1757,6 @@ MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
 )
 
 
-def _match_extensionless_path(scan_text: str, match: "re.Match") -> Optional[Tuple[str, int]]:
-    """Resolve an extensionless MEDIA tag match to a validated on-disk path.
-
-    Tries the regex-captured path first. When that fails validation, the
-    candidate is progressively extended forward across single spaces
-    (validation-gated, bounded at 8 tokens, never past a newline or a
-    subsequent ``MEDIA:`` keyword) so unknown-extension paths containing
-    spaces deliver (#24032). Returns ``(safe_path, end_offset)`` where
-    ``end_offset`` is the index in ``scan_text`` just past the matched path,
-    or ``None`` when nothing validates.
-    """
-    raw = match.group("path")
-    path = _normalize_media_tag_path(raw)
-    if not path:
-        return None
-    safe = validate_media_delivery_path(path)
-    if safe:
-        return safe, match.end("path")
-    start = match.start("path")
-    nl = scan_text.find("\n", start)
-    limit = nl if nl != -1 else len(scan_text)
-    segment = scan_text[start:limit]
-    nxt = segment.find("MEDIA:", 1)
-    if nxt != -1:
-        segment = segment[:nxt]
-    pos = match.end("path") - start
-    for _ in range(8):
-        while pos < len(segment) and segment[pos] in " \t":
-            pos += 1
-        if pos >= len(segment):
-            break
-        tok_end = pos
-        while tok_end < len(segment) and segment[tok_end] not in " \t":
-            tok_end += 1
-        candidate = _normalize_media_tag_path(segment[:tok_end])
-        safe = validate_media_delivery_path(candidate)
-        if safe:
-            return safe, start + tok_end
-        pos = tok_end
-    return None
-
-
-def _merge_spans(spans: list) -> list:
-    """Merge overlapping/nested (start, end) spans so multi-pattern matches
-    over the same tag never double-delete adjacent text."""
-    merged: list = []
-    for s, e in sorted(spans):
-        if merged and s <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
-        else:
-            merged.append((s, e))
-    return merged
-
-
-def _normalize_media_tag_path(raw: str) -> str:
-    path = str(raw or "").strip()
-    if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
-        path = path[1:-1].strip()
-    return path.lstrip("`\"'").rstrip("`\"',.;:)}]")
-
-
-def _path_lacks_deliverable_extension(path: str) -> bool:
-    """True when MEDIA_TAG_CLEANUP_RE's extension alternation does not cover
-    ``path`` — either the basename has no extension at all (Caddyfile,
-    Makefile, …) or the extension is not in MEDIA_DELIVERY_EXTS (.py, .log,
-    .weirdext, …). Such paths route through the validated delivery pass
-    (``validate_media_delivery_path``) instead of the unconditional one, so
-    every file type is deliverable (#36060) while nonexistent / denylisted
-    paths stay visible in the text.
-    """
-    suffix = Path(path).suffix.lower()
-    return not suffix or suffix not in MEDIA_DELIVERY_EXTS
-
-
-def _resolve_extensionless_candidate(path: str) -> Optional[str]:
-    """Validate a bare extensionless-branch path (no forward extension).
-
-    Thin wrapper kept for call sites that only have the normalized path
-    (no scan-text context for spaced-path recovery).
-    """
-    if not path:
-        return None
-    return validate_media_delivery_path(path)
-
-
-def _strip_media_tag_directives(text: str) -> str:
-    """Remove MEDIA: tags and [[audio_as_voice]] / [[as_document]] markers.
-
-    Protected spans (fenced code blocks, inline code holding non-deliverable
-    example tags, blockquotes, JSON string values) are used as a mask-locator
-    only — tags inside them are neither stripped nor mangled, matching
-    ``extract_media``'s treatment so display text and delivery agree (#16434).
-    """
-    if (
-        "MEDIA:" not in text
-        and "[[audio_as_voice]]" not in text
-        and "[[as_document]]" not in text
-    ):
-        return text
-    cleaned = text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
-
-    # Locate real tag spans on a masked copy (offset-preserving), then delete
-    # exactly those spans from the unmasked text — same pattern as
-    # extract_media. Import-cycle-free: BasePlatformAdapter is defined later
-    # in this module, so resolve it lazily at call time.
-    masked = BasePlatformAdapter._mask_protected_spans(cleaned)
-    masked = BasePlatformAdapter._mask_json_string_media(masked)
-
-    spans: list = [m.span() for m in MEDIA_TAG_CLEANUP_RE.finditer(masked)]
-    for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(masked):
-        path = _normalize_media_tag_path(match.group("path"))
-        if not path or not _path_lacks_deliverable_extension(path):
-            continue
-        resolved = _match_extensionless_path(masked, match)
-        if resolved is not None:
-            spans.append((match.start(), resolved[1]))
-
-    if spans:
-        chars = list(cleaned)
-        for start, end in reversed(_merge_spans(spans)):
-            del chars[start:end]
-        cleaned = "".join(chars)
-    return cleaned
-
-
-def get_document_cache_dir() -> Path:
-    """Return the document cache directory, creating it if it doesn't exist."""
-    d = _resolve_cache_dir("DOCUMENT_CACHE_DIR", "cache/documents", "document_cache")
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def cache_document_from_bytes(data: bytes, filename: str) -> str:
-    """
-    Save raw document bytes to the cache and return the absolute file path.
-
-    The cached filename preserves the original human-readable name with a
-    unique prefix: ``doc_{uuid12}_{original_filename}``.
-
-    Args:
-        data: Raw document bytes.
-        filename: Original filename (e.g. "report.pdf").
-
-    Returns:
-        Absolute path to the cached document file as a string.
-
-    Raises:
-        ValueError: If the sanitized path escapes the cache directory.
-    """
-    cache_dir = get_document_cache_dir()
-    # Sanitize: strip directory components, null bytes, and control characters
-    safe_name = Path(filename).name if filename else "document"
-    safe_name = safe_name.replace("\x00", "").strip()
-    if not safe_name or safe_name in {".", ".."}:
-        safe_name = "document"
-    cached_name = f"doc_{uuid.uuid4().hex[:12]}_{safe_name}"
-    filepath = cache_dir / cached_name
-    # Final safety check: ensure path stays inside cache dir
-    if not filepath.resolve().is_relative_to(cache_dir.resolve()):
-        raise ValueError(f"Path traversal rejected: {filename!r}")
-    filepath.write_bytes(data)
-    return str(filepath)
-
-
-def cleanup_document_cache(max_age_hours: int = 24) -> int:
-    """
-    Delete cached documents older than *max_age_hours*.
-
-    Returns the number of files removed.
-    """
-    return _cleanup_cache_dir(get_document_cache_dir(), max_age_hours)
-
-
 # ---------------------------------------------------------------------------
 # Unified media caching
 #
@@ -2285,114 +2112,6 @@ SEND_ERROR_KINDS = frozenset(
     }
 )
 
-# ``not_found`` substrings split by blast radius.  A *chat-level* not_found means
-# the chat/user/group itself is gone, so the whole target is dead.  A
-# *thread/topic/message-level* not_found (a deleted forum topic, an edited-away
-# message) leaves the parent chat reachable — it must NOT mark the whole chat
-# dead.  ``classify_send_error`` collapses both into ``"not_found"``;
-# ``is_chat_level_not_found`` recovers the distinction for the dead-target path.
-# See gateway.dead_targets.
-_CHAT_LEVEL_NOT_FOUND_SUBSTRINGS = ("chat not found",)
-_SUBCHAT_NOT_FOUND_SUBSTRINGS = (
-    "message to edit not found",
-    "message to reply not found",
-    "thread not found",
-    "topic_deleted",
-    "message_id_invalid",
-)
-
-
-def _error_blob(exc: Optional[BaseException] = None, error_text: str = "") -> str:
-    """Build the lowercased text blob both send-error classifiers match against.
-
-    Single source of truth so ``classify_send_error`` and
-    ``is_chat_level_not_found`` can never drift (e.g. one including the
-    exception class name and the other not) and silently disagree on the same
-    failure.  Includes ``str(exc)`` (when non-empty) and the exception's class
-    name, plus any explicit ``error_text``.
-    """
-    parts = []
-    if error_text:
-        parts.append(error_text)
-    if exc is not None:
-        exc_str = str(exc)
-        if exc_str:
-            parts.append(exc_str)
-        parts.append(exc.__class__.__name__)
-    return " ".join(parts).lower()
-
-
-def classify_send_error(exc: Optional[BaseException], error_text: str = "") -> str:
-    """Map a send exception / error string to a :data:`SEND_ERROR_KINDS` value.
-
-    Platform-neutral: matches on the lowercased text of ``exc`` (and/or the
-    explicit ``error_text``) against the substrings the major messaging APIs
-    use.  Conservative — anything unrecognized returns ``"unknown"`` so callers
-    never mistake an unclassified failure for a benign one.
-    """
-    blob = _error_blob(exc, error_text)
-    if not blob.strip():
-        return "unknown"
-    if "message_too_long" in blob or "too long" in blob or "message is too long" in blob:
-        return "too_long"
-    if (
-        "can't parse entities" in blob
-        or "cant parse entities" in blob
-        or "can't find end" in blob
-        or "unsupported start tag" in blob
-        or ("entity" in blob and "parse" in blob)
-        or ("bad request" in blob and "entit" in blob)
-    ):
-        return "bad_format"
-    if (
-        "forbidden" in blob
-        or "bot was blocked" in blob
-        or "blocked by the user" in blob
-        or "user is deactivated" in blob
-        or "not enough rights" in blob
-        or "have no rights" in blob
-        or "not a member" in blob
-    ):
-        return "forbidden"
-    if any(s in blob for s in _CHAT_LEVEL_NOT_FOUND_SUBSTRINGS) or any(
-        s in blob for s in _SUBCHAT_NOT_FOUND_SUBSTRINGS
-    ):
-        return "not_found"
-    if (
-        "flood" in blob
-        or "too many requests" in blob
-        or "retry after" in blob
-        or "rate limit" in blob
-    ):
-        return "rate_limited"
-    for pat in _RETRYABLE_ERROR_PATTERNS:
-        if pat in blob:
-            return "transient"
-    if "connecttimeout" in blob:
-        return "transient"
-    return "unknown"
-
-
-def is_chat_level_not_found(exc: Optional[BaseException] = None, error_text: str = "") -> bool:
-    """Whether a ``not_found`` failure means the *whole chat* is gone.
-
-    :func:`classify_send_error` collapses chat-level and thread/topic/message-level
-    not_found into the single ``"not_found"`` kind.  Only the chat-level case (the
-    chat/user/group no longer exists) should mark a delivery target dead; a deleted
-    forum topic or an edited-away message leaves the parent chat reachable.  When
-    both a chat-level and a sub-chat marker are present, the sub-chat reading wins
-    (conservative: never kill a chat that may still be reachable).
-
-    Argument order mirrors :func:`classify_send_error` (``exc`` first) and both
-    share :func:`_error_blob`, so the two classifiers cannot disagree on the same
-    failure.
-    """
-    blob = _error_blob(exc, error_text)
-    if any(s in blob for s in _SUBCHAT_NOT_FOUND_SUBSTRINGS):
-        return False
-    return any(s in blob for s in _CHAT_LEVEL_NOT_FOUND_SUBSTRINGS)
-
-
 class EphemeralReply(str):
     """System-notice reply that auto-deletes after a TTL.
 
@@ -2629,22 +2348,6 @@ def resolve_channel_skills(
                         seen.append(nm)
                 return seen or None
     return None
-
-
-def _strip_media_directives(text: str) -> str:
-    """Strip internal delivery directives ([[audio_as_voice]], [[as_document]],
-    MEDIA:<path>) so they never render as visible text.
-
-    Backstop only: run ``extract_media`` first. MEDIA cleanup uses the shared
-    ``MEDIA_TAG_CLEANUP_RE`` (only tags whose path has a known deliverable
-    extension are removed; an unknown-extension tag is intentionally left so the
-    bare-path detector downstream can still pick it up, per #34517). Validated
-    extension-less tags (e.g. ``MEDIA:/output/Caddyfile``) are also removed.
-    [[...]] is exact.
-    """
-    if not text:
-        return text
-    return _strip_media_tag_directives(text)
 
 
 class BasePlatformAdapter(ABC):
@@ -6974,3 +6677,30 @@ class BasePlatformAdapter(ABC):
             ]
 
         return chunks
+
+
+# ---------------------------------------------------------------------------
+# Wave-1 shard-s2 extractions (verbatim moves) — re-export the moved helpers
+# so existing ``from gateway.platforms.base import ...`` call sites (adapters,
+# gateway/run.py, tests) keep working unchanged. Imported at the bottom of
+# the module because the extracted modules import shared helpers back from
+# here (cycle break; see media_tag_parsing.py / document_cache.py docstrings).
+# ---------------------------------------------------------------------------
+from gateway.platforms.document_cache import (
+    cache_document_from_bytes,
+    cleanup_document_cache,
+    get_document_cache_dir,
+)
+from gateway.platforms.media_tag_parsing import (
+    _match_extensionless_path,
+    _merge_spans,
+    _normalize_media_tag_path,
+    _path_lacks_deliverable_extension,
+    _resolve_extensionless_candidate,
+    _strip_media_directives,
+    _strip_media_tag_directives,
+)
+from gateway.platforms.send_errors import (
+    classify_send_error,
+    is_chat_level_not_found,
+)

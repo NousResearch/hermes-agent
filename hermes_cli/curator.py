@@ -141,6 +141,9 @@ def _cmd_status(args) -> int:
     if pinned:
         print(f"\npinned ({len(pinned)}): {', '.join(pinned)}")
 
+    needs_review = [r["name"] for r in rows if r.get("needs_review")]
+    if needs_review:
+        print(f"\nneeds review ({len(needs_review)}): {', '.join(needs_review)}")
     # Surface the curation blind spot on the managed path too.
     _print_unmanaged_summary()
 
@@ -255,7 +258,8 @@ def _cmd_run(args) -> int:
                 f"auto: checked={auto.get('checked', 0)} "
                 f"stale={auto.get('marked_stale', 0)} "
                 f"archived={auto.get('archived', 0)} "
-                f"reactivated={auto.get('reactivated', 0)}"
+                f"reactivated={auto.get('reactivated', 0)} "
+                f"needs_review={auto.get('needs_review', 0)}"
             )
     if not synchronous:
         print("llm pass running in background — check `hermes curator status` later")

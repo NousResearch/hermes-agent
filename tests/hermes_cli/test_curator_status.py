@@ -80,6 +80,25 @@ def _capture_status(curator_cli) -> str:
 
 
 
+def test_status_shows_needs_review_skills(curator_status_env):
+    env = curator_status_env
+    env["make_skill"]("risky")
+    env["skill_usage"].mark_agent_created("risky")
+    for success in (False, False, False, True):
+        env["skill_usage"].bump_outcome("risky", success)
+
+    out = _capture_status(env["curator_cli"])
+
+    assert "needs review (1): risky" in out
+
+
+def test_status_no_skills_produces_clean_empty_output(curator_status_env):
+    env = curator_status_env
+    out = _capture_status(env["curator_cli"])
+    assert "no agent-created skills" in out
+    # None of the ranking sections render
+    assert "most active" not in out
+    assert "least active" not in out
 
 
 

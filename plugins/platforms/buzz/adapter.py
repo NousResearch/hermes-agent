@@ -317,20 +317,64 @@ async def _exec_buzz(
     )
 
 
-def _cli_error_message(stderr: str, returncode: int) -> str:
-    """Extract the human-readable message from the CLI's JSON error contract.
+_MAX_CLI_MESSAGE_CHARS = 900
 
-    stderr is ``{"error": "<category>", "message": "<detail>"}`` on failure;
-    fall back to the raw (stripped) stderr when it isn't JSON.
-    """
+
+def _bounded_cli_message(message: str, redact_path: Optional[Path] = None) -> str:
+    """Keep untrusted CLI detail useful without exposing unbounded output."""
+    if redact_path is not None:
+        message = message.replace(str(redact_path), redact_path.name)
+    if len(message) <= _MAX_CLI_MESSAGE_CHARS:
+        return message
+    return f"{message[: _MAX_CLI_MESSAGE_CHARS - 3]}..."
+
+
+def _cli_error_message(
+    stderr: str,
+    returncode: int,
+    *,
+    redact_path: Optional[Path] = None,
+) -> str:
+    """Extract a bounded human-readable message from the CLI error contract."""
     text = (stderr or "").strip()
     try:
         data = json.loads(text)
-        if isinstance(data, dict) and data.get("message"):
-            return f"{data.get('error', 'error')}: {data['message']} (exit {returncode})"
+        if isinstance(data, dict):
+            detail = data.get("message")
+            category = data.get("error")
+            if isinstance(detail, str) and detail.strip():
+                label = category.strip() if isinstance(category, str) and category.strip() else "error"
+                return _bounded_cli_message(
+                    f"{label}: {detail.strip()} (exit {returncode})",
+                    redact_path,
+                )
     except ValueError:
         pass
-    return text or f"buzz CLI failed with exit code {returncode}"
+    return _bounded_cli_message(
+        text or f"buzz CLI failed with exit code {returncode}",
+        redact_path,
+    )
+
+
+def _parse_send_receipt(stdout: str) -> Tuple[Optional[str], Optional[str]]:
+    """Validate the buzz-cli success receipt and return ``(event_id, error)``."""
+    try:
+        data = json.loads(stdout or "{}")
+    except ValueError:
+        return None, "invalid CLI response"
+    if not isinstance(data, dict):
+        return None, "invalid CLI response"
+    if data.get("accepted") is False:
+        detail = data.get("message")
+        if not isinstance(detail, str) or not detail.strip():
+            detail = "message was not accepted"
+        return None, _bounded_cli_message(detail.strip())
+    if data.get("accepted") is not True:
+        return None, "invalid CLI response"
+    event_id = data.get("event_id")
+    if not isinstance(event_id, str) or not event_id.strip():
+        return None, "invalid CLI response"
+    return event_id.strip(), None
 
 
 def _parse_json_list(stdout: str) -> List[dict]:
@@ -619,20 +663,14 @@ class BuzzAdapter(BasePlatformAdapter):
                 error=_cli_error_message(err, code),
                 retryable=code == 2,
             )
-        try:
-            data = json.loads(out or "{}")
-        except ValueError:
-            data = {}
-        event_id = data.get("event_id")
-        if event_id:
-            # Belt-and-braces echo suppression: the poll loop already skips
-            # our own pubkey, but marking the id seen makes de-dupe explicit.
-            self._mark_seen(str(chat_id), str(event_id))
-        return SendResult(
-            success=bool(data.get("accepted", True)),
-            message_id=str(event_id) if event_id else None,
-            raw_response=data,
-        )
+        event_id, receipt_error = _parse_send_receipt(out)
+        if receipt_error:
+            return SendResult(success=False, error=receipt_error)
+        assert event_id is not None
+        # Belt-and-braces echo suppression: the poll loop already skips our own
+        # pubkey, but marking the verified id seen makes de-dupe explicit.
+        self._mark_seen(str(chat_id), event_id)
+        return SendResult(success=True, message_id=event_id)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Buzz has no typing indicator API — no-op."""
@@ -664,6 +702,41 @@ class BuzzAdapter(BasePlatformAdapter):
             return False
         return True
 
+    async def _send_local_file(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Upload one local file through the Buzz CLI and verify its receipt."""
+        local = Path(file_path).expanduser()
+        if not local.is_file():
+            return SendResult(success=False, error="Media file not found")
+        args = [
+            "messages", "send",
+            "--channel", str(chat_id),
+            "--file", str(local),
+            "--content", "-",
+        ]
+        reply_target = reply_to or (metadata or {}).get("thread_id")
+        if reply_target:
+            args += ["--reply-to", str(reply_target)]
+        code, out, err = await self._run_cli(args, input_text=caption or "")
+        if code != 0:
+            return SendResult(
+                success=False,
+                error=_cli_error_message(err, code, redact_path=local),
+                retryable=code == 2,
+            )
+        event_id, receipt_error = _parse_send_receipt(out)
+        if receipt_error:
+            return SendResult(success=False, error=receipt_error)
+        assert event_id is not None
+        self._mark_seen(str(chat_id), event_id)
+        return SendResult(success=True, message_id=event_id)
+
     async def send_image(
         self,
         chat_id: str,
@@ -675,32 +748,65 @@ class BuzzAdapter(BasePlatformAdapter):
         """Send an image: local files upload via --file, URLs go as a link."""
         local = Path(image_url).expanduser() if not image_url.startswith(("http://", "https://")) else None
         if local is not None and local.is_file():
-            args = [
-                "messages", "send",
-                "--channel", str(chat_id),
-                "--file", str(local),
-                "--content", "-",
-            ]
-            if reply_to:
-                args += ["--reply-to", str(reply_to)]
-            code, out, err = await self._run_cli(args, input_text=caption or "")
-            if code != 0:
-                return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
-            try:
-                data = json.loads(out or "{}")
-            except ValueError:
-                data = {}
-            event_id = data.get("event_id")
-            if event_id:
-                self._mark_seen(str(chat_id), str(event_id))
-            return SendResult(
-                success=bool(data.get("accepted", True)),
-                message_id=str(event_id) if event_id else None,
-                raw_response=data,
+            return await self._send_local_file(
+                chat_id, str(local), caption, reply_to, metadata
             )
         # Markdown renders in Buzz, so a URL arrives as a clickable image link.
         text = f"{caption}\n{image_url}" if caption else image_url
         return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._send_local_file(
+            chat_id, image_path, caption, reply_to, metadata
+        )
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._send_local_file(
+            chat_id, video_path, caption, reply_to, metadata
+        )
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._send_local_file(
+            chat_id, audio_path, caption, reply_to, metadata
+        )
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._send_local_file(
+            chat_id, file_path, caption, reply_to, metadata
+        )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         chat_id = str(chat_id)
@@ -1362,7 +1468,7 @@ async def _standalone_send(
     message: str,
     *,
     thread_id: Optional[str] = None,
-    media_files: Optional[List[str]] = None,
+    media_files: Optional[List[Any]] = None,
     force_document: bool = False,
 ) -> Dict[str, Any]:
     """One-shot send without a live adapter (out-of-process cron delivery).
@@ -1388,7 +1494,8 @@ async def _standalone_send(
     args = ["messages", "send", "--channel", target, "--content", "-"]
     if thread_id:
         args += ["--reply-to", str(thread_id)]
-    for path in media_files or []:
+    for media in media_files or []:
+        path = media[0] if isinstance(media, (list, tuple)) and media else media
         args += ["--file", str(path)]
     try:
         code, out, err = await _exec_buzz(
@@ -1397,14 +1504,17 @@ async def _standalone_send(
     except asyncio.CancelledError:
         raise
     except OSError as e:
-        return {"error": f"Buzz standalone send failed to launch CLI: {e}"}
+        detail = _bounded_cli_message(str(e))
+        return {"error": f"Buzz standalone send failed to launch CLI: {detail}"}
     if code != 0:
         return {"error": f"Buzz standalone send failed: {_cli_error_message(err, code)}"}
-    try:
-        data = json.loads(out or "{}")
-    except ValueError:
-        data = {}
-    return {"success": True, "message_id": str(data.get("event_id") or "")}
+    event_id, receipt_error = _parse_send_receipt(out)
+    if receipt_error:
+        return {"error": f"Buzz standalone send failed: {receipt_error}"}
+    result = {"success": True, "message_id": event_id}
+    if media_files:
+        result["media_delivered"] = True
+    return result
 
 
 def interactive_setup() -> None:

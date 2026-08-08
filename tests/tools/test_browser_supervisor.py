@@ -309,6 +309,65 @@ def test_browser_dialog_tool_end_to_end(chrome_cdp, supervisor_registry):
     assert "PYTEST-TOOL-END2END" in r["dialog"]["message"]
 
 
+def _disable_fetch_on_supervisor_session(supervisor) -> None:
+    """Turn Fetch interception off underneath the already-installed bridge.
+
+    Models any backend that accepts ``Fetch.enable`` but never delivers
+    ``Fetch.requestPaused`` for the bridge's XHR — a CDP proxy that owns the
+    Fetch domain itself, or a request the browser refuses before it reaches
+    the network stack.
+    """
+    from agent.async_utils import safe_schedule_threadsafe
+
+    future = safe_schedule_threadsafe(
+        supervisor._cdp("Fetch.disable", session_id=supervisor._page_session_id),
+        supervisor._loop,
+    )
+    assert future is not None, "supervisor loop unavailable"
+    future.result(timeout=10)
+
+
+def test_dialog_falls_back_to_native_when_bridge_cannot_intercept(
+    chrome_cdp, supervisor_registry
+):
+    """An uninterceptable bridge XHR must not answer the dialog for the page.
+
+    The bridge replaces window.confirm, so if its XHR can't be intercepted
+    and it returns early, the page gets ``false`` and no dialog is ever
+    surfaced to the agent. The native call has to run instead.
+    """
+    cdp_url, _port = chrome_cdp
+    supervisor = supervisor_registry.get_or_start(
+        task_id="pytest-bridge-fallback", cdp_url=cdp_url
+    )
+    _disable_fetch_on_supervisor_session(supervisor)
+
+    _fire_on_page(
+        cdp_url,
+        "setTimeout(() => { window.__confirmResult = confirm('PYTEST-FALLBACK'); }, 50)",
+    )
+
+    dialogs = _wait_for_dialog(supervisor)
+    assert dialogs, "confirm() surfaced no dialog — the bridge swallowed it"
+    d = dialogs[0]
+    assert d.type == "confirm"
+    assert "PYTEST-FALLBACK" in d.message
+    # Nothing intercepted the XHR, so this must be the native dialog.
+    assert d.bridge_request_id is None
+
+    assert supervisor.respond_to_dialog("accept")["ok"] is True
+
+    # The page must observe our answer, not a synthesized cancel.
+    deadline = time.monotonic() + 5.0
+    out = {}
+    while time.monotonic() < deadline:
+        out = supervisor.evaluate_runtime("window.__confirmResult")
+        if out.get("ok") and out.get("result") is not None:
+            break
+        time.sleep(0.1)
+    assert out.get("result") is True, f"page saw {out!r}, expected confirm() === true"
+
+
 def test_browser_cdp_frame_id_real_oopif_smoke_documented():
     """Document that real-OOPIF E2E was manually verified — see PR #14540.
 

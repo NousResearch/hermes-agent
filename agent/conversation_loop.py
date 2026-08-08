@@ -7251,7 +7251,9 @@ def run_conversation(
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
                 
-                final_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                final_msg = agent._apply_assistant_message_metadata(
+                    agent._build_assistant_message(assistant_message, finish_reason)
+                )
 
                 # ── Dropped tool-call recovery (copilot/Claude) ────────
                 # Some providers (observed: claude-opus-4.8 / claude-sonnet-4.5

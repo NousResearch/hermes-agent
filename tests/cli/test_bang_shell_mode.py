@@ -308,6 +308,3 @@ class TestBangLeavesHistoryByteIdentical:
         assert json.dumps(cli.conversation_history, sort_keys=True) == before
         roles = [m["role"] for m in cli.conversation_history]
         assert roles == ["system", "user", "assistant", "user", "assistant", "tool"]
-
-
-

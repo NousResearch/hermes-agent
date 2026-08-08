@@ -504,4 +504,3 @@ def dev_fixture_subscription_state() -> Optional[SubscriptionState]:
 
     # Unknown name → behave as logged-out so the misconfiguration is visible.
     return SubscriptionState(logged_in=False, error=f"unknown HERMES_DEV_SUBSCRIPTION_FIXTURE: {name}")
-

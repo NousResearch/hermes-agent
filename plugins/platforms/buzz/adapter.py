@@ -1241,7 +1241,7 @@ class BuzzAdapter(BasePlatformAdapter):
         )
 
         await self.handle_message(event)
-        
+
         # Add a "seen" reaction after dispatching — signals to the user that
         # their message was received and is being processed.
         try:

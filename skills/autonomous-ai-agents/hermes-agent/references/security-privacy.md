@@ -64,4 +64,3 @@ Some shell-hook integrations require explicit allowlisting before they fire. Man
 ### Disabling the web/browser/image-gen tools
 
 To keep the model away from network or media tools entirely, open `hermes tools` and toggle per-platform. Takes effect on next session (`/reset`). See `references/configuration.md` for the toolset list.
-

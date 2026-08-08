@@ -209,4 +209,3 @@ def run_bang_command(
             pass
 
     return int(proc.returncode or 0)
-

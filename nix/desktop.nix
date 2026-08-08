@@ -110,7 +110,7 @@ let
           echo "node-pty must be compiled natively"
           exit 1
         fi
-        
+
       popd
 
       runHook postCheck

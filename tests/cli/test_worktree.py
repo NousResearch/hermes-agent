@@ -1181,4 +1181,3 @@ class TestPruneParallelEquivalence:
 
         cli._prune_stale_worktrees(str(git_repo))
         assert not wt.exists(), "serial fallback must still reap the merged tree"
-

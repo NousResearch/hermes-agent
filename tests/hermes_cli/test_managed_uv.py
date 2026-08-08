@@ -1099,4 +1099,3 @@ class TestVenvPythonUpdateBoundary:
         assert _venv_python(Path("/opt/hermes/venv")) == Path(
             "/opt/hermes/venv/bin/python"
         )
-

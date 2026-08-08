@@ -1791,6 +1791,52 @@ class TestVoiceTTSPlayback:
 
     # -- Streaming ON (already_sent=True) --
 
+    def test_streaming_on_voice_input_runner_fires(self):
+        """Streaming ON + voice input: runner handles TTS (base adapter has no text)."""
+        from gateway.platforms.base import MessageType
+        runner = self._make_runner()
+        assert self._call_should_reply(runner, "all", MessageType.VOICE, already_sent=True) is True
+
+    def test_voice_server_streaming_on_voice_input_skips_runner_tts(self):
+        """Voice server partial streaming already handed text to the voice runtime."""
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+
+        runner = self._make_runner()
+        runner._voice_mode["voice_server:personal-room"] = "all"
+        source = SessionSource(
+            platform=Platform.VOICE_SERVER,
+            chat_id="personal-room",
+            user_id="caller",
+            user_name="caller",
+            chat_type="channel",
+        )
+        event = MessageEvent(source=source, text="test", message_type=MessageType.VOICE)
+
+        assert runner._should_send_voice_reply(
+            event,
+            "Hello",
+            [],
+            already_sent=True,
+        ) is False
+
+    def test_streaming_on_text_input_runner_fires(self):
+        """Streaming ON + text input: runner handles TTS (same as before)."""
+        from gateway.platforms.base import MessageType
+        runner = self._make_runner()
+        assert self._call_should_reply(runner, "all", MessageType.TEXT, already_sent=True) is True
+
+    def test_streaming_on_voice_off_no_tts(self):
+        """Streaming ON + voice_mode=off: no TTS regardless of streaming."""
+        from gateway.platforms.base import MessageType
+        runner = self._make_runner()
+        assert self._call_should_reply(runner, "off", MessageType.VOICE, already_sent=True) is False
+
+    def test_streaming_on_empty_response_no_tts(self):
+        """Streaming ON + empty response: no TTS."""
+        from gateway.platforms.base import MessageType
+        runner = self._make_runner()
+        assert self._call_should_reply(runner, "all", MessageType.VOICE, response="", already_sent=True) is False
 
     def test_streaming_on_agent_tts_dedup(self):
         """Streaming ON + agent called TTS: runner skips (dedup still works)."""

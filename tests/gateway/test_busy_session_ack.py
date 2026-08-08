@@ -188,6 +188,139 @@ class TestBusySessionAck:
         # Verify agent interrupt was called
         agent.interrupt.assert_called_once_with("Are you working?")
 
+    @pytest.mark.asyncio
+    async def test_interrupt_mode_redirects_capable_core_agent(self):
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+        event = _make_event(text="No, use Postgres")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent._supports_active_turn_redirect = True
+        agent.redirect.return_value = True
+        agent._active_children = []
+        agent.get_activity_summary.return_value = {}
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        assert await runner._handle_active_session_busy_message(event, sk) is True
+
+        agent.redirect.assert_called_once_with("No, use Postgres")
+        agent.interrupt.assert_not_called()
+        assert sk not in adapter._pending_messages
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Redirected current run" in content
+
+    @pytest.mark.asyncio
+    async def test_text_event_with_attachment_is_queued_not_redirected(self):
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+        event = _make_event(text="use this attachment")
+        # QQBot and other adapters may retain unknown attachment MIME types on
+        # a TEXT event, so message_type alone is not a safe redirect gate.
+        event.media_urls = ["https://example.invalid/attachment.bin"]
+        event.media_types = ["application/octet-stream"]
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent._supports_active_turn_redirect = True
+        agent._active_children = []
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        assert await runner._handle_active_session_busy_message(event, sk) is True
+
+        agent.redirect.assert_not_called()
+        assert adapter._pending_messages[sk] is event
+        assert adapter._pending_messages[sk].media_urls == event.media_urls
+
+    @pytest.mark.asyncio
+    async def test_queue_mode_suppresses_interrupt_and_updates_ack(self):
+        """When busy_input_mode is 'queue', message is queued WITHOUT interrupt."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+
+        event = _make_event(text="Add this to queue")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+
+        with patch("gateway.run.merge_pending_message_event"):
+            await runner._handle_active_session_busy_message(event, sk)
+
+        # VERIFY: Agent was NOT interrupted
+        agent.interrupt.assert_not_called()
+
+        # VERIFY: Ack sent with queue-specific wording
+        adapter._send_with_retry.assert_called_once()
+        call_kwargs = adapter._send_with_retry.call_args
+        content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
+        assert "Queued for the next turn" in content
+        assert "respond once the current task finishes" in content
+        assert "Interrupting" not in content
+
+    @pytest.mark.asyncio
+    async def test_voice_server_interrupt_suppresses_busy_ack(self):
+        from gateway.config import Platform
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter("voice_server")
+
+        source = SessionSource(
+            platform=Platform.VOICE_SERVER,
+            chat_id="personal-room",
+            chat_type="channel",
+            user_id="caller",
+        )
+        event = MessageEvent(
+            text="actually, stop",
+            message_type=MessageType.VOICE,
+            source=source,
+            message_id="voice-1",
+        )
+        sk = build_session_key(source)
+        runner.adapters[source.platform] = adapter
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        agent.interrupt.assert_called_once_with("actually, stop")
+        adapter._send_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_busy_text_mode_queue_delegates_to_adapter_handle_message(self):
+        """busy_text_mode=queue lets the adapter debounce text silently."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        runner._busy_text_mode = "queue"
+        adapter = _make_adapter()
+
+        first = _make_event(text="part one")
+        second = _make_event(text="part two")
+        sk = build_session_key(first.source)
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[first.source.platform] = adapter
+        runner.adapters[second.source.platform] = adapter
+
+        result1 = await runner._handle_active_session_busy_message(first, sk)
+        result2 = await runner._handle_active_session_busy_message(second, sk)
+
+        assert result1 is False
+        assert result2 is False
+        assert sk not in adapter._pending_messages
+        agent.interrupt.assert_not_called()
+        adapter._send_with_retry.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self, monkeypatch):

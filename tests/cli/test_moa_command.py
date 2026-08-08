@@ -112,4 +112,3 @@ class TestNormalizeMoaModel:
         requested_provider = override or "deepseek" or "auto"
         assert requested_provider == "moa"
         assert model == "strategy"
-

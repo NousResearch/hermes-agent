@@ -6006,8 +6006,22 @@ def resolve_provider_client(
     if provider == "custom":
         custom_base = ""
         custom_key = ""
+        custom_api_mode = api_mode  # task-level override from _resolve_auto
+        # When the main runtime carries a concrete api_mode (set by
+        # _resolve_named_custom_runtime for providers like chatxunfei whose
+        # keys only work on the /anthropic surface), honour it so the
+        # auxiliary client uses the correct transport.  Without this,
+        # _to_openai_base_url rewrites /anthropic → /v1 and the key 401s.
+        if not custom_api_mode and main_runtime:
+            custom_api_mode = (main_runtime.get("api_mode") or "").strip() or None
         if explicit_base_url:
-            custom_base = _to_openai_base_url(explicit_base_url).strip()
+            # anthropic_messages: keep the original /anthropic URL so
+            # build_anthropic_client routes to the correct surface.
+            # OpenAI-wire paths still need the /v1 rewrite.
+            if custom_api_mode == "anthropic_messages":
+                custom_base = explicit_base_url.strip().rstrip("/")
+            else:
+                custom_base = _to_openai_base_url(explicit_base_url).strip()
             custom_key = (
                 (explicit_api_key or "").strip()
                 or _scoped_key_env("OPENAI_API_KEY")
@@ -6063,6 +6077,25 @@ def resolve_provider_client(
             _merged_custom = _apply_user_default_headers(extra.get("default_headers"))
             if _merged_custom:
                 extra["default_headers"] = _merged_custom
+            # anthropic_messages: build an Anthropic SDK client directly
+            # so requests go to the /anthropic surface.  The OpenAI-wire
+            # path would hit /v1 which 401s with Anthropic-only keys
+            # (e.g. chatxunfei's ANTHROPIC_AUTH_TOKEN).
+            if custom_api_mode == "anthropic_messages":
+                try:
+                    from agent.anthropic_adapter import build_anthropic_client
+                    real_client = build_anthropic_client(custom_key, custom_base)
+                    sync_anthropic = AnthropicAuxiliaryClient(
+                        real_client, final_model, custom_key, custom_base, is_oauth=False,
+                    )
+                    if async_mode:
+                        return AsyncAnthropicAuxiliaryClient(sync_anthropic), final_model
+                    return sync_anthropic, final_model
+                except ImportError:
+                    logger.warning(
+                        "Custom endpoint declares api_mode=anthropic_messages but the "
+                        "anthropic SDK is not installed — falling back to OpenAI-wire."
+                    )
             client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base, custom_key)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode

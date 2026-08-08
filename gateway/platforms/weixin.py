@@ -2076,6 +2076,16 @@ class WeixinAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=message_id)
         except Exception as exc:
             logger.error("[%s] send_document failed to=%s: %s", self.name, _safe_id(chat_id), exc)
+            # iLink getUploadUrl ret=-1 fallback: send file path as text
+            exc_str = str(exc)
+            if "ret': -1" in exc_str or "ret=-1" in exc_str:
+                logger.info("[%s] iLink upload unavailable (ret=-1), falling back to text path delivery", self.name)
+                try:
+                    fallback_msg = f"📎 文件: {Path(file_path).name}\n路径: {file_path}"
+                    await self.send(chat_id, fallback_msg)
+                    return SendResult(success=True, message_id="fallback-text-path")
+                except Exception as fb_exc:
+                    logger.warning("[%s] Fallback text delivery also failed: %s", self.name, fb_exc)
             return SendResult(success=False, error=str(exc))
 
     async def send_video(

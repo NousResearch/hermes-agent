@@ -492,8 +492,8 @@ class QQAdapter(BasePlatformAdapter):
             await self._session.close()
         self._session = None
 
-        # Honor WSL proxy env for QQ WebSocket. Hermes upgrades overwrite this
-        # local patch, so QQ can regress to direct-connect timeouts after update.
+        # Honor proxy environment variables for QQ WebSocket.
+        
         self._session = aiohttp.ClientSession(trust_env=True)
         ws_proxy = (
             os.getenv("WSS_PROXY")
@@ -1129,7 +1129,7 @@ class QQAdapter(BasePlatformAdapter):
 
         chat_type = parsed.get("chat_type", "")
         chat_id = parsed.get("chat_id", "")
-        if chat_type == "c2c":
+        if chat_type in {"c2c", "dm"}:  # QQ C2C messages use "dm" in session_key
             return bool(chat_id) and operator == chat_id
 
         if chat_type in {"group", "guild"}:

@@ -274,6 +274,124 @@ class TestBlueBubblesAttachmentDownload:
         assert result == "/tmp/test_image.png"
 
 
+class TestBlueBubblesAttachmentTargetGuid:
+    """Regression for #77916: /api/v1/message/attachment treats ``chatGuid``
+    as the recipient *address*, not a full chat GUID.  Sending a full 1:1
+    GUID (``any;-;+15551234567``) delivers the file to a phantom handle
+    named after the service prefix (``any`` / ``imessage``) and never to
+    the user.
+    """
+
+    def test_1to1_guid_strips_service_prefix(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        assert (
+            adapter._attachment_target_guid("any;-;+15551234567")
+            == "+15551234567"
+        )
+
+    def test_imessage_guid_strips_service_prefix(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        assert (
+            adapter._attachment_target_guid("iMessage;-;user@example.com")
+            == "user@example.com"
+        )
+
+    def test_sms_guid_strips_service_prefix(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        assert (
+            adapter._attachment_target_guid("SMS;-;+15551234567")
+            == "+15551234567"
+        )
+
+    def test_group_guid_passes_through(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        assert (
+            adapter._attachment_target_guid("iMessage;+;chat0000000000-family")
+            == "iMessage;+;chat0000000000-family"
+        )
+
+    def test_group_guid_with_chat_identifier_passes_through(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        assert (
+            adapter._attachment_target_guid("iMessage;-;chat0000000000")
+            == "iMessage;-;chat0000000000"
+        )
+
+    def test_bare_address_passes_through(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        assert adapter._attachment_target_guid("+15551234567") == "+15551234567"
+
+
+class TestBlueBubblesAttachmentSend:
+    """Regression for #77916: _send_attachment must POST the bare recipient
+    address to /api/v1/message/attachment, not the full resolved chat GUID.
+    """
+
+    @pytest.mark.asyncio
+    async def test_send_attachment_posts_bare_address(self, monkeypatch, tmp_path):
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_resolve(target):
+            return "any;-;+15551234567"
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+
+        posted = {}
+
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"status": 200, "data": {"guid": "msg-1"}}
+
+        async def fake_post(*args, **kwargs):
+            posted["data"] = kwargs.get("data")
+            return FakeResponse()
+
+        adapter.client = type("MockClient", (), {"post": fake_post})()
+
+        file_path = tmp_path / "test.txt"
+        file_path.write_text("hello")
+
+        result = await adapter._send_attachment("+15551234567", str(file_path))
+
+        assert result.success is True
+        assert posted["data"]["chatGuid"] == "+15551234567"
+
+    @pytest.mark.asyncio
+    async def test_send_attachment_keeps_group_guid(self, monkeypatch, tmp_path):
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_resolve(target):
+            return "iMessage;+;chat0000000000-family"
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+
+        posted = {}
+
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"status": 200, "data": {"guid": "msg-1"}}
+
+        async def fake_post(*args, **kwargs):
+            posted["data"] = kwargs.get("data")
+            return FakeResponse()
+
+        adapter.client = type("MockClient", (), {"post": fake_post})()
+
+        file_path = tmp_path / "test.txt"
+        file_path.write_text("hello")
+
+        result = await adapter._send_attachment("chat0000000000-family", str(file_path))
+
+        assert result.success is True
+        assert posted["data"]["chatGuid"] == "iMessage;+;chat0000000000-family"
+
+
 # ---------------------------------------------------------------------------
 # Webhook registration
 # ---------------------------------------------------------------------------

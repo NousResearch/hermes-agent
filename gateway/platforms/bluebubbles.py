@@ -588,6 +588,25 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Media sending (outbound)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _attachment_target_guid(guid: str) -> str:
+        """Return the GUID form accepted by ``/api/v1/message/attachment``.
+
+        Unlike ``/api/v1/message/text``, the BlueBubbles attachment endpoint
+        treats ``chatGuid`` as the recipient *address*, not a full chat GUID:
+        passing ``any;-;+15551234567`` delivers the file to a phantom handle
+        named ``any`` instead of the real chat (#77916).  For 1:1 chats strip
+        the service prefix and send the bare address; group GUIDs
+        (``chat...`` / ``;+;``) are passed through unchanged.
+        """
+        for prefix in ("any;-;", "iMessage;-;", "SMS;-;"):
+            if guid.startswith(prefix):
+                candidate = guid.split(";-;", 1)[1]
+                if not candidate.startswith("chat"):
+                    return candidate
+                break
+        return guid
+
     async def _send_attachment(
         self,
         chat_id: str,
@@ -611,7 +630,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             with open(file_path, "rb") as f:
                 files = {"attachment": (fname, f, "application/octet-stream")}
                 data: Dict[str, str] = {
-                    "chatGuid": guid,
+                    "chatGuid": self._attachment_target_guid(guid),
                     "name": fname,
                     "tempGuid": uuid.uuid4().hex,
                 }

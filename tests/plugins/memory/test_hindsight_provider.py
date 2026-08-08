@@ -50,6 +50,12 @@ def _clean_env(tmp_path, monkeypatch):
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
     ):
         monkeypatch.delenv(key, raising=False)
+    # The extended daemon env pass-through reads HINDSIGHT_API_* / CODEX_HOME
+    # from the profile .env; strip any process-level copies so host state
+    # cannot leak into the built daemon env during tests.
+    for key in list(os.environ):
+        if key.startswith("HINDSIGHT_API_") or key == "CODEX_HOME":
+            monkeypatch.delenv(key, raising=False)
 
     # On Windows pathlib.Path.home() resolves USERPROFILE/HOMEDRIVE+HOMEPATH,
     # not the POSIX HOME alias that these tests historically monkeypatched.
@@ -1373,3 +1379,316 @@ class TestClientAutoUpgradeRoutesThroughLazyDeps:
         assert len(calls) == 1  # attempted exactly once, init still completed
         assert any("runtime installs are disabled" in r.getMessage()
                    for r in caplog.records)
+
+
+class TestSecretScopeGuard:
+    """Background writer/daemon threads run without contextvars under a
+    multiplexing gateway. get_secret() then fails closed with
+    UnscopedSecretError; _secret_scope_guard must install the provider's
+    profile scope so client creation and daemon startup resolve the right key.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_multiplex(self):
+        from agent.secret_scope import set_multiplex_active
+        set_multiplex_active(True)
+        try:
+            yield
+        finally:
+            set_multiplex_active(False)
+
+    def _provider(self, tmp_path):
+        from agent.secret_scope import current_secret_scope
+        # Scope must be empty at the start of each test (fresh context).
+        assert current_secret_scope() is None
+        provider = HindsightMemoryProvider()
+        provider._profile_home = tmp_path
+        return provider
+
+    def test_guard_installs_profile_scope_for_secret_reads(self, tmp_path):
+        from agent import secret_scope as ss
+        tmp_path.joinpath(".env").write_text(
+            "HINDSIGHT_LLM_API_KEY=test-llm-key\nHINDSIGHT_API_KEY=test-api-key\n"
+        )
+        provider = self._provider(tmp_path)
+
+        # Baseline: fail closed without the guard.
+        with pytest.raises(ss.UnscopedSecretError):
+            ss.get_secret("HINDSIGHT_LLM_API_KEY", "")
+
+        with provider._secret_scope_guard():
+            assert ss.get_secret("HINDSIGHT_LLM_API_KEY", "") == "test-llm-key"
+            assert ss.get_secret("HINDSIGHT_API_KEY", "") == "test-api-key"
+            # Home override is active too, so daemon-env fills resolve the
+            # provider's own profile .env, not the default home.
+            from hermes_constants import get_hermes_home
+            assert str(get_hermes_home()) == str(tmp_path)
+
+        assert ss.current_secret_scope() is None
+
+    def test_guard_is_reentrant_and_keeps_existing_scope(self, tmp_path):
+        from agent import secret_scope as ss
+        tmp_path.joinpath(".env").write_text("HINDSIGHT_LLM_API_KEY=k\n")
+        provider = self._provider(tmp_path)
+
+        with provider._secret_scope_guard():
+            outer = ss.current_secret_scope()
+            with provider._secret_scope_guard():
+                assert ss.current_secret_scope() is outer
+            assert ss.current_secret_scope() is outer
+
+    def test_guard_noop_when_multiplex_off(self, tmp_path, monkeypatch):
+        from agent import secret_scope as ss
+        from agent.secret_scope import set_multiplex_active
+        set_multiplex_active(False)
+        tmp_path.joinpath(".env").write_text("HINDSIGHT_LLM_API_KEY=k\n")
+        provider = self._provider(tmp_path)
+
+        with provider._secret_scope_guard():
+            # Multiplex off => get_secret falls back to os.environ; guard must
+            # not have installed any scope.
+            assert ss.current_secret_scope() is None
+
+    def test_get_client_creates_within_scope_and_caches(self, tmp_path):
+        from agent import secret_scope as ss
+        tmp_path.joinpath(".env").write_text("HINDSIGHT_LLM_API_KEY=test-llm-key\n")
+        provider = self._provider(tmp_path)
+        provider._client = None
+
+        calls = {}
+
+        def fake_unscoped(self):
+            scope = ss.current_secret_scope()
+            calls["scope_active"] = scope is not None
+            calls["key"] = (scope or {}).get("HINDSIGHT_LLM_API_KEY")
+            self._client = "FAKE_CLIENT"  # real creation sets self._client
+            return "FAKE_CLIENT"
+
+        provider._create_client = fake_unscoped.__get__(provider, HindsightMemoryProvider)
+
+        assert provider._get_client() == "FAKE_CLIENT"
+        assert calls["scope_active"] is True
+        assert calls["key"] == "test-llm-key"
+        # Cached: second call must not re-enter unscoped creation.
+        provider._create_client = None
+        assert provider._get_client() == "FAKE_CLIENT"
+
+    def test_background_thread_resolves_secrets_through_guard(self, tmp_path):
+        """Regression for the actual bug: a plain threading.Thread (no
+        copy_context) like hindsight-writer must still resolve profile secrets
+        when it builds the client under a multiplexing gateway."""
+        import threading
+        from agent import secret_scope as ss
+        tmp_path.joinpath(".env").write_text("HINDSIGHT_LLM_API_KEY=thread-key\n")
+        provider = self._provider(tmp_path)
+        provider._client = None
+
+        result = {}
+
+        def fake_unscoped(self):
+            scope = ss.current_secret_scope()
+            result["scope_active"] = scope is not None
+            result["key"] = (scope or {}).get("HINDSIGHT_LLM_API_KEY")
+            self._client = "THREAD_CLIENT"
+            return "THREAD_CLIENT"
+
+        provider._create_client = fake_unscoped.__get__(provider, HindsightMemoryProvider)
+
+        thread = threading.Thread(target=provider._get_client, name="hindsight-writer")
+        thread.start()
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+        assert result["scope_active"] is True
+        assert result["key"] == "thread-key"
+        assert provider._client == "THREAD_CLIENT"
+        # Main thread context stayed untouched — no leak from the worker.
+        assert ss.current_secret_scope() is None
+
+    def test_guard_restores_contextvars_on_exception(self, tmp_path):
+        from agent import secret_scope as ss
+        from hermes_constants import get_hermes_home_override
+        tmp_path.joinpath(".env").write_text("HINDSIGHT_LLM_API_KEY=k\n")
+        provider = self._provider(tmp_path)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            with provider._secret_scope_guard():
+                raise RuntimeError("boom")
+
+        assert ss.current_secret_scope() is None
+        assert get_hermes_home_override() is None
+
+    def test_guard_fails_closed_when_profile_home_missing(self, tmp_path):
+        from agent import secret_scope as ss
+        provider = HindsightMemoryProvider()
+        provider._profile_home = None  # pre-initialize state
+
+        # Guard must NOT install the default profile's secrets: get_secret
+        # keeps failing closed so a wrong-key client can never be built.
+        with provider._secret_scope_guard():
+            assert ss.current_secret_scope() is None
+            with pytest.raises(ss.UnscopedSecretError):
+                ss.get_secret("HINDSIGHT_LLM_API_KEY", "")
+
+    def test_initialize_captures_profile_home_from_kwarg(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({"mode": "cloud", "apiKey": "x"}))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+        provider = HindsightMemoryProvider()
+        provider.initialize(session_id="s", hermes_home=str(tmp_path), platform="cli")
+        assert provider._profile_home == tmp_path
+
+
+class TestExtendedDaemonEnvPreservation:
+    """The embedded daemon understands more HINDSIGHT_API_* variables than the
+    base env builder emits (embeddings, reranker, consolidation, LLM failover
+    strategy, CODEX_HOME). Those are configured in the Hermes profile .env and
+    must survive env materialization instead of being silently dropped on the
+    next config change/restart."""
+
+    CONFIG = {
+        "mode": "local_embedded",
+        "profile": "hermes",
+        "llm_provider": "openai-codex",
+        "llm_model": "gpt-test",
+    }
+
+    def _build(self, tmp_path, monkeypatch, config=None, hermes_home=None):
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+        return _build_embedded_profile_env(
+            config or dict(self.CONFIG),
+            hermes_home=hermes_home or tmp_path,
+        )
+
+    def test_extended_config_preserved_from_profile_env(self, tmp_path, monkeypatch):
+        tmp_path.joinpath(".env").write_text(
+            "HINDSIGHT_API_EMBEDDINGS_PROVIDER=openai\n"
+            "HINDSIGHT_API_EMBEDDINGS_MODEL=text-embedding-3-large\n"
+            "HINDSIGHT_API_RERANKER_PROVIDER=openrouter\n"
+            "HINDSIGHT_API_LLM_STRATEGY={\"mode\":\"failover\"}\n"
+            "CODEX_HOME=/home/user/.codex\n"
+        )
+        env = self._build(tmp_path, monkeypatch)
+        assert env["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] == "openai"
+        assert env["HINDSIGHT_API_EMBEDDINGS_MODEL"] == "text-embedding-3-large"
+        assert env["HINDSIGHT_API_RERANKER_PROVIDER"] == "openrouter"
+        assert json.loads(env["HINDSIGHT_API_LLM_STRATEGY"]) == {"mode": "failover"}
+        assert env["CODEX_HOME"] == "/home/user/.codex"
+
+    def test_cloud_keys_not_copied(self, tmp_path, monkeypatch):
+        # The bare HINDSIGHT_API_ prefix would also match the cloud-mode
+        # HINDSIGHT_API_KEY / HINDSIGHT_API_URL; the allowlist must exclude
+        # them (they are meaningless to the embedded daemon, and one is a
+        # secret).
+        tmp_path.joinpath(".env").write_text(
+            "HINDSIGHT_API_KEY=cloud-key\n"
+            "HINDSIGHT_API_URL=https://api.hindsight.vectorize.io\n"
+            "HINDSIGHT_API_EMBEDDINGS_PROVIDER=openai\n"
+        )
+        env = self._build(tmp_path, monkeypatch)
+        assert "HINDSIGHT_API_KEY" not in env
+        assert "HINDSIGHT_API_URL" not in env
+        assert env["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] == "openai"
+
+    def test_empty_base_key_not_refilled_from_env(self, tmp_path, monkeypatch):
+        # B2: the base builder authoritatively emits HINDSIGHT_API_LLM_API_KEY
+        # (possibly ""). A leftover value in the profile .env must never
+        # resurrect it — otherwise a rotated/removed key could never be
+        # cleared from the materialized daemon env.
+        tmp_path.joinpath(".env").write_text("HINDSIGHT_API_LLM_API_KEY=stale\n")
+        env = self._build(tmp_path, monkeypatch)
+        assert env["HINDSIGHT_API_LLM_API_KEY"] == ""
+
+    def test_daemon_env_file_not_a_source(self, tmp_path, monkeypatch):
+        # The materialized daemon env file is the artifact we WRITE; it must
+        # never be read back, or removed settings would stay sticky forever.
+        env_path = Path.home() / ".hindsight" / "profiles" / "hermes.env"
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.write_text("HINDSIGHT_API_RERANKER_PROVIDER=stale\n")
+        env = self._build(tmp_path, monkeypatch)
+        assert "HINDSIGHT_API_RERANKER_PROVIDER" not in env
+
+    def test_base_keys_win_over_env(self, tmp_path, monkeypatch):
+        # config.json provider mapping (openrouter -> "openai" wire format)
+        # must not be overridden by a stale value in the profile .env.
+        tmp_path.joinpath(".env").write_text(
+            "HINDSIGHT_API_LLM_PROVIDER=deepseek\nHINDSIGHT_API_LLM_MODEL=stale-model\n"
+        )
+        config = dict(self.CONFIG, llm_provider="openrouter", llm_model="gpt-real")
+        env = self._build(tmp_path, monkeypatch, config=config)
+        assert env["HINDSIGHT_API_LLM_PROVIDER"] == "openai"
+        assert env["HINDSIGHT_API_LLM_MODEL"] == "gpt-real"
+
+    def test_explicit_llm_api_key_wins_over_env(self, tmp_path, monkeypatch):
+        tmp_path.joinpath(".env").write_text("HINDSIGHT_API_LLM_API_KEY=wrong\n")
+        config = dict(self.CONFIG, llmApiKey="right")
+        env = self._build(tmp_path, monkeypatch, config=config)
+        assert env["HINDSIGHT_API_LLM_API_KEY"] == "right"
+
+    def test_explicit_hermes_home_wins(self, tmp_path, monkeypatch):
+        # post_setup passes its explicit hermes_home; the pass-through must
+        # read THAT profile's .env, not the ambient home.
+        other_home = tmp_path / "other-profile"
+        other_home.mkdir()
+        other_home.joinpath(".env").write_text(
+            "HINDSIGHT_API_EMBEDDINGS_PROVIDER=other-openai\n"
+        )
+        env = self._build(tmp_path, monkeypatch, hermes_home=other_home)
+        assert env["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] == "other-openai"
+
+    def test_empty_values_not_filled(self, tmp_path, monkeypatch):
+        # Empty values are truthiness-dropped: a blank extended key must not
+        # clobber anything nor appear in the built env.
+        tmp_path.joinpath(".env").write_text(
+            "HINDSIGHT_API_EMBEDDINGS_PROVIDER=\n"
+        )
+        env = self._build(tmp_path, monkeypatch)
+        assert "HINDSIGHT_API_EMBEDDINGS_PROVIDER" not in env
+
+    def test_process_env_not_a_source(self, tmp_path, monkeypatch):
+        # Deliberate: launch-env HINDSIGHT_API_* must not leak into the daemon
+        # env (would silently attach one profile's config to another's daemon).
+        monkeypatch.setenv("HINDSIGHT_API_RERANKER_PROVIDER", "process-value")
+        monkeypatch.setenv("HINDSIGHT_API_LLM_API_KEY", "process-key")
+        env = self._build(tmp_path, monkeypatch)
+        assert "HINDSIGHT_API_RERANKER_PROVIDER" not in env
+        # The base builder always emits the LLM key slot; it must stay EMPTY,
+        # never filled from the process env.
+        assert env.get("HINDSIGHT_API_LLM_API_KEY", "") == ""
+
+    def test_failover_slots_and_base_url_passthrough(self, tmp_path, monkeypatch):
+        # Numbered failover slots (LLM_1_/LLM_2_) and the allowlisted
+        # LLM_BASE_URL pass through; the base-emitted LLM_API_KEY / _MODEL /
+        # _PROVIDER never do.
+        tmp_path.joinpath(".env").write_text(
+            "HINDSIGHT_API_LLM_1_PROVIDER=openrouter\n"
+            "HINDSIGHT_API_LLM_2_PROVIDER=deepseek\n"
+            "HINDSIGHT_API_LLM_BASE_URL=https://example.com/api\n"
+            "HINDSIGHT_API_LLM_API_KEY=should-not-pass\n"
+            "HINDSIGHT_API_LLM_MODEL=should-not-pass\n"
+        )
+        env = self._build(tmp_path, monkeypatch)
+        assert env["HINDSIGHT_API_LLM_1_PROVIDER"] == "openrouter"
+        assert env["HINDSIGHT_API_LLM_2_PROVIDER"] == "deepseek"
+        assert env["HINDSIGHT_API_LLM_BASE_URL"] == "https://example.com/api"
+        assert env.get("HINDSIGHT_API_LLM_API_KEY", "") == ""
+        assert env["HINDSIGHT_API_LLM_MODEL"] == "gpt-test"
+
+    def test_non_hindsight_keys_not_leaked(self, tmp_path, monkeypatch):
+        tmp_path.joinpath(".env").write_text(
+            "MY_PRIVATE_SECRET=shhh\nGITHUB_TOKEN=ghp_x\n"
+        )
+        env = self._build(tmp_path, monkeypatch)
+        assert "MY_PRIVATE_SECRET" not in env
+        assert "GITHUB_TOKEN" not in env
+
+    def test_missing_profile_env_is_harmless(self, tmp_path, monkeypatch):
+        # No .env at all: base builder must still return the base keys.
+        env = self._build(tmp_path, monkeypatch)
+        assert env["HINDSIGHT_API_LLM_PROVIDER"] == "openai-codex"
+        assert env["HINDSIGHT_API_LOG_LEVEL"] == "info"
+

@@ -142,6 +142,28 @@ Available in `hybrid` and `tools` memory modes:
 | `HINDSIGHT_BUDGET` | Override recall budget |
 | `HINDSIGHT_MODE` | Override mode (`cloud`, `local_embedded`, `local_external`) |
 
+### Extended embedded-daemon configuration (local mode)
+
+In `local_embedded` mode the plugin materializes a profile-scoped env file for
+the embedded daemon (`~/.hindsight/profiles/<profile>.env`). Beyond the base
+LLM keys above, the daemon understands additional `HINDSIGHT_API_*` variables
+for embeddings, reranker, consolidation, and LLM failover strategy. These are
+passed through from your Hermes profile `.env` when present:
+
+- `HINDSIGHT_API_EMBEDDINGS_*` (provider, model, dimensions, API key)
+- `HINDSIGHT_API_RERANKER_*` (provider, model, API key)
+- `HINDSIGHT_API_CONSOLIDATION_*` (LLM provider/model/key, base URL, strategy)
+- `HINDSIGHT_API_LLM_1_*` (failover LLM provider/model/key)
+- `HINDSIGHT_API_LLM_REASONING_EFFORT`, `HINDSIGHT_API_LLM_STRATEGY`
+- `CODEX_HOME` (Codex CLI credential directory, when the daemon uses Codex)
+
+Config keys from `hindsight/config.json` always win; the cloud-mode
+`HINDSIGHT_API_KEY` / `HINDSIGHT_API_URL` are deliberately **not** passed
+through. The process environment is not a source for these extended keys —
+set them in your profile `.env` (`~/.hermes/.env`). (One pre-existing
+exception: `HINDSIGHT_API_LLM_BASE_URL` is also read from the process
+environment by the base builder, so an exported value takes precedence there.)
+
 ## Client Version
 
 Requires `hindsight-client >= 0.6.1`. The plugin auto-upgrades on session start if an older version is detected.

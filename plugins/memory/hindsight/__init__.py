@@ -37,17 +37,31 @@ import json
 import logging
 import os
 import queue
+import re
+from contextlib import contextmanager
 import sys
 import threading
 import time
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List
 
-from agent.secret_scope import get_secret
+from agent.secret_scope import (
+    build_profile_secret_scope,
+    current_secret_scope,
+    get_secret,
+    is_multiplex_active,
+    reset_secret_scope,
+    set_secret_scope,
+)
 
 from agent.memory_provider import MemoryProvider
-from hermes_constants import get_hermes_home
+from hermes_constants import (
+    get_hermes_home,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 from tools.registry import tool_error
 from hermes_cli.config import cfg_get
 
@@ -58,6 +72,28 @@ _DEFAULT_LOCAL_URL = "http://localhost:8888"
 # Keep in sync with tools/lazy_deps.py ("memory.hindsight") and plugin.yaml.
 _MIN_CLIENT_VERSION = "0.6.1"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
+
+# Extended configuration the embedded daemon understands beyond what the base
+# env builder emits (embeddings, reranker, consolidation, LLM failover). Only
+# these keys pass through from the Hermes profile .env into the materialized
+# daemon env. Deliberately NOT a bare "HINDSIGHT_API_" prefix match: that
+# would also copy the cloud-mode HINDSIGHT_API_KEY / HINDSIGHT_API_URL into
+# the daemon env, where the daemon has no use for them.
+_EXTENDED_DAEMON_ENV_PREFIXES = (
+    "HINDSIGHT_API_EMBEDDINGS_",
+    "HINDSIGHT_API_RERANKER_",
+    "HINDSIGHT_API_CONSOLIDATION_",
+)
+_EXTENDED_DAEMON_ENV_EXACT = (
+    "HINDSIGHT_API_LLM_BASE_URL",
+    "HINDSIGHT_API_LLM_REASONING_EFFORT",
+    "HINDSIGHT_API_LLM_STRATEGY",
+    "CODEX_HOME",
+)
+# Failover LLM slots (HINDSIGHT_API_LLM_1_*, _2_, ...). Regex, not a bare
+# "HINDSIGHT_API_LLM_" prefix, so the base-emitted HINDSIGHT_API_LLM_API_KEY /
+# _MODEL / _PROVIDER (which must never be refilled from .env) stay excluded.
+_EXTENDED_DAEMON_LLM_SLOT_RE = re.compile(r"^HINDSIGHT_API_LLM_\d+_")
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
 # `update_mode='append'` semantics on retain (vectorize-io/hindsight#932).
@@ -518,7 +554,25 @@ def _load_simple_env(path) -> dict[str, str]:
     return values
 
 
-def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
+def _is_extended_daemon_env_key(key: str) -> bool:
+    """Return True for keys the embedded daemon consumes beyond the base set.
+
+    Explicit allowlist (prefixes + exact keys + numbered LLM failover slots) —
+    see the module constants.
+    """
+    return (
+        key in _EXTENDED_DAEMON_ENV_EXACT
+        or key.startswith(_EXTENDED_DAEMON_ENV_PREFIXES)
+        or bool(_EXTENDED_DAEMON_LLM_SLOT_RE.match(key))
+    )
+
+
+def _build_embedded_profile_env(
+    config: dict[str, Any],
+    *,
+    llm_api_key: str | None = None,
+    hermes_home: str | Path | None = None,
+) -> dict[str, str]:
     """Build the profile-scoped env file that standalone hindsight-embed consumes."""
     current_key = llm_api_key
     if current_key is None:
@@ -553,6 +607,27 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(
             _parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT)
         )
+
+    # Preserve extended daemon configuration from the Hermes profile .env.
+    # The embedded daemon additionally understands the allowlisted
+    # HINDSIGHT_API_* variables (embeddings, reranker, consolidation, LLM
+    # failover strategy, CODEX_HOME). _materialize_embedded_profile_env()
+    # overwrites the daemon env file whenever the base config changes, so
+    # without this pass-through those extended settings would be silently
+    # dropped on the next restart. Base config keys always win (k not in
+    # env_values) and the daemon env file is deliberately NOT a source — it is
+    # the artifact we write, and reading it back would make settings sticky
+    # after they are removed from the profile .env.
+    try:
+        env_home = Path(hermes_home) if hermes_home else get_hermes_home()
+        for k, v in _load_simple_env(env_home / ".env").items():
+            if _is_extended_daemon_env_key(k) and k not in env_values and v:
+                env_values[k] = v
+    except Exception as exc:
+        logger.warning(
+            "Hindsight extended daemon env pass-through failed: %s", exc, exc_info=True
+        )
+
     return env_values
 
 
@@ -600,11 +675,18 @@ def _validate_profile_env_permissions(profile_env) -> None:
             )
 
 
-def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None):
+def _materialize_embedded_profile_env(
+    config: dict[str, Any],
+    *,
+    llm_api_key: str | None = None,
+    hermes_home: str | Path | None = None,
+):
     """Write the profile-scoped env file that standalone hindsight-embed uses."""
     profile_env = _embedded_profile_env_path(config)
     profile_env.parent.mkdir(parents=True, exist_ok=True)
-    env_values = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
+    env_values = _build_embedded_profile_env(
+        config, llm_api_key=llm_api_key, hermes_home=hermes_home
+    )
     content = "".join(f"{key}={value}\n" for key, value in env_values.items())
     try:
         _secure_write_profile_env(profile_env, content)
@@ -716,6 +798,11 @@ class HindsightMemoryProvider(MemoryProvider):
         self._agent_workspace = ""
         self._turn_index = 0
         self._client = None
+        self._client_lock = threading.Lock()
+        # Set in initialize() from the hermes_home kwarg; kept as None here so
+        # a pre-initialize _get_client() call fails closed instead of reading
+        # the default profile's secrets.
+        self._profile_home: Path | None = None
         self._timeout = _DEFAULT_TIMEOUT
         self._idle_timeout = _DEFAULT_IDLE_TIMEOUT
         self._prefetch_result = ""
@@ -1047,6 +1134,7 @@ class HindsightMemoryProvider(MemoryProvider):
             _materialize_embedded_profile_env(
                 materialized_config,
                 llm_api_key=llm_api_key or None,
+                hermes_home=hermes_home,
             )
 
         print(f"\n  ✓ Hindsight memory configured ({mode} mode)")
@@ -1098,8 +1186,73 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "port_health_grace_timeout", "description": "Seconds to wait for a slow daemon /health before treating it as stale (raise on busy/low-resource hosts; blank uses the 30s default)", "default": "", "when": {"mode": "local_embedded"}},
         ]
 
+    @contextmanager
+    def _secret_scope_guard(self):
+        """Ensure a profile secret scope (+ home override) is active for the
+        duration of client/daemon setup.
+
+        Background threads (``hindsight-writer``, ``hindsight-daemon-start``)
+        are started with plain ``threading.Thread``, which does NOT
+        ``copy_context()``, so they inherit no per-turn contextvars — under a
+        multiplexing gateway ``get_secret()`` would fail closed with
+        UnscopedSecretError and every auto-retain or daemon start would break.
+        Install the profile scope from the provider's own home for the
+        duration of the block when no scope is already active (normal per-turn
+        calls keep their scope).
+
+        Mirrors gateway/run.py ``_profile_runtime_scope``: home override,
+        secret-source hydration, then the isolated ``.env`` scope. Unlike the
+        gateway's per-turn scope, the writer thread lives for the whole
+        process, so both tokens are always reset in ``finally`` and the scope
+        is built BEFORE any contextvar is installed (a raise in scope building
+        must not leak a stale home override onto a long-lived thread).
+        """
+        if not is_multiplex_active() or current_secret_scope() is not None:
+            yield
+            return
+        if self._profile_home is None:
+            # No profile home captured yet — fail closed rather than silently
+            # substituting the default profile's secrets on a background
+            # thread (get_secret() below raises UnscopedSecretError, which is
+            # the documented contract for this situation).
+            yield
+            return
+        profile_home = self._profile_home
+        try:
+            from hermes_cli.env_loader import hydrate_profile_secret_sources
+            hydrate_profile_secret_sources(profile_home)
+        except Exception:
+            # Hydration is once-per-home, cached and fail-open; never let it
+            # take down client creation.
+            pass
+        scope = build_profile_secret_scope(profile_home)
+        home_token = set_hermes_home_override(str(profile_home))
+        secret_token = set_secret_scope(scope)
+        try:
+            yield
+        finally:
+            reset_secret_scope(secret_token)
+            reset_hermes_home_override(home_token)
+
     def _get_client(self):
-        """Return the cached Hindsight client (created once, reused)."""
+        """Return the cached Hindsight client (created once, reused).
+
+        Creation happens inside ``_secret_scope_guard`` and is serialized with
+        ``_client_lock``: the daemon-start thread, the retain writer thread,
+        and the prefetch thread can all race ``self._client is None`` on first
+        use, and an unsynchronized double-create would leak an aiohttp
+        session.
+        """
+        if self._client is not None:
+            return self._client
+        with self._client_lock:
+            if self._client is None:
+                with self._secret_scope_guard():
+                    return self._create_client()
+        return self._client
+
+    def _create_client(self):
+        """Create the Hindsight client. Runs inside _secret_scope_guard."""
         if self._client is None:
             if self._mode == "local_embedded":
                 available, reason = _check_local_runtime()
@@ -1454,6 +1607,13 @@ class HindsightMemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         self._session_id = str(session_id or "").strip()
         self._parent_session_id = str(kwargs.get("parent_session_id", "") or "").strip()
+        # Capture the profile home at init time (agent_init passes it; in the
+        # multiplexing gateway initialize runs inside the profile scope, so
+        # get_hermes_home() is the correct fallback). Background threads that
+        # later build the client have no contextvars, so they rely on this.
+        self._profile_home = Path(
+            kwargs.get("hermes_home") or get_hermes_home()
+        )
 
         # Each process lifecycle gets its own document_id. Reusing session_id
         # alone caused overwrites on /resume — the reloaded session starts
@@ -1486,7 +1646,8 @@ class HindsightMemoryProvider(MemoryProvider):
         except Exception:
             pass  # packaging not available or other issue — proceed anyway
 
-        self._config = _load_config()
+        with self._secret_scope_guard():
+            self._config = _load_config()
         self._platform = str(kwargs.get("platform") or "").strip()
         self._user_id = str(kwargs.get("user_id") or "").strip()
         self._user_name = str(kwargs.get("user_name") or "").strip()
@@ -1524,7 +1685,8 @@ class HindsightMemoryProvider(MemoryProvider):
                 )
                 self._mode = "disabled"
                 return
-        self._api_key = self._config.get("apiKey") or self._config.get("api_key") or get_secret("HINDSIGHT_API_KEY", "")
+        with self._secret_scope_guard():
+            self._api_key = self._config.get("apiKey") or self._config.get("api_key") or get_secret("HINDSIGHT_API_KEY", "")
         default_url = _DEFAULT_LOCAL_URL if self._mode in {"local_embedded", "local_external"} else _DEFAULT_API_URL
         self._api_url = self._config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", default_url)
         self._llm_base_url = self._config.get("llm_base_url", "")
@@ -1651,42 +1813,48 @@ class HindsightMemoryProvider(MemoryProvider):
 
             def _start_daemon():
                 import traceback
-                log_dir = get_hermes_home() / "logs"
-                log_dir.mkdir(parents=True, exist_ok=True)
-                log_path = log_dir / "hindsight-embed.log"
-                try:
-                    # Redirect the daemon manager's Rich console to our log file
-                    # instead of stderr. This avoids global fd redirects that
-                    # would capture output from other threads.
-                    import hindsight_embed.daemon_embed_manager as dem
-                    from rich.console import Console
-                    dem.console = Console(file=open(log_path, "a", encoding="utf-8"), force_terminal=False)
+                # This thread has no contextvars (plain threading.Thread), so
+                # install the profile secret scope + home override for the
+                # WHOLE startup sequence — including the log path resolution:
+                # otherwise the daemon log lands in the default profile's
+                # logs/ dir, which makes per-profile failures undiagnosable.
+                with self._secret_scope_guard():
+                    log_dir = get_hermes_home() / "logs"
+                    log_dir.mkdir(parents=True, exist_ok=True)
+                    log_path = log_dir / "hindsight-embed.log"
+                    try:
+                        # Redirect the daemon manager's Rich console to our log file
+                        # instead of stderr. This avoids global fd redirects that
+                        # would capture output from other threads.
+                        import hindsight_embed.daemon_embed_manager as dem
+                        from rich.console import Console
+                        dem.console = Console(file=open(log_path, "a", encoding="utf-8"), force_terminal=False)
 
-                    client = self._get_client()
-                    profile = self._config.get("profile", "hermes")
+                        client = self._get_client()
+                        profile = self._config.get("profile", "hermes")
 
-                    # Update the profile .env to match our current config so
-                    # the daemon always starts with the right settings.
-                    # If the config changed and the daemon is running, stop it.
-                    profile_env = _embedded_profile_env_path(self._config)
-                    expected_env = _build_embedded_profile_env(self._config)
-                    saved = _load_simple_env(profile_env)
-                    config_changed = saved != expected_env
+                        # Update the profile .env to match our current config so
+                        # the daemon always starts with the right settings.
+                        # If the config changed and the daemon is running, stop it.
+                        profile_env = _embedded_profile_env_path(self._config)
+                        expected_env = _build_embedded_profile_env(self._config)
+                        saved = _load_simple_env(profile_env)
+                        config_changed = saved != expected_env
 
-                    if config_changed:
-                        profile_env = _materialize_embedded_profile_env(self._config)
-                        if client._manager.is_running(profile):
-                            with open(log_path, "a", encoding="utf-8") as f:
-                                f.write("\n=== Config changed, restarting daemon ===\n")
-                            client._manager.stop(profile)
+                        if config_changed:
+                            profile_env = _materialize_embedded_profile_env(self._config)
+                            if client._manager.is_running(profile):
+                                with open(log_path, "a", encoding="utf-8") as f:
+                                    f.write("\n=== Config changed, restarting daemon ===\n")
+                                client._manager.stop(profile)
 
-                    client._ensure_started()
-                    with open(log_path, "a", encoding="utf-8") as f:
-                        f.write("\n=== Daemon started successfully ===\n")
-                except Exception as e:
-                    with open(log_path, "a", encoding="utf-8") as f:
-                        f.write(f"\n=== Daemon startup failed: {e} ===\n")
-                        traceback.print_exc(file=f)
+                        client._ensure_started()
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write("\n=== Daemon started successfully ===\n")
+                    except Exception as e:
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write(f"\n=== Daemon startup failed: {e} ===\n")
+                            traceback.print_exc(file=f)
 
             t = threading.Thread(target=_start_daemon, daemon=True, name="hindsight-daemon-start")
             t.start()

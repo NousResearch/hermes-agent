@@ -762,7 +762,7 @@ def normalize_search_pagination(offset: Any = DEFAULT_SEARCH_OFFSET,
                                 limit: Any = DEFAULT_SEARCH_LIMIT) -> tuple[int, int]:
     """Return safe search pagination bounds for shell head/tail pipelines."""
     normalized_offset = max(0, _coerce_int(offset, DEFAULT_SEARCH_OFFSET))
-    normalized_limit = max(1, _coerce_int(limit, DEFAULT_SEARCH_LIMIT))
+    normalized_limit = min(max(1, _coerce_int(limit, DEFAULT_SEARCH_LIMIT)), 5000)
     return normalized_offset, normalized_limit
 
 

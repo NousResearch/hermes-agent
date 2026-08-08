@@ -26,6 +26,7 @@ import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.message_content import flatten_message_text
+from agent.message_sanitization import mark_interrupted_tool_tail
 
 
 def _is_pure_tool_call_tail(msg: dict) -> bool:
@@ -195,6 +196,7 @@ def finalize_turn(
     completed = (
         final_response is not None
         and not failed
+        and not interrupted
         and (
             api_call_count < agent.max_iterations
             or normal_text_response
@@ -265,6 +267,8 @@ def finalize_turn(
     # same empty-response loop again.
     try:
         agent._drop_trailing_empty_response_scaffolding(messages)
+        if interrupted:
+            mark_interrupted_tool_tail(messages)
 
         # Drop verification-continuation nudges (synthetic user messages)
         # from the live history before the tail-assistant check — only the
@@ -289,7 +293,6 @@ def finalize_turn(
         if interrupted:
             from agent.message_sanitization import close_interrupted_tool_sequence
             close_interrupted_tool_sequence(messages, final_response)
-
         # Some recovery/fallback paths return a real final_response without
         # adding a closing assistant message to the transcript (e.g. the
         # partial-stream and prior-turn-content recovery ``break`` sites in

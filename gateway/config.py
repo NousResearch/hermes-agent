@@ -1550,6 +1550,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["cron_continuable_surface"] = platform_cfg["cron_continuable_surface"]
                 if "require_mention" in platform_cfg:
                     bridged["require_mention"] = platform_cfg["require_mention"]
+                if "allow_dms" in platform_cfg:
+                    bridged["allow_dms"] = platform_cfg["allow_dms"]
                 if "send_read_receipts" in platform_cfg:
                     bridged["send_read_receipts"] = platform_cfg["send_read_receipts"]
                 if plat == Platform.TELEGRAM and "allowed_chats" in platform_cfg:

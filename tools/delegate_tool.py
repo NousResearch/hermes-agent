@@ -3238,7 +3238,8 @@ def delegate_task(
             return tool_error(
                 f"Task {i} must be an object, got {type(task).__name__}."
             )
-        if not task.get("goal", "").strip():
+        goal_val = task.get("goal")
+        if not (isinstance(goal_val, str) and goal_val.strip()):
             return tool_error(f"Task {i} is missing a 'goal'.")
 
     # Batch-only quality gate: catch malformed fan-outs (duplicate goals,

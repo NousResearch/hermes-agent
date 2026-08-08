@@ -840,6 +840,25 @@ class HermesACPAgent(acp.Agent):
         return target_provider, new_model
 
     @staticmethod
+    def _parse_reasoning_effort_kwargs(kwargs: dict[str, Any]) -> dict | None:
+        """Parse an optional ``reasoning_effort`` from ACP call kwargs.
+
+        Accepts both ``reasoning_effort`` and the camelCase
+        ``reasoningEffort`` spelling.  Returns ``None`` when absent or
+        unrecognized so the caller falls back to the session default.
+        """
+        effort = kwargs.get("reasoning_effort", kwargs.get("reasoningEffort"))
+        if effort is None:
+            return None
+        try:
+            from hermes_constants import parse_reasoning_effort
+
+            return parse_reasoning_effort(effort)
+        except Exception:
+            logger.debug("Failed to parse ACP reasoning_effort=%r", effort, exc_info=True)
+            return None
+
+    @staticmethod
     def _build_usage_update(state: SessionState) -> UsageUpdate | None:
         """Build ACP native context-usage data for clients like Zed.
 
@@ -1438,7 +1457,8 @@ class HermesACPAgent(acp.Agent):
         mcp_servers: list | None = None,
         **kwargs: Any,
     ) -> NewSessionResponse:
-        state = self.session_manager.create_session(cwd=cwd)
+        reasoning_config = self._parse_reasoning_effort_kwargs(kwargs)
+        state = self.session_manager.create_session(cwd=cwd, reasoning_config=reasoning_config)
         await self._register_session_mcp_servers(state, mcp_servers)
         self._schedule_mcp_late_refresh(state)
         logger.info("New session %s (cwd=%s)", state.session_id, cwd)
@@ -2440,7 +2460,12 @@ class HermesACPAgent(acp.Agent):
     async def set_session_model(
         self, model_id: str, session_id: str, **kwargs: Any
     ) -> SetSessionModelResponse | None:
-        """Switch the model for a session (called by ACP protocol)."""
+        """Switch the model for a session (called by ACP protocol).
+
+        Accepts an optional ``reasoning_effort`` kwarg (ACP ``_meta`` or
+        direct param) to set the session's per-session thinking override,
+        matching the TUI Gateway's ``session.create`` ``reasoning_effort``.
+        """
         state = self.session_manager.get_session(session_id)
         if state:
             current_provider = getattr(state.agent, "provider", None)
@@ -2452,6 +2477,11 @@ class HermesACPAgent(acp.Agent):
             provider_changed = bool(current_provider and requested_provider != current_provider)
             current_base_url = None if provider_changed else getattr(state.agent, "base_url", None)
             current_api_mode = None if provider_changed else getattr(state.agent, "api_mode", None)
+            reasoning_config = self._parse_reasoning_effort_kwargs(kwargs)
+            if reasoning_config is not None:
+                state.reasoning_config = reasoning_config
+            else:
+                reasoning_config = getattr(state, "reasoning_config", None)
             state.agent = self.session_manager._make_agent(
                 session_id=session_id,
                 cwd=state.cwd,
@@ -2459,6 +2489,7 @@ class HermesACPAgent(acp.Agent):
                 requested_provider=requested_provider,
                 base_url=current_base_url,
                 api_mode=current_api_mode,
+                reasoning_config=reasoning_config,
             )
             self.session_manager.save_session(session_id)
             logger.info(

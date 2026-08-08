@@ -894,28 +894,33 @@ class TestStripProviderPrefix:
         assert _strip_provider_prefix("http://example.com") == "http://example.com"
         assert _strip_provider_prefix("https://example.com") == "https://example.com"
 
-    def test_registered_provider_names_and_aliases_are_prefixes(self):
-        """Prefixes auto-extend from registered profiles, like _URL_TO_PROVIDER.
+    def test_registered_profile_name_and_alias_are_stripped(self, monkeypatch):
+        import providers
+        from providers import ProviderProfile
 
-        Bundled plugin providers (and user plugins under
-        $HERMES_HOME/plugins/model-providers/) must strip without a manual
-        entry in the static frozenset.
-        """
-        from providers import list_providers
+        monkeypatch.setattr(providers, "_REGISTRY", {})
+        monkeypatch.setattr(providers, "_ALIASES", {})
+        monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None)
+        monkeypatch.setattr(providers, "_discovered", True)
+        providers.register_provider(
+            ProviderProfile(name="fake-provider", aliases=("fake-alias",))
+        )
 
-        from agent.model_metadata import _PROVIDER_PREFIXES
+        assert _strip_provider_prefix("fake-provider:org/model") == "org/model"
+        assert _strip_provider_prefix("fake-alias:org/model") == "org/model"
 
-        for profile in list_providers():
-            assert profile.name.lower() in _PROVIDER_PREFIXES, (
-                f"registered provider {profile.name!r} missing from prefixes"
-            )
-            for alias in profile.aliases:
-                assert str(alias).lower() in _PROVIDER_PREFIXES, (
-                    f"alias {alias!r} of {profile.name!r} missing from prefixes"
-                )
-        # And a concrete strip using a bundled provider absent from the
-        # static set (fireworks ships as a plugin only).
-        assert _strip_provider_prefix("fireworks:some/model-v1") == "some/model-v1"
+    def test_bundled_plugin_provider_prefix_is_stripped(self):
+        assert _strip_provider_prefix("fireworks:accounts/fireworks/models/foo") == (
+            "accounts/fireworks/models/foo"
+        )
+
+    def test_unknown_provider_prefix_is_unchanged(self):
+        assert _strip_provider_prefix("not-a-provider:org/model") == (
+            "not-a-provider:org/model"
+        )
+
+    def test_ollama_model_tag_is_unchanged(self):
+        assert _strip_provider_prefix("qwen3.5:27b") == "qwen3.5:27b"
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_ollama_model_tag_not_mangled_in_context_lookup(self, mock_fetch):

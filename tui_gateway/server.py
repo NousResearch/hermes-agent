@@ -1799,7 +1799,32 @@ def _submit_prompt_to_compute_host(
         session["_compute_host_active"] = True
         if image_paths is None:
             session["attached_images"] = []
+    _log_prompt_accepted(rid, sid, session, route="compute_host")
     return _ok(rid, {"status": "streaming", "turn_isolation": True})
+
+
+def _log_prompt_accepted(rid: Any, sid: str, session: dict, *, route: str) -> None:
+    """Record an accepted Desktop/TUI prompt without exposing its content.
+
+    The message is emitted only after the in-process turn is ready to run or
+    the compute host accepted its frame.  It gives incident captures a stable
+    request/session/process correlation point without logging user text.
+    """
+    transport = current_transport() or session.get("transport")
+    profile_home = session.get("profile_home")
+    profile = Path(str(profile_home)).name if profile_home else _current_profile_name()
+    logger.info(
+        "prompt accepted: request_id=%s session=%s source=%s route=%s "
+        "profile=%s pid=%s transport=%s peer=%s",
+        rid,
+        sid,
+        _session_source(session),
+        route,
+        profile,
+        os.getpid(),
+        type(transport).__name__ if transport is not None else "none",
+        getattr(transport, "_peer", "stdio"),
+    )
 
 
 def _send_compute_host_control(

@@ -1592,6 +1592,8 @@ DEFAULT_CONFIG = {
         },
         "xai": {
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
+            "format": True,  # inverse text normalization when language is set
+            "diarize": False,  # include speaker ids on word timestamps when supported by xAI
         },
         "elevenlabs": {
             "model_id": "scribe_v2",  # scribe_v2, scribe_v1

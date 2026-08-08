@@ -32,6 +32,54 @@ from hermes_cli import kanban_swarm as ks
 # Small formatting helpers
 # ---------------------------------------------------------------------------
 
+<<<<<<< HEAD
+=======
+
+# Task ids are ``t_`` + hex (see kanban_db._new_task_id). Length is left
+# unconstrained on purpose: ids have been 4, 8 and 12 hex chars across
+# versions (#68613 / competing #68668). Shape alone separates an id from a
+# reason phrase. Unblock accepts multiple positional ids for bulk mode;
+# free-text notes must use --reason.
+_TASK_ID_RE = re.compile(r"^t_[0-9a-fA-F]+$")
+
+
+def _looks_like_task_id(value: str) -> bool:
+    return bool(value and _TASK_ID_RE.fullmatch(value.strip()))
+
+
+def _reject_non_task_ids(ids: list[str], *, command: str = "unblock") -> list[str]:
+    """Return invalid ids; empty list means all look like task ids.
+
+    Also prints guidance. Callers should treat a non-empty return as
+    fail-fast (no mutations).
+    """
+    bad = [tid for tid in ids if not _looks_like_task_id(tid)]
+    if not bad:
+        return []
+    for tid in bad:
+        print(f"not a task id: {tid!r}", file=sys.stderr)
+    good = [tid for tid in ids if _looks_like_task_id(tid)]
+    if len(bad) == 1 and good:
+        print(
+            f"Did you mean: hermes kanban {command} --reason {bad[0]!r} "
+            + " ".join(good),
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "Pass only task ids (t_<hex>) positionally; put free-text notes "
+            f"in --reason (e.g. hermes kanban {command} --reason \"...\" t_...).",
+            file=sys.stderr,
+        )
+    print(
+        "No tasks were modified. Pass only task ids positionally; "
+        "put free-text notes in --reason.",
+        file=sys.stderr,
+    )
+    return bad
+
+
+>>>>>>> a0464866b (fix(kanban): fail-fast unblock preflight; accept short t_<hex> ids)
 _STATUS_ICONS = {
     "todo":     "◻",
     "ready":    "▶",
@@ -2319,6 +2367,13 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     if not ids:
         print("at least one task_id is required", file=sys.stderr)
         return 1
+<<<<<<< HEAD
+=======
+    # Fail fast before any mutation when a positional looks like a reason/note
+    # rather than a task id (common agent/user mix-up with block's shape).
+    if _reject_non_task_ids(ids, command="unblock"):
+        return 1
+>>>>>>> a0464866b (fix(kanban): fail-fast unblock preflight; accept short t_<hex> ids)
     reason = getattr(args, "reason", None)
     if reason is not None:
         reason = reason.strip() or None

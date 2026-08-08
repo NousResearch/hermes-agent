@@ -361,9 +361,9 @@ def _slack_tools_loaded() -> bool:
     """True iff the agent will actually have Slack tools this session.
 
     Two independent paths grant Slack capability:
-      1. Native `slack` toolset enabled via `hermes tools` (opt-in, default
-         OFF) AND `SLACK_BOT_TOKEN` set — the tool's `check_fn` gates on it
-         at registry time, so config alone isn't enough.
+      1. The native `hermes-slack` platform bundle, or the legacy `slack`
+         toolset, is enabled for this Slack session. Runtime access still
+         fails closed against the selected live adapter.
       2. An MCP server that has ACTUALLY registered tools into the live
          registry (tools/mcp_tool.get_registered_mcp_server_names()), whose
          name suggests Slack. This is the real, availability-filtered
@@ -408,9 +408,9 @@ def _slack_tools_loaded() -> bool:
         # include_default_mcp_servers=True (the default) so a Slack MCP
         # server that's enabled by default for this platform (not
         # explicitly listed) is also counted, in addition to the native
-        # 'slack' toolset.
+        # native Slack toolsets.
         enabled = _get_platform_tools(cfg, "slack")
-        return "slack" in enabled
+        return "hermes-slack" in enabled or "slack" in enabled
     except Exception:
         return False
 

@@ -582,6 +582,7 @@ def make_tool_result_message(
 # promptware defense.  Skipped for short outputs (under 32 chars) where the
 # overhead of the wrapper outweighs any indirect-injection risk.
 _UNTRUSTED_TOOL_NAMES = frozenset({
+    "slack_history",
     "web_extract",
     "web_search",
 })

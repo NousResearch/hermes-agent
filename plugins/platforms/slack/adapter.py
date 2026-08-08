@@ -927,6 +927,7 @@ class SlackAdapter(BasePlatformAdapter):
         # Multi-workspace support
         self._team_clients: Dict[str, Any] = {}  # team_id → WebClient
         self._team_bot_user_ids: Dict[str, str] = {}  # team_id → bot_user_id
+        self._team_bot_ids: Dict[str, str] = {}  # team_id → verified bot_id
         # channel_id → team_id. Grows with every channel AND every DM the bot
         # sees (DM channel IDs are per-user), so it must be bounded on busy
         # multi-workspace installs. Eviction is safe: entries are re-learned
@@ -1900,6 +1901,7 @@ class SlackAdapter(BasePlatformAdapter):
             self._bot_user_id = None
             self._team_clients = {}
             self._team_bot_user_ids = {}
+            self._team_bot_ids = {}
             self._bot_display_name = None
             self._team_bot_names = {}
 
@@ -1922,11 +1924,14 @@ class SlackAdapter(BasePlatformAdapter):
                 auth_response = await client.auth_test()
                 team_id = auth_response.get("team_id", "")
                 bot_user_id = auth_response.get("user_id", "")
+                bot_id = auth_response.get("bot_id", "")
                 bot_name = auth_response.get("user", "unknown")
                 team_name = auth_response.get("team", "unknown")
 
                 self._team_clients[team_id] = client
                 self._team_bot_user_ids[team_id] = bot_user_id
+                if bot_id:
+                    self._team_bot_ids[team_id] = bot_id
                 self._team_bot_names[team_id] = bot_name
 
                 # First token always wins as the primary bot user id; we

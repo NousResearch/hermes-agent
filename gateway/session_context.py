@@ -77,6 +77,12 @@ _SESSION_CHAT_ID: ContextVar = ContextVar("HERMES_SESSION_CHAT_ID", default=_UNS
 _SESSION_CHAT_TYPE: ContextVar = ContextVar("HERMES_SESSION_CHAT_TYPE", default=_UNSET)
 _SESSION_CHAT_NAME: ContextVar = ContextVar("HERMES_SESSION_CHAT_NAME", default=_UNSET)
 _SESSION_THREAD_ID: ContextVar = ContextVar("HERMES_SESSION_THREAD_ID", default=_UNSET)
+_SESSION_SCOPE_ID: ContextVar = ContextVar("HERMES_SESSION_SCOPE_ID", default=_UNSET)
+# In-process transport provenance. This deliberately has no _VAR_MAP entry:
+# adapter objects must never cross into subprocess environments.
+_SESSION_TRANSPORT_ADAPTER: ContextVar = ContextVar(
+    "HERMES_SESSION_TRANSPORT_ADAPTER", default=_UNSET
+)
 _SESSION_USER_ID: ContextVar = ContextVar("HERMES_SESSION_USER_ID", default=_UNSET)
 _SESSION_USER_NAME: ContextVar = ContextVar("HERMES_SESSION_USER_NAME", default=_UNSET)
 _SESSION_KEY: ContextVar = ContextVar("HERMES_SESSION_KEY", default=_UNSET)
@@ -134,6 +140,7 @@ _VAR_MAP = {
     "HERMES_SESSION_CHAT_TYPE": _SESSION_CHAT_TYPE,
     "HERMES_SESSION_CHAT_NAME": _SESSION_CHAT_NAME,
     "HERMES_SESSION_THREAD_ID": _SESSION_THREAD_ID,
+    "HERMES_SESSION_SCOPE_ID": _SESSION_SCOPE_ID,
     "HERMES_SESSION_USER_ID": _SESSION_USER_ID,
     "HERMES_SESSION_USER_NAME": _SESSION_USER_NAME,
     "HERMES_SESSION_KEY": _SESSION_KEY,
@@ -219,6 +226,8 @@ def set_session_vars(
     cwd: str = "",
     async_delivery: bool = True,
     ui_session_id: str = "",
+    scope_id: str = "",
+    transport_adapter: Any = None,
     cron_session: Any = _UNSET,
 ) -> list:
     """Set all session context variables and return reset tokens.
@@ -252,6 +261,8 @@ def set_session_vars(
         _SESSION_CHAT_TYPE.set(chat_type),
         _SESSION_CHAT_NAME.set(chat_name),
         _SESSION_THREAD_ID.set(thread_id),
+        _SESSION_SCOPE_ID.set(scope_id),
+        _SESSION_TRANSPORT_ADAPTER.set(transport_adapter),
         _SESSION_USER_ID.set(user_id),
         _SESSION_USER_NAME.set(user_name),
         _SESSION_KEY.set(session_key),
@@ -289,6 +300,8 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_CHAT_TYPE,
         _SESSION_CHAT_NAME,
         _SESSION_THREAD_ID,
+        _SESSION_SCOPE_ID,
+        _SESSION_TRANSPORT_ADAPTER,
         _SESSION_USER_ID,
         _SESSION_USER_NAME,
         _SESSION_KEY,
@@ -348,6 +361,7 @@ def reset_session_vars() -> None:
     """
     for var in _VAR_MAP.values():
         var.set(_UNSET)
+    _SESSION_TRANSPORT_ADAPTER.set(_UNSET)
     # Reset the async-delivery capability to "never bound here" (_UNSET) for the
     # same inheritance-leak reason as the mapped vars above — see clear_session_vars,
     # which resets this var on the handler-exit path for the symmetric concern.
@@ -384,6 +398,13 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+def get_session_transport_adapter() -> Any | None:
+    """Return the exact in-process adapter that received the active turn."""
+
+    adapter = _SESSION_TRANSPORT_ADAPTER.get()
+    return None if adapter is _UNSET or adapter == "" else adapter
 
 
 # Surfaces that are not a human chat channel. The gateway binds a platform

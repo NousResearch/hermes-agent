@@ -98,6 +98,7 @@ def _connect_and_capture_handlers():
     mock_web_client.auth_test = AsyncMock(
         return_value={
             "user_id": "U_BOT",
+            "bot_id": "B_BOT",
             "user": "testbot",
             "team_id": "T_FAKE",
             "team": "FakeTeam",
@@ -120,6 +121,12 @@ def _connect_and_capture_handlers():
         asyncio.run(adapter.connect())
 
     return adapter, registered
+
+
+def test_connect_records_verified_bot_principal():
+    adapter, _ = _connect_and_capture_handlers()
+
+    assert adapter._team_bot_ids == {"T_FAKE": "B_BOT"}
 
 
 class TestCatchAllEventAck:

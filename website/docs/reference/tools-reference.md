@@ -259,6 +259,12 @@ Registered on the `hermes-discord` platform toolset. Moderation actions require 
 |------|-------------|----------------------|
 | `discord_admin` | Manage a Discord server via the REST API: list guilds/channels/roles, create/edit/delete channels, manage role grants, timeouts, kicks, and bans. | `DISCORD_BOT_TOKEN` + bot permissions |
 
+## `slack` toolset
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `slack_history` | Read one bounded page from the active Slack channel or thread. Other conversations are rejected, message content is marked untrusted, and no mutation actions are exposed. | Live Slack adapter + history scopes |
+
 ## `spotify` toolset
 
 Registered by the bundled `spotify` plugin. Requires an OAuth token — run `hermes auth spotify` once to authorize.

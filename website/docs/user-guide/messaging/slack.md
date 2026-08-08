@@ -382,6 +382,13 @@ Understanding how Hermes behaves in different contexts:
 In channels, always @mention the bot to start a conversation. Once the bot is active in a thread, you can reply in that thread without mentioning it. Outside of threads, messages without @mention are ignored to prevent noise in busy channels.
 :::
 
+### Reading the active conversation
+
+With Slack history scopes enabled, the read-only `slack_history` tool can page
+through messages in the channel or thread that invoked the current turn. It
+cannot list or read other conversations, and it exposes no mutation actions.
+Returned message content is bounded and treated as untrusted external data.
+
 ---
 
 ## Configuration Options

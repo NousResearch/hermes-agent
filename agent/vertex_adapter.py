@@ -20,6 +20,7 @@ import logging
 import os
 import time
 from typing import Optional, Tuple
+from urllib.parse import urlparse
 
 from agent.secret_scope import get_secret as _get_secret, is_multiplex_active
 
@@ -197,6 +198,53 @@ def build_vertex_base_url(project_id: str, region: str = DEFAULT_REGION) -> str:
     """
     host = "aiplatform.googleapis.com" if region == "global" else f"{region}-aiplatform.googleapis.com"
     return f"https://{host}/v1beta1/projects/{project_id}/locations/{region}/endpoints/openapi"
+
+
+def is_vertex_openapi_base_url(base_url: object) -> bool:
+    """Return True for Google Vertex AI's official OpenAI-compatible endpoint.
+
+    This deliberately matches only Google-hosted Vertex URLs, not arbitrary
+    OpenAI-compatible relays that may use Vertex behind the scenes. Some
+    third-party gateways accept bare ``gemini-*`` IDs while others accept
+    ``google/gemini-*``; Hermes must not rewrite those custom endpoints.
+    """
+    try:
+        parsed = urlparse(str(base_url or "").strip())
+    except Exception:
+        return False
+
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.rstrip("/").lower()
+    if not host or not path:
+        return False
+    if host != "aiplatform.googleapis.com" and not host.endswith("-aiplatform.googleapis.com"):
+        return False
+    return path.endswith("/endpoints/openapi")
+
+
+def normalize_vertex_model_for_request(model_name: object, base_url: object) -> str:
+    """Normalize Gemini model IDs for native Vertex OpenAI-compatible calls.
+
+    Vertex's OpenAI-compatible endpoint requires a publisher-qualified model
+    ID such as ``google/gemini-3.1-flash-lite``. Hermes' user-facing model
+    names often use the bare Gemini ID. Apply the prefix only when the target
+    URL is the official Vertex OpenAI endpoint, and only for bare Gemini-family
+    names, so custom/third-party OpenAI-compatible URLs are unaffected.
+    """
+    model = str(model_name or "").strip()
+    if not model:
+        return model
+
+    from hermes_cli.model_normalize import normalize_model_for_provider
+
+    model = normalize_model_for_provider(model, "vertex")
+    if "/" in model:
+        return model
+    if not model.lower().startswith(("gemini-", "gemma-")):
+        return model
+    if not is_vertex_openapi_base_url(base_url):
+        return model
+    return f"google/{model}"
 
 
 def get_vertex_config(

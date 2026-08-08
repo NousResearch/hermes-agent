@@ -2291,6 +2291,71 @@ def _agent_browser_candidate_present(path: str | None) -> bool:
     return os.path.exists(path) and (os.name == "nt" or os.access(path, os.X_OK))
 
 
+def _prefer_windows_native_agent_browser(candidate: str) -> str:
+    """Replace a Windows npm command shim with its runnable native CLI.
+
+    ``agent-browser`` is a native executable, but npm exposes global and
+    project-local installs through ``agent-browser.cmd``.  Keeping that shim in
+    the gateway process tree makes page-context ``eval`` commands cross
+    ``cmd.exe`` with the JavaScript expression in its argv.  Some Windows
+    endpoint environments hard-terminate the long-running gateway on that
+    boundary (observed exit code ``0xE0000027``), while the identical gateway
+    call succeeds when the package-local native executable is launched
+    directly.
+
+    Recognize only the two npm layouts we know how to derive, and validate the
+    native executable with the same runnable check used for every discovery
+    candidate.  If the package layout changes, the matching binary is absent,
+    or validation fails, retain the discovered shim so the caller can apply
+    the existing validation and fallback behavior.
+    """
+    if sys.platform != "win32":
+        return candidate
+
+    shim = Path(candidate)
+    if shim.suffix.lower() != ".cmd":
+        return candidate
+
+    if shim.parent.name.lower() == ".bin":
+        package_root = shim.parent.parent / "agent-browser"
+    else:
+        package_root = shim.parent / "node_modules" / "agent-browser"
+
+    # Do not depend on PROCESSOR_ARCHITECTURE: service managers and the test
+    # runner intentionally use allowlisted environments that may omit it.
+    # Trying both known package names is safe because agent_browser_runnable()
+    # rejects a wrong-architecture executable before it can be selected.
+    for binary_name in (
+        "agent-browser-win32-x64.exe",
+        "agent-browser-win32-arm64.exe",
+    ):
+        native = package_root / "bin" / binary_name
+        if native.is_file() and agent_browser_runnable(str(native)):
+            logger.debug(
+                "Using native agent-browser executable instead of npm shim: %s",
+                native,
+            )
+            return str(native)
+
+    return candidate
+
+
+def _validated_agent_browser_candidate(candidate: str) -> Optional[str]:
+    """Return a runnable discovery candidate, preferring native on Windows.
+
+    Resolve the package-local executable *before* probing the npm shim so a
+    healthy native install never launches ``cmd.exe`` at all.  When no usable
+    native executable exists, retain the existing shim validation/fallback
+    behavior.
+    """
+    preferred = _prefer_windows_native_agent_browser(candidate)
+    if preferred != candidate:
+        return preferred
+    if agent_browser_runnable(candidate):
+        return candidate
+    return None
+
+
 def _find_agent_browser(*, validate: bool = True) -> str:
     """
     Find the agent-browser CLI executable.
@@ -2330,28 +2395,30 @@ def _find_agent_browser(*, validate: bool = True) -> str:
 
     # Check if it's in PATH (global install)
     which_result = shutil.which("agent-browser")
-    if which_result and (
-        agent_browser_runnable(which_result) if validate else _agent_browser_candidate_present(which_result)
-    ):
-        if not validate:
+    if which_result:
+        if not validate and _agent_browser_candidate_present(which_result):
             return which_result
-        _cached_agent_browser = which_result
-        _agent_browser_resolved = True
-        return which_result
+        if validate:
+            validated = _validated_agent_browser_candidate(which_result)
+            if validated:
+                _cached_agent_browser = validated
+                _agent_browser_resolved = True
+                return _cached_agent_browser
 
     # Build an extended search PATH including Hermes-managed Node, macOS
     # versioned Homebrew installs, and fallback system dirs like Termux.
     extended_path = _merge_browser_path("")
     if extended_path:
         which_result = shutil.which("agent-browser", path=extended_path)
-        if which_result and (
-            agent_browser_runnable(which_result) if validate else _agent_browser_candidate_present(which_result)
-        ):
-            if not validate:
+        if which_result:
+            if not validate and _agent_browser_candidate_present(which_result):
                 return which_result
-            _cached_agent_browser = which_result
-            _agent_browser_resolved = True
-            return which_result
+            if validate:
+                validated = _validated_agent_browser_candidate(which_result)
+                if validated:
+                    _cached_agent_browser = validated
+                    _agent_browser_resolved = True
+                    return _cached_agent_browser
 
     # Check local node_modules/.bin/ (npm install in repo root).
     # On Windows, npm drops three shims in .bin: an extensionless POSIX shell
@@ -2365,14 +2432,15 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     local_bin_dir = repo_root / "node_modules" / ".bin"
     if local_bin_dir.is_dir():
         local_which = shutil.which("agent-browser", path=str(local_bin_dir))
-        if local_which and (
-            agent_browser_runnable(local_which) if validate else _agent_browser_candidate_present(local_which)
-        ):
-            if not validate:
+        if local_which:
+            if not validate and _agent_browser_candidate_present(local_which):
                 return local_which
-            _cached_agent_browser = local_which
-            _agent_browser_resolved = True
-            return _cached_agent_browser
+            if validate:
+                validated = _validated_agent_browser_candidate(local_which)
+                if validated:
+                    _cached_agent_browser = validated
+                    _agent_browser_resolved = True
+                    return _cached_agent_browser
 
     # Check common npx locations (also search the extended fallback PATH)
     npx_path = shutil.which("npx")
@@ -2400,10 +2468,12 @@ def _find_agent_browser(*, validate: bool = True) -> str:
                 shutil.which("agent-browser", path=str(get_hermes_home() / "node")),
             ]
             for recheck in candidates:
-                if recheck and agent_browser_runnable(recheck):
-                    _cached_agent_browser = recheck
-                    _agent_browser_resolved = True
-                    return recheck
+                if recheck:
+                    validated = _validated_agent_browser_candidate(recheck)
+                    if validated:
+                        _cached_agent_browser = validated
+                        _agent_browser_resolved = True
+                        return _cached_agent_browser
     except Exception:
         pass
 

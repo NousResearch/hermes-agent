@@ -15,7 +15,12 @@ _profile_scoped = _registry.profile_scoped
 def _(rid, params: dict) -> dict:
     sid = uuid.uuid4().hex[:8]
     key = _new_session_key()
-    cols = int(params.get("cols", 80))
+    # Mirror session.resume: malformed cols must not crash the inline
+    # stdin/WS reader thread (create is not in _LONG_HANDLERS).
+    try:
+        cols = int(params.get("cols", 80))
+    except (TypeError, ValueError):
+        cols = 80
     history = _coerce_seed_history(params.get("messages"))
     title = str(params.get("title") or "").strip()
     # When set, this is a branch: the new chat copies an existing conversation's
@@ -39,7 +44,7 @@ def _(rid, params: dict) -> dict:
     # profile must build its agent + persist against THAT profile's home/state.db,
     # not the dashboard's launch profile. Stored on the session so _start_agent_build
     # and each turn re-bind HERMES_HOME. None/own profile → launch (unchanged).
-    profile = (params.get("profile") or "").strip() or None
+    profile = str(params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
 
     # The desktop composer owns its model/effort/fast as plain UI state and ships
@@ -314,7 +319,7 @@ def _(rid, params: dict) -> dict:
         cols = 80
     # ``profile`` (app-global remote mode): resume a session that lives in another
     # local profile's state.db. None/own profile → the launch profile (unchanged).
-    profile = (params.get("profile") or "").strip() or None
+    profile = str(params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
     # Desktop hydrates persisted transcripts through the authenticated REST
     # route in parallel. Suppress the duplicate WebSocket transcript only when
@@ -3281,7 +3286,11 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    session["cols"] = int(params.get("cols", 80))
+    try:
+        cols = int(params.get("cols", 80))
+    except (TypeError, ValueError):
+        cols = 80
+    session["cols"] = cols
     return _ok(rid, {"cols": session["cols"]})
 
 

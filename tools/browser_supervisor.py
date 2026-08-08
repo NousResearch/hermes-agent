@@ -341,6 +341,12 @@ class CDPSupervisor:
         self._pending_calls: Dict[int, asyncio.Future] = {}
         self._ws: Optional[ClientConnection] = None
         self._page_session_id: Optional[str] = None
+        # Dedicated page target for this Hermes task_id. Multiple sessions can
+        # share one headed browser via the same CDP endpoint; each supervisor
+        # must own its own tab so they do not race on the first open page
+        # (#69727).
+        self._page_target_id: Optional[str] = None
+        self._owns_page_target: bool = False
         self._child_sessions: Dict[str, Dict[str, Any]] = {}  # session_id -> info
 
         # Dialog auto-dismiss watchdog handles (per dialog id).
@@ -400,7 +406,13 @@ class CDPSupervisor:
             # Close the WebSocket from inside the loop — this makes ``async for
             # raw in self._ws`` return cleanly, ``_run`` hits its ``finally``,
             # pending tasks get cancelled in order, THEN the thread exits.
-            async def _close_ws():
+            async def _shutdown_ws():
+                # Drop our dedicated tab before closing the socket so shared
+                # headed browsers do not accumulate blank pages per session.
+                try:
+                    await self._close_owned_page_target()
+                except Exception:
+                    pass
                 ws = self._ws
                 self._ws = None
                 if ws is not None:
@@ -411,7 +423,7 @@ class CDPSupervisor:
 
             try:
                 from agent.async_utils import safe_schedule_threadsafe
-                fut = safe_schedule_threadsafe(_close_ws(), loop)
+                fut = safe_schedule_threadsafe(_shutdown_ws(), loop)
                 if fut is not None:
                     try:
                         fut.result(timeout=2.0)
@@ -503,6 +515,162 @@ class CDPSupervisor:
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
         return {"ok": True, "dialog": snapshot_copy.to_dict()}
+
+    def page_target_id(self) -> Optional[str]:
+        """Return the dedicated page target for this task, if attached."""
+        return self._page_target_id
+
+    def page_target_tab_ref(self, timeout: float = 5.0) -> Dict[str, Any]:
+        """Return agent-browser's stable tab ref for this owned page.
+
+        ``agent-browser --cdp`` connects to the browser endpoint and keeps its
+        own page list.  It has no CLI flag for a raw CDP target id, so the
+        Hermes path binds the command by switching that daemon to the matching
+        stable tab id inside one ``batch`` request.  The stable id is derived
+        from the same filtered ``Target.getTargets`` order agent-browser uses
+        when it creates its page list.
+        """
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return {"ok": False, "error": "supervisor loop is not running"}
+        with self._state_lock:
+            if not self._active:
+                return {"ok": False, "error": "supervisor is not active"}
+            target_id = self._page_target_id
+        if not target_id:
+            return {"ok": False, "error": "supervisor has no dedicated page target"}
+
+        async def _resolve() -> Dict[str, Any]:
+            response = await self._cdp("Target.getTargets", timeout=timeout)
+            infos = (response.get("result") or {}).get("targetInfos") or []
+            pages = [
+                info
+                for info in infos
+                if isinstance(info, dict)
+                and info.get("type") in {"page", "webview"}
+                and not str(info.get("url") or "").startswith(
+                    ("chrome://", "chrome-extension://", "devtools://")
+                )
+            ]
+            for index, info in enumerate(pages, start=1):
+                if info.get("targetId") == target_id:
+                    return {
+                        "ok": True,
+                        "target_id": target_id,
+                        "tab_ref": f"t{index}",
+                    }
+            return {
+                "ok": False,
+                "error": "dedicated page target is not present in Target.getTargets",
+                "target_id": target_id,
+            }
+
+        try:
+            from agent.async_utils import safe_schedule_threadsafe
+
+            fut = safe_schedule_threadsafe(_resolve(), loop)
+            if fut is None:
+                return {"ok": False, "error": "Browser supervisor loop unavailable"}
+            return fut.result(timeout=timeout + 1)
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def activate_owned_page(self, timeout: float = 5.0) -> Dict[str, Any]:
+        """Bring this supervisor's dedicated page to the front (shared CDP).
+
+        Required before agent-browser CLI commands against a multi-session
+        headed browser so navigate/click hit our tab, not another session's.
+        """
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return {"ok": False, "error": "supervisor loop is not running"}
+        with self._state_lock:
+            if not self._active:
+                return {"ok": False, "error": "supervisor is not active"}
+            target_id = self._page_target_id
+        if not target_id:
+            return {"ok": False, "error": "supervisor has no dedicated page target"}
+
+        async def _do_activate() -> None:
+            await self._cdp(
+                "Target.activateTarget",
+                {"targetId": target_id},
+                timeout=timeout,
+            )
+
+        try:
+            from agent.async_utils import safe_schedule_threadsafe
+
+            fut = safe_schedule_threadsafe(_do_activate(), loop)
+            if fut is None:
+                return {"ok": False, "error": "Browser supervisor loop unavailable"}
+            fut.result(timeout=timeout + 1)
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": True, "target_id": target_id}
+
+    def navigate_page(self, url: str, timeout: float = 30.0) -> Dict[str, Any]:
+        """Navigate this supervisor's dedicated page via live CDP Page.navigate.
+
+        Bypasses agent-browser so multi-session CDP sessions do not race on
+        whichever tab agent-browser considers active.
+        """
+        if not isinstance(url, str) or not url.strip():
+            return {"ok": False, "error": "url must be a non-empty string"}
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return {"ok": False, "error": "supervisor loop is not running"}
+        with self._state_lock:
+            if not self._active:
+                return {"ok": False, "error": "supervisor is not active"}
+            session_id = self._page_session_id
+            target_id = self._page_target_id
+        if not session_id:
+            return {"ok": False, "error": "supervisor has no attached page session"}
+
+        async def _do_nav() -> Dict[str, Any]:
+            if target_id:
+                try:
+                    await self._cdp(
+                        "Target.activateTarget",
+                        {"targetId": target_id},
+                        timeout=min(timeout, 5.0),
+                    )
+                except Exception:
+                    pass
+            return await self._cdp(
+                "Page.navigate",
+                {"url": url.strip()},
+                session_id=session_id,
+                timeout=timeout,
+            )
+
+        try:
+            from agent.async_utils import safe_schedule_threadsafe
+
+            fut = safe_schedule_threadsafe(_do_nav(), loop)
+            if fut is None:
+                return {"ok": False, "error": "Browser supervisor loop unavailable"}
+            response = fut.result(timeout=timeout + 1)
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        result = response.get("result") if isinstance(response, dict) else None
+        error_text = None
+        if isinstance(result, dict):
+            error_text = result.get("errorText")
+        if error_text:
+            return {
+                "ok": False,
+                "error": str(error_text),
+                "target_id": target_id,
+            }
+        return {
+            "ok": True,
+            "target_id": target_id,
+            "frame_id": (result or {}).get("frameId") if isinstance(result, dict) else None,
+            "loader_id": (result or {}).get("loaderId") if isinstance(result, dict) else None,
+        }
 
     def evaluate_runtime(
         self,
@@ -738,16 +906,83 @@ class CDPSupervisor:
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 10.0)
 
-    async def _attach_initial_page(self) -> None:
-        """Find a page target, attach flattened session, enable domains, install dialog bridge."""
+    async def _resolve_dedicated_page_target(self) -> str:
+        """Return a page target exclusive to this supervisor/task_id.
+
+        Prefer re-attaching to a page we already created (reconnect path).
+        Otherwise always ``Target.createTarget`` a fresh blank page — never
+        adopt the first existing page, which is shared across all Hermes
+        sessions connected to the same headed browser (#69727).
+        """
+        if self._page_target_id:
+            try:
+                resp = await self._cdp("Target.getTargets")
+                targets = (resp.get("result") or {}).get("targetInfos") or []
+                if any(
+                    isinstance(t, dict) and t.get("targetId") == self._page_target_id
+                    for t in targets
+                ):
+                    return self._page_target_id
+            except Exception as exc:
+                logger.debug(
+                    "CDP supervisor %s: getTargets while reusing page failed: %s",
+                    self.task_id,
+                    _redact_cdp_error_text(exc),
+                )
+            # Prior page is gone (user closed tab, browser restarted, …).
+            self._page_target_id = None
+            self._owns_page_target = False
+
+        created = await self._cdp("Target.createTarget", {"url": "about:blank"})
+        target_id = (created.get("result") or {}).get("targetId")
+        if target_id:
+            self._page_target_id = str(target_id)
+            self._owns_page_target = True
+            return self._page_target_id
+
+        # Rare backend: createTarget rejected or returned nothing. Fall back to
+        # an existing page only as last resort so attach can still succeed.
         resp = await self._cdp("Target.getTargets")
-        targets = resp.get("result", {}).get("targetInfos", [])
-        page_target = next((t for t in targets if t.get("type") == "page"), None)
-        if page_target is None:
-            created = await self._cdp("Target.createTarget", {"url": "about:blank"})
-            target_id = created["result"]["targetId"]
-        else:
-            target_id = page_target["targetId"]
+        targets = (resp.get("result") or {}).get("targetInfos") or []
+        page_target = next(
+            (t for t in targets if isinstance(t, dict) and t.get("type") == "page"),
+            None,
+        )
+        if page_target is None or not page_target.get("targetId"):
+            raise RuntimeError(
+                "CDP Target.createTarget returned no targetId and no page target exists"
+            )
+        self._page_target_id = str(page_target["targetId"])
+        self._owns_page_target = False
+        logger.warning(
+            "CDP supervisor %s: createTarget unavailable; reusing shared page %s "
+            "(multi-session tab isolation degraded)",
+            self.task_id,
+            self._page_target_id[:16],
+        )
+        return self._page_target_id
+
+    async def _close_owned_page_target(self) -> None:
+        """Close the blank page we created for this task_id, if any."""
+        if not self._owns_page_target or not self._page_target_id:
+            return
+        target_id = self._page_target_id
+        try:
+            await self._cdp("Target.closeTarget", {"targetId": target_id})
+        except Exception as exc:
+            logger.debug(
+                "CDP supervisor %s: closeTarget %s failed: %s",
+                self.task_id,
+                target_id[:16],
+                _redact_cdp_error_text(exc),
+            )
+        finally:
+            self._page_target_id = None
+            self._owns_page_target = False
+
+    async def _attach_initial_page(self) -> None:
+        """Attach a dedicated page target, enable domains, install dialog bridge."""
+        target_id = await self._resolve_dedicated_page_target()
 
         attach = await self._cdp(
             "Target.attachToTarget",

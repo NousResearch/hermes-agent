@@ -55,6 +55,19 @@ get_command_link_display_dir() {
     fi
 }
 
+is_linked_worktree() {
+    local git_dir git_common_dir
+    git_dir="$(git -C "$SCRIPT_DIR" rev-parse --absolute-git-dir 2>/dev/null)" || return 1
+    git_dir="$(cd "$git_dir" 2>/dev/null && pwd -P)" || return 1
+    git_common_dir="$(git -C "$SCRIPT_DIR" rev-parse --git-common-dir 2>/dev/null)" || return 1
+    case "$git_common_dir" in
+        /*|[A-Za-z]:/*) ;;
+        *) git_common_dir="$SCRIPT_DIR/$git_common_dir" ;;
+    esac
+    git_common_dir="$(cd "$git_common_dir" 2>/dev/null && pwd -P)" || return 1
+    [ "$git_dir" != "$git_common_dir" ]
+}
+
 echo ""
 echo -e "${CYAN}⚕ Hermes Agent Setup${NC}"
 echo ""
@@ -350,9 +363,15 @@ echo -e "${CYAN}→${NC} Setting up hermes command..."
 HERMES_BIN="$SCRIPT_DIR/venv/bin/hermes"
 COMMAND_LINK_DIR="$(get_command_link_dir)"
 COMMAND_LINK_DISPLAY_DIR="$(get_command_link_display_dir)"
-mkdir -p "$COMMAND_LINK_DIR"
-ln -sf "$HERMES_BIN" "$COMMAND_LINK_DIR/hermes"
-echo -e "${GREEN}✓${NC} Symlinked hermes → $COMMAND_LINK_DISPLAY_DIR/hermes"
+COMMAND_LINK="$COMMAND_LINK_DIR/hermes"
+if is_linked_worktree && { [ -e "$COMMAND_LINK" ] || [ -L "$COMMAND_LINK" ]; }; then
+    echo -e "${YELLOW}⚠${NC} Linked Git worktree detected; leaving $COMMAND_LINK_DISPLAY_DIR/hermes unchanged"
+    echo "  Run $HERMES_BIN directly to use this worktree."
+else
+    mkdir -p "$COMMAND_LINK_DIR"
+    ln -sf "$HERMES_BIN" "$COMMAND_LINK"
+    echo -e "${GREEN}✓${NC} Symlinked hermes → $COMMAND_LINK_DISPLAY_DIR/hermes"
+fi
 
 if is_termux; then
     export PATH="$COMMAND_LINK_DIR:$PATH"

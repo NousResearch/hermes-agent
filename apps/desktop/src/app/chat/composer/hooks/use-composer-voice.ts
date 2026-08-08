@@ -61,6 +61,11 @@ export function useComposerVoice({
   const { t } = useI18n()
   // A tile's composer speaks ITS transcript, not the primary chat's.
   const { $messages } = useComposerScope()
+  // Voice conversation speech is driven by in-progress assistant deltas. Keep
+  // this hook subscribed so its speech effect runs before busy flips false;
+  // pendingTurnResponse still reads $messages.get() so the 150 ms feeder sees
+  // every later delta instead of a stale render-time snapshot.
+  useStore($messages)
   const [voiceConversationActive, setVoiceConversationActive] = useState(false)
   const lastSpokenIdRef = useRef<string | null>(null)
   const ownsWakeIndicatorRef = useRef(false)

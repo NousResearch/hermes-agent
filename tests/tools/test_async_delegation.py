@@ -752,6 +752,24 @@ def test_gateway_formatter_renders_async_block():
     assert "Investigate flaky test" in txt
 
 
+def test_gateway_watch_formatter_preserves_supersession_context(monkeypatch):
+    from gateway.run import _format_gateway_process_notification
+
+    monkeypatch.setattr("tools.process_registry.time.time", lambda: 1300.0)
+    txt = _format_gateway_process_notification({
+        "type": "watch_match",
+        "session_id": "proc_old_watch",
+        "command": "watch old task",
+        "pattern": "READY",
+        "output": "READY",
+        "started_at": 1000.0,
+    })
+
+    assert txt is not None
+    assert "this process started 5m ago" in txt
+    assert "newer user instructions take precedence" in txt
+
+
 def test_gateway_cli_origin_event_left_unrouted():
     """An empty session_key (CLI origin) is left without routing fields."""
     from gateway.run import GatewayRunner

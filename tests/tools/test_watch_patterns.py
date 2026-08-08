@@ -84,6 +84,7 @@ class TestCheckWatchPatterns:
         assert evt["pattern"] == "ERROR"
         assert "disk full" in evt["output"]
         assert evt["session_id"] == "proc_test_watch"
+        assert evt["started_at"] == session.started_at
 
 
     def test_output_truncation(self, registry):
@@ -133,6 +134,23 @@ class TestPerSessionRateLimit:
         assert evt["type"] == "watch_match"
         assert evt["suppressed"] == 4
         assert session._watch_suppressed == 0  # reset after delivery
+
+    def test_watch_disabled_event_keeps_process_start_time(self, registry):
+        """Rate-limit promotion retains timing for supersession context."""
+        session = _make_session(watch_patterns=["E"])
+
+        for index in range(3):
+            registry._check_watch_patterns(session, f"E emit {index}\n")
+            registry._check_watch_patterns(session, f"E drop {index}\n")
+            session._watch_cooldown_until = time.time() - 0.01
+
+        events = []
+        while not registry.completion_queue.empty():
+            events.append(registry.completion_queue.get_nowait())
+        disabled = [event for event in events if event["type"] == "watch_disabled"]
+
+        assert len(disabled) == 1
+        assert disabled[0]["started_at"] == session.started_at
 
 
 # =========================================================================

@@ -569,6 +569,7 @@ class ProcessRegistry:
                     "session_id": session.id,
                     "session_key": session.session_key,
                     "command": session.command,
+                    "started_at": session.started_at,
                     "type": "watch_disabled",
                     "suppressed": session._watch_suppressed,
                     "platform": session.watcher_platform,
@@ -600,6 +601,7 @@ class ProcessRegistry:
             "session_id": session.id,
             "session_key": session.session_key,
             "command": session.command,
+            "started_at": session.started_at,
             "type": "watch_match",
             "pattern": matched_pattern,
             "output": output,
@@ -2749,6 +2751,24 @@ def _format_async_delegation(evt: dict) -> str:
     return "\n".join(lines)
 
 
+def _format_process_supersession_context(evt: dict) -> str:
+    """Return the precedence boundary for a delayed process notification."""
+    started_at = evt.get("started_at")
+    if (
+        isinstance(started_at, (int, float))
+        and not isinstance(started_at, bool)
+        and started_at > 0
+    ):
+        timing = f"this process started {_format_age(time.time() - started_at)} ago and "
+    else:
+        timing = "this process "
+    return (
+        f"Supersession context: {timing}may relate to an earlier turn. "
+        "Reconcile this result with the current conversation before acting; "
+        "newer user instructions take precedence."
+    )
+
+
 def format_process_notification(evt: dict) -> "str | None":
     """Format a process notification event into a [IMPORTANT: ...] message.
 
@@ -2758,9 +2778,10 @@ def format_process_notification(evt: dict) -> "str | None":
     evt_type = evt.get("type", "completion")
     _sid = evt.get("session_id", "unknown")
     _cmd = evt.get("command", "unknown")
+    _supersession = _format_process_supersession_context(evt)
 
     if evt_type == "watch_disabled":
-        return f"[IMPORTANT: {evt.get('message', '')}]"
+        return f"[IMPORTANT: {evt.get('message', '')}\n{_supersession}]"
 
     if evt_type == "watch_match":
         _pat = evt.get("pattern", "?")
@@ -2769,6 +2790,7 @@ def format_process_notification(evt: dict) -> "str | None":
         text = (
             f"[IMPORTANT: Background process {_sid} matched "
             f"watch pattern \"{_pat}\".\n"
+            f"{_supersession}\n"
             f"Command: {_cmd}\n"
             f"Matched output:\n{_out}"
         )
@@ -2800,6 +2822,7 @@ def format_process_notification(evt: dict) -> "str | None":
     return (
         f"[IMPORTANT: Background process {_sid} {_status} "
         f"(exit code {_exit}{_signal}).\n"
+        f"{_supersession}\n"
         f"Command: {_cmd}\n"
         f"Output:\n{_out}]"
     )

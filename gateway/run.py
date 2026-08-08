@@ -3401,33 +3401,10 @@ def _parse_session_key(session_key: str) -> "dict | None":
 def _format_gateway_process_notification(evt: dict) -> "str | None":
     """Format a watch pattern event from completion_queue into a [IMPORTANT:] message."""
     evt_type = evt.get("type", "completion")
-    _sid = evt.get("session_id", "unknown")
-    _cmd = evt.get("command", "unknown")
-
-    if evt_type == "watch_disabled":
-        return f"[IMPORTANT: {evt.get('message', '')}]"
-
-    if evt_type == "watch_match":
-        _pat = evt.get("pattern", "?")
-        _out = evt.get("output", "")
-        _sup = evt.get("suppressed", 0)
-        text = (
-            f"[IMPORTANT: Background process {_sid} matched "
-            f"watch pattern \"{_pat}\".\n"
-            f"Command: {_cmd}\n"
-            f"Matched output:\n{_out}"
-        )
-        if _sup:
-            text += f"\n({_sup} earlier matches were suppressed by rate limit)"
-        text += "]"
-        return text
-
-    if evt_type == "async_delegation":
-        # Reuse the shared rich formatter (self-contained task-source block).
-        from tools.process_registry import format_process_notification
-        return format_process_notification(evt)
-
-    return None
+    if evt_type not in {"watch_match", "watch_disabled", "async_delegation"}:
+        return None
+    from tools.process_registry import format_process_notification
+    return format_process_notification(evt)
 
 
 def _drain_gateway_watch_events(completion_queue) -> "list[dict]":

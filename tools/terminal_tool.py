@@ -1093,6 +1093,8 @@ _creation_locks: Dict[str, threading.Lock] = {}  # Per-task locks for sandbox cr
 _creation_locks_lock = threading.Lock()  # Protects _creation_locks dict itself
 _cleanup_thread = None
 _cleanup_running = False
+_foreground_task_ids: set = set()
+_foreground_lock = threading.Lock()
 
 # Once-per-process guard for the docker orphan reaper (issue #20561).
 # Set when _maybe_reap_docker_orphans first runs; concurrent _create_environment
@@ -1815,6 +1817,16 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
                 _last_activity[task_id] = current_time  # Keep sandbox alive
     except ImportError:
         pass
+
+    # Also skip cleanup for tasks with a foreground command in flight.
+    # Foreground execution is synchronous: _last_activity is only bumped
+    # before env.execute(), so a long-running command can outlive the
+    # lifetime window and be torn down mid-execution.
+    with _foreground_lock:
+        fg_ids = set(_foreground_task_ids)
+    for task_id in fg_ids:
+        if task_id in _last_activity:
+            _last_activity[task_id] = current_time
 
     # Phase 1: collect stale entries and remove them from tracking dicts while
     # holding the lock.  Do NOT call env.cleanup() inside the lock -- Modal and
@@ -3080,7 +3092,16 @@ def terminal_tool(
                         # reads, RPC reads) intentionally stay unbounded.
                         "bounded_capture": True,
                     }
-                    result = env.execute(command, **execute_kwargs)
+                    # Track this task as having a foreground command in
+                    # flight so the idle reaper does not tear down the
+                    # sandbox underneath a long-running synchronous call.
+                    with _foreground_lock:
+                        _foreground_task_ids.add(effective_task_id or "default")
+                    try:
+                        result = env.execute(command, **execute_kwargs)
+                    finally:
+                        with _foreground_lock:
+                            _foreground_task_ids.discard(effective_task_id or "default")
                 except Exception as e:
                     error_str = str(e).lower()
                     if "timeout" in error_str:

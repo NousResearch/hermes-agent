@@ -155,6 +155,12 @@ def windows_batch_command(
             raise ValueError(
                 "Windows batch arguments cannot contain quotes or control characters"
             )
+        if not value:
+            # ``cmd.exe`` leaves an undefined/empty ``%VAR%`` token literal in
+            # this parsing context. An explicit empty quoted token survives
+            # both shells and reaches the batch launcher as an empty argument.
+            placeholders.append('""')
+            continue
         key = f"{prefix}_{index}"
         env[key] = value
         # The outer shell removes the carets without expanding the variable.

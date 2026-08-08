@@ -15482,6 +15482,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 return "Could not start /learn — please try again."
 
+        if canonical == "question":
+            # Rewrite the turn to a clarification-first prompt and fall through
+            # to normal agent processing. This keeps /question on the same
+            # cached system prompt and uses the existing clarify tool rather
+            # than adding a second question engine.
+            from agent.question_prompt import build_question_prompt
+
+            try:
+                event.text = build_question_prompt(event.get_command_args().strip())
+            except Exception:
+                return "Could not start /question — please try again."
+
         if canonical == "init":
             # /init: rewrite the turn to a guidance-laden prompt and fall
             # through to normal agent processing (same fall-through as /learn

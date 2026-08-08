@@ -1769,6 +1769,21 @@ class CLICommandsMixin:
             output = f"Suggestions command failed: {e}"
         self._console_print(output)
 
+    def _handle_question_command(self, cmd: str):
+        """Handle /question by seeding a clarification-first agent turn."""
+        from agent.question_prompt import build_question_prompt
+
+        parts = (cmd or "").split(None, 1)
+        request = parts[1].strip() if len(parts) > 1 else ""
+        self._pending_agent_seed = build_question_prompt(request)
+
+        message = "Question mode started — the next turn will clarify the request."
+        printer = getattr(self, "_console_print", None)
+        if printer is None:
+            print(message)
+        else:
+            printer(message)
+
     def _handle_blueprint_command(self, cmd: str):
         """Handle /blueprint — set up an automation from a blueprint template.
 

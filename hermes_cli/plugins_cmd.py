@@ -725,8 +725,113 @@ def cmd_remove(name: str) -> None:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
+    # Strip config state BEFORE the tree goes away: every identity check in
+    # _plugin_removal_identities needs the plugin still on disk, and if the
+    # config write fails we would rather leave the plugin installed than leave
+    # a deleted plugin listed in plugins.enabled.
+    _remove_plugin_config_state(_plugin_removal_identities(target))
+
     shutil.rmtree(target)
     _display_removed(name, plugins_dir)
+
+
+def _plugin_removal_identities(target: Path) -> set:
+    """Return the ``plugins.*`` config keys demonstrably owned by *target*.
+
+    ``hermes plugins uninstall`` has to strip the removed plugin out of
+    ``plugins.enabled`` / ``plugins.disabled`` / ``plugins.entries``, and
+    ``plugins.entries.<key>`` can hold the privileged ``allow_tool_override``
+    grant that :meth:`PluginContext._tool_override_allowed` reads by canonical
+    key — so a record left behind here is re-applied to whatever is installed
+    at that key next.
+
+    Ownership is established by the directory being deleted, not by the name
+    the user typed: the discovered entry whose directory *is* *target* supplies
+    the canonical key and the manifest name. A bare directory leaf is NOT an
+    identity on its own, because user plugins may be nested and path-derived
+    keys mean a namespaced ``image_gen/openai`` shares its leaf with a wholly
+    separate flat ``openai``. A leaf or manifest alias is therefore only
+    collected when :func:`_resolve_plugin_key` — the single normalization point
+    ``enable`` / ``disable`` already write through — maps it back to this same
+    plugin, and it is not some other installed plugin's canonical key. That
+    keeps legacy bare-name cleanup working in every case where the alias
+    provably identifies one plugin, and declines only when it belongs to
+    somebody else.
+
+    MUST be called before the tree is deleted; discovery scans the plugins
+    directory. Returns an empty set when discovery is unavailable, which leaves
+    config untouched exactly as it is today.
+    """
+    try:
+        target_dir = target.resolve()
+        entries = _discover_all_plugins()
+        # entry = (name, version, description, source, dir_path, key).
+        # Entry-point plugins are installed as Python packages and carry the
+        # entry-point value ("pkg.mod:register") in the dir_path slot instead of
+        # a directory, so restrict the match to real Path entries: that string
+        # is invalid path syntax on Windows, and letting one raise escape here
+        # would abandon the whole identity set and silently skip cleanup.
+        owned = [
+            e for e in entries
+            if isinstance(e[4], Path) and e[4].resolve() == target_dir
+        ]
+        if len(owned) != 1:
+            return set()
+        manifest_name, canonical = owned[0][0], owned[0][5]
+        identities = {canonical}
+        foreign_keys = {e[5] for e in entries if e[5] != canonical}
+        for alias in (manifest_name, target.name):
+            if not alias or alias in identities or alias in foreign_keys:
+                continue
+            if _resolve_plugin_key(alias) == canonical:
+                identities.add(alias)
+        return identities
+    except Exception:
+        # Discovery walks the filesystem; a removal the operator explicitly
+        # asked for must not be blocked by it. Degrade to main's behaviour
+        # (delete the tree, leave config alone) rather than failing the command.
+        logger.debug("Plugin discovery failed; leaving config untouched", exc_info=True)
+        return set()
+
+
+def _remove_plugin_config_state(identities: set) -> None:
+    """Drop *identities* from ``plugins.enabled`` / ``disabled`` / ``entries``.
+
+    One load/save pair so a removal cannot half-apply. The managed-config
+    decision is left to ``save_config``, which prints the canonical managed
+    error and returns without writing — matching every other config writer in
+    ``hermes_cli`` instead of raising a second, inconsistent refusal here.
+    """
+    if not identities:
+        return
+    from hermes_cli.config import load_config, save_config
+
+    config = load_config()
+    plugins_cfg = config.get("plugins")
+    if not isinstance(plugins_cfg, dict):
+        return
+
+    changed = False
+    for list_key in ("enabled", "disabled"):
+        current = plugins_cfg.get(list_key)
+        if not isinstance(current, list):
+            continue
+        kept = [item for item in current if item not in identities]
+        if len(kept) != len(current):
+            plugins_cfg[list_key] = kept
+            changed = True
+
+    entries = plugins_cfg.get("entries")
+    if isinstance(entries, dict):
+        for identity in identities:
+            if identity in entries:
+                del entries[identity]
+                changed = True
+
+    # Only write when something actually changed, so an uninstall of a plugin
+    # that was never enabled stays a no-op on config.yaml.
+    if changed:
+        save_config(config)
 
 
 def _get_disabled_set() -> set:
@@ -2070,7 +2175,7 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
 
 
 def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
-    """Delete a plugin tree under ``~/.hermes/plugins/`` only."""
+    """Delete a plugin tree under ``~/.hermes/plugins/`` and its config state."""
     plugins_dir = _plugins_dir()
     for n, _ver, _d, src, _path, _key in _discover_all_plugins():
         if n == name and src == "bundled":
@@ -2082,6 +2187,10 @@ def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
             "ok": False,
             "error": f"Plugin '{name}' was not found under {plugins_dir}.",
         }
+
+    # Same ordering as the CLI path (see cmd_remove): resolve identities and
+    # clean config while the plugin is still on disk.
+    _remove_plugin_config_state(_plugin_removal_identities(target))
 
     shutil.rmtree(target)
     return {"ok": True, "name": name}

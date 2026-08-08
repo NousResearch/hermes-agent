@@ -625,6 +625,43 @@ class TestDisconnectedAgentReap:
 class TestRunEventCallback:
 
     @pytest.mark.asyncio
+    async def test_moa_progress_events_are_forwarded(self, adapter):
+        """The runs stream exposes live MoA progress and phase transitions."""
+        run_id = "run_moa_progress"
+        loop = asyncio.get_running_loop()
+        queue = asyncio.Queue()
+        adapter._run_streams[run_id] = queue
+        adapter._run_statuses.pop(run_id, None)
+
+        callback = adapter._make_run_event_callback(run_id, loop)
+        callback(
+            "moa.progress",
+            "reference-model",
+            moa_refs_done=1,
+            moa_refs_total=2,
+        )
+        callback(
+            "moa.phase",
+            "aggregator-model",
+            moa_phase="aggregator",
+            moa_refs_done=2,
+            moa_refs_total=2,
+        )
+
+        progress = await asyncio.wait_for(queue.get(), timeout=1.0)
+        phase = await asyncio.wait_for(queue.get(), timeout=1.0)
+
+        assert progress["event"] == "moa.progress"
+        assert progress["refs_done"] == 1
+        assert progress["refs_total"] == 2
+        assert progress["label"] == "reference-model"
+        assert phase["event"] == "moa.phase"
+        assert phase["phase"] == "aggregator"
+        assert phase["refs_done"] == 2
+        assert phase["refs_total"] == 2
+        assert phase["aggregator"] == "aggregator-model"
+
+    @pytest.mark.asyncio
     async def test_subagent_events_redact_secrets_and_carry_child_session(self, adapter):
         """Free-text fields (goal/summary/output_tail/preview) must pass the
         forced secret redaction before hitting the public /v1/runs stream,
@@ -2865,4 +2902,3 @@ class TestCreateAgentModelRecovery:
         )
         adapter._create_agent(session_id="another-session", gateway_session_key="stable-chan-1")
         assert captured[1]["model"] == "minimax/minimax-m3"
-

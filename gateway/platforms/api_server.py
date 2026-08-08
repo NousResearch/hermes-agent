@@ -6400,6 +6400,25 @@ class APIServerAdapter(BasePlatformAdapter):
                     "timestamp": ts,
                     "text": preview or "",
                 })
+            elif event_type == "moa.progress":
+                _push({
+                    "event": "moa.progress",
+                    "run_id": run_id,
+                    "timestamp": ts,
+                    "label": tool_name or "",
+                    "refs_done": kwargs.get("moa_refs_done"),
+                    "refs_total": kwargs.get("moa_refs_total"),
+                })
+            elif event_type == "moa.phase":
+                _push({
+                    "event": "moa.phase",
+                    "run_id": run_id,
+                    "timestamp": ts,
+                    "phase": kwargs.get("moa_phase"),
+                    "refs_done": kwargs.get("moa_refs_done"),
+                    "refs_total": kwargs.get("moa_refs_total"),
+                    "aggregator": tool_name or "",
+                })
             elif event_type in {"subagent.start", "subagent.complete"}:
                 event = {
                     "event": event_type,

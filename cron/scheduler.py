@@ -3635,9 +3635,13 @@ def run_job(
         from hermes_cli.env_loader import (
             load_hermes_dotenv,
             reset_secret_source_cache,
+            restore_cached_secret_sources,
         )
         reset_secret_source_cache()
-        load_hermes_dotenv(hermes_home=_get_hermes_home())
+        try:
+            load_hermes_dotenv(hermes_home=_get_hermes_home())
+        except Exception:
+            restore_cached_secret_sources()
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:

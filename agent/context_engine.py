@@ -382,39 +382,6 @@ class ContextEngine(ABC):
         """
         return True
 
-    # -- Optional: API-call-time transform ---------------------------------
-
-    def transform_api_messages(
-        self,
-        api_messages: List[Dict[str, Any]],
-        *,
-        canonical_messages: List[Dict[str, Any]],
-        system_prompt: str,
-        tools: List[Dict[str, Any]] | None,
-        api_call_count: int,
-        model: str,
-        provider: str | None,
-        session_id: str | None,
-    ) -> List[Dict[str, Any]]:
-        """Transform the provider-bound API-call copy of the transcript.
-
-        Default returns ``api_messages`` unchanged. Engines may override this
-        to add ephemeral refs, compression placeholders, or other context
-        layers without mutating ``canonical_messages``.
-
-        Contract:
-        - Receives the API-call copy, not authoritative history.
-        - Must not mutate ``canonical_messages``.
-        - Must preserve valid OpenAI message ordering.
-        - Must not separate an assistant ``tool_calls`` message from its
-          required tool results.
-        - Should run before prompt-cache marker placement so caching logic
-          sees the actual outgoing request.
-        - Should avoid churning the stable prefix on every call to preserve
-          prompt-cache hit rates.
-        """
-        return api_messages
-
     # -- Optional: session lifecycle ---------------------------------------
 
     def on_session_start(self, session_id: str, **kwargs) -> None:

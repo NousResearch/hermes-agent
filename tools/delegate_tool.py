@@ -2976,9 +2976,17 @@ def _finalize_child_results(
             try:
                 child_index = entry.get("task_index", -1)
                 child = child_by_index.get(child_index)
+                # Session context (title) from the parent; parent_session_id
+                # is passed explicitly below.
+                _session_context = {}
+                _context_getter = getattr(parent_agent, "_hook_session_context", None)
+                if callable(_context_getter):
+                    _session_context = _context_getter() or {}
+                    _session_context.pop("parent_session_id", None)
                 invoke_hook(
                     "subagent_stop",
                     parent_session_id=parent_session_id,
+                    **_session_context,
                     parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
                     child_session_id=getattr(child, "session_id", None),
                     child_role=child_role,

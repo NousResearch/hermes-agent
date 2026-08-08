@@ -2661,6 +2661,26 @@ class AIAgent:
         summary["total_tokens"] = cu.total_tokens
         return summary
 
+    def _hook_session_context(self) -> Dict[str, Any]:
+        """``session_title`` / ``parent_session_id`` kwargs for lifecycle hooks.
+
+        The title is a lazy session-store read (sessions are titled after the
+        first exchange, so it is often absent early on); only call this behind
+        a ``has_hook(...)`` gate. Any failure degrades to None — hook kwargs
+        must never break the agent loop.
+        """
+        context: Dict[str, Any] = {
+            "parent_session_id": getattr(self, "_parent_session_id", None) or None,
+            "session_title": None,
+        }
+        session_db = getattr(self, "_session_db", None)
+        if session_db is not None and self.session_id:
+            try:
+                context["session_title"] = session_db.get_session_title(self.session_id)
+            except Exception:
+                pass
+        return context
+
     @staticmethod
     def _hook_payload_max_chars() -> int:
         raw = os.getenv("HERMES_PLUGIN_PAYLOAD_MAX_CHARS", "50000")
@@ -2885,6 +2905,7 @@ class AIAgent:
                 turn_id=turn_id,
                 api_request_id=api_request_id,
                 session_id=self.session_id or "",
+                **self._hook_session_context(),
                 platform=self.platform or "",
                 model=self.model,
                 provider=self.provider,

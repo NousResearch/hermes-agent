@@ -32,6 +32,9 @@ Design notes
 Config schema (``~/.hermes/config.yaml``)::
 
     hooks:
+      # optional: value for the payload's "host" field on every delivery
+      # (default: this machine's short hostname)
+      outbound_host_label: build-runner-1
       outbound:
         - url: https://ci.example.com/hermes-events
           events: [on_session_end, subagent_stop]
@@ -49,11 +52,18 @@ Wire format (POST body)::
         "tool_name":       null,
         "tool_input":      null,
         "session_id":      "sess_abc123",
+        "parent_session_id": null,          # set for subagent events
+        "session_title":   null,            # when the session is titled
+        "host":            "build-runner-1",
         "cwd":             "/home/user/project",
         "extra":           {...},          # event-specific kwargs
         "delivery_id":     "3f2c...",      # uuid4, unique per POST
         "timestamp":       "2026-07-22T14:00:00Z"
     }
+
+``parent_session_id``, ``session_title``, and ``host`` are additive:
+receivers that predate them simply ignore them, and they serialize as
+``null`` (never absent) when a call site has no value to thread through.
 
 Headers::
 
@@ -74,6 +84,7 @@ import logging
 import os
 import queue
 import re
+import socket
 import threading
 import time
 import uuid
@@ -96,11 +107,31 @@ QUEUE_MAX_SIZE = 256
 _TOOL_SCOPED_EVENTS = {"pre_tool_call", "post_tool_call"}
 
 # kwargs promoted to top-level payload keys (mirrors shell hooks wire).
-_TOP_LEVEL_PAYLOAD_KEYS = {"tool_name", "args", "session_id", "parent_session_id"}
+_TOP_LEVEL_PAYLOAD_KEYS = {
+    "tool_name", "args", "session_id", "parent_session_id", "session_title",
+}
 
 # (event, url) pairs already wired to the plugin manager in this process.
 _registered: Set[Tuple[str, str]] = set()
 _registered_lock = threading.Lock()
+
+# ``hooks.outbound_host_label`` override, captured at registration time.
+# None -> fall back to the short hostname.
+_host_label: Optional[str] = None
+_hostname_cache: Optional[str] = None
+
+
+def _resolve_host_label() -> str:
+    """The payload's ``host`` value: config override, else short hostname."""
+    if _host_label:
+        return _host_label
+    global _hostname_cache
+    if _hostname_cache is None:
+        try:
+            _hostname_cache = socket.gethostname().split(".")[0] or "unknown"
+        except Exception:  # defensive — a payload must always serialize
+            _hostname_cache = "unknown"
+    return _hostname_cache
 
 _delivery_queue: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue(
     maxsize=QUEUE_MAX_SIZE
@@ -173,6 +204,10 @@ def register_from_config(cfg: Optional[Dict[str, Any]]) -> List[WebhookTarget]:
         return []
 
     hooks_cfg = cfg.get("hooks")
+    if isinstance(hooks_cfg, dict):
+        global _host_label
+        label = hooks_cfg.get("outbound_host_label")
+        _host_label = label.strip() if isinstance(label, str) and label.strip() else None
     targets = _parse_outbound_block(
         hooks_cfg.get("outbound") if isinstance(hooks_cfg, dict) else None
     )
@@ -233,6 +268,8 @@ def flush(timeout: float = 5.0) -> bool:
 
 def reset_for_tests() -> None:
     """Clear the idempotence set and drain the queue.  Test-only helper."""
+    global _host_label
+    _host_label = None
     with _registered_lock:
         _registered.clear()
     try:
@@ -421,6 +458,9 @@ def _serialize_payload(
         "tool_name": kwargs.get("tool_name"),
         "tool_input": kwargs.get("args") if isinstance(kwargs.get("args"), dict) else None,
         "session_id": kwargs.get("session_id") or kwargs.get("parent_session_id") or "",
+        "parent_session_id": kwargs.get("parent_session_id") or None,
+        "session_title": kwargs.get("session_title") or None,
+        "host": _resolve_host_label(),
         "cwd": cwd,
         "extra": extras,
         "delivery_id": delivery_id,

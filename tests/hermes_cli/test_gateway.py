@@ -431,3 +431,68 @@ def test_module_has_logger():
     """Verify module has a logger instance (regression guard for #27154)."""
     assert hasattr(gateway, "logger")
     assert gateway.logger.name == "hermes_cli.gateway"
+
+
+def test_default_gateway_warns_when_named_profiles_exist(monkeypatch, tmp_path, capsys):
+    profiles = tmp_path / "profiles"
+    (profiles / "alpha").mkdir(parents=True)
+    (profiles / "beta").mkdir()
+
+    monkeypatch.setattr(gateway, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: tmp_path)
+    monkeypatch.setattr("hermes_constants.display_hermes_home", lambda: str(tmp_path))
+
+    gateway._warn_default_gateway_with_named_profiles()
+
+    err = capsys.readouterr().err
+    assert "starting gateway with the default config" in err
+    assert "Profiles detected: alpha, beta" in err
+    assert "hermes --profile <name> gateway run" in err
+
+
+def test_default_gateway_warning_honors_quiet(monkeypatch, tmp_path, capsys):
+    (tmp_path / "profiles" / "alpha").mkdir(parents=True)
+
+    monkeypatch.setattr(gateway, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: tmp_path)
+    monkeypatch.setattr("hermes_constants.display_hermes_home", lambda: str(tmp_path))
+
+    gateway._warn_default_gateway_with_named_profiles(quiet=True)
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_default_gateway_warning_skips_multiplex_mode(monkeypatch, tmp_path, capsys):
+    (tmp_path / "profiles" / "alpha").mkdir(parents=True)
+    (tmp_path / "config.yaml").write_text(
+        "gateway:\n  multiplex_profiles: true\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(gateway, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: tmp_path)
+    monkeypatch.setattr("hermes_constants.display_hermes_home", lambda: str(tmp_path))
+
+    gateway._warn_default_gateway_with_named_profiles()
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_default_gateway_warning_uses_resolved_default_root(monkeypatch, tmp_path, capsys):
+    default_root = tmp_path / "custom-root"
+    profile_home = default_root / "profiles" / "alpha"
+    profile_home.mkdir(parents=True)
+
+    monkeypatch.setattr(gateway, "get_hermes_home", lambda: profile_home)
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: default_root)
+    monkeypatch.setattr("hermes_constants.display_hermes_home", lambda: str(profile_home))
+
+    gateway._warn_default_gateway_with_named_profiles()
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""

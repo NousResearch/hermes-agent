@@ -326,6 +326,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.6-flash",
         "gemini-3.1-flash-lite-preview",
     ],
+    "gemini-oauth": [
+        "gemini-3.1-pro-preview",
+        "gemini-3-pro-preview",
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-lite-preview",
+    ],
     "zai": [
         "glm-5.2",
         "glm-5.1",
@@ -1152,6 +1158,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint, your Azure AI deployment)"),
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway (Multi-model aggregator)"),
     ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (Reuses local Qwen CLI login)"),
+    ProviderEntry("gemini-oauth",   "Google Gemini OAuth",      "Google Gemini OAuth (Google account, device-code login)"),
 ]
 
 # Auto-extend CANONICAL_PROVIDERS with any provider registered in providers/
@@ -1204,7 +1211,7 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "kimi":     ("Kimi / Moonshot", "Coding Plan, Moonshot global & China endpoints", ["kimi-coding", "kimi-coding-cn"]),
     "minimax":  ("MiniMax",         "Global, OAuth Coding Plan & China endpoints",     ["minimax", "minimax-oauth", "minimax-cn"]),
     "xai":      ("xAI Grok",        "Direct API or SuperGrok / Premium+ OAuth",        ["xai", "xai-oauth"]),
-    "google":   ("Google Gemini",   "Google AI Studio (API key)",                     ["gemini"]),
+    "google":   ("Google Gemini",   "Google AI Studio (API key) or Google Gemini OAuth",  ["gemini", "gemini-oauth"]),
     "openai":   ("OpenAI",          "Codex CLI or direct OpenAI API",                  ["openai-codex", "openai-api"]),
     "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan & Qwen CLI OAuth", ["alibaba", "alibaba-coding-plan", "qwen-oauth"]),
     "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription",            ["opencode-zen", "opencode-go"]),
@@ -1296,6 +1303,9 @@ _PROVIDER_ALIASES = {
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
+    "gemini-oauth": "gemini-oauth",
+    "google-oauth": "gemini-oauth",
+    "google-gemini-oauth": "gemini-oauth",
     "google-vertex": "vertex",
     "vertex-ai": "vertex",
     "gcp-vertex": "vertex",
@@ -2848,6 +2858,8 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         return get_codex_model_ids(access_token=access_token)
     if normalized == "xai-oauth":
         return list(_PROVIDER_MODELS.get("xai-oauth", _PROVIDER_MODELS.get("xai", [])))
+    if normalized == "gemini-oauth":
+        return list(_PROVIDER_MODELS.get("gemini-oauth", _PROVIDER_MODELS.get("gemini", [])))
     if normalized in {"copilot", "copilot-acp"}:
         try:
             live = _fetch_github_models(_resolve_copilot_catalog_api_key())
@@ -5070,7 +5082,7 @@ def validate_requested_model(
         }
 
     # Providers with non-standard catalog validation — /v1/models probing is not the right path.
-    if normalized in {"openai-codex", "xai-oauth"}:
+    if normalized in {"openai-codex", "xai-oauth", "gemini-oauth"}:
         try:
             catalog_models = provider_model_ids(normalized)
         except Exception:
@@ -5097,7 +5109,11 @@ def validate_requested_model(
             suggestion_text = ""
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
-            provider_label = "OpenAI Codex" if normalized == "openai-codex" else "xAI Grok OAuth (SuperGrok / Premium+)"
+            provider_label = {
+                "openai-codex": "OpenAI Codex",
+                "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
+                "gemini-oauth": "Google Gemini OAuth",
+            }.get(normalized, normalized)
             # Plausibility gate (#45006): the soft-accept (#16172 / #19729) exists
             # for entitlement-gated *hidden* slugs the curated listing hasn't
             # caught up with — but those are always the provider's own family
@@ -5110,6 +5126,7 @@ def validate_requested_model(
             _family_prefixes = {
                 "openai-codex": ("gpt-", "codex-", "o1", "o3", "o4"),
                 "xai-oauth": ("grok-",),
+                "gemini-oauth": ("gemini-",),
             }.get(normalized, ())
             _lower = requested_for_lookup.strip().lower()
             _plausible = (not _family_prefixes) or any(

@@ -789,6 +789,81 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
     else:
         print("No change.")
 
+def _model_flow_gemini_oauth(_config, current_model="", *, args=None):
+    """Google Gemini OAuth provider: ensure logged in, then pick model."""
+    from hermes_cli.auth import (
+        get_gemini_oauth_auth_status,
+        _prompt_model_selection,
+        _save_model_choice,
+        _update_config_for_provider,
+        resolve_gemini_oauth_runtime_credentials,
+        _login_gemini_oauth,
+        DEFAULT_GEMINI_OAUTH_BASE_URL,
+        PROVIDER_REGISTRY,
+    )
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    status = get_gemini_oauth_auth_status()
+    if status.get("logged_in"):
+        print("  Google Gemini OAuth credentials: ✓")
+        print()
+        choice = _prompt_auth_credentials_choice(
+            "Google Gemini OAuth credentials:"
+        )
+
+        if choice == "reauth":
+            print("Starting a fresh Google Gemini OAuth login...")
+            print()
+            try:
+                mock_args = argparse.Namespace(
+                    no_browser=bool(getattr(args, "no_browser", False)),
+                    timeout=getattr(args, "timeout", None),
+                )
+                _login_gemini_oauth(
+                    mock_args,
+                    PROVIDER_REGISTRY["gemini-oauth"],
+                    force_new_login=True,
+                )
+            except SystemExit:
+                print("Login cancelled or failed.")
+                return
+            except Exception as exc:
+                print(f"Login failed: {exc}")
+                return
+        elif choice == "cancel":
+            return
+    else:
+        print("Not logged into Google Gemini OAuth. Starting login...")
+        print()
+        try:
+            mock_args = argparse.Namespace(
+                no_browser=bool(getattr(args, "no_browser", False)),
+                timeout=getattr(args, "timeout", None),
+            )
+            _login_gemini_oauth(mock_args, PROVIDER_REGISTRY["gemini-oauth"])
+        except SystemExit:
+            print("Login cancelled or failed.")
+            return
+        except Exception as exc:
+            print(f"Login failed: {exc}")
+            return
+
+    base_url = DEFAULT_GEMINI_OAUTH_BASE_URL
+    try:
+        creds = resolve_gemini_oauth_runtime_credentials()
+        base_url = (creds.get("base_url") or "").strip().rstrip("/") or base_url
+    except Exception:
+        pass
+
+    models = list(_PROVIDER_MODELS.get("gemini-oauth") or _PROVIDER_MODELS.get("gemini") or [])
+    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "gemini-3.1-pro-preview"))
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider("gemini-oauth", base_url)
+        print(f"Default model set to: {selected} (via Google Gemini OAuth)")
+    else:
+        print("No change.")
+
 def _model_flow_qwen_oauth(_config, current_model=""):
     """Qwen OAuth provider: reuse local Qwen CLI login, then pick model."""
     from hermes_cli.main import _DEFAULT_QWEN_PORTAL_MODELS

@@ -120,6 +120,23 @@ XAI_OAUTH_DEVICE_CODE_URL = f"{XAI_OAUTH_ISSUER}/oauth2/device/code"
 # leaving brief but noisy credential-expiry gaps. Refresh up to one hour
 # early so ordinary runtime calls keep the token warm without user reauth.
 XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 3600
+# --- Gemini OAuth (Google OAuth 2.0 device code flow) ---
+# Unlike xAI, Google does NOT expose an OIDC discovery endpoint — the device
+# code and token URLs are fixed/well-known. The user must supply their own
+# Google Cloud Console OAuth client credentials (Desktop app type) since
+# Google requires ``client_secret`` alongside ``client_id`` for the device
+# code grant. The client credentials are stored in auth.json alongside the
+# tokens so refresh works without re-prompting.
+DEFAULT_GEMINI_OAUTH_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+GEMINI_OAUTH_DEVICE_CODE_URL = "https://oauth2.googleapis.com/device/code"
+GEMINI_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GEMINI_OAUTH_SCOPE = (
+    "https://www.googleapis.com/auth/generative-language.retriever"
+    " https://www.googleapis.com/auth/cloud-platform"
+)
+GEMINI_OAUTH_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
+# Google access tokens are JWTs with ~1h lifetime; refresh 5 min early.
+GEMINI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 300
 QWEN_OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
 QWEN_OAUTH_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
 QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
@@ -237,6 +254,12 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="xAI Grok OAuth (SuperGrok / Premium+)",
         auth_type="oauth_external",
         inference_base_url=DEFAULT_XAI_OAUTH_BASE_URL,
+    ),
+    "gemini-oauth": ProviderConfig(
+        id="gemini-oauth",
+        name="Google Gemini OAuth",
+        auth_type="oauth_external",
+        inference_base_url=DEFAULT_GEMINI_OAUTH_BASE_URL,
     ),
     "qwen-oauth": ProviderConfig(
         id="qwen-oauth",
@@ -2006,6 +2029,8 @@ def resolve_provider(
         "x-ai": "xai", "x.ai": "xai", "grok": "xai",
         "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth",
         "grok-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth",
+        "gemini-oauth": "gemini-oauth", "google-oauth": "gemini-oauth",
+        "google-gemini-oauth": "gemini-oauth",
         "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
         "step": "stepfun", "stepfun-coding-plan": "stepfun",
@@ -5067,6 +5092,414 @@ def resolve_xai_oauth_runtime_credentials(
 
 
 # =============================================================================
+# Gemini OAuth (Google OAuth 2.0 device code flow)
+# =============================================================================
+#
+# Mirrors the xai-oauth pattern above, adapted for Google's fixed OAuth 2.0
+# device code endpoints. Key differences from xAI:
+#   * Google requires ``client_secret`` alongside ``client_id`` for both the
+#     device code token poll and the refresh_token grant. The user must supply
+#     their own Google Cloud Console OAuth client credentials (Desktop app
+#     type); there is no hardcoded client_id.
+#   * Google does NOT expose an OIDC discovery endpoint — the device code and
+#     token URLs are fixed constants (``GEMINI_OAUTH_DEVICE_CODE_URL`` /
+#     ``GEMINI_OAUTH_TOKEN_URL``).
+#   * The user-supplied ``client_credentials`` (client_id + client_secret) are
+#     stored in the provider state alongside the tokens so that refresh works
+#     without re-prompting the user.
+
+
+def _gemini_oauth_state_from_store(auth_store: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return usable Gemini OAuth state from provider state or credential pool."""
+    state = _load_provider_state(auth_store, "gemini-oauth")
+    tokens = state.get("tokens") if isinstance(state, dict) else None
+    if isinstance(tokens, dict):
+        access_token = str(tokens.get("access_token", "") or "").strip()
+        refresh_token = str(tokens.get("refresh_token", "") or "").strip()
+        if access_token and refresh_token:
+            return state
+
+    credential_pool = auth_store.get("credential_pool")
+    entries = (
+        credential_pool.get("gemini-oauth")
+        if isinstance(credential_pool, dict)
+        else None
+    )
+    if isinstance(entries, list):
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            access_token = str(entry.get("access_token", "") or "").strip()
+            refresh_token = str(entry.get("refresh_token", "") or "").strip()
+            if not access_token or not refresh_token:
+                continue
+            merged = dict(state or {})
+            merged["tokens"] = {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "token_type": str(entry.get("token_type") or "Bearer"),
+            }
+            if entry.get("last_refresh"):
+                merged["last_refresh"] = entry.get("last_refresh")
+            merged.setdefault("auth_mode", "oauth_device_code")
+            return merged
+
+    return state if isinstance(state, dict) else None
+
+
+def _gemini_oauth_state_has_usable_tokens(state: Optional[Dict[str, Any]]) -> bool:
+    tokens = state.get("tokens") if isinstance(state, dict) else None
+    return (
+        isinstance(tokens, dict)
+        and bool(str(tokens.get("access_token", "") or "").strip())
+        and bool(str(tokens.get("refresh_token", "") or "").strip())
+    )
+
+
+def _read_gemini_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
+    if _lock:
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+    else:
+        auth_store = _load_auth_store()
+    state = _gemini_oauth_state_from_store(auth_store)
+    if not _gemini_oauth_state_has_usable_tokens(state):
+        global_state = _gemini_oauth_state_from_store(_load_global_auth_store())
+        if _gemini_oauth_state_has_usable_tokens(global_state):
+            state = global_state
+    if not state:
+        raise AuthError(
+            "No Gemini OAuth credentials stored. Select Google Gemini OAuth in `hermes model`.",
+            provider="gemini-oauth",
+            code="gemini_auth_missing",
+            relogin_required=True,
+        )
+    tokens = state.get("tokens")
+    if not isinstance(tokens, dict):
+        raise AuthError(
+            "Gemini OAuth state is missing tokens. Re-authenticate with `hermes model`.",
+            provider="gemini-oauth",
+            code="gemini_auth_invalid_shape",
+            relogin_required=True,
+        )
+    access_token = str(tokens.get("access_token", "") or "").strip()
+    refresh_token = str(tokens.get("refresh_token", "") or "").strip()
+    if not access_token:
+        raise AuthError(
+            "Gemini OAuth state is missing access_token. Re-authenticate with `hermes model`.",
+            provider="gemini-oauth",
+            code="gemini_auth_missing_access_token",
+            relogin_required=True,
+        )
+    if not refresh_token:
+        raise AuthError(
+            "Gemini OAuth state is missing refresh_token. Re-authenticate with `hermes model`.",
+            provider="gemini-oauth",
+            code="gemini_auth_missing_refresh_token",
+            relogin_required=True,
+        )
+    return {
+        "tokens": tokens,
+        "last_refresh": state.get("last_refresh"),
+        "client_credentials": state.get("client_credentials") or {},
+    }
+
+
+def _profile_has_own_gemini_oauth_state(auth_store: Dict[str, Any]) -> bool:
+    """True when this store has its OWN ``providers.gemini-oauth`` block."""
+    providers = auth_store.get("providers")
+    return isinstance(providers, dict) and isinstance(providers.get("gemini-oauth"), dict)
+
+
+def _write_through_gemini_oauth_to_global_root(state: Dict[str, Any]) -> None:
+    """Persist a rotated Gemini OAuth ``state`` into the global-root auth.json.
+
+    Best-effort write-through for the multi-profile rotation hazard (mirrors
+    the xai-oauth pattern). Only updates ``providers.gemini-oauth`` in the
+    root store; never touches the profile store. Swallows all errors.
+    """
+    global_path = _global_auth_file_path()
+    if global_path is None:
+        return
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        real_home_env = os.environ.get("HOME", "")
+        if real_home_env:
+            real_root = Path(real_home_env) / ".hermes" / "auth.json"
+            try:
+                if global_path.resolve(strict=False) == real_root.resolve(strict=False):
+                    return
+            except Exception:
+                return
+    try:
+        _persist_provider_state_to_store(
+            "gemini-oauth",
+            state,
+            global_path,
+            set_active=False,
+        )
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.debug("Gemini OAuth: write-through to global root failed: %s", exc)
+
+
+def _save_gemini_oauth_tokens(
+    tokens: Dict[str, Any],
+    *,
+    client_credentials: Optional[Dict[str, Any]] = None,
+    last_refresh: Optional[str] = None,
+    auth_mode: str = "oauth_device_code",
+) -> None:
+    if last_refresh is None:
+        last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        write_through_to_root = not _profile_has_own_gemini_oauth_state(auth_store)
+        state = _load_provider_state(auth_store, "gemini-oauth") or {}
+        state["tokens"] = tokens
+        state["last_refresh"] = last_refresh
+        state["auth_mode"] = auth_mode
+        if client_credentials:
+            state["client_credentials"] = client_credentials
+        _save_provider_state(auth_store, "gemini-oauth", state)
+        _save_auth_store(auth_store)
+        if write_through_to_root:
+            _write_through_gemini_oauth_to_global_root(state)
+
+
+def _gemini_access_token_is_expiring(access_token: str, skew_seconds: int = 0) -> bool:
+    """Check whether a Google JWT access token is past its ``exp`` (minus skew).
+
+    Google access tokens are JWTs; decode the payload and read ``exp`` exactly
+    like the xAI helper.
+    """
+    if not isinstance(access_token, str) or "." not in access_token:
+        return False
+    try:
+        parts = access_token.split(".")
+        if len(parts) < 2:
+            return False
+        payload_b64 = parts[1]
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode("ascii")).decode("utf-8"))
+        exp = payload.get("exp")
+        if not isinstance(exp, (int, float)):
+            return False
+        return float(exp) <= (time.time() + max(0, int(skew_seconds)))
+    except Exception:
+        return False
+
+
+def _refresh_gemini_oauth_tokens(
+    tokens: Dict[str, Any],
+    *,
+    client_id: str,
+    client_secret: str,
+    timeout_seconds: float,
+) -> Dict[str, Any]:
+    """Refresh a Gemini OAuth access token using the refresh_token grant.
+
+    Google uses the standard ``refresh_token`` grant type with ``client_id``,
+    ``client_secret``, and ``refresh_token`` at the fixed token endpoint.
+    """
+    try:
+        state = _load_provider_state(_load_auth_store(), "gemini-oauth") or {}
+        auth_mode = str(state.get("auth_mode") or "oauth_device_code")
+    except Exception:
+        auth_mode = "oauth_device_code"
+    refresh_token = str(tokens.get("refresh_token", "") or "").strip()
+    if not refresh_token:
+        raise AuthError(
+            "Gemini OAuth is missing refresh_token. Re-authenticate with `hermes model`.",
+            provider="gemini-oauth",
+            code="gemini_auth_missing_refresh_token",
+            relogin_required=True,
+        )
+    timeout = httpx.Timeout(max(5.0, float(timeout_seconds)))
+    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}) as client:
+        response = client.post(
+            GEMINI_OAUTH_TOKEN_URL,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "grant_type": "refresh_token",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "refresh_token": refresh_token,
+            },
+        )
+    if response.status_code != 200:
+        detail = response.text.strip()
+        raise AuthError(
+            "Gemini token refresh failed."
+            + (f" Response: {detail}" if detail else ""),
+            provider="gemini-oauth",
+            code="gemini_refresh_failed",
+            relogin_required=(response.status_code in {400, 401, 403}),
+        )
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise AuthError(
+            f"Gemini token refresh returned invalid JSON: {exc}",
+            provider="gemini-oauth",
+            code="gemini_refresh_invalid_json",
+        ) from exc
+    if not isinstance(payload, dict):
+        raise AuthError(
+            "Gemini token refresh response was not a JSON object.",
+            provider="gemini-oauth",
+            code="gemini_refresh_invalid_response",
+            relogin_required=True,
+        )
+    refreshed_access = str(payload.get("access_token", "") or "").strip()
+    if not refreshed_access:
+        raise AuthError(
+            "Gemini token refresh response was missing access_token.",
+            provider="gemini-oauth",
+            code="gemini_refresh_missing_access_token",
+            relogin_required=True,
+        )
+    updated_tokens = dict(tokens)
+    updated_tokens["access_token"] = refreshed_access
+    # Google may rotate the refresh_token; keep the new one if present,
+    # otherwise preserve the existing one.
+    new_refresh = str(payload.get("refresh_token") or "").strip()
+    if new_refresh:
+        updated_tokens["refresh_token"] = new_refresh
+    if payload.get("expires_in") is not None:
+        updated_tokens["expires_in"] = payload.get("expires_in")
+    token_type = str(payload.get("token_type") or "").strip()
+    if token_type:
+        updated_tokens["token_type"] = token_type
+    last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    _save_gemini_oauth_tokens(
+        updated_tokens,
+        client_credentials={"client_id": client_id, "client_secret": client_secret},
+        last_refresh=last_refresh,
+        auth_mode=auth_mode,
+    )
+    return updated_tokens
+
+
+def _is_terminal_gemini_oauth_refresh_error(exc: Exception) -> bool:
+    """True when retrying the same Gemini OAuth refresh token cannot succeed."""
+    return (
+        isinstance(exc, AuthError)
+        and exc.provider == "gemini-oauth"
+        and exc.code in {"gemini_refresh_failed", "gemini_auth_missing_refresh_token"}
+        and bool(exc.relogin_required)
+    )
+
+
+def resolve_gemini_oauth_runtime_credentials(
+    *,
+    force_refresh: bool = False,
+    refresh_if_expiring: bool = True,
+    refresh_skew_seconds: Optional[int] = None,
+) -> Dict[str, Any]:
+    data = _read_gemini_oauth_tokens()
+    tokens = dict(data["tokens"])
+    access_token = str(tokens.get("access_token", "") or "").strip()
+    refresh_timeout_seconds = env_float("HERMES_GEMINI_REFRESH_TIMEOUT_SECONDS", 20)
+    client_credentials = dict(data.get("client_credentials") or {})
+    client_id = str(client_credentials.get("client_id", "") or "").strip()
+    client_secret = str(client_credentials.get("client_secret", "") or "").strip()
+
+    effective_skew = (
+        int(refresh_skew_seconds)
+        if refresh_skew_seconds is not None
+        else GEMINI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS
+    )
+    should_refresh = bool(force_refresh)
+    if (not should_refresh) and refresh_if_expiring:
+        should_refresh = _gemini_access_token_is_expiring(access_token, effective_skew)
+    if should_refresh:
+        if not client_id or not client_secret:
+            raise AuthError(
+                "Gemini OAuth client credentials (client_id/client_secret) are "
+                "missing from auth.json. Re-authenticate with `hermes model` to "
+                "supply them.",
+                provider="gemini-oauth",
+                code="gemini_auth_missing_client_credentials",
+                relogin_required=True,
+            )
+        with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
+            data = _read_gemini_oauth_tokens(_lock=False)
+            tokens = dict(data["tokens"])
+            access_token = str(tokens.get("access_token", "") or "").strip()
+            client_credentials = dict(data.get("client_credentials") or {})
+            client_id = str(client_credentials.get("client_id", "") or "").strip()
+            client_secret = str(client_credentials.get("client_secret", "") or "").strip()
+            effective_skew = (
+                int(refresh_skew_seconds)
+                if refresh_skew_seconds is not None
+                else GEMINI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS
+            )
+            should_refresh = bool(force_refresh)
+            if (not should_refresh) and refresh_if_expiring:
+                should_refresh = _gemini_access_token_is_expiring(access_token, effective_skew)
+            if should_refresh:
+                if not client_id or not client_secret:
+                    raise AuthError(
+                        "Gemini OAuth client credentials (client_id/client_secret) "
+                        "are missing from auth.json. Re-authenticate with "
+                        "`hermes model` to supply them.",
+                        provider="gemini-oauth",
+                        code="gemini_auth_missing_client_credentials",
+                        relogin_required=True,
+                    )
+                try:
+                    tokens = _refresh_gemini_oauth_tokens(
+                        tokens,
+                        client_id=client_id,
+                        client_secret=client_secret,
+                        timeout_seconds=refresh_timeout_seconds,
+                    )
+                    access_token = str(tokens.get("access_token", "") or "").strip()
+                except AuthError as exc:
+                    if _is_terminal_gemini_oauth_refresh_error(exc):
+                        # Terminal failure — quarantine dead tokens so
+                        # subsequent sessions fail fast without a retry.
+                        try:
+                            _q_store = _load_auth_store()
+                            _q_state = _load_provider_state(_q_store, "gemini-oauth") or {}
+                            _q_tokens = dict(_q_state.get("tokens") or {})
+                            _q_tokens.pop("access_token", None)
+                            _q_tokens.pop("refresh_token", None)
+                            _q_state["tokens"] = _q_tokens
+                            _q_state["last_auth_error"] = {
+                                "provider": "gemini-oauth",
+                                "code": exc.code or "gemini_refresh_failed",
+                                "message": str(exc),
+                                "reason": "runtime_refresh_failure",
+                                "relogin_required": True,
+                                "at": datetime.now(timezone.utc).isoformat(),
+                            }
+                            _store_provider_state(_q_store, "gemini-oauth", _q_state, set_active=False)
+                            _save_auth_store(_q_store)
+                        except Exception as _save_exc:
+                            logger.debug(
+                                "Gemini OAuth: failed to persist quarantined state: %s",
+                                _save_exc,
+                            )
+                    raise
+
+    base_url = DEFAULT_GEMINI_OAUTH_BASE_URL
+    env_override = (
+        os.getenv("HERMES_GEMINI_BASE_URL", "").strip().rstrip("/")
+        or os.getenv("GEMINI_BASE_URL", "").strip().rstrip("/")
+    )
+    if env_override:
+        base_url = env_override
+    return {
+        "provider": "gemini-oauth",
+        "base_url": base_url,
+        "api_key": access_token,
+        "source": "hermes-auth-store",
+        "last_refresh": data.get("last_refresh"),
+        "auth_mode": "oauth_device_code",
+    }
+
+
+# =============================================================================
 # TLS verification helper
 # =============================================================================
 
@@ -6960,6 +7393,48 @@ def get_xai_oauth_auth_status() -> Dict[str, Any]:
         }
 
 
+def get_gemini_oauth_auth_status() -> Dict[str, Any]:
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool("gemini-oauth")
+        if pool and pool.has_credentials():
+            entry = pool.select()
+            if entry is not None:
+                api_key = (
+                    getattr(entry, "runtime_api_key", None)
+                    or getattr(entry, "access_token", "")
+                )
+                if api_key and not _gemini_access_token_is_expiring(api_key, 0):
+                    return {
+                        "logged_in": True,
+                        "auth_store": str(_auth_file_path()),
+                        "last_refresh": getattr(entry, "last_refresh", None),
+                        "auth_mode": "oauth_device_code",
+                        "source": f"pool:{getattr(entry, 'label', 'unknown')}",
+                        "api_key": api_key,
+                    }
+    except Exception:
+        pass
+
+    try:
+        creds = resolve_gemini_oauth_runtime_credentials()
+        return {
+            "logged_in": True,
+            "auth_store": str(_auth_file_path()),
+            "last_refresh": creds.get("last_refresh"),
+            "auth_mode": creds.get("auth_mode"),
+            "source": creds.get("source"),
+            "api_key": creds.get("api_key"),
+        }
+    except AuthError as exc:
+        return {
+            "logged_in": False,
+            "auth_store": str(_auth_file_path()),
+            "error": str(exc),
+        }
+
+
 def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
@@ -7887,6 +8362,144 @@ def _login_xai_oauth(
     print(f"  Config updated: {config_path} (model.provider=xai-oauth)")
 
 
+def _login_gemini_oauth(
+    args,
+    pconfig: ProviderConfig,
+    *,
+    force_new_login: bool = False,
+) -> None:
+    """Interactive Gemini OAuth login flow.
+
+    Unlike xAI, Google requires the user to provide their own OAuth client
+    credentials (client_id + client_secret) from the Google Cloud Console
+    (Desktop app type). If credentials are already stored in auth.json, they
+    are reused; otherwise the user is prompted to supply them.
+    """
+    del pconfig
+
+    # --- Resolve client credentials (stored or prompted) ---
+    client_id = ""
+    client_secret = ""
+    try:
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+        state = _load_provider_state(auth_store, "gemini-oauth") or {}
+        stored_creds = state.get("client_credentials") if isinstance(state, dict) else None
+        if isinstance(stored_creds, dict):
+            client_id = str(stored_creds.get("client_id", "") or "").strip()
+            client_secret = str(stored_creds.get("client_secret", "") or "").strip()
+    except Exception:
+        pass
+
+    if not force_new_login and client_id and client_secret:
+        try:
+            existing = resolve_gemini_oauth_runtime_credentials()
+            api_key = existing.get("api_key", "")
+            if isinstance(api_key, str) and api_key and not _gemini_access_token_is_expiring(api_key, 60):
+                print("Existing Gemini OAuth credentials found in Hermes auth store.")
+                try:
+                    reuse = input("Use existing credentials? [Y/n]: ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    reuse = "y"
+                if reuse in {"", "y", "yes"}:
+                    config_path = _update_config_for_provider(
+                        "gemini-oauth",
+                        existing.get("base_url", DEFAULT_GEMINI_OAUTH_BASE_URL),
+                    )
+                    print()
+                    print("Login successful!")
+                    print(f"  Config updated: {config_path} (model.provider=gemini-oauth)")
+                    return
+        except AuthError:
+            pass
+
+    # Prompt for client credentials if not already stored
+    if not client_id or not client_secret:
+        print()
+        print("Google Gemini OAuth requires a Google Cloud Console OAuth client.")
+        print("Create a 'Desktop app' type OAuth client at:")
+        print("  https://console.cloud.google.com/apis/credentials")
+        print("Enable the 'Generative Language API' for your project.")
+        print()
+        print("You can provide the client_id and client_secret directly, or")
+        print("provide the path to a downloaded client_secret.json file.")
+        print()
+
+        # Try path to client_secret.json first
+        try:
+            secret_path = input("Path to client_secret.json (or press Enter to type credentials): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            secret_path = ""
+
+        if secret_path:
+            try:
+                with open(secret_path, "r") as f:
+                    secret_data = json.load(f)
+                # Google client_secret.json format: {"installed": {...}} or {"web": {...}}
+                block = secret_data.get("installed") or secret_data.get("web") or {}
+                client_id = str(block.get("client_id", "") or "").strip()
+                client_secret = str(block.get("client_secret", "") or "").strip()
+            except Exception as exc:
+                raise AuthError(
+                    f"Failed to read client_secret.json: {exc}",
+                    provider="gemini-oauth",
+                    code="gemini_client_credentials_invalid",
+                ) from exc
+
+        if not client_id:
+            try:
+                client_id = input("Google OAuth client_id: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                client_id = ""
+        if not client_secret:
+            try:
+                client_secret = input("Google OAuth client_secret: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                client_secret = ""
+
+        if not client_id or not client_secret:
+            raise AuthError(
+                "Google OAuth client_id and client_secret are required for "
+                "Gemini OAuth. Re-run `hermes model` and provide them.",
+                provider="gemini-oauth",
+                code="gemini_client_credentials_missing",
+                relogin_required=True,
+            )
+
+    print()
+    print("Signing in to Google Gemini OAuth...")
+    print("(Using Google OAuth 2.0 device code flow)")
+    print()
+
+    timeout_seconds = float(getattr(args, "timeout", None) or 20.0)
+    open_browser = not getattr(args, "no_browser", False)
+    if _is_remote_session():
+        open_browser = False
+
+    creds = _gemini_oauth_device_code_login(
+        client_id=client_id,
+        client_secret=client_secret,
+        timeout_seconds=timeout_seconds,
+        open_browser=open_browser,
+    )
+    _save_gemini_oauth_tokens(
+        creds["tokens"],
+        client_credentials=creds.get("client_credentials"),
+        last_refresh=creds.get("last_refresh"),
+        auth_mode="oauth_device_code",
+    )
+    unsuppress_credential_source("gemini-oauth", "device_code")
+    config_path = _update_config_for_provider(
+        "gemini-oauth",
+        creds.get("base_url", DEFAULT_GEMINI_OAUTH_BASE_URL),
+    )
+    print()
+    print("Login successful!")
+    from hermes_constants import display_hermes_home as _dhh
+    print(f"  Auth state: {_dhh()}/auth.json")
+    print(f"  Config updated: {config_path} (model.provider=gemini-oauth)")
+
+
 def _xai_oauth_request_device_code(
     client: httpx.Client,
     *,
@@ -8066,6 +8679,204 @@ def _xai_oauth_device_code_login(
         },
         "discovery": discovery,
         "redirect_uri": "",
+        "base_url": base_url,
+        "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "source": "oauth-device-code",
+    }
+
+
+def _gemini_oauth_request_device_code(
+    client: httpx.Client,
+    *,
+    client_id: str,
+    scope: str = GEMINI_OAUTH_SCOPE,
+) -> Dict[str, Any]:
+    """POST to Google's device code endpoint."""
+    response = client.post(
+        GEMINI_OAUTH_DEVICE_CODE_URL,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        },
+        data={
+            "client_id": client_id,
+            "scope": scope,
+        },
+    )
+    if response.status_code != 200:
+        raise AuthError(
+            f"Gemini device-code request failed (HTTP {response.status_code})."
+            + (f" Response: {response.text.strip()}" if response.text else ""),
+            provider="gemini-oauth",
+            code="device_code_request_failed",
+        )
+    payload = response.json()
+    required = (
+        "device_code",
+        "user_code",
+        "verification_uri",
+        "expires_in",
+        "interval",
+    )
+    missing = [key for key in required if key not in payload]
+    if missing:
+        raise AuthError(
+            f"Gemini device-code response missing fields: {', '.join(missing)}",
+            provider="gemini-oauth",
+            code="device_code_invalid",
+        )
+    return payload
+
+
+def _gemini_oauth_poll_device_token(
+    client: httpx.Client,
+    *,
+    client_id: str,
+    client_secret: str,
+    device_code: str,
+    expires_in: int,
+    poll_interval: int,
+) -> Dict[str, Any]:
+    """Poll Google's token endpoint until the user approves or the code expires.
+
+    Unlike xAI, Google requires ``client_secret`` alongside ``client_id`` and
+    uses the ``urn:ietf:params:oauth:grant-type:device_code`` grant type.
+    """
+    deadline = time.monotonic() + max(1, int(expires_in))
+    current_interval = max(1, int(poll_interval))
+    while time.monotonic() < deadline:
+        response = client.post(
+            GEMINI_OAUTH_TOKEN_URL,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+            data={
+                "grant_type": GEMINI_OAUTH_GRANT_TYPE,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "device_code": device_code,
+            },
+        )
+        if response.status_code == 200:
+            payload = response.json()
+            if not payload.get("access_token"):
+                raise AuthError(
+                    "Gemini device-code token response did not include an access_token.",
+                    provider="gemini-oauth",
+                    code="gemini_device_token_invalid",
+                )
+            if not payload.get("refresh_token"):
+                raise AuthError(
+                    "Gemini device-code token response did not include a refresh_token.",
+                    provider="gemini-oauth",
+                    code="gemini_device_token_invalid",
+                )
+            return payload
+
+        try:
+            error_payload = response.json()
+        except Exception:
+            response.raise_for_status()
+            raise AuthError(
+                "Gemini device-code token polling returned a non-JSON error response.",
+                provider="gemini-oauth",
+                code="gemini_device_token_failed",
+            )
+        error_code = str(error_payload.get("error") or "")
+        if error_code == "authorization_pending":
+            time.sleep(current_interval)
+            continue
+        if error_code == "slow_down":
+            current_interval = min(current_interval + 1, 30)
+            time.sleep(current_interval)
+            continue
+        description = (
+            error_payload.get("error_description")
+            or error_payload.get("error")
+            or response.text
+        )
+        raise AuthError(
+            f"Gemini device-code token polling failed: {description}",
+            provider="gemini-oauth",
+            code="gemini_device_token_failed",
+        )
+    raise AuthError(
+        "Timed out waiting for Gemini device authorization.",
+        provider="gemini-oauth",
+        code="device_code_timeout",
+    )
+
+
+def _gemini_oauth_device_code_login(
+    *,
+    client_id: str,
+    client_secret: str,
+    timeout_seconds: float = 20.0,
+    open_browser: bool = True,
+) -> Dict[str, Any]:
+    """Orchestrate the full Google device code login flow."""
+    timeout = httpx.Timeout(max(20.0, timeout_seconds))
+    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}) as client:
+        device_data = _gemini_oauth_request_device_code(client, client_id=client_id)
+        verification_url = str(
+            device_data.get("verification_uri_complete")
+            or device_data["verification_uri"]
+        )
+        user_code = str(device_data["user_code"])
+        expires_in = int(device_data["expires_in"])
+        interval = int(device_data["interval"])
+
+        print()
+        print("To continue:")
+        print(f"  1. Open: {verification_url}")
+        print(f"  2. If prompted, enter code: {user_code}")
+        if open_browser and not _is_remote_session() and _can_open_graphical_browser():
+            try:
+                opened = webbrowser.open(verification_url)
+            except Exception:
+                opened = False
+            if opened:
+                print("  (Opened browser for verification)")
+            else:
+                print("  Could not open browser automatically -- use the URL above.")
+        print(f"Waiting for approval (polling every {max(1, interval)}s)...")
+
+        payload = _gemini_oauth_poll_device_token(
+            client,
+            client_id=client_id,
+            client_secret=client_secret,
+            device_code=str(device_data["device_code"]),
+            expires_in=expires_in,
+            poll_interval=interval,
+        )
+
+    access_token = str(payload.get("access_token", "") or "").strip()
+    refresh_token = str(payload.get("refresh_token", "") or "").strip()
+    if not access_token or not refresh_token:
+        raise AuthError(
+            "Gemini device-code token response was missing required tokens.",
+            provider="gemini-oauth",
+            code="gemini_device_token_invalid",
+        )
+    base_url = DEFAULT_GEMINI_OAUTH_BASE_URL
+    env_override = (
+        os.getenv("HERMES_GEMINI_BASE_URL", "").strip().rstrip("/")
+        or os.getenv("GEMINI_BASE_URL", "").strip().rstrip("/")
+    )
+    if env_override:
+        base_url = env_override
+    return {
+        "tokens": {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_in": payload.get("expires_in"),
+            "token_type": str(payload.get("token_type") or "Bearer").strip() or "Bearer",
+        },
+        "client_credentials": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+        },
         "base_url": base_url,
         "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "source": "oauth-device-code",

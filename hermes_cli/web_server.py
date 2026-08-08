@@ -214,6 +214,29 @@ def _resolve_restart_drain_timeout() -> float:
         return DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
 
 
+def _reap_stale_desktop_gateway_orphans() -> None:
+    """Sweep for gateway orphans an abrupt Desktop restart left behind.
+
+    Desktop tears down the previous backend with a plain SIGTERM on POSIX
+    or a full process-tree kill on Windows (see backend-child.ts) — neither
+    path reaches a gateway spawned via ``hermes gateway restart``, which
+    detaches into its own session (``start_new_session=True``). On hosts
+    without a service supervisor this stacked a duplicate, unsupervised
+    gateway on every Desktop restart, splitting/duplicating inbound
+    messages on connected platforms (#77276).
+    ``_reap_unsupervised_gateway_orphans`` already solves this exact class
+    of bug for the CLI restart path (#51325, #75936), including the
+    systemd-aware no-op gate — reusing it here closes the Desktop-restart
+    gap without inventing new kill logic. No-op when a service supervisor
+    is present or no orphan is found.
+    """
+    try:
+        from hermes_cli.gateway import _reap_unsupervised_gateway_orphans
+        _reap_unsupervised_gateway_orphans()
+    except Exception:
+        _log.debug("Desktop startup gateway-orphan sweep failed", exc_info=True)
+
+
 @asynccontextmanager
 async def _lifespan(app: "FastAPI"):
     app.state.event_channels = {}  # dict[str, set]
@@ -239,6 +262,7 @@ async def _lifespan(app: "FastAPI"):
     cron_stop: "threading.Event | None" = None
     cron_thread: "threading.Thread | None" = None
     if os.getenv("HERMES_DESKTOP") == "1":
+        _reap_stale_desktop_gateway_orphans()
         cron_stop = threading.Event()
         cron_thread = threading.Thread(
             target=_start_desktop_cron_ticker,

@@ -4221,6 +4221,39 @@ class TestDesktopCronTicker:
         with self._client():
             assert called.wait(3.0), "expected cron tick under HERMES_DESKTOP=1"
 
+    def test_startup_reaps_gateway_orphans_when_desktop(self, monkeypatch, _isolate_hermes_home):
+        """#77276: an abrupt Desktop restart leaves a detached gateway
+        (start_new_session=True) behind — neither the POSIX SIGTERM nor the
+        Windows tree-kill Desktop uses to stop the old backend reaches it.
+        The next Desktop-spawned backend must sweep for it on startup so a
+        restart never stacks a duplicate, unsupervised gateway."""
+        import hermes_cli.gateway as gw
+
+        called = []
+        monkeypatch.setattr(
+            gw, "_reap_unsupervised_gateway_orphans", lambda *a, **k: called.append(True)
+        )
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+
+        with self._client():
+            pass
+
+        assert called, "expected gateway-orphan sweep on Desktop startup"
+
+    def test_startup_skips_gateway_reap_when_not_desktop(self, monkeypatch, _isolate_hermes_home):
+        import hermes_cli.gateway as gw
+
+        called = []
+        monkeypatch.setattr(
+            gw, "_reap_unsupervised_gateway_orphans", lambda *a, **k: called.append(True)
+        )
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+
+        with self._client():
+            pass
+
+        assert not called, "server-mode backend must not run the desktop-only orphan sweep"
+
 
 class TestServeIndexMissingIndex:
     """_serve_index must not raise per-request when index.html vanishes

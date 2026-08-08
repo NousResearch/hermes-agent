@@ -40,6 +40,64 @@ describe('parseMultipleKeypresses bracketed paste recovery', () => {
   })
 })
 
+describe('parseMultipleKeypresses CSI u (Kitty keyboard protocol)', () => {
+  it('parses Shift+Enter (CSI 13;2u) as return with shift=true', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[13;2u')
+
+    expect(keys).toHaveLength(1)
+    expect(keys[0]).toMatchObject({
+      kind: 'key',
+      name: 'return',
+      shift: true,
+      ctrl: false,
+      meta: false,
+      super: false
+    })
+  })
+
+  it('parses Ctrl+Enter (CSI 13;5u) as return with ctrl=true', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[13;5u')
+
+    expect(keys).toHaveLength(1)
+    expect(keys[0]).toMatchObject({
+      kind: 'key',
+      name: 'return',
+      shift: false,
+      ctrl: true,
+      meta: false,
+      super: false
+    })
+  })
+
+  it('parses Cmd+Enter (CSI 13;9u) as return with super=true', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[13;9u')
+
+    expect(keys).toHaveLength(1)
+    expect(keys[0]).toMatchObject({
+      kind: 'key',
+      name: 'return',
+      shift: false,
+      ctrl: false,
+      meta: false,
+      super: true
+    })
+  })
+
+  it('parses plain Enter (CSI 13u) as return with no modifiers', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[13u')
+
+    expect(keys).toHaveLength(1)
+    expect(keys[0]).toMatchObject({
+      kind: 'key',
+      name: 'return',
+      shift: false,
+      ctrl: false,
+      meta: false,
+      super: false
+    })
+  })
+})
+
 describe('mouse wheel modifier decoding', () => {
   // SGR mouse format: ESC [ < button ; col ; row M
   // Wheel up = 64 (0x40), wheel down = 65 (0x41).

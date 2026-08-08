@@ -13385,8 +13385,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if getattr(self, "_signal_initiated_shutdown", False) and not self._restart_requested:
                 logger.info(
                     "Gateway stopped by an unexpected signal — persisting "
-                    "gateway_state=running so container_boot auto-starts on "
-                    "the next boot (issue #42675)"
+                    "gateway_state=running so the supervisor (s6 on Linux "
+                    "Docker, macOS launchd KeepAlive on Aqua sessions) can "
+                    "auto-recover. Note: launchd has no equivalent to "
+                    "container_boot — if the LaunchAgent has been unloaded "
+                    "(Aqua restart, OS upgrade, `launchctl bootout`), run "
+                    "`hermes gateway start` or see `hermes status` for the "
+                    "fix command. (related: #42675, #55441, #28632)"
                 )
                 self._update_runtime_status("running", self._exit_reason)
             else:

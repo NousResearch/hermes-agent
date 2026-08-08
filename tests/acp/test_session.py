@@ -37,6 +37,53 @@ class TestCreateSession:
         assert state.history == []
         assert state.agent is not None
 
+    def test_create_session_forwards_model_and_provider_to_agent(self, tmp_path, monkeypatch):
+        """create_session(model=..., requested_provider=...) must reach the
+        agent build so session/new can honor a client model request (#80150)."""
+        captured = {}
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            captured["requested_provider"] = requested
+            return {
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.example/v1",
+                "api_key": "test-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            captured["model"] = kwargs.get("model")
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider="openrouter",
+                base_url=None,
+                api_mode=None,
+            )
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"provider": "openrouter", "default": "test-model"}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=db)
+            state = manager.create_session(
+                cwd="/work",
+                model="custom:ollama-remote1:qwen3.5:9b",
+                requested_provider="custom",
+            )
+
+        assert captured["model"] == "custom:ollama-remote1:qwen3.5:9b"
+        assert captured["requested_provider"] == "custom"
+        assert state.model == "custom:ollama-remote1:qwen3.5:9b"
+
 
 
     def test_register_task_cwd_translates_windows_drive_for_wsl_tools(self, monkeypatch):

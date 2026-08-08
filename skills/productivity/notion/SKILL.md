@@ -1,7 +1,7 @@
 ---
 name: notion
 description: "Notion API + ntn CLI: pages, databases, markdown, Workers."
-version: 2.0.0
+version: 2.1.0
 author: community
 license: MIT
 platforms: [linux, macos, windows]
@@ -83,6 +83,16 @@ Syntax notes:
 - `key[nested]=value` — nested object fields
 - `key:=value` — typed assignment (booleans, numbers, null, arrays)
 
+### Passing JSON bodies with `-d` (preferred for complex payloads)
+```bash
+# Use -d for any JSON body that's too complex for inline key=value syntax
+ntn api v1/data_sources/{id} -X PATCH -d '{"properties":{"Thématique":{"select":{"options":[...]}}}}'
+
+# Or from a file
+ntn api v1/data_sources/{id}/query -X POST --file /tmp/query.json
+```
+The `-d` / `--data <JSON>` flag is the cleanest way to pass structured bodies. It avoids all shell escaping issues that the inline `key=value` syntax can have with nested arrays, unicode, or special characters.
+
 ### Search
 ```bash
 ntn api v1/search query="page title"
@@ -143,10 +153,33 @@ ntn files list
 
 Compare to the 3-step HTTP flow (create upload → PUT bytes → reference).
 
+### Shorthand: `ntn datasources query`
+
+For simple queries without complex filters, use the dedicated subcommand (cleaner than `ntn api`):
+
+```bash
+ntn datasources query <data-source-id> --limit 50
+ntn datasources query <data-source-id> --filter '{"property":"Status","select":{"equals":"Open"}}'
+ntn datasources query <data-source-id> --json   # machine-readable output
+```
+
+For sorts, compound filters, or `filter_properties`, use `ntn api v1/data_sources/{id}/query -X POST` with `-d` or inline `filter:='{...}'` syntax instead.
+
+### Self-discovery: inspect endpoints without leaving the terminal
+
+```bash
+ntn api ls                          # list all public API endpoints
+ntn api v1/data_sources --spec      # reduced OpenAPI fragment for this endpoint
+ntn api v1/data_sources --docs      # full official markdown docs for this endpoint
+ntn api v1/data_sources --docs -X POST   # specify method when ambiguous
+```
+
+Use these when unsure about request/response shapes — faster than guessing or searching the web.
+
 ### Useful env vars
 | Var | Effect |
 |---|---|
-| `NOTION_API_TOKEN` | Auth token (overrides keychain) — set this to your integration token |
+| `NOTION_API_TOKEN` | Auth token (overrides keychain) — set this to your integration token (NOT a `$VAR` reference) |
 | `NOTION_KEYRING=0` | File-based creds at `~/.config/notion/auth.json` instead of OS keychain |
 | `NOTION_WORKSPACE_ID` | Skip the workspace picker prompt |
 
@@ -445,4 +478,59 @@ Headings 5/6 collapse to H4. Multiple `>` lines render as separate quote blocks 
 - Use `"is_inline": true` when creating data sources to embed them in a page.
 - Always pass `-s` to curl to suppress progress bars (cleaner agent output).
 - Pipe JSON through `jq` when reading: `... | jq '.results[0].properties'`.
+- `ntn api` supports `--file /path/to/body.json` as an alternative to `-d` for large JSON payloads.
 - Notion also ships an MCP server now (`Notion MCP`, ~91% more token-efficient on DB ops than the previous version) — wire it via Hermes' MCP support if you want streaming Notion access from inside a session, but the paths above are enough for most one-shot tasks.
+
+## Official Documentation
+
+**When in doubt about Notion CLI behavior, API shapes, or syntax — check the official docs first before guessing.** The `ntn` CLI is also self-documenting via `ntn api ls`, `ntn api <path> --spec`, and `ntn api <path> --docs`.
+
+- **CLI overview:** https://developers.notion.com/cli/get-started/overview
+- **API requests syntax (inline, -d, --file, query params):** https://developers.notion.com/cli/guides/api-requests
+- **Data sources (query, create, update, templates):** https://developers.notion.com/cli/guides/data-sources
+- **Command reference (all ntn commands):** https://developers.notion.com/cli/reference/commands
+- **Authentication (keychain, --no-browser, env vars):** https://developers.notion.com/cli/get-started/authentication
+
+## Common Pitfalls
+
+> **Reference:** See `references/select-option-operations.md` for detailed recipes on renaming select options, deleting properties, and avoiding emoji-duplicate options.
+
+1. **ntn fails with "Failed to build public API request" in Hermes.** `NOTION_API_TOKEN` and `NOTION_KEYRING=0` must be in `~/.hermes/.env` (not just `NOTION_API_KEY`). Without `NOTION_API_TOKEN`, ntn can't find the token. Without `NOTION_KEYRING=0`, it tries the OS keychain which doesn't exist in a headless environment. If only `NOTION_API_KEY` is set, add the other two with the same token value.
+
+2. **ntn shell escaping in terminal tool.** Inline `export VAR=$(...)` with parentheses and quotes gets mangled by the Hermes terminal shell wrapper. **Use `ntn -d '{"key":"value"}'` to pass JSON bodies directly** — this avoids all shell escaping issues and keeps commands as one-liners. Do NOT wrap ntn calls in Python `subprocess.run()` — the user has corrected this reflex multiple times. The CLI is designed to be called directly from the terminal. For complex JSON bodies, write the JSON to a temp file and use `ntn api ... -d @/tmp/body.json`, or use heredoc with `--file`.
+
+3. **ntn fails with "No workspace selected" despite correct token/keyring env vars.** `NOTION_API_TOKEN` and `NOTION_KEYRING=0` are set correctly but ntn still can't resolve the workspace. Fix: set `NOTION_WORKSPACE_ID` in `~/.hermes/.env` (find it in the Notion URL or via `ntn api v1/users` if you can get past the error). If you can't get the workspace ID easily, **fall back to curl immediately** — the curl path (Path B) works perfectly with just `NOTION_API_KEY` and no workspace selection. Don't waste turns trying to fix ntn env when curl works.
+
+4. **DEFAULT TO ntn CLI, NOT MCP TOOLS.** Agents reach for the MCP Notion tools (notion_find, notion_query_data_source, etc.) by reflex because they're function-shaped, but ntn CLI returns compact JSON (~500 chars) vs MCP's 3-5KB wrappers. **Use ntn for ALL standard operations**: search, query, read pages, create/update/delete items, archive blocks. MCP tools should only be used for operations ntn genuinely cannot do (e.g. typed relation creation via notion_create_data_source_item_from_values, schema inspection with notion_inspect_data_source). When in doubt, use ntn.
+
+   Key ntn operations agents forget exist:
+   ```bash
+   # Query a data source
+   ntn api v1/data_sources/{data_source_id}/query -X POST
+
+   # Delete/archive a block (page item)
+   ntn api v1/blocks/{block_id} -X PATCH archived:=true
+
+   # Inspect a data source schema
+   ntn api v1/data_sources/{data_source_id}
+
+   # Search
+   ntn api v1/search query="Objets"
+
+   # Delete a property from a data source (set to null)
+   ntn api v1/data_sources/{data_source_id} -X PATCH 'properties[PropertyName]:=null'
+
+   # Or with -d for clarity:
+   ntn api v1/data_sources/{data_source_id} -X PATCH -d '{"properties":{"PropertyName":null}}'
+   ```
+
+5. **Renaming a select option by ID does NOT work via data_source PATCH.** The Notion API silently ignores name changes to existing select options when you PATCH `/v1/data_sources/{id}` with the option ID + new name. The workaround:
+   1. Add a new option with the desired name: `ntn api v1/data_sources/{id} -X PATCH -d '{"properties":{"Thématique":{"select":{"options":[{"name":"🏙️ Vie terrestre","color":"gray"}]}}}}'`
+   2. Reassign all pages that had the old option to the new one: `ntn api v1/pages/{page_id} -X PATCH -d '{"properties":{"Thématique":{"select":{"name":"🏙️ Vie terrestre"}}}}'`
+   3. Remove the old option by PATCHing the data source with only the desired options list (omitting the old option ID).
+   
+   **WARNING**: If you PATCH the options list to remove an option that pages still reference, those pages lose their select value (it becomes null). Always reassign pages BEFORE removing the old option.
+
+6. **`.env` variable references don't resolve.** If `~/.hermes/.env` contains `NOTION_API_TOKEN=*** `, the `$NOTION_API_KEY` is a literal string, not a variable reference. `.env` files are not shell scripts — they don't expand variables. Always write the actual token value: `NOTION_API_TOKEN=ntn_abc123...`. If `NOTION_API_TOKEN` is missing or invalid, ntn fails with "API token is invalid" even when `NOTION_API_KEY` is correct.
+
+7. **`ntn api -d` for JSON bodies, NOT Python wrappers.** Do NOT wrap `ntn` calls in Python `subprocess.run()` scripts. Call `ntn` directly from the terminal. For complex JSON, use `-d '{"...": "..."}'` or `--file /tmp/body.json`. Python wrappers around ntn are unnecessary indirection — the CLI is designed for direct terminal use.

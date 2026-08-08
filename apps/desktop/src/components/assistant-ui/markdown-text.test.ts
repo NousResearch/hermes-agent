@@ -360,4 +360,28 @@ describe('preprocessMarkdown', () => {
 
     expect(preprocessMarkdown(input)).toBe(input)
   })
+
+  it('keeps a radical index inside inline math', () => {
+    expect(preprocessMarkdown('$\\sqrt[3]{8}$')).toBe('$\\sqrt[3]{8}$')
+  })
+
+  it('keeps a radical index inside display math', () => {
+    expect(preprocessMarkdown('$$\\sqrt[3]{8}$$')).toBe('$$\\sqrt[3]{8}$$')
+  })
+
+  it('keeps a radical index inside a multiline display block', () => {
+    const input = ['$$', '\\sqrt[3]{8} + \\sqrt[4]{16}', '$$'].join('\n')
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it('keeps a radical index in math that arrived as bracket delimiters', () => {
+    expect(preprocessMarkdown('\\(\\sqrt[3]{8}\\)')).toContain('$\\sqrt[3]{8}$')
+  })
+
+  it('still strips a citation marker in prose that also contains math', () => {
+    const output = preprocessMarkdown('Per the paper[2], $\\sqrt[3]{8}$ is 2.')
+
+    expect(output).toBe('Per the paper, $\\sqrt[3]{8}$ is 2.')
+  })
 })

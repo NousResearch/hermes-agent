@@ -14,6 +14,11 @@ const FENCE_LINE_RE = /^([ \t]*)(`{3,}|~{3,})([^\n]*)$/
 const EMPTY_FENCE_BLOCK_RE = /(^|\n)[ \t]*(?:`{3,}|~{3,})[^\n]*\n[ \t]*(?:`{3,}|~{3,})[ \t]*(?=\n|$)/g
 const CODE_FENCE_SPLIT_RE = /((?:```|~~~)[\s\S]*?(?:```|~~~))/g
 const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
+// Math spans as remark-math will see them: a `$$…$$` block, which may span
+// lines, or a same-line `$…$`. A delimiter escaped as `\$` is prose — that is
+// exactly how escapeCurrencyDollarsPreservingMath marks a price, so the
+// lookbehinds keep `\$5 and \$10` out of the math branch.
+const MATH_SPAN_SPLIT_RE = /((?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|(?<!\\)\$[^\n$]+?(?<!\\)\$)/g
 const LATEX_DISPLAY_OPEN_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\\{1,2}\[[ \t]*\r?$/
 const LATEX_DISPLAY_CLOSE_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\\{1,2}\][ \t]*\r?$/
 const CUSTOM_DISPLAY_MATH_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\[\/math\][ \t]*\r?$/
@@ -182,19 +187,39 @@ function routeFileLinksToPreview(text: string): string {
   })
 }
 
+function rewriteProseSegment(segment: string): string {
+  return linkifySessionRefs(
+    autoLinkRawUrls(
+      routeFileLinksToPreview(
+        segment.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+      )
+    )
+  )
+}
+
+/**
+ * Apply the prose rewrites to visible prose only.
+ *
+ * Inline code has always been shielded here. Math has to be shielded for the
+ * same reason: these rewrites read TeX as prose. `CITATION_MARKER_RE` is the
+ * one that bites — its lookbehind accepts any letter, so the `t` of `\sqrt`
+ * qualifies and `$\sqrt[3]{8}$` loses its index to what looks like a citation
+ * marker, long before KaTeX sees it.
+ *
+ * Split on math spans is odd-index-is-a-delimiter (capturing split), not a
+ * `startsWith('$')` test, so a prose segment that merely opens with a stray
+ * dollar can't be mistaken for math.
+ */
 function normalizeVisibleProse(text: string): string {
   return text
     .split(INLINE_CODE_SPLIT_RE)
     .map(part =>
       part.startsWith('`')
         ? part
-        : linkifySessionRefs(
-            autoLinkRawUrls(
-              routeFileLinksToPreview(
-                part.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
-              )
-            )
-          )
+        : part
+            .split(MATH_SPAN_SPLIT_RE)
+            .map((segment, index) => (index % 2 === 1 ? segment : rewriteProseSegment(segment)))
+            .join('')
     )
     .join('')
 }

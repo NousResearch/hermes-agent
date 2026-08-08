@@ -1319,8 +1319,13 @@ class HonchoMemoryProvider(MemoryProvider):
 
         Messages exceeding the Honcho API limit (default 25k chars) are
         split into multiple messages with continuation markers.
+
+        Honors saveMessages: false — the provider then never persists raw
+        turns to Honcho (read/tools paths stay fully functional).
         """
         if self._cron_skipped:
+            return
+        if not getattr(self._config, "save_messages", True):
             return
         if self._recall_mode == "tools" and not self._session_ready():
             return
@@ -1368,6 +1373,8 @@ class HonchoMemoryProvider(MemoryProvider):
             return
         if self._cron_skipped:
             return
+        if not getattr(self._config, "save_messages", True):
+            return
         if self._recall_mode == "tools" and not self._session_ready():
             return
         if not self._session_ready():
@@ -1386,6 +1393,8 @@ class HonchoMemoryProvider(MemoryProvider):
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Flush all pending messages to Honcho on session end."""
         if self._cron_skipped:
+            return
+        if not getattr(self._config, "save_messages", True):
             return
         if not self._manager:
             return
@@ -1529,7 +1538,12 @@ class HonchoMemoryProvider(MemoryProvider):
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
-        # Flush any remaining messages
+        # Flush any remaining messages. Honors saveMessages: false — skip
+        # persistence, but the worker-thread joins above still run (cleanup
+        # is independent of persistence; placing the guard here rather than
+        # at the top avoids leaking _prefetch_thread/_sync_thread).
+        if not getattr(self._config, "save_messages", True):
+            return
         if self._manager and not (self._init_thread and self._init_thread.is_alive() and not self._session_initialized):
             try:
                 self._manager.flush_all()

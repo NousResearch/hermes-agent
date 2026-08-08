@@ -50,6 +50,12 @@ class TraceState:
     pending_tools_by_name: Dict[str, list] = field(default_factory=dict)
     turn_tool_calls: list[dict[str, Any]] = field(default_factory=list)
     last_updated_at: float = field(default_factory=time.time)
+    session_id: str = ""
+    # propagate_attributes() context, entered in _start_root_trace and held
+    # open for the trace's whole lifetime so that child observations created
+    # by later hook invocations inherit session_id/tags. Closed in
+    # _finish_trace / _evict_stale_locked.
+    attr_ctx: Any = None
 
 
 _STATE_LOCK = threading.Lock()
@@ -621,33 +627,31 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
     if session_id:
         trace_ctx["session_id"] = session_id
 
+    tags = ["hermes", "langfuse"]
+    if platform:
+        tags.append(f"channel:{platform}")
+
+    # propagate_attributes() applies session_id/tags only to observations
+    # created while its context is open. Entering and exiting it around just
+    # the root span's creation would leave every child observation — the
+    # LLM-call generations and tool spans created by later hook invocations —
+    # without session_id or tags, silently breaking session-level cost/token
+    # aggregation. Enter it manually and hold it open in TraceState (closed
+    # in _finish_trace / _evict_stale_locked), the same way root_ctx itself
+    # is already held open across hooks.
+    attr_ctx = None
     if propagate_attributes is not None:
         try:
-            with propagate_attributes(
+            attr_ctx = propagate_attributes(
                 session_id=session_id or task_key,
                 trace_name="Hermes turn",
-                tags=["hermes", "langfuse"],
-            ):
-                root_ctx = client.start_as_current_observation(
-                    trace_context=trace_ctx,
-                    name="Hermes turn",
-                    as_type="chain",
-                    input=trace_input,
-                    metadata=metadata,
-                    end_on_exit=False,
-                )
-                root_span = root_ctx.__enter__()
-        except Exception:
-            root_ctx = client.start_as_current_observation(
-                trace_context=trace_ctx,
-                name="Hermes turn",
-                as_type="chain",
-                input=trace_input,
-                metadata=metadata,
-                end_on_exit=False,
+                tags=tags,
             )
-            root_span = root_ctx.__enter__()
-    else:
+            attr_ctx.__enter__()
+        except Exception:
+            attr_ctx = None
+
+    try:
         root_ctx = client.start_as_current_observation(
             trace_context=trace_ctx,
             name="Hermes turn",
@@ -657,6 +661,14 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
             end_on_exit=False,
         )
         root_span = root_ctx.__enter__()
+    except Exception:
+        if attr_ctx is not None:
+            try:
+                attr_ctx.__exit__(None, None, None)
+            except Exception:
+                pass
+            attr_ctx = None
+        raise
 
     try:
         root_span.set_trace_io(input=trace_input)
@@ -664,7 +676,13 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
         pass
 
     _debug(f"started trace {trace_id} for {task_key}")
-    return TraceState(trace_id=trace_id, root_ctx=root_ctx, root_span=root_span)
+    return TraceState(
+        trace_id=trace_id,
+        root_ctx=root_ctx,
+        root_span=root_span,
+        session_id=session_id,
+        attr_ctx=attr_ctx,
+    )
 
 
 def _start_child_observation(state: TraceState, *, client: Langfuse, name: str, as_type: str,
@@ -681,7 +699,8 @@ def _start_child_observation(state: TraceState, *, client: Langfuse, name: str, 
 
 
 def _end_observation(observation: Any, *, output: Any = None, metadata: Optional[dict] = None,
-                     usage_details: Optional[dict] = None, cost_details: Optional[dict] = None) -> None:
+                     usage_details: Optional[dict] = None, cost_details: Optional[dict] = None,
+                     level: Optional[str] = None, status_message: Optional[str] = None) -> None:
     if observation is None:
         return
     try:
@@ -694,6 +713,10 @@ def _end_observation(observation: Any, *, output: Any = None, metadata: Optional
             update_kwargs["usage_details"] = usage_details
         if cost_details:
             update_kwargs["cost_details"] = cost_details
+        if level is not None:
+            update_kwargs["level"] = level
+        if status_message is not None:
+            update_kwargs["status_message"] = status_message
         if update_kwargs:
             observation.update(**update_kwargs)
         observation.end()
@@ -732,6 +755,11 @@ def _evict_stale_locked() -> None:
             state.root_span.end()
         except Exception as exc:  # pragma: no cover - fail-open
             _debug(f"evict stale trace failed: {exc}")
+        if state.attr_ctx is not None:
+            try:
+                state.attr_ctx.__exit__(None, None, None)
+            except Exception:
+                pass
 
 
 def _finish_trace(task_key: str, *, output: Any = None) -> None:
@@ -745,13 +773,29 @@ def _finish_trace(task_key: str, *, output: Any = None) -> None:
         return
 
     try:
+        # Anything still here never received its post_api_request/post_tool_call
+        # completion (both pop their entry on a normal finish) — the turn ended
+        # (retries exhausted, exception, disconnect) without a recorded response
+        # for this call. Mark it accordingly instead of closing it silently.
         for observation in state.generations.values():
-            _end_observation(observation)
+            _end_observation(
+                observation,
+                level="ERROR",
+                status_message="Turn ended without a recorded response for this call.",
+            )
         for observation in state.tools.values():
-            _end_observation(observation)
+            _end_observation(
+                observation,
+                level="ERROR",
+                status_message="Turn ended before this tool call's result was recorded.",
+            )
         for queue in state.pending_tools_by_name.values():
             for observation in queue:
-                _end_observation(observation)
+                _end_observation(
+                    observation,
+                    level="ERROR",
+                    status_message="Turn ended before this tool call's result was recorded.",
+                )
         final_output = _merge_trace_output(output, state)
         if final_output is not None:
             state.root_span.set_trace_io(output=final_output)
@@ -760,6 +804,11 @@ def _finish_trace(task_key: str, *, output: Any = None) -> None:
     except Exception as exc:  # pragma: no cover - fail-open
         _debug(f"finish trace failed: {exc}")
     finally:
+        if state.attr_ctx is not None:
+            try:
+                state.attr_ctx.__exit__(None, None, None)
+            except Exception:
+                pass
         try:
             client.flush()
         except Exception:
@@ -887,7 +936,11 @@ def on_pre_llm_request(
         state.last_updated_at = time.time()
         previous = state.generations.pop(req_key, None)
         if previous is not None:
-            _end_observation(previous)
+            _end_observation(
+                previous,
+                level="WARNING",
+                status_message="Retried: no response was recorded for this attempt before the next attempt started.",
+            )
         state.generations[req_key] = _start_child_observation(
             state,
             client=client,

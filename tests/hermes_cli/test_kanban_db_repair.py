@@ -144,6 +144,10 @@ def test_corrupt_backup_retention_cap_prunes_oldest(tmp_path, monkeypatch):
     mutation. The cap keeps only the newest ``_CORRUPT_BACKUP_RETENTION``.
     """
     monkeypatch.setattr(kb, "_CORRUPT_BACKUP_RETENTION", 3)
+    # The moved function reads the cap from kanban_integrity's namespace;
+    # patch the canonical kanban_db binding too (kept for kb.* access).
+    import hermes_cli.kanban_integrity as _ki
+    monkeypatch.setattr(_ki, "_CORRUPT_BACKUP_RETENTION", 3)
     db_path = tmp_path / "kanban.db"
     _write_page_corrupt_db(db_path)
 

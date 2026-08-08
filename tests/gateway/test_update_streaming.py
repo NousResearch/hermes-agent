@@ -16,7 +16,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import MessageEvent, SendResult
 from gateway.session import SessionSource
 
 
@@ -250,6 +250,388 @@ class TestWatchUpdateProgress:
         # Check session was marked as having pending prompt
         # (may be cleared by the time we check since update finished)
 
+    @pytest.mark.parametrize(
+        ("native_result", "uses_text_fallback"),
+        [
+            pytest.param(None, False, id="legacy-none"),
+            pytest.param(SendResult(success=True), False, id="success"),
+            pytest.param(
+                SendResult(success=False, error="native delivery failed"),
+                True,
+                id="failure",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_native_prompt_send_uses_text_fallback_only_on_failure(
+        self, tmp_path, caplog, native_result, uses_text_fallback
+    ):
+        """Only an explicit native SendResult failure uses the text prompt."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {
+            "platform": "telegram",
+            "chat_id": "111",
+            "user_id": "222",
+            "session_key": "agent:main:telegram:dm:111",
+        }
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_prompt.json").write_text(json.dumps({
+            "prompt": "Restore local changes? [Y/n]",
+            "default": "y",
+        }))
+
+        class NativePromptAdapter:
+            def __init__(self):
+                self.native_prompt_calls = []
+                self.sent = []
+
+            async def send_update_prompt(self, **kwargs):
+                self.native_prompt_calls.append(kwargs)
+                return native_result
+
+            async def send(self, chat_id, content, metadata=None):
+                self.sent.append((chat_id, content, metadata))
+                return SendResult(success=True)
+
+        adapter = NativePromptAdapter()
+        runner.adapters = {Platform.TELEGRAM: adapter}
+
+        async def finish_update():
+            await asyncio.sleep(0.2)
+            (hermes_home / ".update_exit_code").write_text("0")
+
+        with caplog.at_level("DEBUG", logger="gateway.run"):
+            with patch("gateway.run._hermes_home", hermes_home):
+                task = asyncio.create_task(finish_update())
+                await runner._watch_update_progress(
+                    poll_interval=0.05,
+                    stream_interval=0.1,
+                    timeout=10.0,
+                )
+                await task
+
+        assert len(adapter.native_prompt_calls) == 1
+        prompt_sends = [
+            content for _, content, _ in adapter.sent
+            if "Restore local changes" in content
+        ]
+        assert len(prompt_sends) == int(uses_text_fallback)
+        if uses_text_fallback:
+            assert "native delivery failed" in caplog.text
+        else:
+            assert "Native update prompt send reported failure" not in caplog.text
+
+    @pytest.mark.parametrize(
+        ("native_error", "expected_error"),
+        [
+            pytest.param(
+                " \r\nnative delivery failed\r\n" + "x" * 400 + " \n",
+                "native delivery failed  " + "x" * 276,
+                id="sanitized-and-capped",
+            ),
+            pytest.param(
+                "\x1b[31mnative delivery failed\x1b[0m\x00\x07\r\n" + "x" * 400,
+                "native delivery failed    " + "x" * 274,
+                id="ansi-and-c0-controls-removed",
+            ),
+            pytest.param(None, "unknown error", id="unknown-error"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_native_prompt_failure_logs_safe_error_text(
+        self, tmp_path, caplog, native_error, expected_error
+    ):
+        """Native prompt failures log a bounded, single-line error."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        session_key = "agent:main:telegram:dm:111"
+        (hermes_home / ".update_pending.json").write_text(json.dumps({
+            "platform": "telegram",
+            "chat_id": "111",
+            "user_id": "222",
+            "session_key": session_key,
+        }))
+        (hermes_home / ".update_prompt.json").write_text(json.dumps({
+            "prompt": "Restore local changes? [Y/n]",
+            "default": "y",
+        }))
+
+        prompt_sent = asyncio.Event()
+
+        class NativePromptAdapter:
+            async def send_update_prompt(self, **kwargs):
+                return SendResult(success=False, error=native_error)
+
+            async def send(self, chat_id, content, metadata=None):
+                if "Update needs your input" in content:
+                    prompt_sent.set()
+                return SendResult(success=True)
+
+        runner.adapters = {Platform.TELEGRAM: NativePromptAdapter()}
+
+        with caplog.at_level("DEBUG", logger="gateway.run"):
+            with patch("gateway.run._hermes_home", hermes_home):
+                watcher = asyncio.create_task(runner._watch_update_progress(
+                    poll_interval=0.05,
+                    stream_interval=0.1,
+                    timeout=10.0,
+                ))
+                await asyncio.wait_for(prompt_sent.wait(), timeout=2.0)
+                failure_records = [
+                    record.message
+                    for record in caplog.records
+                    if "Native update prompt send reported failure" in record.message
+                ]
+                assert len(failure_records) == 1
+                assert failure_records[0].endswith(expected_error)
+                assert "\r" not in failure_records[0]
+                assert "\n" not in failure_records[0]
+                (hermes_home / ".update_exit_code").write_text("0")
+                await watcher
+
+    @pytest.mark.asyncio
+    async def test_text_prompt_failure_warns_without_false_forward_log_and_keeps_pending(
+        self, tmp_path, caplog
+    ):
+        """A failed text fallback remains answerable without claiming delivery."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        session_key = "agent:main:telegram:dm:111"
+        (hermes_home / ".update_pending.json").write_text(json.dumps({
+            "platform": "telegram",
+            "chat_id": "111",
+            "user_id": "222",
+            "session_key": session_key,
+        }))
+        (hermes_home / ".update_prompt.json").write_text(json.dumps({
+            "prompt": "Restore local changes? [Y/n]",
+            "default": "y",
+        }))
+
+        prompt_sent = asyncio.Event()
+
+        class TextFallbackFailureAdapter:
+            async def send_update_prompt(self, **kwargs):
+                return SendResult(success=False, error="native delivery failed")
+
+            async def send(self, chat_id, content, metadata=None):
+                if "Update needs your input" in content:
+                    prompt_sent.set()
+                    return SendResult(success=False, error="text delivery failed")
+                return SendResult(success=True)
+
+        runner.adapters = {Platform.TELEGRAM: TextFallbackFailureAdapter()}
+
+        with caplog.at_level("INFO", logger="gateway.run"):
+            with patch("gateway.run._hermes_home", hermes_home):
+                watcher = asyncio.create_task(runner._watch_update_progress(
+                    poll_interval=0.05,
+                    stream_interval=0.1,
+                    timeout=10.0,
+                ))
+                await asyncio.wait_for(prompt_sent.wait(), timeout=2.0)
+                state = runner._peek_session_state(session_key)
+                assert state is not None
+                assert state.persistent.update_prompt_pending is True
+                assert not any(
+                    "Forwarded update prompt" in record.message
+                    for record in caplog.records
+                )
+                assert any(
+                    "text delivery failed" in record.message
+                    for record in caplog.records
+                )
+                (hermes_home / ".update_exit_code").write_text("0")
+                await watcher
+
+    @pytest.mark.asyncio
+    async def test_text_prompt_exception_warns_without_false_forward_log_and_keeps_pending(
+        self, tmp_path, caplog
+    ):
+        """A text fallback exception cannot kill the watcher or claim delivery."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        session_key = "agent:main:telegram:dm:111"
+        (hermes_home / ".update_pending.json").write_text(json.dumps({
+            "platform": "telegram",
+            "chat_id": "111",
+            "user_id": "222",
+            "session_key": session_key,
+        }))
+        (hermes_home / ".update_prompt.json").write_text(json.dumps({
+            "prompt": "Restore local changes? [Y/n]",
+            "default": "y",
+        }))
+
+        prompt_attempted = asyncio.Event()
+        fallback_error = "\x1b[31mtext transport failed\x1b[0m\x00\r\n" + "x" * 400
+
+        class TextFallbackExceptionAdapter:
+            async def send_update_prompt(self, **kwargs):
+                return SendResult(success=False, error="native delivery failed")
+
+            async def send(self, chat_id, content, metadata=None):
+                if "Update needs your input" in content:
+                    prompt_attempted.set()
+                    raise RuntimeError(fallback_error)
+                return SendResult(success=True)
+
+        runner.adapters = {Platform.TELEGRAM: TextFallbackExceptionAdapter()}
+
+        with caplog.at_level("DEBUG", logger="gateway.run"):
+            with patch("gateway.run._hermes_home", hermes_home):
+                watcher = asyncio.create_task(runner._watch_update_progress(
+                    poll_interval=0.05,
+                    stream_interval=0.1,
+                    timeout=10.0,
+                ))
+                await asyncio.wait_for(prompt_attempted.wait(), timeout=2.0)
+
+                state = runner._peek_session_state(session_key)
+                assert state is not None
+                assert state.persistent.update_prompt_pending is True
+
+                failure_records = [
+                    record.message
+                    for record in caplog.records
+                    if "Text update prompt send failed" in record.message
+                ]
+                assert len(failure_records) == 1
+                failure = failure_records[0]
+                assert "text transport failed" in failure
+                assert "\x1b" not in failure
+                assert not any(
+                    0 <= ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F
+                    for char in failure
+                )
+                assert len(failure.rsplit(": ", 1)[-1]) <= 300
+                assert not any(
+                    "Forwarded update prompt" in record.message
+                    for record in caplog.records
+                )
+
+                (hermes_home / ".update_exit_code").write_text("0")
+                await watcher
+
+    @pytest.mark.asyncio
+    async def test_forwarded_prompt_log_sanitizes_bounded_values(self, tmp_path, caplog):
+        """Forwarded-prompt logs keep hostile session and prompt values safe."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        session_key = "agent:main:telegram:dm:\x1b[31m" + "s" * 200 + "\n"
+        prompt_text = "\x1b]0;spoofed title\x07Restore\x00\n" + "p" * 200
+        (hermes_home / ".update_pending.json").write_text(json.dumps({
+            "platform": "telegram",
+            "chat_id": "111",
+            "user_id": "222",
+            "session_key": session_key,
+        }))
+        (hermes_home / ".update_prompt.json").write_text(json.dumps({
+            "prompt": prompt_text,
+            "default": "y",
+        }))
+
+        prompt_forwarded = asyncio.Event()
+
+        class PromptLoggingAdapter:
+            async def send(self, chat_id, content, metadata=None):
+                if "Update needs your input" in content:
+                    prompt_forwarded.set()
+                return SendResult(success=True)
+
+        runner.adapters = {Platform.TELEGRAM: PromptLoggingAdapter()}
+
+        with caplog.at_level("INFO", logger="gateway.run"):
+            with patch("gateway.run._hermes_home", hermes_home):
+                watcher = asyncio.create_task(runner._watch_update_progress(
+                    poll_interval=0.05,
+                    stream_interval=0.1,
+                    timeout=10.0,
+                ))
+                await asyncio.wait_for(prompt_forwarded.wait(), timeout=2.0)
+
+                forwarded_records = [
+                    record.message
+                    for record in caplog.records
+                    if "Forwarded update prompt" in record.message
+                ]
+                assert len(forwarded_records) == 1
+                forwarded = forwarded_records[0]
+                assert "Restore" in forwarded
+                assert "\x1b" not in forwarded
+                assert not any(
+                    0 <= ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F
+                    for char in forwarded
+                )
+                assert len(forwarded) < 350
+                assert "s" * 150 not in forwarded
+                assert "p" * 100 not in forwarded
+
+                (hermes_home / ".update_exit_code").write_text("0")
+                await watcher
+
+    @pytest.mark.asyncio
+    async def test_native_prompt_exception_logs_safely_and_uses_text_fallback(
+        self, tmp_path, caplog
+    ):
+        """Native prompt exceptions still reach the actionable text fallback."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        session_key = "agent:main:telegram:dm:111"
+        (hermes_home / ".update_pending.json").write_text(json.dumps({
+            "platform": "telegram",
+            "chat_id": "111",
+            "user_id": "222",
+            "session_key": session_key,
+        }))
+        (hermes_home / ".update_prompt.json").write_text(json.dumps({
+            "prompt": "Restore local changes? [Y/n]",
+            "default": "y",
+        }))
+
+        prompt_sent = asyncio.Event()
+        native_error = " \r\nbutton transport failed\r\n" + "x" * 400 + " \n"
+
+        class NativePromptExceptionAdapter:
+            async def send_update_prompt(self, **kwargs):
+                raise RuntimeError(native_error)
+
+            async def send(self, chat_id, content, metadata=None):
+                if "Update needs your input" in content:
+                    prompt_sent.set()
+                return SendResult(success=True)
+
+        runner.adapters = {Platform.TELEGRAM: NativePromptExceptionAdapter()}
+
+        with caplog.at_level("DEBUG", logger="gateway.run"):
+            with patch("gateway.run._hermes_home", hermes_home):
+                watcher = asyncio.create_task(runner._watch_update_progress(
+                    poll_interval=0.05,
+                    stream_interval=0.1,
+                    timeout=10.0,
+                ))
+                await asyncio.wait_for(prompt_sent.wait(), timeout=2.0)
+                prompt_sends = [
+                    record
+                    for record in caplog.records
+                    if "Button-based update prompt failed" in record.message
+                ]
+                assert len(prompt_sends) == 1
+                assert prompt_sends[0].message.endswith(
+                    "button transport failed  " + "x" * 275
+                )
+                assert "\r" not in prompt_sends[0].message
+                assert "\n" not in prompt_sends[0].message
+                (hermes_home / ".update_exit_code").write_text("0")
+                await watcher
 
     @pytest.mark.asyncio
     async def test_prompt_is_recovered_after_watcher_restart(self, tmp_path):

@@ -4087,6 +4087,23 @@ def run_job(
         # _touch_activity() on every tool call, API call, and stream delta).
         _cron_timeout = _cron_inactivity_seconds()
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
+        # Wall-clock hard limit: kill the job after this many seconds
+        # regardless of activity.  Prevents cron jobs from hanging
+        # indefinitely when the inactivity watchdog is fooled by
+        # continuous (but unproductive) activity (#79244).
+        # 0 = disabled (default — backward compatible).
+        _raw_hard_limit = os.getenv("HERMES_CRON_HARD_LIMIT", "").strip()
+        _cron_hard_limit: float | None = None
+        if _raw_hard_limit:
+            try:
+                _hl = float(_raw_hard_limit)
+                if _hl > 0:
+                    _cron_hard_limit = _hl
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Invalid HERMES_CRON_HARD_LIMIT=%r; ignoring",
+                    _raw_hard_limit,
+                )
         _POLL_INTERVAL = 5.0
         # Keep the one-shot run_claim fresh while the run is alive (#62002):
         # the claim TTL is a dead-owner detector, but without a heartbeat a
@@ -4130,6 +4147,8 @@ def run_job(
         _audit_t_start = time.monotonic()
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
+        _hard_limit_exceeded = False
+        _run_start_mono = time.monotonic()
         try:
             if _cron_inactivity_limit is None:
                 # Unlimited — no inactivity watchdog, but a one-shot still
@@ -4144,8 +4163,29 @@ def run_job(
                             result = _cron_future.result()
                             break
                         _heartbeat_run_claim_if_due()
+                        if _cron_hard_limit is not None and (
+                            time.monotonic() - _run_start_mono
+                        ) >= _cron_hard_limit:
+                            _hard_limit_exceeded = True
+                            break
                 else:
-                    result = _cron_future.result()
+                    if _cron_hard_limit is not None:
+                        # Hard limit active — must poll to enforce it.
+                        result = None
+                        while True:
+                            done, _ = concurrent.futures.wait(
+                                {_cron_future}, timeout=_POLL_INTERVAL,
+                            )
+                            if done:
+                                result = _cron_future.result()
+                                break
+                            if (
+                                time.monotonic() - _run_start_mono
+                            ) >= _cron_hard_limit:
+                                _hard_limit_exceeded = True
+                                break
+                    else:
+                        result = _cron_future.result()
             else:
                 result = None
                 while True:
@@ -4166,6 +4206,12 @@ def run_job(
                             pass
                     if _idle_secs >= _cron_inactivity_limit:
                         _inactivity_timeout = True
+                        break
+                    # Wall-clock hard limit (#79244).
+                    if _cron_hard_limit is not None and (
+                        time.monotonic() - _run_start_mono
+                    ) >= _cron_hard_limit:
+                        _hard_limit_exceeded = True
                         break
         except Exception:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
@@ -4199,6 +4245,23 @@ def run_job(
                 f"Cron job '{job_name}' idle for "
                 f"{int(_secs_ago)}s (limit {int(_cron_inactivity_limit)}s) "
                 f"— last activity: {_last_desc}"
+            )
+
+        if _hard_limit_exceeded:
+            _wall_elapsed = time.monotonic() - _run_start_mono
+            assert _cron_hard_limit is not None  # guaranteed by _hard_limit_exceeded guard
+            logger.error(
+                "Job '%s' exceeded wall-clock hard limit %.0fs "
+                "(ran for %.0fs) — forcing interrupt (#79244)",
+                job_name, _cron_hard_limit, _wall_elapsed,
+            )
+            request_hard_interrupt(
+                agent,
+                f"Cron job exceeded hard time limit ({int(_cron_hard_limit)}s)",
+            )
+            raise TimeoutError(
+                f"Cron job '{job_name}' exceeded wall-clock hard limit "
+                f"{int(_cron_hard_limit)}s (ran for {int(_wall_elapsed)}s)"
             )
 
         # Guard against non-dict returns from run_conversation under error conditions

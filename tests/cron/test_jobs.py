@@ -253,6 +253,32 @@ class TestUpdateJob:
         fetched = get_job(job["id"])
         assert fetched["name"] == "New Name"
 
+    def test_update_rejects_unknown_fields(self, tmp_cron_dir):
+        """#67625: a typo'd field like ``promt`` must be rejected loudly
+        instead of silently persisted as a successful update."""
+        job = create_job(prompt="Check server status", schedule="every 1h", name="Old Name")
+        with pytest.raises(ValueError, match="unknown field.*promt"):
+            update_job(job["id"], {"promt": "some value"})
+        # Nothing was persisted
+        fetched = get_job(job["id"])
+        assert "promt" not in fetched
+        assert fetched["prompt"] == "Check server status"
+
+    def test_update_accepts_all_known_fields(self, tmp_cron_dir):
+        """Every create_job parameter is a legal update key."""
+        job = create_job(prompt="P", schedule="30m")
+        updates = {
+            "prompt": "P2", "schedule": "1h", "name": "n", "repeat": 2,
+            "deliver": "local", "origin": {"platform": "test"},
+            "skill": "s1", "skills": ["s1", "s2"], "model": "m", "provider": "p",
+            "base_url": "http://x", "script": "", "context_from": None,
+            "enabled_toolsets": ["web"], "workdir": None, "no_agent": False,
+            "attach_to_session": None, "schedule_display": "1h",
+        }
+        updated = update_job(job["id"], updates)
+        assert updated is not None
+        assert updated["name"] == "n"
+
 
 class TestPauseResumeJob:
     def test_pause_sets_state(self, tmp_cron_dir):

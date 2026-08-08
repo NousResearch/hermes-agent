@@ -377,6 +377,44 @@ def _jobs_lock():
 # into output writes/deletes.
 _IMMUTABLE_JOB_FIELDS = frozenset({"id"})
 
+# Fields a caller may legitimately change via update_job. Everything else —
+# including typos like ``promt`` — is rejected loudly instead of being
+# silently persisted to jobs.json and reported as a successful update
+# (#67625). Mirrors the create_job() parameter set plus schedule_display
+# (which update_job derives itself) and the scheduler-owned lifecycle fields
+# that pause_job/resume_job/trigger_job persist through update_job. Other
+# runtime fields (last_run_at, last_status, run_claim, ...) are owned by
+# the scheduler and never updatable.
+_UPDATEABLE_JOB_FIELDS = frozenset(
+    {
+        "prompt",
+        "schedule",
+        "name",
+        "repeat",
+        "deliver",
+        "origin",
+        "skill",
+        "skills",
+        "model",
+        "provider",
+        "base_url",
+        "script",
+        "context_from",
+        "description",
+        "enabled_toolsets",
+        "workdir",
+        "no_agent",
+        "attach_to_session",
+        "schedule_display",
+        # lifecycle fields written by pause/resume/trigger
+        "enabled",
+        "state",
+        "paused_at",
+        "paused_reason",
+        "next_run_at",
+    }
+)
+
 
 def _job_output_dir(job_id: str) -> Path:
     """Resolve a job's output directory, rejecting any path-escape attempt.
@@ -1842,6 +1880,14 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
     if bad_fields:
         raise ValueError(
             f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}"
+        )
+
+    unknown_fields = (updates or {}).keys() - _UPDATEABLE_JOB_FIELDS
+    if unknown_fields:
+        raise ValueError(
+            "Cron job update contains unknown field(s): "
+            f"{', '.join(sorted(unknown_fields))}. Known updateable fields: "
+            f"{', '.join(sorted(_UPDATEABLE_JOB_FIELDS))}"
         )
 
     with _jobs_lock():

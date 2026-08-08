@@ -58,14 +58,15 @@ export function applyZoomLevel(webContents, level) {
 }
 
 // Chromium can drop webContents zoom when a BrowserWindow is resized, minimized
-// and restored, or crosses onto a monitor with different display scaling. macOS
-// and Windows provide trailing `resized`/`moved` events; Linux only provides the
-// noisy `resize`/`move` pair, so debounce those fallbacks before re-applying the
-// persisted level.
+// and restored, crosses onto a monitor with different display scaling, or loses
+// and regains focus (alt-tab on Windows high-DPI displays triggers a DPI
+// re-evaluation). macOS and Windows provide trailing `resized`/`moved` events;
+// Linux only provides the noisy `resize`/`move` pair, so debounce those
+// fallbacks before re-applying the persisted level.
 export const ZOOM_RESIZE_REASSERT_DELAY_MS = 100
 
 export function zoomReassertWindowEvents(platform = process.platform) {
-  return platform === 'linux' ? ['show', 'restore', 'resize', 'move'] : ['show', 'restore', 'resized', 'moved']
+  return platform === 'linux' ? ['show', 'restore', 'focus', 'resize', 'move'] : ['show', 'restore', 'focus', 'resized', 'moved']
 }
 
 export function installZoomReassertOnWindowEvents(win, reassert, platform = process.platform) {

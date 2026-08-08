@@ -15414,6 +15414,33 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     event.app.invalidate()
                 return
 
+            # --- @ context completion open: Enter selects, does NOT submit ---
+            # Mirrors the TUI's completionToApplyOnEnter: @file:/@folder: rows
+            # are working-file references picked one-at-a-time BEFORE sending,
+            # so Enter accepts the highlighted row and keeps the composer open
+            # — stacking several picks, then one bare Enter to send. Scoped to
+            # "@" rows only; slash-command completion keeps Enter=submit.
+            from hermes_cli.commands import at_completion_to_accept_on_enter
+            from prompt_toolkit.document import Document as _PTDocument
+
+            _buf = event.app.current_buffer
+            _pick = at_completion_to_accept_on_enter(_buf)
+            if _pick is not None:
+                # Replicate apply_completion's replace-from-caret math but
+                # assign buffer.document directly: insert_text(fire_event=True)
+                # would re-fire complete_while_typing and pop the menu straight
+                # back open inside the just-selected folder, fighting the next
+                # "@" pick. A direct document swap inserts silently.
+                _before = _buf.document.text_before_cursor
+                _cut = len(_before) + _pick.start_position
+                _buf.complete_state = None
+                _buf.document = _PTDocument(
+                    _buf.document.text[:_cut] + _pick.text + _buf.document.text_after_cursor,
+                    _cut + len(_pick.text),
+                )
+                event.app.invalidate()
+                return
+
             # --- Normal input routing ---
             text = event.app.current_buffer.text.strip()
             has_images = bool(self._attached_images)

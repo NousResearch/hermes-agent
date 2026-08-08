@@ -382,6 +382,8 @@ export interface ComposerActions {
   setInput: StateSetter<string>
   setInputBuf: StateSetter<string[]>
   setQueueEdit: (index: null | number) => void
+  /** Close the path-completion popup after accepting a row (see useCompletion). */
+  suppressNextCompletion: () => void
   takeQueue: (index: number, editedDisplay?: string) => QueueItem | undefined
   /** Reconcile attached payloads against tokens still present in the text. */
   syncTokens: (value: string) => void
@@ -399,6 +401,8 @@ export interface ComposerRefs {
 export interface ComposerState {
   compIdx: number
   compReplace: number
+  /** Which completer produced the active dropdown: path (@) or slash (/). */
+  completionKind: 'path' | 'slash' | null
   completions: CompletionItem[]
   historyIdx: null | number
   input: string

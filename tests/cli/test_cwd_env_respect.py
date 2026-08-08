@@ -6,6 +6,8 @@ Rules:
 - Non-local with explicit path: keep as-is.
 """
 
+import os
+
 
 _CWD_PLACEHOLDERS = (".", "auto", "cwd")
 
@@ -97,3 +99,51 @@ class TestGatewayLazyImport:
         d = {"terminal": {"cwd": "/home/user"}}
         result = _resolve_cwd(tc, d, env)
         assert result == "/fake/getcwd"
+
+
+class TestDeletedCwd:
+    """A deleted launch directory must not crash load_cli_config().
+
+    os.getcwd() raises FileNotFoundError when the process's working directory
+    is removed out from under it (e.g. a scratch workspace cleaned up
+    mid-session). The local-backend cwd bridge must fall back safely instead
+    of propagating the crash through CLI/TUI (and gateway lazy-import) startup.
+    """
+
+    def test_load_cli_config_falls_back_to_terminal_cwd(self, tmp_path, monkeypatch):
+        import cli
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+
+        def _boom():
+            raise FileNotFoundError("[Errno 2] No such file or directory")
+
+        monkeypatch.setattr(os, "getcwd", _boom)
+        monkeypatch.setenv("TERMINAL_CWD", "/srv/fallback")
+
+        cfg = cli.load_cli_config()
+
+        assert cfg["terminal"]["cwd"] == "/srv/fallback"
+        assert os.environ["TERMINAL_CWD"] == "/srv/fallback"
+
+    def test_load_cli_config_falls_back_to_home(self, tmp_path, monkeypatch):
+        import cli
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+
+        def _boom():
+            raise FileNotFoundError()
+
+        monkeypatch.setattr(os, "getcwd", _boom)
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        monkeypatch.setattr(os.path, "expanduser", lambda p: "/home/me")
+
+        cfg = cli.load_cli_config()
+
+        assert cfg["terminal"]["cwd"] == "/home/me"

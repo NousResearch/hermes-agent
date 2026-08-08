@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from collections import OrderedDict
 from datetime import datetime
@@ -32,7 +33,11 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
 )
 from .media_cache import ext_for_mime
-from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+from gateway.platforms.helpers import (
+    MessageDeduplicator,
+    compile_mention_patterns,
+    strip_markdown,
+)
 
 # Historical BlueBubbles mime→ext maps, preserved verbatim as overrides for
 # the shared dispatch in gateway.platforms.media_cache. Both maps are
@@ -114,8 +119,13 @@ _TAPBACK_REMOVED = {
     3003: "laugh", 3004: "emphasize", 3005: "question",
 }
 
-# Webhook event types that carry user messages
-_MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
+# Webhook event types that carry new user messages. BlueBubbles also emits
+# ``updated-message`` for receipt/edit state changes; those can duplicate the
+# same inbound iMessage under a different chat identifier, which causes Hermes
+# to reply in both the DM and a related group chat. Register and process only
+# new-message-style events; receiver-side GUID dedup below is still kept for
+# retry/reconnect duplicates.
+_MESSAGE_EVENTS = {"new-message", "message"}
 
 # Log redaction patterns
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
@@ -202,6 +212,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        # Bounded, TTL-based inbound dedup shared with the other adapters.
+        # BlueBubbles can emit more than one webhook event for the same
+        # iMessage GUID (new-message followed by a receipt/edit update, or a
+        # replay after reconnect); the shared helper caps memory growth under
+        # sustained traffic, which a plain dict would not.
+        self._dedup = MessageDeduplicator(max_size=2000, ttl_seconds=300.0)
 
     # ------------------------------------------------------------------
     # API helpers
@@ -387,9 +403,48 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         webhook_url = self._webhook_register_url
 
-        # Crash resilience — reuse an existing registration if present
+        # Crash resilience — reuse an existing registration if present, but do
+        # not preserve stale registrations that still subscribe to update
+        # events. Those can make one iMessage arrive twice under different chat
+        # identifiers and cause Hermes to answer both conversations.
+        #
+        # ``_find_registered_webhooks`` returns *every* registration for this
+        # URL, so scan the whole list before deciding: keep at most one
+        # compliant registration and delete all the others. Returning as soon
+        # as a compliant entry was found would leave a later stale entry
+        # active, which is the duplicate-delivery bug this fix targets.
         existing = await self._find_registered_webhooks(webhook_url)
-        if existing:
+        desired_events = ["new-message"]
+
+        keeper: Optional[dict] = None
+        stale: list = []
+        for wh in existing:
+            if keeper is None and wh.get("events") == desired_events:
+                keeper = wh
+            else:
+                stale.append(wh)
+
+        for wh in stale:
+            wh_id = wh.get("id")
+            if not wh_id:
+                continue
+            try:
+                res = await self.client.delete(
+                    self._api_url(f"/api/v1/webhook/{wh_id}")
+                )
+                res.raise_for_status()
+                logger.info(
+                    "[bluebubbles] removed stale webhook registration before re-registering: %s",
+                    self._webhook_register_url_for_log,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[bluebubbles] failed to remove stale webhook registration: %s",
+                    exc,
+                )
+                return False
+
+        if keeper is not None:
             logger.info(
                 "[bluebubbles] webhook already registered: %s",
                 self._webhook_register_url_for_log,
@@ -398,7 +453,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         payload = {
             "url": webhook_url,
-            "events": ["new-message", "updated-message"],
+            "events": desired_events,
         }
 
         try:
@@ -931,6 +986,22 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return web.Response(text="ok")
 
         record = self._extract_payload_record(payload) or {}
+
+        # BlueBubbles can emit multiple webhook events for the same iMessage
+        # GUID (for example, a new-message event followed by updated-message).
+        # Process the first event only so one user message cannot fan out into
+        # duplicate Hermes sessions/replies under slightly different chat IDs.
+        msg_guid = self._value(
+            record.get("guid"), payload.get("guid"), record.get("originalGuid")
+        )
+        if msg_guid and self._dedup.is_duplicate(msg_guid):
+            logger.debug(
+                "[bluebubbles] dropping duplicate webhook for guid %s (event=%s)",
+                msg_guid,
+                event_type or "<none>",
+            )
+            return web.Response(text="ok")
+
         is_from_me = bool(
             record.get("isFromMe")
             or record.get("fromMe")
@@ -1026,8 +1097,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not sender or not (chat_guid or chat_identifier) or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
 
-        session_chat_id = chat_guid or chat_identifier
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
+        session_chat_id = str(chat_guid or chat_identifier or "")
+        if not is_group and sender and session_chat_id == sender and ";" not in session_chat_id:
+            # Some BlueBubbles payloads omit chatGuid and only expose the sender
+            # address. Do not let that become the session/chat target: outbound
+            # bare-address resolution can pick a group that contains the handle.
+            session_chat_id = f"any;-;{sender}"
         if is_group and self.require_mention:
             if not self._message_matches_mention_patterns(text):
                 logger.debug(

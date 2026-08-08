@@ -777,6 +777,20 @@ export const ToolTrail = memo(function ToolTrail({
     setOpenMeta(visible.activity === 'expanded')
   }, [thinkingDefaultExpanded, visible])
 
+  // `collapsed` is an auto preference: keep the panel open while reasoning
+  // is live (stream pulses keep `reasoningActive` true) and collapse it the
+  // moment the reasoning phase ends (`endReasoningPhase` flips it false).
+  // `expanded` stays fully manual, `hidden` never renders content, and MoA
+  // reference panels (reasoningAlwaysVisible) are left alone.
+  const thinkingAuto = visible.thinking === 'collapsed' && !reasoningAlwaysVisible
+  useEffect(() => {
+    if (!thinkingAuto) {
+      return
+    }
+
+    setOpenThinking(reasoningActive)
+  }, [thinkingAuto, reasoningActive])
+
   const cot = useMemo(() => thinkingPreview(reasoning, 'full', THINKING_COT_MAX), [reasoning])
 
   // Spawn-tree derivations must live above any early return so React's

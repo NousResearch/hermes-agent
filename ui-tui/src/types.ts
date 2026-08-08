@@ -125,6 +125,11 @@ export interface Msg {
   // user-facing mixture-of-agents process the user opted into, so it stays
   // visible even when `display.sections.thinking` is hidden.
   isMoaReference?: boolean
+  // True only while this trail segment's reasoning is being streamed live by
+  // the current turn (see turnController's syncReasoningSegment). Sealed
+  // reasoning segments from earlier in the turn carry no flag, so the TUI can
+  // tell "the reasoning happening right now" apart from finished blocks.
+  isLiveReasoning?: boolean
   thinkingTokens?: number
   toolTokens?: number
   tools?: string[]

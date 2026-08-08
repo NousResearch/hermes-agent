@@ -37,6 +37,7 @@ export const MessageLine = memo(function MessageLine({
   liveDetails = false,
   msg,
   prev,
+  reasoningActive = false,
   sections,
   t,
   tools = []
@@ -84,6 +85,7 @@ export const MessageLine = memo(function MessageLine({
           detailsMode={detailsMode}
           preferExpandedThinking={liveDetails}
           reasoning={thinking}
+          reasoningActive={reasoningActive}
           reasoningAlwaysVisible={msg.isMoaReference}
           reasoningTokens={msg.thinkingTokens}
           sections={sections}
@@ -249,6 +251,7 @@ export const MessageLine = memo(function MessageLine({
             detailsMode={detailsMode}
             preferExpandedThinking={liveDetails}
             reasoning={thinking}
+            reasoningActive={reasoningActive}
             reasoningTokens={msg.thinkingTokens}
             sections={sections}
             t={t}
@@ -309,6 +312,7 @@ interface MessageLineProps {
   // lead gap (see domain/blockLayout.ts::hasLeadGap). Undefined at the top of
   // the transcript or when spacing is irrelevant.
   prev?: Msg
+  reasoningActive?: boolean
   sections?: SectionVisibility
   t: Theme
   tools?: ActiveTool[]

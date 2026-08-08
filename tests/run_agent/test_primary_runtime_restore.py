@@ -146,6 +146,76 @@ class TestRestorePrimaryRuntime:
         assert agent.model == original_model
         assert agent.provider == original_provider
 
+    def test_emits_user_visible_primary_restore_notice(self):
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        )
+        agent.model = "primary-model"
+        agent._primary_runtime["model"] = "primary-model"
+        original_model = agent.model
+        original_provider = agent.provider
+        mock_client = _mock_resolve()
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, None),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        emitted = []
+        agent._emit_status = emitted.append
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            assert agent._restore_primary_runtime() is True
+
+        assert emitted == [
+            f"✅ Primary model restored: {original_model} via {original_provider}; "
+            "fallback anthropic/claude-sonnet-4 via openrouter is no longer active."
+        ]
+
+    def test_does_not_label_temporary_model_restore_as_fallback_recovery(self):
+        """`/model --once` reuses restore with no provider fallback lifecycle."""
+        agent = _make_agent()
+        agent.model = "temporary-model"
+        agent.provider = "openrouter"
+        agent._fallback_activated = True
+        emitted = []
+        agent._emit_status = emitted.append
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            assert agent._restore_primary_runtime() is True
+
+        assert emitted == []
+
+    def test_restore_retry_preserves_fallback_identity_after_partial_failure(self):
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        )
+        agent.model = "primary-model"
+        agent._primary_runtime["model"] = "primary-model"
+        mock_client = _mock_resolve()
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, None),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        emitted = []
+        agent._emit_status = emitted.append
+        with (
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch.object(
+                agent.context_compressor,
+                "update_model",
+                side_effect=[RuntimeError("transient restore failure"), None],
+            ),
+        ):
+            assert agent._restore_primary_runtime() is False
+            assert agent._restore_primary_runtime() is True
+
+        assert emitted == [
+            "✅ Primary model restored: primary-model via custom; "
+            "fallback anthropic/claude-sonnet-4 via openrouter is no longer active."
+        ]
+
     def test_resets_fallback_index(self):
         """After restore, the full fallback chain should be available again."""
         agent = _make_agent(

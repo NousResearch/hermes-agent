@@ -10034,6 +10034,23 @@ ipcMain.on('hermes:hud:ignore-mouse', (_event, ignore) => {
   }
 })
 
+ipcMain.on('hermes:hud:move-by', (event, delta) => {
+  if (!hudWindow || hudWindow.isDestroyed() || event.sender !== hudWindow.webContents) {
+    return
+  }
+
+  const dx = Number(delta?.x)
+  const dy = Number(delta?.y)
+
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) {
+    return
+  }
+
+  const [x, y] = hudWindow.getPosition()
+
+  hudWindow.setPosition(Math.round(x + dx), Math.round(y + dy))
+})
+
 // The HUD renderer reporting which session it is on, so the close broadcast
 // can hand it back to the app window (see hudSessionId).
 ipcMain.on('hermes:hud:session', (event, sessionId) => {

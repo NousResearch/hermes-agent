@@ -945,6 +945,17 @@
   --arc-c2: color-mix(in srgb, var(--arc-c1) 45%, transparent);
 }
 
+/* HUD composer — same travelling arc as a working sidebar row, 2px and pill-
+   rounded to match the bar. */
+.arc-border.arc-composer,
+:root.dark .arc-border.arc-composer {
+  --arc-width: 2px;
+  --arc-standoff: 0rem;
+  --arc-radius: 0.75rem;
+  --arc-c2: color-mix(in srgb, var(--arc-c1) 45%, transparent);
+  z-index: 6;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .arc-border::before {
     animation: none;
@@ -2251,13 +2262,15 @@ button[data-slot='aui_msg-reactions'] svg {
 
 [data-hud-shell] {
   background: transparent;
-  /* Empty space drags the window; anything that needs the mouse carves itself
-     back out below. */
-  -webkit-app-region: drag;
   /* Arrive decisively and settle; leave gently and get out of the way. Linear
      both directions is what made this feel mechanical. */
   --hud-ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
   --hud-ease-exit: cubic-bezier(0.4, 0, 0.7, 0.2);
+  /* The band is narrower than the bar, centred under it, so the bar's corner
+     controls sit clear of the sheet's edge instead of on top of it. */
+  --hud-band-inset: 0.5rem;
+  /* Clear space above the composer for the exit chip. */
+  --hud-chip-strip: 1.625rem;
 }
 
 /* Chat surface carries nothing in HUD mode — the visual is the BAND below. */
@@ -2284,36 +2297,29 @@ button[data-slot='aui_msg-reactions'] svg {
    fade is furniture leaving the room. */
 [data-hud-shell] [data-slot='composer-bounds'] {
   position: absolute !important;
-  /* Anchored to the bar and sized to the transcript, exactly like the sheet
-     behind it — same box, same clock — so the text is clipped away as the panel
-     rolls rather than fading in place.
- 
-     Edge to edge with no dead margins, and it never computes where the bar's
-     top is: the bar simply covers this box's bottom. Every earlier attempt
-     derived that edge from --composer-surface-measured-height, which is the
-     composer's published height, rounded, while the real box is fractional —
-     so the math left a hairline that appeared and vanished as the composer grew
-     ("the gap is 0px until two lines"). What keeps the TEXT off the bar is the
-     app's own composer clearance, below. */
-  inset: 0 !important;
-  height: auto !important;
-  width: 100% !important;
+  /* THE BAND IS THIS BOX. It sits against the bar and is exactly as tall as the
+     transcript is allowed to be — same geometry as the sheet behind it, same
+     clock — so the text is clipped away as the panel rolls rather than fading
+     in place, and the box that scrolls is the box you can see.
+
+     It ran the full window for a long time, clipped down to the band for paint
+     and hit-testing. That works right up until the band is CAPPED: the scroll
+     container was still window-tall, so content shorter than the window never
+     overflowed it and never scrolled, while the clip hid everything past the
+     cap. A capped band has to be a real box or half the transcript is
+     unreachable.
+
+     No fill of its own — the sheet is its own layer ([data-hud-glass]) so it
+     can animate independently of the text. */
+  inset: auto var(--hud-band-inset) var(--hud-bar-height, var(--composer-fallback-height))
+    var(--hud-band-inset) !important;
+  height: var(--hud-band-height, 0px) !important;
+  width: auto !important;
   max-width: none !important;
   flex: none !important;
   border: 0 !important;
-  /* Rounded on top to match the window's own corners; square at the bottom,
-     where the bar covers it. */
+  /* Rounded away from the bar, square where it meets it. */
   border-radius: 0.75rem 0.75rem 0 0;
-  /* No fill of its own — the sheet is its own layer behind this one
-     ([data-hud-glass]), so it can be sized to the transcript while this box
-     stays the full window for the drag region and the scroll container.
-
-     The box stays full-window; the part of it that answers the cursor must
-     not, or an engaged HUD swallows every click in the empty space above a
-     short transcript — the whole window on a fresh thread. Hit-testing honours
-     clip-path, so clipping to the sheet bounds the surface the same way #81920
-     bounded the frost. */
-  clip-path: inset(calc(100% - min(100%, var(--hud-band-height, 0px))) 0 0 0);
   background: transparent !important;
   /* Three opacity states: gone at rest, half strength when a turn is recent or
      you've just let go of the composer (there to glance at, not to demand
@@ -2347,18 +2353,18 @@ button[data-slot='aui_msg-reactions'] svg {
    should be disappearing. The way through is NSVisualEffectView.maskImage
    behind a small native addon, which is its own change. */
 [data-hud-shell] [data-hud-glass] {
-  /* The exit chip rides this box, not the band — the band is the whole window,
-     so anchoring there left the chip stranded in empty space above a short
-     transcript. */
-  anchor-name: --hud-band;
   position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
+  right: var(--hud-band-inset);
+  bottom: var(--hud-bar-height, var(--composer-fallback-height));
+  left: var(--hud-band-inset);
   z-index: 0;
   pointer-events: none;
   border-radius: 0.75rem 0.75rem 0 0;
-  background: color-mix(in srgb, var(--dt-card) 55%, transparent);
+  /* Heavier than the text in front of it, deliberately: with no blur to
+     separate the band from what it lies over, the sheet is the only thing
+     keeping half-opacity text off someone else's UI. Fade the words, keep the
+     paper. */
+  background: color-mix(in srgb, var(--dt-card) 80%, transparent);
   /* Slides down behind the bar as it fades. A TRANSFORM, not height: it is
      composited, so it stays smooth where animating height re-lays-out the panel
      every frame and looked coarse — and it leaves the box alone, which matters
@@ -2369,7 +2375,7 @@ button[data-slot='aui_msg-reactions'] svg {
      The height below still tracks the transcript; only the offset animates on
      exit, and it finishes ahead of the fade so the panel has left while the last
      of the text is still going. */
-  height: min(100%, var(--hud-band-height, 0px));
+  height: var(--hud-band-height, 0px);
   translate: 0 var(--hud-exit-shift, 2.5rem);
   opacity: 0;
   transition:
@@ -2400,7 +2406,7 @@ button[data-slot='aui_msg-reactions'] svg {
 
 /* Flipped, the sheet hangs from the bar instead of standing on it. */
 [data-hud-shell][data-hud-edge='top'] [data-hud-glass] {
-  top: 0;
+  top: var(--hud-bar-height, var(--composer-fallback-height));
   bottom: auto;
   --hud-exit-shift: -2.5rem;
   border-radius: 0 0 0.75rem 0.75rem;
@@ -2524,66 +2530,28 @@ button[data-slot='aui_msg-reactions'] svg {
   display: none !important;
 }
 
-/* SCROLLING vs DRAGGING — pick one, per element, per STATE.
-   `-webkit-app-region: drag` hands an element's mouse input to the window
-   manager, wheel included — and the region math is rect-based, so a `no-drag`
-   band subtracts its rectangle even when it's pointer-transparent. The band is
-   most of the window, so giving its rect away permanently made the HUD nearly
-   immovable in practice (the composer almost always has focus while in use).
-
-   So the carve-out needs BOTH: composer focused AND actual overflow to scroll
-   (data-hud-scrollable, set by HudShell). A short conversation leaves the
-   whole window grabbable; the band only becomes a scroll surface when
-   scrolling is a real thing you could do with it. */
-[data-hud-shell][data-hud-scrollable]:focus-within [data-slot='composer-bounds'] {
-  -webkit-app-region: no-drag;
-}
-
 /* ── Edge flip ───────────────────────────────────────────────────────────────
    Parked in the top half of the screen (data-hud-edge='top', broadcast by
    main on move/resize), the whole HUD mirrors vertically: composer hugs the
-   window's top edge, the band hangs BELOW it, text melts at the bottom, and
-   the drag strip moves to the bottom dead zone. Same four surfaces, same
-   variables — only the anchors swap. */
+   window's top edge, the band hangs BELOW it, and text melts at the bottom.
+   Same surfaces, same variables — only the anchors swap.
+
+   The bar would sit flush against the window's top edge, leaving no "above the
+   composer" to put anything in — which is where the exit chip belongs. Reserve
+   the strip as dock padding rather than moving the bar: --hud-bar-height is
+   measured from the dock's box, so the band's offset picks the gap up on its
+   own instead of needing a second variable kept in sync. */
 [data-hud-shell][data-hud-edge='top'] [data-slot='composer-dock'] {
   top: 0 !important;
   bottom: auto !important;
+  padding-top: var(--hud-chip-strip) !important;
 }
 
+/* Flipped, the band hangs from the bar instead of standing on it. */
 [data-hud-shell][data-hud-edge='top'] [data-slot='composer-bounds'] {
+  top: var(--hud-bar-height, var(--composer-fallback-height)) !important;
+  bottom: auto !important;
   border-radius: 0 0 0.75rem 0.75rem;
-  clip-path: inset(0 0 calc(100% - min(100%, var(--hud-band-height, 0px))) 0);
-}
-
-/* Flipped, the bar is at the TOP, so the clearance has to be too — the app's
-   clearance element only pads the end of the thread. */
-[data-hud-shell][data-hud-edge='top'] [data-chat-surface] {
-  --thread-last-message-clearance: 0.25rem;
-}
-
-[data-hud-shell][data-hud-edge='top'] [data-slot='aui_thread-content'] {
-  padding-block-start: calc(var(--hud-bar-height, var(--composer-fallback-height)) + 0.25rem) !important;
-}
-
-[data-hud-shell][data-hud-edge='top'] [data-hud-drag-strip] {
-  top: auto;
-  bottom: 0;
-}
-
-/* The drag handle is the top strip of the WINDOW, above the band. The band
-   itself scrolls (a drag region eats wheel events, so it can never be the
-   handle); this strip is dead space either way, so it drags. */
-[data-hud-shell] [data-hud-drag-strip] {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 2rem;
-  z-index: 10;
-  -webkit-app-region: drag;
-  /* Blank to the eye, but this is the grab handle: a strip the window ignores
-     is a strip you cannot drag the HUD by. */
-  pointer-events: auto;
 }
 
 /* Tighten the thread on every side. The docked chat's gutters (px-6 py-8 plus
@@ -2608,13 +2576,11 @@ button[data-slot='aui_msg-reactions'] svg {
   justify-content: flex-start;
 }
 
-/* Space under the last message — the app's own measured-dock clearance, minus
-   the 2rem of breathing room a full window can afford. This is what holds the
-   text off the bar now that the band runs the whole window height, and it is
-   measured from the live dock, so it tracks the composer growing to two, three,
-   ten rows with no hairline and no hole. */
+/* The band's box already ends at the bar, so the app's dock clearance — sized
+   to hold text out from under a composer it overlaps — would only open a hole
+   the height of the bar between the last message and the composer. */
 [data-hud-shell] [data-chat-surface] {
-  --thread-last-message-clearance: var(--hud-bar-height, var(--composer-fallback-height));
+  --thread-last-message-clearance: 0.25rem;
 }
 
 /* Same for the dock's own bottom pad — this var also feeds
@@ -2636,37 +2602,19 @@ button[data-slot='aui_msg-reactions'] svg {
   --thread-viewport-height: 100%;
 }
 
-/* The composer BAR is the drag handle: it's the one surface that isn't a
-   scroll container, so it's the only one that can be. Its frame drags; the
-   controls carve themselves back out (a drag region eats their clicks too). */
+/* NOTHING in HUD mode declares `-webkit-app-region: drag`. The window manager
+   takes a draggable region's mouse input whole, so the page never sees the
+   cursor arrive there — and `useHudClickThrough`, which decides whether the
+   window is solid from exactly those moves, has already handed the window away
+   by the time you press. Every version of the app-region handle was therefore
+   both unusable (the press fell through to the app behind) and the reason the
+   HUD stayed solid over dead space once you left it. The two mechanisms cannot
+   share a window; click-through wins, and dragging is `useHudComposerDrag` —
+   press and hold the bar, then move. */
 [data-hud-shell] [data-slot='composer-dock'] {
-  -webkit-app-region: drag;
   /* The one surface that is always there, so the one that always takes the
      mouse — everything else in the shell earns it by being on screen. */
   pointer-events: auto;
-}
-
-/* Focusables, not a list of the controls that happen to be in the bar today —
-   a drag region eats the clicks of anything it covers, so anything missed here
-   is a dead control. */
-[data-hud-shell] [data-slot='composer-rich-input'],
-[data-hud-shell]
-  [data-slot='composer-dock']
-  :is(
-    a[href],
-    button,
-    input,
-    label,
-    select,
-    textarea,
-    [contenteditable],
-    [role='button'],
-    [role='combobox'],
-    [role='menuitem'],
-    [role='switch'],
-    [tabindex]:not([tabindex='-1'])
-  ) {
-  -webkit-app-region: no-drag;
 }
 
 /* HUD mode is the input and the log — nothing else. The dock stacks
@@ -2767,79 +2715,82 @@ button[data-slot='aui_msg-reactions'] svg {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
   box-shadow: none !important;
+  transition: border-color var(--hud-reveal) var(--hud-ease-enter);
 }
 
-/* The exit button: a real control, visible at rest, on a card chip so it
-   reads against any backdrop.
+/* Focus: the border the bar already has, in the accent. Everything with its own
+   geometry is out — the bar sits flush against the window, so a ring or a
+   shadow is sawn off by the window before any CSS can shape it, and paying for
+   the clearance moves the bar. Recolouring what is already drawn costs no
+   space, cannot be clipped, and leaves the working arc as the only ring. */
+[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-slot='composer-surface'] {
+  border-color: var(--dt-primary) !important;
+}
 
-   Square (aspect-ratio 1/1 on the app's titlebar button size) and INSET from
-   the band's corner — tucked flush it read as a mistake; a chip floating in
-   the corner with its own margin reads as intentional. anchor() to the band:
-   calc()-based attempts drifted because the composer's measured vars are
-   inline-scoped and stale outside [data-chat-surface]. */
+/* Long-press drag armed — the whole bar is the handle until release. */
+[data-hud-shell] [data-slot='composer-root'][data-hud-grabbing] [data-slot='composer-dock'] {
+  cursor: grabbing;
+}
 
+/* The exit button. HUD mode has no titlebar, so this is the only visible way
+   back; it lives in the open space off the bar's outer edge, at the right.
+
+   A bare themed glyph rather than a chip: it sits over whatever the user is
+   really working in, and a card floating there is a stray fragment of app on
+   their screen.
+
+   Placed from --hud-bar-height rather than CSS anchor(). Lightning CSS drops a
+   whole rule containing an `anchor()` on the vertical axis, so the flipped-edge
+   override never reached the browser and the chip rendered off screen. */
 [data-hud-shell] [data-hud-exit] {
-  position-anchor: --hud-band;
   left: auto;
-  bottom: auto;
-  right: calc(anchor(right) + 0.5rem);
-  top: calc(anchor(top) + 0.5rem);
+  top: auto;
+  right: 0.375rem;
+  bottom: calc(var(--hud-bar-height, var(--composer-fallback-height)) + 0.375rem);
   aspect-ratio: 1;
   height: auto;
-  background: var(--dt-card) !important;
-  border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: 0.5rem;
-  /* Part of the band, so it lives and dies with it — same states, same timing.
-     Left visible at rest it is a lone chip hovering in empty space a hundred
-     pixels above the bar; revealed on hovering the window it pops up whenever
-     the cursor crosses the HUD on its way somewhere else. */
+  background: transparent !important;
+  border: 0;
+  color: var(--ui-text-primary) !important;
+  /* Focus only. A turn landing brings the transcript up but doesn't mean you
+     are reaching for the window controls, and at rest this is a lone chip
+     hovering over whatever you're actually working in. */
   opacity: 0;
   transition: opacity var(--hud-fade) var(--hud-ease-exit);
-  /* And it takes clicks on exactly the same terms as the band it sits in —
-     visible or nothing. A faded-out control that still takes clicks is an
-     invisible button floating over the app behind; a lit one that doesn't is
-     the dead chip you get from keying this to focus alone. */
+  /* Clicks on exactly the same terms as the paint — a faded-out control that
+     still takes them is an invisible button floating over the app behind. */
   pointer-events: none;
 }
 
-[data-hud-shell][data-hud-recent] [data-hud-exit],
-[data-hud-shell]:focus-within [data-hud-exit] {
-  pointer-events: auto;
-}
-
-/* Flipped, the sheet's top corner is behind the bar — drop the chip clear of
-   it so it stays in the transcript rather than under the composer. */
+/* Flipped, "above the composer" is the reserved strip at the top of the
+   window rather than a gap the band has to leave. */
 [data-hud-shell][data-hud-edge='top'] [data-hud-exit] {
-  top: calc(anchor(top) + var(--hud-bar-height, var(--composer-fallback-height)) + 0.5rem);
+  bottom: auto;
+  top: 0;
 }
 
-[data-hud-shell][data-hud-recent] [data-hud-exit],
 [data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-exit] {
   opacity: 0.75;
+  pointer-events: auto;
   transition-duration: var(--hud-reveal);
   transition-delay: 0s;
 }
 
-[data-hud-shell][data-hud-recent] [data-hud-exit]:hover,
 [data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-exit]:hover {
   opacity: 1;
+}
+
+/* The composer's drop target is a full-window dashed sheet sized for the app's
+   chat column. In the HUD it is a white slab hanging under the bar on a fresh
+   thread, and there is nowhere to drop anything into a bar anyway. */
+[data-hud-shell] [data-slot='chat-drop-overlay'] {
+  display: none !important;
 }
 
 /* The dock's fade-to-surface gradient assumes a chat column behind it; over a
    transparent HUD it's a grey smear. */
 [data-hud-shell] [data-slot='composer-root'] > .pointer-events-none {
   display: none !important;
-}
-
-/* Portaled overlays (model picker, menus, dialogs, tooltips, the command
-   palette) mount into <body>, OUTSIDE [data-hud-shell] — so they never inherit
-   its `no-drag` carve-outs. And Electron's draggable region is RECT math, not
-   paint order: the shell's window-sized `drag` rect covers wherever the menu
-   opens, and anything that doesn't explicitly subtract itself is handed to the
-   window manager. The menu rendered, sat correctly, and swallowed every click
-   ("I can't even select a model"). Carve every portal back out. */
-html:has([data-hud-shell]) body > *:not(#root) {
-  -webkit-app-region: no-drag;
 }
 
 /* Popovers in a ~320px-tall window. Two separate problems:

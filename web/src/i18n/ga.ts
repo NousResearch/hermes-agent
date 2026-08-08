@@ -324,6 +324,10 @@ export const ga: Translations = {
     created: "Cruthaithe",
     deleted: "Scriosta",
     renamed: "Athainmnithe",
+    reasoningEffort: "Leibhéal réasúnaigh",
+    reasoningInherit: "Oirthreoir réamhshocraithe ó sholáthraí",
+    reasoningSaved: "Leibhéal réasúnaigh nuashonraithe",
+    reasoningUnset: "réamhshocrú soláthraí",
   },
 
   pluginsPage: {

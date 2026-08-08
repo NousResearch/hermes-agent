@@ -316,6 +316,10 @@ export const af: Translations = {
     created: "Geskep",
     deleted: "Geskrap",
     renamed: "Hernoem",
+    reasoningEffort: "Redeneervlak",
+    reasoningInherit: "Erf verstekwaarde van verskaffer",
+    reasoningSaved: "Redeneervlak opgedateer",
+    reasoningUnset: "verskaffer verstekwaarde",
   },
 
   pluginsPage: {

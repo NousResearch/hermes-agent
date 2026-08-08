@@ -315,6 +315,10 @@ export const zhHant: Translations = {
     created: "已建立",
     deleted: "已刪除",
     renamed: "已重新命名",
+    reasoningEffort: "推理強度",
+    reasoningInherit: "繼承提供者預設值",
+    reasoningSaved: "推理強度已更新",
+    reasoningUnset: "提供者預設值",
   },
 
   pluginsPage: {

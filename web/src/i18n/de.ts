@@ -316,6 +316,10 @@ export const de: Translations = {
     created: "Erstellt",
     deleted: "Gelöscht",
     renamed: "Umbenannt",
+    reasoningEffort: "Reasoning-Stärke",
+    reasoningInherit: "Anbieter-Standard verwenden",
+    reasoningSaved: "Reasoning-Stärke aktualisiert",
+    reasoningUnset: "Anbieter-Standard",
   },
 
   pluginsPage: {

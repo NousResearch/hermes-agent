@@ -315,6 +315,10 @@ export const ko: Translations = {
     created: "생성됨",
     deleted: "삭제됨",
     renamed: "이름 변경됨",
+    reasoningEffort: "추론 강도",
+    reasoningInherit: "제공자 기본값 상속",
+    reasoningSaved: "추론 강도가 업데이트되었습니다",
+    reasoningUnset: "제공자 기본값",
   },
 
   pluginsPage: {

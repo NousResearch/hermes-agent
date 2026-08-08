@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple  # noqa: F401
 
 from fastapi import APIRouter, HTTPException, Query  # noqa: F401
 
-from hermes_cli.web_deps import late
+from hermes_cli.web_deps import late, late_attr
 from hermes_cli.web_models import (
     ProfileCreate,
     ProfileActiveUpdate,
@@ -32,7 +32,10 @@ from hermes_cli.web_models import (
     ProfileSoulUpdate,
     ProfileDescriptionUpdate,
     ProfileModelUpdate,
+    ProfileReasoningUpdate,
+    ProfileSettingsUpdate,
     ProfileDescribeAuto,
+    ProfileFallbackUpdate,
 )
 
 # Same logger the handlers used before extraction (identical logger object).
@@ -74,6 +77,10 @@ _spawn_hermes_action = late("_spawn_hermes_action")
 _strip_session_list_rows = late("_strip_session_list_rows")
 _write_profile_mcp_servers = late("_write_profile_mcp_servers")
 _write_profile_model = late("_write_profile_model")
+_write_profile_reasoning_effort = late("_write_profile_reasoning_effort")
+_write_profile_settings = late("_write_profile_settings")
+_read_profile_fallbacks = late("_read_profile_fallbacks")
+_write_profile_fallbacks = late("_write_profile_fallbacks")
 
 
 @sessions_router.get("/api/profiles/sessions")
@@ -709,6 +716,83 @@ async def update_profile_model_endpoint(name: str, body: ProfileModelUpdate):
         _log.exception("PUT /api/profiles/%s/model failed", name)
         raise HTTPException(status_code=500, detail=str(e))
     return {"ok": True, "provider": provider, "model": model}
+
+
+@router.put("/api/profiles/{name}/reasoning")
+async def update_profile_reasoning_endpoint(name: str, body: ProfileReasoningUpdate):
+    """Set or clear a profile's main-agent reasoning default."""
+    profile_dir = _resolve_profile_dir(name)
+    effort = (body.effort or "").strip().lower()
+    reasoning_options = late_attr("_REASONING_EFFORT_OPTIONS")
+    if effort not in reasoning_options:
+        raise HTTPException(
+            status_code=400,
+            detail="effort must be one of: "
+            + ", ".join(option or "(inherit)" for option in reasoning_options),
+        )
+    try:
+        saved = _write_profile_reasoning_effort(profile_dir, effort)
+    except Exception as e:
+        _log.exception("PUT /api/profiles/%s/reasoning failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "reasoning_effort": saved}
+
+
+@router.put("/api/profiles/{name}/settings")
+async def update_profile_settings_endpoint(name: str, body: ProfileSettingsUpdate):
+    """Atomically update a profile's model and reasoning settings."""
+    profile_dir = _resolve_profile_dir(name)
+    provider = (body.provider or "").strip()
+    model = (body.model or "").strip()
+    if bool(provider) != bool(model):
+        raise HTTPException(
+            status_code=400,
+            detail="provider and model must be provided together or both be empty",
+        )
+    effort = (body.effort or "").strip().lower()
+    reasoning_options = late_attr("_REASONING_EFFORT_OPTIONS")
+    if effort not in reasoning_options:
+        raise HTTPException(
+            status_code=400,
+            detail="effort must be one of: "
+            + ", ".join(option or "(inherit)" for option in reasoning_options),
+        )
+    try:
+        saved = _write_profile_settings(
+            profile_dir,
+            provider=provider or None,
+            model=model or None,
+            effort=effort,
+        )
+    except Exception as e:
+        _log.exception("PUT /api/profiles/%s/settings failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, **saved}
+
+
+@router.get("/api/profiles/{name}/fallbacks")
+async def get_profile_fallbacks_endpoint(name: str):
+    """Return the ordered fallback chain without credential-bearing fields."""
+    profile_dir = _resolve_profile_dir(name)
+    try:
+        return {"fallbacks": _read_profile_fallbacks(profile_dir)}
+    except Exception as e:
+        _log.exception("GET /api/profiles/%s/fallbacks failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/api/profiles/{name}/fallbacks")
+async def update_profile_fallbacks_endpoint(name: str, body: ProfileFallbackUpdate):
+    """Persist an ordered fallback chain with per-entry reasoning policy."""
+    profile_dir = _resolve_profile_dir(name)
+    try:
+        saved = _write_profile_fallbacks(profile_dir, body.fallbacks)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log.exception("PUT /api/profiles/%s/fallbacks failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "fallbacks": saved}
 
 
 @router.post("/api/profiles/{name}/describe-auto")

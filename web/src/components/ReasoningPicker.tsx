@@ -25,7 +25,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
 import {
-  EFFORT_OPTIONS,
+  filterEffortOptions,
   normalizeEffort,
   VALID_EFFORTS,
 } from "@/lib/reasoning-effort";
@@ -38,6 +38,9 @@ interface ReasoningPickerProps {
   profile?: string;
   /** Bumped after the model picker saves, to re-read config in lockstep. */
   refreshKey?: number;
+  /** Provider-known reasoning-effort dial values for `currentModel`.
+   *  undefined → full option list (unknown); [] → no reasoning dial. */
+  reasoningLevels?: string[] | null;
   /** Called after a successful change so the sidebar can show an "apply on
    *  /new or reload" notice, matching the model-switch UX. */
   onChanged?: (effort: string) => void;
@@ -47,12 +50,19 @@ export function ReasoningPicker({
   currentModel,
   profile,
   refreshKey = 0,
+  reasoningLevels,
   onChanged,
 }: ReasoningPickerProps) {
   const [effort, setEffort] = useState("medium");
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const lastFetchKeyRef = useRef("");
+
+  const options = filterEffortOptions(
+    reasoningLevels,
+    loaded ? effort : undefined,
+  );
+  const hasDial = options.length > 0 || reasoningLevels === undefined || reasoningLevels === null;
 
   useEffect(() => {
     const fetchKey = `${profile ?? ""}:${currentModel}:${refreshKey}`;
@@ -102,6 +112,13 @@ export function ReasoningPicker({
     [effort, onChanged, profile],
   );
 
+  if (!hasDial) {
+    // Model has no reasoning dial on this provider (e.g. MiMo/Nemotron via
+    // OpenCode Go sends no reasoning params). Hide the picker entirely —
+    // a visible-but-inert dial is worse than none.
+    return null;
+  }
+
   return (
     <div className="flex items-center gap-2 px-3 py-2 text-xs">
       <div className="flex items-center gap-1.5 text-text-tertiary">
@@ -114,7 +131,7 @@ export function ReasoningPicker({
         onValueChange={onSelect}
         value={effort}
       >
-        {EFFORT_OPTIONS.map((opt) => (
+        {options.map((opt) => (
           <SelectOption key={opt.value} value={opt.value}>
             {opt.label}
           </SelectOption>

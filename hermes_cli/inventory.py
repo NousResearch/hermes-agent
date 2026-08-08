@@ -402,15 +402,21 @@ def format_aux_picker_entries(
 
 
 def _apply_capabilities(rows: list[dict]) -> None:
-    """Attach a ``{model: {fast, reasoning}}`` map to each provider row.
+    """Attach a ``{model: {fast, reasoning, reasoning_levels}}`` map to each provider row.
 
     `fast` mirrors ``model_supports_fast_mode`` (the same gate the runtime
     enforces). `reasoning` comes from the models.dev catalog when known and
     defaults to True otherwise — the effort dial is broadly accepted and a
     no-op on models that ignore it, whereas hiding it from a capable-but-
     uncatalogued model is the worse failure.
+
+    `reasoning_levels` comes from the provider profile's
+    ``reasoning_effort_levels()`` hook when the provider knows the dial
+    values its models accept (None → caller shows the full list; [] → no
+    reasoning dial at all).
     """
     from hermes_cli.models import model_supports_fast_mode
+    from providers import get_provider_profile
 
     try:
         from agent.models_dev import get_model_capabilities
@@ -419,7 +425,12 @@ def _apply_capabilities(rows: list[dict]) -> None:
 
     for row in rows:
         slug = row.get("slug") or ""
-        caps: dict[str, dict[str, bool]] = {}
+        profile = None
+        try:
+            profile = get_provider_profile(slug)
+        except Exception:
+            profile = None
+        caps: dict[str, dict[str, object]] = {}
 
         for model in row.get("models") or []:
             reasoning = True
@@ -431,9 +442,17 @@ def _apply_capabilities(rows: list[dict]) -> None:
                 except Exception:
                     reasoning = True
 
+            reasoning_levels = None
+            if profile is not None:
+                try:
+                    reasoning_levels = profile.reasoning_effort_levels(model)
+                except Exception:
+                    reasoning_levels = None
+
             caps[model] = {
                 "fast": bool(model_supports_fast_mode(model)),
                 "reasoning": reasoning,
+                "reasoning_levels": reasoning_levels,
             }
 
         row["capabilities"] = caps

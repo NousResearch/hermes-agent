@@ -316,6 +316,10 @@ export const hu: Translations = {
     created: "Létrehozva",
     deleted: "Törölve",
     renamed: "Átnevezve",
+    reasoningEffort: "Gondolkodási szint",
+    reasoningInherit: "Szolgáltató alapértelmezése öröklése",
+    reasoningSaved: "Gondolkodási szint frissítve",
+    reasoningUnset: "szolgáltató alapértelmezése",
   },
 
   pluginsPage: {

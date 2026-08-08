@@ -985,6 +985,25 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "API service tier (OpenAI/Anthropic)",
         "options": ["", "auto", "default", "flex"],
     },
+    # This virtual field is intentionally absent from DEFAULT_CONFIG: an empty
+    # value preserves the provider default and is only written when selected.
+    "agent.reasoning_effort": {
+        "type": "select",
+        "description": "Reasoning effort for the main agent",
+        "category": "agent",
+        "emptyLabel": "Inherit provider default",
+        "options": [
+            "",
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra",
+        ],
+    },
     "delegation.reasoning_effort": {
         "type": "select",
         "description": "Reasoning effort for delegated subagents",
@@ -1123,12 +1142,18 @@ CONFIG_SCHEMA = _build_schema_from_config(DEFAULT_CONFIG)
 # by the normalize/denormalize cycle.  Insert model_context_length right after
 # the "model" key so it renders adjacent in the frontend.
 _mcl_entry = _SCHEMA_OVERRIDES["model_context_length"]
+_reasoning_entry = _SCHEMA_OVERRIDES["agent.reasoning_effort"]
 _ordered_schema: Dict[str, Dict[str, Any]] = {}
 for _k, _v in CONFIG_SCHEMA.items():
     _ordered_schema[_k] = _v
     if _k == "model":
         _ordered_schema["model_context_length"] = _mcl_entry
+        _ordered_schema["agent.reasoning_effort"] = _reasoning_entry
 CONFIG_SCHEMA = _ordered_schema
+
+_REASONING_EFFORT_OPTIONS = tuple(
+    _SCHEMA_OVERRIDES["agent.reasoning_effort"]["options"]
+)
 
 
 def _is_command_provider_block(value: Any) -> bool:
@@ -1381,7 +1406,11 @@ from hermes_cli.web_models import (  # noqa: F401
     ProfileActiveUpdate,
     ProfileDescriptionUpdate,
     ProfileModelUpdate,
+    ProfileReasoningUpdate,
+    ProfileSettingsUpdate,
     ProfileDescribeAuto,
+    ProfileFallbackEntry,
+    ProfileFallbackUpdate,
     SkillToggle,
     SkillCreate,
     SkillContentUpdate,
@@ -6231,6 +6260,19 @@ def get_model_info(profile: Optional[str] = None):
         except Exception:
             pass
 
+        # Provider profile may know the exact reasoning-effort dial values the
+        # model accepts (None → full list; [] → no reasoning dial). Surfaced so
+        # the dashboard picker shows only valid choices per model.
+        try:
+            from providers import get_provider_profile
+            profile = get_provider_profile(provider)
+            if profile is not None:
+                levels = profile.reasoning_effort_levels(model_name)
+                if levels is not None:
+                    caps["reasoning_levels"] = levels
+        except Exception:
+            pass
+
         return {
             "model": model_name,
             "provider": provider,
@@ -6924,7 +6966,30 @@ async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
             # frontend can only overwrite what it explicitly sends.
             existing = read_raw_config()
             incoming = _denormalize_config_from_web(body.config)
-            save_config(_deep_merge(existing, incoming))
+            incoming_agent = incoming.get("agent")
+            reasoning_empty = False
+            if isinstance(incoming_agent, dict) and "reasoning_effort" in incoming_agent:
+                effort = incoming_agent["reasoning_effort"]
+                if effort is False or (
+                    isinstance(effort, str)
+                    and effort.strip().lower() in {"false", "disabled"}
+                ):
+                    effort = "none"
+                if (
+                    not isinstance(effort, str)
+                    or effort.strip().lower() not in _REASONING_EFFORT_OPTIONS
+                ):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="invalid agent.reasoning_effort",
+                    )
+                effort = effort.strip().lower()
+                reasoning_empty = effort == ""
+                incoming_agent["reasoning_effort"] = effort
+            merged = _deep_merge(existing, incoming)
+            if reasoning_empty and isinstance(merged.get("agent"), dict):
+                merged["agent"].pop("reasoning_effort", None)
+            save_config(merged)
         return {"ok": True}
     except HTTPException:
         raise
@@ -13397,13 +13462,189 @@ def _profile_attr(info, name: str, default: Any = None) -> Any:
         return default
 
 
+def _read_profile_reasoning_effort(profile_dir: Path) -> str:
+    """Read and canonicalize a profile's optional main-agent default."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(str(profile_dir))
+    try:
+        config = load_config()
+        agent = config.get("agent")
+        raw = agent.get("reasoning_effort") if isinstance(agent, dict) else ""
+        if raw is False or (
+            isinstance(raw, str) and raw.strip().lower() in {"false", "disabled"}
+        ):
+            return "none"
+        value = str(raw or "").strip().lower()
+        return value if value in _REASONING_EFFORT_OPTIONS else ""
+    except Exception:
+        return ""
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _profile_fallback_public_entry(entry: Dict[str, Any], source_index: int) -> Dict[str, Any]:
+    from hermes_cli.fallback_config import normalize_fallback_reasoning_effort
+
+    try:
+        effort = normalize_fallback_reasoning_effort(entry.get("reasoning_effort"))
+    except ValueError:
+        # Existing hand-edited configs should remain viewable; an invalid value
+        # is shown as inherit and is rejected if the user tries to save it.
+        effort = ""
+    base_url = entry.get("base_url")
+    base_url = base_url.strip().rstrip("/") if isinstance(base_url, str) and base_url.strip() else None
+    api_mode = entry.get("api_mode")
+    api_mode = api_mode.strip() if isinstance(api_mode, str) and api_mode.strip() else None
+    provider = str(entry.get("provider") or "").strip()
+    model = str(entry.get("model") or "").strip()
+    return {
+        "source_index": source_index,
+        "source_provider": provider or None,
+        "source_model": model or None,
+        "source_base_url": base_url,
+        "source_api_mode": api_mode,
+        "provider": provider,
+        "model": model,
+        "reasoning_effort": effort,
+        "base_url": base_url,
+        "api_mode": api_mode,
+    }
+
+
+def _read_profile_fallbacks(profile_dir: Path) -> List[Dict[str, Any]]:
+    """Read a profile's effective fallback chain without returning secrets."""
+    from hermes_cli.fallback_config import get_fallback_chain
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(str(profile_dir))
+    try:
+        config = load_config()
+        chain = get_fallback_chain(config)
+        return [_profile_fallback_public_entry(entry, index) for index, entry in enumerate(chain)]
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _write_profile_fallbacks(
+    profile_dir: Path,
+    requested: List[ProfileFallbackEntry],
+) -> List[Dict[str, Any]]:
+    """Persist an ordered fallback chain while preserving route credentials.
+
+    ``source_index`` is only a UI hint. Public route identity fields are
+    matched first so a concurrent reorder or edit cannot copy credentials from
+    another row. Changing provider never copies the old route's credentials;
+    changing only the model on the same provider keeps the route credentials.
+    """
+    from hermes_cli.fallback_config import (
+        get_fallback_chain,
+        normalize_fallback_reasoning_effort,
+    )
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(str(profile_dir))
+    try:
+        config = load_config()
+        existing = get_fallback_chain(config)
+        new_chain: List[Dict[str, Any]] = []
+        seen_routes: set[tuple[str, str, str]] = set()
+
+        def _identity_part(value: Any) -> str:
+            return str(value or "").strip().rstrip("/").lower()
+
+        def _route_identity(entry: Dict[str, Any]) -> tuple[str, str, str, str]:
+            return (
+                _identity_part(entry.get("provider")),
+                _identity_part(entry.get("model")),
+                _identity_part(entry.get("base_url")),
+                _identity_part(entry.get("api_mode")),
+            )
+
+        for item in requested:
+            provider = (item.provider or "").strip()
+            model = (item.model or "").strip()
+            if not provider or not model:
+                raise ValueError("fallback provider and model are required")
+            effort = normalize_fallback_reasoning_effort(item.reasoning_effort)
+
+            old: Dict[str, Any] = {}
+            source_provider = (item.source_provider or "").strip()
+            source_model = (item.source_model or "").strip()
+            source_identity: Optional[tuple[str, str, str, str]] = None
+            if source_provider and source_model:
+                source_identity = (
+                    _identity_part(source_provider),
+                    _identity_part(source_model),
+                    _identity_part(item.source_base_url),
+                    _identity_part(item.source_api_mode),
+                )
+            elif isinstance(item.source_index, int) and not isinstance(item.source_index, bool):
+                # Legacy clients did not send source identity. Preserve only
+                # when the current route metadata also matches exactly; this
+                # is intentionally conservative for stale clients.
+                source_identity = (
+                    _identity_part(provider),
+                    _identity_part(model),
+                    _identity_part(item.base_url),
+                    _identity_part(item.api_mode),
+                )
+
+            candidates: List[Dict[str, Any]] = []
+            if isinstance(item.source_index, int) and not isinstance(item.source_index, bool):
+                if 0 <= item.source_index < len(existing):
+                    candidates.append(existing[item.source_index])
+            if source_identity is not None:
+                candidates.extend(
+                    candidate
+                    for candidate in existing
+                    if candidate not in candidates
+                    and _route_identity(candidate) == source_identity
+                )
+
+            for candidate in candidates:
+                if source_identity is None or _route_identity(candidate) != source_identity:
+                    continue
+                # A model edit is safe on the same provider/endpoint, but a
+                # provider edit must not inherit the old secret/custom route.
+                if _identity_part(candidate.get("provider")) == _identity_part(provider):
+                    old = dict(candidate)
+                    break
+
+            base_url = _identity_part(old.get("base_url"))
+            route_key = (provider.lower(), model.lower(), base_url)
+            if route_key in seen_routes:
+                raise ValueError("fallback provider/model routes must be unique")
+            seen_routes.add(route_key)
+
+            entry = dict(old)
+            entry["provider"] = provider
+            entry["model"] = model
+            if effort:
+                entry["reasoning_effort"] = effort
+            else:
+                entry.pop("reasoning_effort", None)
+            new_chain.append(entry)
+
+        config["fallback_providers"] = new_chain
+        # Saving through the new list format makes the effective order explicit
+        # and prevents an old single fallback from being appended twice.
+        config.pop("fallback_model", None)
+        save_config(config)
+        return [_profile_fallback_public_entry(entry, index) for index, entry in enumerate(new_chain)]
+    finally:
+        reset_hermes_home_override(token)
+
+
 def _profile_to_dict(info) -> Dict[str, Any]:
+    profile_path = Path(str(_profile_attr(info, "path", "")))
     return {
         "name": _profile_attr(info, "name", ""),
         "path": str(_profile_attr(info, "path", "")),
         "is_default": bool(_profile_attr(info, "is_default", False)),
         "model": _profile_attr(info, "model"),
         "provider": _profile_attr(info, "provider"),
+        "reasoning_effort": _read_profile_reasoning_effort(profile_path),
         "has_env": bool(_profile_attr(info, "has_env", False)),
         "skill_count": int(_profile_attr(info, "skill_count", 0) or 0),
         "gateway_running": bool(_profile_attr(info, "gateway_running", False)),
@@ -13433,6 +13674,7 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
             "is_default": True,
             "model": model,
             "provider": provider,
+            "reasoning_effort": _safe(lambda: _read_profile_reasoning_effort(default_home), ""),
             "has_env": (default_home / ".env").exists(),
             "skill_count": _safe(lambda: profiles_mod._count_skills(default_home), 0),
             "gateway_running": _safe(lambda: profiles_mod._check_gateway_running(default_home), False),
@@ -13456,6 +13698,7 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
                 "is_default": False,
                 "model": model,
                 "provider": provider,
+                "reasoning_effort": _safe(lambda entry=entry: _read_profile_reasoning_effort(entry), ""),
                 "has_env": (entry / ".env").exists(),
                 "skill_count": _safe(lambda entry=entry: profiles_mod._count_skills(entry), 0),
                 "gateway_running": _safe(lambda entry=entry: profiles_mod._check_gateway_running(entry), False),
@@ -13488,25 +13731,61 @@ def _profile_setup_command(name: str) -> str:
     return "hermes setup" if name == "default" else f"{name} setup"
 
 
-def _write_profile_model(profile_dir: Path, provider: str, model: str) -> None:
-    """Write the main model assignment into a specific profile's config.yaml.
+def _write_profile_settings(
+    profile_dir: Path,
+    *,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    effort: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Persist profile model and reasoning settings in one config write.
 
-    Scopes ``load_config``/``save_config`` to ``profile_dir`` via the
-    context-local HERMES_HOME override so the write lands in the target
-    profile's config rather than the dashboard process's active profile.
-    Clears any stale ``base_url`` / ``context_length`` the same way
-    ``POST /api/model/set`` does, since the new model may differ.
+    ``provider`` and ``model`` are both omitted for a reasoning-only update;
+    ``effort`` is omitted for the legacy model-only endpoint. Keeping both
+    mutations inside one scoped load/save makes the combined dashboard save
+    atomic from the profile's point of view.
     """
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    if (provider is None) != (model is None):
+        raise ValueError("provider and model must be provided together")
 
     token = set_hermes_home_override(str(profile_dir))
     try:
-        provider, model = _normalize_main_model_assignment(provider, model)
-        cfg = load_config()
-        cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), provider, model)
-        save_config(cfg)
+        config = load_config()
+        if provider is not None and model is not None:
+            provider, model = _normalize_main_model_assignment(provider, model)
+            config["model"] = _apply_main_model_assignment(
+                config.get("model", {}), provider, model
+            )
+        if effort is not None:
+            agent = config.get("agent")
+            if not isinstance(agent, dict):
+                agent = {}
+                config["agent"] = agent
+            if effort:
+                agent["reasoning_effort"] = effort
+            else:
+                agent.pop("reasoning_effort", None)
+        save_config(config)
+        return {
+            "provider": provider,
+            "model": model,
+            "reasoning_effort": effort,
+        }
     finally:
         reset_hermes_home_override(token)
+
+
+def _write_profile_model(profile_dir: Path, provider: str, model: str) -> None:
+    """Write the main model assignment into a specific profile's config.yaml."""
+    _write_profile_settings(profile_dir, provider=provider, model=model)
+
+
+def _write_profile_reasoning_effort(profile_dir: Path, effort: str) -> str:
+    """Persist or clear a profile's optional main-agent default."""
+    _write_profile_settings(profile_dir, effort=effort)
+    return effort
 
 
 def _write_profile_mcp_servers(profile_dir: Path, servers: List["MCPServerCreate"]) -> int:
@@ -13606,6 +13885,8 @@ from hermes_cli.web_routers.profiles import (  # noqa: E402,F401 — legacy re-e
     update_profile_soul,
     update_profile_description_endpoint,
     update_profile_model_endpoint,
+    update_profile_reasoning_endpoint,
+    update_profile_settings_endpoint,
     describe_profile_auto_endpoint,
 )
 

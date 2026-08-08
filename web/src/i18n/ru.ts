@@ -316,6 +316,10 @@ export const ru: Translations = {
     created: "Создан",
     deleted: "Удалён",
     renamed: "Переименован",
+    reasoningEffort: "Уровень рассуждений",
+    reasoningInherit: "Наследовать значение по умолчанию провайдера",
+    reasoningSaved: "Уровень рассуждений обновлён",
+    reasoningUnset: "значение по умолчанию провайдера",
   },
 
   pluginsPage: {

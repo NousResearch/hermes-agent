@@ -178,6 +178,25 @@ class ProviderProfile:
         """
         return self.default_max_tokens
 
+    def reasoning_effort_levels(self, model: str | None) -> list[str] | None:
+        """Return the Hermes reasoning-effort levels *model* actually accepts.
+
+        Overrideable hook for providers whose models differ in which effort
+        dial values the upstream API accepts (or whether they accept one at
+        all). The dashboard reasoning picker uses this to show only the
+        levels a model can genuinely use instead of the full Hermes scale.
+
+        Return values:
+          - a list of level strings (subset of
+            ``hermes_constants.VALID_REASONING_EFFORTS`` + ``"none"``) when
+            the provider knows the model's supported dial values;
+          - ``None`` when unknown — callers must fall back to the full
+            option list rather than hiding a capable-but-uncatalogued model.
+
+        Default: None (no provider-specific knowledge; full list is shown).
+        """
+        return None
+
     def fetch_models(
         self,
         *,

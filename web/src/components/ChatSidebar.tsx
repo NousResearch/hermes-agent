@@ -141,6 +141,12 @@ export function ChatSidebar({
   // (currently unused) ModelInfoCard surfaces, so the dashboard exposes a
   // control to *set* the level, not just a read-only "Reasoning" badge.
   const [supportsReasoning, setSupportsReasoning] = useState(false);
+  // Provider-known reasoning-effort dial values for the effective model
+  // (undefined → full list; [] → no dial). Read alongside supportsReasoning
+  // so the picker shows only valid levels per model.
+  const [reasoningLevels, setReasoningLevels] = useState<string[] | null>(
+    null,
+  );
   // Bumped on model change/save so ReasoningPicker re-reads the saved effort
   // (config is profile-scoped the same way the model badge is).
   const [modelRefreshKey, setModelRefreshKey] = useState(0);
@@ -159,6 +165,10 @@ export function ChatSidebar({
       .then((r) => {
         if (r?.model) setEffectiveModel(String(r.model));
         setSupportsReasoning(!!r?.capabilities?.supports_reasoning);
+        const levels = r?.capabilities?.reasoning_levels;
+        setReasoningLevels(
+          levels === undefined ? null : levels,
+        );
         // Bump so ReasoningPicker re-reads the saved effort for the new model.
         setModelRefreshKey((k) => k + 1);
       })
@@ -444,6 +454,7 @@ export function ChatSidebar({
             currentModel={modelName}
             profile={profile}
             refreshKey={modelRefreshKey}
+            reasoningLevels={reasoningLevels}
             onChanged={(effort) =>
               setModelNotice(
                 `Reasoning effort set to ${effort}. Run /new or refresh the page to apply it to this chat.`,

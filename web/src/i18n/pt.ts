@@ -317,6 +317,10 @@ export const pt: Translations = {
     created: "Criado",
     deleted: "Eliminado",
     renamed: "Renomeado",
+    reasoningEffort: "Nível de raciocínio",
+    reasoningInherit: "Herdar padrão do provedor",
+    reasoningSaved: "Nível de raciocínio atualizado",
+    reasoningUnset: "padrão do provedor",
   },
 
   pluginsPage: {

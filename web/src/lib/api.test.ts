@@ -173,3 +173,72 @@ describe("api OAuth helpers", () => {
     }
   });
 });
+
+describe("api.setProfileReasoning", () => {
+  it("writes the selected effort to the requested profile", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ ok: true, reasoning_effort: "high" });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.setProfileReasoning("my profile", "high");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/profiles/my%20profile/reasoning",
+      expect.objectContaining({
+        body: JSON.stringify({ effort: "high" }),
+        credentials: "include",
+        method: "PUT",
+      }),
+    );
+  });
+});
+
+describe("api.setProfileSettings", () => {
+  it("sends model and reasoning together to the requested profile", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({
+      ok: true,
+      provider: "provider-a",
+      model: "model-a",
+      reasoning_effort: "high",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.setProfileSettings("my profile", "provider-a", "model-a", "high");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/profiles/my%20profile/settings",
+      expect.objectContaining({
+        body: JSON.stringify({
+          provider: "provider-a",
+          model: "model-a",
+          effort: "high",
+        }),
+        credentials: "include",
+        method: "PUT",
+      }),
+    );
+  });
+
+  it("normalizes unchanged nullable model values for the profile settings endpoint", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({
+      ok: true,
+      provider: null,
+      model: null,
+      reasoning_effort: "high",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.setProfileSettings("my profile", null, null, "high");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/profiles/my%20profile/settings",
+      expect.objectContaining({
+        body: JSON.stringify({ provider: "", model: "", effort: "high" }),
+        credentials: "include",
+        method: "PUT",
+      }),
+    );
+  });
+});

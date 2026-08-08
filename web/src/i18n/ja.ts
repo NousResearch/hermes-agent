@@ -315,6 +315,10 @@ export const ja: Translations = {
     created: "作成しました",
     deleted: "削除しました",
     renamed: "名前を変更しました",
+    reasoningEffort: "推論強度",
+    reasoningInherit: "プロバイダーのデフォルトを継承",
+    reasoningSaved: "推論強度を更新しました",
+    reasoningUnset: "プロバイダーのデフォルト",
   },
 
   pluginsPage: {

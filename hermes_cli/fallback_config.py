@@ -99,3 +99,54 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
             chain.append(entry)
 
     return chain
+
+
+def normalize_fallback_reasoning_effort(value: Any) -> str:
+    """Canonicalize the optional per-fallback reasoning selector.
+
+    An empty value means inherit the profile/model reasoning policy.  ``none``
+    and its legacy aliases explicitly disable thinking.  Invalid values are
+    rejected by dashboard writes instead of being silently persisted.
+    """
+    from hermes_constants import parse_reasoning_effort
+
+    if value is None:
+        return ""
+    if value is False:
+        return "none"
+    raw = str(value).strip().lower()
+    if not raw:
+        return ""
+    if raw in {"false", "disabled"}:
+        return "none"
+    if parse_reasoning_effort(raw) is None:
+        raise ValueError(
+            "reasoning_effort must be empty, none, minimal, low, medium, high, xhigh, max, or ultra"
+        )
+    return raw
+
+
+def resolve_fallback_reasoning_config(
+    config: dict[str, Any] | None,
+    model: str,
+    entry: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Resolve reasoning for one fallback entry.
+
+    A non-empty entry-level value is authoritative, including ``none``.
+    Missing/empty values inherit the normal per-model/profile policy.
+    """
+    from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
+
+    if isinstance(entry, dict) and "reasoning_effort" in entry:
+        raw = entry.get("reasoning_effort")
+        if raw is not None and not (isinstance(raw, str) and not raw.strip()):
+            try:
+                normalized = normalize_fallback_reasoning_effort(raw)
+            except ValueError:
+                normalized = ""
+            if normalized:
+                explicit = parse_reasoning_effort(normalized)
+                if explicit is not None:
+                    return explicit
+    return resolve_reasoning_config(config, model)

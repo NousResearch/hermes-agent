@@ -312,6 +312,10 @@ export const zh: Translations = {
     created: "已创建",
     deleted: "已删除",
     renamed: "已重命名",
+    reasoningEffort: "推理强度",
+    reasoningInherit: "继承提供商默认值",
+    reasoningSaved: "推理强度已更新",
+    reasoningUnset: "提供商默认值",
   },
 
   pluginsPage: {

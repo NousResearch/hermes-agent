@@ -55,6 +55,30 @@ class OpenCodeGoProfile(ProviderProfile):
             return cap
         return self.default_max_tokens
 
+    def reasoning_effort_levels(self, model: str | None) -> list[str] | None:
+        """Return the Hermes effort levels *model* accepts on this relay.
+
+        Mirrors the family gates in ``build_api_kwargs_extras`` so the
+        dashboard picker shows exactly the dial values the wire accepts:
+
+        - DeepSeek thinking models: full Hermes scale minus ``ultra`` — the
+          relay rejects ``ultra`` (verified live: "unknown variant `ultra`,
+          expected one of none/minimal/low/medium/high/xhigh/max").
+        - Kimi K2: ``none`` plus low/medium/high — the upstream accepts only
+          those effort values (xhigh/max/ultra collapse to high).
+        - GLM-5.2: ``none`` plus the two enabled levels high/max.
+        - Everything else (MiMo, Nemotron, other GLM): the relay sends no
+          reasoning parameters at all, so the dial is meaningless — return
+          an empty list to hide it.
+        """
+        if _is_glm_5_2_model(model):
+            return ["none", "high", "max"]
+        if _is_kimi_k2_model(model):
+            return ["none", "low", "medium", "high"]
+        if _is_deepseek_thinking_model(model):
+            return ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+        return []
+
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:

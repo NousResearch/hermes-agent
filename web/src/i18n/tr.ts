@@ -316,6 +316,10 @@ export const tr: Translations = {
     created: "Oluşturuldu",
     deleted: "Silindi",
     renamed: "Yeniden adlandırıldı",
+    reasoningEffort: "Muhakeme düzeyi",
+    reasoningInherit: "Sağlayıcı varsayılana devret",
+    reasoningSaved: "Muhakeme düzeyi güncellendi",
+    reasoningUnset: "sağlayıcı varsayılanı",
   },
 
   pluginsPage: {

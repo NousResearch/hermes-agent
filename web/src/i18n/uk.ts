@@ -317,6 +317,10 @@ export const uk: Translations = {
     created: "Створено",
     deleted: "Видалено",
     renamed: "Перейменовано",
+    reasoningEffort: "Рівень міркувань",
+    reasoningInherit: "Наслідувати значення за замовчуванням провайдера",
+    reasoningSaved: "Рівень міркувань оновлено",
+    reasoningUnset: "значення за замовчуванням провайдера",
   },
 
   pluginsPage: {

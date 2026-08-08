@@ -1184,3 +1184,56 @@ class TestApiServerEnvOverride:
         assert config.platforms[Platform.API_SERVER].enabled is False
         # The key is still wired through for the shared listener.
         assert config.platforms[Platform.API_SERVER].extra.get("key") == api_server_key
+
+
+def test_webhook_env_secret_round_trip_persists_only_an_env_reference(monkeypatch):
+    """WEBHOOK_SECRET authenticates at runtime without entering serialized config."""
+    import yaml
+
+    from gateway.config import (
+        GatewayConfig,
+        Platform,
+        PlatformConfig,
+        _apply_env_overrides,
+    )
+
+    marker = "synthetic-webhook-secret"
+    monkeypatch.setenv("WEBHOOK_ENABLED", "1")
+    monkeypatch.setenv("WEBHOOK_SECRET", marker)
+    config = GatewayConfig(
+        platforms={
+            Platform.WEBHOOK: PlatformConfig(enabled=True),
+        }
+    )
+
+    _apply_env_overrides(config)
+    platform = config.platforms[Platform.WEBHOOK]
+    persisted = platform.to_dict()
+
+    assert platform.extra["secret"] == marker
+    assert persisted["extra"]["secret"] == "${WEBHOOK_SECRET}"
+    assert marker not in yaml.safe_dump(persisted)
+
+    reloaded = PlatformConfig.from_dict(persisted)
+    assert reloaded.extra["secret"] == marker
+    assert reloaded.to_dict()["extra"]["secret"] == "${WEBHOOK_SECRET}"
+
+
+def test_webhook_env_ref_uses_gateway_secret_scope(monkeypatch):
+    """Environment references resolve through the active gateway secret scope."""
+    from gateway import config as gateway_config
+
+    marker = "synthetic-scoped-webhook-secret"
+    monkeypatch.delenv("WEBHOOK_SECRET", raising=False)
+    monkeypatch.setattr(
+        gateway_config,
+        "_getenv",
+        lambda name, default=None: marker if name == "WEBHOOK_SECRET" else default,
+    )
+
+    platform = gateway_config.PlatformConfig.from_dict(
+        {"enabled": True, "extra": {"secret": "${WEBHOOK_SECRET}"}}
+    )
+
+    assert platform.extra["secret"] == marker
+    assert platform.to_dict()["extra"]["secret"] == "${WEBHOOK_SECRET}"

@@ -3647,7 +3647,12 @@ def _save_aux_choice(
     other task-specific settings are preserved untouched. The main model
     config (``model.default``/``model.provider``) is never modified.
     """
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import (
+        auxiliary_api_key_env,
+        load_config,
+        save_config,
+        save_env_value,
+    )
 
     cfg = load_config()
     aux = cfg.setdefault("auxiliary", {})
@@ -3661,7 +3666,13 @@ def _save_aux_choice(
     entry["provider"] = provider
     entry["model"] = model or ""
     entry["base_url"] = base_url or ""
-    entry["api_key"] = api_key or ""
+    if api_key:
+        key_env = auxiliary_api_key_env(task)
+        save_env_value(key_env, api_key)
+        entry["key_env"] = key_env
+        entry.pop("api_key", None)
+        entry.pop("api", None)
+        entry.pop("api_key_env", None)
     save_config(cfg)
 
 
@@ -3688,7 +3699,7 @@ def _reset_aux_to_auto() -> int:
         if entry.get("provider") not in {None, "", "auto"}:
             entry["provider"] = "auto"
             changed = True
-        for field in ("model", "base_url", "api_key"):
+        for field in ("model", "base_url", "api_key", "key_env", "api_key_env"):
             if entry.get(field):
                 entry[field] = ""
                 changed = True
@@ -4123,7 +4134,16 @@ def _save_custom_provider(
     When *key_env* is set the caller has already written the key to ``.env``,
     so the entry references it instead of inlining the secret (#69449).
     """
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import (
+        custom_endpoint_key_env,
+        load_config,
+        save_config,
+        save_env_value,
+    )
+
+    if api_key and not key_env:
+        key_env = custom_endpoint_key_env(base_url)
+        save_env_value(key_env, api_key)
 
     cfg = load_config()
     providers = cfg.get("custom_providers") or []

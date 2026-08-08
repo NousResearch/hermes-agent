@@ -223,8 +223,13 @@ class TestListNavigation:
         # The list must still be a list
         assert isinstance(reloaded["custom_providers"], list)
         assert len(reloaded["custom_providers"]) == 2
-        # Entry 0 was updated
-        assert reloaded["custom_providers"][0]["api_key"] == "new-a"
+        # Entry 0 now references .env instead of storing the key inline.
+        entry_zero = reloaded["custom_providers"][0]
+        assert entry_zero["key_env"] == "HERMES_CUSTOM_PROVIDER_0_API_KEY"
+        assert "api_key" not in entry_zero
+        from hermes_cli.config import get_env_value
+        assert get_env_value(entry_zero["key_env"]) == "new-a"
+        assert "new-a" not in _read_config(_isolated_hermes_home)
         assert reloaded["custom_providers"][0]["name"] == "provider-a"
         assert reloaded["custom_providers"][0]["base_url"] == "https://a.example.com"
         # Entry 1 is untouched
@@ -249,7 +254,11 @@ class TestListNavigation:
         import yaml
         reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
         entry = reloaded["custom_providers"][0]
-        assert entry["api_key"] == "rotated"
+        assert entry["key_env"] == "HERMES_CUSTOM_PROVIDER_0_API_KEY"
+        assert "api_key" not in entry
+        from hermes_cli.config import get_env_value
+        assert get_env_value(entry["key_env"]) == "rotated"
+        assert "rotated" not in _read_config(_isolated_hermes_home)
         assert entry["name"] == "provider-a"
         assert entry["base_url"] == "https://a.example.com"
         assert set(entry["models"].keys()) == {"foo", "bar"}
@@ -437,6 +446,19 @@ class TestSecretRedactionInDisplay:
 
         captured = capsys.readouterr()
         assert "Set model.reasoning_effort = high" in captured.out
+
+    def test_webhook_secret_set_uses_env_reference(self, _isolated_hermes_home):
+        """CLI webhook-secret writes preserve only the environment reference."""
+        import yaml
+
+        marker = "synthetic-webhook-config-secret"
+        set_config_value("platforms.webhook.extra.secret", marker)
+
+        raw = _read_config(_isolated_hermes_home)
+        parsed = yaml.safe_load(raw)
+        assert parsed["platforms"]["webhook"]["extra"]["secret"] == "${WEBHOOK_SECRET}"
+        assert marker not in raw
+        assert f"WEBHOOK_SECRET={marker}" in _read_env(_isolated_hermes_home)
 
 # #34067: Schema validation for unknown keys
 # ---------------------------------------------------------------------------
@@ -677,17 +699,36 @@ class TestScalarModelSubKeyPreservation:
         assert model["provider"] == "openai"
 
     def test_scalar_model_id_preserved_after_api_key_write(self, _isolated_hermes_home):
-        """model.api_key must also preserve the existing scalar model id."""
+        """model.api_key preserves the model id without persisting the key."""
         import yaml
 
         set_config_value("model", "claude-sonnet")
-        # model.api_key is a sub-key (has a dot), so it stays in config.yaml
-        set_config_value("model.api_key", "sk-test")
+        set_config_value("model.api_key", "synthetic-model-key")
 
         raw = _read_config(_isolated_hermes_home)
         parsed = yaml.safe_load(raw)
         assert parsed["model"]["default"] == "claude-sonnet"
-        assert parsed["model"]["api_key"] == "sk-test"
+        assert parsed["model"]["key_env"] == "HERMES_MODEL_API_KEY"
+        assert "api_key" not in parsed["model"]
+        assert "synthetic-model-key" not in raw
+        assert "HERMES_MODEL_API_KEY=synthetic-model-key" in _read_env(
+            _isolated_hermes_home
+        )
+
+    def test_model_key_env_is_resolved_for_custom_runtime(self, _isolated_hermes_home):
+        """The runtime consumes the env reference written by model.api_key."""
+        set_config_value("model.provider", "custom")
+        set_config_value("model.default", "synthetic-model")
+        set_config_value("model.base_url", "https://llm.synthetic.invalid/v1")
+        set_config_value("model.api_key", "synthetic-model-key")
+
+        from hermes_cli.runtime_provider import _resolve_openrouter_runtime
+
+        with patch.dict(os.environ, {"HERMES_MODEL_API_KEY": "synthetic-model-key"}):
+            runtime = _resolve_openrouter_runtime(requested_provider="custom")
+
+        assert runtime["api_key"] == "synthetic-model-key"
+        assert "synthetic-model-key" not in _read_config(_isolated_hermes_home)
 
 class TestMalformedYAMLConfigPreservation:
     """#75431: config.yaml with YAML syntax errors must not be overwritten."""

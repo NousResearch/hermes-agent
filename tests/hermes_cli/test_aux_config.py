@@ -75,6 +75,33 @@ def test_save_aux_choice_persists_to_config_yaml(tmp_path, monkeypatch):
 
 
 
+def test_save_aux_choice_stores_api_key_in_env_reference(tmp_path, monkeypatch):
+    """An auxiliary API key is never serialized into config.yaml."""
+    from pathlib import Path
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".hermes").mkdir(exist_ok=True)
+    marker = "synthetic-auxiliary-key"
+
+    _save_aux_choice(
+        "vision",
+        provider="custom",
+        model="synthetic-vision-model",
+        base_url="https://vision.synthetic.invalid/v1",
+        api_key=marker,
+    )
+
+    cfg = load_config()
+    entry = cfg["auxiliary"]["vision"]
+    assert not entry.get("api_key")
+    assert entry["key_env"] == "HERMES_AUX_VISION_API_KEY"
+    config_text = (tmp_path / ".hermes" / "config.yaml").read_text(encoding="utf-8")
+    env_text = (tmp_path / ".hermes" / ".env").read_text(encoding="utf-8")
+    assert marker not in config_text
+    assert f"HERMES_AUX_VISION_API_KEY={marker}" in env_text
+
+
 # ── _reset_aux_to_auto ──────────────────────────────────────────────────────
 
 

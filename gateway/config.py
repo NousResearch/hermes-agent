@@ -11,6 +11,7 @@ Handles loading and validating configuration for:
 import logging
 import os
 import json
+import re
 from pathlib import Path
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Dict, List, Optional, Any, Callable
@@ -21,6 +22,9 @@ from agent.secret_scope import current_secret_scope, get_secret as _get_secret
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
+
+
+_ENV_SECRET_REF_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 
 
 def _coerce_bool(value: Any, default: bool = True) -> bool:
@@ -635,10 +639,17 @@ class PlatformConfig:
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
 
+    # Runtime-only provenance for a secret loaded from an environment
+    # reference. It is deliberately omitted from serialized config.
+    secret_env: Optional[str] = field(default=None, repr=False, compare=False)
+
     def to_dict(self) -> Dict[str, Any]:
+        extra = dict(self.extra)
+        if self.secret_env and "secret" in extra:
+            extra["secret"] = f"${{{self.secret_env}}}"
         result = {
             "enabled": self.enabled,
-            "extra": self.extra,
+            "extra": extra,
             "reply_to_mode": self.reply_to_mode,
             "gateway_restart_notification": self.gateway_restart_notification,
             "typing_indicator": self.typing_indicator,
@@ -669,6 +680,15 @@ class PlatformConfig:
         # and extra so YAML ``discord: gateway_restart_notification: false``
         # works without needing a separate platforms: block.
         extra = _coerce_dict(data.get("extra", {}))
+        # A serialized webhook secret is an exact ``${ENV_VAR}`` reference.
+        # Resolve it for the adapter but retain provenance for the next save.
+        secret_env = None
+        raw_secret = extra.get("secret")
+        if isinstance(raw_secret, str):
+            match = _ENV_SECRET_REF_RE.fullmatch(raw_secret.strip())
+            if match:
+                secret_env = match.group(1)
+                extra["secret"] = _getenv(secret_env, "") or ""
         _grn = data.get("gateway_restart_notification")
         if _grn is None:
             _grn = extra.get("gateway_restart_notification")
@@ -704,6 +724,7 @@ class PlatformConfig:
             typing_status_text=_typing_text,
             channel_overrides=channel_overrides,
             extra=extra,
+            secret_env=secret_env,
         )
 
 
@@ -2184,7 +2205,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             except ValueError:
                 pass
         if webhook_secret:
-            config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
+            webhook_config = config.platforms[Platform.WEBHOOK]
+            webhook_config.extra["secret"] = webhook_secret
+            webhook_config.secret_env = "WEBHOOK_SECRET"
 
     # Microsoft Graph webhook platform
     msgraph_webhook_enabled = is_truthy_value(getenv("MSGRAPH_WEBHOOK_ENABLED", ""))

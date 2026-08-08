@@ -416,6 +416,65 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_inherits_board_default_workdir_kind(worker_env, tmp_path):
+    """Tool create with no workspace + no parent-task project inherits the
+    board's git ``default_workdir`` as a ``worktree`` (#69787).
+
+    Exercises the ``kanban_create`` chat/orchestrator branch that resolves the
+    board default when the caller omits ``workspace_kind``/``workspace_path``.
+    """
+    import subprocess
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    kb.create_board("tool-inherit", default_workdir=str(repo))
+    # No parent-task project to inherit from -> board default applies.
+    monkeypatch_task = os.environ.pop("HERMES_KANBAN_TASK", None)
+    try:
+        out = kt._handle_create({
+            "title": "from-board",
+            "assignee": "peer",
+            "board": "tool-inherit",
+        })
+    finally:
+        if monkeypatch_task is not None:
+            os.environ["HERMES_KANBAN_TASK"] = monkeypatch_task
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["workspace_kind"] == "worktree"
+    assert d["workspace_path"] == str(repo.resolve())
+
+
+def test_create_explicit_scratch_skips_board_default(worker_env, tmp_path):
+    """Explicit ``workspace_kind='scratch'`` must not inherit the board path."""
+    import subprocess
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    repo = tmp_path / "proj2"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    kb.create_board("tool-scratch", default_workdir=str(repo))
+    monkeypatch_task = os.environ.pop("HERMES_KANBAN_TASK", None)
+    try:
+        out = kt._handle_create({
+            "title": "force-scratch",
+            "assignee": "peer",
+            "board": "tool-scratch",
+            "workspace_kind": "scratch",
+        })
+    finally:
+        if monkeypatch_task is not None:
+            os.environ["HERMES_KANBAN_TASK"] = monkeypatch_task
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["workspace_kind"] == "scratch"
+    assert d["workspace_path"] is None
+
+
 def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     conn = kb.connect()

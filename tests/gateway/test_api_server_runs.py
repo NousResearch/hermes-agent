@@ -637,3 +637,62 @@ class TestRunsProviderAuthFailure:
                 assert status["status"] == "failed"
                 assert status["error"] == "⚠️ Provider authentication failed: No credentials found for provider 'nous'"
                 assert status["last_event"] == "run.failed"
+
+
+class TestRunEventsHeadFlush:
+    """The SSE head must reach the client before the first event (#80757).
+
+    ``_handle_run_events`` used to call ``prepare()`` and go straight into the
+    queue wait. aiohttp keeps the headers in the socket buffer until the first
+    body write, so a subscriber that connects before the run emits anything got
+    no bytes at all — ``fetch()``/``EventSource`` never resolve and the client
+    looks hung. The approval flow is the worst case: ``approval.request`` only
+    fires after the model thinks, so the client waits that whole time (or the
+    30s keepalive) for headers that were ready immediately.
+    """
+
+    @pytest.mark.asyncio
+    async def test_head_arrives_before_any_event(self, adapter):
+        """A subscriber on a silent run reads its first byte immediately."""
+        app = _create_runs_app(adapter)
+        run_id = "run_silent_head"
+        # A registered run whose queue stays empty for the whole test — the
+        # exact shape of "subscribed before the first event was emitted".
+        adapter._run_streams[run_id] = asyncio.Queue()
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await asyncio.wait_for(
+                cli.get(f"/v1/runs/{run_id}/events"), timeout=5.0
+            )
+            assert resp.status == 200
+            assert resp.headers["Content-Type"].startswith("text/event-stream")
+
+            # Without the preamble this blocks until the 30s keepalive.
+            first = await asyncio.wait_for(resp.content.read(1), timeout=3.0)
+            assert first, "no body byte arrived before the first event"
+
+            resp.close()
+
+    @pytest.mark.asyncio
+    async def test_preamble_is_an_ignorable_sse_comment(self, adapter):
+        """The flush must not look like an event to a conforming consumer."""
+        app = _create_runs_app(adapter)
+        run_id = "run_comment_preamble"
+        q: asyncio.Queue = asyncio.Queue()
+        adapter._run_streams[run_id] = q
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await asyncio.wait_for(
+                cli.get(f"/v1/runs/{run_id}/events"), timeout=5.0
+            )
+            assert resp.status == 200
+
+            # Close the stream so the body is finite, then read it whole.
+            await q.put(None)
+            body = await asyncio.wait_for(resp.text(), timeout=5.0)
+
+        # Every line before the close sentinel is an SSE comment: no `event:`
+        # or `data:` field, so EventSource dispatches nothing extra.
+        assert body.startswith(":")
+        assert "event:" not in body
+        assert "data:" not in body

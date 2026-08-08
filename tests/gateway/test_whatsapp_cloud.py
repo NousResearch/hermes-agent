@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import Platform
+from gateway.platforms.base import MessageType
 
 
 @pytest.fixture(autouse=True)
@@ -752,6 +753,164 @@ class TestSendVoice:
             _os.unlink(mp3_path)
             if _os.path.exists(opus_path):
                 _os.unlink(opus_path)
+
+
+class TestSendLocation:
+    """send_location — Cloud API ``type: location`` message (parity with B)."""
+
+
+    @pytest.mark.asyncio
+    async def test_send_location_payload_shape(self):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200, {"messages": [{"id": "wamid.loc1"}]}
+            )
+        )
+
+        result = await adapter.send_location(
+            "15551234567", 37.7749, -122.4194,
+            name="Salesforce Tower", address="415 Mission St, San Francisco",
+        )
+        assert result.success is True
+        assert result.message_id == "wamid.loc1"
+
+        payload = adapter._http_client.post.call_args.kwargs["json"]
+        assert payload["messaging_product"] == "whatsapp"
+        assert payload["recipient_type"] == "individual"
+        assert payload["to"] == "15551234567"
+        assert payload["type"] == "location"
+        assert payload["location"]["latitude"] == 37.7749
+        assert payload["location"]["longitude"] == -122.4194
+        assert payload["location"]["name"] == "Salesforce Tower"
+        assert payload["location"]["address"] == "415 Mission St, San Francisco"
+
+    @pytest.mark.asyncio
+    async def test_send_location_minimal_coords_only(self):
+        """Only lat + lng are required; name/address are optional."""
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200, {"messages": [{"id": "wamid.loc2"}]}
+            )
+        )
+
+        result = await adapter.send_location("15551234567", 48.8566, 2.3522)
+        assert result.success is True
+
+        payload = adapter._http_client.post.call_args.kwargs["json"]
+        assert payload["location"] == {"latitude": 48.8566, "longitude": 2.3522}
+        assert "name" not in payload["location"]
+        assert "address" not in payload["location"]
+
+    @pytest.mark.asyncio
+    async def test_send_location_with_reply_to(self):
+        """reply_to sets context.message_id for quoted location messages."""
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200, {"messages": [{"id": "wamid.loc3"}]}
+            )
+        )
+
+        await adapter.send_location(
+            "15551234567", 51.5074, -0.1278, reply_to="wamid.inbound1"
+        )
+        payload = adapter._http_client.post.call_args.kwargs["json"]
+        assert payload["context"] == {"message_id": "wamid.inbound1"}
+
+    @pytest.mark.asyncio
+    async def test_send_location_graph_error_returns_failure(self):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        error_resp = MagicMock()
+        error_resp.status_code = 400
+        error_resp.json = MagicMock(return_value={
+            "error": {"code": 100, "message": "Invalid location"}
+        })
+        error_resp.text = '{"error":{"code":100,"message":"Invalid location"}}'
+        adapter._http_client.post = AsyncMock(return_value=error_resp)
+
+        result = await adapter.send_location("15551234567", 0.0, 0.0)
+        assert result.success is False
+        assert "graph error 100" in result.error
+
+    @pytest.mark.asyncio
+    async def test_send_location_not_connected(self):
+        adapter = _make_adapter()
+        adapter._http_client = None
+
+        result = await adapter.send_location("15551234567", 1.0, 2.0)
+        assert result.success is False
+        assert result.error == "Not connected"
+
+    @pytest.mark.asyncio
+    async def test_send_location_accepts_metadata(self):
+        """metadata kwarg is accepted for signature parity with Baileys."""
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200, {"messages": [{"id": "wamid.loc4"}]}
+            )
+        )
+
+        result = await adapter.send_location(
+            "15551234567", 40.7128, -74.0060, metadata={"key": "value"}
+        )
+        assert result.success is True
+
+
+class TestInboundLocation:
+    """Inbound ``type: location`` messages produce a MessageEvent with
+    coordinates surfaced as text + MessageType.LOCATION (parity with B)."""
+
+    @pytest.mark.asyncio
+    async def test_inbound_location_with_name_address(self):
+        adapter = _make_adapter()
+        adapter._message_handler = AsyncMock()
+
+        event = await adapter._build_message_event_from_cloud(
+            {"from": "15551234567", "id": "wamid.inbound_loc",
+             "type": "location",
+             "location": {
+                 "latitude": 37.7749, "longitude": -122.4194,
+                 "name": "Salesforce Tower",
+                 "address": "415 Mission St",
+             }},
+            {"15551234567": "Alice"}, {},
+        )
+        assert event is not None
+        assert event.message_type == MessageType.LOCATION
+        assert "Salesforce Tower" in event.text
+        assert "415 Mission St" in event.text
+        assert "37.7749" in event.text
+        assert "-122.4194" in event.text
+        assert "maps.google.com" in event.text
+
+    @pytest.mark.asyncio
+    async def test_inbound_location_coords_only(self):
+        """Location without name/address still surfaces the coordinates."""
+        adapter = _make_adapter()
+        adapter._message_handler = AsyncMock()
+
+        event = await adapter._build_message_event_from_cloud(
+            {"from": "15551234567", "id": "wamid.inbound_loc2",
+             "type": "location",
+             "location": {"latitude": 48.8566, "longitude": 2.3522}},
+            {"15551234567": "Alice"}, {},
+        )
+        assert event is not None
+        assert event.message_type == MessageType.LOCATION
+        assert "48.8566" in event.text
+        assert "2.3522" in event.text
+        assert "maps.google.com" in event.text
+        # No name/address labels when they weren't provided
+        assert "Name:" not in event.text
+        assert "Address:" not in event.text
 
 
 # ---------------------------------------------------------------------------

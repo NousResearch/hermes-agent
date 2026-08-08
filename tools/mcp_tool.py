@@ -345,6 +345,19 @@ _MAX_BACKOFF_SECONDS = 60
 # server is unrevivable: its tools are out of the registry, so no tool call
 # can ever reach the circuit-breaker half-open probe or _signal_reconnect.
 _PARKED_RETRY_INTERVAL = 300     # seconds between parked self-probes
+# Revival probes from the parked state run on a short connect budget
+# (#77765): for an HTTP+OAuth server whose OAuth/auth flow hangs inside the
+# long-lived gateway process, every self-probe used to burn the full
+# connect_timeout (default 60s × 3 attempts ≈ 3 minutes) and then park
+# again — forever. Capping the probe budget keeps each wake cheap so the
+# give-up threshold below is reached in minutes, not hours.
+_PARKED_PROBE_CONNECT_TIMEOUT = 10.0
+# After this many consecutive failed revival probes the timed self-probe is
+# abandoned entirely: the server stays parked until an explicit reconnect
+# is requested (manual /mcp refresh, OAuth recovery) or the process
+# restarts. Without this bound the park loop times out forever in the
+# background even though the server/token/network are healthy (#77765).
+_MAX_PARKED_PROBE_FAILURES = 6
 _RECYCLED_RECONNECT_TIMEOUT = 15.0
 # Jitter applied to reconnect backoff sleeps. Without it, every server that
 # lost the same backend retries in lockstep (thundering herd) and log lines
@@ -1962,6 +1975,7 @@ class MCPServerTask:
         "_idle_timeout_seconds", "_max_lifetime_seconds", "_recycled_reason",
         "initialize_result", "_ping_unsupported",
         "_reconnect_retries", "_session_proven", "_was_parked",
+        "_parked_probe_failures", "_probe_connect_timeout",
     )
 
     def __init__(self, name: str):
@@ -1996,6 +2010,14 @@ class MCPServerTask:
         # until the session proves healthy again — used to log the
         # parked→revived transition exactly once.
         self._was_parked: bool = False
+        # Consecutive failed revival probes while parked (#77765). Reset by
+        # _mark_session_proven once the session proves healthy again.
+        self._parked_probe_failures: int = 0
+        # When set, the next HTTP connect attempt(s) run on a short budget
+        # (_PARKED_PROBE_CONNECT_TIMEOUT) instead of the full
+        # connect_timeout. Armed on every park wake; cleared once a session
+        # establishes so later (non-probe) reconnects use the full budget.
+        self._probe_connect_timeout: Optional[float] = None
         self._auth_type: str = ""
         self._refresh_lock = asyncio.Lock()
         # MCP stdio sessions are a single JSON-RPC stream. Some servers emit
@@ -2038,6 +2060,20 @@ class MCPServerTask:
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
         return "url" in self._config
+
+    def _effective_connect_timeout(self, config: dict) -> float:
+        """Return the connect timeout for the next transport attempt.
+
+        Revival probes from the parked state run on a short budget
+        (:data:`_PARKED_PROBE_CONNECT_TIMEOUT`) so a wedged OAuth/auth flow
+        gives up in seconds instead of burning the full ``connect_timeout``
+        on every self-probe wake (#77765). Non-probe attempts keep the
+        configured timeout.
+        """
+        connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+        if self._probe_connect_timeout is not None:
+            connect_timeout = min(connect_timeout, self._probe_connect_timeout)
+        return connect_timeout
 
     def _advertises_tools(self) -> bool:
         """Whether the server advertises the ``tools`` capability.
@@ -2340,6 +2376,10 @@ class MCPServerTask:
         if not self._session_proven:
             self._session_proven = True
             self._reconnect_retries = 0
+            # A healthy session proves the revival succeeded — restart the
+            # consecutive-probe-failure counter so a later outage gets a
+            # fresh self-probe budget (#77765).
+            self._parked_probe_failures = 0
             if self._was_parked:
                 self._was_parked = False
                 logger.warning(
@@ -2452,6 +2492,58 @@ class MCPServerTask:
             return "shutdown"
         self._reconnect_event.clear()
         return "reconnect"
+
+    async def _park_for_revival(self, park_reason: str) -> str:
+        """Park this server and wait for revival, bounding the self-probe loop.
+
+        Parking deregisters the server's tools, so no tool call can reach the
+        circuit-breaker half-open probe or ``_signal_reconnect`` — the park
+        must therefore wake periodically and attempt one revival probe itself
+        (#57129). That wake cadence is what #77765 turned into an eternal
+        loop: for an HTTP+OAuth server whose OAuth/auth flow hangs inside the
+        long-lived gateway process, every self-probe burns the full
+        ``connect_timeout`` per attempt (default 60s × 3 attempts ≈ 3 minutes)
+        and then parks again — forever, even though the server, token, and
+        network are all healthy (a fresh process connects in ~0.3s).
+
+        This bounds that loop in two ways:
+
+        * Every revival wake arms a short connect budget
+          (:data:`_PARKED_PROBE_CONNECT_TIMEOUT`) for the next transport
+          attempt(s), so a wedged auth flow gives up in seconds.
+        * After :data:`_MAX_PARKED_PROBE_FAILURES` consecutive failed probes
+          the timed self-probe is abandoned: the server stops waking and
+          waits only for an explicit reconnect request (manual ``/mcp``
+          refresh, OAuth recovery) or shutdown. The loop desists instead of
+          timing out forever in the background.
+
+        ``park_reason`` is a short human-readable label for the give-up log.
+
+        Returns ``"shutdown"`` or ``"reconnect"`` (see
+        :meth:`_wait_for_reconnect_or_shutdown`).
+        """
+        if self._was_parked:
+            # A previous revival probe failed and we are parking again: charge
+            # the consecutive-failure counter so the self-probe loop is bounded.
+            self._parked_probe_failures += 1
+        self._was_parked = True
+        self._deregister_tools()
+        self._reconnect_event.clear()
+        if self._parked_probe_failures >= _MAX_PARKED_PROBE_FAILURES:
+            logger.warning(
+                "MCP server '%s': %d consecutive revival probes failed (%s); "
+                "giving up the timed self-probe loop — the server stays "
+                "parked until an explicit reconnect is requested (e.g. "
+                "/reload-mcp) or the gateway is restarted",
+                self.name, self._parked_probe_failures, park_reason,
+            )
+            timeout: Optional[float] = None
+        else:
+            timeout = _PARKED_RETRY_INTERVAL
+        parked = await self._wait_for_reconnect_or_shutdown(timeout=timeout)
+        # Revival wake: arm the short connect budget for the probe attempt(s).
+        self._probe_connect_timeout = _PARKED_PROBE_CONNECT_TIMEOUT
+        return parked
 
     async def _wait_for_reconnect_or_shutdown(
         self, timeout: Optional[float] = None
@@ -2899,7 +2991,7 @@ class MCPServerTask:
         # case-insensitive so conventional casing is preserved.
         if not any(key.lower() == "mcp-protocol-version" for key in headers):
             headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION
-        connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+        connect_timeout = self._effective_connect_timeout(config)
         ssl_verify = config.get("ssl_verify", True)
         client_cert = _resolve_client_cert(self.name, config)
 
@@ -3136,6 +3228,10 @@ class MCPServerTask:
         # Clears any latch from a prior connection in case the server gained
         # ping support across the reconnect.
         self._ping_unsupported = False
+        # The transport just established: if a revival probe budget was armed
+        # by _park_for_revival, it has served its purpose — drop the cap so
+        # later (non-probe) reconnects use the full connect_timeout (#77765).
+        self._probe_connect_timeout = None
         if self.session is None:
             return
         if not self._advertises_tools():
@@ -3323,11 +3419,8 @@ class MCPServerTask:
                             self.name, _MAX_RECONNECT_RETRIES,
                             _PARKED_RETRY_INTERVAL,
                         )
-                        self._was_parked = True
-                        self._deregister_tools()
-                        self._reconnect_event.clear()
-                        parked = await self._wait_for_reconnect_or_shutdown(
-                            timeout=_PARKED_RETRY_INTERVAL
+                        parked = await self._park_for_revival(
+                            "rapid-drop budget exhausted"
                         )
                         if parked == "shutdown":
                             break
@@ -3415,11 +3508,8 @@ class MCPServerTask:
                             )
                         self._error = exc
                         self._ready.set()
-                        self._was_parked = True
-                        self._deregister_tools()
-                        self._reconnect_event.clear()
-                        parked = await self._wait_for_reconnect_or_shutdown(
-                            timeout=_PARKED_RETRY_INTERVAL
+                        parked = await self._park_for_revival(
+                            "permanent initial failure"
                         )
                         if parked == "shutdown":
                             return
@@ -3447,11 +3537,8 @@ class MCPServerTask:
                         )
                         self._error = exc
                         self._ready.set()
-                        self._was_parked = True
-                        self._deregister_tools()
-                        self._reconnect_event.clear()
-                        parked = await self._wait_for_reconnect_or_shutdown(
-                            timeout=_PARKED_RETRY_INTERVAL
+                        parked = await self._park_for_revival(
+                            "initial connection failures"
                         )
                         if parked == "shutdown":
                             return
@@ -3505,11 +3592,8 @@ class MCPServerTask:
                         self.name, _PARKED_RETRY_INTERVAL,
                         type(root).__name__, root,
                     )
-                    self._was_parked = True
-                    self._deregister_tools()
-                    self._reconnect_event.clear()
-                    parked = await self._wait_for_reconnect_or_shutdown(
-                        timeout=_PARKED_RETRY_INTERVAL
+                    parked = await self._park_for_revival(
+                        "permanent error"
                     )
                     if parked == "shutdown":
                         return
@@ -3541,14 +3625,13 @@ class MCPServerTask:
                     # deregisters the tools, no tool call can reach the
                     # circuit-breaker half-open probe or _signal_reconnect —
                     # so the park is a TIMED wait: every _PARKED_RETRY_INTERVAL
-                    # we wake and attempt one reconnect ourselves (#57129).
+                    # we wake and attempt one reconnect ourselves (#57129),
+                    # bounded by _park_for_revival (short probe budget +
+                    # give-up after _MAX_PARKED_PROBE_FAILURES, #77765).
                     # An explicit _reconnect_event.set() (OAuth recovery,
                     # manual /mcp refresh) still wakes us immediately.
-                    self._was_parked = True
-                    self._deregister_tools()
-                    self._reconnect_event.clear()
-                    parked = await self._wait_for_reconnect_or_shutdown(
-                        timeout=_PARKED_RETRY_INTERVAL
+                    parked = await self._park_for_revival(
+                        "reconnect budget exhausted"
                     )
                     if parked == "shutdown":
                         return

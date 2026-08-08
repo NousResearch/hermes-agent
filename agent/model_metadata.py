@@ -2129,8 +2129,18 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
             resp = client.get(f"{server_url}/v1/models/{model}")
             if resp.status_code == 200:
                 data = resp.json()
-                # vLLM returns max_model_len
-                ctx = data.get("max_model_len") or data.get("context_length") or data.get("max_tokens")
+                # vLLM returns max_model_len.  Anthropic-shaped payloads (e.g. a
+                # local relay proxying api.anthropic.com/v1/models) report
+                # max_input_tokens for the context window and max_tokens for the
+                # *output* cap — check max_input_tokens before falling back to
+                # max_tokens, otherwise a 1M-context model is read as its 128K
+                # output limit.
+                ctx = (
+                    data.get("max_model_len")
+                    or data.get("context_length")
+                    or data.get("max_input_tokens")
+                    or data.get("max_tokens")
+                )
                 if ctx and isinstance(ctx, (int, float)):
                     return int(ctx)
 
@@ -2155,6 +2165,8 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                     # vLLM/OpenAI keys are also checked. Runtime n_ctx is
                     # preferred over n_ctx_train (the training maximum, which
                     # can be larger than what the server actually allocates).
+                    # max_input_tokens precedes max_tokens: on Anthropic-shaped
+                    # payloads max_tokens is the *output* cap, not the window.
                     for source in (matched, matched.get("meta") or {}):
                         if not isinstance(source, dict):
                             continue
@@ -2164,6 +2176,7 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                             "context_window",
                             "max_model_len",
                             "max_context_length",
+                            "max_input_tokens",
                             "max_tokens",
                             "n_ctx_train",
                         ):

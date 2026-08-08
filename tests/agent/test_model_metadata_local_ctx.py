@@ -272,6 +272,107 @@ class TestQueryLocalContextLengthModelsList:
         assert result == 256000
 
 
+class TestQueryLocalContextLengthAnthropicShape:
+    """Anthropic-shaped /v1/models payloads: max_tokens is the *output* cap.
+
+    A local relay that proxies api.anthropic.com/v1/models reports
+    ``max_tokens`` (output token cap, e.g. 128000) alongside
+    ``max_input_tokens`` (the real context window, e.g. 1000000).  Treating
+    ``max_tokens`` as a context-length key silently caps such models at the
+    output limit.  vLLM-shaped payloads (``max_model_len``) must stay
+    unaffected.
+    """
+
+    def _make_resp(self, status_code, body):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.json.return_value = body
+        return resp
+
+    def _make_client(self, detail_resp, list_resp):
+        """Mock httpx.Client: first GET is /v1/models/{model}, second /v1/models."""
+        call_count = [0]
+
+        def side_effect(url, **kwargs):
+            call_count[0] += 1
+            return detail_resp if call_count[0] == 1 else list_resp
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = self._make_resp(404, {})
+        client_mock.get.side_effect = side_effect
+        return client_mock
+
+    def test_model_detail_prefers_max_input_tokens_over_max_tokens(self):
+        """/v1/models/{model}: max_input_tokens wins over the max_tokens output cap."""
+        from agent.model_metadata import _query_local_context_length
+
+        detail_resp = self._make_resp(200, {
+            "id": "claude-sonnet-5",
+            "type": "model",
+            "max_tokens": 128000,
+            "max_input_tokens": 1000000,
+        })
+        client_mock = self._make_client(detail_resp, self._make_resp(404, {}))
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("claude-sonnet-5", "http://127.0.0.1:9933/v1")
+
+        assert result == 1000000
+
+    def test_models_list_prefers_max_input_tokens_over_max_tokens(self):
+        """/v1/models list: max_input_tokens wins over the max_tokens output cap."""
+        from agent.model_metadata import _query_local_context_length
+
+        list_resp = self._make_resp(200, {
+            "data": [
+                {
+                    "id": "claude-sonnet-5",
+                    "type": "model",
+                    "max_tokens": 128000,
+                    "max_input_tokens": 1000000,
+                }
+            ]
+        })
+        client_mock = self._make_client(self._make_resp(404, {}), list_resp)
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("claude-sonnet-5", "http://127.0.0.1:9933/v1")
+
+        assert result == 1000000
+
+    def test_model_detail_vllm_shape_unaffected(self):
+        """/v1/models/{model}: max_model_len still wins for vLLM-shaped payloads."""
+        from agent.model_metadata import _query_local_context_length
+
+        detail_resp = self._make_resp(200, {"id": "omnicoder-9b", "max_model_len": 262144})
+        client_mock = self._make_client(detail_resp, self._make_resp(404, {}))
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="vllm"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("omnicoder-9b", "http://localhost:8000/v1")
+
+        assert result == 262144
+
+    def test_models_list_vllm_shape_unaffected(self):
+        """/v1/models list: max_model_len still wins for vLLM-shaped payloads."""
+        from agent.model_metadata import _query_local_context_length
+
+        list_resp = self._make_resp(200, {
+            "data": [{"id": "omnicoder-9b", "max_model_len": 262144}]
+        })
+        client_mock = self._make_client(self._make_resp(404, {}), list_resp)
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="vllm"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("omnicoder-9b", "http://localhost:8000/v1")
+
+        assert result == 262144
+
+
 class TestQueryLocalContextLengthLmStudio:
     """_query_local_context_length with LM Studio native /api/v1/models response."""
 

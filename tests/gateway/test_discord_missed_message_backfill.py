@@ -294,6 +294,42 @@ async def test_recovered_mention_reuses_live_auth_and_mention_gates(adapter, mon
     )
 
 
+@pytest.mark.asyncio
+async def test_recovered_unmentioned_message_rejected_in_required_channel(
+    adapter, monkeypatch
+):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    adapter.config.extra["require_mention_channels"] = ["123"]
+    message = make_message(
+        channel=FakeChannel(channel_id=123),
+        content="unmentioned request",
+    )
+
+    assert await adapter._dispatch_recovered_message(message) is False
+    adapter._handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recovered_explicit_mention_admitted_in_required_channel(
+    adapter, monkeypatch
+):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    adapter.config.extra["require_mention_channels"] = ["123"]
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeChannel(channel_id=123),
+        content=f"<@{bot_user.id}> mentioned request",
+        mentions=[bot_user],
+    )
+
+    assert await adapter._dispatch_recovered_message(message) is True
+    adapter._handle_message.assert_awaited_once_with(
+        message,
+        role_authorized=False,
+        recovered=True,
+    )
+
+
 def test_default_config_exposes_missed_message_backfill_settings():
     from hermes_cli.config import DEFAULT_CONFIG
 

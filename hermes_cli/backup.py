@@ -24,6 +24,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_default_hermes_root, get_hermes_home, display_hermes_home
+from utils import (
+    _preserve_file_mode,
+    _preserve_file_owner,
+    _restore_file_mode,
+    _restore_file_owner,
+    atomic_replace,
+)
 
 # Shared formatter; the private alias is kept because claw.py and the backup
 # tests import ``_format_size`` from this module.
@@ -849,6 +856,108 @@ def _detect_prefix(zf: zipfile.ZipFile) -> str:
     return ""
 
 
+def _default_new_file_mode() -> Optional[int]:
+    """Return the mode ``open(path, "wb")`` gives a file it has to create.
+
+    ``tempfile.mkstemp`` always creates at 0600, so staging an import through a
+    temp file would tighten every *newly created* file to owner-only — the same
+    hazard ``utils._restore_file_mode`` documents for Docker/NAS volume mounts
+    that rely on broader permissions.  The umask can only be read by setting it,
+    so this is resolved once per import rather than once per member.  The probe
+    installs a *restrictive* mask rather than 0 so that anything another thread
+    creates inside the two-syscall window is owner-only, never world-writable.
+    Returns ``None`` if the umask cannot be read, in which case the caller
+    leaves mkstemp's mode alone.
+    """
+    try:
+        current = os.umask(0o077)
+        os.umask(current)
+    except OSError:
+        return None
+    return 0o666 & ~current
+
+
+def _extract_member_atomically(
+    zf: zipfile.ZipFile,
+    member: str,
+    target: Path,
+    new_file_mode: Optional[int] = None,
+) -> None:
+    """Restore one zip member onto *target* with no truncation window.
+
+    ``open(target, "wb")`` truncates the user's existing file to zero *before*
+    any replacement bytes exist.  A Ctrl-C, an ENOSPC, a corrupt member, or a
+    crash between the truncate and the write therefore leaves that file empty
+    with nothing behind it — during ``hermes import``, which is the
+    disaster-recovery path a user reaches for *because* they already lost
+    something.  Staging into the target's own directory and publishing with a
+    rename means the target only ever moves from its old contents to the
+    complete new contents.
+
+    ``atomic_replace`` rather than a bare ``os.replace``: it resolves a
+    symlinked target first, so a deployment that links ``config.yaml`` into a
+    dotfiles repo keeps the link instead of having it silently swapped for a
+    regular file (GitHub #16743), and it falls back to copy/fsync/unlink on
+    ``EXDEV``/``EBUSY`` for cross-device and bind-mount installs.  That
+    fallback uses ``shutil.copyfile``, which does truncate in place, so on the
+    cross-device path the guarantee above degrades to today's behaviour rather
+    than improving on it; closing that belongs in ``utils.atomic_replace``,
+    where every atomic writer in the repo would benefit, not here.
+
+    Permission bits *and* ownership are carried across the replace so routing
+    through mkstemp does not change the file the caller would otherwise have
+    produced.  ``os.replace`` swaps in a temp file owned by the *writing* user,
+    so without the chown a ``sudo hermes import`` would silently re-own every
+    restored file to root — on the disaster-recovery path, and on exactly the
+    Docker/NAS installs ``utils._restore_file_owner`` documents.  Both concerns
+    delegate to the shared ``utils`` helpers rather than being re-derived here.
+    The temp file is removed on any failure so a partial import leaves no
+    residue.
+    """
+    # ``_preserve_file_mode`` returns None when the target does not exist (or
+    # cannot be stat'd), in which case the umask-derived create-mode applies —
+    # the same shape as ``atomic_yaml_write``'s ``create_mode`` fallback.
+    mode = _preserve_file_mode(target)
+    owner = _preserve_file_owner(target)
+    if mode is None:
+        mode = new_file_mode
+
+    # Truncate the stem: mkstemp adds ~16 characters, and a member already near
+    # NAME_MAX would otherwise fail here on a write that used to succeed.
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(target.parent), prefix=f".{target.name[:80]}.", suffix=".partial"
+    )
+    try:
+        with os.fdopen(fd, "wb") as dst:
+            if mode is not None:
+                # Apply the mode to the temp file BEFORE the replace so the
+                # target never transits through mkstemp's 0600, and so
+                # ``atomic_replace``'s EXDEV/EBUSY ``shutil.copystat`` fallback
+                # copies the intended bits rather than 0600.  fchmod is
+                # Unix-only; Windows takes the path-based chmod.
+                if hasattr(os, "fchmod"):
+                    os.fchmod(dst.fileno(), mode)
+                else:
+                    os.chmod(tmp_name, mode)
+            # Stream instead of ``src.read()``: a multi-gigabyte state.db member
+            # must not be held in memory in one piece.
+            with zf.open(member) as src:
+                shutil.copyfileobj(src, dst)
+            dst.flush()
+            os.fsync(dst.fileno())
+        real_path = Path(atomic_replace(tmp_name, target))
+        # Owner first: chown clears setuid/setgid, so the mode restore below is
+        # what puts those bits back.  Ordering mirrors ``atomic_yaml_write``.
+        _restore_file_owner(real_path, owner)
+        _restore_file_mode(real_path, mode)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
 def run_import(args) -> None:
     """Restore a Hermes backup from a zip file."""
     zip_path = Path(args.zipfile).expanduser().resolve()
@@ -907,6 +1016,9 @@ def run_import(args) -> None:
         restored_external = 0
         skipped_runtime: list[str] = []
         home_dir = Path.home().resolve()
+        # Resolved once: every member is published via a temp file, and mkstemp
+        # would otherwise create newly restored files as 0600.
+        new_file_mode = _default_new_file_mode()
         t0 = time.monotonic()
 
         for member in members:
@@ -926,8 +1038,7 @@ def run_import(args) -> None:
                     continue
                 try:
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    with zf.open(member) as src, open(target, "wb") as dst:
-                        dst.write(src.read())
+                    _extract_member_atomically(zf, member, target, new_file_mode)
                     # External provider configs commonly hold credentials.
                     if target.suffix in {".json", ".env", ".conf"} or target.name in _SECRET_FILE_NAMES:
                         try:
@@ -972,8 +1083,7 @@ def run_import(args) -> None:
 
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
-                with zf.open(member) as src, open(target, "wb") as dst:
-                    dst.write(src.read())
+                _extract_member_atomically(zf, member, target, new_file_mode)
                 if target.name in _SECRET_FILE_NAMES:
                     os.chmod(target, 0o600)
                 restored += 1

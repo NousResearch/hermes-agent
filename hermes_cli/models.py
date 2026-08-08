@@ -1369,6 +1369,7 @@ _PROVIDER_ALIASES = {
     "lm_studio": "lmstudio",
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
+    "meta-ai": "meta",
 }
 
 

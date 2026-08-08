@@ -1,0 +1,5 @@
+name: meta-provider
+kind: model-provider
+version: 1.0.0
+description: Meta — Model API (OpenAI-compatible)
+author: Nous Research

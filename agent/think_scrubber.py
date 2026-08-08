@@ -95,13 +95,21 @@ class StreamingThinkScrubber:
     def __init__(self) -> None:
         self._in_block: bool = False
         self._buf: str = ""
+        self._last_stripped_reasoning: str = ""
         self._last_emitted_ended_newline: bool = True
 
     def reset(self) -> None:
         """Reset all state.  Call at the top of every new turn."""
         self._in_block = False
         self._buf = ""
+        self._last_stripped_reasoning = ""
         self._last_emitted_ended_newline = True
+
+    def pop_stripped_reasoning(self) -> str:
+        """Return and clear reasoning text stripped by the most recent feed."""
+        text = self._last_stripped_reasoning
+        self._last_stripped_reasoning = ""
+        return text
 
     def feed(self, text: str) -> str:
         """Feed one delta; return the scrubbed visible portion.
@@ -110,6 +118,7 @@ class StreamingThinkScrubber:
         content or is being held back pending resolution of a partial
         tag at the boundary.
         """
+        self._last_stripped_reasoning = ""
         if not text:
             return ""
         buf = self._buf + text
@@ -124,11 +133,17 @@ class StreamingThinkScrubber:
                 )
                 if close_idx == -1:
                     # No close yet — hold back a potential partial
-                    # close-tag prefix; discard everything else.
+                    # close-tag prefix; route everything else as reasoning.
                     held = self._max_partial_suffix(buf, self._CLOSE_TAGS)
+                    reasoning_part = buf[:-held] if held else buf
+                    if reasoning_part:
+                        self._last_stripped_reasoning += reasoning_part
                     self._buf = buf[-held:] if held else ""
                     return "".join(out)
-                # Found close: discard block content + tag, continue.
+                # Found close: route block content as reasoning, discard tag,
+                # continue with any visible text after the block.
+                if close_idx > 0:
+                    self._last_stripped_reasoning += buf[:close_idx]
                 buf = buf[close_idx + close_len:]
                 self._in_block = False
             else:
@@ -158,6 +173,9 @@ class StreamingThinkScrubber:
                             self._last_emitted_ended_newline = (
                                 preceding.endswith("\n")
                             )
+                    inner = self._closed_pair_inner_text(buf[start_idx:end_idx])
+                    if inner:
+                        self._last_stripped_reasoning += inner
                     buf = buf[end_idx:]
                     continue
 
@@ -219,6 +237,7 @@ class StreamingThinkScrubber:
         if self._in_block:
             self._buf = ""
             self._in_block = False
+            self._last_stripped_reasoning = ""
             # Next feed() is a new stream — start-of-stream is a boundary.
             self._last_emitted_ended_newline = True
             return ""
@@ -279,6 +298,27 @@ class StreamingThinkScrubber:
             if best is None or open_idx < best[0]:
                 best = (open_idx, end_idx)
         return best
+
+    def _closed_pair_inner_text(self, segment: str) -> str:
+        """Return inner text for a closed think/reasoning tag segment."""
+        segment_lower = segment.lower()
+        best: "tuple[int, int, int] | None" = None
+        for open_tag, close_tag in zip(self._OPEN_TAGS, self._CLOSE_TAGS):
+            open_lower = open_tag.lower()
+            close_lower = close_tag.lower()
+            open_idx = segment_lower.find(open_lower)
+            if open_idx == -1:
+                continue
+            content_start = open_idx + len(open_lower)
+            close_idx = segment_lower.find(close_lower, content_start)
+            if close_idx == -1:
+                continue
+            if best is None or open_idx < best[0]:
+                best = (open_idx, content_start, close_idx)
+        if best is None:
+            return ""
+        _, content_start, close_idx = best
+        return segment[content_start:close_idx]
 
     def _find_open_at_boundary(
         self, buf: str, already_emitted: list[str],

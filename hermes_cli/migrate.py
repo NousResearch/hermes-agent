@@ -20,7 +20,7 @@ def cmd_migrate(args: Any) -> int:
         return cmd_migrate_xai(args)
 
     print("usage: hermes migrate xai [--apply] [--no-backup]", file=sys.stderr)
-    return 2
+    sys.exit(2)
 
 
 def cmd_migrate_xai(args: Any) -> int:
@@ -75,7 +75,7 @@ def cmd_migrate_xai(args: Any) -> int:
             f"(looked at: {config_path})",
             file=sys.stderr,
         )
-        return 1
+        sys.exit(1)
 
     try:
         result = apply_migration(
@@ -88,7 +88,7 @@ def cmd_migrate_xai(args: Any) -> int:
             f"  {color('✗', Colors.RED)} Migration failed: {exc}",
             file=sys.stderr,
         )
-        return 1
+        sys.exit(1)
 
     if not result.config_changed:
         print(f"  {color('⚠', Colors.YELLOW)} No changes written.")

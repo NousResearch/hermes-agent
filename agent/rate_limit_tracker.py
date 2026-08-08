@@ -134,10 +134,9 @@ def parse_rate_limit_headers(
 
 def _fmt_count(n: int) -> str:
     """Human-friendly number: 7999856 -> '8.0M', 33599 -> '33.6K', 799 -> '799'."""
+    n = max(0, n)  # guard against negative remaining values from buggy providers
     if n >= 1_000_000:
         return f"{n / 1_000_000:.1f}M"
-    if n >= 10_000:
-        return f"{n / 1_000:.1f}K"
     if n >= 1_000:
         return f"{n / 1_000:.1f}K"
     return str(n)

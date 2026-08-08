@@ -4819,17 +4819,20 @@ class FeishuAdapter(BasePlatformAdapter):
         payload: str,
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
+        uuid_value: Optional[str] = None,  # stable idempotency key; auto-computed from payload hash when omitted
     ) -> Any:
         effective_reply_to = reply_to
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
         reply_in_thread = bool((metadata or {}).get("thread_id"))
+        if uuid_value is None:
+            uuid_value = uuid.uuid5(uuid.NAMESPACE_DNS, payload).hex
         if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload,
                 msg_type=msg_type,
                 reply_in_thread=reply_in_thread,
-                uuid_value=str(uuid.uuid4()),
+                uuid_value=uuid_value,
             )
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
@@ -4843,7 +4846,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 receive_id=_thread_id,
                 msg_type=msg_type,
                 content=payload,
-                uuid_value=str(uuid.uuid4()),
+                uuid_value=uuid_value,
             )
             request = self._build_create_message_request("thread_id", body)
         else:
@@ -4859,7 +4862,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 receive_id=receive_id,
                 msg_type=msg_type,
                 content=payload,
-                uuid_value=str(uuid.uuid4()),
+                uuid_value=uuid_value,
             )
             request = self._build_create_message_request(receive_id_type, body)
         return await self._run_blocking(self._client.im.v1.message.create, request)
@@ -4996,6 +4999,14 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
+        # One idempotency key per logical send, threaded through every retry
+        # attempt AND the reply→create fallback. If attempt 1 succeeds
+        # server-side but the response is lost (client timeout, network drop),
+        # attempt 2 arrives with the same uuid_value and Feishu dedupes it.
+        # uuid5(payload) is deterministic across attempts for the same content;
+        # the API treats duplicate uuid_values within a short window as the
+        # same logical message and returns the original message_id.
+        stable_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, payload).hex
         last_error: Optional[Exception] = None
         active_reply_to = reply_to
         for attempt in range(_FEISHU_SEND_ATTEMPTS):
@@ -5006,6 +5017,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     payload=payload,
                     reply_to=active_reply_to,
                     metadata=metadata,
+                    uuid_value=stable_uuid,
                 )
                 # If replying to a message failed because it was withdrawn or not found,
                 # fall back to posting a new message directly to the chat.
@@ -5035,6 +5047,7 @@ class FeishuAdapter(BasePlatformAdapter):
                             payload=payload,
                             reply_to=None,
                             metadata=metadata,
+                            uuid_value=stable_uuid,
                         )
                 return response
             except Exception as exc:

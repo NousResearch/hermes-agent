@@ -308,13 +308,6 @@ from plugins.platforms.telegram.telegram_network import (
 from utils import atomic_replace, env_float, env_int
 
 
-class _TelegramRichMessageFilter(filters.MessageFilter if TELEGRAM_AVAILABLE else object):
-    """Match top-level Bot API rich-message updates omitted by ``filters.TEXT``."""
-
-    def filter(self, message: Any) -> bool:
-        return TelegramAdapter._is_rich_message_update(message)
-
-
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _TELEGRAM_IMAGE_MIME_TO_EXT = {
     "image/png": ".png",
@@ -648,6 +641,19 @@ class TelegramAdapter(BasePlatformAdapter):
     - Forum topics (thread_id support)
     - Media messages
     """
+
+    @staticmethod
+    def _rich_message_filter():
+        """Build the filter lazily to preserve PTB-stub test imports."""
+        base_filter = getattr(filters, "MessageFilter", None)
+        if base_filter is None:
+            raise RuntimeError("python-telegram-bot MessageFilter is unavailable")
+
+        class _RichMessageFilter(base_filter):
+            def filter(self, message: Any) -> bool:
+                return TelegramAdapter._is_rich_message_update(message)
+
+        return _RichMessageFilter()
 
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
@@ -3902,7 +3908,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._handle_text_message
             ))
             self._app.add_handler(TelegramMessageHandler(
-                _TelegramRichMessageFilter(),
+                self._rich_message_filter(),
                 self._handle_rich_message,
             ))
             self._app.add_handler(TelegramMessageHandler(
@@ -4038,7 +4044,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             self._handle_text_message
                         ))
                         self._app.add_handler(TelegramMessageHandler(
-                            _TelegramRichMessageFilter(),
+                            self._rich_message_filter(),
                             self._handle_rich_message,
                         ))
                         self._app.add_handler(TelegramMessageHandler(
@@ -8929,7 +8935,7 @@ class TelegramAdapter(BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg:
             return
-        payload = self._rich_message_payload(msg)
+        payload = self._inbound_rich_message_payload(msg)
         getter = getattr(payload, "get", None)
         text = self._flatten_rich_blocks(getter("blocks") if callable(getter) else None).strip()
         if not text:
@@ -8946,7 +8952,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._enqueue_text_event(event)
 
     @classmethod
-    def _rich_message_payload(cls, message: Any) -> Any:
+    def _inbound_rich_message_payload(cls, message: Any) -> Any:
         rich_message = getattr(message, "rich_message", None)
         if rich_message is not None:
             return rich_message
@@ -8956,7 +8962,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     @classmethod
     def _is_rich_message_update(cls, message: Any) -> bool:
-        payload = cls._rich_message_payload(message)
+        payload = cls._inbound_rich_message_payload(message)
         getter = getattr(payload, "get", None)
         return bool(callable(getter) and getter("blocks") is not None)
 
@@ -9783,7 +9789,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _extract_rich_reply_text(cls, reply_to_message: Any) -> Optional[str]:
         """Return plaintext echoed by Telegram's rich_message reply payload."""
         try:
-            rich_message = cls._rich_message_payload(reply_to_message)
+            rich_message = cls._inbound_rich_message_payload(reply_to_message)
             rich_getter = getattr(rich_message, "get", None)
             if not callable(rich_getter):
                 return None

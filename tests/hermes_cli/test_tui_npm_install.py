@@ -176,3 +176,40 @@ def test_make_tui_argv_omits_workspace_when_tui_has_own_lockfile(
     assert install_cmd[:2] == ["/bin/npm", "install"]
     # cwd must be tui_dir (standalone), not parent
     assert calls[0][1]["cwd"] == str(tui_dir)
+
+
+def test_tui_install_cmd_prefers_offline_cache(main_mod, monkeypatch, tmp_path) -> None:
+    """Measured-work pin: the launch-time TUI npm install reuses the cache.
+
+    The update path adopted ``--prefer-offline`` (perf(cli) #39267/#39399) so
+    npm stops re-fetching metadata on repeat installs. The TUI auto-install —
+    which runs on every launch while deps are stale — was a sibling that
+    missed the flag. Without it the launch-time reinstall hits the network
+    every time; with it, npm reuses its local cache.
+    """
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    # Parent (workspace root) has the lockfile; install uses --workspace.
+    (tmp_path / "package-lock.json").write_text("{}")
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    install_cmd = calls[0][0][0]
+    assert install_cmd[:2] == ["/bin/npm", "install"]
+    assert "--prefer-offline" in install_cmd, (
+        f"TUI npm install should pass --prefer-offline (same as the update "
+        f"path, perf(cli) #39267), got: {install_cmd}"
+    )

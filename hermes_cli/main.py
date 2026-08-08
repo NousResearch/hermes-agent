@@ -2049,6 +2049,10 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             "--silent",
             "--no-fund",
             "--no-audit",
+            # --prefer-offline: reuse npm's local cache instead of
+            # re-fetching metadata on every launch-time reinstall (same
+            # flag the update path adopted; see perf(cli) #39267/#39399).
+            "--prefer-offline",
             "--progress=false",
         ]
 
@@ -2796,6 +2800,47 @@ def cmd_proxy(args):
         raise SystemExit(rc)
 
 
+def _install_whatsapp_bridge_deps(bridge_dir: Path) -> bool:
+    """Install the WhatsApp bridge dependencies; True on success.
+
+    Extracted from ``cmd_whatsapp`` so the npm command shape is directly
+    testable. ``--prefer-offline`` reuses npm's local cache instead of
+    re-fetching registry metadata (same flag the update/web paths adopted,
+    perf(cli) #39267/#39399).
+    """
+    print(
+        "\n→ Installing WhatsApp bridge dependencies (this can take a few minutes)..."
+    )
+    from hermes_constants import find_node_executable, with_hermes_node_path
+
+    npm = find_node_executable("npm")
+    if not npm:
+        print("  ✗ npm not found on PATH — install Node.js first")
+        return False
+    try:
+        result = subprocess.run(
+            [npm, "install", "--no-fund", "--no-audit", "--prefer-offline", "--progress=false"],
+            cwd=str(bridge_dir),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=with_hermes_node_path(),
+        )
+    except KeyboardInterrupt:
+        print("\n  ✗ Install cancelled")
+        return False
+    if result.returncode != 0:
+        err = (result.stderr or "").strip()
+        preview = "\n".join(err.splitlines()[-30:]) if err else "(no output)"
+        print("  ✗ npm install failed:")
+        print(preview)
+        return False
+    print("  ✓ Dependencies installed")
+    return True
+
+
 def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
     _require_tty("whatsapp")
@@ -2912,34 +2957,8 @@ def cmd_whatsapp(args):
         return
 
     if not (bridge_dir / "node_modules").exists():
-        print(
-            "\n→ Installing WhatsApp bridge dependencies (this can take a few minutes)..."
-        )
-        npm = find_node_executable("npm")
-        if not npm:
-            print("  ✗ npm not found on PATH — install Node.js first")
+        if not _install_whatsapp_bridge_deps(bridge_dir):
             return
-        try:
-            result = subprocess.run(
-                [npm, "install", "--no-fund", "--no-audit", "--progress=false"],
-                cwd=str(bridge_dir),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                env=with_hermes_node_path(),
-            )
-        except KeyboardInterrupt:
-            print("\n  ✗ Install cancelled")
-            return
-        if result.returncode != 0:
-            err = (result.stderr or "").strip()
-            preview = "\n".join(err.splitlines()[-30:]) if err else "(no output)"
-            print("  ✗ npm install failed:")
-            print(preview)
-            return
-        print("  ✓ Dependencies installed")
     else:
         print("✓ Bridge dependencies already installed")
 
@@ -7136,7 +7155,11 @@ def cmd_gui(args: argparse.Namespace):
             # NixOS build env keeps its PYTHON hint while restoring managed Node
             # ahead of a bare PATH (same idiom as the `hermes update` path).
             nixos_env = with_hermes_node_path(_nixos_build_env())
-            install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
+            install_result = _run_npm_install_deterministic(
+                npm, PROJECT_ROOT,
+                extra_args=("--prefer-offline",),
+                capture_output=False, env=nixos_env,
+            )
             if install_result.returncode != 0:
                 if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
                     print("✗ Desktop dependency install failed")

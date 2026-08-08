@@ -8609,7 +8609,7 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
     timeout = env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300)
     try:
         result = subprocess.run(
-            [npm, "install", "--silent"],
+            [npm, "install", "--silent", "--prefer-offline"],
             cwd=str(bridge_dir),
             capture_output=True,
             text=True,

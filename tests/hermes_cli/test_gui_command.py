@@ -75,6 +75,9 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     mock_install.assert_called_once()
     assert mock_install.call_args.args == ("/usr/bin/npm", root)
     assert mock_install.call_args.kwargs["capture_output"] is False
+    # perf(cli): the desktop dependency install reuses npm's local cache —
+    # same --prefer-offline flag the update/web paths adopted (#39267/#39399).
+    assert mock_install.call_args.kwargs.get("extra_args") == ("--prefer-offline",)
     install_env = mock_install.call_args.kwargs["env"]
     assert install_env is not None and "PATH" in install_env
     assert mock_run.call_args_list[0].args[0] == ["/usr/bin/npm", "run", "pack"]

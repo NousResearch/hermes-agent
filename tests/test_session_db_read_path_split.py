@@ -8,10 +8,14 @@ per-thread read-only connection under WAL, never touch self._lock, and fall
 back to the legacy locked path when WAL or the read connection is missing.
 """
 
+import sqlite3
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+import hermes_state
 from hermes_state import SessionDB
 
 
@@ -30,7 +34,8 @@ def test_read_conn_is_per_thread(db):
     conns = {}
 
     def grab(key):
-        conns[key] = db._get_read_conn()
+        with db._read_ctx() as conn:
+            conns[key] = conn
 
     t1 = threading.Thread(target=grab, args=(1,))
     t2 = threading.Thread(target=grab, args=(2,))
@@ -40,7 +45,11 @@ def test_read_conn_is_per_thread(db):
 
 
 def test_read_conn_reused_within_thread(db):
-    assert db._get_read_conn() is db._get_read_conn()
+    with db._read_ctx() as first:
+        pass
+    with db._read_ctx() as second:
+        pass
+    assert first is second
 
 
 @pytest.mark.requires_wal
@@ -80,7 +89,8 @@ def test_read_your_writes(db):
 
 def test_non_wal_uses_locked_path(db):
     db._wal_active = False
-    assert db._get_read_conn() is None
+    with db._read_ctx() as conn:
+        assert conn is db._conn
     # And queries still work via the legacy path.
     assert db.get_session("s1")["id"] == "s1"
 
@@ -129,6 +139,158 @@ def test_anchored_view_and_around_use_read_path(db):
         assert done["view"]["window"]
     finally:
         db._lock.release()
+
+
+@pytest.mark.requires_wal
+def test_finished_read_threads_are_reaped_during_db_lifetime(db):
+    """Historical workers must not retain real SQLite connections."""
+    opened = []
+
+    def read_once():
+        with db._read_ctx() as conn:
+            assert conn.execute("SELECT 1").fetchone()[0] == 1
+            opened.append(conn)
+
+    for _ in range(40):
+        worker = threading.Thread(target=read_once)
+        worker.start()
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+
+    # The main thread's first read reaps the final finished worker before it
+    # opens its own connection. Every earlier worker was reaped by its successor.
+    assert db.get_session("s1")["id"] == "s1"
+    assert len(db._read_conns) == 1
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            conn.execute("SELECT 1")
+
+
+@pytest.mark.requires_wal
+def test_cached_reader_reaps_finished_worker(db):
+    """Reaping runs on reuse too, not only when a new connection registers."""
+    with db._read_ctx() as cached:
+        pass
+
+    holder = {}
+
+    def read_once():
+        with db._read_ctx() as conn:
+            holder["conn"] = conn
+
+    worker = threading.Thread(target=read_once)
+    worker.start()
+    worker.join(timeout=10)
+    assert not worker.is_alive()
+    assert len(db._read_conns) == 2
+
+    with db._read_ctx() as reused:
+        assert reused is cached
+    assert len(db._read_conns) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        holder["conn"].execute("SELECT 1")
+
+
+@pytest.mark.requires_wal
+def test_dead_readers_are_reaped_before_next_connect(db, monkeypatch):
+    """A full fd budget must be relieved before attempting another open."""
+    def open_once():
+        with db._read_ctx() as conn:
+            return conn
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(open_once).result(timeout=10)
+    assert len(db._read_conns) == 1
+
+    real_connect = hermes_state._connect_tracked_db
+
+    def fd_limited_connect(*args, **kwargs):
+        if db._read_conns:
+            raise sqlite3.OperationalError("too many open files")
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(hermes_state, "_connect_tracked_db", fd_limited_connect)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        assert pool.submit(open_once).result(timeout=10) is not None
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        first.execute("SELECT 1")
+
+
+@pytest.mark.requires_wal
+def test_close_waits_for_in_flight_read_lease(db):
+    entered = threading.Event()
+    release = threading.Event()
+    holder = {}
+
+    def reader():
+        with db._read_ctx() as conn:
+            holder["conn"] = conn
+            entered.set()
+            assert release.wait(timeout=10)
+            assert conn.execute("SELECT 1").fetchone()[0] == 1
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reader_future = pool.submit(reader)
+        assert entered.wait(timeout=10)
+        close_future = pool.submit(db.close)
+        deadline = time.monotonic() + 5
+        while not db._read_conns_closed and time.monotonic() < deadline:
+            time.sleep(0.001)
+        assert db._read_conns_closed
+        assert not close_future.done()
+        release.set()
+        reader_future.result(timeout=10)
+        close_future.result(timeout=10)
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        holder["conn"].execute("SELECT 1")
+
+
+@pytest.mark.requires_wal
+def test_close_waits_for_reader_open_already_in_progress(db, monkeypatch):
+    real_connect = hermes_state._connect_tracked_db
+    open_started = threading.Event()
+    finish_open = threading.Event()
+    close_started = threading.Event()
+    holder = {}
+
+    def blocked_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        holder["conn"] = conn
+        open_started.set()
+        assert finish_open.wait(timeout=10)
+        return conn
+
+    monkeypatch.setattr(hermes_state, "_connect_tracked_db", blocked_connect)
+
+    def open_reader():
+        with db._read_ctx() as conn:
+            assert conn.execute("SELECT 1").fetchone()[0] == 1
+            return conn
+
+    def close_db():
+        close_started.set()
+        db.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        open_future = pool.submit(open_reader)
+        assert open_started.wait(timeout=10)
+        close_future = pool.submit(close_db)
+        assert close_started.wait(timeout=10)
+        assert not close_future.done()
+        finish_open.set()
+        assert open_future.result(timeout=10) is holder["conn"]
+        close_future.result(timeout=10)
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        holder["conn"].execute("SELECT 1")
+
+
+def test_close_from_read_context_fails_fast_without_poisoning_db(db):
+    with db._read_ctx():
+        with pytest.raises(RuntimeError, match="inside a read context"):
+            db.close()
+    assert db.get_session("s1")["id"] == "s1"
 
 
 @pytest.mark.requires_wal

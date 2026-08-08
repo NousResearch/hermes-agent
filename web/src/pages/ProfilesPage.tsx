@@ -1212,8 +1212,19 @@ export default function ProfilesPage() {
                           </span>
                         )}
 
-                        <span>
-                          {t.profiles.skills}: {p.skill_count}
+                        <span
+                          title={
+                            p.role_specific_skill_count != null &&
+                            p.role_specific_skill_count !== p.skill_count
+                              ? `${p.role_specific_skill_count} role-specific, ${p.skill_count} total (incl. inherited)`
+                              : undefined
+                          }
+                        >
+                          {t.profiles.skills}:{" "}
+                          {p.role_specific_skill_count != null &&
+                          p.role_specific_skill_count !== p.skill_count
+                            ? `${p.role_specific_skill_count} / ${p.skill_count}`
+                            : p.skill_count}
                         </span>
 
                         <span className="font-mono truncate">{p.path}</span>

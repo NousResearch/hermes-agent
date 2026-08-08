@@ -5842,12 +5842,12 @@ class TestStreamCallbackNonStreamingProvider:
 
 
 # ---------------------------------------------------------------------------
-# Bugfix: API-only user message prefixes must not persist
+# API-only user message annotations must not persist
 # ---------------------------------------------------------------------------
 
 
 class TestPersistUserMessageOverride:
-    """Synthetic API-only user prefixes should never leak into transcripts."""
+    """Synthetic API-only annotations should never leak into transcripts."""
 
     def test_persist_session_rewrites_current_turn_user_message(self, agent):
         agent._session_db = MagicMock()
@@ -5858,10 +5858,7 @@ class TestPersistUserMessageOverride:
         messages = [
             {
                 "role": "user",
-                "content": (
-                    "[Voice input — respond concisely and conversationally, "
-                    "2-3 sentences max. No code blocks or markdown.] Hello there"
-                ),
+                "content": "[MODEL SWITCH NOTE]\n\nHello there",
             },
             {"role": "assistant", "content": "Hi!"},
         ]
@@ -5874,8 +5871,7 @@ class TestPersistUserMessageOverride:
         # API call (#48677).
         assert (
             messages[0]["content"]
-            == "[Voice input — respond concisely and conversationally, "
-            "2-3 sentences max. No code blocks or markdown.] Hello there"
+            == "[MODEL SWITCH NOTE]\n\nHello there"
         )
         # But the DB write must get the override.
         batch = agent._session_db.append_messages_batch.call_args_list[0].kwargs[

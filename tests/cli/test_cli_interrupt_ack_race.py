@@ -195,6 +195,44 @@ def test_chat_persists_clean_input_when_a_queued_note_changes_api_message():
     assert agent.captured["persist_user_message"] == "clean prompt"
 
 
+def test_voice_input_passes_user_message_to_agent_unchanged():
+    """Voice input must not carry an output-length or formatting instruction."""
+    cli = _make_cli()
+
+    class _CaptureAgent(_StubAgent):
+        def __init__(self, session_id):
+            super().__init__(session_id, turn_seconds=0)
+            self.captured = None
+
+        def run_conversation(self, **kwargs):
+            self.captured = kwargs
+            return {
+                "final_response": "done",
+                "messages": [{"role": "assistant", "content": "done"}],
+                "api_calls": 1,
+                "completed": True,
+                "partial": True,
+                "response_previewed": True,
+            }
+
+    agent = _CaptureAgent(cli.session_id)
+    cli.agent = agent
+    cli._interrupt_queue = queue.Queue()
+    cli._pending_input = queue.Queue()
+
+    with patch.object(cli, "_ensure_runtime_credentials", return_value=True), \
+         patch.object(cli, "_resolve_turn_agent_config", return_value={
+             "signature": cli._active_agent_route_signature,
+             "model": None, "runtime": None, "request_overrides": None,
+         }), \
+         patch.object(cli, "_init_agent", return_value=True):
+        cli.chat("Report the complete result", voice_input=True)
+
+    assert agent.captured is not None
+    assert agent.captured["user_message"] == "Report the complete result"
+    assert agent.captured["persist_user_message"] is None
+
+
 def test_chat_preserves_clean_multimodal_input_when_note_changes_api_message():
     """A queued note forwards original native parts as the persistence override."""
     cli = _make_cli()

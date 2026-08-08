@@ -4208,9 +4208,8 @@ def _normalize_moa_model(model: Optional[str]) -> tuple[Optional[str], Optional[
 class _VoiceInputMessage:
     """Sentinel wrapper for voice-transcribed messages in ``_pending_input``.
 
-    Distinguishes STT output from manually typed text while voice mode is
-    active, so the concise-voice-response prefix is applied only to messages
-    that actually came from the microphone (#65827).
+    Distinguishes STT output from manually typed text so voice transcripts are
+    not mistaken for typed voice-control commands.
     """
 
     __slots__ = ("text",)
@@ -12851,10 +12850,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             pass
 
-        # Voice mode instruction is injected as a user message prefix (not a
-        # system prompt change) to avoid invalidating the prompt cache.  See
-        # _voice_message_prefix property and its usage in _process_message().
-
         tts_status = " (TTS enabled)" if self._voice_tts else ""
         # Use the startup-pinned cache so the advertised shortcut always
         # matches the live prompt_toolkit binding — reading live config
@@ -13762,8 +13757,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         Args:
             message: The user's message (str or multimodal content list)
             images: Optional list of Path objects for attached images
-            voice_input: True when the message came from voice transcription
-                (gates the concise voice-response prefix, #65827)
+            voice_input: True when the message came from voice transcription.
+                This provenance must not alter the message sent to the agent.
             
         Returns:
             The agent's response, or None on error
@@ -14011,16 +14006,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # #75780).
                     self._voice_last_tts_text = (self._voice_last_tts_text or "") + delta
 
-            # When voice mode is active, prepend a brief instruction so the
-            # model responds concisely. The prefix is API-call-local only —
-            # run_conversation persists the original clean user message.
-            _voice_prefix = ""
-            if voice_input and isinstance(message, str):
-                _voice_prefix = (
-                    "[Voice input — respond concisely and conversationally, "
-                    "2-3 sentences max. No code blocks or markdown.] "
-                )
-
             def run_agent():
                 nonlocal result
                 # Set callbacks inside the agent thread so thread-local storage
@@ -14051,7 +14036,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 except Exception:
                     reset_current_session_key = None  # type: ignore[assignment]
                     _approval_session_token = None
-                agent_message = _voice_prefix + message if _voice_prefix else message
+                agent_message = message
                 # Prepend pending notes via _prepend_note_to_message, which
                 # handles both plain-string and multimodal content-parts list
                 # messages. Naive ``note + "\n\n" + agent_message`` crashed with
@@ -14077,12 +14062,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._pending_moa_config = None
                 if _moa_cfg is None:
                     _moa_cfg = None
-                # Model/skill notes and voice instructions are API-local. Keep
+                # Model/skill notes are API-local. Keep
                 # the original staged input as the durable transcript value so a
                 # close-path marker follows the same dict into turn setup rather
                 # than producing a second noted user row (#63766).
                 _persist_clean_user_message = (
-                    message if (_voice_prefix or agent_message != message) else None
+                    message if agent_message != message else None
                 )
                 _one_turn_model_restore = getattr(
                     self, "_pending_one_turn_model_restore", None
@@ -17445,7 +17430,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         continue
 
                     # Voice-transcribed messages arrive wrapped in a sentinel
-                    # so only genuine STT output gets the voice prefix (#65827).
+                    # so their text is not mistaken for a typed voice command.
                     is_voice_input = isinstance(user_input, _VoiceInputMessage)
                     if is_voice_input:
                         user_input = user_input.text

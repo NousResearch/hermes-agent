@@ -347,7 +347,7 @@ class TestVoiceStopAndTranscribeReal:
         cli._voice_stop_and_transcribe()
         queued = cli._pending_input.get_nowait()
         # Voice transcripts are wrapped in the _VoiceInputMessage sentinel so
-        # only genuine STT output gets the voice prefix (#65827).
+        # typed voice-control commands can still be distinguished from STT.
         from cli import _VoiceInputMessage
         assert isinstance(queued, _VoiceInputMessage)
         assert str(queued) == "hello world"

@@ -1380,6 +1380,7 @@ Unified plugin management — general plugins, memory providers, and context eng
 | `enable <name>` | Enable a disabled plugin. |
 | `disable <name>` | Disable a plugin without removing it. |
 | `list` (alias: `ls`) | List installed plugins with enabled/disabled status. |
+| `doctor [path-or-id] [--ci]` | Validate a native plugin through the real manifest parser, loader, and registration path. `--ci` exits 1 on errors. |
 
 Provider plugin selections are saved to `config.yaml`:
 - `memory.provider` — active memory provider (empty = built-in only)

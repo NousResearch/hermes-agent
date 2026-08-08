@@ -172,10 +172,30 @@ Plus a hook that logs every tool call, and a bundled skill file.
 
 ## Step 1: Create the plugin directory
 
+Create a directory and continue with Step 2:
+
 ```bash
 mkdir -p ~/.hermes/plugins/calculator
 cd ~/.hermes/plugins/calculator
 ```
+
+### Validate with Plugin Doctor
+
+`hermes plugins doctor [path-or-id]` runs the same directory discovery,
+manifest parser, namespaced import, `register(ctx)`, hook registry, and tool
+registry used by Hermes itself. It reports invalid hook names, callbacks that do
+not accept `**kwargs`, registration failures, and drift between declared and
+registered tools/hooks. Pass `--ci` to exit non-zero on an error:
+
+```bash
+hermes plugins doctor . --ci
+```
+
+Doctor uses a temporary `HERMES_HOME`, restores plugin registration state after
+the check, and blocks direct Python socket connections to catch accidental
+network access while registration runs. This is not a sandbox: plugin code still
+executes in-process with the current user's permissions and can spawn subprocesses,
+so only run Doctor on code you trust enough to import.
 
 ## Step 2: Write the manifest
 

@@ -13,10 +13,10 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     """Attach the ``plugins`` subcommand to ``subparsers``."""
     plugins_parser = subparsers.add_parser(
         "plugins",
-        help="Manage plugins — install, update, remove, list",
+        help="Manage and validate plugins",
         description=(
-            "Install, update, remove, or list native Hermes plugins and "
-            "portable Agent Plugins v1 packages. Portable packages install disabled."
+            "Install, update, remove, list, or validate native Hermes plugins "
+            "and portable Agent Plugins v1 packages. Portable packages install disabled."
         ),
     )
     plugins_subparsers = plugins_parser.add_subparsers(dest="plugins_action")
@@ -106,4 +106,20 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         "disable", help="Disable a plugin without removing it"
     )
     plugins_disable.add_argument("name", help="Plugin name to disable")
+
+    plugins_doctor = plugins_subparsers.add_parser(
+        "doctor", help="Validate a plugin with the real runtime contracts"
+    )
+    plugins_doctor.add_argument(
+        "target",
+        nargs="?",
+        default=".",
+        help="Plugin path or installed plugin id (default: current directory)",
+    )
+    plugins_doctor.add_argument(
+        "--ci",
+        action="store_true",
+        help="Exit non-zero when validation reports an error",
+    )
+
     plugins_parser.set_defaults(func=cmd_plugins)

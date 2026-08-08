@@ -2128,6 +2128,18 @@ def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
     return {"ok": True, "name": name}
 
 
+def cmd_plugin_doctor(target: str = ".", *, ci: bool = False) -> None:
+    """Validate one plugin through runtime discovery and registration."""
+    from rich.console import Console
+
+    from hermes_cli.plugin_dev import doctor_plugin
+
+    report = doctor_plugin(target)
+    Console().print(report.format_text())
+    if ci and not report.ok:
+        raise SystemExit(1)
+
+
 def plugins_command(args) -> None:
     """Dispatch hermes plugins subcommands."""
     action = getattr(args, "plugins_action", None)
@@ -2161,6 +2173,8 @@ def plugins_command(args) -> None:
         cmd_disable(args.name)
     elif action in {"list", "ls"}:
         cmd_list(args)
+    elif action == "doctor":
+        cmd_plugin_doctor(args.target, ci=getattr(args, "ci", False))
     elif action is None:
         cmd_toggle()
     else:

@@ -284,6 +284,35 @@ class TestReasoningStyle:
 
         assert resolve_display_setting({}, "discord", "reasoning_style") == "subtext"
 
+
+class TestReasoningFull:
+    def test_defaults_to_clamped(self):
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "telegram", "reasoning_full") is False
+
+    def test_platform_override_wins_over_global(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "reasoning_full": True,
+                "platforms": {
+                    "telegram": {"reasoning_full": False},
+                },
+            }
+        }
+
+        assert resolve_display_setting(config, "telegram", "reasoning_full") is False
+        assert resolve_display_setting(config, "discord", "reasoning_full") is True
+
+    def test_string_boolean_is_normalized(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"reasoning_full": "false"}}
+
+        assert resolve_display_setting(config, "telegram", "reasoning_full") is False
+
     def test_other_platforms_default_to_code(self):
         from gateway.display_config import resolve_display_setting
 
@@ -300,5 +329,4 @@ class TestLiveStatusSetting:
         from gateway.display_config import resolve_display_setting
 
         assert resolve_display_setting({}, "slack", "live_status") == "full"
-
 

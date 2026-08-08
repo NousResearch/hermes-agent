@@ -1378,6 +1378,15 @@ DEFAULT_CONFIG = {
         "oauth": {
             "client_id": "",  # agent:{instance_id} — Portal provisions this
             "portal_url": "",  # blank → use plugin default (production Portal)
+            # Self-hosted OIDC provider config (dashboard_auth/self_hosted plugin).
+            # Set when using Google/Authentik/Keycloak/etc. as the IDP.
+            "self_hosted": {
+                "issuer": "",
+                "client_id": "",
+                # Optional: restrict login to these emails (comma-separated).
+                # Empty = allow any valid OIDC identity.
+                "allowed_emails": "",
+            },
         },
         # Username/password gate configuration — read by the bundled
         # ``dashboard_auth/basic`` plugin (a self-hosted "just put a

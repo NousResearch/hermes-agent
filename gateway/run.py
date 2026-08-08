@@ -22568,18 +22568,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # Flush any buffered output first so the user sees
                         # context before the prompt
                         await _flush_buffer()
-                        # Try platform-native buttons first (Discord, Telegram)
+                        # Try platform-native prompt controls first.
                         sent_buttons = False
                         if getattr(type(adapter), "send_update_prompt", None) is not None:
                             try:
-                                await adapter.send_update_prompt(
+                                result = await adapter.send_update_prompt(
                                     chat_id=chat_id,
                                     prompt=prompt_text,
                                     default=default,
                                     session_key=session_key,
                                     metadata=_non_conversational_metadata(metadata, platform=platform),
                                 )
-                                sent_buttons = True
+                                # Native hooks may return None for a successful send,
+                                # but an explicit SendResult failure must use the text fallback.
+                                native_send_succeeded = (
+                                    result is None
+                                    or getattr(result, "success", True)
+                                )
+                                if not native_send_succeeded:
+                                    logger.warning(
+                                        "Native update prompt send reported failure for %s; "
+                                        "falling back to text: %s",
+                                        session_key,
+                                        getattr(result, "error", None) or "unknown error",
+                                    )
+                                sent_buttons = native_send_succeeded
                             except Exception as btn_err:
                                 logger.debug("Button-based update prompt failed: %s", btn_err)
                         if not sent_buttons:

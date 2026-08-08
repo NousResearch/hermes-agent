@@ -95,6 +95,148 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
 
 
 @pytest.mark.asyncio
+async def test_gateway_stop_gracefully_drains_interactive_actions_before_disconnect():
+    runner, adapter = make_restart_runner()
+    runner._interactive_action_tasks = set()
+    runner._interactive_action_task_claims = {}
+    runner._adapter_disconnect_timeout_secs = lambda: 0.5
+    order = []
+
+    async def finish_action():
+        await asyncio.sleep(0.02)
+        order.append("action-finished")
+
+    action_task = asyncio.create_task(finish_action())
+    runner._interactive_action_tasks.add(action_task)
+    action_task.add_done_callback(runner._interactive_action_tasks.discard)
+
+    async def disconnect():
+        order.append("disconnect")
+
+    adapter.disconnect = disconnect
+
+    with (
+        patch("gateway.status.remove_pid_file"),
+        patch("gateway.status.write_runtime_status"),
+    ):
+        await runner.stop()
+    await asyncio.gather(action_task, return_exceptions=True)
+
+    assert order == ["action-finished", "disconnect"]
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_timeout_cancels_action_and_persists_unknown_outcome(
+    tmp_path,
+):
+    from gateway.interactive_actions import (
+        InteractiveActionCallback,
+        InteractiveActionManager,
+        InteractiveActionResult,
+        InteractiveCardAction,
+        InteractiveCardEnvelope,
+        InteractiveCardOrigin,
+        SQLiteInteractiveActionStorage,
+    )
+    from gateway.session import SessionSource
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    entered = asyncio.Event()
+
+    async def handler(_ctx):
+        entered.set()
+        await asyncio.Event().wait()
+
+    plugins = PluginManager()
+    context = PluginContext(
+        PluginManifest(name="proposal-plugin", key="proposal-plugin", source="user"),
+        plugins,
+    )
+    context.register_interactive_action("apply", handler)
+    manager = InteractiveActionManager(
+        storage=SQLiteInteractiveActionStorage(tmp_path / "state.db"),
+        registrations=plugins._interactive_actions,
+        clock=lambda: 1_000.0,
+        id_source=lambda: "ia_shutdown",
+    )
+    envelope = InteractiveCardEnvelope(
+        version=1,
+        title="Apply proposal?",
+        summary="Apply the reviewed proposal.",
+        fallback_text="Apply the reviewed proposal in the admin console.",
+        expires_in_seconds=900,
+        actions=(
+            InteractiveCardAction(
+                label="Apply",
+                action="proposal-plugin/apply",
+                external_action_id="proposal-v1",
+                payload={"proposal_id": "prop_1"},
+            ),
+        ),
+    )
+    origin = InteractiveCardOrigin(
+        platform="telegram",
+        profile_id="work",
+        chat_id="123456",
+        thread_id=None,
+        initiator_id="u1",
+        initiator_name="Alice",
+        message_id="trigger",
+    )
+    prepared = manager.prepare_card(
+        plugin_id="proposal-plugin",
+        envelope=envelope,
+        origin=origin,
+    )
+    manager.activate_card(prepared, card_id="card-1")
+
+    runner, adapter = make_restart_runner()
+    runner._interactive_action_manager = manager
+    runner._interactive_action_tasks = set()
+    runner._interactive_action_task_claims = {}
+    runner._adapter_disconnect_timeout_secs = lambda: 0.01
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123456",
+        chat_type="dm",
+        user_id="u1",
+        user_name="Alice",
+        message_id="card-1",
+        profile="work",
+    )
+    callback = InteractiveActionCallback(
+        action_instance_id="ia_shutdown",
+        platform="telegram",
+        profile_id="work",
+        operator_id="u1",
+        operator_name="Alice",
+        chat_id="123456",
+        thread_id=None,
+        card_id="card-1",
+    )
+    adapter.update_interactive_card = AsyncMock()
+    adapter.disconnect = AsyncMock()
+    initial = await runner._begin_interactive_action_from_adapter(
+        callback=callback,
+        source=source,
+        adapter=adapter,
+    )
+    await entered.wait()
+
+    with (
+        patch("gateway.status.remove_pid_file"),
+        patch("gateway.status.write_runtime_status"),
+    ):
+        await runner.stop()
+
+    replay = await manager.dispatch(callback, gateway_authorize=lambda: True)
+    assert initial.status == "processing"
+    assert replay == InteractiveActionResult.unknown_outcome()
+    assert runner._interactive_action_tasks == set()
+    adapter.disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_in_chat_restart_skips_home_shutdown_even_with_active_session():
     runner, adapter = make_restart_runner()
     source = make_restart_source(thread_id="42")
@@ -269,5 +411,4 @@ def test_pid_exists_zombie_via_psutil_returns_false(monkeypatch):
     monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
     assert status._pid_exists(4242) is False
-
 

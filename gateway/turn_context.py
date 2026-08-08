@@ -120,6 +120,10 @@ class TurnContext:
     _status_adapter: Any = None
     _status_chat_id: Any = None
     _status_thread_metadata: Optional[dict] = None
+    # A copied ContextVar can outlive the thread that created it.  Keep an
+    # explicit turn-lifetime gate so a plugin-owned background thread cannot
+    # retain the bound card sender after ``run_conversation`` returns.
+    _interactive_card_sender_active: bool = False
 
     # --- extracted sibling callbacks (bound TurnRunner methods; run_sync
     #     reads them through the ctx exactly where it used to close over

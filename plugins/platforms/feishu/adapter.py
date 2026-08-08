@@ -1495,6 +1495,12 @@ class FeishuAdapter(BasePlatformAdapter):
     # is almost certain.
     _SPLIT_THRESHOLD = 4000
 
+    @property
+    def supports_interactive_cards(self) -> bool:
+        """Only the SDK-authenticated WebSocket callback path is V1-native."""
+
+        return getattr(self, "_connection_mode", "") == "websocket"
+
     # =========================================================================
     # Lifecycle — init / settings / connect / disconnect
     # =========================================================================
@@ -2046,6 +2052,136 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    @staticmethod
+    def _build_plugin_interactive_card(
+        envelope: Any,
+        action_instance_ids: tuple[str, ...],
+    ) -> Dict[str, Any]:
+        """Render a platform-neutral envelope with opaque button values."""
+
+        if len(action_instance_ids) != len(envelope.actions):
+            raise ValueError("interactive card action ID count mismatch")
+        elements: List[Dict[str, Any]] = [
+            {"tag": "markdown", "content": envelope.summary},
+        ]
+        if envelope.facts:
+            facts = "\n".join(
+                f"**{fact.label}:** {fact.value}" for fact in envelope.facts
+            )
+            elements.append({"tag": "markdown", "content": facts})
+        for section in envelope.sections:
+            elements.append({
+                "tag": "markdown",
+                "content": f"**{section.title}**\n{section.body}",
+            })
+        buttons = []
+        for action, instance_id in zip(
+            envelope.actions,
+            action_instance_ids,
+            strict=True,
+        ):
+            buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": action.label},
+                "type": action.style,
+                "value": {"hermes_interactive_action_id": instance_id},
+            })
+        elements.append({"tag": "action", "actions": buttons})
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": envelope.title, "tag": "plain_text"},
+                "template": "orange",
+            },
+            "elements": elements,
+        }
+
+    async def send_interactive_card(
+        self,
+        *,
+        chat_id: str,
+        envelope: Any,
+        action_instance_ids: tuple[str, ...] = (),
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an external-plugin confirmation as a native Feishu card."""
+
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        try:
+            card = self._build_plugin_interactive_card(
+                envelope,
+                action_instance_ids,
+            )
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=json.dumps(card, ensure_ascii=False),
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            return self._finalize_send_result(
+                response,
+                "send_interactive_card failed",
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Feishu] send_interactive_card failed (%s)",
+                type(exc).__name__,
+            )
+            return SendResult(
+                success=False,
+                error="interactive card delivery failed",
+            )
+
+    async def update_interactive_card(
+        self,
+        *,
+        chat_id: str,
+        card_id: str,
+        result: Any,
+        action_instance_id: Optional[str] = None,
+    ) -> SendResult:
+        """Replace a plugin card with its truthful final action state."""
+
+        del chat_id  # Feishu updates address the card message directly.
+        if not self._client or not card_id:
+            return SendResult(success=False, error="interactive card is unavailable")
+        try:
+            card = self._build_interactive_action_status_card(
+                result,
+                action_instance_id=action_instance_id,
+            )
+            body = self._build_update_message_body(
+                msg_type="interactive",
+                content=json.dumps(card, ensure_ascii=False),
+            )
+            request = self._build_update_message_request(
+                message_id=card_id,
+                request_body=body,
+            )
+            response = await self._run_blocking(
+                self._client.im.v1.message.update,
+                request,
+            )
+            finalized = self._finalize_send_result(
+                response,
+                "update_interactive_card failed",
+            )
+            if finalized.success:
+                finalized.message_id = card_id
+            return finalized
+        except Exception as exc:
+            logger.warning(
+                "[Feishu] update_interactive_card failed (%s)",
+                type(exc).__name__,
+            )
+            return SendResult(
+                success=False,
+                error="interactive card update failed",
+            )
 
     # Template attrs for the shared _format_exec_approval core. The card
     # header carries the title, so the text core starts at the code fence.
@@ -2734,6 +2870,15 @@ class FeishuAdapter(BasePlatformAdapter):
             action_value.get("hermes_update_prompt_action")
             if isinstance(action_value, dict) else None
         )
+        has_interactive_action_id = (
+            isinstance(action_value, dict)
+            and "hermes_interactive_action_id" in action_value
+        )
+        interactive_action_id = (
+            action_value.get("hermes_interactive_action_id")
+            if has_interactive_action_id
+            else None
+        )
 
         if hermes_action:
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
@@ -2741,6 +2886,12 @@ class FeishuAdapter(BasePlatformAdapter):
             return self._handle_update_prompt_card_action(
                 event=event,
                 action_value=action_value,
+                loop=loop,
+            )
+        if has_interactive_action_id:
+            return self._handle_plugin_interactive_action(
+                event=event,
+                action_instance_id=str(interactive_action_id or ""),
                 loop=loop,
             )
 
@@ -2768,15 +2919,185 @@ class FeishuAdapter(BasePlatformAdapter):
         future.add_done_callback(self._log_background_failure)
         return True
 
-    def _is_interactive_operator_authorized(self, open_id: str) -> bool:
-        """Return whether this card-action operator may answer gated prompts."""
-        normalized = str(open_id or "").strip()
-        if not normalized:
-            return False
-        allowed_ids = set(self._admins) | set(self._allowed_group_users)
-        if not allowed_ids:
-            return True
-        return "*" in allowed_ids or normalized in allowed_ids
+    @staticmethod
+    def _build_interactive_action_status_card(
+        result: Any,
+        *,
+        action_instance_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        status = str(getattr(result, "status", "retryable_failure") or "")
+        title, template = {
+            "processing": ("⏳ Processing", "blue"),
+            "succeeded": ("✅ Applied", "green"),
+            "downstream_replay": ("✅ Already applied", "green"),
+            "already_processed": ("ℹ️ Already processed", "blue"),
+            "denied": ("⛔ Denied", "red"),
+            "unknown": ("⚠️ Unavailable", "grey"),
+            "expired": ("⌛ Expired", "grey"),
+            "conflict": ("⚠️ Conflict", "orange"),
+            "retryable_failure": ("⚠️ Retryable failure", "orange"),
+            "unknown_outcome": ("⚠️ Outcome unknown", "grey"),
+        }.get(status, ("⚠️ Retryable failure", "orange"))
+        message = str(
+            getattr(result, "user_message", "The confirmation could not be completed.")
+            or "The confirmation could not be completed."
+        )
+        elements: List[Dict[str, Any]] = [
+            {"tag": "markdown", "content": message}
+        ]
+        if status == "retryable_failure" and action_instance_id:
+            elements.append({
+                "tag": "action",
+                "actions": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "Retry"},
+                    "type": "primary",
+                    "value": {
+                        "hermes_interactive_action_id": action_instance_id,
+                    },
+                }],
+            })
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": title, "tag": "plain_text"},
+                "template": template,
+            },
+            "elements": elements,
+        }
+
+    def _handle_plugin_interactive_action(
+        self,
+        *,
+        event: Any,
+        action_instance_id: str,
+        loop: Any,
+    ) -> Any:
+        """Authorize+claim before returning an inline Processing card."""
+
+        from gateway.interactive_actions import InteractiveActionResult
+
+        if self._connection_mode != "websocket":
+            result = InteractiveActionResult.denied()
+            return self._build_interactive_action_callback_response(result)
+
+        future = None
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._begin_plugin_interactive_action(
+                    event=event,
+                    action_instance_id=action_instance_id,
+                ),
+                loop,
+            )
+            result = future.result(timeout=3.0)
+        except Exception as exc:
+            if future is not None:
+                future.cancel()
+            logger.warning(
+                "[Feishu] interactive action claim failed (%s)",
+                type(exc).__name__,
+            )
+            result = InteractiveActionResult.retryable_failure()
+
+        return self._build_interactive_action_callback_response(result)
+
+    def _build_interactive_action_callback_response(self, result: Any) -> Any:
+        if P2CardActionTriggerResponse is None:
+            return None
+        response = P2CardActionTriggerResponse()
+        # A callback response replaces the shared card for every viewer.  A
+        # denied, unknown, or pre-claim failure must therefore leave the live
+        # confirmation untouched; otherwise any unauthorized group member
+        # could remove the initiator's buttons.  Only claimed or terminal
+        # ledger states may replace the card inline.
+        status = str(getattr(result, "status", "") or "")
+        if CallBackCard is not None and status in {
+            "processing",
+            "succeeded",
+            "downstream_replay",
+            "already_processed",
+            "expired",
+            "conflict",
+            "unknown_outcome",
+        }:
+            card = CallBackCard()
+            card.type = "raw"
+            card.data = self._build_interactive_action_status_card(result)
+            response.card = card
+        return response
+
+    async def _begin_plugin_interactive_action(
+        self,
+        *,
+        event: Any,
+        action_instance_id: str,
+    ) -> Any:
+        """Normalize SDK callback fields before entering the generic runner."""
+
+        from gateway.interactive_actions import (
+            InteractiveActionCallback,
+            InteractiveActionResult,
+        )
+
+        context = getattr(event, "context", None)
+        chat_id = str(getattr(context, "open_chat_id", "") or "")
+        card_id = str(getattr(context, "open_message_id", "") or "")
+        thread_id = str(
+            getattr(context, "open_thread_id", "")
+            or getattr(context, "open_root_id", "")
+            or ""
+        )
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        if not action_instance_id or not chat_id or not card_id or not open_id:
+            return InteractiveActionResult.denied()
+
+        sender_id = SimpleNamespace(
+            open_id=open_id,
+            user_id=str(getattr(operator, "user_id", "") or ""),
+            union_id=str(getattr(operator, "union_id", "") or ""),
+        )
+        sender_profile = await self._resolve_sender_profile(sender_id)
+        stable_operator_id = str(sender_profile.get("user_id") or "")
+        if not stable_operator_id:
+            return InteractiveActionResult.denied()
+        chat_info = await self.get_chat_info(chat_id)
+        source = self.build_source(
+            chat_id=chat_id,
+            chat_name=chat_info.get("name") or chat_id,
+            chat_type=self._resolve_source_chat_type(
+                chat_info=chat_info,
+                event_chat_type="group",
+            ),
+            user_id=stable_operator_id,
+            user_name=str(sender_profile.get("user_name") or stable_operator_id),
+            thread_id=thread_id or None,
+            user_id_alt=sender_profile.get("user_id_alt"),
+            message_id=card_id,
+        )
+        callback = InteractiveActionCallback(
+            action_instance_id=action_instance_id,
+            platform=self.platform.value,
+            # Profile ownership is gateway state, not a platform callback
+            # field. GatewayRunner overwrites this placeholder from the
+            # routed source / receiving adapter identity before any lookup.
+            profile_id="",
+            operator_id=stable_operator_id,
+            operator_name=str(sender_profile.get("user_name") or stable_operator_id),
+            chat_id=chat_id,
+            thread_id=thread_id or None,
+            card_id=card_id,
+        )
+        runner = getattr(self, "gateway_runner", None)
+        begin = getattr(runner, "_begin_interactive_action_from_adapter", None)
+        if not callable(begin):
+            return InteractiveActionResult.retryable_failure()
+        return await begin(
+            callback=callback,
+            source=source,
+            adapter=self,
+        )
 
     def _handle_approval_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
         """Schedule approval resolution and build the synchronous callback response."""
@@ -2792,8 +3113,13 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
-        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+        user_id = str(getattr(operator, "user_id", "") or "")
+        sender_id = SimpleNamespace(open_id=open_id, user_id=user_id)
+        if not self._allow_group_message(
+            sender_id,
+            state["chat_id"],
+            is_bot=False,
+        ):
             logger.warning("[Feishu] Unauthorized approval click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
@@ -2819,6 +3145,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 choice=choice,
                 user_name=user_name,
                 open_id=open_id,
+                user_id=user_id,
                 chat_id=chat_id,
             ),
         ):
@@ -2852,8 +3179,13 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
-        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+        user_id = str(getattr(operator, "user_id", "") or "")
+        sender_id = SimpleNamespace(open_id=open_id, user_id=user_id)
+        if not self._allow_group_message(
+            sender_id,
+            state["chat_id"],
+            is_bot=False,
+        ):
             logger.warning("[Feishu] Unauthorized update prompt click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
@@ -2876,6 +3208,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 answer,
                 user_name,
                 open_id=open_id,
+                user_id=user_id,
                 chat_id=callback_chat_id,
             ),
         ):
@@ -2898,6 +3231,7 @@ class FeishuAdapter(BasePlatformAdapter):
         user_name: str,
         *,
         open_id: str = "",
+        user_id: str = "",
         chat_id: str = "",
     ) -> None:
         """Pop approval state and unblock the waiting agent thread."""
@@ -2905,7 +3239,12 @@ class FeishuAdapter(BasePlatformAdapter):
         if not state:
             logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
             return
-        if not self._is_interactive_operator_authorized(open_id):
+        sender_id = SimpleNamespace(open_id=open_id, user_id=user_id)
+        if not self._allow_group_message(
+            sender_id,
+            state["chat_id"],
+            is_bot=False,
+        ):
             logger.warning("[Feishu] Unauthorized approval click by %s for approval %s", open_id or "<unknown>", approval_id)
             return
         expected_chat_id = str(state.get("chat_id", "") or "")
@@ -2952,6 +3291,7 @@ class FeishuAdapter(BasePlatformAdapter):
         user_name: str,
         *,
         open_id: str = "",
+        user_id: str = "",
         chat_id: str = "",
     ) -> None:
         """Persist an update prompt answer for the detached update process."""
@@ -2959,11 +3299,14 @@ class FeishuAdapter(BasePlatformAdapter):
         if not state:
             logger.debug("[Feishu] Update prompt %s already resolved or unknown", prompt_id)
             return
-        if open_id:
-            sender_id = SimpleNamespace(open_id=open_id, user_id="")
-            if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
-                logger.warning("[Feishu] Unauthorized update prompt click by %s for prompt %s", open_id, prompt_id)
-                return
+        sender_id = SimpleNamespace(open_id=open_id, user_id=user_id)
+        if not self._allow_group_message(
+            sender_id,
+            state["chat_id"],
+            is_bot=False,
+        ):
+            logger.warning("[Feishu] Unauthorized update prompt click by %s for prompt %s", open_id, prompt_id)
+            return
         expected_chat_id = str(state.get("chat_id", "") or "")
         if expected_chat_id and chat_id and expected_chat_id != chat_id:
             logger.warning(

@@ -1096,6 +1096,55 @@ class PluginContext:
             action_id,
         )
 
+    # -- platform-neutral interactive actions -------------------------------
+
+    def register_interactive_action(
+        self,
+        action_name: str,
+        handler: Callable,
+        authorization_policy: str = "initiator_only",
+    ) -> str:
+        """Register a deterministic gateway-card action owned by this plugin.
+
+        ``action_name`` may be local (``"apply"``) or already qualified
+        (``"my-plugin/apply"``).  The returned qualified name is what card
+        envelopes reference.
+        """
+        from gateway.interactive_actions import (
+            InteractiveActionRegistrationError,
+            build_registration,
+        )
+
+        plugin_id = self.manifest.key or self.manifest.name
+        registration = build_registration(
+            plugin_id=plugin_id,
+            action_name=action_name,
+            handler=handler,
+            authorization_policy=authorization_policy,
+        )
+        if registration.qualified_name in self._manager._interactive_actions:
+            raise InteractiveActionRegistrationError(
+                f"interactive action {registration.qualified_name!r} is already registered"
+            )
+        self._manager._interactive_actions[registration.qualified_name] = registration
+        logger.debug(
+            "Plugin %s registered interactive action: %s",
+            self.manifest.name,
+            registration.qualified_name,
+        )
+        return registration.qualified_name
+
+    def send_interactive_card(self, envelope: Any) -> Any:
+        """Send a card to the current gateway turn's conversation.
+
+        The destination is gateway-owned.  This capability fails closed when
+        invoked outside a bound gateway turn.
+        """
+        from gateway.interactive_actions import send_current_interactive_card
+
+        plugin_id = self.manifest.key or self.manifest.name
+        return send_current_interactive_card(plugin_id=plugin_id, envelope=envelope)
+
     # -- hook registration --------------------------------------------------
 
     # -- auxiliary task registration ---------------------------------------
@@ -1333,6 +1382,8 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
+        # Qualified action name -> immutable plugin-owned registration.
+        self._interactive_actions: Dict[str, Any] = {}
 
     # -----------------------------------------------------------------------
     # Public
@@ -1363,6 +1414,7 @@ class PluginManager:
             self._portable_mcp_servers.clear()
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
+            self._interactive_actions.clear()
             self._context_engine = None
         # Set the flag up front as a re-entrancy guard (a plugin's register()
         # can transitively trigger discovery again), but reset it if the sweep
@@ -1919,6 +1971,7 @@ class PluginManager:
             f"{_NS_PARENT}.{_slug}",
             PluginContext(manifest, self)._tool_override_allowed(""),
         )
+        _interactive_actions_before = dict(self._interactive_actions)
         try:
             if manifest.source in {"user", "project", "bundled"}:
                 module = self._load_directory_module(manifest)
@@ -1981,6 +2034,12 @@ class PluginManager:
                 )
 
         except Exception as exc:
+            # High-impact card handlers must never survive a failed plugin
+            # registration as partially-live capability. Discovery is
+            # serialized, so restoring the pre-register snapshot is atomic
+            # with respect to the plugin load sweep.
+            self._interactive_actions.clear()
+            self._interactive_actions.update(_interactive_actions_before)
             loaded.error = str(exc)
             logger.warning(
                 "Failed to load plugin '%s': %s",
@@ -2144,6 +2203,11 @@ class PluginManager:
     def has_middleware(self, kind: str) -> bool:
         """Return True when at least one callback is registered for middleware."""
         return bool(self._middleware.get(kind))
+
+    def get_interactive_actions(self) -> Dict[str, Any]:
+        """Return a snapshot of registered gateway-card actions."""
+
+        return dict(self._interactive_actions)
 
     def invoke_middleware(self, kind: str, **kwargs: Any) -> List[Any]:
         """Call registered middleware callbacks for *kind*.

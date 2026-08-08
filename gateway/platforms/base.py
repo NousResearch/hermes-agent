@@ -2969,6 +2969,12 @@ class BasePlatformAdapter(ABC):
     # site.
     interactive_resume: bool = True
 
+    # Native platform-neutral plugin card support. Unsupported adapters keep
+    # this false and use ``send_interactive_card``'s exact-text fallback via
+    # their ordinary ``send`` path. No clickable action ledger is created for
+    # that path; the gateway manager checks this flag before reserving IDs.
+    supports_interactive_cards: bool = False
+
     # Back-reference to the running ``GatewayRunner``, injected by
     # ``gateway/run.py`` after the adapter is created. Adapters consume it via
     # ``getattr(self, "gateway_runner", None)`` for cross-platform delivery and
@@ -3835,6 +3841,39 @@ class BasePlatformAdapter(ABC):
             SendResult with success status and message ID
         """
         pass
+
+    async def send_interactive_card(
+        self,
+        *,
+        chat_id: str,
+        envelope: Any,
+        action_instance_ids: tuple[str, ...] = (),
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an exact fallback on adapters without native card support."""
+
+        return await self.send(
+            chat_id=chat_id,
+            content=envelope.fallback_text,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+    async def update_interactive_card(
+        self,
+        *,
+        chat_id: str,
+        card_id: str,
+        result: Any,
+        action_instance_id: Optional[str] = None,
+    ) -> SendResult:
+        """Update native card state; unsupported adapters fail explicitly."""
+
+        return SendResult(
+            success=False,
+            error="interactive card updates are not supported",
+        )
 
     # Default: the adapter treats ``finalize=True`` on edit_message as a
     # no-op and is happy to have the stream consumer skip redundant final

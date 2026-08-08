@@ -678,6 +678,159 @@ All callbacks should accept `**kwargs` for forward compatibility. If a hook call
 
 The kanban lifecycle hooks fire **after** the board DB change commits, so a callback always sees durable state and can never hold the SQLite write lock. Because kanban workers run as separate `hermes -p <profile> chat -q` subprocesses, `kanban_task_claimed` fires in the **dispatcher** process while `kanban_task_completed` / `kanban_task_blocked` fire in the **worker** process — hook in the dispatcher to observe every transition centrally, or in the worker for per-task in-session context.
 
+### Send a gateway confirmation card
+
+An external plugin can turn its own validated `post_tool_call` result into one
+high-impact operator confirmation without adding a model tool or injecting a
+message into the conversation. Register one namespaced action at startup, then
+use the gateway-turn-bound `send_interactive_card` capability from the hook:
+
+```python
+import json
+
+from gateway.interactive_actions import (
+    InteractiveActionConflictError,
+    InteractiveActionResult,
+    InteractiveActionRetryableError,
+    InteractiveCardAction,
+    InteractiveCardEnvelope,
+    InteractiveCardFact,
+)
+
+
+async def apply_proposal(action_context):
+    # The immutable payload came from Hermes's server-side ledger, not the button.
+    proposal_id = action_context.payload["proposal_id"]
+    revision = action_context.payload["revision"]
+
+    try:
+        outcome = await proposal_service.apply_once(
+            proposal_id=proposal_id,
+            revision=revision,
+            idempotency_key=action_context.external_action_id,
+            operator_id=action_context.operator_id,
+        )
+    except ProposalRevisionConflict:
+        raise InteractiveActionConflictError("The proposal revision changed.")
+    except ProposalServiceUnavailable:
+        raise InteractiveActionRetryableError(
+            "The proposal service is temporarily unavailable."
+        )
+
+    if outcome.already_applied:
+        return InteractiveActionResult.downstream_replay()
+    return InteractiveActionResult.succeeded()
+
+
+def register(ctx):
+    action_name = ctx.register_interactive_action(
+        "apply",
+        apply_proposal,
+        authorization_policy="initiator_only",  # the default
+    )
+
+    def after_tool(*, tool_name, result, **_kwargs):
+        if tool_name != "proposal_validate":
+            return
+        validated = json.loads(result)
+        if validated.get("status") != "ready_for_confirmation":
+            return
+
+        ctx.send_interactive_card(
+            InteractiveCardEnvelope(
+                version=1,
+                title="Apply pricing proposal?",
+                summary="This changes the customer contract after confirmation.",
+                facts=(
+                    InteractiveCardFact("Customer", validated["customer_name"]),
+                    InteractiveCardFact("Revision", str(validated["revision"])),
+                ),
+                fallback_text=(
+                    "Apply the validated pricing proposal in the admin console."
+                ),
+                expires_in_seconds=900,
+                actions=(
+                    InteractiveCardAction(
+                        label="Apply proposal",
+                        action=action_name,
+                        external_action_id=validated["idempotency_key"],
+                        payload={
+                            "proposal_id": validated["proposal_id"],
+                            "revision": validated["revision"],
+                        },
+                        style="primary",
+                    ),
+                ),
+            )
+        )
+
+    ctx.register_hook("post_tool_call", after_tool)
+```
+
+`authorization_policy` has two V0 values:
+
+| Policy | Who may click |
+|---|---|
+| `initiator_only` | Only the stable platform user ID that originated the gateway turn. This is the default. |
+| `authorized_user` | Any operator who passes the gateway's normal authorization for that platform/chat. |
+
+The handler receives an immutable `InteractiveActionContext`: verified
+platform and profile IDs, stable operator ID/name, chat/thread, originating
+message, card message, opaque action-instance ID, your stable
+`external_action_id`, and the immutable server-stored payload. It never
+receives a Feishu SDK object or another adapter's raw callback.
+
+Security and delivery contract:
+
+- `send_interactive_card()` has no destination arguments. It is available only
+  during the current gateway turn (including `post_tool_call`) and fails closed
+  elsewhere.
+- The V1 envelope is bounded: 1–5 actions, a 1–86,400 second expiry, bounded
+  text/section counts, and at most 16 KiB of JSON payload per action. Payload
+  fields that look like passwords, tokens, API keys, cookies, credentials, or
+  other secrets are rejected. Do not put secrets in visible card text either.
+- Native buttons contain only an opaque Hermes action-instance ID. The plugin
+  action name, `external_action_id`, and business payload stay in the
+  profile-local `state.db` ledger.
+- Hermes binds the action to the profile, platform, chat/thread, originating
+  message, delivered card, initiator, registered action, and issuance-time
+  policy. Normal gateway authorization and the policy both run before the
+  atomic claim and before plugin code.
+- One action instance has at most one active claim. Concurrent clicks return
+  Processing without running the handler again. Terminal outcomes and their
+  sanitized messages are replayed exactly; a process failure after claim is
+  recovered as a terminal Unknown outcome and is never executed again. Hermes
+  does not claim network-wide exactly-once execution. Use `external_action_id`
+  as the downstream idempotency key and return `downstream_replay()` when that
+  system reports an earlier success.
+- Handler outcomes are `succeeded`, `downstream_replay`, `conflict`, or
+  `retryable_failure`. Unexpected exceptions are hidden behind generic text.
+  Typed conflict/retryable exceptions expose only the bounded public message
+  you deliberately provide; never include payload or exception internals. A
+  retryable failure reactivates the same bound action and Feishu retains a
+  Retry button; all profile, chat, card, operator, expiry, and policy checks run
+  again before the next atomic claim.
+- Feishu WebSocket renders a native card and updates it from Processing to the
+  truthful final state, retrying a transient final edit three times. If every
+  terminal edit fails, another authenticated callback on the original bound
+  card reconstructs the durable final status and sanitized message. A denied,
+  unknown, or pre-claim failure never replaces the shared card, so an
+  unauthorized viewer cannot remove live buttons. Other adapters send
+  `fallback_text` exactly through their normal text-send path and create no
+  clickable ledger state (and therefore do not require a native initiator or
+  source-message ID).
+- Native delivery is two-phase: Hermes reserves opaque IDs, sends the card,
+  then binds the provider's returned card-message ID. If that final bind fails,
+  Hermes marks the reservation unusable when possible and best-effort replaces
+  the delivered card with a non-actionable failure state. The profile-local
+  schema is created/migrated transactionally alongside existing `state.db`
+  tables. Shutdown drains action tasks before disconnecting adapters; cancelled
+  claims and processing rows found after a process crash become terminal
+  Unknown outcomes. Stale rows are pruned after the bounded retention window.
+- `post_tool_call` remains observational: sending a card does not replace the
+  tool result or mutate the transcript, cached system prompt, toolsets, or
+  message roles.
+
 ### `pre_llm_call` context injection
 
 This is the only hook whose return value matters. When a `pre_llm_call` callback returns a dict with a `"context"` key (or a plain string), Hermes injects that text into the **current turn's user message**. This is the mechanism for memory plugins, RAG integrations, guardrails, and any plugin that needs to provide the model with additional context.

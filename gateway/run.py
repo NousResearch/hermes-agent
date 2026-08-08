@@ -4441,6 +4441,71 @@ class TurnRunner:
                     ctx._cleanup_msg_ids.append(str(mid))
             _fut.add_done_callback(_track_status_id)
 
+    def _send_interactive_card_sync(self, *, plugin_id: str, envelope: Any) -> Any:
+        """Bridge a plugin hook in the agent thread to the current gateway turn."""
+        from gateway.interactive_actions import (
+            InteractiveCardOrigin,
+            InteractiveCardUnavailableError,
+        )
+        from hermes_cli.profiles import get_active_profile_name
+
+        ctx = self._ctx
+        if not ctx._interactive_card_sender_active or not ctx._run_still_current():
+            raise InteractiveCardUnavailableError(
+                "the current gateway turn is no longer active"
+            )
+        adapter = self._runner._adapter_for_source(ctx.source)
+        if adapter is None or ctx._loop_for_step is None:
+            raise InteractiveCardUnavailableError(
+                "the current gateway turn has no delivery adapter"
+            )
+        try:
+            caller_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            caller_loop = None
+        if caller_loop is ctx._loop_for_step:
+            raise InteractiveCardUnavailableError(
+                "interactive card delivery cannot synchronously block the gateway loop"
+            )
+        source = ctx.source
+        origin = InteractiveCardOrigin(
+            platform=source.platform.value,
+            profile_id=str(
+                getattr(source, "profile", None)
+                or get_active_profile_name()
+                or "default"
+            ),
+            chat_id=str(source.chat_id or ""),
+            thread_id=str(source.thread_id) if source.thread_id else None,
+            initiator_id=str(source.user_id or ""),
+            initiator_name=str(source.user_name or source.user_id or ""),
+            message_id=str(ctx.event_message_id or source.message_id or ""),
+        )
+        future = safe_schedule_threadsafe(
+            self._runner._interactive_action_manager.deliver_card(
+                plugin_id=plugin_id,
+                envelope=envelope,
+                origin=origin,
+                adapter=adapter,
+                metadata=dict(ctx._status_thread_metadata)
+                if ctx._status_thread_metadata
+                else None,
+            ),
+            ctx._loop_for_step,
+            logger=logger,
+            log_message="interactive card delivery scheduling error",
+        )
+        if future is None:
+            raise InteractiveCardUnavailableError(
+                "the current gateway turn could not schedule card delivery"
+            )
+        try:
+            return future.result(timeout=30)
+        except Exception as exc:
+            raise InteractiveCardUnavailableError(
+                "interactive card delivery failed for the current gateway turn"
+            ) from exc
+
     def run_sync(self):
         ctx = self._ctx
         # Historical note: as a nested closure this body declared
@@ -5480,7 +5545,17 @@ class TurnRunner:
                 _conversation_kwargs["moa_config"] = ctx.moa_config
             if _persist_user_timestamp_override is not None:
                 _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
-            result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+            from gateway.interactive_actions import bind_interactive_card_sender
+
+            ctx._interactive_card_sender_active = True
+            try:
+                with bind_interactive_card_sender(self._send_interactive_card_sync):
+                    result = agent.run_conversation(
+                        _api_run_message,
+                        **_conversation_kwargs,
+                    )
+            finally:
+                ctx._interactive_card_sender_active = False
         finally:
             unregister_gateway_notify(_approval_session_key)
             # Cancel any pending clarify entries so blocked agent
@@ -5941,6 +6016,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # sites are untouched when multiplexing is off (this dict is empty).
         # Populated by _start_secondary_profile_adapters().
         self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
+        # External-plugin interactive actions stay at the gateway edge: one
+        # process-wide orchestrator, with profile-resolved state.db storage on
+        # each operation and no agent-loop/model-tool surface.
+        from gateway.interactive_actions import InteractiveActionManager
+        from hermes_cli.plugins import get_plugin_manager
+
+        self._interactive_action_manager = InteractiveActionManager(
+            registrations=lambda: get_plugin_manager().get_interactive_actions(),
+        )
+        self._interactive_action_tasks: set[asyncio.Task] = set()
+        self._interactive_action_task_claims: dict[
+            asyncio.Task, tuple[Any, SessionSource]
+        ] = {}
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
@@ -12853,6 +12941,62 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._systemd_watchdog = None
         await watchdog.stop()
 
+    async def _drain_interactive_action_tasks(self) -> None:
+        """Bound action completion before adapters needed for card edits close."""
+
+        current = asyncio.current_task()
+        tracked = getattr(self, "_interactive_action_tasks", None)
+        if not isinstance(tracked, set):
+            return
+        tasks = {
+            task
+            for task in tracked
+            if isinstance(task, asyncio.Task)
+            and task is not current
+            and not task.done()
+        }
+        if not tasks:
+            return
+
+        timeout = self._adapter_disconnect_timeout_secs()
+        done, pending = await asyncio.wait(tasks, timeout=max(0.0, timeout))
+        if done:
+            await asyncio.gather(*done, return_exceptions=True)
+        if not pending:
+            return
+
+        logger.warning(
+            "Timed out after %.1fs draining %d interactive action task(s); cancelling",
+            timeout,
+            len(pending),
+        )
+        claims = getattr(self, "_interactive_action_task_claims", None)
+        for task in pending:
+            bound = claims.get(task) if isinstance(claims, dict) else None
+            if bound is not None:
+                claim, source = bound
+                self._mark_interactive_action_unknown_outcome(
+                    claim=claim,
+                    source=source,
+                )
+            task.cancel()
+
+        cancellation_grace = min(max(timeout, 0.1), 1.0)
+        cancelled, stubborn = await asyncio.wait(
+            pending,
+            timeout=cancellation_grace,
+        )
+        if cancelled:
+            await asyncio.gather(*cancelled, return_exceptions=True)
+        if stubborn:
+            logger.warning(
+                "%d cancelled interactive action task(s) did not stop within %.1fs",
+                len(stubborn),
+                cancellation_grace,
+            )
+            for task in stubborn:
+                task.add_done_callback(consume_detached_task_result)
+
     async def stop(
         self,
         *,
@@ -13187,6 +13331,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await self._cleanup_agent_resources_off_loop(
                         _agent, context="shutdown idle-cache"
                     )
+
+            await self._drain_interactive_action_tasks()
 
             for platform, adapter in list(self.adapters.items()):
                 await self._bounded_adapter_teardown(adapter, platform)
@@ -24802,6 +24948,219 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 message_type=message_type,
             )
+
+    async def _begin_interactive_action_from_adapter(
+        self,
+        *,
+        callback: Any,
+        source: SessionSource,
+        adapter: BasePlatformAdapter,
+    ) -> Any:
+        """Authorize and durably claim a normalized platform callback.
+
+        The adapter has already authenticated the platform callback. This
+        method applies the normal gateway operator authorization, then the
+        plugin policy and atomic ledger claim. Only a successful claim returns
+        Processing; plugin code runs in a separate task and never enters the
+        transcript/model path.
+        """
+        from gateway.interactive_actions import (
+            InteractiveActionCallback,
+            InteractiveActionResult,
+            ClaimedInteractiveAction,
+        )
+        from dataclasses import replace
+
+        manager = self._interactive_action_manager
+
+        source_platform = getattr(getattr(source, "platform", None), "value", "")
+        source_chat_id = str(getattr(source, "chat_id", "") or "")
+        source_operator_id = str(getattr(source, "user_id", "") or "")
+        source_card_id = str(getattr(source, "message_id", "") or "")
+        if (
+            not isinstance(callback, InteractiveActionCallback)
+            or callback.platform != source_platform
+            or callback.chat_id != source_chat_id
+            or callback.operator_id != source_operator_id
+            or callback.card_id != source_card_id
+        ):
+            return InteractiveActionResult.denied()
+
+        # ``build_source`` stamps route-selected profiles, but a secondary
+        # multiplex adapter with no matching route is still owned by its own
+        # profile.  Derive that ownership by adapter identity; never trust the
+        # adapter-supplied callback profile (which may reflect the process-wide
+        # active profile instead).
+        effective_profile = str(getattr(source, "profile", None) or "").strip()
+        if not effective_profile:
+            primary = (getattr(self, "adapters", None) or {}).get(source.platform)
+            if adapter is primary:
+                effective_profile = self._active_profile_name()
+            else:
+                for profile_name, profile_adapters in (
+                    getattr(self, "_profile_adapters", None) or {}
+                ).items():
+                    if adapter is profile_adapters.get(source.platform):
+                        effective_profile = str(profile_name)
+                        break
+        if not effective_profile:
+            return InteractiveActionResult.denied()
+        source.profile = effective_profile
+        callback = replace(callback, profile_id=effective_profile)
+
+        def _claim() -> Any:
+            return manager.claim_action(
+                callback,
+                gateway_authorize=lambda: self._is_user_authorized(source),
+            )
+
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                claim = _claim()
+        else:
+            claim = _claim()
+        if isinstance(claim, InteractiveActionResult):
+            return claim
+        if not isinstance(claim, ClaimedInteractiveAction):
+            return InteractiveActionResult.retryable_failure()
+
+        task = asyncio.create_task(
+            self._complete_interactive_action(
+                claim=claim,
+                source=source,
+                adapter=adapter,
+            ),
+            name=f"interactive-action:{callback.action_instance_id[:32]}",
+        )
+        tasks = getattr(self, "_interactive_action_tasks", None)
+        if not isinstance(tasks, set):
+            tasks = set()
+            self._interactive_action_tasks = tasks
+        tasks.add(task)
+        claims = getattr(self, "_interactive_action_task_claims", None)
+        if not isinstance(claims, dict):
+            claims = {}
+            self._interactive_action_task_claims = claims
+        claims[task] = (claim, source)
+        task.add_done_callback(
+            lambda completed: self._interactive_action_task_done(
+                completed,
+                claim=claim,
+                source=source,
+            )
+        )
+        return InteractiveActionResult.processing()
+
+    def _interactive_action_task_done(
+        self,
+        task: asyncio.Task,
+        *,
+        claim: Any,
+        source: SessionSource,
+    ) -> None:
+        """Release task tracking and terminalize a cancelled claimed action."""
+
+        tasks = getattr(self, "_interactive_action_tasks", None)
+        if isinstance(tasks, set):
+            tasks.discard(task)
+        claims = getattr(self, "_interactive_action_task_claims", None)
+        if isinstance(claims, dict):
+            claims.pop(task, None)
+        if not task.cancelled():
+            return
+        self._mark_interactive_action_unknown_outcome(
+            claim=claim,
+            source=source,
+        )
+
+    def _mark_interactive_action_unknown_outcome(
+        self,
+        *,
+        claim: Any,
+        source: SessionSource,
+    ) -> None:
+        """Persist cancellation ambiguity without overwriting durable truth."""
+
+        manager = self._interactive_action_manager
+        try:
+            if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+                with _profile_runtime_scope(
+                    self._resolve_profile_home_for_source(source)
+                ):
+                    manager.mark_unknown_outcome(claim)
+            else:
+                manager.mark_unknown_outcome(claim)
+        except Exception as exc:
+            logger.warning(
+                "Interactive action cancellation persistence failed (%s)",
+                type(exc).__name__,
+            )
+
+    async def _complete_interactive_action(
+        self,
+        *,
+        claim: Any,
+        source: SessionSource,
+        adapter: BasePlatformAdapter,
+    ) -> None:
+        """Execute claimed plugin work and replace Processing with final truth."""
+        # Give the platform callback thread a chance to return its inline
+        # Processing card before an especially fast handler edits the same
+        # message to its final state.
+        await asyncio.sleep(0.05)
+        manager = self._interactive_action_manager
+        try:
+            if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+                with _profile_runtime_scope(
+                    self._resolve_profile_home_for_source(source)
+                ):
+                    result = await manager.execute_claimed(claim)
+            else:
+                result = await manager.execute_claimed(claim)
+        except Exception as exc:
+            logger.warning(
+                "Interactive action completion persistence failed (%s)",
+                type(exc).__name__,
+            )
+            return
+
+        update_failure_type = "rejected"
+        for attempt in range(3):
+            try:
+                update_card = adapter.update_interactive_card
+                update_kwargs = {
+                    "chat_id": claim.record.chat_id,
+                    "card_id": claim.record.card_id or "",
+                    "result": result,
+                }
+                try:
+                    update_params = inspect.signature(update_card).parameters
+                    supports_action_id = (
+                        "action_instance_id" in update_params
+                        or any(
+                            param.kind is inspect.Parameter.VAR_KEYWORD
+                            for param in update_params.values()
+                        )
+                    )
+                except (TypeError, ValueError):
+                    supports_action_id = False
+                if supports_action_id:
+                    update_kwargs["action_instance_id"] = (
+                        claim.record.action_instance_id
+                    )
+                update = await update_card(
+                    **update_kwargs,
+                )
+                if getattr(update, "success", False):
+                    return
+            except Exception as exc:
+                update_failure_type = type(exc).__name__
+            if attempt < 2:
+                await asyncio.sleep(0.25 * (2**attempt))
+        logger.warning(
+            "Interactive action final card update failed after 3 attempts (%s)",
+            update_failure_type,
+        )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
         """Resolve the profile name for an inbound source via configured routes.

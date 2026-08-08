@@ -10,6 +10,8 @@ itself (that's covered by test_run_progress_topics.py et al.).
 
 import asyncio
 import queue as queue_mod
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -64,3 +66,95 @@ class TestTurnRunner:
         ctx = TurnContext(progress_queue=queue_mod.Queue())
         runner = _make_runner(ctx)  # stub adapter resolver returns None
         assert asyncio.run(runner.send_progress_messages()) is None
+
+    @pytest.mark.asyncio
+    async def test_interactive_card_sender_binds_current_turn_destination(self):
+        from gateway.config import Platform
+        from gateway.run import TurnRunner
+        from gateway.session import SessionSource
+
+        manager = SimpleNamespace(deliver_card=AsyncMock(return_value="delivery-1"))
+        adapter = SimpleNamespace()
+
+        class _Runner:
+            _interactive_action_manager = manager
+
+            def _adapter_for_source(self, _source):
+                return adapter
+
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_current",
+            user_id="ou_current",
+            user_name="Alice",
+            thread_id="om_root",
+            message_id="om_source",
+            profile="work",
+        )
+        ctx = TurnContext(
+            source=source,
+            event_message_id="om_trigger",
+            _run_still_current=lambda: True,
+            _status_thread_metadata={"thread_id": "om_root"},
+            _interactive_card_sender_active=True,
+        )
+        ctx._loop_for_step = asyncio.get_running_loop()
+        turn = TurnRunner(_Runner(), ctx)
+
+        delivery = await asyncio.to_thread(
+            turn._send_interactive_card_sync,
+            plugin_id="proposal-plugin",
+            envelope=SimpleNamespace(),
+        )
+
+        assert delivery == "delivery-1"
+        kwargs = manager.deliver_card.await_args.kwargs
+        assert kwargs["plugin_id"] == "proposal-plugin"
+        assert kwargs["adapter"] is adapter
+        assert kwargs["origin"].platform == "feishu"
+        assert kwargs["origin"].profile_id == "work"
+        assert kwargs["origin"].chat_id == "oc_current"
+        assert kwargs["origin"].thread_id == "om_root"
+        assert kwargs["origin"].initiator_id == "ou_current"
+        assert kwargs["origin"].message_id == "om_trigger"
+
+    def test_interactive_card_sender_rejects_a_copied_context_after_turn_end(self):
+        from gateway.interactive_actions import InteractiveCardUnavailableError
+        from gateway.run import TurnRunner
+
+        ctx = TurnContext(
+            _run_still_current=lambda: True,
+            _interactive_card_sender_active=False,
+        )
+        turn = TurnRunner(object(), ctx)
+
+        with pytest.raises(InteractiveCardUnavailableError, match="no longer active"):
+            turn._send_interactive_card_sync(
+                plugin_id="proposal-plugin",
+                envelope=SimpleNamespace(),
+            )
+
+    @pytest.mark.asyncio
+    async def test_interactive_card_sender_never_deadlocks_gateway_loop(self):
+        from gateway.interactive_actions import InteractiveCardUnavailableError
+        from gateway.run import TurnRunner
+
+        adapter = SimpleNamespace()
+
+        class _Runner:
+            def _adapter_for_source(self, _source):
+                return adapter
+
+        ctx = TurnContext(
+            source=SimpleNamespace(),
+            _run_still_current=lambda: True,
+            _interactive_card_sender_active=True,
+            _loop_for_step=asyncio.get_running_loop(),
+        )
+        turn = TurnRunner(_Runner(), ctx)
+
+        with pytest.raises(InteractiveCardUnavailableError, match="gateway loop"):
+            turn._send_interactive_card_sync(
+                plugin_id="proposal-plugin",
+                envelope=SimpleNamespace(),
+            )

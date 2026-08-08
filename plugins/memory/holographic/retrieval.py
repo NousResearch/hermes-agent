@@ -65,6 +65,19 @@ class FactRetriever:
         # Stage 1: Get FTS5 candidates (more than limit for reranking headroom)
         candidates = self._fts_candidates(query, category, min_trust, limit * 3)
 
+        # FTS5 scores on content-token overlap only. When recall is thin or
+        # empty, consult the entity index: facts bound to entities whose
+        # name/alias token-overlaps the query would otherwise be invisible
+        # to prefetch even though probe() finds them (#77919).
+        if len(candidates) < limit:
+            candidates += self._entity_candidates(
+                query,
+                category,
+                min_trust,
+                limit - len(candidates),
+                exclude_ids={f["fact_id"] for f in candidates},
+            )
+
         if not candidates:
             return []
 
@@ -491,6 +504,72 @@ class FactRetriever:
 
         scored.sort(key=lambda x: x["score"], reverse=True)
         return scored[:limit]
+
+    def _entity_candidates(
+        self,
+        query: str,
+        category: str | None,
+        min_trust: float,
+        limit: int,
+        exclude_ids: set[int] | None = None,
+    ) -> list[dict]:
+        """Facts bound to entities whose name/alias token-overlaps the query.
+
+        FTS5 scores on content-token overlap only. A query that describes a
+        fact's topic with different words than the stored content gets zero
+        candidates, so search() bails before the HRR/Jaccard rerank ever
+        runs and prefetch returns empty context — even though the entity
+        index knows the query's terms are bound to those facts (#77919).
+
+        This stage consults the entities table (name + comma-separated
+        aliases) and returns the bound facts as neutral candidates
+        (fts_rank=0.0) for the reranker to score.
+        """
+        query_tokens = self._tokenize(query)
+        if not query_tokens:
+            return []
+
+        conn = self.store._conn
+        matched_ids: list[int] = []
+        for row in conn.execute(
+            "SELECT entity_id, name, aliases FROM entities"
+        ).fetchall():
+            haystack = f"{row['name'] or ''} {row['aliases'] or ''}"
+            if self._tokenize(haystack) & query_tokens:
+                matched_ids.append(row["entity_id"])
+
+        if not matched_ids:
+            return []
+
+        placeholders = ",".join("?" * len(matched_ids))
+        where = f"fe.entity_id IN ({placeholders}) AND f.trust_score >= ?"
+        params: list = list(matched_ids) + [min_trust]
+        if category:
+            where += " AND f.category = ?"
+            params.append(category)
+
+        sql = f"""
+            SELECT f.*
+            FROM fact_entities fe
+            JOIN facts f ON f.fact_id = fe.fact_id
+            WHERE {where}
+            LIMIT ?
+        """
+        params.append(limit)
+
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        except Exception:
+            return []
+
+        results = []
+        for row in rows:
+            fact = dict(row)
+            if exclude_ids and fact["fact_id"] in exclude_ids:
+                continue
+            fact["fts_rank"] = 0.0  # neutral — Jaccard/HRR/trust decide
+            results.append(fact)
+        return results
 
     def _fts_candidates(
         self,

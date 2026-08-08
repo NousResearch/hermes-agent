@@ -353,3 +353,64 @@ class TestDetection:
     def test_bare_dir_is_not_coding(self, tmp_path):
         cfg = {"agent": {"coding_context": "auto"}}
         assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is False
+
+
+# ── skills_catalog_mode resolver ────────────────────────────────────────────
+
+class TestSkillsCatalogMode:
+    """resolve_skills_catalog_compaction — pure, session-fixed, cache-safe."""
+
+    def test_t1_chat_default_is_compact(self):
+        # Messaging surface with no explicit config demotes the non-coding set.
+        got = cc.resolve_skills_catalog_compaction(platform="mattermost", config={})
+        assert got == frozenset(cc._NON_CODING_SKILL_CATEGORIES)
+        # A coding surface keeps the full catalog.
+        assert cc.resolve_skills_catalog_compaction(platform="cli", config={}) == frozenset()
+
+    def test_t1_other_chat_surfaces_compact(self):
+        for plat in ("telegram", "discord", "signal", "slack"):
+            assert cc.resolve_skills_catalog_compaction(platform=plat, config={}) == frozenset(
+                cc._NON_CODING_SKILL_CATEGORIES
+            )
+
+    def test_names_only_returns_all_categories_sentinel(self):
+        from agent.prompt_builder import ALL_SKILL_CATEGORIES
+
+        cfg = {"agent": {"skills_catalog_mode": "names-only"}}
+        got = cc.resolve_skills_catalog_compaction(platform="cli", config=cfg)
+        assert got is ALL_SKILL_CATEGORIES
+
+    def test_t4_determinism_identical_inputs_identical_output(self):
+        a = cc.resolve_skills_catalog_compaction(platform="mattermost", config={})
+        b = cc.resolve_skills_catalog_compaction(platform="mattermost", config={})
+        assert a == b
+        # No turn-varying state read: repeated calls are stable.
+        assert a is not None and b is not None
+
+    def test_t5_explicit_config_overrides_surface_default(self):
+        # full on a chat surface (would otherwise default to compact)
+        cfg_full = {"agent": {"skills_catalog_mode": "full"}}
+        assert cc.resolve_skills_catalog_compaction(platform="mattermost", config=cfg_full) == frozenset()
+        # compact forced on a coding surface (would otherwise default to full)
+        cfg_compact = {"agent": {"skills_catalog_mode": "compact"}}
+        assert cc.resolve_skills_catalog_compaction(platform="cli", config=cfg_compact) == frozenset(
+            cc._NON_CODING_SKILL_CATEGORIES
+        )
+
+    def test_t5_empty_string_falls_through_to_surface_default(self):
+        cfg = {"agent": {"skills_catalog_mode": ""}}
+        assert cc.resolve_skills_catalog_compaction(platform="mattermost", config=cfg) == frozenset(
+            cc._NON_CODING_SKILL_CATEGORIES
+        )
+        assert cc.resolve_skills_catalog_compaction(platform="cli", config=cfg) == frozenset()
+
+    def test_mode_resolution_normalizes_aliases(self):
+        assert cc._skills_catalog_mode({"agent": {"skills_catalog_mode": "NAMES_ONLY"}}, "cli") == "names-only"
+        assert cc._skills_catalog_mode({"agent": {"skills_catalog_mode": "  Full "}}, "mattermost") == "full"
+        # Unrecognized value falls back to the per-surface default.
+        assert cc._skills_catalog_mode({"agent": {"skills_catalog_mode": "bogus"}}, "mattermost") == "compact"
+
+    def test_empty_platform_is_treated_as_interactive(self):
+        # Empty platform is in INTERACTIVE_CODING_PLATFORMS → full default.
+        assert cc.resolve_skills_catalog_compaction(platform="", config={}) == frozenset()
+        assert cc.resolve_skills_catalog_compaction(platform=None, config={}) == frozenset()

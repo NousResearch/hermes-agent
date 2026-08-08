@@ -134,7 +134,12 @@ class TestSendTelegramStandaloneProxy:
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
         # Make sure macOS system-proxy auto-detection (scutil) can't kick in.
-        monkeypatch.setattr(sys, "platform", "linux")
+        # Stub the probe itself rather than claiming the host is Linux — that
+        # keeps this assertion true on the macOS runner too, where a real
+        # scutil proxy would otherwise be picked up.
+        monkeypatch.setattr(
+            "gateway.platforms.base._detect_macos_system_proxy", lambda: None
+        )
 
         bot = _make_bot()
         bot_factory = MagicMock(return_value=bot)

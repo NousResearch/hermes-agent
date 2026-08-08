@@ -286,18 +286,19 @@ class TestShellFileOpsHelpers:
         assert file_ops._escape_shell_arg("hello") == "'hello'"
 
 
-    def test_escape_shell_arg_rewrites_forward_slash_native_paths(self, monkeypatch, file_ops):
-        import tools.environments.local as local_mod
-
-        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+    @pytest.mark.windows_only
+    def test_escape_shell_arg_rewrites_forward_slash_native_paths(self, file_ops):
+        """Windows-only: ``_bash_safe_path`` only rewrites drive paths to the
+        Git Bash form on Windows, where the MSYS path mangling it works around
+        actually happens."""
         assert file_ops._escape_shell_arg(
             "C:/Users/alice/notes.txt"
         ) == "'/c/Users/alice/notes.txt'"
 
-    def test_read_file_uses_bash_safe_windows_paths(self, mock_env, monkeypatch):
-        import tools.environments.local as local_mod
-
-        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+    @pytest.mark.windows_only
+    def test_read_file_uses_bash_safe_windows_paths(self, mock_env):
+        """Windows-only: proves read_file's shell commands carry the MSYS path
+        form Git Bash needs — a translation that is a no-op off Windows."""
         commands = []
 
         def side_effect(command, **kwargs):

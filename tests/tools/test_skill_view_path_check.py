@@ -5,7 +5,6 @@ fails on Windows where Path.resolve() returns backslash-separated paths.
 Now uses Path.is_relative_to() which handles all platforms correctly.
 """
 
-import os
 import pytest
 from pathlib import Path
 
@@ -86,7 +85,10 @@ class TestOldCheckWouldFail:
             and resolved != skill_dir_resolved
         )
 
-    @pytest.mark.skipif(os.sep == "/", reason="Bug only manifests on Windows")
+    # ``windows_only`` rather than ``skipif(os.sep == "/")``: the Windows CI
+    # job greps for the marker to decide which files to import, so a bare
+    # skipif leaves this running on no host at all.
+    @pytest.mark.windows_only
     def test_old_check_false_positive_on_windows(self, tmp_path):
         """On Windows, the old check incorrectly blocks valid subpaths."""
         skill_dir = tmp_path / "skills" / "axolotl"

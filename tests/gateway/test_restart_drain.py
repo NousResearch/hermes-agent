@@ -220,15 +220,18 @@ async def test_run_restart_excluded_from_stop_cancel_loop():
     )
 
 
+@pytest.mark.windows_only
 @pytest.mark.asyncio
 async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_path):
+    """Faking sys.platform="win32" on Linux could not reach the real Windows
+    detach branch (msvcrt/creationflags spawn, Lib/site-packages venv layout);
+    this runs on the Windows CI job instead."""
     runner, _adapter = make_restart_runner()
     popen_calls = []
     venv_dir = tmp_path / "venv"
     site_packages = venv_dir / "Lib" / "site-packages"
     site_packages.mkdir(parents=True)
 
-    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
     monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
     monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
     monkeypatch.setenv("_HERMES_GATEWAY", "1")
@@ -260,19 +263,23 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
     assert kwargs["stderr"] is subprocess.DEVNULL
 
 
+@pytest.mark.windows_only
 @pytest.mark.asyncio
 async def test_windows_detached_restart_watcher_keeps_console_python(monkeypatch, tmp_path):
     """The restart watcher must run sys.executable (console python) under the
     hidden-console detach kwargs — NOT swap in GUI-subsystem pythonw.exe,
     which would leave the watcher console-less and make its descendants
-    flash visible conhosts (#54220/#56747)."""
+    flash visible conhosts (#54220/#56747).
+
+    Faking sys.platform on Linux could not enter the Windows-only watcher
+    spawn branch this asserts on, so it runs on the Windows CI job.
+    """
     runner, _adapter = make_restart_runner()
     popen_calls = []
     venv_dir = tmp_path / "venv"
     site_packages = venv_dir / "Lib" / "site-packages"
     site_packages.mkdir(parents=True)
 
-    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
     monkeypatch.setattr(gateway_run.sys, "executable", r"C:\venv\Scripts\python.exe")
     monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
     monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)

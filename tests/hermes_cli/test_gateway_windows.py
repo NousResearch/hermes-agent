@@ -26,10 +26,17 @@ def test_schtasks_encoding_falls_back_to_utf8(monkeypatch):
 
 
 
+@pytest.mark.windows_only
 def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, tmp_path):
     """No pythonw / base-interpreter detour: the venv console python.exe is
     launched hidden (CREATE_NO_WINDOW) so descendants inherit its hidden
-    console instead of flashing their own (#54220/#56747)."""
+    console instead of flashing their own (#54220/#56747).
+
+    Windows-only: ``_build_gateway_argv()`` asserts the host is Windows and the
+    argv/env overlay it returns is built from real Windows path separators and
+    ``Scripts/python.exe`` layout — a patched ``sys.platform`` covered the
+    branch but not any of that.
+    """
 
     project = tmp_path / "project"
     scripts = project / "venv" / "Scripts"
@@ -53,7 +60,6 @@ def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, t
 
     import hermes_cli.gateway as gateway
 
-    monkeypatch.setattr(gateway_windows.sys, "platform", "win32")
     monkeypatch.setattr(gateway, "PROJECT_ROOT", project)
     monkeypatch.setattr(gateway, "get_python_path", lambda: str(venv_python))
     monkeypatch.setattr(gateway, "_profile_arg", lambda hermes_home: "")
@@ -123,10 +129,17 @@ def _arrange_startup_fallback(monkeypatch, tmp_path, running_pids):
 
 
 
+@pytest.mark.windows_only
 def test_elevated_gateway_command_uses_hidden_console_python(monkeypatch):
     """UAC handoff launches console python with SW_HIDE — a single hidden
     console, not console-less pythonw (#54220/#56747), and no visible
-    elevated cmd.exe window left open."""
+    elevated cmd.exe window left open.
+
+    Windows-only: the code path runs behind ``_assert_windows()`` and goes
+    through ``ctypes.windll.shell32``, neither of which exists on a faked
+    host. ShellExecuteW itself stays mocked — it would raise a real UAC
+    prompt — but the host identity is genuine.
+    """
     calls = []
 
     class FakeShell32:
@@ -137,7 +150,6 @@ def test_elevated_gateway_command_uses_hidden_console_python(monkeypatch):
     class FakeWindll:
         shell32 = FakeShell32()
 
-    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
     monkeypatch.setattr(gateway_windows, "_current_profile_cli_args", lambda: ["--profile", "alice"])
     monkeypatch.setattr(gateway_windows.sys, "executable", r"C:\Hermes\venv\Scripts\python.exe")
     monkeypatch.setattr(gateway_windows.ctypes, "windll", FakeWindll(), raising=False)
@@ -154,12 +166,16 @@ def test_elevated_gateway_command_uses_hidden_console_python(monkeypatch):
 
 
 def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_path):
-    """Install must delete+create so stale minute-repeat task settings are not preserved."""
+    """Install must delete+create so stale minute-repeat task settings are not preserved.
+
+    Host-agnostic on purpose: ``_install_scheduled_task`` only renders the task
+    XML and shells out through ``_exec_schtasks`` (mocked here as the genuine
+    external dependency), so no platform fake is needed.
+    """
     calls = []
     script_path = tmp_path / "Hermes_Gateway_alice.cmd"
     xml_seen = {}
 
-    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
     monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"DOMAIN\\alice")
 
     def fake_schtasks(args):

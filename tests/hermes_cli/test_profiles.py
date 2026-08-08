@@ -403,8 +403,8 @@ class TestAliasCollision:
 
 
 
-    def test_windows_checks_bat_extension(self, profile_env, monkeypatch):
-        monkeypatch.setattr("sys.platform", "win32")
+    @pytest.mark.windows_only
+    def test_windows_checks_bat_extension(self, profile_env):
         wrapper_dir = profile_env / ".local" / "bin"
         wrapper_dir.mkdir(parents=True, exist_ok=True)
         bat_path = wrapper_dir / "mybot.bat"
@@ -433,7 +433,6 @@ class TestWrapperScript:
     """Tests for create_wrapper_script() and remove_wrapper_script()."""
 
     def test_creates_sh_on_posix(self, profile_env, monkeypatch):
-        monkeypatch.setattr("sys.platform", "darwin")
         monkeypatch.setattr("hermes_cli.profiles.shutil.which", lambda name: "/opt/hermes/bin/hermes")
         from hermes_cli.profiles import create_wrapper_script
         wrapper = create_wrapper_script("mybot")
@@ -444,8 +443,8 @@ class TestWrapperScript:
         assert "exec /opt/hermes/bin/hermes -p mybot" in content
 
 
-    def test_remove_finds_bat_on_windows(self, profile_env, monkeypatch):
-        monkeypatch.setattr("sys.platform", "win32")
+    @pytest.mark.windows_only
+    def test_remove_finds_bat_on_windows(self, profile_env):
         from hermes_cli.profiles import create_wrapper_script, remove_wrapper_script
         wrapper = create_wrapper_script("mybot")
         assert wrapper is not None
@@ -492,16 +491,14 @@ class TestWrapperScriptSecurity:
 class TestFindAliasForProfile:
     """Tests for find_alias_for_profile() and alias display in list/show."""
 
-    def test_profile_named_alias(self, profile_env, monkeypatch):
-        monkeypatch.setattr("sys.platform", "darwin")
+    def test_profile_named_alias(self, profile_env):
         from hermes_cli.profiles import create_wrapper_script, find_alias_for_profile
         create_wrapper_script("steve")
         assert find_alias_for_profile("steve") == "steve"
 
 
-    def test_ignores_unrelated_files(self, profile_env, monkeypatch):
+    def test_ignores_unrelated_files(self, profile_env):
         # ~/.local/bin commonly holds unrelated binaries; they must not match.
-        monkeypatch.setattr("sys.platform", "darwin")
         from hermes_cli.profiles import _get_wrapper_dir, find_alias_for_profile
         wrapper_dir = _get_wrapper_dir()
         wrapper_dir.mkdir(parents=True, exist_ok=True)
@@ -509,8 +506,7 @@ class TestFindAliasForProfile:
         assert find_alias_for_profile("steve") is None
 
 
-    def test_list_profiles_surfaces_custom_alias(self, profile_env, monkeypatch):
-        monkeypatch.setattr("sys.platform", "darwin")
+    def test_list_profiles_surfaces_custom_alias(self, profile_env):
         from hermes_cli.profiles import (
             create_profile,
             create_wrapper_script,

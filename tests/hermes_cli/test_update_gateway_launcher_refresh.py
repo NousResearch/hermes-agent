@@ -12,14 +12,18 @@ forever" gap:
    update`` regenerates the installed Scheduled Task / Startup launcher
    scripts instead of leaving install-time artifacts stale forever.
 
-Windows-specific paths are exercised via ``_is_windows`` patching so they
-run on any host (same approach as test_update_venv_health).
+``_resolve_detached_python`` is a pure path helper and runs on any host.
+``windowless_gateway_restart_spec`` returns its argv unchanged off Windows,
+so the test that exercises the rewrite is ``windows_only`` rather than run
+against a faked ``sys.platform``.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 from unittest import mock
+
+import pytest
 
 import hermes_cli.gateway_windows as gateway_windows
 import hermes_cli.main as cli_main
@@ -53,21 +57,20 @@ def test_resolve_detached_python_swaps_legacy_pythonw_for_console_sibling(tmp_pa
 
 
 
+@pytest.mark.windows_only
 def test_restart_spec_normalizes_legacy_pythonw_argv(tmp_path):
     """A pre-rework Scheduled Task argv snapshot (leading pythonw.exe) must be
     respawned through the console python + hidden-console launch, with every
-    argument after the interpreter preserved verbatim."""
+    argument after the interpreter preserved verbatim.
+
+    ``windows_only``: ``windowless_gateway_restart_spec`` returns the argv
+    untouched off Windows, so the fake was the only thing making the rewrite
+    (and its ``Scripts/``-layout venv derivation) run at all.
+    """
     pythonw, python = _make_venv(tmp_path, with_console_python=True)
 
-    # Pre-import so the function's lazy imports resolve from sys.modules
-    # instead of re-importing under the win32 platform patch (see the
-    # TestWindowlessGatewayRestartSpec comment in
-    # tests/tools/test_windows_native_support.py).
-    import hermes_cli.config  # noqa: F401
-    import hermes_cli.gateway  # noqa: F401
-
     argv = [str(pythonw), "-m", "hermes_cli.main", "gateway", "run"]
-    with mock.patch.object(gateway_windows.sys, "platform", "win32"), mock.patch.object(
+    with mock.patch.object(
         gateway_windows, "_stable_gateway_working_dir", return_value=str(tmp_path)
     ), mock.patch("hermes_cli.config.get_hermes_home", return_value=str(tmp_path)):
         new_argv, cwd, env = gateway_windows.windowless_gateway_restart_spec(list(argv))

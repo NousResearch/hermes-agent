@@ -61,8 +61,15 @@ def test_install_npm_works_without_extras(tmp_path, monkeypatch):
 
 
 
+@pytest.mark.windows_only
 def test_install_pip_finds_windows_scripts_launcher(tmp_path, monkeypatch):
-    """pip console scripts can land in Scripts/ on native Windows."""
+    """pip console scripts can land in Scripts/ on native Windows.
+
+    ``windows_only``: the ``Scripts/`` layout and the ``.exe`` launcher are
+    what pip actually produces on Windows. Faking ``_is_windows()`` on Linux
+    made the test assert against a directory tree the test itself created, on
+    a host where pip would never lay it out that way.
+    """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from agent.lsp import install as install_mod
@@ -75,7 +82,6 @@ def test_install_pip_finds_windows_scripts_launcher(tmp_path, monkeypatch):
         launcher.chmod(0o755)
         return MagicMock(returncode=0, stderr="")
 
-    monkeypatch.setattr(install_mod, "_is_windows", lambda: True)
     monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
 
     resolved = install_mod._install_pip("fake-lsp", "fake-language-server")

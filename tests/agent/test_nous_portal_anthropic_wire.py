@@ -401,7 +401,31 @@ class TestPortalThinkingReplay:
         self._assert_thinking_kept(STAGING_URL)
 
     def test_other_third_party_gateways_still_strip_thinking(self):
-        """The Portal carve-out must not leak into MiniMax-style proxies."""
+        """The Portal carve-out must not leak into generic third-party proxies."""
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        _system, converted = convert_messages_to_anthropic(
+            self._messages(),
+            base_url="https://some-proxy.example.com/anthropic",
+            model="MiniMax-M2.7",
+        )
+        assistant = next(m for m in converted if m["role"] == "assistant")
+        thinking = [
+            b
+            for b in assistant["content"]
+            if isinstance(b, dict) and b.get("type") == "thinking"
+        ]
+
+        assert thinking == []
+
+    def test_minimax_demotes_signed_thinking_to_unsigned(self):
+        """MiniMax strips the signature but preserves thinking content (#75725).
+
+        MiniMax accepts unsigned thinking blocks on replay and uses them for
+        interleaved reasoning — unlike a generic third-party proxy that strips
+        them entirely.  The Portal carve-out and the MiniMax carve-out are
+        distinct: Portal keeps the *signed* block; MiniMax keeps *unsigned*.
+        """
         from agent.anthropic_adapter import convert_messages_to_anthropic
 
         _system, converted = convert_messages_to_anthropic(
@@ -416,7 +440,9 @@ class TestPortalThinkingReplay:
             if isinstance(b, dict) and b.get("type") == "thinking"
         ]
 
-        assert thinking == []
+        assert len(thinking) == 1
+        assert thinking[0]["thinking"] == "plan the listing"
+        assert "signature" not in thinking[0]
 
 
 # ── 6. Auxiliary clients inherit the dual-wire split ─────────────────────────

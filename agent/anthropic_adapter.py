@@ -2527,6 +2527,32 @@ def _manage_thinking_signatures(
                     continue
                 new_content.append(b)
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
+        elif _is_minimax_anthropic_endpoint(base_url):
+            # MiniMax: strip signature, preserve thinking content (signed→unsigned).
+            # MiniMax returns *signed* thinking blocks on its /anthropic endpoint
+            # but validates signatures against the originating turn context, so a
+            # signed block replayed from an earlier turn is rejected with HTTP 400.
+            # Unlike DeepSeek (which strips signed blocks entirely because it only
+            # replays unsigned blocks synthesised from reasoning_content), MiniMax
+            # accepts unsigned thinking content on replay and uses it for
+            # interleaved reasoning across tool-call turns (#75725).
+            new_content = []
+            for b in m["content"]:
+                if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
+                    new_content.append(b)
+                    continue
+                if b.get("type") == "thinking":
+                    # Strip the signature → block becomes unsigned.
+                    unsigned = {k: v for k, v in b.items()
+                                if k not in ("signature", "cache_control")}
+                    new_content.append(unsigned)
+                else:
+                    # redacted_thinking: the opaque ``data`` payload is
+                    # signature-equivalent and MiniMax cannot validate it.
+                    # Replace with a text placeholder so block position is
+                    # preserved for interleaved reasoning.
+                    new_content.append({"type": "text", "text": "(redacted thinking elided)"})
+            m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
         elif _is_third_party or idx != last_assistant_idx:
             # Third-party: strip ALL thinking blocks (signatures are proprietary).
             # Direct Anthropic: strip from non-latest assistant messages only.

@@ -521,3 +521,201 @@ def test_apply_external_secret_sources_bad_ttl_does_not_crash(tmp_path, monkeypa
 
     # Coerced to the 300s default rather than raising ValueError.
     assert captured["cache_ttl_seconds"] == 300
+
+
+# ---------------------------------------------------------------------------
+# #74283 — multiplex regression: a profile's dotenv value must not be replaced
+# by another profile's external secret across load_hermes_dotenv() calls.
+# ---------------------------------------------------------------------------
+
+
+def test_multiplex_dotenv_value_not_clobbered_by_other_profile_external_secret(
+    tmp_path, monkeypatch
+):
+    """Regression for #74283: per-home isolation must hold across profiles.
+
+    Home A resolves ``ANTHROPIC_API_KEY`` via an external secret source
+    (``"aaa"``).  Home B's ``.env`` sets the same key to a different
+    value (``"bbb"``).  Loading home B's dotenv must NOT replace B's
+    value with A's external secret snapshot.
+
+    The pre-repair implementation snapshotted the process-global
+    ``_SECRET_SOURCES`` (which conflates profiles because the latest
+    writer wins on the ``name -> source`` map).  Restoring from that
+    global snapshot would clobber B's dotenv value with A's external
+    value.  The fix snapshots ``get_secret_source_values(home_path)``
+    so each home's protection is independent.
+    """
+    from agent.secret_sources.base import FetchResult
+    from agent.secret_sources.registry import (
+        AppliedVar,
+        ApplyReport,
+        SourceReport,
+    )
+    from agent.secret_sources import registry as reg_module
+
+    home_a = tmp_path / "profile-a"
+    home_b = tmp_path / "profile-b"
+    home_a.mkdir()
+    home_b.mkdir()
+
+    # Home A: external source resolves ANTHROPIC_API_KEY="aaa".
+    (home_a / "config.yaml").write_text(
+        "secrets:\n  test-source:\n    enabled: true\n",
+        encoding="utf-8",
+    )
+    # Home B: dotenv sets ANTHROPIC_API_KEY="bbb" (no external source).
+    (home_b / ".env").write_text(
+        "ANTHROPIC_API_KEY=bbb\n", encoding="utf-8"
+    )
+
+    external_values = {
+        str(home_a.resolve()): "aaa",
+    }
+
+    def _fake_apply_all(_cfg, home_path):
+        home_key = str(Path(home_path).resolve())
+        if home_key not in external_values:
+            # Home B has no external source — return an empty report.
+            return ApplyReport(sources=[], provenance={})
+        value = external_values[home_key]
+        monkeypatch.setenv("ANTHROPIC_API_KEY", value)
+        return ApplyReport(
+            sources=[
+                SourceReport(
+                    name="test-source",
+                    label="Test Source",
+                    result=FetchResult(),
+                    applied=["ANTHROPIC_API_KEY"],
+                )
+            ],
+            provenance={
+                "ANTHROPIC_API_KEY": AppliedVar(
+                    name="ANTHROPIC_API_KEY",
+                    source="test-source",
+                    shape="mapped",
+                    overrode_env=True,
+                )
+            },
+        )
+
+    monkeypatch.setattr(reg_module, "apply_all", _fake_apply_all)
+
+    # Seed the home-A snapshot directly so the test is independent of the
+    # apply path's own side effects (the bug is purely about which dict
+    # load_hermes_dotenv() snapshots from).
+    home_a_key = str(home_a.resolve())
+    env_loader._SECRET_SOURCES["ANTHROPIC_API_KEY"] = "test-source"
+    env_loader._SECRET_SOURCE_VALUES_BY_HOME[home_a_key] = {
+        "ANTHROPIC_API_KEY": "aaa",
+    }
+    env_loader._APPLIED_HOMES.add(home_a_key)
+
+    # Simulate the first call having resolved A's external secret into the
+    # shared os.environ (this is what an earlier load_hermes_dotenv(home_a)
+    # would have done).
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "aaa")
+
+    # Now load home B.  Its .env must take precedence over the stale
+    # process-global state.
+    env_loader.load_hermes_dotenv(hermes_home=home_b)
+
+    assert os.environ["ANTHROPIC_API_KEY"] == "bbb", (
+        "Home B's dotenv value was replaced by home A's external secret "
+        "(#74283). load_hermes_dotenv() must snapshot per-home, not "
+        "process-global, when protecting external-source values."
+    )
+
+    # Home A's snapshot is untouched.
+    assert env_loader.get_secret_source_values(home_a) == {
+        "ANTHROPIC_API_KEY": "aaa",
+    }
+
+
+def test_multiplex_external_secret_survives_reload_for_own_home(
+    tmp_path, monkeypatch
+):
+    """#74283 — sibling path: a home's external-secret value must still
+    survive a *second* load_hermes_dotenv() for the SAME home.  This
+    preserves the original #74265 protection while confirming the
+    per-home snapshot is in effect.
+
+    Home A: external source resolves ANTHROPIC_API_KEY="aaa" and stores
+    a placeholder in .env.  Loading A twice must keep the resolved
+    "aaa" (not the placeholder).
+    Home B: independent .env with ANTHROPIC_API_KEY="bbb" and no
+    external source.  Loading B once must keep "bbb" even though
+    A's external source is still tracked in the process-global state.
+    """
+    from agent.secret_sources.base import FetchResult
+    from agent.secret_sources.registry import (
+        AppliedVar,
+        ApplyReport,
+        SourceReport,
+    )
+    from agent.secret_sources import registry as reg_module
+
+    home_a = tmp_path / "profile-a"
+    home_b = tmp_path / "profile-b"
+    home_a.mkdir()
+    home_b.mkdir()
+
+    (home_a / "config.yaml").write_text(
+        "secrets:\n  test-source:\n    enabled: true\n",
+        encoding="utf-8",
+    )
+    (home_a / ".env").write_text(
+        "ANTHROPIC_API_KEY=__PLACEHOLDER__\n", encoding="utf-8"
+    )
+    (home_b / ".env").write_text(
+        "ANTHROPIC_API_KEY=bbb\n", encoding="utf-8"
+    )
+
+    home_a_key = str(home_a.resolve())
+
+    def _fake_apply_all(_cfg, home_path):
+        home_key = str(Path(home_path).resolve())
+        if home_key != home_a_key:
+            return ApplyReport(sources=[], provenance={})
+        value = "aaa"
+        monkeypatch.setenv("ANTHROPIC_API_KEY", value)
+        return ApplyReport(
+            sources=[
+                SourceReport(
+                    name="test-source",
+                    label="Test Source",
+                    result=FetchResult(),
+                    applied=["ANTHROPIC_API_KEY"],
+                )
+            ],
+            provenance={
+                "ANTHROPIC_API_KEY": AppliedVar(
+                    name="ANTHROPIC_API_KEY",
+                    source="test-source",
+                    shape="mapped",
+                    overrode_env=True,
+                )
+            },
+        )
+
+    monkeypatch.setattr(reg_module, "apply_all", _fake_apply_all)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    # First load: external source resolves A's placeholder to "aaa".
+    env_loader.load_hermes_dotenv(hermes_home=home_a)
+    assert os.environ["ANTHROPIC_API_KEY"] == "aaa"
+
+    # Second load of A: placeholder must NOT clobber the resolved "aaa"
+    # (this is the original #74265 protection, preserved).
+    env_loader.load_hermes_dotenv(hermes_home=home_a)
+    assert os.environ["ANTHROPIC_API_KEY"] == "aaa", (
+        "Home A's external-secret value was clobbered on second "
+        "load_hermes_dotenv() — #74265 protection regressed."
+    )
+
+    # Load B: B's .env "bbb" must be preserved, not replaced by A's "aaa".
+    env_loader.load_hermes_dotenv(hermes_home=home_b)
+    assert os.environ["ANTHROPIC_API_KEY"] == "bbb", (
+        "Home B's dotenv value was replaced by home A's external secret "
+        "snapshot — #74283 multiplex isolation regressed."
+    )

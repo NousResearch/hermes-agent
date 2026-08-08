@@ -36,6 +36,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -573,6 +574,56 @@ def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:
     assert db.get_compression_lock_holder(parent_sid) is None, (
         "Compression lock leaked: still held after both paths completed."
     )
+
+
+def test_turn_start_recovery_follows_multiple_compression_rotations(
+    tmp_path: Path,
+) -> None:
+    """An already-open runtime may lag more than one continuation behind.
+
+    Desktop tabs keep a stable runtime id while compression rotates the durable
+    session id. If the renderer misses two rotation events, the next turn still
+    arrives on the runtime whose agent points at the root. Recovery must adopt
+    the live tip, not only a live direct child of that root.
+    """
+    from agent.conversation_compression import recover_rotated_compression_session
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    root = "desktop-stale-root"
+    middle = "desktop-ended-middle"
+    tip = "desktop-live-tip"
+    db.create_session(root, source="desktop")
+    db.append_message(root, "user", "pre-compression turn")
+    db.end_session(root, "compression")
+    db.create_session(middle, source="desktop", parent_session_id=root)
+    db.append_message(middle, "user", "first compacted handoff")
+    db.end_session(middle, "compression")
+    db.create_session(tip, source="desktop", parent_session_id=middle)
+    db.append_message(tip, "user", "second compacted handoff")
+
+    switches = []
+    agent = SimpleNamespace(
+        _gateway_session_key="desktop-runtime",
+        _memory_manager=None,
+        _session_db=db,
+        context_compressor=SimpleNamespace(
+            on_session_start=lambda *args, **kwargs: switches.append((args, kwargs))
+        ),
+        platform="desktop",
+        session_id=root,
+    )
+
+    try:
+        recovered = recover_rotated_compression_session(agent)
+    finally:
+        db.close()
+
+    assert agent.session_id == tip
+    assert [
+        (message["role"], message["content"]) for message in recovered or []
+    ] == [("user", "second compacted handoff")]
+    assert switches and switches[0][0] == (tip,)
+    assert switches[0][1]["old_session_id"] == root
 
 
 def test_durable_message_committed_before_lease_is_adopted(

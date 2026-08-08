@@ -241,6 +241,12 @@ def test_failed_assistant_persist_blocks_ui_projection_and_tool_side_effects():
     assert result["failed"] is True
     assert result["completed"] is False
     assert result["turn_exit_reason"] == "session_persistence_failed"
+    assert result["error"] == (
+        "⚠️ No reply: the turn was stopped because session storage could not be "
+        "written (the transcript would have been lost on restart). Check Hermes "
+        "logs for the exact storage error, fix it, then send your message again."
+    )
+    assert "disk" not in result["error"].lower()
 
 
 # ---------------------------------------------------------------------------

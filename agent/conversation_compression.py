@@ -1209,26 +1209,52 @@ def _adopt_live_compression_child(
     session_db: Any,
     parent_session_id: str,
 ) -> Optional[List[Dict[str, Any]]]:
-    """Move a stale compression contender onto the unique durable child.
+    """Move a stale compression contender onto the durable live tip.
 
     Resolve and load first, then mutate the live agent. This ordering keeps the
     stale contender fail-closed when lineage is ambiguous or the compacted
-    handoff cannot be read.
+    handoff cannot be read. The canonical tip resolver is transitive because an
+    already-open Desktop runtime can miss more than one durable-id rotation.
     """
     finder = getattr(type(session_db), "find_live_compression_child", None)
     loader = getattr(type(session_db), "get_messages_as_conversation", None)
-    if not callable(finder) or not callable(loader):
+    tip_resolver = getattr(type(session_db), "get_compression_tip", None)
+    session_loader = getattr(type(session_db), "get_session", None)
+    if not callable(loader):
         return None
-    child = finder(session_db, parent_session_id)
+
+    if callable(tip_resolver) and callable(session_loader):
+        tip_id = tip_resolver(session_db, parent_session_id)
+        child = (
+            session_loader(session_db, tip_id)
+            if tip_id and tip_id != parent_session_id
+            else None
+        )
+        if child and child.get("ended_at") is not None:
+            child = None
+    else:
+        if not callable(finder):
+            return None
+        child = finder(session_db, parent_session_id)
     if not child or not child.get("id"):
         return None
     child_session_id = str(child["id"])
     recovered = loader(session_db, child_session_id)
     if not isinstance(recovered, list) or not recovered:
         return None
-    # Revalidate after loading: the child may have rotated or a competing
+    # Revalidate after loading: the tip may have rotated or a competing
     # continuation may have appeared between the two DB reads.
-    confirmed = finder(session_db, parent_session_id)
+    if callable(tip_resolver) and callable(session_loader):
+        confirmed_id = tip_resolver(session_db, parent_session_id)
+        confirmed = (
+            session_loader(session_db, confirmed_id) if confirmed_id else None
+        )
+        if confirmed and confirmed.get("ended_at") is not None:
+            confirmed = None
+    else:
+        if not callable(finder):
+            return None
+        confirmed = finder(session_db, parent_session_id)
     if not confirmed or str(confirmed.get("id") or "") != child_session_id:
         return None
 

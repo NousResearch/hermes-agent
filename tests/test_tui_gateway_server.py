@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import subprocess
@@ -5190,6 +5191,48 @@ def test_run_prompt_submit_prefers_origin_ui_session_id(monkeypatch, tmp_path):
         assert created == [], "session.create should not persist an empty DB row"
     finally:
         server._sessions.pop(sid, None)
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code", "expected_text"),
+    [
+        (OSError(errno.ENOSPC, "No space left on device"), 5070, "disk full"),
+        (
+            PermissionError("state row is closed"),
+            5071,
+            "session storage could not be written",
+        ),
+    ],
+)
+def test_prompt_submit_distinguishes_disk_full_from_other_persistence_failures(
+    monkeypatch, failure, expected_code, expected_text
+):
+    """Desktop notification routing depends on these persistence error classes."""
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *_args: None)
+    monkeypatch.setattr(
+        server,
+        "_ensure_session_db_row",
+        lambda _session: (_ for _ in ()).throw(failure),
+    )
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "request",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hello"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert response is not None
+    assert "error" in response
+    assert response["error"]["code"] == expected_code
+    assert expected_text in response["error"]["message"].lower()
+    if expected_code == 5071:
+        assert "disk full" not in response["error"]["message"].lower()
 
 
 def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):

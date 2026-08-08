@@ -189,6 +189,111 @@ class TestCreateSkill:
         assert extract_skill_description(fm) in result["system_prompt_preview"]
 
 
+class TestFindSkillSymlinks:
+    """Regression tests for #35184 — rglob does not follow symlinks."""
+
+    def test_symlinked_skill_dir_is_found(self, tmp_path):
+        """Skills under a symlinked category directory must be discoverable."""
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        # Create a real category dir outside skills_dir
+        real_category = tmp_path / "real_category" / "my-skill"
+        real_category.mkdir(parents=True)
+        (real_category / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+
+        # Symlink the category into skills_dir
+        try:
+            (skills_dir / "real_category").symlink_to(tmp_path / "real_category")
+        except OSError:
+            pytest.skip("Symlinks not supported on this platform")
+
+        with patch("tools.skill_manager_tool.SKILLS_DIR", skills_dir), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
+            from tools.skill_manager_tool import _find_skill
+            result = _find_skill("my-skill")
+
+        assert result is not None, "Symlinked skill should be found"
+        # iter_skill_index_files returns the path through the symlink,
+        # not the symlink's target path
+        expected_path = skills_dir / "real_category" / "my-skill"
+        assert result["path"] == expected_path
+
+    def test_nested_symlinked_skill_is_found(self, tmp_path):
+        """Skills nested under multiple symlinked dirs must be discoverable."""
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        # Create real nested dirs outside
+        real_root = tmp_path / "outside" / "nested" / "deep-skill"
+        real_root.mkdir(parents=True)
+        (real_root / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+
+        # Symlink the top-level outside dir into skills
+        try:
+            (skills_dir / "outside").symlink_to(tmp_path / "outside")
+        except OSError:
+            pytest.skip("Symlinks not supported on this platform")
+
+        with patch("tools.skill_manager_tool.SKILLS_DIR", skills_dir), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
+            from tools.skill_manager_tool import _find_skill
+            result = _find_skill("deep-skill")
+
+        assert result is not None, "Nested symlinked skill should be found"
+
+    def test_symlinked_skill_found_via_other_profile(self, tmp_path, monkeypatch):
+        """Regression: _find_skill_in_other_profiles must follow symlinks too.
+
+        A skill in a non-active profile that is reachable only through a
+        symlink must appear in the cross-profile matches list.
+        """
+        # Active profile skills dir — empty, so _find_skill returns None
+        active_skills = tmp_path / "active-skills"
+        active_skills.mkdir()
+
+        # Other profile: skill is nested under a symlink category
+        profile_skills = tmp_path / "other-profile-skills"
+        profile_skills.mkdir()
+        real_cat = tmp_path / "real-cat" / "cross-skill"
+        real_cat.mkdir(parents=True)
+        (real_cat / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        try:
+            (profile_skills / "real-cat").symlink_to(tmp_path / "real-cat")
+        except OSError:
+            pytest.skip("Symlinks not supported on this platform")
+
+        # Stub hermes root so the profile scan finds profile_skills.
+        # _find_skill_in_other_profiles scans root/profiles/*/skills.
+        root = tmp_path / "hermes"
+        root.mkdir()
+        profiles_root = root / "profiles"
+        profiles_root.mkdir()
+        other_profile = profiles_root / "other"
+        other_profile.mkdir()
+        (other_profile / "skills").symlink_to(profile_skills)
+
+        monkeypatch.setattr(
+            "tools.skill_manager_tool.SKILLS_DIR",
+            active_skills,
+        )
+        monkeypatch.setattr(
+            "hermes_constants.get_default_hermes_root",
+            lambda: root,
+        )
+        monkeypatch.setattr(
+            "tools.skill_manager_tool._skills_dir",
+            lambda: active_skills,
+        )
+
+        with patch("agent.skill_utils.get_all_skills_dirs", return_value=[active_skills]):
+            from tools.skill_manager_tool import _find_skill_in_other_profiles
+            matches = _find_skill_in_other_profiles("cross-skill")
+
+        assert matches, "Symlinked skill should be found in other profile"
+        assert matches[0][0] == "other"
+
+
 class TestEditSkill:
     def test_edit_existing_skill(self, tmp_path):
         with _skill_dir(tmp_path):

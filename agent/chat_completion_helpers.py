@@ -2045,7 +2045,21 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         fb_api_mode = "chat_completions"
         fb_base_url = str(fb_client.base_url)
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
-        if fb_provider == "openai-codex":
+        # An explicit `api_mode` on the chain entry wins over inference. The
+        # primary path already honors it via runtime_provider._parse_api_mode;
+        # without this the inference chain below silently downgrades a
+        # user-declared wire protocol. A custom provider fronting Claude
+        # (base_url http://gateway/v1, provider "custom") matches none of the
+        # anthropic checks, so `api_mode: anthropic_messages` was ignored and
+        # the turn went out over /chat/completions — which drops the
+        # `cache_control` blocks the Anthropic path attaches, silently zeroing
+        # prompt caching for the rest of the conversation.
+        from hermes_cli.runtime_provider import _parse_api_mode
+
+        _fb_explicit_api_mode = _parse_api_mode(fb.get("api_mode"))
+        if _fb_explicit_api_mode:
+            fb_api_mode = _fb_explicit_api_mode
+        elif fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
         elif fb_provider in {"nous", "nous-portal", "nousresearch"}:
             # Portal is dual-wire: anthropic/* must land on /v1/messages.

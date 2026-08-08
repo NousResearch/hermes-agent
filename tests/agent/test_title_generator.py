@@ -1,11 +1,14 @@
 """Tests for agent.title_generator — auto-generated session titles."""
 
+from contextvars import ContextVar
+
 import pytest
 from unittest.mock import MagicMock, patch
 
 
 from agent.title_generator import (
     generate_title,
+    choose_topic_icon,
     auto_title_session,
     maybe_auto_title,
     _title_language,
@@ -18,6 +21,201 @@ class TestGenerateTitle:
 
 
 
+    def test_default_prompt_matches_user_language(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Some Title"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response) as llm:
+            generate_title("質問です", "回答です")
+
+        system_prompt = llm.call_args.kwargs["messages"][0]["content"]
+        assert "same language the user is writing in" in system_prompt
+        assert "1-3 words" in system_prompt
+        assert "named project" in system_prompt
+        assert "Fixing" in system_prompt
+        assert "Do not include emoji" in system_prompt
+
+    def test_compact_preferences_and_name_aliases_are_configurable(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Planning Flow"
+        config = {
+            "auxiliary": {
+                "title_generation": {
+                    "max_words": 2,
+                    "max_characters": 24,
+                    "name_aliases": {
+                        "project atlas": "ProjectAtlas",
+                        "atlas app": "ProjectAtlas",
+                    },
+                }
+            }
+        }
+
+        with (
+            patch("hermes_cli.config.load_config_readonly", return_value=config),
+            patch("agent.title_generator.call_llm", return_value=mock_response) as llm,
+        ):
+            assert generate_title("Update the ATLAS APP", "I will inspect it") == "ProjectAtlas"
+
+        system_prompt = llm.call_args.kwargs["messages"][0]["content"]
+        assert "1-2 words" in system_prompt
+        assert "24 characters" in system_prompt
+        assert '\"project atlas\": \"ProjectAtlas\"' in system_prompt
+        assert '\"atlas app\": \"ProjectAtlas\"' in system_prompt
+
+    def test_name_aliases_match_whole_terms_not_substrings(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Atlassian Migration"
+        config = {
+            "auxiliary": {
+                "title_generation": {
+                    "name_aliases": {"atlas": "ProjectAtlas"},
+                }
+            }
+        }
+
+        with (
+            patch("hermes_cli.config.load_config_readonly", return_value=config),
+            patch("agent.title_generator.call_llm", return_value=mock_response),
+        ):
+            title = generate_title("Plan the Atlassian migration", "I will inspect it")
+
+        assert title == "Atlassian Migration"
+
+    def test_name_aliases_do_not_match_across_exchange_boundary(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Vajra"
+        config = {
+            "auxiliary": {
+                "title_generation": {
+                    "name_aliases": {
+                        "atlas app": "ProjectAtlas",
+                        "vajra": "Vajra",
+                    },
+                }
+            }
+        }
+
+        with (
+            patch("hermes_cli.config.load_config_readonly", return_value=config),
+            patch("agent.title_generator.call_llm", return_value=mock_response),
+        ):
+            title = generate_title(
+                "Please leave this as atlas",
+                "app support for Vajra is available",
+            )
+
+        assert title == "Vajra"
+
+    def test_canonical_alias_takes_precedence_over_character_preference(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Atlas"
+        config = {
+            "auxiliary": {
+                "title_generation": {
+                    "max_characters": 12,
+                    "name_aliases": {"atlas app": "ProjectAtlasLongName"},
+                }
+            }
+        }
+
+        with (
+            patch("hermes_cli.config.load_config_readonly", return_value=config),
+            patch("agent.title_generator.call_llm", return_value=mock_response),
+        ):
+            title = generate_title("Open the atlas app", "I will inspect it")
+
+        assert title == "ProjectAtlasLongName"
+
+    def test_name_alias_after_prompt_snippet_is_still_enforced(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Planning Flow"
+        config = {
+            "auxiliary": {
+                "title_generation": {
+                    "name_aliases": {"atlas app": "ProjectAtlas"},
+                }
+            }
+        }
+
+        with (
+            patch("hermes_cli.config.load_config_readonly", return_value=config),
+            patch("agent.title_generator.call_llm", return_value=mock_response),
+        ):
+            title = generate_title("x" * 550 + " atlas app", "I will inspect it")
+
+        assert title == "ProjectAtlas"
+
+    def test_name_aliases_ignore_hidden_skill_scaffolding(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Title Leak"
+        config = {
+            "auxiliary": {
+                "title_generation": {
+                    "name_aliases": {"worktree": "Worktree"},
+                }
+            }
+        }
+        expanded_skill_message = (
+            "/work scaffolding with hidden instructions about a fresh worktree"
+        )
+
+        with (
+            patch("hermes_cli.config.load_config_readonly", return_value=config),
+            patch("agent.title_generator.call_llm", return_value=mock_response),
+            patch(
+                "agent.title_generator._summarize_user_message",
+                return_value="/work — fix the title leak",
+            ),
+        ):
+            title = generate_title(expanded_skill_message, "I will fix the title leak")
+
+        assert title == "Title Leak"
+
+    def test_configured_character_limit_is_enforced(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "A" * 40
+        config = {
+            "auxiliary": {
+                "title_generation": {
+                    "max_words": 2,
+                    "max_characters": 24,
+                }
+            }
+        }
+
+        with (
+            patch("hermes_cli.config.load_config_readonly", return_value=config),
+            patch("agent.title_generator.call_llm", return_value=mock_response),
+        ):
+            title = generate_title("question", "answer")
+
+        assert title is not None
+        assert len(title) == 24
+        assert title.endswith("...")
+
+    def test_configured_language_pins_prompt(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Some Title"
+
+        with (
+            patch("agent.title_generator.call_llm", return_value=mock_response) as llm,
+            patch("agent.title_generator._title_language", return_value="Japanese"),
+        ):
+            generate_title("hello", "hi")
+
+        system_prompt = llm.call_args.kwargs["messages"][0]["content"]
+        assert "Write the title in Japanese" in system_prompt
+        assert "same language the user" not in system_prompt
 
     def test_title_language_reads_config(self):
         cfg = {"auxiliary": {"title_generation": {"language": "  French "}}}
@@ -87,7 +285,8 @@ class TestGenerateTitle:
 
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             title = generate_title("question", "answer")
-            assert len(title) == 80
+            assert title is not None
+            assert len(title) == 40
             assert title.endswith("...")
 
 
@@ -116,6 +315,117 @@ class TestGenerateTitle:
 
 
 
+
+
+class TestChooseTopicIcon:
+    def test_returns_exact_allowed_emoji(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "🚀"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response) as llm:
+            result = choose_topic_icon(
+                "ProjectAtlas",
+                "Let's improve the ProjectAtlas planning workflow",
+                ["📊", "🚀", "🛠️"],
+            )
+
+        assert result == "🚀"
+        prompt = llm.call_args.kwargs["messages"][0]["content"]
+        assert "ranked" in prompt
+        assert "specific, playful visual metaphors" in prompt
+        assert "📊" in prompt and "🚀" in prompt and "🛠️" in prompt
+        assert llm.call_args.kwargs["temperature"] == 0.7
+
+    def test_extracts_single_allowed_emoji_from_wrapped_response(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Emoji: 💳"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert choose_topic_icon("Finance", "credit card benefits", ["🚀", "💳"]) == "💳"
+
+    def test_matches_allowed_variation_selector_form(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "⚡"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert choose_topic_icon("ProjectBolt", "fast analysis", ["⚡️", "💡"]) == "⚡️"
+
+    def test_prefers_ranked_candidate_that_was_not_used_recently(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "🚀 📊 🧪"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response) as llm:
+            assert choose_topic_icon(
+                "Launch",
+                "compare metrics",
+                ["🚀", "📊", "🧪"],
+                recent_emojis=["🚀"],
+            ) == "📊"
+
+        prompt = llm.call_args.kwargs["messages"][0]["content"]
+        assert "used recently" in prompt
+        assert "🚀" in prompt
+
+    def test_excludes_recent_icons_from_large_candidate_pool(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "💻"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert choose_topic_icon(
+                "Developer Tools",
+                "debug the agent",
+                ["💻", "🎨", "🧪", "🔭", "🛠️"],
+                recent_emojis=["💻"],
+            ) is None
+
+    def test_compound_emoji_wins_over_overlapping_component(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "👮‍♂️ ⚡"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert choose_topic_icon(
+                "Safety",
+                "police safety workflow",
+                ["👮", "👮‍♂️", "♂️", "⚡️"],
+            ) == "👮‍♂️"
+            assert choose_topic_icon(
+                "Safety",
+                "police safety workflow",
+                ["👮", "👮‍♂️", "♂️", "⚡️"],
+                recent_emojis=["👮‍♂️"],
+            ) == "⚡️"
+
+    def test_falls_back_to_top_ranked_candidate_when_all_were_recent(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "💻 🤖"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert choose_topic_icon(
+                "Developer Tools",
+                "debug the agent",
+                ["💻", "🤖"],
+                recent_emojis=["💻", "🤖"],
+            ) == "💻"
+
+    def test_rejects_response_without_an_allowed_candidate(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "🛸"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert choose_topic_icon("Launch", "ship it", ["🚀", "📊"]) is None
+
+    def test_skips_without_allowed_icons(self):
+        with patch("agent.title_generator.call_llm") as llm:
+            assert choose_topic_icon("Launch", "ship it", []) is None
+        llm.assert_not_called()
 
 
 class TestAutoTitleSession:
@@ -236,9 +546,51 @@ class TestMaybeAutoTitle:
                 runtime_validator=None,
             )
 
+    def test_copies_context_into_background_worker(self):
+        """Profile-scoped ContextVars must survive the bare title thread."""
+        db = MagicMock()
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        marker = ContextVar("title_profile_marker", default="default")
+        token = marker.set("secondary")
+        seen = []
 
+        try:
+            with patch("agent.title_generator.auto_title_session") as mock_auto:
+                import threading
 
+                called = threading.Event()
 
+                def _capture(*_args, **_kwargs):
+                    seen.append(marker.get())
+                    called.set()
+
+                mock_auto.side_effect = _capture
+                maybe_auto_title(db, "sess-1", "hello", "hi there", history)
+                assert called.wait(timeout=10), "auto_title thread never ran"
+        finally:
+            marker.reset(token)
+
+        assert seen == ["secondary"]
+
+    def test_skips_when_title_generation_disabled(self):
+        """Disabled title generation should not even start the background worker."""
+        db = MagicMock()
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        config = {"auxiliary": {"title_generation": {"enabled": False}}}
+
+        with (
+            patch("hermes_cli.config.load_config_readonly", return_value=config),
+            patch("agent.title_generator.auto_title_session") as mock_auto,
+        ):
+            maybe_auto_title(db, "sess-1", "hello", "hi there", history)
+
+        mock_auto.assert_not_called()
 
 
 class TestAutoTitleDuplicateHandling:

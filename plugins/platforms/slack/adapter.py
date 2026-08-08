@@ -6599,16 +6599,54 @@ class SlackAdapter(BasePlatformAdapter):
             if len(body) > budget:
                 body = body[:budget] + "..."
 
+            choice_labels = [
+                str(choice).strip() or f"Option {idx + 1}"
+                for idx, choice in enumerate(choices)
+            ]
+            # Slack limits a button label to 75 characters. Showing a raw
+            # prefix makes otherwise distinct choices indistinguishable, so
+            # render the complete numbered choices above the controls and use
+            # numbered buttons whenever any label exceeds that limit.
+            show_full_choices = any(len(label) > 75 for label in choice_labels)
+            choice_blocks: list = []
+            if show_full_choices:
+                for idx, label in enumerate(choice_labels, start=1):
+                    escaped_label = (
+                        label.replace("&", "&amp;")
+                        .replace("<", "&lt;")
+                        .replace(">", "&gt;")
+                    )
+                    option_text = f"*{idx}.* {escaped_label}"
+                    # A section block cannot exceed 3000 characters. Falling
+                    # back to the base numbered-text path keeps an unusually
+                    # large choice intact instead of creating an invalid Slack
+                    # payload or silently truncating it.
+                    if len(option_text) > 3000:
+                        return await super().send_clarify(
+                            chat_id=chat_id,
+                            question=question,
+                            choices=choices,
+                            clarify_id=clarify_id,
+                            session_key=session_key,
+                            metadata=metadata,
+                        )
+                    choice_blocks.append(
+                        {"type": "section", "text": {"type": "mrkdwn", "text": option_text}}
+                    )
+
             # One button per choice + a free-text "Other" button.  Slack caps
             # an actions block at 5 elements; the clarify tool caps choices at
             # 4 (+ Other = 5) so this is normally one block, but chunk anyway
             # so a larger choice list degrades gracefully instead of 400ing.
             elements = []
-            for idx, choice in enumerate(choices):
-                label = str(choice).strip() or f"Option {idx + 1}"
+            for idx, label in enumerate(choice_labels):
                 elements.append({
                     "type": "button",
-                    "text": {"type": "plain_text", "text": label[:75], "emoji": True},
+                    "text": {
+                        "type": "plain_text",
+                        "text": f"Choose {idx + 1}" if show_full_choices else label,
+                        "emoji": True,
+                    },
                     "action_id": f"hermes_clarify_choice_{idx}",
                     "value": f"{clarify_id}|{idx}",
                 })
@@ -6619,15 +6657,41 @@ class SlackAdapter(BasePlatformAdapter):
                 "value": f"{clarify_id}|other",
             })
 
+            if (
+                show_full_choices
+                and 1 + len(choice_blocks) + (len(elements) + 4) // 5 > 50
+            ):
+                return await super().send_clarify(
+                    chat_id=chat_id,
+                    question=question,
+                    choices=choices,
+                    clarify_id=clarify_id,
+                    session_key=session_key,
+                    metadata=metadata,
+                )
+
             blocks: list = [
                 {"type": "section", "text": {"type": "mrkdwn", "text": body}},
+                *choice_blocks,
             ]
             for start in range(0, len(elements), 5):
                 blocks.append({"type": "actions", "elements": elements[start:start + 5]})
 
+            fallback_text = body
+            if show_full_choices:
+                fallback_text = "\n\n".join(
+                    [
+                        body,
+                        "\n".join(
+                            f"{idx}. {label.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')}"
+                            for idx, label in enumerate(choice_labels, start=1)
+                        ),
+                    ]
+                )
+
             kwargs: Dict[str, Any] = {
                 "channel": chat_id,
-                "text": body,
+                "text": fallback_text,
                 "blocks": blocks,
             }
             if thread_ts:

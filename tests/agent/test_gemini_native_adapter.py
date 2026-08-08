@@ -298,6 +298,22 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
 
 
 
+def test_extract_multimodal_parts_accepts_video_url_data_urls():
+    from agent.gemini_native_adapter import _extract_multimodal_parts
+
+    parts = _extract_multimodal_parts([
+        {"type": "text", "text": "describe this video"},
+        {
+            "type": "video_url",
+            "video_url": {"url": "data:video/mp4;base64,QUJD"},
+        },
+    ])
+
+    assert parts[0] == {"text": "describe this video"}
+    assert parts[1]["inlineData"]["mimeType"] == "video/mp4"
+    assert parts[1]["inlineData"]["data"] == "QUJD"
+
+
 # ---------------------------------------------------------------------------
 # X-Goog-Api-Client header tests
 # ---------------------------------------------------------------------------

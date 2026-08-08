@@ -1661,37 +1661,32 @@ class PhotonAdapter(BasePlatformAdapter):
         # discord/whatsapp adapters use for their sidecar spawns.
         from hermes_cli._subprocess_compat import windows_hide_flags
 
-        try:
-            # Off the event loop, for the same reason the dep reinstall above
-            # hops to a thread: this spawns node and *waits* for it (up to 10s).
-            # Run inline it holds the shared gateway loop for that whole window,
-            # so every other platform's traffic stalls — and _start_sidecar runs
-            # on every reconnect (connect(is_reconnect=True)), not just startup,
-            # so the stall recurs on a live gateway.
-            patch = await asyncio.to_thread(
-                subprocess.run,  # noqa: S603
-                [
-                    self._node_bin,
-                    str(_sidecar_dir() / "patch-spectrum-mixed-attachments.mjs"),
-                    str(_sidecar_dir()),
-                ],
-                capture_output=True,
-                text=True, encoding='utf-8', errors='replace',
-                timeout=10,
-                check=False,
-                # Windows: suppress the brief console flash this short-lived
-                # node patch run would otherwise pop on every sidecar start.
-                creationflags=windows_hide_flags(),
-            )
-            if patch.returncode != 0:
-                raise RuntimeError((patch.stderr or patch.stdout or "").strip())
-            if patch.stderr.strip():
-                logger.debug("[photon] %s", patch.stderr.strip())
-        except Exception as exc:
-            logger.warning(
-                "[photon] failed to apply Spectrum mixed attachment patch: %s",
-                exc,
-            )
+        if self._imessage_mode != "local":
+            try:
+                patch = await asyncio.to_thread(
+                    subprocess.run,  # noqa: S603
+                    [
+                        self._node_bin,
+                        str(_sidecar_dir() / "patch-spectrum-mixed-attachments.mjs"),
+                        str(_sidecar_dir()),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=10,
+                    check=False,
+                    creationflags=windows_hide_flags(),
+                )
+                if patch.returncode != 0:
+                    raise RuntimeError((patch.stderr or patch.stdout or "").strip())
+                if patch.stderr.strip():
+                    logger.debug("[photon] %s", patch.stderr.strip())
+            except Exception as exc:
+                logger.warning(
+                    "[photon] failed to apply Spectrum mixed attachment patch: %s",
+                    exc,
+                )
 
         self._sidecar_proc = subprocess.Popen(  # noqa: S603
             [self._node_bin, str(_sidecar_dir() / "index.mjs")],

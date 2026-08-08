@@ -206,6 +206,40 @@ class TestControlCharSplitTokens:
         assert "SHELL=/bin/bash" in result
         assert "HOME=/home/user" in result
 
+    def test_complete_csi_sgr_glued_to_token_masked(self):
+        """A complete CSI/SGR sequence glued directly to a token head (no
+        separating space) must not defeat prefix masking — the parameter
+        bytes (``[32m``) used to defeat ``_PREFIX_RE``'s lookbehind and
+        the token leaked verbatim (issue #81012).
+        """
+        tok = "sk-" + "a" * 24
+        # Terminal-style colored log line: ESC[32m wraps the token.
+        text = f"\x1b[32m{tok}\x1b[0m"
+        result = redact_sensitive_text(text, force=True)
+        # The token body must be gone (no cleartext leak of any 8+ char
+        # contiguous fragment).
+        assert "a" * 12 not in result
+
+    def test_csi_between_token_fragments_joins(self):
+        """``sk-<head>\\x1b[32m<tail>`` — the CSI parameter bytes between the
+        fragments used to leak the tail (only the head was masked because
+        the bare-ESC strip left ``[32m`` defeating the join). The complete
+        CSI strip removes the whole ``\\x1b[32m`` so the shadow match sees
+        a contiguous ``sk-<head><tail>``."""
+        head = "sk-" + "a" * 15
+        tail = "b" * 25
+        text = f"{head}\x1b[32m{tail}"
+        result = redact_sensitive_text(text, force=True)
+        assert tail not in result
+        assert "a" * 12 not in result
+
+    def test_csi_within_prose_does_not_match(self):
+        """Ordinary text with embedded CSI but no token must pass through
+        unchanged (the new CSI strip must not introduce false positives)."""
+        prose = "\x1b[1;32mWelcome to the dashboard\x1b[0m"
+        result = redact_sensitive_text(prose, force=True)
+        assert "Welcome to the dashboard" in result
+
 
 class TestEnvLookupPreserved:
     """Programmatic env var lookups must not be corrupted (issue #2852)."""

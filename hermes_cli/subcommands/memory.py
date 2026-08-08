@@ -6,7 +6,23 @@ Handler injected to avoid importing ``main``.
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Callable
+
+
+_LEGACY_RESET_TARGETS = frozenset({"all", "memory", "user"})
+
+
+def _dispatch_memory_reset(args, *, legacy_handler: Callable):
+    """Route existing targets to the legacy handler and conversation reset."""
+    target = getattr(args, "target", "all")
+    if target in _LEGACY_RESET_TARGETS:
+        return legacy_handler(args)
+
+    # Lazy import keeps the ordinary CLI startup path lightweight.
+    from hermes_cli.memory_reset import cmd_memory_reset
+
+    return cmd_memory_reset(args)
 
 
 def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
@@ -22,6 +38,7 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
             "Built-in memory (MEMORY.md/USER.md) is always active."
         ),
     )
+    memory_parser.set_defaults(func=cmd_memory)
     memory_sub = memory_parser.add_subparsers(dest="memory_command")
     _setup_parser = memory_sub.add_parser(
         "setup", help="Interactive provider selection and configuration"
@@ -36,7 +53,7 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")
     _reset_parser = memory_sub.add_parser(
         "reset",
-        help="Erase all built-in memory (MEMORY.md and USER.md)",
+        help="Erase built-in memory or persisted conversation history",
     )
     _reset_parser.add_argument(
         "--yes",
@@ -46,8 +63,13 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
     )
     _reset_parser.add_argument(
         "--target",
-        choices=["all", "memory", "user"],
+        choices=["all", "memory", "user", "conversations"],
         default="all",
-        help="Which store to reset: 'all' (default), 'memory', or 'user'",
+        help=(
+            "Which store to reset: 'all' (MEMORY.md + USER.md, default), "
+            "'memory', 'user', or 'conversations'"
+        ),
     )
-    memory_parser.set_defaults(func=cmd_memory)
+    _reset_parser.set_defaults(
+        func=partial(_dispatch_memory_reset, legacy_handler=cmd_memory)
+    )

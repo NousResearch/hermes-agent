@@ -334,6 +334,101 @@ class TestSecretsNeverImported:
         config = yaml.safe_load((hermes_home / "config.yaml").read_text())
         assert config["mcp_servers"]["remote"]["headers"] == {"X-Region": "us-east"}
 
+    # -- credential files INSIDE a skill directory -------------------------
+    #
+    # The cases above hold by accident: every fixture plants its credential
+    # file at the ROOT of the source tree, and no importer reads root-level
+    # files.  skills/ is the one destination that copies a whole subtree, and
+    # it copied every member verbatim -- so `_CREDENTIAL_FILENAMES`, the list
+    # the module docstring promises is "NEVER imported", was enforced nowhere.
+
+    SKILL_SECRETS = {
+        ".credentials.json": "sk-ant-INSIDE-SKILL",
+        "auth.json": "sk-oai-INSIDE-SKILL",
+        "credentials.json": "pw-INSIDE-SKILL",
+    }
+
+    @pytest.fixture()
+    def skill_with_credentials(self, claude_tree):
+        """A source skill the user keeps their agent credentials inside."""
+        skill = claude_tree / "skills" / "deploy-helper"
+        for name, secret in self.SKILL_SECRETS.items():
+            (skill / name).write_text(
+                json.dumps({"key": secret}), encoding="utf-8")
+        # ... and one a directory deeper, beside a file that must still copy.
+        nested = skill / "helpers"
+        nested.mkdir()
+        (nested / "auth.json").write_text(
+            json.dumps({"key": "sk-oai-NESTED"}), encoding="utf-8")
+        (nested / "run.sh").write_text("echo deploying\n", encoding="utf-8")
+        return skill
+
+    def test_skill_imports_without_its_credential_files(
+            self, claude_tree, skill_with_credentials, hermes_home):
+        report = run_import("claude-code", claude_tree, hermes_home,
+                            execute=True)
+
+        assert [i["status"] for i in skill_items(report)] == ["imported"]
+        dest = hermes_home / "skills" / "claude-code-imports" / "deploy-helper"
+        # The skill itself lands, in full ...
+        assert "Deploy things." in (dest / "SKILL.md").read_text(encoding="utf-8")
+        assert (dest / "helpers" / "run.sh").exists()
+        # ... minus every credential file, at the top level ...
+        for name in self.SKILL_SECRETS:
+            assert not (dest / name).exists()
+        # ... and nested, which is what makes this a name match and not a
+        # top-level-only one.
+        assert not (dest / "helpers" / "auth.json").exists()
+
+    def test_no_skill_credential_values_anywhere(
+            self, claude_tree, skill_with_credentials, hermes_home):
+        run_import("claude-code", claude_tree, hermes_home, execute=True)
+        blob = "".join(
+            p.read_text(encoding="utf-8", errors="replace")
+            for p in hermes_home.rglob("*") if p.is_file()
+        )
+        for secret in self.SKILL_SECRETS.values():
+            assert secret not in blob
+        assert "sk-oai-NESTED" not in blob
+
+    def test_symlinked_credential_file_is_excluded_not_followed(
+            self, claude_tree, hermes_home, tmp_path):
+        """``symlinks=True`` reproduces links AS links, so a link named
+        ``auth.json`` would otherwise still resolve to the real secret."""
+        real = tmp_path / "real-auth.json"
+        real.write_text(json.dumps({"key": "sk-oai-BEHIND-LINK"}),
+                        encoding="utf-8")
+        (claude_tree / "skills" / "deploy-helper" / "auth.json").symlink_to(real)
+
+        run_import("claude-code", claude_tree, hermes_home, execute=True)
+
+        dest = hermes_home / "skills" / "claude-code-imports" / "deploy-helper"
+        assert not (dest / "auth.json").is_symlink()
+        assert not (dest / "auth.json").exists()
+        blob = "".join(
+            p.read_text(encoding="utf-8", errors="replace")
+            for p in hermes_home.rglob("*") if p.is_file()
+        )
+        assert "sk-oai-BEHIND-LINK" not in blob
+
+    def test_skipped_skill_credentials_are_reported(
+            self, claude_tree, skill_with_credentials, hermes_home):
+        """Strip *and* tell the user -- the same contract the MCP env-var
+        stripper holds, so a file left behind can be moved across
+        deliberately if it was never a credential."""
+        report = run_import("claude-code", claude_tree, hermes_home,
+                            execute=True)
+
+        item = skill_items(report)[0]
+        assert sorted(Path(p).name for p in item["skipped_credentials"]) == [
+            ".credentials.json", "auth.json", "auth.json", "credentials.json",
+        ]
+        assert (str(skill_with_credentials / "helpers" / "auth.json")
+                in item["skipped_credentials"])
+        # They surface in the same report section as the stripped env vars.
+        for name in self.SKILL_SECRETS:
+            assert str(skill_with_credentials / name) in report["stripped_secrets"]
+
 
 # ---------------------------------------------------------------------------
 # Malformed inputs: per-item skip/error reports, no crashes

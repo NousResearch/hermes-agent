@@ -413,6 +413,38 @@ def sanitize_mcp_env(env: Any) -> Tuple[Dict[str, str], List[str]]:
     return kept, stripped
 
 
+def _credential_copytree_ignore(skipped: List[str]):
+    """Build a ``copytree`` ignore callback that drops credential files.
+
+    :data:`_CREDENTIAL_FILENAMES` names the files this module's docstring
+    promises are "NEVER imported", but nothing consulted it.  ``skills/`` is
+    the one destination that copies a whole subtree rather than reading
+    named keys out of a config, and it copied every member verbatim — so a
+    ``.credentials.json`` or ``auth.json`` a user keeps inside
+    ``skills/<name>/`` landed in ``HERMES_HOME/skills/<category>/<name>/``.
+    This is the file-level counterpart of :func:`sanitize_mcp_env`, and the
+    same thing ``hermes_cli/profiles.py`` does with
+    ``_clone_all_copytree_ignore`` when it clones a profile.
+
+    Matching is on the entry NAME, so a credential file is excluded at ANY
+    depth in the skill tree, and — because the copy passes ``symlinks=True``
+    — a *symlink* named ``auth.json`` is dropped as a name rather than
+    reproduced as a link that still resolves to the real secret.
+
+    Every excluded path is appended to ``skipped``: this module's rule for
+    secrets is strip *and report*, so the user can move one across
+    deliberately if it was never a credential after all.
+    """
+    matcher = shutil.ignore_patterns(*_CREDENTIAL_FILENAMES)
+
+    def _ignore(directory: str, names: List[str]) -> List[str]:
+        ignored = sorted(matcher(directory, names))
+        skipped.extend(str(Path(directory) / name) for name in ignored)
+        return ignored
+
+    return _ignore
+
+
 # ---------------------------------------------------------------------------
 # Importer
 # ---------------------------------------------------------------------------
@@ -868,7 +900,8 @@ class AgentImporter:
                 continue
             if self.execute:
                 try:
-                    self._install_skill_dir(skill_dir, destination)
+                    skipped_credentials = self._install_skill_dir(
+                        skill_dir, destination)
                 except OSError as exc:
                     # ``shutil.Error`` subclasses OSError, so this covers a
                     # partially-failed copytree too.  Recording the failure
@@ -880,12 +913,19 @@ class AgentImporter:
                     self.record("skill", skill_dir, destination, "error",
                                 f"Could not import skill directory: {exc}")
                     continue
-                self.record("skill", skill_dir, destination, "imported")
+                details: Dict[str, Any] = {}
+                if skipped_credentials:
+                    # Same contract as the stripped MCP env vars: the secret
+                    # is left behind AND named, never dropped in silence.
+                    self.stripped_secrets.extend(skipped_credentials)
+                    details["skipped_credentials"] = skipped_credentials
+                self.record("skill", skill_dir, destination, "imported",
+                            **details)
             else:
                 self.record("skill", skill_dir, destination, "imported",
                             "Would copy skill directory")
 
-    def _install_skill_dir(self, source: Path, destination: Path) -> None:
+    def _install_skill_dir(self, source: Path, destination: Path) -> List[str]:
         """Stage a copy of ``source`` beside ``destination``, then swap it in.
 
         The previous implementation called ``shutil.rmtree(destination)`` and
@@ -901,6 +941,9 @@ class AgentImporter:
 
         Staging and backup live beside the destination so the swap is a rename
         on one filesystem rather than a second full copy.
+
+        Returns the credential files that were left behind (their paths in
+        ``source``), so the caller can report them.
         """
         token = uuid.uuid4().hex[:8]
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -929,8 +972,14 @@ class AgentImporter:
         #    a dangling or absolute symlink, and dereferencing one aborts the
         #    copy part-way through (hermes_cli/profiles.py passes the same flag
         #    when cloning and exporting profiles, for the same reason).
+        #    ``ignore`` keeps credential files out of the copy entirely, so
+        #    they are never written to disk under HERMES_HOME even briefly.
+        skipped_credentials: List[str] = []
         try:
-            shutil.copytree(source, staged, symlinks=True)
+            shutil.copytree(
+                source, staged, symlinks=True,
+                ignore=_credential_copytree_ignore(skipped_credentials),
+            )
         except BaseException:
             discard_path(staged)
             raise
@@ -959,6 +1008,7 @@ class AgentImporter:
             raise
         if backed_up:
             discard_path(backup)
+        return skipped_credentials
 
 
 # ---------------------------------------------------------------------------

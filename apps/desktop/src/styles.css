@@ -2297,38 +2297,29 @@ button[data-slot='aui_msg-reactions'] svg {
    fade is furniture leaving the room. */
 [data-hud-shell] [data-slot='composer-bounds'] {
   position: absolute !important;
-  /* Anchored to the bar and sized to the transcript, exactly like the sheet
-     behind it — same box, same clock — so the text is clipped away as the panel
-     rolls rather than fading in place.
- 
-     Edge to edge with no dead margins, and it never computes where the bar's
-     top is: the bar simply covers this box's bottom. Every earlier attempt
-     derived that edge from --composer-surface-measured-height, which is the
-     composer's published height, rounded, while the real box is fractional —
-     so the math left a hairline that appeared and vanished as the composer grew
-     ("the gap is 0px until two lines"). What keeps the TEXT off the bar is the
-     app's own composer clearance, below. */
-  inset: 0 !important;
-  height: auto !important;
-  width: 100% !important;
+  /* THE BAND IS THIS BOX. It sits against the bar and is exactly as tall as the
+     transcript is allowed to be — same geometry as the sheet behind it, same
+     clock — so the text is clipped away as the panel rolls rather than fading
+     in place, and the box that scrolls is the box you can see.
+
+     It ran the full window for a long time, clipped down to the band for paint
+     and hit-testing. That works right up until the band is CAPPED: the scroll
+     container was still window-tall, so content shorter than the window never
+     overflowed it and never scrolled, while the clip hid everything past the
+     cap. A capped band has to be a real box or half the transcript is
+     unreachable.
+
+     No fill of its own — the sheet is its own layer ([data-hud-glass]) so it
+     can animate independently of the text. */
+  inset: auto var(--hud-band-inset) var(--hud-bar-height, var(--composer-fallback-height))
+    var(--hud-band-inset) !important;
+  height: var(--hud-band-height, 0px) !important;
+  width: auto !important;
   max-width: none !important;
   flex: none !important;
   border: 0 !important;
-  /* Rounded on top to match the window's own corners; square at the bottom,
-     where the bar covers it. */
+  /* Rounded away from the bar, square where it meets it. */
   border-radius: 0.75rem 0.75rem 0 0;
-  /* No fill of its own — the sheet is its own layer behind this one
-     ([data-hud-glass]), so it can be sized to the transcript while this box
-     stays the full window for the drag region and the scroll container.
-
-     The box stays full-window; the part of it that answers the cursor must
-     not, or an engaged HUD swallows every click in the empty space above a
-     short transcript — the whole window on a fresh thread. Hit-testing honours
-     clip-path, so clipping to the sheet bounds the surface the same way #81920
-     bounded the frost. */
-  clip-path: inset(
-    calc(100% - var(--hud-band-height, 0px)) var(--hud-band-inset) 0 var(--hud-band-inset)
-  );
   background: transparent !important;
   /* Three opacity states: gone at rest, half strength when a turn is recent or
      you've just let go of the composer (there to glance at, not to demand
@@ -2364,7 +2355,7 @@ button[data-slot='aui_msg-reactions'] svg {
 [data-hud-shell] [data-hud-glass] {
   position: absolute;
   right: var(--hud-band-inset);
-  bottom: 0;
+  bottom: var(--hud-bar-height, var(--composer-fallback-height));
   left: var(--hud-band-inset);
   z-index: 0;
   pointer-events: none;
@@ -2552,29 +2543,11 @@ button[data-slot='aui_msg-reactions'] svg {
   padding-top: var(--hud-chip-strip) !important;
 }
 
+/* Flipped, the band hangs from the bar instead of standing on it. */
 [data-hud-shell][data-hud-edge='top'] [data-slot='composer-bounds'] {
+  top: var(--hud-bar-height, var(--composer-fallback-height)) !important;
+  bottom: auto !important;
   border-radius: 0 0 0.75rem 0.75rem;
-  /* Band hangs below the bar — not from the window's top edge. Bottom inset is
-     clamped so an oversized measure cannot invert the clip and paint the whole
-     HUD as one empty slab. */
-  clip-path: inset(
-    var(--hud-bar-height, var(--composer-fallback-height)) var(--hud-band-inset)
-      max(
-        0px,
-        calc(100% - var(--hud-bar-height, var(--composer-fallback-height)) - var(--hud-band-height, 0px))
-      )
-      var(--hud-band-inset)
-  );
-}
-
-/* Flipped, the bar is at the TOP, so the clearance has to be too — the app's
-   clearance element only pads the end of the thread. */
-[data-hud-shell][data-hud-edge='top'] [data-chat-surface] {
-  --thread-last-message-clearance: 0.25rem;
-}
-
-[data-hud-shell][data-hud-edge='top'] [data-slot='aui_thread-content'] {
-  padding-block-start: calc(var(--hud-bar-height, var(--composer-fallback-height)) + 0.25rem) !important;
 }
 
 /* Tighten the thread on every side. The docked chat's gutters (px-6 py-8 plus
@@ -2599,13 +2572,11 @@ button[data-slot='aui_msg-reactions'] svg {
   justify-content: flex-start;
 }
 
-/* Space under the last message — the app's own measured-dock clearance, minus
-   the 2rem of breathing room a full window can afford. This is what holds the
-   text off the bar now that the band runs the whole window height, and it is
-   measured from the live dock, so it tracks the composer growing to two, three,
-   ten rows with no hairline and no hole. */
+/* The band's box already ends at the bar, so the app's dock clearance — sized
+   to hold text out from under a composer it overlaps — would only open a hole
+   the height of the bar between the last message and the composer. */
 [data-hud-shell] [data-chat-surface] {
-  --thread-last-message-clearance: var(--hud-bar-height, var(--composer-fallback-height));
+  --thread-last-message-clearance: 0.25rem;
 }
 
 /* Same for the dock's own bottom pad — this var also feeds

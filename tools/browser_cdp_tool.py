@@ -234,7 +234,11 @@ async def _cdp_call(
                         f"Timed out attaching to target {target_id}"
                     )
                 raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
-                msg = json.loads(raw)
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    # Skip non-JSON frames (binary, malformed)
+                    continue
                 if msg.get("id") == attach_id:
                     if "error" in msg:
                         raise RuntimeError(
@@ -268,7 +272,11 @@ async def _cdp_call(
                     f"Timed out waiting for response to {method}"
                 )
             raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
-            msg = json.loads(raw)
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                # Skip non-JSON frames (binary, malformed)
+                continue
             if msg.get("id") == call_id:
                 if "error" in msg:
                     raise RuntimeError(f"CDP error: {msg['error']}")

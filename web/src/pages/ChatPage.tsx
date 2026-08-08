@@ -742,6 +742,32 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let mobileInputCleanup: (() => void) | null = null;
     term.open(host);
 
+    // ── Touch scrolling (Android / touch devices) ──────────────────────
+    // xterm.js attaches touch handlers to .xterm-viewport that call
+    // preventDefault() on touchmove, which swallows the swipe gesture so
+    // the scrollback can't be scrolled by touch (#81119). Let the browser
+    // own vertical panning (touch-action: pan-y) and swallow the touchmove
+    // in the capture phase — before xterm's target-phase handler runs — so
+    // that preventDefault() is never reached and native scrolling survives.
+    const xtermViewport = host.querySelector<HTMLElement>(".xterm-viewport");
+    let touchScrollCleanup: (() => void) | null = null;
+    if (xtermViewport) {
+      xtermViewport.style.touchAction = "pan-y";
+      const swallowTouchMove = (ev: TouchEvent) => {
+        // One-finger drag is a scroll gesture; multi-touch (pinch-zoom) and
+        // taps are left alone.
+        if (ev.touches.length !== 1) return;
+        ev.stopPropagation();
+      };
+      xtermViewport.addEventListener("touchmove", swallowTouchMove, {
+        capture: true,
+        passive: true,
+      });
+      touchScrollCleanup = () => {
+        xtermViewport.removeEventListener("touchmove", swallowTouchMove, true);
+      };
+    }
+
     const textarea = term.textarea;
     if (textarea) {
       textarea.setAttribute("autocomplete", "off");
@@ -839,12 +865,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         term.options.fontSize = nextSize;
         term.options.lineHeight = nextLh;
       }
+      const prevCols = term.cols;
+      const prevRows = term.rows;
       try {
         fit.fit();
       } catch {
         return;
       }
-      if (fontChanged && term.rows > 0) {
+      // Force a repaint when the grid or font metrics actually changed.
+      // On touch devices, fit() alone can leave the canvas showing stale
+      // or blank text after a rotation/resize — especially with the WebGL
+      // renderer — so we issue an explicit refresh in either case (#81119).
+      const gridChanged = term.cols !== prevCols || term.rows !== prevRows;
+      if ((fontChanged || gridChanged) && term.rows > 0) {
         try {
           term.refresh(0, term.rows - 1);
         } catch {
@@ -1238,6 +1271,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       host.removeEventListener("paste", handleBrowserPaste, true);
       host.removeEventListener("dragover", handleBrowserDragOver, true);
       host.removeEventListener("drop", handleBrowserDrop, true);
+      touchScrollCleanup?.();
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       window.visualViewport?.removeEventListener(

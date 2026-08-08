@@ -49,6 +49,8 @@ from acp.schema import (
     SessionForkCapabilities,
     SessionInfoUpdate,
     SessionListCapabilities,
+    SessionConfigOptionSelect,
+    SessionConfigSelectOption,
     SessionMode,
     SessionModeState,
     SessionModelState,
@@ -621,6 +623,7 @@ class HermesACPAgent(acp.Agent):
     )
 
     _EDIT_APPROVAL_POLICY_CONFIG_ID = "edit_approval_policy"
+    _MODEL_CONFIG_ID = "model"
     _EDIT_APPROVAL_POLICY_DEFAULT = "ask"
     _MODE_DEFAULT = "default"
     _MODE_ACCEPT_EDITS = "accept_edits"
@@ -819,6 +822,58 @@ class HermesACPAgent(acp.Agent):
             available_models=[ModelInfo(model_id=fallback_choice, name=model)],
             current_model_id=fallback_choice,
         )
+
+    def _session_config_options(
+        self,
+        state: SessionState,
+        model_state: "SessionModelState | None" = None,
+    ) -> list[SessionConfigOptionSelect]:
+        """Expose the session model list as an ACP ``configOptions`` selector.
+
+        Newer ACP clients (Zed and others) render their per-session model
+        picker from ``configOptions`` with ``category: "model"`` and drive
+        changes through ``session/set_config_option``. The older
+        ``SessionModelState`` (``models``) field is kept in the session
+        responses for backwards compatibility, but on its own it no longer
+        produces a visible selector in those clients.
+
+        ``model_state`` may be passed in by callers that already built it (the
+        session responses do, via ``_build_model_state``) so the potentially
+        network-bound inventory is assembled once per request rather than
+        twice. When omitted it is built on demand.
+        """
+        if model_state is None:
+            model_state = self._build_model_state(state)
+        if model_state is None or not getattr(model_state, "available_models", None):
+            return []
+
+        options: list[SessionConfigSelectOption] = []
+        for model in model_state.available_models:
+            value = getattr(model, "model_id", "") or ""
+            if not value:
+                continue
+            options.append(
+                SessionConfigSelectOption(
+                    value=value,
+                    name=getattr(model, "name", None) or value,
+                    description=getattr(model, "description", None),
+                )
+            )
+        if not options:
+            return []
+
+        current_value = getattr(model_state, "current_model_id", None) or options[0].value
+        return [
+            SessionConfigOptionSelect(
+                type="select",
+                id=self._MODEL_CONFIG_ID,
+                name="Model",
+                category="model",
+                description="Model used for this session (does not change your global default).",
+                current_value=current_value,
+                options=options,
+            )
+        ]
 
     @staticmethod
     def _resolve_model_selection(raw_model: str, current_provider: str) -> tuple[str, str]:
@@ -1444,10 +1499,12 @@ class HermesACPAgent(acp.Agent):
         logger.info("New session %s (cwd=%s)", state.session_id, cwd)
         self._schedule_available_commands_update(state.session_id)
         self._schedule_usage_update(state)
+        model_state = self._build_model_state(state)
         return NewSessionResponse(
             session_id=state.session_id,
-            models=self._build_model_state(state),
+            models=model_state,
             modes=self._session_modes(state),
+            config_options=self._session_config_options(state, model_state),
             field_meta=self._provenance_meta(
                 state.session_id, getattr(state.agent, "session_id", state.session_id)
             ),
@@ -1493,9 +1550,11 @@ class HermesACPAgent(acp.Agent):
             )
         self._schedule_available_commands_update(session_id)
         self._schedule_usage_update(state)
+        model_state = self._build_model_state(state)
         return LoadSessionResponse(
-            models=self._build_model_state(state),
+            models=model_state,
             modes=self._session_modes(state),
+            config_options=self._session_config_options(state, model_state),
             field_meta=self._provenance_meta(
                 session_id, getattr(state.agent, "session_id", session_id)
             ),
@@ -1529,9 +1588,11 @@ class HermesACPAgent(acp.Agent):
             )
         self._schedule_available_commands_update(state.session_id)
         self._schedule_usage_update(state)
+        model_state = self._build_model_state(state)
         return ResumeSessionResponse(
-            models=self._build_model_state(state),
+            models=model_state,
             modes=self._session_modes(state),
+            config_options=self._session_config_options(state, model_state),
             field_meta=self._provenance_meta(
                 state.session_id, getattr(state.agent, "session_id", state.session_id)
             ),
@@ -2499,6 +2560,32 @@ class HermesACPAgent(acp.Agent):
         if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
             mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)
             setattr(state, "mode", mode)
+        elif str(config_id) == self._MODEL_CONFIG_ID:
+            # Session-scoped model switch — mirrors set_session_model and the
+            # ``/model`` slash command. Only touches this session's state and
+            # its persisted session row; never writes config.yaml.
+            current_provider = getattr(state.agent, "provider", None) or "openrouter"
+            requested_provider, resolved_model = self._resolve_model_selection(
+                str(value), current_provider
+            )
+            provider_changed = bool(
+                current_provider and requested_provider != current_provider
+            )
+            current_base_url = (
+                None if provider_changed else getattr(state.agent, "base_url", None)
+            )
+            current_api_mode = (
+                None if provider_changed else getattr(state.agent, "api_mode", None)
+            )
+            state.model = resolved_model
+            state.agent = self.session_manager._make_agent(
+                session_id=session_id,
+                cwd=state.cwd,
+                model=resolved_model,
+                requested_provider=requested_provider,
+                base_url=current_base_url,
+                api_mode=current_api_mode,
+            )
         else:
             options = getattr(state, "config_options", None)
             if not isinstance(options, dict):
@@ -2507,4 +2594,6 @@ class HermesACPAgent(acp.Agent):
             setattr(state, "config_options", options)
         self.session_manager.save_session(session_id)
         logger.info("Session %s: config option %s updated", session_id, config_id)
-        return SetSessionConfigOptionResponse(config_options=[])
+        return SetSessionConfigOptionResponse(
+            config_options=self._session_config_options(state)
+        )

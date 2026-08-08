@@ -3,7 +3,9 @@
 from unittest.mock import patch
 
 from cli import HermesCLI
+from hermes_cli.banner import UPDATE_AVAILABLE_NO_COUNT
 from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command
+from hermes_cli.main import _print_version_info
 
 
 def test_version_command_is_registered():
@@ -26,3 +28,22 @@ def test_process_command_version_prints_version_info():
         assert cli_obj.process_command("/version") is True
 
     mock_print.assert_called_once_with(check_updates=True)
+
+
+def test_version_info_reports_update_when_commit_count_is_unknown(capsys):
+    with (
+        patch(
+            "hermes_cli.banner.check_for_updates",
+            return_value=UPDATE_AVAILABLE_NO_COUNT,
+        ),
+        patch(
+            "hermes_cli.config.recommended_update_command",
+            return_value="hermes update",
+        ),
+    ):
+        _print_version_info(check_updates=True)
+
+    output = capsys.readouterr().out
+    assert "Update available (commit count unknown)" in output
+    assert "run 'hermes update'" in output
+    assert "Up to date" not in output

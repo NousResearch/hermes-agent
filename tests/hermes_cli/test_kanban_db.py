@@ -1238,6 +1238,32 @@ def _make_task(**overrides) -> "kb.Task":
 # ---------------------------------------------------------------------------
 
 
+def test_dispatch_equal_live_caps_fills_last_available_slot(
+    kanban_home, all_assignees_spawnable
+):
+    """Running tasks count once when max_spawn and max_in_progress match."""
+    with kb.connect_closing() as conn:
+        running_a = kb.create_task(conn, title="running-a", assignee="alice")
+        running_b = kb.create_task(conn, title="running-b", assignee="bob")
+        ready_a = kb.create_task(conn, title="ready-a", assignee="carol")
+        ready_b = kb.create_task(conn, title="ready-b", assignee="dana")
+        assert kb.claim_task(conn, running_a)
+        assert kb.claim_task(conn, running_b)
+
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda *_args: None,
+            max_spawn=3,
+            max_in_progress=3,
+        )
+
+        assert [task_id for task_id, _assignee, _workspace in result.spawned] == [
+            ready_a
+        ]
+        assert kb.get_task(conn, ready_a).status == "running"
+        assert kb.get_task(conn, ready_b).status == "ready"
+
+
 # Review column dispatch
 # ---------------------------------------------------------------------------
 

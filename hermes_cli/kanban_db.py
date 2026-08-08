@@ -8475,10 +8475,12 @@ def _dispatch_once_locked(
         ).fetchone()[0]
         if in_progress >= max_in_progress:
             return result
-        # Only spawn enough to reach the cap, respecting max_spawn too.
-        remaining = max_in_progress - in_progress
-        if max_spawn is None or max_spawn > remaining:
-            max_spawn = remaining
+        # Both values are live concurrency caps: the loop below compares
+        # ``running_count + spawned`` against ``max_spawn``.  Reducing
+        # ``max_spawn`` to the number of remaining slots would double-count
+        # already-running tasks and leave available capacity unused.
+        if max_spawn is None or max_spawn > max_in_progress:
+            max_spawn = max_in_progress
     spawned = 0
     # Per-profile concurrency cap (#21582): when set, track how many
     # workers each assignee already has in flight, and refuse to spawn

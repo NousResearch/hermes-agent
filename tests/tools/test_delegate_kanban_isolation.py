@@ -296,3 +296,173 @@ def test_child_attempting_default_complete_does_not_finish_parent_or_delete_work
     assert task.status == "running"
     assert run.status == "running"
     assert workspace.is_dir()
+
+
+# ---------------------------------------------------------------------------
+# Server-role entrypoints must not inherit the lineage marker
+# ---------------------------------------------------------------------------
+
+
+def _run_child_python(code: str, env_overrides: dict[str, str], tmp_path):
+    """Run *code* in a real subprocess with the repo under test importable."""
+    import subprocess
+
+    env = dict(os.environ)
+    env.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
+    env["PYTHONPATH"] = str(_REPO_ROOT)
+    env["HERMES_HOME"] = str(tmp_path / ".hermes")
+    env.update(env_overrides)
+    return subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+
+
+@pytest.mark.parametrize(
+    "argv,expected",
+    [
+        (["serve", "--host", "127.0.0.1"], True),
+        (["dashboard"], True),
+        (["gui"], True),
+        (["desktop"], True),
+        (["gateway", "run"], True),
+        # Short-lived CLI calls are NOT a server role — a delegated child that
+        # shells out to any of these must keep its lineage.
+        (["gateway", "restart"], False),
+        (["gateway"], False),
+        (["kanban", "boards", "rm", "victim", "--delete"], False),
+        (["chat"], False),
+        ([], False),
+        (["--version"], False),
+        # Option VALUES must never be read as commands — a delegated child
+        # running e.g. `hermes -s desktop chat` is agent work, not a server
+        # (the old positional filter skipped flags but not their values).
+        (["-s", "desktop", "chat"], False),
+        (["-m", "serve", "chat"], False),
+        (["--provider", "gui", "chat"], False),
+        # The CLI's global profile selector is the one flag family allowed to
+        # precede the command — the desktop launcher really invokes
+        # `hermes --profile <name> serve ...` (electron/main.ts).
+        (["--profile", "work", "serve", "--host", "127.0.0.1"], True),
+        (["--profile=work", "dashboard", "--no-open"], True),
+        (["-p", "work", "gateway", "run"], True),
+        # A profile flag that consumes the would-be command leaves no command.
+        (["--profile", "serve"], False),
+        # Any other leading flag has unknown arity: fail safe, keep the marker.
+        (["--verbose", "serve"], False),
+    ],
+)
+def test_is_server_role_argv(argv, expected):
+    from agent.delegation_context import is_server_role_argv
+
+    assert is_server_role_argv(argv) is expected
+
+
+def test_serve_entrypoint_drops_inherited_marker_and_kanban_works(tmp_path):
+    """The gateway/dashboard process must pass the guard, guard unchanged.
+
+    Reproduces the live defect: the desktop app (and the ``hermes serve`` it
+    spawns) was launched from a delegated child, inherited
+    HERMES_DELEGATED_CHILD_CONTEXT=1, and then failed every Kanban open for the
+    life of the process — connect()'s first-open migration pass goes through
+    write_txn, so the guard killed the read path too.
+    """
+    code = (
+        "import sys; sys.argv = ['hermes', 'serve', '--host', '127.0.0.1', '--port', '0']\n"
+        "import os\n"
+        "import hermes_cli.main  # noqa: F401 — module-level startup is the fix\n"
+        "assert 'HERMES_DELEGATED_CHILD_CONTEXT' not in os.environ, 'marker not cleared'\n"
+        "from hermes_cli import kanban_db as kb\n"
+        "kb.init_db()\n"
+        "conn = kb.connect()\n"
+        "try:\n"
+        "    tid = kb.create_task(conn, title='from-server')\n"
+        "finally:\n"
+        "    conn.close()\n"
+        "assert tid\n"
+        "print('SERVER_OK')\n"
+    )
+    proc = _run_child_python(
+        code, {"HERMES_DELEGATED_CHILD_CONTEXT": "1"}, tmp_path,
+    )
+    assert "SERVER_OK" in proc.stdout, (proc.returncode, proc.stdout, proc.stderr)
+
+
+def test_agent_cli_entrypoint_keeps_inherited_marker(tmp_path):
+    """The reset is server-role only: a delegated `hermes kanban` stays rejected."""
+    code = (
+        "import sys; sys.argv = ['hermes', 'kanban', 'list']\n"
+        "import os\n"
+        "import hermes_cli.main  # noqa: F401\n"
+        "assert os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT') == '1', 'marker cleared'\n"
+        "from hermes_cli import kanban_db as kb\n"
+        "try:\n"
+        "    kb.init_db()\n"
+        "except PermissionError as exc:\n"
+        "    assert 'delegate_task child contexts' in str(exc)\n"
+        "    print('CLI_REJECTED')\n"
+        "else:\n"
+        "    print('CLI_ALLOWED')\n"
+    )
+    proc = _run_child_python(
+        code, {"HERMES_DELEGATED_CHILD_CONTEXT": "1"}, tmp_path,
+    )
+    assert "CLI_REJECTED" in proc.stdout, (proc.returncode, proc.stdout, proc.stderr)
+
+
+def test_real_lineage_child_and_grandchild_still_rejected(tmp_path, monkeypatch):
+    """Real delegate_task subprocess-env path: child AND grandchild stay rejected.
+
+    Also pins that the fix does not clear or narrow the marker anywhere on that
+    lineage — the grandchild inherits it through a plain ``env=None`` spawn.
+    """
+    monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    from agent.delegation_context import (
+        delegated_child_context,
+        delegated_child_subprocess_env,
+    )
+
+    grandchild = (
+        "import os\n"
+        "assert os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT') == '1'\n"
+        "from hermes_cli import kanban_db as kb\n"
+        "try:\n"
+        "    kb.init_db()\n"
+        "except PermissionError:\n"
+        "    print('GRANDCHILD_REJECTED')\n"
+        "else:\n"
+        "    print('GRANDCHILD_ALLOWED')\n"
+    )
+    child = (
+        "import os, subprocess, sys\n"
+        "assert os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT') == '1'\n"
+        "from hermes_cli import kanban_db as kb\n"
+        "try:\n"
+        "    kb.init_db()\n"
+        "except PermissionError:\n"
+        "    print('CHILD_REJECTED')\n"
+        "else:\n"
+        "    print('CHILD_ALLOWED')\n"
+        # env=None → the grandchild inherits this process's env, marker included.
+        f"g = subprocess.run([sys.executable, '-c', {grandchild!r}],\n"
+        "                   capture_output=True, text=True, timeout=120)\n"
+        "print(g.stdout.strip())\n"
+        "print(g.stderr[-500:], file=sys.stderr)\n"
+    )
+
+    # Build the child env exactly the way delegate_task's subprocess call sites
+    # do, from inside a real delegated-child ContextVar scope.
+    with delegated_child_context():
+        child_env = delegated_child_subprocess_env(os.environ)
+    assert child_env is not None
+    assert child_env["HERMES_DELEGATED_CHILD_CONTEXT"] == "1"
+
+    proc = _run_child_python(child, child_env, tmp_path)
+    assert "CHILD_REJECTED" in proc.stdout, (proc.returncode, proc.stdout, proc.stderr)
+    assert "GRANDCHILD_REJECTED" in proc.stdout, (proc.returncode, proc.stdout, proc.stderr)

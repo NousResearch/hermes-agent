@@ -15,7 +15,12 @@
 //   window.__PERF_LIVE__.off()
 //   window.__PERF_LIVE__.last()    the most recent report as an object
 //
-// Dev-only; the whole debug/ graph is aliased out of production builds.
+// Dev-only; the whole debug/ graph is aliased out of production builds. The
+// LoAF observer + attribution core it uses is NOT dev-only: it lives in
+// `@/diagnostics` so the production capture module shares one implementation
+// (KTD1).
+
+import { createLongFrameObserver, type LongFrameSample } from '@/diagnostics/long-frames'
 
 interface Sample {
   kind: string
@@ -30,17 +35,11 @@ interface Sample {
   longFrames: LongFrame[]
 }
 
-/** One Long Animation Frame, attributed. `styleMs` is the engine's style+layout
- *  time inside the frame; `scripts` names who ran JS and for how long. This is
- *  the half the render counter cannot see — a frame can cost 900ms with almost
- *  no React in it, and only LoAF says whether that was layout, a ResizeObserver
- *  callback loop, or some timer. */
-interface LongFrame {
-  ms: number
-  styleMs: number
-  blockingMs: number
-  scripts: Array<{ invoker: string; ms: number; src: string }>
-}
+/** One Long Animation Frame, attributed — see `@/diagnostics/long-frames`.
+ *  This is the half the render counter cannot see: a frame can cost 900ms with
+ *  almost no React in it, and only LoAF says whether that was layout, a
+ *  ResizeObserver callback loop, or some timer. */
+type LongFrame = LongFrameSample
 
 const RESIZE_SELECTOR =
   '[role="separator"], [data-slot="pane-resize-handle"], [class*="cursor-col-resize"], [class*="cursor-row-resize"]'
@@ -70,44 +69,13 @@ let lastReport: null | Sample = null
 // half of a frame the render counter cannot see.
 let longFrames: LongFrame[] = []
 
-const loafObserver =
-  typeof PerformanceObserver !== 'undefined' &&
-  PerformanceObserver.supportedEntryTypes?.includes('long-animation-frame')
-    ? new PerformanceObserver(list => {
-        if (!active) {
-          return
-        }
+const loafObserver = createLongFrameObserver(sample => {
+  if (!active) {
+    return
+  }
 
-        for (const entry of list.getEntries()) {
-          const e = entry as PerformanceEntry & {
-            blockingDuration?: number
-            styleAndLayoutStart?: number
-            renderStart?: number
-            scripts?: Array<{
-              duration: number
-              invoker?: string
-              invokerType?: string
-              sourceURL?: string
-              sourceFunctionName?: string
-            }>
-          }
-
-          longFrames.push({
-            blockingMs: Math.round(e.blockingDuration ?? 0),
-            ms: Math.round(e.duration),
-            scripts: (e.scripts ?? [])
-              .filter(s => s.duration >= 5)
-              .map(s => ({
-                invoker: `${s.invokerType ?? ''}:${s.invoker ?? s.sourceFunctionName ?? '?'}`,
-                ms: Math.round(s.duration),
-                src: (s.sourceURL ?? '').split('/').pop() ?? ''
-              })),
-            // styleAndLayoutStart -> frame end is the engine's style+layout tail.
-            styleMs: e.styleAndLayoutStart ? Math.round(e.startTime + e.duration - e.styleAndLayoutStart) : 0
-          })
-        }
-      })
-    : null
+  longFrames.push(sample)
+})
 
 const pct = (sorted: number[], p: number) =>
   sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))] : 0
@@ -120,7 +88,7 @@ function finish() {
   const { kind, startedAt, frames, raf } = active
   active = null
   cancelAnimationFrame(raf)
-  loafObserver?.disconnect()
+  loafObserver?.stop()
   const capturedLongFrames = longFrames
   longFrames = []
 
@@ -193,13 +161,10 @@ function begin(kind: string) {
 
   window.__RENDER_COUNTS__?.start()
 
-  try {
-    // Buffered so a long frame already in flight when the gesture starts is
-    // still attributed to it.
-    loafObserver?.observe({ buffered: true, type: 'long-animation-frame' })
-  } catch {
-    // Older runtime without LoAF — headline still works, attribution is empty.
-  }
+  // Buffered observation (a long frame already in flight when the gesture
+  // starts is still attributed to it) is handled inside the shared observer;
+  // on a runtime without LoAF there is no observer and attribution is empty.
+  loafObserver?.start()
 
   const now = performance.now()
 

@@ -1026,13 +1026,18 @@ def run_debug(args):
         run_debug_share(args)
     elif subcmd == "delete":
         run_debug_delete(args)
+    elif subcmd == "diagnose":
+        from hermes_cli.diagnostics_diagnose import run_diagnose
+
+        run_diagnose(args)
     else:
         # Default: show help
         print("Usage: hermes debug <command>")
         print()
         print("Commands:")
-        print("  share    Upload debug report to a paste service and print URL")
-        print("  delete   Delete a previously uploaded paste")
+        print("  share     Upload debug report to a paste service and print URL")
+        print("  delete    Delete a previously uploaded paste")
+        print("  diagnose  Snapshot the Hermes process tree (+ optional WPR trace)")
         print()
         print("Options (share):")
         print("  --lines N    Number of log lines to include (default: 200)")
@@ -1044,3 +1049,9 @@ def run_debug(args):
         print()
         print("Options (delete):")
         print("  <url> ...    One or more paste URLs to delete")
+        print()
+        print("Options (diagnose):")
+        print("  --out DIR       Where to write the report")
+        print("  --wpr           Also record a bounded WPR trace (UNSANITIZED,")
+        print("                  system-wide; written to unsafe-to-share/)")
+        print("  --wpr-seconds N How long to record (default: 30)")

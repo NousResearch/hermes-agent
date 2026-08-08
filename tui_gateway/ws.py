@@ -31,9 +31,16 @@ import socket
 import threading
 from typing import Any
 
+from hermes_cli import diagnostics_ring
 from tui_gateway import server
 
 _log = logging.getLogger(__name__)
+
+# Diagnostics capture RPCs (U3) ride this transport's own dispatch surface, so
+# they are installed when the WS transport module loads — that is exactly the
+# set of processes that can serve them, and it keeps the auth boundary at
+# ``/api/ws`` where it already is.
+diagnostics_ring.install_rpc_methods(server)
 
 # Max seconds a pool-dispatched handler will block waiting for the event loop
 # to flush a WS frame before we mark the transport dead. Protects handler
@@ -177,6 +184,14 @@ class WSTransport:
                 "ws write slow (loop stalled >%ss) peer=%s — frame left in flight",
                 _WS_WRITE_TIMEOUT_S, self._peer,
             )
+            # Same signal, machine-readable, only while a capture is armed
+            # (U3/KTD4). The peer is HMAC'd under a per-capture key inside the
+            # ring, so the exported bundle correlates one connection's stalls
+            # without naming the address.
+            if diagnostics_ring.ARMED:
+                diagnostics_ring.record_ws_write_slow(
+                    self._peer, _WS_WRITE_TIMEOUT_S
+                )
             return not self._closed
         except Exception as exc:
             self._closed = True

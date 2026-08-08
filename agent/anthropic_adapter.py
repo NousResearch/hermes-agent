@@ -1009,18 +1009,44 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     return None
 
 
+def _claude_code_credentials_path() -> Path:
+    """Resolve the Claude Code OAuth credentials file path.
+
+    Honors ``CLAUDE_CONFIG_DIR`` per Anthropic's docs: "If you've set the
+    CLAUDE_CONFIG_DIR environment variable on Linux or Windows, the
+    .credentials.json file lives under that directory instead."
+    (https://code.claude.com/docs/en/authentication). Unset or
+    empty/whitespace-only falls back to the default
+    ``~/.claude/.credentials.json`` — identical to prior behavior, so this
+    is strictly additive. Deliberately NOT gated by platform: Claude Code
+    itself honors the var on Linux/Windows, and adding a Darwin check here
+    would only add a branch with no behavioral benefit — macOS users who
+    don't set it get the same default path either way.
+
+    Resolved fresh on every call (never cached at import time) so tests
+    and users that set/change the env var after import take effect.
+    """
+    config_dir = os.getenv("CLAUDE_CONFIG_DIR", "").strip()
+    if config_dir:
+        expanded = os.path.expandvars(os.path.expanduser(config_dir))
+        return Path(expanded) / ".credentials.json"
+    return Path.home() / ".claude" / ".credentials.json"
+
+
 def _read_claude_code_credentials_from_file() -> Optional[Dict[str, Any]]:
     """Read Claude Code OAuth credentials from ~/.claude/.credentials.json.
 
+    Honors ``CLAUDE_CONFIG_DIR`` — see ``_claude_code_credentials_path``.
+
     Returns dict with {accessToken, refreshToken?, expiresAt?, source} or None.
     """
-    cred_path = Path.home() / ".claude" / ".credentials.json"
+    cred_path = _claude_code_credentials_path()
     if not cred_path.exists():
         return None
     try:
         data = json.loads(cred_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError, IOError) as e:
-        logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
+        logger.debug("Failed to read Claude Code credentials file %s: %s", cred_path, e)
         return None
 
     oauth_data = data.get("claudeAiOauth")
@@ -1218,12 +1244,17 @@ def _write_claude_code_credentials(
 ) -> None:
     """Write refreshed credentials back to ~/.claude/.credentials.json.
 
+    Honors ``CLAUDE_CONFIG_DIR`` — see ``_claude_code_credentials_path``. Without
+    this, a refresh on a host with ``CLAUDE_CONFIG_DIR`` set would create a
+    stale duplicate credentials file at the default path that Claude Code
+    itself never reads.
+
     The optional *scopes* list (e.g. ``["user:inference", "user:profile", ...]``)
     is persisted so that Claude Code's own auth check recognises the credential
     as valid.  Claude Code >=2.1.81 gates on the presence of ``"user:inference"``
     in the stored scopes before it will use the token.
     """
-    cred_path = Path.home() / ".claude" / ".credentials.json"
+    cred_path = _claude_code_credentials_path()
     try:
         # Read existing file to preserve other fields
         existing = {}

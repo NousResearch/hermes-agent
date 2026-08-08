@@ -107,6 +107,8 @@ class _BotState:
         self.last_audio_out_at: Optional[float] = None
         self.last_barge_in_at: Optional[float] = None
         self.leave_reason: Optional[str] = None
+        # Result of the post-admission mic check (see _ensure_mic_on).
+        self.mic_state: Optional[str] = None
         # Scraped captions, in order, deduped. Each entry is a dict of
         # {"ts": <epoch>, "speaker": str, "text": str}.
         self._seen: set = set()
@@ -162,6 +164,7 @@ class _BotState:
             "lastAudioOutAt": self.last_audio_out_at,
             "lastBargeInAt": self.last_barge_in_at,
             "leaveReason": self.leave_reason,
+            "micState": self.mic_state,
         }
         tmp = self.status_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -278,10 +281,11 @@ def _start_realtime_speaker(
 
     The speaker thread reads text lines from ``say_queue.jsonl``, sends each
     to OpenAI Realtime, and writes PCM audio into ``speaker.pcm``. A
-    separate *pump* thread forwards that PCM into the OS audio sink so
-    Chrome's fake mic picks it up. On Linux we pipe to ``paplay`` against
-    the null-sink; on macOS the caller is expected to have the BlackHole
-    device selected as default input.
+    *pump* process forwards that PCM into the OS audio sink so Chrome's
+    fake mic picks it up: on Linux ``paplay`` against the null-sink, on
+    macOS ``ffmpeg`` into the BlackHole device. The pump reads raw PCM
+    from stdin, fed by a tail thread that follows ``speaker.pcm`` as it
+    grows, so audio appended after startup is still played.
     """
     try:
         from plugins.google_meet.realtime.openai_client import (
@@ -340,75 +344,139 @@ def _start_realtime_speaker(
 
     # PCM pump: feeds speaker.pcm (24kHz s16le mono) into the OS audio
     # device that Chrome's fake mic reads from. Different tools per
-    # platform, but the contract is the same — block-read the growing
-    # PCM file and stream it to the device in near-real-time.
+    # platform, but the contract is the same — stream the growing PCM
+    # file to the device in near-real-time. The pump process reads raw
+    # PCM from stdin; a tail thread forwards appended bytes, so audio
+    # arriving after startup (the whole point of this mode) is played
+    # instead of the pump exiting on an empty file.
     platform_tag = (bridge_info or {}).get("platform")
+    pump_argv = None
     if platform_tag == "linux":
-        import subprocess as _sp
-
         sink = (bridge_info or {}).get("write_target") or "hermes_meet_sink"
+        pump_argv = [
+            "paplay",
+            "--raw",
+            "--rate=24000",
+            "--format=s16le",
+            "--channels=1",
+            f"--device={sink}",
+            "-",  # read raw PCM from stdin
+        ]
+    elif platform_tag == "darwin":
+        import shutil as _shutil
+
+        device_name = (bridge_info or {}).get("write_target") or "BlackHole 2ch"
+        if _shutil.which("ffmpeg"):
+            pump_argv = [
+                "ffmpeg",
+                "-hide_banner", "-loglevel", "error",
+                "-f", "s16le", "-ar", "24000", "-ac", "1",
+                "-i", "-",  # read raw PCM from stdin
+                "-f", "audiotoolbox",
+                "-audio_device_index", _mac_audio_device_index(device_name),
+                "-",  # positional output arg — ffmpeg rejects the command without one
+            ]
+        else:
+            state.set(error="ffmpeg not found — install via `brew install ffmpeg` for realtime on macOS")
+
+    if pump_argv:
         try:
+            import subprocess as _sp
+
             proc = _sp.Popen(
-                [
-                    "paplay",
-                    "--raw",
-                    "--rate=24000",
-                    "--format=s16le",
-                    "--channels=1",
-                    f"--device={sink}",
-                    str(pcm_path),
-                ],
-                stdin=_sp.DEVNULL,
+                pump_argv,
+                stdin=_sp.PIPE,
                 stdout=_sp.DEVNULL,
                 stderr=_sp.DEVNULL,
             )
             rt["pcm_pump"] = proc
+            t_pump = threading.Thread(
+                target=_pcm_tail_loop,
+                args=(proc, pcm_path, stop_flag),
+                name="meet-pcm-tail",
+                daemon=True,
+            )
+            t_pump.start()
+            rt["pcm_tail_thread"] = t_pump
         except FileNotFoundError:
-            state.set(error="paplay not found — install pulseaudio-utils for realtime on Linux")
-    elif platform_tag == "darwin":
-        # macOS: use ffmpeg to tail-read speaker.pcm and write it to the
-        # BlackHole output device. The user must have BlackHole selected
-        # as the default input in System Settings → Sound for Chrome to
-        # pick it up. We prefer ffmpeg because it's scriptable and can
-        # target AVFoundation devices by name; fall back to afplay-ing
-        # the file in a tight loop if ffmpeg is absent.
-        import shutil as _shutil
-        import subprocess as _sp
-
-        device_name = (bridge_info or {}).get("write_target") or "BlackHole 2ch"
-        if _shutil.which("ffmpeg"):
-            try:
-                # -re: read input at native frame rate.
-                # -f avfoundation -i: speaker path as raw PCM.
-                # -f s16le -ar 24000 -ac 1 -i <pcm>: interpret the file.
-                # -f audiotoolbox -audio_device_index: write to BlackHole.
-                # Simpler: output as raw via coreaudio using "-f audiotoolbox".
-                # ffmpeg's audiotoolbox output picks the current default
-                # output device, which isn't what we want. Instead we use
-                # -f avfoundation with the named device as OUTPUT via
-                # -vn and the device name.
-                proc = _sp.Popen(
-                    [
-                        "ffmpeg",
-                        "-nostdin", "-hide_banner", "-loglevel", "error",
-                        "-re",
-                        "-f", "s16le", "-ar", "24000", "-ac", "1",
-                        "-i", str(pcm_path),
-                        "-f", "audiotoolbox",
-                        "-audio_device_index", _mac_audio_device_index(device_name),
-                        "-",
-                    ],
-                    stdin=_sp.DEVNULL,
-                    stdout=_sp.DEVNULL,
-                    stderr=_sp.DEVNULL,
-                )
-                rt["pcm_pump"] = proc
-            except FileNotFoundError:
+            if platform_tag == "linux":
+                state.set(error="paplay not found — install pulseaudio-utils for realtime on Linux")
+            else:
                 state.set(error="ffmpeg not found — install via `brew install ffmpeg` for realtime on macOS")
-            except Exception as e:
-                state.set(error=f"macOS pcm pump failed to start: {e}")
-        else:
-            state.set(error="ffmpeg not found — install via `brew install ffmpeg` for realtime on macOS")
+        except Exception as e:
+            state.set(error=f"PCM pump failed to start: {e}")
+
+
+def _pcm_tail_loop(
+    proc,
+    pcm_path: Path,
+    stop_flag: dict,
+    poll_interval: float = 0.05,
+) -> None:
+    """Stream bytes appended to *pcm_path* into ``proc.stdin``.
+
+    Reads the PCM sink file from its end and forwards appended chunks to
+    the audio pump's stdin. Unlike a plain ``paplay <file>`` invocation,
+    this never exits when the file is empty or momentarily at EOF — it
+    keeps polling until ``stop_flag`` is set or the pump process dies, so
+    audio appended after startup still reaches the virtual microphone.
+
+    Returns when the pump's stdin is gone (process died) or the loop is
+    told to stop.
+    """
+    closed = False
+
+    def _close_stdin() -> None:
+        nonlocal closed
+        if closed:
+            return
+        closed = True
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+
+    try:
+        try:
+            f = open(pcm_path, "rb")
+        except FileNotFoundError:
+            # The sink file is truncated just before the pump starts; if it
+            # is not visible yet, wait briefly instead of dying silently.
+            deadline = time.monotonic() + 2.0
+            while True:
+                if stop_flag.get("stop", False) or proc.poll() is not None:
+                    return
+                time.sleep(poll_interval)
+                try:
+                    f = open(pcm_path, "rb")
+                    break
+                except FileNotFoundError:
+                    if time.monotonic() > deadline:
+                        return
+        with f:
+            # Start at the end: the sink file is truncated before the
+            # pump starts, and we only forward bytes appended after that.
+            f.seek(0, os.SEEK_END)
+            while not stop_flag.get("stop", False):
+                if proc.poll() is not None:
+                    # Pump process exited on its own (device gone, crash);
+                    # nothing left to stream to.
+                    return
+                chunk = f.read(65536)
+                if chunk:
+                    try:
+                        proc.stdin.write(chunk)
+                        proc.stdin.flush()
+                    except Exception:
+                        # Pump process exited or its pipe closed; nothing
+                        # left to stream to.
+                        return
+                else:
+                    time.sleep(poll_interval)
+    except Exception:
+        return
+    finally:
+        _close_stdin()
 
 
 def _mac_audio_device_index(device_name: str) -> str:
@@ -498,6 +566,7 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
         "session": None,           # RealtimeSession | None
         "speaker_thread": None,    # threading.Thread | None
         "speaker_stop": None,      # callable | None
+        "pcm_tail_thread": None,   # threading.Thread | None
     }
     if rt["enabled"]:
         if not realtime_api_key:
@@ -638,6 +707,7 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                             in_call=True,
                             lobby_waiting=False,
                             joined_at=now,
+                            mic_state=_ensure_mic_on(page),
                         )
                     elif now > lobby_deadline:
                         state.set(
@@ -703,11 +773,25 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
 
             context.close()
             browser.close()
-            # v2: teardown PCM pump, speaker thread, and audio bridge.
+            # The session is ending — make background loops see the stop
+            # flag regardless of why we left (SIGTERM sets it, but
+            # duration expiry and lobby timeout break the loop without
+            # setting it). Without this the tail thread would keep
+            # polling until its join timeout below.
+            stop_flag["stop"] = True
+            # v2: teardown PCM pump, tail thread, speaker thread, and
+            # audio bridge. The pump is terminated first so the tail
+            # thread's blocked stdin write fails fast and the join below
+            # returns promptly.
             if rt.get("pcm_pump"):
                 try:
                     rt["pcm_pump"].terminate()
                     rt["pcm_pump"].wait(timeout=3)
+                except Exception:
+                    pass
+            if rt.get("pcm_tail_thread"):
+                try:
+                    rt["pcm_tail_thread"].join(timeout=1.0)
                 except Exception:
                     pass
             if rt["speaker_stop"]:
@@ -747,6 +831,31 @@ def _try_guest_name(page, guest_name: str) -> None:
             locator.fill(guest_name, timeout=2_000)
     except Exception:
         pass
+
+
+def _ensure_mic_on(page) -> str:
+    """Make sure the bot's microphone is unmuted once admitted.
+
+    Meet's in-call mic toggle exposes its state via ``aria-label``:
+    "Turn on microphone" when muted, "Turn off microphone" when
+    unmuted. We only act when the muted label is present, so an
+    already-unmuted call is never touched.
+
+    Returns one of ``"unmuted"`` (already on), ``"unmuted_clicked"``
+    (we clicked the toggle), or ``"unknown"`` (button not found —
+    Meet variant changed, or the label is localized).
+    """
+    try:
+        muted = page.locator('button[aria-label*="Turn on microphone" i]').first
+        if muted.count() and muted.is_visible():
+            muted.click(timeout=3_000)
+            return "unmuted_clicked"
+        on = page.locator('button[aria-label*="Turn off microphone" i]').first
+        if on.count() and on.is_visible():
+            return "unmuted"
+    except Exception:
+        pass
+    return "unknown"
 
 
 def _detect_admission(page) -> bool:

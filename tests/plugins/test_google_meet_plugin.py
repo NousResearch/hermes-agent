@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 import os
 import signal
+import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -268,6 +270,384 @@ def test_detect_admission_returns_false_on_error():
         def evaluate(self, _js): raise RuntimeError("boom")
 
     assert _detect_admission(_FakePage()) is False
+
+
+# ---------------------------------------------------------------------------
+# Post-admission microphone unmute (_ensure_mic_on)
+# ---------------------------------------------------------------------------
+
+class _Locator:
+    """Fake Playwright locator whose ``.first`` is one of the fake buttons."""
+
+    def __init__(self, btn):
+        self._btn = btn
+
+    @property
+    def first(self):
+        return self._btn
+
+
+class _PresentBtn:
+    def __init__(self):
+        self.clicks = 0
+
+    def count(self):
+        return 1
+
+    def is_visible(self):
+        return True
+
+    def click(self, timeout=0):
+        self.clicks += 1
+
+
+class _AbsentBtn:
+    def __init__(self):
+        self.clicks = 0  # never incremented; keeps the fake's interface uniform
+
+    def count(self):
+        return 0
+
+    def is_visible(self):
+        return False
+
+
+class _MicPage:
+    """Fake page: ``muted=True`` means the "Turn on microphone" toggle exists."""
+
+    def __init__(self, muted):
+        self._muted = muted
+        self.muted_btn = _PresentBtn() if muted else _AbsentBtn()
+        self.unmuted_btn = _AbsentBtn() if muted else _PresentBtn()
+
+    def locator(self, sel):
+        if "Turn on microphone" in sel:
+            return _Locator(self.muted_btn)
+        return _Locator(self.unmuted_btn)
+
+
+def test_ensure_mic_on_clicks_toggle_when_muted():
+    from plugins.google_meet.meet_bot import _ensure_mic_on
+
+    page = _MicPage(muted=True)
+    assert _ensure_mic_on(page) == "unmuted_clicked"
+    assert page.muted_btn.clicks == 1
+
+
+def test_ensure_mic_on_leaves_already_unmuted_alone():
+    from plugins.google_meet.meet_bot import _ensure_mic_on
+
+    page = _MicPage(muted=False)
+    assert _ensure_mic_on(page) == "unmuted"
+    assert page.unmuted_btn.clicks == 0
+
+
+def test_ensure_mic_on_unknown_when_no_toggle_found():
+    from plugins.google_meet.meet_bot import _ensure_mic_on
+
+    class _Page:
+        def locator(self, _sel):
+            return _Locator(_AbsentBtn())
+
+    assert _ensure_mic_on(_Page()) == "unknown"
+
+
+def test_ensure_mic_on_survives_locator_errors():
+    from plugins.google_meet.meet_bot import _ensure_mic_on
+
+    class _Page:
+        def locator(self, _sel):
+            raise RuntimeError("boom")
+
+    assert _ensure_mic_on(_Page()) == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Streaming PCM pump tail loop (_pcm_tail_loop)
+# ---------------------------------------------------------------------------
+
+class _FakeStdin:
+    def __init__(self):
+        self.received = bytearray()
+        self.closed = False
+
+    def write(self, b):
+        self.received.extend(b)
+
+    def flush(self):
+        pass
+
+    def close(self):
+        self.closed = True
+
+
+class _FakePump:
+    def __init__(self, stdin, poll_result=None):
+        self.stdin = stdin
+        self._poll_result = poll_result
+
+    def poll(self):
+        return self._poll_result
+
+
+def _append_pcm(path: Path, data: bytes) -> None:
+    # Mirrors RealtimeSession.speak(): open 'ab', write, close.
+    with open(path, "ab") as f:
+        f.write(data)
+
+
+def test_pcm_tail_loop_survives_empty_file_and_streams_appended_bytes(tmp_path):
+    from plugins.google_meet.meet_bot import _pcm_tail_loop
+
+    pcm = tmp_path / "speaker.pcm"
+    pcm.write_bytes(b"")  # production truncates the sink before pump start
+    stdin = _FakeStdin()
+    stop = {"stop": False}
+
+    t = threading.Thread(target=_pcm_tail_loop, args=(_FakePump(stdin), pcm, stop, 0.01))
+    t.start()
+    try:
+        # The pump must NOT exit just because the file is empty at start.
+        time.sleep(0.1)
+        assert t.is_alive(), "tail loop exited on an empty sink file"
+
+        # Bytes appended after startup must reach the pump's stdin.
+        chunk = b"\x00\x01" * 10
+        _append_pcm(pcm, chunk)
+        deadline = time.time() + 2.0
+        while len(stdin.received) < len(chunk) and time.time() < deadline:
+            time.sleep(0.01)
+        assert bytes(stdin.received) == chunk
+
+        # Later appends keep flowing.
+        chunk2 = b"\xff" * 25
+        _append_pcm(pcm, chunk2)
+        deadline = time.time() + 2.0
+        while len(stdin.received) < len(chunk) + len(chunk2) and time.time() < deadline:
+            time.sleep(0.01)
+        assert bytes(stdin.received) == chunk + chunk2
+    finally:
+        stop["stop"] = True
+        t.join(timeout=1.0)
+    assert stdin.closed
+
+
+def test_pcm_tail_loop_stops_when_told(tmp_path):
+    from plugins.google_meet.meet_bot import _pcm_tail_loop
+
+    pcm = tmp_path / "speaker.pcm"
+    pcm.write_bytes(b"")
+    stdin = _FakeStdin()
+    stop = {"stop": False}
+
+    t = threading.Thread(target=_pcm_tail_loop, args=(_FakePump(stdin), pcm, stop, 0.01))
+    t.start()
+    time.sleep(0.05)
+    stop["stop"] = True
+    t.join(timeout=1.0)
+    assert not t.is_alive()
+    assert stdin.closed
+
+
+def test_pcm_tail_loop_exits_when_pump_dies(tmp_path):
+    from plugins.google_meet.meet_bot import _pcm_tail_loop
+
+    class _DeadStdin:
+        def write(self, _b):
+            raise BrokenPipeError("pump gone")
+
+        def flush(self):
+            pass
+
+        def close(self):
+            pass
+
+    pcm = tmp_path / "speaker.pcm"
+    pcm.write_bytes(b"")
+    stop = {"stop": False}
+
+    t = threading.Thread(
+        target=_pcm_tail_loop,
+        args=(_FakePump(_DeadStdin()), pcm, stop, 0.01),
+    )
+    t.start()
+    _append_pcm(pcm, b"\x00" * 100)  # triggers a write that fails
+    t.join(timeout=1.0)
+    assert not t.is_alive()
+
+
+def test_pcm_tail_loop_exits_when_pump_process_gone_while_idle(tmp_path):
+    from plugins.google_meet.meet_bot import _pcm_tail_loop
+
+    pcm = tmp_path / "speaker.pcm"
+    pcm.write_bytes(b"")
+    stdin = _FakeStdin()
+    stop = {"stop": False}
+
+    # poll() != None means the pump process has exited; the loop must
+    # notice even while the sink file is idle (no pending writes).
+    t = threading.Thread(
+        target=_pcm_tail_loop,
+        args=(_FakePump(stdin, poll_result=1), pcm, stop, 0.01),
+    )
+    t.start()
+    t.join(timeout=1.0)
+    assert not t.is_alive()
+    assert len(stdin.received) == 0
+
+
+def test_pcm_tail_loop_waits_for_late_sink_file(tmp_path):
+    from plugins.google_meet.meet_bot import _pcm_tail_loop
+
+    pcm = tmp_path / "speaker.pcm"  # deliberately NOT created yet
+    stdin = _FakeStdin()
+    stop = {"stop": False}
+
+    t = threading.Thread(target=_pcm_tail_loop, args=(_FakePump(stdin), pcm, stop, 0.01))
+    t.start()
+    try:
+        time.sleep(0.05)
+        assert t.is_alive(), "tail loop gave up before the sink file appeared"
+        # The file appears empty (as in production); let the loop open it
+        # at EOF, then grow it and confirm appended bytes still flow.
+        pcm.write_bytes(b"")
+        time.sleep(0.05)
+        _append_pcm(pcm, b"\x00" * 10)
+        deadline = time.time() + 2.0
+        while len(stdin.received) < 10 and time.time() < deadline:
+            time.sleep(0.01)
+        assert bytes(stdin.received) == b"\x00" * 10
+    finally:
+        stop["stop"] = True
+        t.join(timeout=1.0)
+
+
+def test_realtime_speaker_reports_missing_pump_binary(monkeypatch, tmp_path):
+    import plugins.google_meet.meet_bot as mb
+    from plugins.google_meet.meet_bot import _start_realtime_speaker
+
+    class _FakeSession:
+        def __init__(self, **kwargs):
+            self.audio_bytes_out = 0
+
+        def connect(self):
+            pass
+
+    class _FakeSpeaker:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_until_stopped(self, stop_fn):
+            return None
+
+    monkeypatch.setattr(
+        "plugins.google_meet.realtime.openai_client.RealtimeSession", _FakeSession
+    )
+    monkeypatch.setattr(
+        "plugins.google_meet.realtime.openai_client.RealtimeSpeaker", _FakeSpeaker
+    )
+
+    def _missing_pump(*args, **kwargs):
+        raise FileNotFoundError("paplay")
+
+    monkeypatch.setattr("subprocess.Popen", _missing_pump)
+
+    out = tmp_path / "meet"
+    state = mb._BotState(out_dir=out, meeting_id="abc", url="https://meet.google.com/abc-defg-hij")
+    rt = {
+        "session": None,
+        "speaker_thread": None,
+        "speaker_stop": None,
+        "pcm_pump": None,
+        "pcm_tail_thread": None,
+    }
+    _start_realtime_speaker(
+        rt=rt,
+        out_dir=out,
+        bridge_info={"platform": "linux", "write_target": "hermes_meet_sink"},
+        api_key="sk-test",
+        model="gpt-realtime",
+        voice="alloy",
+        instructions="",
+        stop_flag={"stop": False},
+        state=state,
+    )
+    assert "paplay not found" in (state.error or "")
+    assert rt["pcm_pump"] is None
+    assert rt["pcm_tail_thread"] is None
+
+
+def test_realtime_speaker_builds_macos_ffmpeg_pump_argv(monkeypatch, tmp_path):
+    import plugins.google_meet.meet_bot as mb
+    from plugins.google_meet.meet_bot import _start_realtime_speaker
+
+    class _FakeSession:
+        def __init__(self, **kwargs):
+            self.audio_bytes_out = 0
+
+        def connect(self):
+            pass
+
+    class _FakeSpeaker:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_until_stopped(self, stop_fn):
+            return None
+
+    monkeypatch.setattr(
+        "plugins.google_meet.realtime.openai_client.RealtimeSession", _FakeSession
+    )
+    monkeypatch.setattr(
+        "plugins.google_meet.realtime.openai_client.RealtimeSpeaker", _FakeSpeaker
+    )
+    monkeypatch.setattr(
+        "shutil.which", lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else None
+    )
+    monkeypatch.setattr(mb, "_mac_audio_device_index", lambda device_name: "3")
+
+    captured = {}
+
+    def _fake_popen(argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return _FakePump(_FakeStdin())
+
+    monkeypatch.setattr("subprocess.Popen", _fake_popen)
+
+    out = tmp_path / "meet"
+    state = mb._BotState(out_dir=out, meeting_id="abc", url="https://meet.google.com/abc-defg-hij")
+    stop = {"stop": False}
+    rt = {
+        "session": None,
+        "speaker_thread": None,
+        "speaker_stop": None,
+        "pcm_pump": None,
+        "pcm_tail_thread": None,
+    }
+    _start_realtime_speaker(
+        rt=rt,
+        out_dir=out,
+        bridge_info={"platform": "darwin", "write_target": "BlackHole 2ch"},
+        api_key="sk-test",
+        model="gpt-realtime",
+        voice="alloy",
+        instructions="",
+        stop_flag=stop,
+        state=state,
+    )
+    argv = captured["argv"]
+    assert argv[0] == "ffmpeg"
+    assert argv[argv.index("-i") + 1] == "-"  # raw PCM from stdin
+    # The output-side "-f" (after the "-i -" input) selects audiotoolbox.
+    assert argv[argv.index("-f", argv.index("-i")) + 1] == "audiotoolbox"
+    # ffmpeg rejects the command without a positional output arg.
+    assert argv[-1] == "-"
+    assert captured["kwargs"]["stdin"] is not None  # PIPE
+    assert rt["pcm_pump"] is not None
+    assert rt["pcm_tail_thread"] is not None
+    stop["stop"] = True
+    rt["pcm_tail_thread"].join(timeout=1.0)
 
 
 # ---------------------------------------------------------------------------

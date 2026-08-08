@@ -19090,6 +19090,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if watch:
             watch.pop(quick_key, None)
 
+    async def _heartbeat_session_tip(self, session_id: str) -> str:
+        """Return the compression-continuation tip for *session_id*.
+
+        Returns the input unchanged when the session never rotated, when no
+        session DB is attached, or when the lookup fails, so callers can treat
+        the result as a plain rebind hint.
+        """
+        if not session_id or self._session_db is None:
+            return session_id
+        try:
+            tip = await self._session_db.get_compression_tip(session_id)
+        except Exception:
+            logger.debug(
+                "heartbeat compression-tip lookup failed for %s",
+                session_id, exc_info=True,
+            )
+            return session_id
+        return tip or session_id
+
     def _start_heartbeat_poller(self) -> None:
         """Start the single gateway-wide heartbeat poll task (idempotent)."""
         existing = getattr(self, "_heartbeat_poll_task", None)
@@ -19113,8 +19132,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                         mgr = HeartbeatManager(session_id=session_id)
                         if not mgr.has_heartbeat():
-                            watch.pop(quick_key, None)
-                            continue
+                            # Context compression re-homes the heartbeat onto
+                            # the continuation session and clears the parent
+                            # row, so the id captured at /heartbeat time reads
+                            # empty the first time the session rotates. Follow
+                            # the compression chain before concluding the user
+                            # cleared it — otherwise the poller unregisters a
+                            # live heartbeat and it silently never fires again.
+                            tip = await self._heartbeat_session_tip(session_id)
+                            if tip != session_id:
+                                rebound = HeartbeatManager(session_id=tip)
+                                if rebound.has_heartbeat():
+                                    watch[quick_key] = (source, tip)
+                                    mgr = rebound
+                            if not mgr.has_heartbeat():
+                                watch.pop(quick_key, None)
+                                continue
                         prompt = mgr.due_prompt()
                         if not prompt:
                             continue

@@ -222,6 +222,7 @@ hermes skills uninstall <skill-name>
 | [**sherlock**](/docs/user-guide/skills/optional/security/security-sherlock) | Find accounts for a username across 400+ platforms. |
 | [**unbroker**](/docs/user-guide/skills/optional/security/security-unbroker) | Autonomously remove your info from data-broker sites. |
 | [**web-pentest**](/docs/user-guide/skills/optional/security/security-web-pentest) | Authorized web application penetration testing — reconnaissance, vulnerability analysis, proof-based exploitation, and professional reporting. Adapts Shannon's "No Exploit, No Report" methodology with hard guardrails for scope, authoriza... |
+| [**web3-permission-audit**](/docs/user-guide/skills/optional/security/security-web3-permission-audit) | Read-only cross-chain wallet permission audit. |
 
 ## software-development
 

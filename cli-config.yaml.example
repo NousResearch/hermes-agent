@@ -156,6 +156,15 @@ model:
 #       gpt-5.4:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
+# agent:
+#   # How long a streaming call tolerates a model emitting ONLY reasoning
+#   # tokens (reasoning_content / thinking) with no visible output before the
+#   # stream is killed and reconnected.  Independent of the no-chunk stale
+#   # detectors: this fires when chunks arrive but are all reasoning.  Default
+#   # 300s leaves slow-but-normal thinking models untouched while bounding the
+#   # reasoning-only hang class (DeepSeek V4 Flash, etc.).  0 disables.
+#   reasoning_only_stale_timeout: 300
+
 # =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)
 # =============================================================================

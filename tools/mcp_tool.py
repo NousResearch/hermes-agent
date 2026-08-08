@@ -99,6 +99,7 @@ import contextvars
 import concurrent.futures
 import errno
 import fnmatch
+import hashlib
 import inspect
 import json
 import logging
@@ -5845,15 +5846,42 @@ def sanitize_mcp_name_component(value: str) -> str:
 MCP_TOOL_NAME_PREFIX = "mcp__"
 _MCP_NAME_DELIM = "__"
 
+# OpenAI-compatible providers validate function names against
+# ``^[a-zA-Z0-9_-]{1,64}$`` and reject the whole tools array (or, in the
+# portable-plugin case, silently drop the offending tool from the catalog)
+# when a generated name exceeds 64 chars. Portable Agent Plugin names put the
+# plugin name in three times over (slug, digest, server key), so their
+# server/tool prefix routinely blows past this limit even though a plain
+# ``hermes mcp add`` of the same server stays well under it (issue #81331).
+# Clamp deterministically with a collision-safe hash suffix, mirroring the
+# property-key clamp in schema_sanitizer.sanitize_property_key.
+_MCP_TOOL_NAME_MAX_LENGTH = 64
+_MCP_TOOL_NAME_HASH_LENGTH = 8
+
 
 def mcp_prefixed_tool_name(server_name: str, tool_name: str) -> str:
     """Build the registry/wire name for an MCP tool.
 
-    Produces ``mcp__<sanitizedServer>__<sanitizedTool>``.
+    Produces ``mcp__<sanitizedServer>__<sanitizedTool>``, clamped to
+    ``_MCP_TOOL_NAME_MAX_LENGTH`` chars with a stable hash suffix when the
+    natural name would exceed it.
     """
     safe_server = sanitize_mcp_name_component(server_name)
     safe_tool = sanitize_mcp_name_component(tool_name)
-    return f"{MCP_TOOL_NAME_PREFIX}{safe_server}{_MCP_NAME_DELIM}{safe_tool}"
+    full_name = f"{MCP_TOOL_NAME_PREFIX}{safe_server}{_MCP_NAME_DELIM}{safe_tool}"
+    if len(full_name) <= _MCP_TOOL_NAME_MAX_LENGTH:
+        return full_name
+
+    digest = hashlib.sha256(full_name.encode("utf-8")).hexdigest()[:_MCP_TOOL_NAME_HASH_LENGTH]
+    suffix = f"_{digest}"
+    logger.warning(
+        "MCP tool name %r (%d chars) exceeds the %d-char provider limit; "
+        "shortened to a deterministic hash-suffixed name",
+        full_name,
+        len(full_name),
+        _MCP_TOOL_NAME_MAX_LENGTH,
+    )
+    return full_name[: _MCP_TOOL_NAME_MAX_LENGTH - len(suffix)] + suffix
 
 
 def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:

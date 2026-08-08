@@ -436,6 +436,10 @@ export const zh: Translations = {
       uiScaleTitle: '界面缩放',
       uiScaleDesc: (percent: number) =>
         `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
+      effectsTitle: '动态与特效',
+      effectsDesc: '精简模式会保留状态指示，同时停止持续的闪烁、渐变和活动动画，以节省 GPU 资源。',
+      effectsFull: '完整',
+      effectsReduced: '精简',
       terminalFontTitle: '终端字体',
       terminalFontDesc:
         '选择已安装的字体用于桌面端终端。Nerd Font 可正确显示 Powerlevel10k 和 Shell 图标；留空则使用内置的 JetBrains Mono。',

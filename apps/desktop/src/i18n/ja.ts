@@ -319,6 +319,11 @@ export const ja = defineLocale({
       uiScaleTitle: 'UI スケール',
       uiScaleDesc: (percent: number) =>
         `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。現在: ${percent}%`,
+      effectsTitle: 'モーションとエフェクト',
+      effectsDesc:
+        '「軽減」では状態表示を残したまま、GPU負荷を抑えるため連続するシマー、グラデーション、動作アニメーションを停止します。',
+      effectsFull: 'フル',
+      effectsReduced: '軽減',
       terminalFontTitle: 'ターミナルフォント',
       terminalFontDesc:
         'Desktop のターミナルで使用するインストール済みフォントを選びます。Nerd Font は Powerlevel10k とシェルアイコンを表示できます。空欄では内蔵の JetBrains Mono を使用します。',

@@ -445,6 +445,11 @@ export const en: Translations = {
       uiScaleTitle: 'UI Scale',
       uiScaleDesc: (percent: number) =>
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,
+      effectsTitle: 'Motion and Effects',
+      effectsDesc:
+        'Reduced keeps status indicators visible but stops continuous shimmer, gradient, and activity animations to preserve GPU capacity.',
+      effectsFull: 'Full',
+      effectsReduced: 'Reduced',
       terminalFontTitle: 'Terminal Font',
       terminalFontDesc:
         'Choose an installed font for Desktop terminals. Nerd Fonts render Powerlevel10k and shell icons; leave blank to use bundled JetBrains Mono.',

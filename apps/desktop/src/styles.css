@@ -21,6 +21,24 @@
   }
 }
 
+/* Hermes-local counterpart to the OS reduced-motion preference. This avoids
+   continuous compositor work without forcing software rendering for the
+   entire Electron window. */
+:root[data-reduced-effects] *,
+:root[data-reduced-effects] *::before,
+:root[data-reduced-effects] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+:root[data-reduced-effects] .shimmer {
+  background: none !important;
+  color: inherit !important;
+  -webkit-text-fill-color: currentColor !important;
+}
+
 /* Sidebar sections: tall viewports give each its own scroller; compact ones
    (this variant) flatten everything into one shared scroll. See ChatSidebar. */
 @custom-variant compact (@media (max-height: 768px));
@@ -980,6 +998,11 @@
   .arc-border::before {
     animation: none;
   }
+}
+
+:root[data-reduced-effects] .arc-border::before {
+  animation: none;
+  background: color-mix(in srgb, var(--arc-c1) 55%, transparent);
 }
 
 /* No focus rings, anywhere. Kills the native outline plus Tailwind's

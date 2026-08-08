@@ -396,6 +396,11 @@ export const ar = defineLocale({
       colorModeDesc: 'اختر الوضع الفاتح أو الداكن أو اتبع النظام.',
       toolViewTitle: 'عرض الأدوات',
       toolViewDesc: 'تحكم في كيفية عرض نشاط الأدوات داخل المحادثة.',
+      effectsTitle: 'الحركة والتأثيرات',
+      effectsDesc:
+        'يبقي الوضع المخفّض مؤشرات الحالة ظاهرة ويوقف تأثيرات اللمعان والتدرج والحركة المستمرة للحفاظ على موارد وحدة معالجة الرسومات.',
+      effectsFull: 'كاملة',
+      effectsReduced: 'مخفّضة',
       translucencyTitle: 'شفافية النافذة',
       translucencyDesc: 'إظهار سطح المكتب من خلال النافذة بالكامل. متاح على macOS وWindows فقط.',
       backdropTitle: 'خلفية النافذة',

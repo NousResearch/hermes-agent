@@ -56,6 +56,7 @@ tts:
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
     base_url: "https://api.openai.com/v1"  # Override for OpenAI-compatible TTS endpoints
     speed: 1.0                  # 0.25 - 4.0
+    pcm_sample_rate: 24000      # 原始 PCM 播放采样率；须与兼容端点输出一致
   minimax:
     model: "speech-2.8-hd"     # speech-2.8-hd (default), speech-2.8-turbo
     voice_id: "English_Graceful_Lady"  # See https://platform.minimax.io/faq/system-voice-id
@@ -96,6 +97,8 @@ tts:
 ```
 
 **速度控制**：全局 `tts.speed` 值默认应用于所有提供商。每个提供商可用自身的 `speed` 设置覆盖它（例如 `tts.openai.speed: 1.5`）。提供商级别的速度优先于全局值。默认值为 `1.0`（正常速度）。
+
+**PCM 播放采样率（OpenAI 兼容端点）**：`tts.openai.pcm_sample_rate` 告诉 Hermes 如何播放端点返回的无标头原始 PCM。OpenAI 官方 API 使用 `24000`，而兼容服务器可能使用模型的原生采样率；例如，[openedai-speech](https://github.com/matatonic/openedai-speech) 的 Piper `tts-1` 模型输出 `22050` Hz PCM。该值必须与端点输出一致，否则语音的速度和音调会不正确。该值必须为正整数；无效值会发出警告并回退到 `24000` Hz，而不会禁用流式播放。
 
 
 ### 输入长度限制

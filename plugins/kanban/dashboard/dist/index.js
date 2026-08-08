@@ -1085,7 +1085,7 @@
           },
           onRefresh: loadBoard,
         }),
-       selectedIds.size > 0 ? h(BulkActionBar, {
+       selectedIds.size > 0 && !(boardData.presentation && boardData.presentation.mode === "projection") ? h(BulkActionBar, {
          count: selectedIds.size,
          assignees: (boardData && boardData.assignees) || [],
          onApply: applyBulk,
@@ -1093,8 +1093,15 @@
          onSelectAllVisible: selectAllVisible,
          onDelete: deleteSelected,
        }) : null,
-        error ? h("div", { className: "text-xs text-destructive px-2" }, error) : null,
-        h(BoardColumns, {
+       error ? h("div", { className: "text-xs text-destructive px-2" }, error) : null,
+       boardData.presentation && boardData.presentation.error
+         ? h("div", {
+             className: "text-xs text-destructive px-2",
+             role: "alert",
+           }, "Board presentation configuration is invalid: ",
+             boardData.presentation.error)
+         : null,
+       h(BoardColumns, {
           board: filteredBoard,
           boardMeta: boardList.find(function (item) { return item.slug === board; }) || null,
           laneByProfile,
@@ -2528,6 +2535,9 @@
     const handleDragEnd = useCallback(function () {
       if (props.onDragEnd) props.onDragEnd();
     }, [props.onDragEnd]);
+    const projectedReadOnly = props.board.columns.length > 0 && props.board.columns.every(function (col) {
+      return col.read_only === true;
+    });
     return h("div", {
       ref: columnsRef,
       className: cn(
@@ -2558,7 +2568,7 @@
           allTasks: props.allTasks,
         });
       }),
-      h(TrashDropZone, {
+      projectedReadOnly ? null : h(TrashDropZone, {
         draggingTaskId: props.draggingTaskId,
         selectedIds: props.selectedIds,
         onDelete: props.onDelete,
@@ -2571,10 +2581,11 @@
     const [dragOver, setDragOver] = useState(false);
     const [showCreate, setShowCreate] = useState(false);
     const colRef = useRef(null);
+    const readOnly = props.column.read_only === true;
 
     // Listen for our synthetic touch-drop events from attachTouchDrag().
     useEffect(function () {
-      if (!colRef.current) return undefined;
+      if (!colRef.current || readOnly) return undefined;
       const el = colRef.current;
       function onTouchDrop(e) {
         if (e.detail && e.detail.status === props.column.name) {
@@ -2588,7 +2599,7 @@
       }
       el.addEventListener("hermes-kanban:drop", onTouchDrop);
       return function () { el.removeEventListener("hermes-kanban:drop", onTouchDrop); };
-    }, [props.column.name, props.onMove, props.selectedIds, props.onMoveSelected]);
+    }, [props.column.name, props.onMove, props.selectedIds, props.onMoveSelected, readOnly]);
 
     const handleDragOver = function (e) {
       e.preventDefault();
@@ -2620,8 +2631,8 @@
       });
     }, [props.column, props.laneByProfile]);
 
-    const colHelp = getColumnHelp(t, props.column.name);
-    const colLabel = getColumnLabel(t, props.column.name);
+    const colHelp = props.column.helper || getColumnHelp(t, props.column.name);
+    const colLabel = props.column.label || getColumnLabel(t, props.column.name);
 
     return h("div", {
       ref: colRef,
@@ -2630,13 +2641,13 @@
         "hermes-kanban-column",
         dragOver ? "hermes-kanban-column--drop" : "",
       ),
-      onDragOver: handleDragOver,
-      onDragLeave: handleDragLeave,
-      onDrop: handleDrop,
+      onDragOver: readOnly ? undefined : handleDragOver,
+      onDragLeave: readOnly ? undefined : handleDragLeave,
+      onDrop: readOnly ? undefined : handleDrop,
     },
       h("div", { className: "hermes-kanban-column-header",
                  title: colHelp || "" },
-        h(Checkbox, {
+        readOnly ? null : h(Checkbox, {
           className: "hermes-kanban-col-check",
           title: "Select all tasks in this column",
           "aria-label": `Select all tasks in ${colLabel || props.column.name}`,
@@ -2652,7 +2663,7 @@
         h("span", { className: "hermes-kanban-column-count",
                     title: `${props.column.tasks.length} task${props.column.tasks.length === 1 ? "" : "s"} in this column` },
           props.column.tasks.length),
-        h("button", {
+        readOnly ? null : h("button", {
           type: "button",
           className: "hermes-kanban-column-add",
           title: tx(t, "createTask", "Create task in this column"),
@@ -2661,7 +2672,7 @@
       ),
       h("div", { className: "hermes-kanban-column-sub" },
         colHelp || ""),
-      showCreate ? h(InlineCreate, {
+      !readOnly && showCreate ? h(InlineCreate, {
         columnName: props.column.name,
         allTasks: props.allTasks,
         defaultWorkspaceKind: (props.boardMeta && props.boardMeta.default_workspace_kind) || "scratch",
@@ -2691,6 +2702,7 @@
                       toggleSelected: props.toggleSelected,
                       toggleRange: props.toggleRange,
                       onOpen: props.onOpen,
+                      readOnly: readOnly,
                     });
                   }),
                 );
@@ -2705,6 +2717,7 @@
                   toggleSelected: props.toggleSelected,
                   toggleRange: props.toggleRange,
                   onOpen: props.onOpen,
+                  readOnly: readOnly,
                 });
               }),
       ),
@@ -2742,8 +2755,9 @@
     const cardRef = useRef(null);
 
     useEffect(function () {
+      if (props.readOnly) return undefined;
       return attachTouchDrag(cardRef.current, t.id);
-    }, [t.id]);
+    }, [t.id, props.readOnly]);
 
     const handleDragStart = function (e) {
       e.dataTransfer.setData(MIME_TASK, t.id);
@@ -2761,13 +2775,13 @@
       }
     };
     const handleClick = function (e) {
-      if (e.shiftKey) {
+      if (!props.readOnly && e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
         if (props.toggleRange) props.toggleRange(t.id);
         return;
       }
-      if (e.ctrlKey || e.metaKey) {
+      if (!props.readOnly && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         e.stopPropagation();
         props.toggleSelected(t.id, true);
@@ -2801,18 +2815,18 @@
         props.draggingSource ? "hermes-kanban-card--dragging-source" : "",
         stalenessClass(t),
       ),
-      draggable: true,
+      draggable: !props.readOnly,
       tabIndex: 0,
       role: "button",
       "aria-label": `${t.title || "untitled"} — ${t.id} — ${t.status}`,
-      onDragStart: handleDragStart,
+      onDragStart: props.readOnly ? undefined : handleDragStart,
       onClick: handleClick,
       onKeyDown: handleKeyDown,
     },
       h(Card, null,
         h(CardContent, { className: "hermes-kanban-card-content" },
           h("div", { className: "hermes-kanban-card-row" },
-            h("label", {
+            props.readOnly ? null : h("label", {
               className: "hermes-kanban-card-check-wrap",
               title: tx(i18n, "selectForBulk", "Select for bulk actions"),
               onClick: function (e) { e.stopPropagation(); },
@@ -2841,6 +2855,17 @@
                   ),
                 }, t.warnings.highest_severity === "critical" ? "!!!" :
                    t.warnings.highest_severity === "error" ? "!!" : "⚠")
+              : null,
+            t.presentation_diagnostics && t.presentation_diagnostics.length > 0
+              ? h("span", {
+                  className: "hermes-kanban-warning-badge hermes-kanban-warning-badge--warning",
+                  role: "alert",
+                  title: t.presentation_diagnostics.map(function (diagnostic) {
+                    return `${diagnostic.kind}: ${diagnostic.message}`;
+                  }).join("\n"),
+                }, "⚠ ", t.presentation_diagnostics.map(function (diagnostic) {
+                  return diagnostic.message;
+                }).join(" · "))
               : null,
             t.priority > 0
               ? h(Badge, { className: "hermes-kanban-priority",

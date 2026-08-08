@@ -44,9 +44,9 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from hermes_cli import kanban_db
 from hermes_cli import kanban_diagnostics as kd
@@ -375,6 +375,117 @@ def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
 # GET /board
 # ---------------------------------------------------------------------------
 
+
+PRESENTATION_REQUEST_MAX_BYTES = kanban_db.PRESENTATION_MAX_BYTES + 4 * 1024
+
+
+class PresentationWriteBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    presentation: dict[str, Any]
+    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class PresentationValidateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    presentation: dict[str, Any]
+
+
+async def _strict_presentation_request(
+    request: Request,
+    model: type[PresentationWriteBody] | type[PresentationValidateBody],
+) -> PresentationWriteBody | PresentationValidateBody:
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared_length = int(content_length)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid Content-Length") from exc
+        if declared_length < 0:
+            raise HTTPException(status_code=400, detail="invalid Content-Length")
+        if declared_length > PRESENTATION_REQUEST_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="presentation request is too large")
+    raw_body = bytearray()
+    async for chunk in request.stream():
+        if len(raw_body) + len(chunk) > PRESENTATION_REQUEST_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="presentation request is too large")
+        raw_body.extend(chunk)
+    try:
+        decoded = bytes(raw_body).decode("utf-8")
+        parsed = await asyncio.to_thread(kanban_db.strict_json_loads, decoded)
+        if not isinstance(parsed, dict):
+            raise ValueError("request body must be a JSON object")
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise HTTPException(status_code=400, detail=f"invalid JSON: {exc}") from exc
+    try:
+        return await asyncio.to_thread(model.model_validate, parsed)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="request body does not match the presentation schema",
+        ) from exc
+
+
+@router.get("/boards/{slug}/presentation")
+def get_board_presentation(slug: str):
+    board = _resolve_board(slug)
+    return kanban_db.read_board_presentation(board)
+
+
+@router.put("/boards/{slug}/presentation")
+async def put_board_presentation(slug: str, request: Request):
+    board = _resolve_board(slug)
+    payload = await _strict_presentation_request(request, PresentationWriteBody)
+    assert isinstance(payload, PresentationWriteBody)
+    try:
+        return await asyncio.to_thread(
+            kanban_db.write_board_presentation,
+            board,
+            payload.presentation,
+            expected_revision=payload.expected_revision,
+        )
+    except kanban_db.BoardPresentationConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/boards/{slug}/presentation/validate")
+async def validate_board_presentation_endpoint(slug: str, request: Request):
+    _resolve_board(slug)
+    payload = await _strict_presentation_request(request, PresentationValidateBody)
+    assert isinstance(payload, PresentationValidateBody)
+    try:
+        presentation = await asyncio.to_thread(
+            kanban_db.validate_board_presentation, payload.presentation
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    digest = await asyncio.to_thread(
+        kanban_db.board_presentation_digest, presentation
+    )
+    return {
+        "valid": True,
+        "presentation": presentation,
+        "digest": digest,
+    }
+
+
+@router.delete("/boards/{slug}/presentation")
+def delete_board_presentation(
+    slug: str, expected_revision: str = Query(..., pattern=r"^[0-9a-f]{64}$")
+):
+    board = _resolve_board(slug)
+    try:
+        return kanban_db.clear_board_presentation(
+            board, expected_revision=expected_revision
+        )
+    except kanban_db.BoardPresentationConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
 @router.get("/board")
 def get_board(
     tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
@@ -449,9 +560,16 @@ def get_board(
             "SELECT COALESCE(MAX(id), 0) AS m FROM task_events"
         ).fetchone()["m"]
 
-        columns: dict[str, list[dict]] = {c: [] for c in BOARD_COLUMNS}
-        if include_archived:
-            columns["archived"] = []
+        presentation_state = kanban_db.read_board_presentation(board)
+        presentation = presentation_state["presentation"]
+        if presentation is not None:
+            columns: dict[str, list[dict]] = {
+                column["id"]: [] for column in presentation["columns"]
+            }
+        else:
+            columns = {c: [] for c in BOARD_COLUMNS}
+            if include_archived:
+                columns["archived"] = []
 
         # Batch-fetch the latest non-null run summary per task in one
         # window-function query (avoids N+1 ``latest_summary`` calls
@@ -475,7 +593,18 @@ def get_board(
                 # needs the summary.
                 d["diagnostics"] = diags
                 d["warnings"] = _warnings_summary_from_diagnostics(diags)
-            col = t.status if t.status in columns else "todo"
+            if presentation is not None:
+                assignment = kanban_db.project_task_presentation(
+                    t,
+                    presentation,
+                    live_worker=kanban_db.presentation_live_worker(conn, t),
+                    evidence_text=t.body or "",
+                )
+                d["display_column"] = assignment["column_id"]
+                d["presentation_diagnostics"] = assignment["diagnostics"]
+                col = assignment["column_id"]
+            else:
+                col = t.status if t.status in columns else "todo"
             columns[col].append(d)
 
         # Stable per-column ordering already applied by list_tasks
@@ -497,15 +626,42 @@ def get_board(
             )
         ]
 
-        return {
-            "columns": [
+        if presentation is not None:
+            serialized_columns = [
+                {
+                    "id": column["id"],
+                    "name": column["id"],
+                    "label": column["label"],
+                    "helper": column["helper"],
+                    "read_only": column["read_only"],
+                    "tasks": columns[column["id"]],
+                }
+                for column in presentation["columns"]
+            ]
+        else:
+            serialized_columns = [
                 {"name": name, "tasks": columns[name]} for name in columns.keys()
-            ],
+            ]
+        response = {
+            "columns": serialized_columns,
             "tenants": tenants,
             "assignees": assignees,
             "latest_event_id": int(latest_event_id),
             "now": int(time.time()),
         }
+        if presentation is not None:
+            response["presentation"] = {
+                "schema": presentation["schema"],
+                "mode": presentation["mode"],
+                "digest": presentation_state["digest"],
+                "revision": presentation_state["revision"],
+            }
+        elif presentation_state["error"]:
+            response["presentation"] = {
+                "mode": "canonical",
+                "error": presentation_state["error"],
+            }
+        return response
     finally:
         conn.close()
 
@@ -2456,15 +2612,18 @@ def rename_board(slug: str, payload: RenameBoardBody):
                 default_workdir = primary_path
         else:
             project_id = ""  # clear the scope
-    meta = kanban_db.write_board_metadata(
-        normed,
-        name=payload.name,
-        description=payload.description,
-        icon=payload.icon,
-        color=payload.color,
-        default_workdir=default_workdir,
-        project_id=project_id,
-    )
+    try:
+        meta = kanban_db.write_board_metadata(
+            normed,
+            name=payload.name,
+            description=payload.description,
+            icon=payload.icon,
+            color=payload.color,
+            default_workdir=default_workdir,
+            project_id=project_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     meta["default_workspace_kind"] = _default_workspace_kind(meta)
     _, meta["project_name"], _ = _resolve_project(meta.get("project_id"))
     return {"board": meta}

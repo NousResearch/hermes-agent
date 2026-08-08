@@ -641,9 +641,100 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 | `DELETE` | `/links?parent_id=…&child_id=…` | Remove a dependency |
 | `POST` | `/dispatch?max=…&dry_run=…` | Nudge the dispatcher — skip the 60 s wait |
 | `GET` | `/config` | Read `dashboard.kanban` preferences from `config.yaml` — `default_tenant`, `lane_by_profile`, `include_archived_by_default`, `render_markdown` |
+| `GET` | `/boards/:slug/presentation` | Read the validated `board.json.presentation` value plus its metadata revision and canonical digest |
+| `POST` | `/boards/:slug/presentation/validate` | Validate and normalize a candidate without writing board metadata |
+| `PUT` | `/boards/:slug/presentation` | Replace presentation metadata using a required `expected_revision` compare-and-swap guard |
+| `DELETE` | `/boards/:slug/presentation?expected_revision=…` | Remove presentation metadata using the same revision guard |
 | `WS` | `/events?since=<event_id>` | Live stream of `task_events` rows |
 
 Every handler is a thin wrapper — the plugin is ~700 lines of Python (router + WebSocket tail + bulk batcher + config reader) and adds no new business logic. A tiny `_conn()` helper auto-initializes `kanban.db` on every read and write, so a fresh install works whether the user opened the dashboard first, hit the REST API directly, or ran `hermes kanban init`.
+
+### Board presentation metadata
+
+A board may opt into display-only columns by storing a versioned
+`presentation` object in its existing `board.json`. This changes only how the
+dashboard groups cards. Task statuses and history remain canonical SQLite
+lifecycle truth.
+
+Presentation mode uses ordered, read-only projection surfaces. Every configured
+column must be `read_only: true`; the dashboard disables lane-originated
+drag/drop, touch/trash drop, bulk selection and transition, and inline creation.
+Cards can still be opened in the canonical task drawer. Drawer lifecycle actions
+continue to use canonical statuses and existing confirmation rules; they never
+use a presentation column ID. The backend accepts only canonical lifecycle
+statuses, so a virtual column ID can never be used as a status through the task
+or bulk APIs. Boards with no `presentation` key use the canonical dashboard
+payload and behavior unchanged.
+
+The schema is deliberately declarative and allowlisted:
+
+```json
+{
+  "schema": 1,
+  "mode": "projection",
+  "columns": [
+    {
+      "id": "queue-view",
+      "label": "Queue",
+      "helper": "Canonical triage work",
+      "read_only": true,
+      "match": {"status_in": ["triage"]}
+    },
+    {
+      "id": "attention-view",
+      "label": "Attention",
+      "helper": "Fallback with explicit diagnostics",
+      "read_only": true,
+      "match": {"status_in": ["todo", "blocked"]}
+    }
+  ],
+  "unmatched": {
+    "column": "attention-view",
+    "diagnostic": "No configured projection matched; lifecycle state is unchanged."
+  }
+}
+```
+
+Allowed predicates are `status_in`, `block_kind_in`, `markers_present`,
+`evidence`, `all`, `any`, and `not`. Allowed markers are `Question`, `Resumes`,
+`Resume Condition`, `Display: Live`, and `Health Proof`; allowed evidence names
+are `live_worker` and `valid_health_proof`. The schema cannot contain source
+code, expressions, imports, callbacks, templates, or board-specific executable
+logic. Invalid candidates are
+rejected by validation, `set`, and `PUT`. If malformed presentation metadata is
+found on disk, the board endpoint returns its validation error and falls back to
+canonical columns without treating the malformed value as active configuration.
+
+Projection diagnostics are explicit. A `running` card without verified current
+run, PID, unexpired claim, and heartbeat evidence is marked `stale_running`. A
+`needs_input` blocker without non-empty `Question` and `Resume Condition` (or
+legacy `Resumes`) fields is marked `malformed_needs_input`. A card matching no
+projection is placed in the configured fallback with `unmatched_projection`.
+These warnings are shown on the card rather than presenting the card as
+ordinary fallback work. Structured projection markers are evaluated only from the
+current task body; historical result text and run summaries cannot satisfy a
+current marker or evidence predicate.
+
+The `valid_health_proof` evidence predicate requires an exact JSON object in a
+Markdown `Health Proof` field. Free text, stale timestamps, future timestamps,
+failed checks, and checks without evidence are rejected. The schema-1 contract
+is:
+
+```markdown
+**Health Proof:** {"schema":1,"checked_at":<current Unix seconds>,"max_age_seconds":900,"healthy":true,"checks":[{"name":"service","ok":true,"evidence":"https://status.example.test/check/123"}]}
+```
+
+Replace `<current Unix seconds>` with a JSON integer generated when the check
+runs; the placeholder is not itself valid proof.
+
+`checked_at` is Unix time, `max_age_seconds` must be between 30 seconds and 24
+hours, `healthy` must be `true`, and `checks` must be a non-empty list of exact
+`name`, `ok`, and `evidence` objects. Every check must pass. A separate exact
+`**Display:** Live` marker can be required by the presentation predicate.
+
+Metadata writes are atomic same-directory replacements. Set and clear require
+the current revision returned by `show` or `GET`, preventing concurrent editors
+from silently overwriting one another.
 
 ### Dashboard config
 
@@ -689,6 +780,10 @@ The GUI is deliberately thin. Everything the plugin does is reachable from the C
 This is the surface **you** (or scripts, cron, the dashboard) use to drive the board. Workers running inside the dispatcher use the `kanban_*` [tool surface](#how-workers-interact-with-the-board) for the same operations — the CLI here and the tools there both route through `kanban_db`, so the two surfaces agree by construction.
 
 ```
+hermes kanban boards presentation show <slug> [--json]
+hermes kanban boards presentation validate <slug> --file <presentation.json>
+hermes kanban boards presentation set <slug> --file <presentation.json> --if-revision <sha256>
+hermes kanban boards presentation clear <slug> --if-revision <sha256>
 hermes kanban init                                     # create kanban.db + print daemon hint
 hermes kanban create "<title>" [--body ...] [--assignee <profile>]
                                 [--parent <id>]... [--tenant <name>]

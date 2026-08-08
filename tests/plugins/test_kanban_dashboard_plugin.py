@@ -7,7 +7,9 @@ REST surface without spinning up the whole dashboard.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -15,7 +17,7 @@ import time
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
@@ -60,6 +62,338 @@ def client(kanban_home):
     return TestClient(app)
 
 
+def _presentation_config():
+    return {
+        "schema": 1,
+        "mode": "projection",
+        "columns": [
+            {
+                "id": "queue-view",
+                "label": "Queue",
+                "helper": "Tasks awaiting verified work.",
+                "read_only": True,
+                "match": {"status_in": ["triage", "todo", "scheduled", "ready", "blocked"]},
+            },
+            {
+                "id": "work-view",
+                "label": "Work",
+                "helper": "A current worker is verified.",
+                "read_only": True,
+                "match": {
+                    "all": [
+                        {"status_in": ["running"]},
+                        {"evidence": "live_worker"},
+                    ]
+                },
+            },
+        ],
+        "unmatched": {
+            "column": "queue-view",
+            "diagnostic": "No presentation rule matched; canonical status is unchanged.",
+        },
+    }
+
+
+def test_presentation_endpoints_are_board_scoped_and_revision_guarded(client):
+    kb.create_board("neutral-board", description="preserve")
+    initial = client.get(
+        "/api/plugins/kanban/boards/neutral-board/presentation"
+    )
+    assert initial.status_code == 200
+    revision = initial.json()["revision"]
+
+    written = client.put(
+        "/api/plugins/kanban/boards/neutral-board/presentation",
+        json={"presentation": _presentation_config(), "expected_revision": revision},
+    )
+    assert written.status_code == 200, written.text
+    state = written.json()
+    assert state["presentation"] == _presentation_config()
+    assert len(state["digest"]) == 64
+    assert kb.read_board_metadata("neutral-board")["description"] == "preserve"
+
+    stale = client.delete(
+        "/api/plugins/kanban/boards/neutral-board/presentation",
+        params={"expected_revision": revision},
+    )
+    assert stale.status_code == 409
+    cleared = client.delete(
+        "/api/plugins/kanban/boards/neutral-board/presentation",
+        params={"expected_revision": state["revision"]},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["presentation"] is None
+
+
+def test_presentation_validation_endpoint_is_read_only(client):
+    kb.create_board("neutral-board", description="unchanged")
+    before = kb.board_metadata_path("neutral-board").read_bytes()
+
+    response = client.post(
+        "/api/plugins/kanban/boards/neutral-board/presentation/validate",
+        json={"presentation": _presentation_config()},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["valid"] is True
+    assert response.json()["presentation"] == _presentation_config()
+    assert len(response.json()["digest"]) == 64
+    assert kb.board_metadata_path("neutral-board").read_bytes() == before
+
+
+def test_presentation_api_rejects_duplicate_json_keys_without_mutation(client):
+    kb.create_board("neutral-board", description="unchanged")
+    path = kb.board_metadata_path("neutral-board")
+    before = path.read_bytes()
+    revision = client.get(
+        "/api/plugins/kanban/boards/neutral-board/presentation"
+    ).json()["revision"]
+    presentation = json.dumps(_presentation_config()).replace(
+        '"schema": 1', '"schema": 2, "schema": 1', 1
+    )
+
+    written = client.put(
+        "/api/plugins/kanban/boards/neutral-board/presentation",
+        content=(
+            f'{{"presentation":{presentation},'
+            f'"expected_revision":"{revision}"}}'
+        ),
+        headers={"content-type": "application/json"},
+    )
+    assert written.status_code == 400
+    assert "duplicate JSON object key" in written.text
+    assert path.read_bytes() == before
+
+    validated = client.post(
+        "/api/plugins/kanban/boards/neutral-board/presentation/validate",
+        content=f'{{"presentation":{presentation}}}',
+        headers={"content-type": "application/json"},
+    )
+    assert validated.status_code == 400
+    assert "duplicate JSON object key" in validated.text
+    assert path.read_bytes() == before
+
+    unexpected = client.put(
+        "/api/plugins/kanban/boards/neutral-board/presentation",
+        content=(
+            f'{{"presentation":{json.dumps(_presentation_config())},'
+            f'"expected_revision":"{revision}","unexpected":true}}'
+        ),
+        headers={"content-type": "application/json"},
+    )
+    assert unexpected.status_code == 422
+    assert path.read_bytes() == before
+
+    oversized = client.put(
+        "/api/plugins/kanban/boards/neutral-board/presentation",
+        content=(
+            f'{{"presentation":{json.dumps(_presentation_config())},'
+            f'"expected_revision":"{revision}",'
+            f'"unexpected_padding":"{"x" * 70_000}"}}'
+        ),
+        headers={"content-type": "application/json"},
+    )
+    assert oversized.status_code == 413
+    assert path.read_bytes() == before
+
+
+def test_presentation_api_stops_streaming_at_body_limit():
+    router = _load_plugin_router()
+    route = next(
+        route
+        for route in router.routes
+        if route.path == "/boards/{slug}/presentation" and "PUT" in route.methods
+    )
+    helper = route.endpoint.__globals__["_strict_presentation_request"]
+    model = route.endpoint.__globals__["PresentationWriteBody"]
+    chunk = b"x" * 65_536
+    received = 0
+
+    async def receive():
+        nonlocal received
+        received += 1
+        return {
+            "type": "http.request",
+            "body": chunk,
+            "more_body": received < 80,
+        }
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "PUT",
+            "path": "/",
+            "headers": [(b"content-length", b"1")],
+        },
+        receive,
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(helper(request, model))
+    assert exc_info.value.status_code == 413
+    assert received == 2
+
+
+def test_board_is_projected_server_side_and_keeps_canonical_status(client):
+    revision = client.get(
+        "/api/plugins/kanban/boards/default/presentation"
+    ).json()["revision"]
+    response = client.put(
+        "/api/plugins/kanban/boards/default/presentation",
+        json={"presentation": _presentation_config(), "expected_revision": revision},
+    )
+    assert response.status_code == 200, response.text
+    created = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "Neutral queued task"}
+    ).json()["task"]
+
+    with kb.connect() as conn:
+        before_task = kb.get_task(conn, created["id"])
+        assert before_task is not None
+        before_status = before_task.status
+        before_events = conn.execute("SELECT COUNT(*) FROM task_events").fetchone()[0]
+
+    board = client.get("/api/plugins/kanban/board").json()
+    assert board["presentation"]["mode"] == "projection"
+    assert [column["id"] for column in board["columns"]] == [
+        "queue-view", "work-view"
+    ]
+    queue = board["columns"][0]
+    all_projected_ids = [
+        task["id"] for column in board["columns"] for task in column["tasks"]
+    ]
+    assert all_projected_ids.count(created["id"]) == 1
+    assert queue["label"] == "Queue"
+    assert queue["helper"] == "Tasks awaiting verified work."
+    assert queue["read_only"] is True
+    assert queue["tasks"][0]["id"] == created["id"]
+    assert queue["tasks"][0]["status"] == "ready"
+    with kb.connect() as conn:
+        after_task = kb.get_task(conn, created["id"])
+        assert after_task is not None
+        assert after_task.status == before_status
+        assert conn.execute("SELECT COUNT(*) FROM task_events").fetchone()[0] == before_events
+
+    rejected = client.patch(
+        f"/api/plugins/kanban/tasks/{created['id']}",
+        json={"status": "queue-view"},
+    )
+    assert rejected.status_code == 400
+    assert kb.get_task(kb.connect(), created["id"]).status == "ready"
+
+    bulk = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [created["id"]], "status": "queue-view"},
+    )
+    assert bulk.status_code == 200
+    assert bulk.json()["results"][0]["id"] == created["id"]
+    assert bulk.json()["results"][0]["ok"] is False
+    assert "queue-view" in bulk.json()["results"][0]["error"]
+    assert kb.get_task(kb.connect(), created["id"]).status == "ready"
+
+
+def test_projection_ignores_stale_result_and_run_summary_markers(client):
+    config = _presentation_config()
+    config["columns"].insert(
+        0,
+        {
+            "id": "input-view",
+            "label": "Input",
+            "helper": "Current structured input gate.",
+            "read_only": True,
+            "match": {
+                "all": [
+                    {"status_in": ["blocked"]},
+                    {"block_kind_in": ["needs_input"]},
+                    {"markers_present": ["Question", "Resumes"]},
+                ]
+            },
+        },
+    )
+    revision = client.get(
+        "/api/plugins/kanban/boards/default/presentation"
+    ).json()["revision"]
+    assert client.put(
+        "/api/plugins/kanban/boards/default/presentation",
+        json={"presentation": config, "expected_revision": revision},
+    ).status_code == 200
+    created = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "Current input gate"}
+    ).json()["task"]
+    stale = "**Question:** stale question\n**Resumes:** stale condition"
+    with kb.connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', block_kind = 'needs_input', "
+            "body = ?, result = ? WHERE id = ?",
+            ("Current body has no structured gate.", stale, created["id"]),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, summary, started_at) "
+            "VALUES (?, ?, ?, ?)",
+            (created["id"], "completed", stale, 1),
+        )
+        conn.commit()
+
+    board = client.get("/api/plugins/kanban/board").json()
+    projected = next(
+        task
+        for column in board["columns"]
+        for task in column["tasks"]
+        if task["id"] == created["id"]
+    )
+    assert projected["display_column"] == "queue-view"
+    assert {item["kind"] for item in projected["presentation_diagnostics"]} == {
+        "malformed_needs_input",
+    }
+
+
+def test_projection_keeps_included_archived_tasks_visible_as_unmatched(client):
+    revision = client.get(
+        "/api/plugins/kanban/boards/default/presentation"
+    ).json()["revision"]
+    assert client.put(
+        "/api/plugins/kanban/boards/default/presentation",
+        json={"presentation": _presentation_config(), "expected_revision": revision},
+    ).status_code == 200
+    created = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "Archived neutral task"}
+    ).json()["task"]
+    conn = kb.connect()
+    try:
+        conn.execute("UPDATE tasks SET status = 'archived' WHERE id = ?", (created["id"],))
+        conn.commit()
+    finally:
+        conn.close()
+
+    board = client.get(
+        "/api/plugins/kanban/board", params={"include_archived": True}
+    ).json()
+    tasks = [task for column in board["columns"] for task in column["tasks"]]
+    archived = next(task for task in tasks if task["id"] == created["id"])
+    assert archived["status"] == "archived"
+    assert {item["kind"] for item in archived["presentation_diagnostics"]} == {
+        "unmatched_projection"
+    }
+
+
+def test_malformed_presentation_falls_back_to_canonical_payload_with_error(client):
+    kb.write_board_metadata("default", name="Default")
+    metadata = kb.read_board_metadata("default")
+    metadata.pop("db_path", None)
+    metadata["presentation"] = {"schema": 1, "mode": "projection"}
+    kb.board_metadata_path("default").write_text(
+        json.dumps(metadata), encoding="utf-8"
+    )
+
+    response = client.get("/api/plugins/kanban/board")
+    assert response.status_code == 200
+    board = response.json()
+    assert {column["name"] for column in board["columns"]} == (
+        kb.VALID_STATUSES - {"archived"}
+    )
+    assert board["presentation"]["mode"] == "canonical"
+    assert "unknown or missing fields" in board["presentation"]["error"]
+
+
 # ---------------------------------------------------------------------------
 # GET /board on an empty DB
 # ---------------------------------------------------------------------------
@@ -78,6 +412,7 @@ def test_board_empty(client):
     assert data["tenants"] == []
     assert data["assignees"] == []
     assert data["latest_event_id"] == 0
+    assert "presentation" not in data
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +469,99 @@ def test_patch_board_sets_project_directory(client, tmp_path):
     assert board["default_workspace_kind"] == "dir"
     assert kb.read_board_metadata("late-config")["default_workdir"] == str(
         project_dir.resolve()
+    )
+
+
+def test_patch_board_clears_project_directory(client, tmp_path):
+    """Empty string clears default_workdir; omitting it leaves it unchanged."""
+    project_dir = tmp_path / "was-configured"
+    project_dir.mkdir()
+    kb.create_board("clearable", default_workdir=str(project_dir))
+
+    # Omitted key → unchanged.
+    r = client.patch(
+        "/api/plugins/kanban/boards/clearable",
+        json={"name": "Renamed Only"},
+    )
+    assert r.status_code == 200
+    assert r.json()["board"]["default_workdir"] == str(project_dir.resolve())
+
+    # Empty string → cleared, recommendation falls back to scratch.
+    r = client.patch(
+        "/api/plugins/kanban/boards/clearable",
+        json={"default_workdir": ""},
+    )
+    assert r.status_code == 200
+    board = r.json()["board"]
+    assert not board.get("default_workdir")
+    assert board["default_workspace_kind"] == "scratch"
+
+
+def test_patch_board_rejects_malformed_metadata_without_overwriting(client):
+    kb.create_board("broken-metadata", name="Keep")
+    path = kb.board_metadata_path("broken-metadata")
+    malformed = b'{"name":"Keep",'
+    path.write_bytes(malformed)
+
+    response = client.patch(
+        "/api/plugins/kanban/boards/broken-metadata",
+        json={"name": "Replacement"},
+    )
+
+    assert response.status_code == 400
+    assert "metadata" in response.json()["detail"].lower()
+    assert path.read_bytes() == malformed
+
+
+@pytest.mark.parametrize("path", ["relative/project", "~/missing-project"])
+def test_patch_board_rejects_invalid_project_directory(client, path):
+    """PATCH must validate default_workdir like board creation does."""
+    kb.create_board("strict")
+
+    response = client.patch(
+        "/api/plugins/kanban/boards/strict",
+        json={"default_workdir": path},
+    )
+
+    assert response.status_code == 400
+    assert "project directory" in response.json()["detail"].lower()
+
+
+def test_new_board_dialog_collects_project_directory():
+    """Board creation should expose the setting that controls safe task defaults."""
+    bundle = (
+        Path(__file__).resolve().parents[2]
+        / "plugins"
+        / "kanban"
+        / "dashboard"
+        / "dist"
+        / "index.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'const [projectDirectory, setProjectDirectory] = useState("");' in bundle
+    assert "Project directory" in bundle
+    assert "Absolute path to the project folder" in bundle
+    assert "default_workdir: projectDirectory.trim() || undefined" in bundle
+
+
+def test_dashboard_workspace_picker_explains_persistence_contract():
+    """Task creation must make scratch deletion visible without a hover."""
+    bundle = (
+        Path(__file__).resolve().parents[2]
+        / "plugins"
+        / "kanban"
+        / "dashboard"
+        / "dist"
+        / "index.js"
+    ).read_text(encoding="utf-8")
+
+    assert "Temporary — deleted on completion" in bundle
+    assert "Git worktree — preserved" in bundle
+    assert "Directory — preserved" in bundle
+    assert "defaultWorkspacePath: (props.boardMeta && props.boardMeta.default_workdir) || \"\"" in bundle
+    assert (
+        "This workspace and any files left in it are deleted when the task completes."
+        in bundle
     )
 
 

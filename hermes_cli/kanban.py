@@ -326,6 +326,24 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     b_set_wd.add_argument("path", nargs="?", default=None,
                           help="Absolute path to use as default workdir. Omit to clear.")
 
+    b_presentation = boards_sub.add_parser(
+        "presentation", help="Show, validate, set, or clear board presentation metadata"
+    )
+    presentation_sub = b_presentation.add_subparsers(dest="presentation_action")
+    p_show = presentation_sub.add_parser("show")
+    p_show.add_argument("slug")
+    p_show.add_argument("--json", action="store_true")
+    p_validate = presentation_sub.add_parser("validate")
+    p_validate.add_argument("slug")
+    p_validate.add_argument("--file", required=True)
+    p_set = presentation_sub.add_parser("set")
+    p_set.add_argument("slug")
+    p_set.add_argument("--file", required=True)
+    p_set.add_argument("--if-revision", required=True, dest="if_revision")
+    p_clear = presentation_sub.add_parser("clear")
+    p_clear.add_argument("slug")
+    p_clear.add_argument("--if-revision", required=True, dest="if_revision")
+
     # --- create ---
     p_create = sub.add_parser("create", help="Create a new task")
     p_create.add_argument("title", help="Task title")
@@ -1201,6 +1219,8 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
         return _cmd_boards_rename(args)
     if sub == "set-default-workdir":
         return _cmd_boards_set_default_workdir(args)
+    if sub == "presentation":
+        return _cmd_boards_presentation(args)
     print(f"kanban boards: unknown action {sub!r}", file=sys.stderr)
     return 2
 
@@ -1352,7 +1372,11 @@ def _cmd_boards_rename(args: argparse.Namespace) -> int:
         print(f"kanban boards rename: board {args.slug!r} does not exist",
               file=sys.stderr)
         return 1
-    meta = kb.write_board_metadata(normed, name=args.name)
+    try:
+        meta = kb.write_board_metadata(normed, name=args.name)
+    except ValueError as exc:
+        print(f"kanban boards rename: {exc}", file=sys.stderr)
+        return 2
     print(f"Board {normed!r} renamed to {meta['name']!r}.")
     return 0
 
@@ -1367,13 +1391,71 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
         print(f"kanban boards set-default-workdir: board {args.slug!r} does not exist",
               file=sys.stderr)
         return 1
-    meta = kb.write_board_metadata(normed, default_workdir=args.path)
+    try:
+        meta = kb.write_board_metadata(normed, default_workdir=args.path)
+    except ValueError as exc:
+        print(f"kanban boards set-default-workdir: {exc}", file=sys.stderr)
+        return 2
     new_val = meta.get("default_workdir")
     if new_val:
         print(f"Board {normed!r} default workdir set to {new_val!r}.")
     else:
         print(f"Board {normed!r} default workdir cleared.")
     return 0
+
+
+def _load_presentation_file(path: str) -> Any:
+    candidate = Path(path)
+    if candidate.stat().st_size > kb.PRESENTATION_MAX_BYTES:
+        raise ValueError("presentation exceeds the 64 KiB limit")
+    try:
+        return kb.strict_json_loads(candidate.read_text(encoding="utf-8"))
+    except (ValueError, RecursionError) as exc:
+        raise ValueError(f"invalid JSON: {exc}") from exc
+
+
+def _cmd_boards_presentation(args: argparse.Namespace) -> int:
+    action = getattr(args, "presentation_action", None)
+    try:
+        slug = kb._normalize_board_slug(args.slug)
+        if not slug or not kb.board_exists(slug):
+            raise ValueError(f"board {getattr(args, 'slug', '')!r} does not exist")
+        if action == "show":
+            state = kb.read_board_presentation(slug)
+            if getattr(args, "json", False) or state["presentation"] is not None:
+                print(json.dumps(state, indent=2, ensure_ascii=False))
+            else:
+                print(f"Board {slug!r} has no presentation configuration.")
+                print(f"Revision: {state['revision']}")
+            return 0
+        if action == "validate":
+            value = kb.validate_board_presentation(_load_presentation_file(args.file))
+            print(
+                "Presentation is valid "
+                f"(digest {kb.board_presentation_digest(value)})."
+            )
+            return 0
+        if action == "set":
+            state = kb.write_board_presentation(
+                slug,
+                _load_presentation_file(args.file),
+                expected_revision=args.if_revision,
+            )
+            print(json.dumps(state, indent=2, ensure_ascii=False))
+            return 0
+        if action == "clear":
+            state = kb.clear_board_presentation(
+                slug, expected_revision=args.if_revision
+            )
+            print(json.dumps(state, indent=2, ensure_ascii=False))
+            return 0
+        raise ValueError("action must be show, validate, set, or clear")
+    except kb.BoardPresentationConflict as exc:
+        print(f"kanban boards presentation: {exc}", file=sys.stderr)
+        return 1
+    except (OSError, ValueError) as exc:
+        print(f"kanban boards presentation: {exc}", file=sys.stderr)
+        return 2
 
 
 # ---------------------------------------------------------------------------

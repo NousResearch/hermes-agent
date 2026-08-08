@@ -83,6 +83,7 @@ import subprocess
 import sys
 import threading
 import logging
+import math
 import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
@@ -681,14 +682,41 @@ def _default_board_display_name(slug: str) -> str:
     return " ".join(part.capitalize() for part in slug.replace("_", "-").split("-") if part) or slug
 
 
-def read_board_metadata(board: Optional[str] = None) -> dict:
-    """Return ``board.json`` contents (or synthesized defaults).
+def _reject_nonfinite_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant is not allowed: {value}")
 
-    Never raises — a missing / malformed ``board.json`` falls back to a
-    synthesised entry so the dashboard always has something to render.
-    Includes the canonical ``slug`` and ``db_path`` so the caller
-    doesn't need to reconstruct them.
-    """
+
+def _parse_finite_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"non-finite JSON number is not allowed: {value}")
+    return parsed
+
+
+def _reject_duplicate_json_object_pairs(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        result[key] = value
+    return result
+
+
+def strict_json_loads(value: str) -> Any:
+    """Parse strict JSON, rejecting non-finite constants and duplicate keys."""
+    return json.loads(
+        value,
+        parse_constant=_reject_nonfinite_json_constant,
+        parse_float=_parse_finite_json_float,
+        object_pairs_hook=_reject_duplicate_json_object_pairs,
+    )
+
+
+def _read_board_metadata_with_error(
+    board: Optional[str] = None,
+) -> tuple[dict[str, Any], Optional[str]]:
     slug = _normalize_board_slug(board) or DEFAULT_BOARD
     meta: dict[str, Any] = {
         "slug": slug,
@@ -705,19 +733,554 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "created_at": None,
         "archived": False,
     }
+    error = None
+    observed_exists = False
     try:
         p = board_metadata_path(slug)
-        if p.exists():
-            raw = json.loads(p.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
+        observed_exists = p.exists()
+        if observed_exists:
+            raw = strict_json_loads(p.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                error = "board metadata must be a JSON object"
+            else:
                 # Never let the metadata file claim a different slug than
                 # its directory — trust the filesystem.
                 raw["slug"] = slug
                 meta.update(raw)
-    except (OSError, json.JSONDecodeError):
-        pass
+    except FileNotFoundError:
+        if observed_exists:
+            error = "board metadata could not be read"
+    except OSError:
+        error = "board metadata could not be read"
+    except (ValueError, RecursionError):
+        error = "board metadata is not valid JSON"
     meta["db_path"] = str(kanban_db_path(slug))
-    return meta
+    return meta, error
+
+
+def read_board_metadata(board: Optional[str] = None) -> dict:
+    """Return ``board.json`` contents (or synthesized defaults).
+
+    Never raises — a missing / malformed ``board.json`` falls back to a
+    synthesised entry so the dashboard always has something to render.
+    Includes the canonical ``slug`` and ``db_path`` so the caller
+    doesn't need to reconstruct them.
+    """
+    return _read_board_metadata_with_error(board)[0]
+
+
+PRESENTATION_SCHEMA_VERSION = 1
+PRESENTATION_MAX_COLUMNS = 32
+PRESENTATION_MAX_BYTES = 64 * 1024
+PRESENTATION_MAX_STRUCTURE_DEPTH = 32
+PRESENTATION_MAX_STRUCTURE_NODES = 8_192
+PRESENTATION_EVIDENCE = frozenset({"live_worker", "valid_health_proof"})
+PRESENTATION_MARKERS = frozenset(
+    {"Question", "Resumes", "Resume Condition", "Display: Live", "Health Proof"}
+)
+_PRESENTATION_COLUMN_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_PRESENTATION_PREDICATES = frozenset(
+    {"status_in", "block_kind_in", "markers_present", "evidence", "all", "any", "not"}
+)
+
+
+class BoardPresentationConflict(RuntimeError):
+    """The caller's board metadata revision is no longer current."""
+
+
+def _canonical_json(value: Any) -> bytes:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+
+
+def _board_metadata_revision(meta: dict[str, Any]) -> str:
+    stable = dict(meta)
+    stable.pop("db_path", None)
+    return hashlib.sha256(_canonical_json(stable)).hexdigest()
+
+
+def _presentation_digest(value: Any) -> str:
+    return hashlib.sha256(_canonical_json(value)).hexdigest()
+
+
+def board_presentation_digest(value: Any) -> str:
+    """Return the canonical SHA-256 digest for presentation JSON."""
+    return _presentation_digest(value)
+
+
+def _validate_presentation_text(value: Any, field_name: str, max_length: int) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"presentation {field_name} must be a string")
+    if len(value) > max_length:
+        raise ValueError(f"presentation {field_name} exceeds {max_length} characters")
+    if any(ord(ch) < 32 and ch not in "\t\n" for ch in value):
+        raise ValueError(f"presentation {field_name} contains control characters")
+    return value
+
+
+def _validate_presentation_structure(value: Any) -> None:
+    """Bound untrusted containers before recursive JSON encoding."""
+    stack: list[tuple[str, Any, int]] = [("visit", value, 0)]
+    active_containers: set[int] = set()
+    nodes = 0
+    while stack:
+        operation, current, depth = stack.pop()
+        if operation == "leave":
+            active_containers.remove(id(current))
+            continue
+        if operation == "iterate":
+            iterator = current
+            try:
+                child = next(iterator)
+            except StopIteration:
+                continue
+            stack.append(("iterate", iterator, depth))
+            stack.append(("visit", child, depth))
+            continue
+
+        nodes += 1
+        if nodes > PRESENTATION_MAX_STRUCTURE_NODES:
+            raise ValueError("presentation exceeds the structural size limit")
+        if depth > PRESENTATION_MAX_STRUCTURE_DEPTH:
+            raise ValueError("presentation exceeds the nesting limit")
+        if isinstance(current, dict):
+            children = iter(current.values())
+        elif isinstance(current, (list, tuple)):
+            children = iter(current)
+        else:
+            continue
+
+        identity = id(current)
+        if identity in active_containers:
+            raise ValueError("presentation contains a recursive structure")
+        active_containers.add(identity)
+        stack.append(("leave", current, depth))
+        stack.append(("iterate", children, depth + 1))
+
+
+def _validate_presentation_predicate(rule: Any, *, depth: int = 0) -> None:
+    if depth > 8 or not isinstance(rule, dict) or len(rule) != 1:
+        raise ValueError("presentation predicate must be a single allowlisted operation")
+    op, operand = next(iter(rule.items()))
+    if op not in _PRESENTATION_PREDICATES:
+        raise ValueError(f"presentation predicate {op!r} is not allowlisted")
+    if op in {"all", "any"}:
+        if not isinstance(operand, list) or not 1 <= len(operand) <= 16:
+            raise ValueError(f"presentation predicate {op} requires 1-16 rules")
+        for child in operand:
+            _validate_presentation_predicate(child, depth=depth + 1)
+        return
+    if op == "not":
+        _validate_presentation_predicate(operand, depth=depth + 1)
+        return
+    if op == "status_in":
+        allowed = VALID_STATUSES - {"archived"}
+    elif op == "block_kind_in":
+        allowed = VALID_BLOCK_KINDS
+    elif op == "markers_present":
+        allowed = PRESENTATION_MARKERS
+    else:
+        if not isinstance(operand, str) or operand not in PRESENTATION_EVIDENCE:
+            raise ValueError("presentation evidence predicate is not allowlisted")
+        return
+    if (
+        not isinstance(operand, list)
+        or not 1 <= len(operand) <= len(allowed)
+        or any(not isinstance(item, str) or item not in allowed for item in operand)
+        or len(set(operand)) != len(operand)
+    ):
+        raise ValueError(f"presentation predicate {op} contains invalid values")
+
+
+def validate_board_presentation(value: Any) -> dict[str, Any]:
+    """Validate and return a detached schema-1 board presentation object."""
+    _validate_presentation_structure(value)
+    try:
+        detached = json.loads(json.dumps(value, ensure_ascii=False))
+        canonical = _canonical_json(detached)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ValueError("presentation must be JSON-compatible") from exc
+    if not isinstance(detached, dict):
+        raise ValueError("presentation must be an object")
+    if len(canonical) > PRESENTATION_MAX_BYTES:
+        raise ValueError("presentation exceeds the 64 KiB limit")
+    if set(detached) != {"schema", "mode", "columns", "unmatched"}:
+        raise ValueError("presentation has unknown or missing fields")
+    if type(detached["schema"]) is not int or detached["schema"] != PRESENTATION_SCHEMA_VERSION:
+        raise ValueError("presentation schema must be integer 1")
+    mode = detached["mode"]
+    if mode != "projection":
+        raise ValueError("presentation mode must be projection")
+    columns = detached["columns"]
+    if not isinstance(columns, list) or not 1 <= len(columns) <= PRESENTATION_MAX_COLUMNS:
+        raise ValueError("presentation columns must contain 1-32 entries")
+    ids: set[str] = set()
+    for column in columns:
+        if not isinstance(column, dict) or set(column) != {
+            "id", "label", "helper", "read_only", "match"
+        }:
+            raise ValueError("presentation column has unknown or missing fields")
+        column_id = column["id"]
+        if not isinstance(column_id, str) or not _PRESENTATION_COLUMN_ID_RE.fullmatch(column_id):
+            raise ValueError("presentation column id is invalid")
+        if column_id in VALID_STATUSES:
+            raise ValueError("presentation column id must not be a lifecycle status")
+        if column_id in ids:
+            raise ValueError("presentation column ids must be unique")
+        ids.add(column_id)
+        _validate_presentation_text(column["label"], "label", 80)
+        if not column["label"].strip():
+            raise ValueError("presentation label must not be empty")
+        _validate_presentation_text(column["helper"], "helper", 500)
+        if type(column["read_only"]) is not bool:
+            raise ValueError("presentation column read_only must be boolean")
+        _validate_presentation_predicate(column["match"])
+        if mode == "projection" and column["read_only"] is not True:
+            raise ValueError("projection columns must be read_only")
+
+    unmatched = detached["unmatched"]
+    if not isinstance(unmatched, dict) or set(unmatched) != {"column", "diagnostic"}:
+        raise ValueError("presentation unmatched must contain column and diagnostic")
+    if unmatched["column"] not in ids:
+        raise ValueError("presentation unmatched column must reference a configured column")
+    _validate_presentation_text(unmatched["diagnostic"], "unmatched diagnostic", 500)
+    if not unmatched["diagnostic"].strip():
+        raise ValueError("presentation unmatched diagnostic must not be empty")
+    return detached
+
+
+def read_board_presentation(board: Optional[str] = None) -> dict[str, Any]:
+    """Return presentation plus whole-metadata revision and value digest."""
+    meta, error = _read_board_metadata_with_error(board)
+    value = meta.get("presentation")
+    if value is not None:
+        try:
+            value = validate_board_presentation(value)
+        except ValueError as exc:
+            value = None
+            error = str(exc)
+    return {
+        "presentation": value,
+        "digest": _presentation_digest(value),
+        "revision": _board_metadata_revision(meta),
+        "error": error,
+    }
+
+
+def _atomic_write_board_metadata(path: Path, meta: dict[str, Any]) -> None:
+    data = json.dumps(meta, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp")
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+        try:
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+    finally:
+        try:
+            temp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+@contextlib.contextmanager
+def _board_metadata_lock(path: Path):
+    """Serialize metadata compare-and-swap operations across processes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(f".{path.name}.lock")
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(lock_path, flags, 0o600)
+    try:
+        if _IS_WINDOWS:
+            import msvcrt
+
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b"0")
+                os.fsync(fd)
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if _IS_WINDOWS:
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def write_board_presentation(
+    board: Optional[str], value: Any, *, expected_revision: str
+) -> dict[str, Any]:
+    """CAS-write a validated presentation while preserving all other metadata."""
+    _assert_not_delegated_child_mutation()
+    slug = _normalize_board_slug(board) or DEFAULT_BOARD
+    if not board_exists(slug):
+        raise ValueError(f"board {slug!r} does not exist")
+    presentation = validate_board_presentation(value)
+    path = board_metadata_path(slug)
+    with _board_metadata_lock(path):
+        meta, metadata_error = _read_board_metadata_with_error(slug)
+        if metadata_error is not None:
+            raise ValueError("board metadata is invalid; refusing presentation mutation")
+        current_revision = _board_metadata_revision(meta)
+        if expected_revision != current_revision:
+            raise BoardPresentationConflict("board metadata revision is stale")
+        meta.pop("db_path", None)
+        meta["presentation"] = presentation
+        _atomic_write_board_metadata(path, meta)
+        result = read_board_presentation(slug)
+    return result
+
+
+def clear_board_presentation(
+    board: Optional[str], *, expected_revision: str
+) -> dict[str, Any]:
+    """CAS-remove presentation while preserving all other board metadata."""
+    _assert_not_delegated_child_mutation()
+    slug = _normalize_board_slug(board) or DEFAULT_BOARD
+    if not board_exists(slug):
+        raise ValueError(f"board {slug!r} does not exist")
+    path = board_metadata_path(slug)
+    with _board_metadata_lock(path):
+        meta, metadata_error = _read_board_metadata_with_error(slug)
+        if metadata_error is not None:
+            raise ValueError("board metadata is invalid; refusing presentation mutation")
+        current_revision = _board_metadata_revision(meta)
+        if expected_revision != current_revision:
+            raise BoardPresentationConflict("board metadata revision is stale")
+        meta.pop("db_path", None)
+        meta.pop("presentation", None)
+        _atomic_write_board_metadata(path, meta)
+        result = read_board_presentation(slug)
+    return result
+
+
+_PRESENTATION_MARKER_INSIDE_RE = re.compile(
+    r"^\s*\*\*(Question|Resumes|Resume Condition|Display|Health Proof):\*\*\s*(.*?)\s*$"
+)
+_PRESENTATION_MARKER_OUTSIDE_RE = re.compile(
+    r"^\s*\*\*(Question|Resumes|Resume Condition|Display|Health Proof)\*\*:\s*(.*?)\s*$"
+)
+
+
+def _valid_health_proof(value: str, *, now: Optional[int] = None) -> bool:
+    try:
+        proof = strict_json_loads(value)
+    except (TypeError, ValueError, RecursionError):
+        return False
+    if not isinstance(proof, dict) or set(proof) != {
+        "schema", "checked_at", "max_age_seconds", "healthy", "checks"
+    }:
+        return False
+    if type(proof["schema"]) is not int or proof["schema"] != 1:
+        return False
+    if type(proof["checked_at"]) is not int or proof["checked_at"] <= 0:
+        return False
+    if (
+        type(proof["max_age_seconds"]) is not int
+        or not 30 <= proof["max_age_seconds"] <= 24 * 60 * 60
+    ):
+        return False
+    now = int(time.time()) if now is None else int(now)
+    if proof["checked_at"] > now:
+        return False
+    if now - proof["checked_at"] > proof["max_age_seconds"]:
+        return False
+    if type(proof["healthy"]) is not bool or proof["healthy"] is not True:
+        return False
+    checks = proof["checks"]
+    if not isinstance(checks, list) or not 1 <= len(checks) <= 64:
+        return False
+    for check in checks:
+        if (
+            not isinstance(check, dict)
+            or set(check) != {"name", "ok", "evidence"}
+            or not isinstance(check["name"], str)
+            or not check["name"].strip()
+            or len(check["name"]) > 80
+            or type(check["ok"]) is not bool
+            or not isinstance(check["evidence"], str)
+            or not check["evidence"].strip()
+            or len(check["evidence"]) > 500
+        ):
+            return False
+    return all(check["ok"] for check in checks)
+
+
+def presentation_markers(
+    text: Optional[str], *, now: Optional[int] = None
+) -> dict[str, bool]:
+    """Extract exact markdown fields into fixed, non-executable booleans."""
+    values: dict[str, str] = {}
+    duplicates: set[str] = set()
+    for line in (text or "").splitlines():
+        match = _PRESENTATION_MARKER_INSIDE_RE.fullmatch(line)
+        if match is None:
+            match = _PRESENTATION_MARKER_OUTSIDE_RE.fullmatch(line)
+        if match:
+            key = match.group(1)
+            if key in values:
+                duplicates.add(key)
+            else:
+                values[key] = match.group(2).strip()
+    return {
+        "Question": "Question" not in duplicates and bool(values.get("Question")),
+        "Resumes": "Resumes" not in duplicates and bool(values.get("Resumes")),
+        "Resume Condition": (
+            "Resume Condition" not in duplicates
+            and bool(values.get("Resume Condition"))
+        ),
+        "Display: Live": "Display" not in duplicates and values.get("Display") == "Live",
+        "Health Proof": _valid_health_proof(
+            values.get("Health Proof", ""), now=now
+        ) and "Health Proof" not in duplicates,
+        "Health Proof Present": "Health Proof" in values,
+    }
+
+
+def _presentation_rule_matches(
+    rule: dict[str, Any], task: "Task", markers: dict[str, bool], live_worker: bool
+) -> bool:
+    op, operand = next(iter(rule.items()))
+    if op == "all":
+        return all(_presentation_rule_matches(r, task, markers, live_worker) for r in operand)
+    if op == "any":
+        return any(_presentation_rule_matches(r, task, markers, live_worker) for r in operand)
+    if op == "not":
+        return not _presentation_rule_matches(operand, task, markers, live_worker)
+    if op == "status_in":
+        return task.status in operand
+    if op == "block_kind_in":
+        return task.block_kind in operand
+    if op == "markers_present":
+        return all(markers.get(name, False) for name in operand)
+    if operand == "live_worker":
+        return live_worker
+    if operand == "valid_health_proof":
+        return markers["Health Proof"]
+    return False  # validation makes this unreachable; fail closed if called directly
+
+
+def project_task_presentation(
+    task: "Task",
+    presentation: Any,
+    *,
+    live_worker: bool = False,
+    evidence_text: Optional[str] = None,
+    now: Optional[int] = None,
+) -> dict[str, Any]:
+    """Assign one task to one configured display column without mutating it."""
+    config = validate_board_presentation(presentation)
+    text = evidence_text
+    if text is None:
+        text = task.body or ""
+    markers = presentation_markers(text, now=now)
+    diagnostics: list[dict[str, str]] = []
+    if task.status == "running" and not live_worker:
+        diagnostics.append({
+            "kind": "stale_running",
+            "message": "Running has no verified current worker/run/PID/claim/heartbeat.",
+        })
+    if task.status == "blocked" and task.block_kind == "needs_input" and not (
+        markers["Question"]
+        and (markers["Resumes"] or markers["Resume Condition"])
+    ):
+        diagnostics.append({
+            "kind": "malformed_needs_input",
+            "message": (
+                "needs_input requires exact non-empty Question and "
+                "Resume Condition (or Resumes) fields."
+            ),
+        })
+    if markers["Health Proof Present"] and not markers["Health Proof"]:
+        diagnostics.append({
+            "kind": "invalid_health_proof",
+            "message": (
+                "Health Proof must be fresh schema-1 evidence with a bounded age "
+                "and at least one passing check carrying an evidence reference."
+            ),
+        })
+    for column in config["columns"]:
+        if _presentation_rule_matches(column["match"], task, markers, live_worker):
+            return {
+                "column_id": column["id"],
+                "matched": True,
+                "canonical_status": task.status,
+                "diagnostics": diagnostics,
+            }
+    diagnostics.append({
+        "kind": "unmatched_projection",
+        "message": config["unmatched"]["diagnostic"],
+    })
+    return {
+        "column_id": config["unmatched"]["column"],
+        "matched": False,
+        "canonical_status": task.status,
+        "diagnostics": diagnostics,
+    }
+
+
+def presentation_live_worker(
+    conn: sqlite3.Connection,
+    task: "Task",
+    *,
+    now: Optional[int] = None,
+    heartbeat_max_stale_seconds: int = DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS,
+) -> bool:
+    """Verify the current run, PID, claim and heartbeat for a running task."""
+    if task.status != "running" or task.current_run_id is None:
+        return False
+    now = int(time.time()) if now is None else int(now)
+    row = conn.execute(
+        "SELECT * FROM task_runs WHERE id = ? AND task_id = ?",
+        (task.current_run_id, task.id),
+    ).fetchone()
+    if row is None or row["status"] != "running" or row["ended_at"] is not None:
+        return False
+    task_pid = task.worker_pid
+    run_pid = row["worker_pid"]
+    if not task_pid or task_pid != run_pid or not _pid_alive(task_pid):
+        return False
+    if (
+        not task.claim_lock
+        or task.claim_lock != row["claim_lock"]
+        or task.claim_expires is None
+        or row["claim_expires"] is None
+        or task.claim_expires != row["claim_expires"]
+        or int(task.claim_expires) < now
+    ):
+        return False
+    task_heartbeat = task.last_heartbeat_at
+    run_heartbeat = row["last_heartbeat_at"]
+    if (
+        task_heartbeat is None
+        or run_heartbeat is None
+        or int(task_heartbeat) != int(run_heartbeat)
+        or now - int(task_heartbeat) > heartbeat_max_stale_seconds
+        or int(task_heartbeat) > now
+    ):
+        return False
+    return True
 
 
 def write_board_metadata(
@@ -742,32 +1305,31 @@ def write_board_metadata(
     """
     _assert_not_delegated_child_mutation()
     slug = _normalize_board_slug(board) or DEFAULT_BOARD
-    meta = read_board_metadata(slug)
-    # Preserve existing DB-derived fields — they get re-computed each
-    # read but shouldn't be written into board.json.
-    meta.pop("db_path", None)
-    if name is not None:
-        meta["name"] = str(name).strip() or _default_board_display_name(slug)
-    if description is not None:
-        meta["description"] = str(description)
-    if icon is not None:
-        meta["icon"] = str(icon)
-    if color is not None:
-        meta["color"] = str(color)
-    if archived is not None:
-        meta["archived"] = bool(archived)
-    if default_workdir is not None:
-        meta["default_workdir"] = str(default_workdir) if default_workdir else None
-    if project_id is not None:
-        meta["project_id"] = str(project_id) if project_id else None
-    if not meta.get("created_at"):
-        meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    with _board_metadata_lock(path):
+        meta, metadata_error = _read_board_metadata_with_error(slug)
+        if metadata_error is not None:
+            raise ValueError("board metadata is invalid; refusing metadata mutation")
+        # Preserve existing DB-derived fields — they get re-computed each
+        # read but shouldn't be written into board.json.
+        meta.pop("db_path", None)
+        if name is not None:
+            meta["name"] = str(name).strip() or _default_board_display_name(slug)
+        if description is not None:
+            meta["description"] = str(description)
+        if icon is not None:
+            meta["icon"] = str(icon)
+        if color is not None:
+            meta["color"] = str(color)
+        if archived is not None:
+            meta["archived"] = bool(archived)
+        if default_workdir is not None:
+            meta["default_workdir"] = str(default_workdir) if default_workdir else None
+        if project_id is not None:
+            meta["project_id"] = str(project_id) if project_id else None
+        if not meta.get("created_at"):
+            meta["created_at"] = int(time.time())
+        _atomic_write_board_metadata(path, meta)
     meta["db_path"] = str(kanban_db_path(slug))
     return meta
 

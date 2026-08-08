@@ -1437,6 +1437,112 @@ class TestMatrixSyncLoop:
         assert fake_client.sync.await_count == 1
         assert 5 not in [call.args[0] for call in mock_sleep.await_args_list]
 
+    # ------------------------------------------------------------------
+    # Result-object (non-exception) auth failures.
+    #
+    # The pinned mautrix 0.21.0 never returns an error object from sync():
+    # HTTPAPI._send raises make_request_error() for any non-2xx and otherwise
+    # returns parsed JSON, so a real auth failure arrives as an exception and
+    # is covered by the two tests above. The result-object branch in
+    # _sync_loop is inherited from the earlier matrix-nio client (whose
+    # SyncError objects were genuine) and is kept as defense in depth. These
+    # tests pin it to the same classifier the exception path uses so a future
+    # client swap cannot silently reintroduce the infinite-resync bug.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _result_obj(**attrs):
+        """Build an error *result object*, not a MagicMock.
+
+        A MagicMock would auto-create ``errcode``/``http_status`` attributes
+        and make the structured-vs-text branch untestable, so these fixtures
+        expose exactly the attributes a real client object would.
+        """
+        return type("SyncErrorResult", (), attrs)()
+
+    async def _run_loop_with_sync_result(self, result_obj):
+        """Drive _sync_loop with sync() returning result_obj, then a clean dict."""
+        adapter = _make_adapter()
+        adapter._closing = False
+
+        calls = {"n": 0}
+
+        async def _sync_side_effect(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return result_obj
+            # If the loop treated the object as transient it comes back here;
+            # stop cleanly so the test can assert the retry happened.
+            adapter._closing = True
+            return {"next_batch": "s1"}
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync_side_effect)
+        fake_client.sync_store = mock_sync_store
+        adapter._client = fake_client
+
+        with patch("asyncio.sleep", new=AsyncMock()):
+            await adapter._sync_loop()
+
+        return fake_client.sync.await_count
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_stops_on_result_object_with_permanent_errcode(self):
+        """An M_MISSING_TOKEN result object must stop the loop.
+
+        This is the discriminating RED/GREEN case for routing the branch
+        through _is_permanent_matrix_auth_error. The old code tested only
+        ``"m_unknown_token" in msg or "unknown_token" in msg``, and this
+        message ("Missing access token") contains neither, so the old branch
+        fell through and resynced forever against a credential that can
+        never succeed. Reading the structured errcode catches it.
+        """
+        obj = self._result_obj(
+            message="Missing access token", errcode="M_MISSING_TOKEN"
+        )
+        assert await self._run_loop_with_sync_result(obj) == 1
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_stops_on_result_object_with_401_http_status(self):
+        """A result object exposing only http_status=401 must stop the loop.
+
+        Also discriminating: the message text carries no auth keyword at all,
+        so only the structured status read reaches the right verdict.
+        """
+        obj = self._result_obj(message="Sync request failed", http_status=401)
+        assert await self._run_loop_with_sync_result(obj) == 1
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_stops_on_unstructured_result_object_via_message(self):
+        """With no errcode and no http_status, the message text is the only signal.
+
+        str(obj) on a result object is an opaque repr like
+        ``<SyncErrorResult object at 0x...>``, so the classifier must be
+        handed ``.message`` explicitly or this auth failure is missed.
+        """
+        obj = self._result_obj(message="M_FORBIDDEN: access token rejected")
+        assert await self._run_loop_with_sync_result(obj) == 1
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_retries_transient_result_object_despite_auth_keyword(self):
+        """A structured 502 must be retried even though its body says "Forbidden".
+
+        This pins the precedence rule. A homeserver behind a reverse proxy can
+        return a 502 HTML error page containing the word "Forbidden"; if the
+        message-text scan were allowed to override the structured status, a
+        passing outage would permanently kill the sync loop. That is the same
+        false-positive class the classifier rework exists to prevent.
+        """
+        obj = self._result_obj(
+            message="<html><body><h1>502 Bad Gateway</h1>Forbidden</body></html>",
+            http_status=502,
+        )
+        assert await self._run_loop_with_sync_result(obj) == 2
+
     @pytest.mark.asyncio
     async def test_connect_receives_dm_from_initial_sync_dispatch(self):
         """A DM delivered by initial sync should reach the message handler after connect."""

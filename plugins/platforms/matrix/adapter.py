@@ -1817,32 +1817,19 @@ class MatrixAdapter(BasePlatformAdapter):
         next_batch = await client.sync_store.get_next_batch()  # resume from the initial sync
         while not self._closing:
             try:
-<<<<<<< HEAD
-                # 45s outer cap guards TCP-level hangs the 30s long-poll timeout can't catch.
+                # 45s outer cap guards TCP-level hangs the 30s long-poll timeout cannot catch.
                 sync_data = await asyncio.wait_for(client.sync(since=next_batch, timeout=30000), timeout=45.0)
-                # Auth failures (M_UNKNOWN_TOKEN) arrive as SyncError objects, not exceptions.
-=======
-                # Wrap in asyncio.wait_for to guard against TCP-level hangs
-                # that the Matrix long-poll timeout cannot catch. Long-poll
-                # is 30s, so 45s gives 15s slack for network drain.
-                sync_data = await asyncio.wait_for(
-                    client.sync(
-                        since=next_batch,
-                        timeout=30000,
-                    ),
-                    timeout=45.0,
-                )
 
-                # mautrix's Client.sync() returns a plain dict on success but
-                # an object carrying a "message" string (not a raised
-                # exception) for auth failures like M_UNKNOWN_TOKEN. Detect
-                # and stop immediately rather than falling through to the
-                # dict-shaped handling below.
->>>>>>> 4e16313582 (fix(matrix): use a genuinely discriminating fixture for the sync-loop test)
+                # Route result objects through the same classifier as raised errors.
                 _sync_msg = getattr(sync_data, "message", None)
-                if isinstance(_sync_msg, str) and "unknown_token" in _sync_msg.lower():
-                    logger.error("Matrix: permanent auth error from sync: %s — stopping", _sync_msg)
-                    return
+                if isinstance(_sync_msg, str):
+                    structured = isinstance(getattr(sync_data, "errcode", None), str) or isinstance(getattr(sync_data, "http_status", None), int)
+                    permanent = _is_permanent_matrix_auth_error(sync_data) if structured else _is_permanent_matrix_auth_error(_sync_msg)
+                    if permanent:
+                        logger.error("Matrix: permanent auth error from sync: %s, stopping", _sync_msg)
+                        return
+
+
                 if isinstance(sync_data, dict):
                     next_batch = await self._absorb_sync(client, sync_data) or next_batch
                     await asyncio.sleep(0)  # let fresh invite joins start before the next sync

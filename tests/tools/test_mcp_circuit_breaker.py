@@ -150,7 +150,16 @@ def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):
         result = handler({})
         parsed = json.loads(result)
         assert "error" in parsed, parsed
-        assert "unreachable" in parsed["error"].lower()
+        assert "unavailable" in parsed["error"].lower()
+        # Guard against reintroducing directive wording that causes
+        # model over-adherence (the original bug this PR fixes).
+        _err = parsed["error"].lower()
+        assert "do not" not in _err, "error must not contain imperative directives"
+        assert "do not retry" not in _err
+        assert "give it" not in _err
+        assert "wait" not in _err or "auto-retry" in _err, (
+            "error must not instruct the model to wait"
+        )
         assert call_count["n"] == 0, (
             "breaker should short-circuit before cooldown elapses"
         )
@@ -213,7 +222,15 @@ def test_circuit_breaker_reopens_on_probe_failure(monkeypatch, tmp_path):
         # immediate call should short-circuit, not invoke session again.
         result = handler({})
         parsed = json.loads(result)
-        assert "unreachable" in parsed.get("error", "").lower()
+        assert "unavailable" in parsed.get("error", "").lower()
+        # Guard against reintroducing directive wording that causes
+        # model over-adherence (the original bug this PR fixes).
+        _err = parsed.get("error", "").lower()
+        assert "do not" not in _err, "error must not contain imperative directives"
+        assert "give it" not in _err
+        assert "wait" not in _err or "auto-retry" in _err, (
+            "error must not instruct the model to wait"
+        )
         assert call_count["n"] == 1, (
             "breaker should re-open and block further calls after probe failure"
         )
@@ -262,6 +279,14 @@ def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_pat
 
         # Clean "reconnecting" error, and a reconnect was actually signalled.
         assert "reconnect" in parsed.get("error", "").lower(), parsed
+        # Guard against reintroducing directive wording that causes
+        # model over-adherence (the original bug this PR fixes).
+        _err = parsed.get("error", "").lower()
+        assert "do not" not in _err, "error must not contain imperative directives"
+        assert "give it" not in _err
+        assert "wait" not in _err or "auto-retry" in _err, (
+            "error must not instruct the model to wait"
+        )
         server._reconnect_event.assert_called_once()
     finally:
         _cleanup(mcp_tool, "srv")

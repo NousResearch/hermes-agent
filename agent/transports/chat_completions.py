@@ -300,6 +300,19 @@ class ChatCompletionsTransport(ProviderTransport):
                     sanitized[msg_idx] = copied_msg
                 return copied_msg
 
+            # Tool-result reference hints are carried as a sibling key to keep
+            # message content a parseable JSON string; fold them into the
+            # model-visible text here, at the wire.
+            hint = msg.get("_tool_result_hint")
+            if hint:
+                out_msg = mutable_msg()
+                content = out_msg.get("content")
+                if isinstance(content, str):
+                    out_msg["content"] = content + hint
+                elif isinstance(content, list):
+                    out_msg["content"] = [*content, {"type": "text", "text": hint.strip()}]
+                out_msg.pop("_tool_result_hint", None)
+
             if (
                 "codex_reasoning_items" in msg
                 or "codex_message_items" in msg

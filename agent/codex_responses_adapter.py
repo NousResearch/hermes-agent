@@ -684,6 +684,13 @@ def _chat_messages_to_responses_input(
             else:
                 output_value = str(tool_content or "")
 
+            _ref_hint = msg.get("_tool_result_hint")
+            if _ref_hint:
+                if isinstance(output_value, str):
+                    output_value += _ref_hint
+                else:
+                    output_value = [*output_value, {"type": "input_text", "text": _ref_hint.strip()}]
+
             items.append({
                 "type": "function_call_output",
                 "call_id": _clamp_responses_call_id(call_id),

@@ -25,12 +25,58 @@ from typing import Any, Mapping
 logger = logging.getLogger(__name__)
 
 # Team registry: shared profile_id -> {lead agent, participant agents}.
-# Mirrors the nightly script's TEAMS map. Extend as teams are stood up.
+# Mirrors the nightly script's TEAMS map (must stay IDENTICAL — see
+# governance/team-definitions-draft-20260808.md). Approved by Sahil
+# 2026-08-08; all 9 former Tier-3 profiles activated and teemed.
 TEAMS: dict[str, dict[str, Any]] = {
-    # "team-content": {"lead": "ceecee", "participants": ["ceecee-writer", "ceecee-social"]},
-    # "team-ops": {"lead": "wesker", "participants": ["wesker-ops", "wesker-backup"]},
-    # "team-research": {"lead": "remii", "participants": ["remii-deep", "remii-digest"]},
-    # "team-build": {"lead": "octacon", "participants": ["octacon-backend", "octacon-frontend"]},
+    "team-content": {
+        "lead": "ceecee",
+        "participants": ["ceecee-writer", "ceecee-social", "ceecee-brand",
+                         "ceecee-reviewer", "content-strategist", "ceecee-seo"],
+    },
+    "team-research": {
+        "lead": "remii",
+        "participants": ["remii-digest", "remii-gitradar", "remii-market",
+                         "market-scanner", "remii-deep"],
+    },
+    "team-build": {
+        "lead": "octacon",
+        "participants": ["octacon-backend", "octacon-infra", "octacon-testrunner",
+                         "moss", "octacon-mobile", "octacon-frontend",
+                         "octacon-architect", "octacon-techwriter"],
+    },
+    "team-ops": {
+        "lead": "wesker",
+        "participants": ["wesker-ops", "wesker-scanner", "wesker-backup"],
+    },
+    "team-qa": {
+        "lead": "quan",
+        "participants": ["quan-arch", "quan-code", "quan-perf", "quan-security",
+                         "quan-ux", "quan-e2e"],
+    },
+    "team-design": {
+        "lead": "dezzy",
+        "participants": ["dezzy-brand", "dezzy-component-lib",
+                         "dezzy-design-system", "dezzy-ux-prototype",
+                         "dezzy-ux-architect", "dezzy-image-prompt"],
+    },
+    "team-knowledge": {
+        "lead": "light",
+        "participants": ["light-indexer", "light-wiki", "light-archivist"],
+    },
+    "team-governance": {
+        "lead": "denji",
+        "participants": ["denji-ledger", "denji-reviewer", "denji-skill",
+                         "skill-broker", "skill-research", "denji-monitor"],
+    },
+    "team-admin": {
+        "lead": "gojo",
+        "participants": ["gojo-admin", "gojo-calendar", "gojo-mailbox"],
+    },
+    "team-orchestration": {
+        "lead": "orchestrator",
+        "participants": ["triage-router"],
+    },
 }
 
 QUERY_TERMS = ["decision", "status", "conclusion", "learned", "blocker", "owner"]

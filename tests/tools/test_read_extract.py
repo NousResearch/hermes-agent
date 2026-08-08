@@ -477,14 +477,64 @@ class TestReadFileToolIntegration(unittest.TestCase):
         self.assertIn("print(1)", res["content"])
 
 
-    def test_corrupt_docx_falls_through_to_binary_guard(self):
+    def test_corrupt_docx_surfaces_extraction_error(self):
         p = os.path.join(self.tmp, "bad.docx")
         with open(p, "wb") as fh:
             fh.write(b"not a zip")
         res = json.loads(read_file_tool(p))
-        # Should NOT crash; falls through to the binary-extension guard.
+        # Should NOT crash; the binary guard fires but surfaces the
+        # specific extraction failure instead of the generic message.
         self.assertIn("error", res)
-        self.assertIn("binary", res["error"].lower())
+        self.assertIn("extraction failed", res["error"].lower())
+        self.assertIn("docx", res["error"].lower())
+
+    def test_oversized_anydoc_read_surfaces_size_error(self):
+        import tools.read_extract as rex
+
+        saved_cap = rex.MAX_ANYDOC_BYTES
+        saved_module = rex._anydoc_module
+
+        class _FakeAnydoc:
+            def to_markdown(self, path):  # pragma: no cover - must not be called
+                raise AssertionError("conversion should be rejected before call")
+
+        rex._anydoc_module = _FakeAnydoc()
+        rex.MAX_ANYDOC_BYTES = 10
+        try:
+            p = os.path.join(self.tmp, "big.pdf")
+            with open(p, "wb") as fh:
+                fh.write(b"x" * 11)
+            res = json.loads(read_file_tool(p))
+            self.assertIn("error", res)
+            self.assertIn("too large", res["error"].lower())
+            # The size hint reaches the agent instead of a generic binary error.
+            self.assertNotIn("cannot read binary file", res["error"].lower())
+        finally:
+            rex.MAX_ANYDOC_BYTES = saved_cap
+            rex._anydoc_module = saved_module
+
+    def test_unavailable_converter_falls_back_to_raw_read(self):
+        import time
+
+        import tools.read_extract as rex
+
+        saved_module = rex._anydoc_module
+        saved_failed_at = rex._anydoc_failed_at
+        # Simulate "converter unavailable and in cooldown": _anydoc() returns
+        # None, the .pdf is not treated as extractable, and read_file keeps
+        # its historical raw-read fallthrough (no extraction error surfaced).
+        rex._anydoc_module = None
+        rex._anydoc_failed_at = time.monotonic()
+        try:
+            p = os.path.join(self.tmp, "doc.pdf")
+            with open(p, "wb") as fh:
+                fh.write(b"%PDF-1.4 fake")
+            res = json.loads(read_file_tool(p))
+            self.assertNotIn("error", res)
+            self.assertIn("%PDF-1.4 fake", res.get("content", ""))
+        finally:
+            rex._anydoc_module = saved_module
+            rex._anydoc_failed_at = saved_failed_at
 
     def test_docx_read_extracts(self):
         p = os.path.join(self.tmp, "d.docx")

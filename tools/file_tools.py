@@ -1535,6 +1535,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
         # Try before the binary-extension guard so .docx/.xlsx can render as text.
         # Malformed documents fall through to the normal path/binary guard.
         from tools.read_extract import (
+            ANYDOC_EXTENSIONS,
+            EXTRACTABLE_EXTENSIONS,
             MAX_DOCUMENT_BYTES,
             ExtractionError,
             extract_document_bytes,
@@ -1555,8 +1557,31 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 extracted_text = extract_document_bytes(
                     document_bytes, str(_resolved)
                 )
-            except (ExtractionError, ValueError, base64.binascii.Error):
+            except (ExtractionError, ValueError, base64.binascii.Error) as exc:
                 logger.debug("document extraction failed for %s", path, exc_info=True)
+                # For binary document formats, surface the specific failure
+                # (size cap, encrypted, malformed…) instead of falling through
+                # — the fallthrough path can only produce a generic
+                # binary-file error or garbage raw bytes, hiding the
+                # actionable reason (e.g. "Document too large to convert").
+                # .ipynb stays on the fallthrough path: it is plain JSON text
+                # and a raw read is genuinely useful.  Byte-transport issues
+                # (ValueError / binascii) keep the fallthrough too — only a
+                # specific ExtractionError carries an actionable reason.
+                _doc_ext = _resolved.suffix.lower()
+                _binary_doc = _doc_ext in ANYDOC_EXTENSIONS or (
+                    _doc_ext in EXTRACTABLE_EXTENSIONS and _doc_ext != ".ipynb"
+                )
+                if (
+                    _binary_doc
+                    and isinstance(exc, ExtractionError)
+                    and not str(exc).startswith("Unsupported document type")
+                ):
+                    return tool_error(
+                        f"Cannot read '{path}' ({_doc_ext}): document "
+                        f"extraction failed — {exc}. Use terminal utilities "
+                        "to inspect or convert the file."
+                    )
             else:
                 lines = extracted_text.splitlines()
                 total_lines = len(lines)

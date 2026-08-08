@@ -89,8 +89,14 @@ installs made with `--include-desktop` pre-install them, so the ear works
 instantly). To install ahead of time:
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[wake]"
+cd ~/.hermes/hermes-agent
+uv pip install -e ".[wake]"
+# Linux only: openWakeWord's published metadata requires an unavailable
+# tflite-runtime wheel even though Hermes uses its ONNX backend.
+[ "$(uname -s)" != "Linux" ] || uv pip install --no-deps "openwakeword==0.6.0"
 ```
+
+The official desktop installer performs both Linux steps automatically.
 
 ## Quick start
 

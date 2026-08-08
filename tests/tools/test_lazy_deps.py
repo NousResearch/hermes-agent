@@ -98,6 +98,20 @@ class TestAllowlist:
         # Same spec tail on both forms.
         assert venv.split(" -m pip install ", 1)[1] == default.split("uv pip install ", 1)[1]
 
+    def test_openwakeword_linux_manual_command_bypasses_tflite_metadata(self, monkeypatch):
+        monkeypatch.setattr(ld.sys, "platform", "linux")
+        command = ld.feature_install_command("wake.openwakeword")
+
+        assert command is not None
+        assert "uv pip install --no-deps 'openwakeword==0.6.0'" in command
+        assert "; uv pip install " in command
+        assert "onnxruntime==" in command
+
+        error = ld.FeatureUnavailable(
+            "wake.openwakeword", ld.LAZY_DEPS["wake.openwakeword"], "test failure"
+        )
+        assert f"{ld.sys.executable} -m pip install --no-deps" in str(error)
+
 
 # ---------------------------------------------------------------------------
 # allow_lazy_installs gating
@@ -155,6 +169,33 @@ class TestEnsure:
         )
         with pytest.raises(ld.FeatureUnavailable, match="still not importable"):
             ld.ensure("test.cache", prompt=False)
+
+    def test_dependency_bypass_installs_anchor_separately(self, monkeypatch):
+        feature = "test.no-deps"
+        anchor = "broken-parent==1.0"
+        dependency = "working-dependency==2.0"
+        monkeypatch.setitem(ld.LAZY_DEPS, feature, (anchor, dependency))
+        monkeypatch.setitem(ld.NO_DEPS_SPECS, feature, (anchor,))
+        monkeypatch.setattr(ld.sys, "platform", "linux")
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+
+        installed = set()
+        calls = []
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: spec in installed)
+
+        def fake_install(specs, *, timeout=300, no_deps=False):
+            calls.append((specs, no_deps))
+            installed.update(specs)
+            return ld._InstallResult(True, "ok", "")
+
+        monkeypatch.setattr(ld, "_venv_pip_install", fake_install)
+
+        ld.ensure(feature, prompt=False)
+
+        assert calls == [
+            ((anchor,), True),
+            ((dependency,), False),
+        ]
 
 
 # ---------------------------------------------------------------------------

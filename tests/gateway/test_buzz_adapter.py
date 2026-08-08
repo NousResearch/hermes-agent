@@ -324,6 +324,35 @@ class TestDmClassification:
 
 
     @pytest.mark.asyncio
+    async def test_dm_metadata_latches_unptagged_unmentioned_message(self, adapter):
+        """Buzz Desktop v0.5.3 only p-tags typed mentions, so an un-mentioned
+        DM message carries no p-tag.  The relay's own metadata (channels list
+        entry named "DM" with an empty description) is positive evidence:
+        the message must still latch the conversation as a DM and dispatch
+        without a mention (#77987)."""
+        await self._poll_with(
+            adapter, DM_CHANNEL,
+            _tagged_event("e1", DM_CHANNEL, content="ich möchte sehen was du kannst…"),
+        )
+        assert adapter._channel_state[DM_CHANNEL]["chat_type"] == "dm"
+        assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
+        assert adapter._dispatched[0]["chat_type"] == "dm"
+
+    @pytest.mark.asyncio
+    async def test_dm_metadata_does_not_latch_missing_metadata(self, adapter):
+        """Without DM-shaped metadata the p-tag shape test still governs: an
+        un-mentioned, un-p-tagged message in a metadata-less conversation
+        does not flip the latch (no positive evidence)."""
+        adapter._channel_meta = {}
+        await self._poll_with(
+            adapter, DM_CHANNEL,
+            _tagged_event("e1", DM_CHANNEL, content="hello there"),
+        )
+        assert adapter._channel_state[DM_CHANNEL]["chat_type"] == "group"
+        assert adapter._dispatched == []
+
+
+    @pytest.mark.asyncio
     async def test_general_reply_ptagging_self_stays_channel(self, adapter):
         """A #general reply to us p-tags our pubkey (observed live) — that
         must NOT reclassify the channel; mention gating still applies."""

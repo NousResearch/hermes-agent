@@ -46,7 +46,7 @@ CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category);
 CREATE INDEX IF NOT EXISTS idx_entities_name  ON entities(name);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts
-    USING fts5(content, tags, content=facts, content_rowid=fact_id);
+    USING fts5(content, tags, content=facts, content_rowid=fact_id, tokenize='trigram');
 
 CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
     INSERT INTO facts_fts(rowid, content, tags)
@@ -89,6 +89,21 @@ _RE_AKA          = re.compile(
     r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)',
     re.IGNORECASE,
 )
+# Chinese entity patterns
+# Match Chinese terms: 2-4 char words (common in financial/legal domains)
+_RE_CHINESE_TERM = re.compile(r'([\u4e00-\u9fff]{2,4})')
+# Match Chinese quoted terms: \u300cterm\u300d or "term"
+_RE_CHINESE_QUOTE = re.compile(r'[\u300c\u201c\u201d]([^\u300d\u201c\u201d\n]+)[\u300d\u201c\u201d]')
+# Common financial abbreviations to extract
+_FINANCIAL_ABBR = {
+   'A\u80a1', '\u6e2f\u80a1', '\u7f8e\u80a1', '\u53f0\u80a1', '\u65e5\u80a1', '\u6b27\u80a1',
+   'ST', '*ST', 'IPO', 'ETF', 'LOF', 'QDII', 'QFII',
+   '\u6caa\u6df1', '\u4e0a\u4ea4\u6240', '\u6df1\u4ea4\u6240', '\u5317\u4ea4\u6240', '\u6e2f\u4ea4\u6240',
+   '\u8bc1\u76d1\u4f1a', '\u94f6\u4fdd\u76d1\u4f1a', '\u592e\u884c', '\u7f8e\u8054\u50a8', 'SEC',
+   '\u8305\u53f0', '\u5e73\u5b89', '\u5b81\u5fb7', '\u6bd4\u4e9a\u8fea', '\u817e\u8baf', '\u963f\u91cc',
+   '\u6df1\u5e02', '\u6caa\u5e02', '\u4e3b\u677f', '\u521b\u4e1a\u677f', '\u79d1\u521b\u677f',
+   '\u5317\u5411', '\u5357\u5411', '\u878d\u8d44', '\u878d\u5238', '\u505a\u7a7a', '\u505a\u591a',
+}
 
 
 def _clamp_trust(value: float) -> float:
@@ -476,6 +491,31 @@ class MemoryStore:
         for m in _RE_AKA.finditer(text):
             _add(m.group(1))
             _add(m.group(2))
+
+        # Chinese patterns (new)
+        # 1. Chinese quoted terms
+        for m in _RE_CHINESE_QUOTE.finditer(text):
+            _add(m.group(1))
+
+        # 2. Common financial abbreviations (exact match)
+        for abbr in _FINANCIAL_ABBR:
+            if abbr in text:
+                _add(abbr)
+
+        # 3. Chinese 2-4 char terms (filter out common stopwords)
+        _CHINESE_STOPWORDS = {
+            '\u7684', '\u4e86', '\u5728', '\u662f', '\u6211', '\u6709', '\u548c', '\u5c31', '\u4e0d', '\u4eba',
+            '\u90fd', '\u4e00', '\u4e00\u4e2a', '\u4e0a', '\u4e5f', '\u5f88', '\u5230', '\u8bf4', '\u8981', '\u53bb',
+            '\u4f60', '\u4f1a', '\u7740', '\u6ca1\u6709', '\u770b', '\u597d', '\u81ea\u5df1', '\u8fd9', '\u4ed6', '\u5979',
+            '\u53ef\u4ee5', '\u8fc7', '\u4e0b', '\u6765', '\u91cc', '\u7528', '\u628a', '\u90a3', '\u4e48',
+            '\u4ec0\u4e48', '\u6ca1', '\u4e3a', '\u8fd8', '\u5bf9', '\u4ece', '\u800c', '\u4ee5', '\u4f46', '\u4e0e',
+            '\u5176', '\u6216', '\u88ab', '\u7b49', '\u5982', '\u56e0', '\u6b64', '\u6240', '\u4e4b', '\u53ca',
+        }
+        for m in _RE_CHINESE_TERM.finditer(text):
+            term = m.group(1)
+            # Skip if already added, is a stopword, or is a single char
+            if term not in seen and term.lower() not in seen and term not in _CHINESE_STOPWORDS:
+                _add(term)
 
         return candidates
 

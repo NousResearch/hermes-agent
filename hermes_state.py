@@ -5854,6 +5854,30 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return self._execute_write(_do) or 0
 
+    def prune_zombie_sessions(self) -> int:
+        """Mark zombie sessions (ended_at=NULL, older than 1h) as crashed.
+
+        Hot-patch: fixes crash-induced sessions that never got end_session()
+        called, leaving ended_at=NULL forever.  Sets end_reason='crash'.
+        """
+        cutoff = time.time() - 3600  # 1 hour
+
+        def _do(conn):
+            now = time.time()
+            result = conn.execute(
+                """
+                UPDATE sessions
+                SET ended_at = ?,
+                    end_reason = 'crash'
+                WHERE ended_at IS NULL
+                  AND started_at < ?
+                """,
+                (now, cutoff),
+            )
+            return result.rowcount
+
+        return self._execute_write(_do) or 0
+
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""
         # Cost/usage readers (/status, /usage, gateway endpoints) reach the
@@ -6674,10 +6698,23 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # back-filled root then projects to its live tip exactly like a row
         # that had made the page on its own. One extra query, bounded by the
         # number of pins (a handful), never N+1 per pin.
+        #
+        # IMPORTANT: the pinned back-fill must NOT inherit the archived filter.
+        # A pin is a "this must always be reachable" statement — an archived
+        # pinned conversation should still appear in the sidebar (the user
+        # explicitly chose to keep it visible). We rebuild the WHERE for the
+        # pinned query by dropping the `s.archived` clause while keeping all
+        # other filters (source, min_message_count, etc.).
         if include_pinned:
             seen_ids = {s["id"] for s in sessions}
+            # Drop the archived filter from the pinned back-fill WHERE.
+            pinned_clauses = [
+                c for c in where_clauses
+                if c not in ("s.archived = 0", "s.archived = 1")
+            ]
             pinned_where = (
-                f"{where_sql} AND s.pinned = 1" if where_sql else "WHERE s.pinned = 1"
+                f"WHERE {' AND '.join(pinned_clauses)} AND s.pinned = 1"
+                if pinned_clauses else "WHERE s.pinned = 1"
             )
             _sel = self._compact_session_cols() if compact_rows else "s.*"
             pinned_query = f"""
@@ -8712,6 +8749,28 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 (session_id,),
             )
         self._execute_write(_do)
+
+    @staticmethod
+    def _archive_session_files(sessions_dir: Optional[Path], session_id: str) -> None:
+        """Move transcript files to archive/sessions/ before deletion.
+
+        Hot-patch: preserves session transcripts in archive/sessions/ for
+        post-mortem debugging.  Silently skips on any filesystem error.
+        """
+        if sessions_dir is None:
+            return
+        archive_dir = sessions_dir / "archive" / "sessions"
+        try:
+            archive_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+        for suffix in (".json", ".jsonl"):
+            src = sessions_dir / f"{session_id}{suffix}"
+            try:
+                if src.exists():
+                    src.rename(archive_dir / src.name)
+            except OSError:
+                pass
 
     @staticmethod
     def _remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:

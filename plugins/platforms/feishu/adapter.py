@@ -133,7 +133,7 @@ from gateway.platforms.base import (
 )
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
-from utils import atomic_json_write, env_float, env_int
+from utils import atomic_json_write, env_float, env_int, env_var_enabled
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
@@ -3156,7 +3156,8 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _reactions_enabled(self) -> bool:
-        return os.getenv("FEISHU_REACTIONS", "true").strip().lower() not in {"false", "0", "no"}
+        """Default on; shared falsy aliases (including ``off``) disable reactions."""
+        return env_var_enabled("FEISHU_REACTIONS", default="true")
 
     async def _add_reaction(self, message_id: str, emoji_type: str) -> Optional[str]:
         """Return the reaction_id on success, else None. The id is needed later for deletion."""

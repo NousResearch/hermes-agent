@@ -503,16 +503,17 @@ Newline-delimited JSON-RPC over stdio. Requests from Ink, events from Python. Se
 
 ### Dev Commands
 
+Run these commands from the repository root:
+
 ```bash
-cd ui-tui
-npm install       # first time
-npm run dev       # watch mode (rebuilds hermes-ink + tsx --watch)
-npm start         # production
-npm run build     # full build (hermes-ink + tsc)
-npm run typecheck # typecheck only (tsc --noEmit)
-npm run lint      # eslint
-npm run fmt       # prettier
-npm test          # vitest
+npm run install:tui                  # first time
+npm run dev --workspace ui-tui       # watch mode (rebuilds hermes-ink + tsx --watch)
+npm run start --workspace ui-tui     # production
+npm run build --workspace ui-tui     # bundle TUI entrypoint with esbuild
+npm run typecheck --workspace ui-tui # typecheck only (tsc --noEmit)
+npm run lint --workspace ui-tui      # eslint
+npm run fmt --workspace ui-tui       # prettier
+npm run test --workspace ui-tui      # vitest
 ```
 
 ### TUI in the Dashboard (`hermes dashboard` → `/chat`)

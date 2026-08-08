@@ -54,7 +54,7 @@ You can also set or auto-generate the description later with `hermes profile des
 hermes profile create work --clone
 ```
 
-Copies your current profile's `config.yaml`, `.env`, `SOUL.md`, and skills into the new profile. Same API keys, model, and capabilities, but fresh sessions and memory. Edit `~/.hermes/profiles/work/.env` for different API keys, or `~/.hermes/profiles/work/SOUL.md` for a different personality.
+Copies your current profile's `config.yaml`, `.env`, `SOUL.md`, curated `MEMORY.md`/`USER.md`, and skills into the new profile. Same API keys, model, capabilities, and starting identity, but fresh sessions and state database. Edit `~/.hermes/profiles/work/.env` for different API keys, or `~/.hermes/profiles/work/SOUL.md` for a different personality.
 
 ### Clone everything (`--clone-all`)
 
@@ -135,6 +135,22 @@ Profiles are often confused with workspaces or sandboxes, but they are different
 - A **sandbox** is what limits filesystem access. Profiles do **not** sandbox the agent.
 
 On the default `local` terminal backend, the agent still has the same filesystem access as your user account. A profile does not stop it from accessing folders outside the profile directory.
+
+For a named profile that uses a container-scoped terminal, you can also keep
+the host-side `read_file`, `search_files`, and file-write tools out of default
+and sibling-profile state:
+
+```yaml
+agent:
+  profile_scope: strict
+  # Optional: a root-level Hermes path intentionally shared with this profile.
+  profile_scope_allow:
+    - ~/.hermes/cache
+```
+
+Strict profile scope leaves normal project paths available and only blocks
+other Hermes profile trees. It does not sandbox the local terminal backend,
+which still runs as your OS user.
 
 If you want a profile to start in a specific project folder, set an explicit absolute `terminal.cwd` in that profile's `config.yaml`:
 

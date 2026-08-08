@@ -1530,6 +1530,13 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
 
         _resolved = _resolve_path_for_task(path, task_id)
 
+        # Check every read path before document extraction.  Extraction opens
+        # the source file itself, so placing the shared guard below it would
+        # let a protected .docx/.pdf bypass profile and credential rules.
+        block_error = get_read_block_error(str(_resolved))
+        if block_error:
+            return tool_error(block_error)
+
         # ── Structured-document extraction ────────────────────────────
         # Try before the binary-extension guard so .docx/.xlsx can render as text.
         # Malformed documents fall through to the normal path/binary guard.
@@ -1597,17 +1604,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 f"Cannot read binary file '{path}' ({_ext}). "
                 "Use vision_analyze for images, or terminal to inspect binary files."
             )
-
-        # ── Hermes internal path guard ────────────────────────────────
-        # Prevent prompt injection via catalog or hub metadata files,
-        # and block credential stores under HERMES_HOME.  Pass the
-        # already-resolved path so a relative-path read against
-        # TERMINAL_CWD == HERMES_HOME (e.g. "auth.json") still hits the
-        # denylist — get_read_block_error's own resolve() runs against
-        # the Python process cwd, which can differ.
-        block_error = get_read_block_error(str(_resolved))
-        if block_error:
-            return tool_error(block_error)
 
         # ── Negative-result cache ─────────────────────────────────────
         # If we already discovered this path doesn't exist (within TTL),

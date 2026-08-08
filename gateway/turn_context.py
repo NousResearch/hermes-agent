@@ -129,3 +129,11 @@ class TurnContext:
     _step_callback_sync: Optional[Callable] = None
     _event_callback_sync: Optional[Callable] = None
     _status_callback_sync: Optional[Callable] = None
+
+    # --- live-thinking bubble wiring (Mattermost live-thinking feature) ----
+    #     Published by _run_agent_inner; TurnRunner reads them in
+    #     _interim_assistant_cb and the agent callback-wiring block.
+    _live_thinking_enabled: bool = False
+    _live_thinking_adapter: Any = None
+    _live_thinking_post_ids: List[str] = field(default_factory=list)
+    _live_thinking_lock: Any = None

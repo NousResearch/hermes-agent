@@ -126,11 +126,16 @@ def resolved_max_export_messages() -> int:
 
 
 class SessionResumeTooLargeError(ValueError):
-    def __init__(self, message_count: int, limit: int = MAX_SAFE_RESUME_MESSAGES):
+    def __init__(
+        self,
+        message_count: int,
+        limit: int = MAX_SAFE_RESUME_MESSAGES,
+        scope: str = "across its lineage",
+    ):
         self.message_count = message_count
         self.limit = limit
         super().__init__(
-            f"session has at least {message_count} active messages across its lineage; "
+            f"session has at least {message_count} active messages {scope}; "
             f"safe resume limit is {limit}. Export the session instead, or set "
             "sessions.max_resume_messages: 0 in config.yaml to disable the guard."
         )

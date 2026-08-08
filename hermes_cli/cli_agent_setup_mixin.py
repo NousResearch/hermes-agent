@@ -617,7 +617,9 @@ class CLIAgentSetupMixin:
                 try:
                     tip_check(self.session_id, max_messages=limit)
                 except SessionExportTooLargeError as exc:
-                    raise SessionResumeTooLargeError(exc.message_count, limit) from exc
+                    raise SessionResumeTooLargeError(
+                        exc.message_count, limit, scope="in its tip segment"
+                    ) from exc
             else:
                 safety_check = getattr(self._session_db, "assert_resume_safe", None)
                 if not callable(safety_check):

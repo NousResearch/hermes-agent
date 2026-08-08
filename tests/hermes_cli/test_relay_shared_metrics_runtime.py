@@ -1303,6 +1303,49 @@ def test_direct_runtime_fake_enforces_lifo_scope_contract(direct_runtime):
     runtime.run_in_session(session, direct_runtime.scope.pop, first)
 
 
+def test_close_session_drains_orphaned_scopes_before_session_pop(direct_runtime):
+    """Orphaned physical scopes must not permanently wedge session close (#81521)."""
+    runtime = relay_runtime.get_runtime()
+    assert runtime is not None
+    session = runtime.ensure_session({"session_id": "orphan-drain"})
+    assert session is not None
+    session_handle = session.handle
+
+    orphan = runtime.run_in_session(
+        session,
+        direct_runtime.scope.push,
+        "orphaned-physical-llm",
+        direct_runtime.ScopeType.Function,
+        handle=session_handle,
+    )
+    assert orphan is not None
+
+    # Without drain, popping the session while the orphan is on top fails
+    # with "scope handle is not at the top of the stack".
+    runtime.close_session({"session_id": "orphan-drain"})
+
+    assert runtime.get_session("orphan-drain") is None
+    rejected = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop.rejected" and event[1] == session_handle
+    ]
+    # First attempt may reject; drain + retry must succeed so the session
+    # handle is eventually popped (not left rejected-only).
+    session_pops = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1] == session_handle
+    ]
+    orphan_pops = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1] == orphan
+    ]
+    assert orphan_pops, "orphaned physical scope was not drained"
+    assert session_pops, f"session scope never closed (rejected={rejected!r})"
+
+
 def test_concurrent_turn_skips_relay_before_scope_stack_can_interleave(
     direct_runtime,
 ):

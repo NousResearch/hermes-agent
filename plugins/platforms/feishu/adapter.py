@@ -192,6 +192,20 @@ _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
 # ---------------------------------------------------------------------------
+# Bot calling names (短名 → 飞书全名 映射)
+# Used by _text_mentions_self to match both @称呼 and @飞书显示名.
+# ---------------------------------------------------------------------------
+_BOT_CALLING_NAMES = {
+    "星辰": "星辰与灯的智能助手",
+    "小牛": "Hermes生产力-小牛",
+    "小和": "健康助理-小和",
+    "小任": "人际助理-小任",
+    "小书": "写作助手-小书",
+    "小音": "有声教练-小音",
+}
+_BOT_FULL_TO_CALLING = {v: k for k, v in _BOT_CALLING_NAMES.items()}
+
+# ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
 
@@ -4348,7 +4362,8 @@ class FeishuAdapter(BasePlatformAdapter):
         sender_ids = _sender_identity(sender)
         self_ids = frozenset(v for v in (self._bot_open_id, self._bot_user_id) if v)
         is_bot = _is_bot_sender(sender)
-        is_group = getattr(message, "chat_type", "p2p") != "p2p"
+        chat_type = getattr(message, "chat_type", "p2p") or "p2p"
+        is_group = chat_type != "p2p"
         chat_id = getattr(message, "chat_id", "") or ""
         require_mention = is_group and self._require_mention_for(chat_id)
 
@@ -4383,11 +4398,18 @@ class FeishuAdapter(BasePlatformAdapter):
                 return "dm_policy_rejected"
             return None
 
-        if not self._allow_group_message(
+        group_admit = self._allow_group_message(
             getattr(sender, "sender_id", None), chat_id, is_bot=is_bot,
-        ):
+        )
+        if not group_admit:
             return "group_policy_rejected"
-        if require_mention and not self._mentions_self(message):
+        mentions_self = self._mentions_self(message)
+        # Cross-app bot fallback: bots sending via API include @BotName in text
+        # but can't include a structured Feishu mention (app-scoped open_ids don't
+        # match across apps). Check raw text when sender is a bot.
+        if not mentions_self and is_bot and self._text_mentions_self(message, is_bot):
+            mentions_self = True
+        if require_mention and not mentions_self:
             return "group_policy_rejected"
         return None
 
@@ -4432,6 +4454,11 @@ class FeishuAdapter(BasePlatformAdapter):
             return True
         if policy == "admin_only":
             return False
+        # "mention" policy: let all group messages through the policy gate;
+        # the @mention enforcement happens in _admit() via
+        # ``require_mention and not self._mentions_self(message)``.
+        if policy == "mention":
+            return True
         if is_bot:
             return True
 
@@ -4460,6 +4487,61 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         return self._post_mentions_bot(normalized.mentions)
 
+    def _text_mentions_self(self, message: Any, sender_is_bot: bool) -> bool:
+        """Check if raw text content contains an @mention of this bot's name.
+
+        Used as a fallback for cross-app bot-to-bot messages where the sending
+        bot's API message includes @BotName in plain text but lacks a structured
+        Feishu mention (because open_ids are app-scoped and won't match).
+        Also matches [TO:短名] prefix protocol for bot-to-bot communication.
+
+        Only applied when the sender is a bot to avoid false triggers from users
+        who happen to type a bot's name.
+        """
+        if not sender_is_bot:
+            return False
+        raw_content = getattr(message, "content", "") or ""
+        if not raw_content:
+            return False
+        if not self._bot_name:
+            # Bot identity not hydrated yet — try matching [TO:短名] against all
+            # known short names as a best-effort fallback.
+            for short_name, full_name in _BOT_CALLING_NAMES.items():
+                if re.search(r'\[TO:' + re.escape(short_name) + r'\]', raw_content):
+                    logger.debug(
+                        "[Feishu] _text_mentions_self: matched [TO:%s] prefix (bot_name empty, fallback guess)",
+                        short_name,
+                    )
+                    self._bot_name = full_name  # hydrate for subsequent calls
+                    return True
+            return False
+        # Feishu text messages: content is JSON like {"text":"你好 @小和 请帮助"}
+        text = raw_content
+        if raw_content.startswith("{"):
+            try:
+                decoded = json.loads(raw_content)
+                text = decoded.get("text") or decoded.get("content") or raw_content
+                # Ensure text is a string — post/rich-text content is a list
+                # and would crash re.search.
+                if not isinstance(text, str):
+                    text = raw_content
+            except (json.JSONDecodeError, TypeError):
+                pass
+        # Check full name (e.g. @星辰与灯的智能助手)
+        if re.search(re.escape(f"@{self._bot_name}"), text) is not None:
+            logger.debug("[Feishu] _text_mentions_self: matched @full_name (%s)", self._bot_name)
+            return True
+        # Check calling name (e.g. @星辰)
+        calling_name = _BOT_FULL_TO_CALLING.get(self._bot_name)
+        if calling_name and re.search(re.escape(f"@{calling_name}"), text) is not None:
+            logger.debug("[Feishu] _text_mentions_self: matched @short_name (%s)", calling_name)
+            return True
+        # Check [TO:短名] prefix protocol (e.g. [TO:小和])
+        if calling_name and re.search(r'\[TO:' + re.escape(calling_name) + r'\]', text) is not None:
+                logger.debug("[Feishu] _text_mentions_self: matched [TO:%s] prefix", calling_name)
+                return True
+        return False
+
     def _message_mentions_bot(self, mentions: List[Any]) -> bool:
         # IDs trump names: when both sides have open_id (or both user_id),
         # match requires equal IDs. Name fallback only when either side
@@ -4473,7 +4555,9 @@ class FeishuAdapter(BasePlatformAdapter):
             if mention_open_id and self._bot_open_id:
                 if mention_open_id == self._bot_open_id:
                     return True
-                continue  # IDs differ — not the bot; skip name fallback.
+                # open_id differs — likely a cross-app bot mention where
+                # the sending app's scoped open_id ≠ this bot's own open_id.
+                # Fall through to name check before giving up.
             if mention_user_id and self._bot_user_id:
                 if mention_user_id == self._bot_user_id:
                     return True
@@ -4525,6 +4609,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 parsed = _parse_bot_response(payload) or {}
                 open_id = (parsed.get("bot_open_id") or "").strip()
                 bot_name = (parsed.get("bot_name") or "").strip()
+                bot_user_id = (parsed.get("bot_user_id") or "").strip()
                 if open_id:
                     if self._bot_open_id and self._bot_open_id != open_id:
                         logger.warning(
@@ -4537,6 +4622,13 @@ class FeishuAdapter(BasePlatformAdapter):
                             "[Feishu] FEISHU_BOT_NAME differs from /bot/v3/info; using hydrated bot name for group @mention gating."
                         )
                     self._bot_name = bot_name
+                if bot_user_id:
+                    self._bot_user_id = bot_user_id
+                bot_union_id = (parsed.get("bot_union_id") or "").strip()
+                logger.info(
+                    "[Feishu] Bot identity: open_id=%s user_id=%s union_id=%s name=%s",
+                    self._bot_open_id, self._bot_user_id, bot_union_id, self._bot_name,
+                )
         except Exception:
             logger.debug(
                 "[Feishu] /bot/v3/info probe failed during hydration",
@@ -5463,6 +5555,8 @@ def _parse_bot_response(data: dict) -> Optional[dict]:
     return {
         "bot_name": bot.get("app_name") or bot.get("bot_name"),
         "bot_open_id": bot.get("open_id"),
+        "bot_user_id": bot.get("user_id", ""),
+        "bot_union_id": bot.get("union_id", ""),
     }
 
 

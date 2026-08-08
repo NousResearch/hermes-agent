@@ -3292,6 +3292,12 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     if not ref.startswith("@"):
         ref = f"@{ref}"
 
+    # agent-browser's click does not reliably auto-scroll targets into view.
+    # Off-screen elements report success while firing zero DOM click/submit
+    # events. Scroll first; ignore scroll failures so CSS-selector clicks and
+    # already-visible targets still proceed.
+    _run_browser_command(effective_task_id, "scrollintoview", [ref])
+
     result = _run_browser_command(effective_task_id, "click", [ref])
 
     if result.get("success"):

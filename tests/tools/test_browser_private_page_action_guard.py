@@ -56,7 +56,10 @@ def test_click_still_runs_when_current_page_is_public(monkeypatch):
     out = json.loads(browser_tool.browser_click("e1", task_id="task-1"))
 
     assert out == {"success": True, "clicked": "@e1"}
-    assert calls == [("task-1", "click", ["@e1"])]
+    assert calls == [
+        ("task-1", "scrollintoview", ["@e1"]),
+        ("task-1", "click", ["@e1"]),
+    ]
 
 
 def test_guard_inactive_does_not_block_or_probe(monkeypatch):
@@ -82,7 +85,35 @@ def test_guard_inactive_does_not_block_or_probe(monkeypatch):
     out = json.loads(browser_tool.browser_click("@e1", task_id="task-1"))
 
     assert out == {"success": True, "clicked": "@e1"}
-    assert calls == [("task-1", "click", ["@e1"])]
+    assert calls == [
+        ("task-1", "scrollintoview", ["@e1"]),
+        ("task-1", "click", ["@e1"]),
+    ]
+
+
+def test_click_scrolls_into_view_before_click(monkeypatch):
+    """Off-screen targets get a no-op success from agent-browser click unless
+    scrolled into view first. browser_click must call scrollintoview before
+    click, and must still click even if scrollintoview fails."""
+    calls = []
+
+    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: False)
+
+    def fake_run(task_id, command, args):
+        calls.append((command, list(args)))
+        if command == "scrollintoview":
+            return {"success": False, "error": "unknown ref"}
+        return {"success": True}
+
+    monkeypatch.setattr(browser_tool, "_run_browser_command", fake_run)
+
+    out = json.loads(browser_tool.browser_click("@e7", task_id="task-1"))
+
+    assert out == {"success": True, "clicked": "@e7"}
+    assert calls == [
+        ("scrollintoview", ["@e7"]),
+        ("click", ["@e7"]),
+    ]
 
 
 def test_camofox_short_circuits_before_guard(monkeypatch):

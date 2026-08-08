@@ -2476,13 +2476,24 @@ def _manage_thinking_signatures(
     stripping, message merging) invalidates the signature, causing HTTP 400
     "Invalid signature in thinking block".
 
-    Signatures are Anthropic-proprietary.  Third-party endpoints (MiniMax,
-    Azure AI Foundry, AWS Bedrock, self-hosted proxies) cannot validate them
-    and will reject them outright.  Kimi's /coding and DeepSeek's /anthropic
-    endpoints speak the Anthropic protocol upstream but require unsigned
-    thinking blocks (synthesised from ``reasoning_content``) to round-trip on
-    replayed assistant tool-call messages.  See hermes-agent#13848 (Kimi) and
+    Signatures are Anthropic-proprietary.  Third-party endpoints (Azure AI
+    Foundry, AWS Bedrock, self-hosted proxies) cannot validate them and will
+    reject them outright.  Kimi's /coding and DeepSeek's /anthropic endpoints
+    speak the Anthropic protocol upstream but require unsigned thinking
+    blocks (synthesised from ``reasoning_content``) to round-trip on replayed
+    assistant tool-call messages.  See hermes-agent#13848 (Kimi) and
     hermes-agent#16748 (DeepSeek).
+
+    MiniMax-M3 on ``api.minimax.io/anthropic`` (and the China mirror
+    ``api.minimaxi.com/anthropic``) returns signed thinking blocks that the
+    upstream accepts only in the same turn context — a cross-context signed
+    block 400s ("thinking blocks in the latest assistant message cannot be
+    modified").  MiniMax accepts UNSIGNED thinking blocks on replay and
+    continues the chain-of-thought, so Hermes downgrades signed blocks to
+    unsigned (keeping the text) instead of stripping them — stripping the
+    thinking block from a replayed assistant tool-call turn leaves the model
+    without its chain context and interleaved reasoning dies after the first
+    tool-call turn (verified live 2026-07-31, hermes-agent#75725).
 
     Nous Portal's ``/v1/messages`` route is the exception among third-party
     hosts: it proxies Claude to Anthropic/Vertex/Bedrock and validates the
@@ -2526,6 +2537,32 @@ def _manage_thinking_signatures(
                     # Signed (or redacted-with-data) — upstream can't validate, strip.
                     continue
                 new_content.append(b)
+            m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
+        elif _is_minimax_anthropic_endpoint(base_url):
+            # MiniMax-M3 /anthropic: preserve unsigned thinking blocks and
+            # DOWNGRADE signed ones to unsigned (drop the signature, keep the
+            # text) instead of stripping them. MiniMax cannot validate the
+            # Anthropic signature on a cross-context replay (HTTP 400), but it
+            # accepts unsigned blocks and continues the chain-of-thought.
+            # Dropping the block entirely leaves the model without chain
+            # context — interleaved reasoning dies after the first tool-call
+            # turn (live-verified 2026-07-31: replay WITH the unsigned block
+            # present continues thinking; replay WITHOUT it produces no
+            # thinking on the follow-up turn).
+            new_content = []
+            for b in m["content"]:
+                if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
+                    new_content.append(b)
+                    continue
+                if b.get("type") == "redacted_thinking" or b.get("data"):
+                    # Redacted-with-data — no recoverable text, drop.
+                    continue
+                if b.get("signature"):
+                    # Signed — downgrade to unsigned so the upstream accepts
+                    # it and the chain-of-thought survives.
+                    new_content.append({"type": "thinking", "thinking": b.get("thinking", "")})
+                else:
+                    new_content.append(b)
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
         elif _is_third_party or idx != last_assistant_idx:
             # Third-party: strip ALL thinking blocks (signatures are proprietary).

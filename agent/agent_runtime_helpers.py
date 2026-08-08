@@ -1257,30 +1257,30 @@ def recover_with_credential_pool(
 
 def try_recover_primary_transport(
     agent, api_error: Exception, *, retry_count: int, max_retries: int,
-) -> bool:
+) -> Optional[bool]:
     """Attempt one extra primary-provider recovery cycle for transient transport failures.
 
-    After ``max_retries`` exhaust, rebuild the primary client (clearing
-    stale connection pools) and give it one more attempt before falling
-    back.  This is most useful for direct endpoints (custom, Z.AI,
-    Anthropic, OpenAI, local models) where a TCP-level hiccup does not
-    mean the provider is down.
+    On the first transient transport failure, rebuild the primary client
+    (clearing stale connection pools) before the next retry. A successful
+    rebuild starts one fresh, bounded retry cycle before fallback. This is most
+    useful for direct endpoints (custom, Z.AI, Anthropic, OpenAI, local models)
+    where a TCP-level hiccup does not mean the provider is down.
 
     Skipped for proxy/aggregator providers (OpenRouter, Nous) which
     already manage connection pools and retries server-side — if our
     retries through them are exhausted, one more rebuilt client won't help.
     """
     if agent._fallback_activated:
-        return False
+        return None
 
     # Only for transient transport errors
     error_type = type(api_error).__name__
     if error_type not in _TRANSIENT_TRANSPORT_ERRORS:
-        return False
+        return None
 
     # Skip for aggregator providers — they manage their own retry infra
     if agent._is_openrouter_url():
-        return False
+        return None
     provider_lower = (agent.provider or "").strip().lower()
     # Portal OpenAI-wire traffic still rides aggregator retry infra, so one
     # more rebuilt OpenAI client won't help. Portal Claude on the native
@@ -1291,7 +1291,7 @@ def try_recover_primary_transport(
         provider_lower in {"nous", "nous-portal", "nousresearch"}
         and getattr(agent, "api_mode", None) != "anthropic_messages"
     ):
-        return False
+        return None
 
     try:
         # Retire the existing client to release stale connections. #70773:

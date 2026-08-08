@@ -6532,7 +6532,7 @@ class AIAgent:
 
     def _try_recover_primary_transport(
         self, api_error: Exception, *, retry_count: int, max_retries: int,
-    ) -> bool:
+    ) -> Optional[bool]:
         """Forwarder — see ``agent.agent_runtime_helpers.try_recover_primary_transport``."""
         from agent.agent_runtime_helpers import try_recover_primary_transport
         return try_recover_primary_transport(self, api_error, retry_count=retry_count, max_retries=max_retries)

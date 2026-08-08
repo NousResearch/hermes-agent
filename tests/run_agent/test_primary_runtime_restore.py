@@ -10,6 +10,7 @@ Verifies that:
 """
 
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
@@ -380,6 +381,49 @@ def _make_transport_error(error_type="ReadTimeout"):
 
 class TestTryRecoverPrimaryTransport:
 
+    def test_run_conversation_rebuilds_before_first_transport_retry(self):
+        """A stale pooled connection must be rebuilt before retrying it.
+
+        Waiting until the retry budget is exhausted only repeats the same
+        broken transport. Recovery is still one-shot, but its successful
+        rebuild must happen between the first timeout and the next API call.
+        """
+        agent = _make_agent(provider="custom")
+        setattr(agent, "_api_max_retries", 3)
+        calls = 0
+
+        def fake_api_call(_api_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise _make_transport_error("ReadTimeout")
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="stop",
+                        message=SimpleNamespace(content="Recovered", tool_calls=None),
+                    )
+                ],
+                model="primary/model",
+                usage=None,
+            )
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call),
+            patch.object(agent, "_try_recover_primary_transport", return_value=True) as recover,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("agent.model_metadata.get_model_context_length", return_value=200000),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered"
+        assert calls == 2
+        recover.assert_called_once()
+        assert recover.call_args.kwargs == {"retry_count": 1, "max_retries": 3}
+
     def test_recovers_on_read_timeout(self):
         agent = _make_agent(provider="custom")
         error = _make_transport_error("ReadTimeout")
@@ -404,7 +448,7 @@ class TestTryRecoverPrimaryTransport:
         result = agent._try_recover_primary_transport(
             error, retry_count=3, max_retries=3,
         )
-        assert result is False
+        assert result is None
 
 
 
@@ -481,6 +525,29 @@ class TestTryRecoverPrimaryTransport:
             )
 
         assert result is False
+
+    def test_failed_rebuild_consumes_turn_recovery_budget(self):
+        """A broken rebuild must not be retried after every transport error."""
+        agent = _make_agent(provider="custom")
+        setattr(agent, "_api_max_retries", 3)
+
+        with (
+            patch.object(
+                agent,
+                "_interruptible_api_call",
+                side_effect=_make_transport_error("ReadTimeout"),
+            ),
+            patch.object(agent, "_try_recover_primary_transport", return_value=False) as recover,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("agent.model_metadata.get_model_context_length", return_value=200000),
+            patch("agent.conversation_loop.time.sleep"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is False
+        recover.assert_called_once()
 
 
 # =============================================================================

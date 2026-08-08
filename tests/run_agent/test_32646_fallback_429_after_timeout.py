@@ -206,18 +206,21 @@ class TestFallbackChainResetOnTransportRecovery:
         # Retry-state semantics: simulate the conversation loop body.
         retry_state = TurnRetryState()
         retry_state.has_retried_429 = True  # set by a pre-recovery 429 path
+        # Transport recovery is scoped to the full run_conversation call, not
+        # the per-API-block TurnRetryState that is rebuilt between tool turns.
+        primary_transport_recovery_attempted = False
 
         # The fix block:
         recovered = True  # _try_recover_primary_transport() returned True
-        if recovered and not retry_state.primary_recovery_attempted:
-            retry_state.primary_recovery_attempted = True
+        if recovered and not primary_transport_recovery_attempted:
+            primary_transport_recovery_attempted = True
             retry_state.has_retried_429 = False  # the documented reset
 
         assert retry_state.has_retried_429 is False, (
             "post-recovery cycle must reset has_retried_429 so the "
             "credential-pool path treats the next 429 as a fresh first-hit"
         )
-        assert retry_state.primary_recovery_attempted is True
+        assert primary_transport_recovery_attempted is True
 
     def test_run_conversation_fallbacks_on_429_after_timeout_recovery(self):
         """Full loop regression for #32646.

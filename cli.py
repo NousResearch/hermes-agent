@@ -16864,12 +16864,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             #          + blank_before_bottom + bottom border = 5 rows
             #   tight: top border + bottom border = 2 rows (drop all blanks)
             #
-            # reserved_below matches the approval-panel budget (~6 rows for
-            # spinner/tool-progress + status + input + separators + prompt).
+            # reserved_below must cover EVERYTHING below the clarify panel in
+            # the real TUI HSplit: status bar + tool-progress/spinner + agent
+            # status line + multi-line composer input + prompt gutter +
+            # separators. The approval-panel budget of 6 under-estimates this:
+            # `available` is inflated, the question claims rows that do not
+            # exist, the panel exceeds the viewport, and HSplit clips its tail —
+            # which is exactly where the choices live (residual of #34808).
+            # 12 is a conservative floor for typical TUI layouts; the
+            # choices-overflow guard below still wins when even that is short.
             term_rows = shutil.get_terminal_size((100, 24)).lines
             chrome_full = 5
             chrome_tight = 2
-            reserved_below = 6
+            reserved_below = 12
 
             available = max(0, term_rows - reserved_below)
             # The compact decision must reserve room for at least one question

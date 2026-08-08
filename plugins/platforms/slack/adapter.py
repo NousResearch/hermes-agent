@@ -6289,6 +6289,17 @@ class SlackAdapter(BasePlatformAdapter):
             text, chat_id=channel_id, team_id=team_id
         )
 
+        # When the bot was explicitly @mentioned, prepend a text-level marker
+        # so the agent knows this message was directed at it.  The identity
+        # prompt injected via channel_prompt (_build_identity_prompt) tells the
+        # model "treat every delivered turn as intentionally routed to you",
+        # but models may still emit NO_REPLY when the mention is stripped from
+        # the visible text.  A text-level marker is harder to ignore.
+        # Commands skip this — they are already recognized as addressed input.
+        if is_mentioned and not is_command_text:
+            _directed = "(directed at you)"
+            text = f"{_directed} {text}" if text else _directed
+
         msg_event = MessageEvent(
             text=(command_probe_text if is_command_text else text),
             message_type=msg_type,

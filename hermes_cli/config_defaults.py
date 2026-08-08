@@ -403,6 +403,12 @@ DEFAULT_CONFIG = {
     },
 
     "browser": {
+        # Browser tool implementation.
+        # ""            — built-in browser tools (browser_navigate, browser_click, …)
+        # "browser-use" — Browser Use mode: one browser_exec tool driving the
+        #                 Browser Use CLI 3.0 (local Chrome over CDP or Browser
+        #                 Use cloud browsers)
+        "backend": "",
         "inactivity_timeout": 120,
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos

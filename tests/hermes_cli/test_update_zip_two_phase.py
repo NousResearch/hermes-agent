@@ -115,6 +115,54 @@ def test_commit_handles_entries_absent_from_the_install(tmp_path):
     assert (live / "brand_new" / "version.txt").read_text() == "new"
 
 
+def test_commit_grafts_preserved_nested_paths_from_the_backup(tmp_path):
+    """Locally built artifacts inside a swapped entry survive the swap (#70337).
+
+    The GitHub source ZIP has no build outputs, so a plain swap of ``apps/``
+    deletes ``apps/desktop/dist`` + ``release`` (including the win-unpacked
+    exe the user launched the update from). The commit phase grafts those
+    back from the swap backup before the backups are dropped.
+    """
+    live, new = tmp_path / "live", tmp_path / "new"
+    _live_tree(live, {"apps": "old"})
+    _live_tree(new, {"apps": "new"})
+    built = live / "apps" / "desktop" / "dist"
+    built.mkdir(parents=True)
+    (built / "electron-main.mjs").write_text("locally built")
+
+    update_cmd._commit_staged_replacements(
+        _stage_all(live, new, ["apps"]),
+        preserve_nested=(("apps", "desktop", "dist"),),
+    )
+
+    # The entry itself is at the new version...
+    assert (live / "apps" / "version.txt").read_text() == "new"
+    # ...but the build output the archive could not contain was grafted back.
+    assert (built / "electron-main.mjs").read_text() == "locally built"
+    # No staging/backup litter left behind.
+    assert not [p for p in os.listdir(live) if "hermes-update" in p]
+
+
+def test_commit_graft_never_overwrites_an_archive_provided_path(tmp_path):
+    """If the new tree DOES ship the preserved path, the archive copy wins."""
+    live, new = tmp_path / "live", tmp_path / "new"
+    _live_tree(live, {"apps": "old"})
+    _live_tree(new, {"apps": "new"})
+    for root, marker in ((live, "stale build"), (new, "shipped build")):
+        built = root / "apps" / "desktop" / "dist"
+        built.mkdir(parents=True)
+        (built / "electron-main.mjs").write_text(marker)
+
+    update_cmd._commit_staged_replacements(
+        _stage_all(live, new, ["apps"]),
+        preserve_nested=(("apps", "desktop", "dist"),),
+    )
+
+    assert (
+        live / "apps" / "desktop" / "dist" / "electron-main.mjs"
+    ).read_text() == "shipped build"
+
+
 def test_staging_clears_leftovers_from_an_interrupted_run(tmp_path):
     live, new = tmp_path / "live", tmp_path / "new"
     _live_tree(live, {"agent": "old"})

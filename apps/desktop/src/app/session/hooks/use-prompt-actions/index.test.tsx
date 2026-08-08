@@ -3,7 +3,7 @@ import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSession } from '@/hermes'
+import { getSession, getSessionMessages } from '@/hermes'
 import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
@@ -33,6 +33,7 @@ import { uploadComposerAttachment, usePromptActions } from '.'
 vi.mock('@/hermes', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   getSession: vi.fn(),
+  getSessionMessages: vi.fn(async () => ({ messages: [], session_id: '' })),
   PROMPT_SUBMIT_REQUEST_TIMEOUT_MS: 1_800_000,
   setApiRequestProfile: vi.fn(),
   transcribeAudio: vi.fn()
@@ -920,6 +921,139 @@ describe('usePromptActions /compress', () => {
     await waitFor(() => expect($notifications.get().some(item => item.message === 'compressing context...')).toBe(true))
     resolveCompress({ messages: [{ content: 'compressed transcript', role: 'system' }] })
     await submitted
+  })
+})
+
+describe('usePromptActions /undo', () => {
+  // The stored DB id is deliberately different from the runtime id: the
+  // messages endpoint is REST and resolves against the stored sessions table,
+  // so re-syncing with the runtime id would 404 (same mismatch as /title).
+  const UNDO_STORED_SESSION_ID = 'stored-db-undo-1'
+
+  beforeEach(() => {
+    setSessions(() => [sessionInfo({ id: UNDO_STORED_SESSION_ID, profile: 'ai-engineer' })])
+  })
+
+  afterEach(() => {
+    cleanup()
+    setComposerDraft('')
+    setMessages([])
+    vi.restoreAllMocks()
+  })
+
+  it('re-syncs the transcript to the server active history and prefills the composer', async () => {
+    // What the server has left after the undo: the surviving turn only. The
+    // undone user/assistant pair is soft-deleted (active=0) before it answers.
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [
+        { role: 'user', content: 'first turn that survives' },
+        { role: 'assistant', content: 'reply that survives' }
+      ],
+      session_id: UNDO_STORED_SESSION_ID
+    } as never)
+
+    const seeds: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        // /undo is a pending-input command, so the slash worker rejects it and
+        // the client falls through to command.dispatch.
+        throw new Error('pending-input command: use command.dispatch for /undo')
+      }
+
+      if (method === 'command.dispatch') {
+        return {
+          type: 'prefill',
+          message: 'the undone message',
+          notice: '↶ Undid 1 turn (2 message(s)). Edit and resubmit, or send a new message.'
+        } as never
+      }
+
+      throw new Error(`unexpected method: ${method}`)
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={[
+          { id: 'u1', role: 'user', parts: [textPart('first turn that survives')] },
+          { id: 'a1', role: 'assistant', parts: [textPart('reply that survives')] },
+          { id: 'u2', role: 'user', parts: [textPart('the undone message')] },
+          { id: 'a2', role: 'assistant', parts: [textPart('reply that gets undone')] }
+        ]}
+        storedSessionId={UNDO_STORED_SESSION_ID}
+      />
+    )
+
+    await handle!.submitText('/undo')
+
+    // Stored id, not the runtime one — and carrying the owning profile, or the
+    // gateway falls back to the launch-profile DB and repaints the transcript
+    // from the wrong profile's session (#67603).
+    expect(getSessionMessages).toHaveBeenCalledWith(UNDO_STORED_SESSION_ID, 'ai-engineer')
+
+    const finalMessages = (seeds[seeds.length - 1]?.messages ?? []) as Array<{
+      parts?: Array<{ text?: string }>
+      role?: string
+    }>
+
+    const renderedText = finalMessages.flatMap(message => (message.parts ?? []).map(part => part.text ?? '')).join('\n')
+
+    // The core complaint in #39019: the undone exchange has to leave the screen.
+    expect(renderedText).not.toContain('the undone message')
+    expect(renderedText).not.toContain('reply that gets undone')
+    expect(renderedText).toContain('first turn that survives')
+
+    // The notice surviving the wholesale replace is what proves the re-sync ran
+    // *before* it was rendered — render it first and the replace eats it.
+    expect(renderedText).toContain('Undid 1 turn')
+
+    // The backed-up text lands in the composer for editing, not the transcript.
+    expect($composerDraft.get()).toContain('the undone message')
+  })
+
+  it('still surfaces the notice and prefill when the history refresh fails', async () => {
+    vi.mocked(getSessionMessages).mockRejectedValue(new Error('sessions endpoint unreachable'))
+
+    const seeds: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        throw new Error('pending-input command: use command.dispatch for /undo')
+      }
+
+      if (method === 'command.dispatch') {
+        return { type: 'prefill', message: 'the undone message', notice: '↶ Undid 1 turn (2 message(s)).' } as never
+      }
+
+      throw new Error(`unexpected method: ${method}`)
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={UNDO_STORED_SESSION_ID}
+      />
+    )
+
+    await handle!.submitText('/undo')
+
+    // A failed refresh is reported, but the undo itself already happened
+    // server-side — swallowing the notice and the prefill would lose the
+    // backed-up text entirely.
+    const texts = renderedSeedTexts(seeds)
+
+    expect(texts.some(text => text.includes('sessions endpoint unreachable'))).toBe(true)
+    expect(texts.some(text => text.includes('Undid 1 turn'))).toBe(true)
+    expect($composerDraft.get()).toContain('the undone message')
   })
 })
 

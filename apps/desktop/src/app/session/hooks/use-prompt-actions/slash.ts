@@ -1,7 +1,7 @@
 import { skillInvocationText } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
-import { getProfiles } from '@/hermes'
+import { getProfiles, getSessionMessages } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import { parseCommandDispatch, parseSlashCommand, sessionTitle } from '@/lib/chat-runtime'
@@ -54,6 +54,7 @@ import type {
   SessionTitleResponse,
   SlashExecResponse
 } from '../../../types'
+import { resolveSessionProfile } from '../use-session-actions/utils'
 
 import { resolveTargetSessionId } from './resolve-target-session'
 import {
@@ -276,11 +277,14 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             return
           }
 
-          // send / prefill carry an optional `notice` (e.g. "⊙ Goal set …")
-          // that the backend wants shown as a system line before the message
-          // is acted on. Mirrors the TUI's createSlashHandler — without it a
-          // `/goal <text>` looked like it did nothing.
-          if ((dispatch.type === 'send' || dispatch.type === 'prefill') && dispatch.notice?.trim()) {
+          // send carries an optional `notice` (e.g. "⊙ Goal set …") that the
+          // backend wants shown as a system line before the message is acted
+          // on. Mirrors the TUI's createSlashHandler — without it a
+          // `/goal <text>` looked like it did nothing. `prefill` also carries a
+          // notice, but it renders its own below: the transcript re-sync there
+          // replaces the message list wholesale and would clobber a line
+          // rendered here.
+          if (dispatch.type === 'send' && dispatch.notice?.trim()) {
             renderSlashOutput(dispatch.notice.trim())
 
             // `/goal <text>` returns its "⊙ Goal set …" notice here and kicks
@@ -298,6 +302,42 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // /undo returns a prefill directive: drop the backed-up message into
           // the composer for editing instead of submitting it immediately.
           if (dispatch.type === 'prefill') {
+            // The backend has already soft-deleted the undone turns (active=0)
+            // by the time it answers, so re-sync the transcript to the server's
+            // active history — without this the undone exchange stays on screen
+            // even though it is gone from the agent's context, which is the
+            // whole complaint in #39019. Same wholesale replace the compress
+            // path above does, and for the same reason: the removed bubbles
+            // have to actually disappear. It intentionally drops local-only
+            // rows; /undo is a discard and runs on an idle session.
+            if (storedSessionId) {
+              try {
+                // Read through the owning profile. Without it the gateway falls
+                // back to the launch-profile DB and we would repaint the
+                // transcript from the wrong profile's session (#67603).
+                const profile = await resolveSessionProfile(storedSessionId)
+                const refreshed = await getSessionMessages(storedSessionId, profile)
+
+                if (Array.isArray(refreshed?.messages)) {
+                  updateSessionState(
+                    sessionId,
+                    state => ({ ...state, messages: toChatMessages(refreshed.messages) }),
+                    storedSessionId
+                  )
+                }
+              } catch (err) {
+                renderSlashOutput(
+                  `/${name}: could not refresh history — ${err instanceof Error ? err.message : String(err)}`
+                )
+              }
+            }
+
+            // After the replace, never before it — see the note on the `send`
+            // notice branch above.
+            if (dispatch.notice?.trim()) {
+              renderSlashOutput(dispatch.notice.trim())
+            }
+
             if (message) {
               setComposerDraft(message)
             }

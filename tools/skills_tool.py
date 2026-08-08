@@ -783,6 +783,36 @@ def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
 
 
+def _is_skill_visible_under_governance(
+    skill_name: str,
+    *,
+    mode: str,
+) -> bool:
+    """Return whether a skill should stay visible on a governed surface."""
+    try:
+        from agent.skill_governance import evaluate_skill_selection_fail_closed
+
+        decision = evaluate_skill_selection_fail_closed(
+            skill_name,
+            mode=mode,
+            emit_log=False,
+        )
+        return decision is None or decision.allowed
+    except Exception:
+        logger.debug(
+            "Skill governance visibility check failed for %s",
+            skill_name,
+            exc_info=True,
+        )
+    try:
+        from agent.skill_governance import probe_protected_task_class
+
+        probe = probe_protected_task_class()
+    except Exception:
+        return False
+    return probe.safe and not probe.protected_task
+
+
 def skills_list(category: str = None, task_id: str = None) -> str:
     """
     List all available skills (progressive disclosure tier 1 - minimal metadata).
@@ -833,6 +863,12 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         if category:
             all_skills = [s for s in all_skills if s.get("category") == category]
 
+        all_skills = [
+            s
+            for s in all_skills
+            if _is_skill_visible_under_governance(s.get("name", ""), mode="auto")
+        ]
+
         # Sort by category then name
         all_skills = _sort_skills(all_skills)
 
@@ -870,6 +906,19 @@ def _serve_plugin_skill(
 ) -> str:
     """Read a plugin-provided skill, apply guards, return JSON."""
     from hermes_cli.plugins import _get_disabled_plugins, get_plugin_manager
+
+    qualified_name = f"{namespace}:{bare}"
+    if preprocess and not _is_skill_visible_under_governance(qualified_name, mode="explicit"):
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    f"Skill '{qualified_name}' is blocked by skill governance "
+                    "for the active task class."
+                ),
+            },
+            ensure_ascii=False,
+        )
 
     if namespace in _get_disabled_plugins():
         return json.dumps(
@@ -1373,6 +1422,19 @@ def skill_view(
                     "error": (
                         f"Skill '{resolved_name}' is disabled. "
                         "Enable it with `hermes skills` or inspect the files directly on disk."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        if preprocess and not _is_skill_visible_under_governance(
+            resolved_name, mode="explicit"
+        ):
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": (
+                        f"Skill '{resolved_name}' is blocked by skill governance "
+                        "for the active task class."
                     ),
                 },
                 ensure_ascii=False,

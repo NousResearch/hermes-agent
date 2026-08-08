@@ -1843,6 +1843,23 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        "governance": {
+            # Optional machine-readable registry describing the provenance
+            # status of skills. Relative paths resolve against HERMES_HOME.
+            # When unset, governance classification falls back to UNKNOWN.
+            "registry_path": "",
+            # Optional ambient task class used by automatic skill selection,
+            # preload filtering, and retrieval ranking.
+            "task_class": "",
+            # Task classes that must fail closed for non-current skills.
+            # CURRENT is allowed. COMPATIBILITY_ONLY additionally requires
+            # explicit historical intent from the caller. UNKNOWN / STALE /
+            # CONFLICTING are rejected.
+            "protected_task_classes": [],
+            # Apply governance classification to supported retrieval ranking
+            # surfaces (currently skills-hub search ordering).
+            "retrieval_ranking": True,
+        },
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id
         # before the agent sees it.  Lets skill authors reference bundled

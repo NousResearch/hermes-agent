@@ -123,6 +123,7 @@ async def list_skills_hub_sources(profile: Optional[str] = None):
     """
 
     def _run():
+        from hermes_cli.skills_hub import _rank_retrieval_results
         from tools.skills_hub import create_source_router
 
         with _config_profile_scope(profile):
@@ -151,9 +152,8 @@ async def list_skills_hub_sources(profile: Optional[str] = None):
                 # Empty-query search on the index returns featured/popular skills.
                 if index_available:
                     try:
-                        featured = [
-                            _skill_meta_to_payload(m) for m in src.search("", limit=12)
-                        ]
+                        ranked_featured = _rank_retrieval_results(src.search("", limit=12))
+                        featured = [_skill_meta_to_payload(m) for m in ranked_featured]
                     except Exception:
                         featured = []
             out.append(entry)
@@ -200,6 +200,7 @@ async def search_skills_hub(
         return {"results": [], "source_counts": {}, "timed_out": [], "installed": {}}
 
     def _run():
+        from hermes_cli.skills_hub import _rank_retrieval_results
         from tools.skills_hub import create_source_router, parallel_search_sources
 
         with _config_profile_scope(profile):
@@ -217,7 +218,14 @@ async def search_skills_hub(
                 seen[r.identifier] = r
             elif _rank.get(r.trust_level, 0) > _rank.get(seen[r.identifier].trust_level, 0):
                 seen[r.identifier] = r
-        deduped = list(seen.values())[:capped]
+        deduped = _rank_retrieval_results(
+            list(seen.values()),
+            fallback_key=lambda r: (
+                -_rank.get(r.trust_level, 0),
+                r.source != "official",
+                r.name.lower(),
+            ),
+        )[:capped]
 
         return {
             "results": [_skill_meta_to_payload(m) for m in deduped],

@@ -1,5 +1,6 @@
 """Tests for agent/skill_commands.py — skill slash command scanning and platform filtering."""
 
+import builtins
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -7,9 +8,11 @@ from unittest.mock import patch
 import pytest
 
 import tools.skills_tool as skills_tool_module
+from agent.skill_governance import SkillGovernanceRejectedError
 from agent.skill_commands import (
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
+    get_discoverable_skill_commands,
     resolve_skill_command_key,
     scan_skill_commands,
 )
@@ -50,6 +53,25 @@ def _symlink_category(skills_dir: Path, linked_root: Path, category: str) -> Pat
     return external_category
 
 
+def _configure_protected_governance(home: Path, registry_entries: str) -> None:
+    (home / "governance").mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        """\
+skills:
+  governance:
+    registry_path: governance/skills-registry.yaml
+    task_class: ardyn_engineering
+    protected_task_classes:
+      - ardyn_engineering
+""",
+        encoding="utf-8",
+    )
+    (home / "governance" / "skills-registry.yaml").write_text(
+        "version: 1\nskills:\n" + registry_entries,
+        encoding="utf-8",
+    )
+
+
 class TestScanSkillCommands:
 
 
@@ -81,6 +103,104 @@ class TestScanSkillCommands:
         assert "/impeccable" in result
         assert message is not None
         assert "Apply impeccable design craft." in message
+
+    def test_explicit_skill_invocation_denies_compatibility_only_without_historical_intent(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _configure_protected_governance(
+            tmp_path,
+            """\
+  - name: ToolTrust
+    classification: COMPATIBILITY_ONLY
+""",
+        )
+        _make_skill(tmp_path, "ToolTrust", body="blocked legacy content")
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            scan_skill_commands()
+            with pytest.raises(SkillGovernanceRejectedError, match="historical intent"):
+                build_skill_invocation_message("/tooltrust", "do it")
+
+    def test_explicit_skill_invocation_fails_closed_when_governance_eval_errors(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _configure_protected_governance(
+            tmp_path,
+            """\
+  - name: ToolTrust
+    classification: CURRENT
+""",
+        )
+        _make_skill(tmp_path, "ToolTrust", body="should not load")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_governance.governance_context",
+                side_effect=RuntimeError("registry unreadable"),
+            ),
+        ):
+            scan_skill_commands()
+            with pytest.raises(SkillGovernanceRejectedError, match="evaluation failed"):
+                build_skill_invocation_message("/tooltrust", "do it")
+
+    def test_discoverable_skill_commands_hide_governance_blocked_skills_when_protected(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _configure_protected_governance(
+            tmp_path,
+            """\
+  - name: ToolTrust
+    classification: COMPATIBILITY_ONLY
+  - name: SafeSkill
+    classification: CURRENT
+""",
+        )
+        _make_skill(tmp_path, "ToolTrust", body="blocked legacy content")
+        _make_skill(tmp_path, "SafeSkill", body="allowed content")
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            scan_skill_commands()
+            commands = get_discoverable_skill_commands()
+
+        assert "/safeskill" in commands
+        assert "/tooltrust" not in commands
+
+    def test_discoverable_skill_commands_fail_closed_when_config_unreadable(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  governance: []\n",
+            encoding="utf-8",
+        )
+        _make_skill(tmp_path, "ToolTrust", body="blocked legacy content")
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            scan_skill_commands()
+            commands = get_discoverable_skill_commands()
+
+        assert commands == {}
+
+    def test_discoverable_skill_commands_preserve_unprotected_behavior_on_eval_failure(
+        self, tmp_path, monkeypatch
+    ):
+        _make_skill(tmp_path, "ToolTrust", body="still visible when unprotected")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_governance.governance_context",
+                side_effect=RuntimeError("registry unreadable"),
+            ),
+        ):
+            scan_skill_commands()
+            commands = get_discoverable_skill_commands()
+
+        assert "/tooltrust" in commands
 
     def test_get_skill_commands_rescans_when_platform_scope_changes(self, tmp_path):
         """Platform-specific disabled-skill caches must not leak across platforms.
@@ -372,6 +492,131 @@ class TestBuildPreloadedSkillsPrompt:
         assert missing == ["disabled-skill"]
         assert "SECRET DISABLED CONTENT." not in prompt
         assert "enabled-skill" in prompt
+
+    def test_protected_preload_denies_all_when_governance_import_fails(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _configure_protected_governance(
+            home,
+            """\
+  - name: protected-skill
+    classification: CURRENT
+""",
+        )
+        _make_skill(skills_dir, "protected-skill", body="must not load")
+
+        real_import = builtins.__import__
+
+        def _deny_governance_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "agent.skill_governance":
+                raise ImportError("simulated governance import failure")
+            return real_import(name, globals, locals, fromlist, level)
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+            monkeypatch.setattr(builtins, "__import__", _deny_governance_import)
+            prompt, loaded, missing = build_preloaded_skills_prompt(["protected-skill"])
+
+        assert prompt == ""
+        assert loaded == []
+        assert missing == ["protected-skill"]
+
+    def test_protected_preload_denies_when_skill_utils_import_fails_and_governance_eval_errors(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _configure_protected_governance(
+            home,
+            """\
+  - name: protected-skill
+    classification: CURRENT
+""",
+        )
+
+        real_import = builtins.__import__
+
+        def _deny_imports(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "agent.skill_utils":
+                raise ImportError(f"simulated import failure: {name}")
+            return real_import(name, globals, locals, fromlist, level)
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "nonexistent"):
+            monkeypatch.setattr(
+                "agent.skill_commands._load_skill_payload",
+                lambda identifier, task_id=None: (
+                    {"content": "must not load", "name": identifier},
+                    None,
+                    identifier,
+                ),
+            )
+            monkeypatch.setattr(
+                "agent.skill_governance.evaluate_skill_selection",
+                lambda *args, **kwargs: (_ for _ in ()).throw(
+                    RuntimeError("simulated governance evaluation failure")
+                ),
+            )
+            monkeypatch.setattr(builtins, "__import__", _deny_imports)
+            prompt, loaded, missing = build_preloaded_skills_prompt(["protected-skill"])
+
+        assert prompt == ""
+        assert loaded == []
+        assert missing == ["protected-skill"]
+
+    def test_protected_preload_denies_when_config_cannot_be_parsed(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        (home / "config.yaml").parent.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("skills: [\n", encoding="utf-8")
+        monkeypatch.setattr(
+            "agent.skill_commands._load_skill_payload",
+            lambda identifier, task_id=None: (
+                {"content": "must not load", "name": identifier},
+                None,
+                identifier,
+            ),
+        )
+
+        prompt, loaded, missing = build_preloaded_skills_prompt(["protected-skill"])
+
+        assert prompt == ""
+        assert loaded == []
+        assert missing == ["protected-skill"]
+
+    def test_unprotected_preload_keeps_loading_when_config_is_unprotected(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _configure_protected_governance(
+            home,
+            """\
+  - name: unprotected-skill
+    classification: CURRENT
+""",
+        )
+        (home / "config.yaml").write_text(
+            """\
+skills:
+  governance:
+    registry_path: governance/skills-registry.yaml
+    task_class: general_ops
+    protected_task_classes:
+      - ardyn_engineering
+""",
+            encoding="utf-8",
+        )
+        _make_skill(skills_dir, "unprotected-skill", body="still loads")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+            prompt, loaded, missing = build_preloaded_skills_prompt(["unprotected-skill"])
+
+        assert loaded == ["unprotected-skill"]
+        assert missing == []
+        assert "still loads" in prompt
 
 
 
@@ -690,3 +935,28 @@ class TestStackedSkillCommands:
         assert loaded == ["skill-a"]
         assert missing == ["gone"]
         assert "Skills missing (skipped): gone" in msg
+
+    def test_stacked_message_denies_when_any_member_is_governance_blocked(
+        self, tmp_path, monkeypatch
+    ):
+        from agent.skill_commands import build_stacked_skill_invocation_message
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        _configure_protected_governance(
+            tmp_path / "home",
+            """\
+  - name: skill-a
+    classification: CURRENT
+  - name: skill-b
+    classification: COMPATIBILITY_ONLY
+""",
+        )
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            self._setup_three_skills(tmp_path)
+            scan_skill_commands()
+            with pytest.raises(SkillGovernanceRejectedError, match="skill-b"):
+                build_stacked_skill_invocation_message(
+                    ["/skill-a", "/skill-b"],
+                    "go",
+                )

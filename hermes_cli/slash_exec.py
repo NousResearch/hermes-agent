@@ -109,14 +109,14 @@ def _exec_profile(ctx: CommandContext) -> CommandReply:
 def _exec_bundles(ctx: CommandContext) -> CommandReply:
     """Core /bundles data — installed skill bundles listing."""
     try:
-        from agent.skill_bundles import _bundles_dir, list_bundles
+        from agent.skill_bundles import _bundles_dir, list_discoverable_bundles
     except Exception as exc:  # pragma: no cover - env-specific
         return CommandReply(
             f"Bundles subsystem unavailable: {exc}",
             data={"error": str(exc)},
         )
 
-    bundles = list_bundles()
+    bundles = list_discoverable_bundles()
     bundles_dir = str(_bundles_dir())
     if not bundles:
         return CommandReply(
@@ -150,8 +150,9 @@ def _exec_help(ctx: CommandContext) -> CommandReply:
         *gateway_help_lines(),
     ]
     try:
-        from agent.skill_commands import get_skill_commands
-        skill_cmds = get_skill_commands()
+        from agent.skill_commands import get_discoverable_skill_commands
+
+        skill_cmds = get_discoverable_skill_commands()
         if skill_cmds:
             lines.append(t("gateway.help.skill_header", count=len(skill_cmds)))
             # Show first 10, then point to /commands for the rest
@@ -186,8 +187,9 @@ def _exec_commands(ctx: CommandContext) -> CommandReply:
     # Build combined entry list: built-in commands + skill commands
     entries = list(gateway_help_lines())
     try:
-        from agent.skill_commands import get_skill_commands
-        skill_cmds = get_skill_commands()
+        from agent.skill_commands import get_discoverable_skill_commands
+
+        skill_cmds = get_discoverable_skill_commands()
         if skill_cmds:
             entries.append("")
             entries.append(t("gateway.commands.skill_header"))

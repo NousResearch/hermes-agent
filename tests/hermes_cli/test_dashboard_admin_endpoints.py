@@ -7,6 +7,8 @@ contract and the CLI-config parity (servers/keys written via the API are
 visible to the CLI data layer), not specific catalog values.
 """
 
+from pathlib import Path
+
 import pytest
 
 
@@ -25,6 +27,31 @@ def _client():
     # touches it.
     hermes_state.DEFAULT_DB_PATH = get_hermes_home() / "state.db"
     return client, _SESSION_HEADER_NAME
+
+
+def _write_governance_config(
+    home: Path,
+    *,
+    task_class: str = "",
+    protected: list[str] | None = None,
+) -> None:
+    (home / "governance").mkdir(parents=True, exist_ok=True)
+    lines = [
+        "skills:",
+        "  governance:",
+        "    registry_path: governance/skills-registry.yaml",
+        f"    task_class: {task_class}",
+        "    protected_task_classes:",
+    ]
+    if protected:
+        lines.extend(f"      - {item}" for item in protected)
+    else:
+        lines.append("      []")
+    (home / "config.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (home / "governance" / "skills-registry.yaml").write_text(
+        "skills: []\n",
+        encoding="utf-8",
+    )
 
 
 class TestMcpEndpoints:
@@ -556,6 +583,62 @@ class TestSkillsHubSearchEndpoint:
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
 
+    def test_search_fail_closes_when_protected_governance_ranking_fails(
+        self, monkeypatch, _isolate_hermes_home
+    ):
+        from hermes_constants import get_hermes_home
+
+        _write_governance_config(
+            get_hermes_home(),
+            task_class="medical",
+            protected=["medical"],
+        )
+
+        result = _FakeMeta("github/owner/current-skill", trust_level="community")
+        monkeypatch.setattr("tools.skills_hub.create_source_router", lambda: [])
+        monkeypatch.setattr(
+            "tools.skills_hub.parallel_search_sources",
+            lambda *_a, **_k: ([result], {"github": 1}, []),
+        )
+        monkeypatch.setattr(
+            "agent.skill_governance.rank_skill_search_results",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("simulated ranking failure")),
+        )
+
+        r = self.client.get("/api/skills/hub/search?q=current")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["results"] == []
+        assert body["source_counts"] == {"github": 1}
+
+    def test_search_keeps_fallback_order_when_unprotected_governance_ranking_fails(
+        self, monkeypatch, _isolate_hermes_home
+    ):
+        from hermes_constants import get_hermes_home
+
+        _write_governance_config(
+            get_hermes_home(),
+            task_class="general",
+            protected=["medical"],
+        )
+
+        community = _FakeMeta("github/owner/zulu", trust_level="community")
+        trusted = _FakeMeta("github/owner/alpha", trust_level="trusted")
+        monkeypatch.setattr("tools.skills_hub.create_source_router", lambda: [])
+        monkeypatch.setattr(
+            "tools.skills_hub.parallel_search_sources",
+            lambda *_a, **_k: ([community, trusted], {"github": 2}, []),
+        )
+        monkeypatch.setattr(
+            "agent.skill_governance.rank_skill_search_results",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("simulated ranking failure")),
+        )
+
+        r = self.client.get("/api/skills/hub/search?q=skill")
+        assert r.status_code == 200
+        body = r.json()
+        assert [item["name"] for item in body["results"]] == ["alpha", "zulu"]
+
 
 class _FakeMeta:
     """Minimal SkillMeta stand-in for monkeypatched source search."""
@@ -633,6 +716,37 @@ class TestSkillsHubSourcesEndpoint:
         assert len(body["featured"]) == 1
         assert body["featured"][0]["trust_level"] == "trusted"
         assert isinstance(body["installed"], dict)
+
+    def test_sources_featured_fail_closes_when_protected_governance_ranking_fails(
+        self, monkeypatch, _isolate_hermes_home
+    ):
+        from hermes_constants import get_hermes_home
+
+        _write_governance_config(
+            get_hermes_home(),
+            task_class="medical",
+            protected=["medical"],
+        )
+
+        class _Src:
+            is_available = True
+
+            def source_id(self):
+                return "hermes-index"
+
+            def search(self, q, limit=10):
+                return [_FakeMeta("hermes-index/current-skill", "trusted", source="hermes-index")]
+
+        monkeypatch.setattr("tools.skills_hub.create_source_router", lambda: [_Src()])
+        monkeypatch.setattr(
+            "agent.skill_governance.rank_skill_search_results",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("simulated ranking failure")),
+        )
+
+        r = self.client.get("/api/skills/hub/sources")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["featured"] == []
 
 
 class TestSkillsHubPreviewEndpoint:

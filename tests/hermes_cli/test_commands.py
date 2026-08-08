@@ -610,7 +610,7 @@ class TestDiscordSkillCmdKeyDispatch:
             },
         }
 
-        with patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds), \
+        with patch("agent.skill_commands.get_discoverable_skill_commands", return_value=fake_cmds), \
              patch("tools.skills_tool.SKILLS_DIR", fake_skills_dir), \
              patch("agent.skill_utils.get_external_skills_dirs", return_value=[]):
             entries, hidden = discord_skill_commands(
@@ -685,7 +685,7 @@ class TestTelegramMenuCommands:
         }
 
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("agent.skill_commands.get_discoverable_skill_commands", return_value=fake_cmds),
             patch("tools.skills_tool.SKILLS_DIR", local_dir),
             patch(
                 "agent.skill_utils.get_external_skills_dirs",
@@ -726,7 +726,7 @@ class TestTelegramMenuCommands:
             },
         }
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("agent.skill_commands.get_discoverable_skill_commands", return_value=fake_cmds),
             patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             (tmp_path / "skills").mkdir(exist_ok=True)
@@ -759,7 +759,7 @@ class TestTelegramMenuCommands:
             },
         }
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("agent.skill_commands.get_discoverable_skill_commands", return_value=fake_cmds),
             patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             (tmp_path / "skills").mkdir(exist_ok=True)
@@ -770,6 +770,43 @@ class TestTelegramMenuCommands:
         assert "valid_skill" in menu_names
         # No empty string in menu names
         assert "" not in menu_names
+
+    def test_hides_skills_when_discoverable_set_is_empty(self, tmp_path, monkeypatch):
+        from unittest.mock import patch
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "skills").mkdir(exist_ok=True)
+        with (
+            patch("agent.skill_commands.get_discoverable_skill_commands", return_value={}),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            menu, _ = telegram_menu_commands(max_commands=100)
+
+        menu_names = {n for n, _ in menu}
+        assert "my_cool_skill" not in menu_names
+
+    def test_preserves_unprotected_behavior_via_discoverable_set(self, tmp_path, monkeypatch):
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+        fake_cmds = {
+            "/my-cool-skill": {
+                "name": "my-cool-skill",
+                "description": "A cool skill",
+                "skill_md_path": f"{fake_skills_dir}/my-cool-skill/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/my-cool-skill",
+            },
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with (
+            patch("agent.skill_commands.get_discoverable_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            (tmp_path / "skills").mkdir(exist_ok=True)
+            menu, _ = telegram_menu_commands(max_commands=100)
+
+        menu_names = {n for n, _ in menu}
+        assert "my_cool_skill" in menu_names
 
 
 # ---------------------------------------------------------------------------
@@ -810,7 +847,7 @@ class TestDiscordSkillCommands:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "skills").mkdir(exist_ok=True)
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("agent.skill_commands.get_discoverable_skill_commands", return_value=fake_cmds),
             patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             entries, _ = discord_skill_commands(
@@ -836,7 +873,7 @@ class TestDiscordSkillCommands:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "skills").mkdir(exist_ok=True)
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("agent.skill_commands.get_discoverable_skill_commands", return_value=fake_cmds),
             patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             entries, hidden = discord_skill_commands(
@@ -845,6 +882,49 @@ class TestDiscordSkillCommands:
 
         assert len(entries) == 5
         assert hidden == 15
+
+    def test_hides_skills_when_discoverable_set_is_empty(self, tmp_path, monkeypatch):
+        """Gateway discovery must respect fail-closed governance filtering."""
+        from unittest.mock import patch
+
+        fake_skills_dir = tmp_path / "skills"
+        fake_skills_dir.mkdir(exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with (
+            patch("agent.skill_commands.get_discoverable_skill_commands", return_value={}),
+            patch("tools.skills_tool.SKILLS_DIR", fake_skills_dir),
+        ):
+            entries, hidden = discord_skill_commands(
+                max_slots=50, reserved_names=set(),
+            )
+
+        assert entries == []
+        assert hidden == 0
+
+    def test_preserves_unprotected_behavior_via_discoverable_set(self, tmp_path, monkeypatch):
+        from unittest.mock import patch
+
+        fake_skills_dir = tmp_path / "skills"
+        fake_skills_dir.mkdir(exist_ok=True)
+        fake_cmds = {
+            "/my-cool-skill": {
+                "name": "my-cool-skill",
+                "description": "A cool skill",
+                "skill_md_path": f"{fake_skills_dir}/my-cool-skill/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/my-cool-skill",
+            },
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with (
+            patch("agent.skill_commands.get_discoverable_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", fake_skills_dir),
+        ):
+            entries, hidden = discord_skill_commands(
+                max_slots=50, reserved_names=set(),
+            )
+
+        assert [name for name, _desc, _key in entries] == ["my-cool-skill"]
+        assert hidden == 0
 
 
 
@@ -897,7 +977,7 @@ class TestDiscordSkillCommandsByCategory:
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("agent.skill_commands.get_discoverable_skill_commands", return_value=fake_cmds),
             patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             categories, uncategorized, hidden = discord_skill_commands_by_category(
@@ -954,7 +1034,7 @@ class TestDiscordSkillCommandsByCategory:
         }
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("agent.skill_commands.get_discoverable_skill_commands", return_value=fake_cmds),
             patch("tools.skills_tool.SKILLS_DIR", local_skills_dir),
             patch(
                 "agent.skill_utils.get_external_skills_dirs",

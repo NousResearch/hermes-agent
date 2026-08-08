@@ -4,11 +4,13 @@ import os
 from pathlib import Path
 
 import pytest
+from agent.skill_governance import SkillGovernanceRejectedError
 
 from agent.skill_bundles import (
     _slugify,
     build_bundle_invocation_message,
     delete_bundle,
+    get_discoverable_skill_bundles,
     get_bundle,
     get_skill_bundles,
     list_bundles,
@@ -17,6 +19,25 @@ from agent.skill_bundles import (
     save_bundle,
     scan_bundles,
 )
+
+
+def _configure_protected_governance(home: Path, registry_entries: str) -> None:
+    (home / "governance").mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        """\
+skills:
+  governance:
+    registry_path: governance/skills-registry.yaml
+    task_class: ardyn_engineering
+    protected_task_classes:
+      - ardyn_engineering
+""",
+        encoding="utf-8",
+    )
+    (home / "governance" / "skills-registry.yaml").write_text(
+        "version: 1\nskills:\n" + registry_entries,
+        encoding="utf-8",
+    )
 
 
 def _make_bundle_yaml(
@@ -127,6 +148,52 @@ class TestGetSkillBundles:
         assert "/b" in result
 
 
+class TestDiscoverableSkillBundles:
+    def test_hides_bundle_with_governance_blocked_member(self, bundles_env, monkeypatch):
+        bundles_dir, skills_dir = bundles_env
+        home = bundles_dir.parent / "home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _configure_protected_governance(
+            home,
+            """\
+  - name: skill-a
+    classification: CURRENT
+  - name: skill-b
+    classification: COMPATIBILITY_ONLY
+""",
+        )
+        _make_skill(skills_dir, "skill-a", body="safe")
+        _make_skill(skills_dir, "skill-b", body="blocked")
+        _make_bundle_yaml(bundles_dir, "combo", ["skill-a", "skill-b"])
+
+        assert get_discoverable_skill_bundles() == {}
+
+    def test_fail_closes_when_governance_config_is_malformed(self, bundles_env, monkeypatch):
+        bundles_dir, skills_dir = bundles_env
+        home = bundles_dir.parent / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        (home / "config.yaml").write_text(
+            "skills:\n  governance: []\n",
+            encoding="utf-8",
+        )
+        _make_skill(skills_dir, "skill-a", body="safe")
+        _make_bundle_yaml(bundles_dir, "combo", ["skill-a"])
+
+        assert get_discoverable_skill_bundles() == {}
+
+    def test_preserves_unprotected_behavior(self, bundles_env, monkeypatch):
+        bundles_dir, skills_dir = bundles_env
+        home = bundles_dir.parent / "home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _make_skill(skills_dir, "skill-a", body="safe")
+        _make_bundle_yaml(bundles_dir, "combo", ["skill-a"])
+
+        visible = get_discoverable_skill_bundles()
+
+        assert list(visible) == ["/combo"]
+
+
 class TestResolveBundleCommandKey:
     def test_exact_match(self, bundles_env):
         bundles_dir, _ = bundles_env
@@ -227,6 +294,29 @@ class TestBuildBundleInvocationMessage:
         msg2, loaded2, _ = result2
         assert set(loaded2) == {"skill-a", "skill-b"}
         assert "SECRET DISABLED CONTENT." in msg2
+
+    def test_bundle_denies_when_member_is_governance_blocked(
+        self, bundles_env, monkeypatch
+    ):
+        bundles_dir, skills_dir = bundles_env
+        home = bundles_dir.parent / "home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _configure_protected_governance(
+            home,
+            """\
+  - name: skill-a
+    classification: CURRENT
+  - name: skill-b
+    classification: COMPATIBILITY_ONLY
+""",
+        )
+        _make_skill(skills_dir, "skill-a", body="safe")
+        _make_skill(skills_dir, "skill-b", body="blocked")
+        _make_bundle_yaml(bundles_dir, "combo", ["skill-a", "skill-b"])
+        scan_bundles()
+
+        with pytest.raises(SkillGovernanceRejectedError, match="skill-b"):
+            build_bundle_invocation_message("/combo")
 
 
 

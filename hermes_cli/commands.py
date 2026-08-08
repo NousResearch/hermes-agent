@@ -927,7 +927,7 @@ def _collect_gateway_skill_entries(
 
     skill_triples: list[tuple[str, str, str]] = []
     try:
-        from agent.skill_commands import get_skill_commands
+        from agent.skill_commands import get_discoverable_skill_commands
         from tools.skills_tool import SKILLS_DIR
         from agent.skill_utils import get_external_skills_dirs
         _skills_dir = str(SKILLS_DIR.resolve())
@@ -942,7 +942,7 @@ def _collect_gateway_skill_entries(
         _allowed_prefixes.extend(
             str(d).rstrip("/") + "/" for d in get_external_skills_dirs()
         )
-        skill_cmds = get_skill_commands()
+        skill_cmds = get_discoverable_skill_commands()
         for cmd_key in sorted(skill_cmds):
             info = skill_cmds[cmd_key]
             skill_path = info.get("skill_md_path", "")
@@ -1108,7 +1108,7 @@ def discord_skill_commands_by_category(
     hidden = 0
 
     try:
-        from agent.skill_commands import get_skill_commands
+        from agent.skill_commands import get_discoverable_skill_commands
         from agent.skill_utils import get_external_skills_dirs
         from tools.skills_tool import SKILLS_DIR
 
@@ -1126,7 +1126,7 @@ def discord_skill_commands_by_category(
                     continue
         except Exception:
             pass
-        skill_cmds = get_skill_commands()
+        skill_cmds = get_discoverable_skill_commands()
 
         for cmd_key in sorted(skill_cmds):
             info = skill_cmds[cmd_key]

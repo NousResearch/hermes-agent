@@ -15818,11 +15818,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Skill bundles take precedence over individual skill commands —
             # /<bundle> loads multiple skills at once. Mirrors CLI dispatch.
             _bundle_handled = False
+            _skill_governance_rejected = ()
             try:
                 from agent.skill_bundles import (
                     build_bundle_invocation_message,
                     resolve_bundle_command_key,
                 )
+                from agent.skill_governance import SkillGovernanceRejectedError
+                _skill_governance_rejected = (SkillGovernanceRejectedError,)
                 bundle_key = resolve_bundle_command_key(command)
                 if bundle_key is not None:
                     user_instruction = event.get_command_args().strip()
@@ -15846,16 +15849,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 bundle_key, ", ".join(missing),
                             )
                         # Fall through to normal message processing with bundle content
+            except _skill_governance_rejected as exc:
+                return str(exc)
             except Exception as exc:
                 logger.warning("Bundle dispatch failed: %s", exc)
 
         if command and not locals().get("_bundle_handled", False):
+            _protected_skill_governance = False
             try:
                 from agent.skill_commands import (
                     get_skill_commands,
                     build_skill_invocation_message,
                     resolve_skill_command_key,
                 )
+                from agent.skill_governance import (
+                    SkillGovernanceRejectedError,
+                    probe_protected_task_class,
+                )
+                _protected_skill_governance = probe_protected_task_class().protected_task
                 skill_cmds = get_skill_commands()
                 cmd_key = resolve_skill_command_key(command)
                 if cmd_key is not None:
@@ -15954,8 +15965,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             f"or resend without the leading slash to send "
                             f"as a regular message."
                         )
+            except SkillGovernanceRejectedError as exc:
+                return str(exc)
             except Exception as e:
-                logger.debug("Skill command check failed (non-fatal): %s", e)
+                logger.debug("Skill command check failed", exc_info=True)
+                if _protected_skill_governance:
+                    return (
+                        f'The "/{command}" skill command was denied because skill governance '
+                        f"could not be evaluated for the protected task class: {e}"
+                    )
         
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger

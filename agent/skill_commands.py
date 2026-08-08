@@ -482,6 +482,51 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     return _skill_commands
 
 
+def get_discoverable_skill_commands() -> Dict[str, Dict[str, Any]]:
+    """Return skill commands safe to advertise in help/completion surfaces.
+
+    Discovery is stricter than explicit dispatch: when governance marks the
+    current task class protected, or governance evaluation cannot be trusted,
+    skills that would be blocked at invocation time are hidden entirely.
+
+    Unprotected task classes preserve the historical behavior and keep the full
+    scan-time command list even if governance evaluation is unavailable.
+    """
+    commands = get_skill_commands()
+    if not commands:
+        return commands
+
+    try:
+        from agent.skill_governance import evaluate_skill_selection_fail_closed
+    except Exception:
+        evaluate_skill_selection_fail_closed = None
+
+    if evaluate_skill_selection_fail_closed is None:
+        try:
+            from agent.skill_governance import probe_protected_task_class
+
+            if probe_protected_task_class().protected_task:
+                return {}
+        except Exception:
+            return {}
+        return commands
+
+    visible: Dict[str, Dict[str, Any]] = {}
+    for cmd_key, info in commands.items():
+        skill_name = str((info or {}).get("name") or cmd_key.lstrip("/") or "").strip()
+        if not skill_name:
+            continue
+        decision = evaluate_skill_selection_fail_closed(
+            skill_name,
+            mode="explicit",
+            historical_intent=False,
+            emit_log=False,
+        )
+        if decision is None or decision.allowed:
+            visible[cmd_key] = info
+    return visible
+
+
 def reload_skills() -> Dict[str, Any]:
     """Re-scan the skills directory and return a diff of what changed.
 
@@ -592,6 +637,19 @@ def build_skill_invocation_message(
 
     loaded_skill, skill_dir, skill_name = loaded
 
+    from agent.skill_governance import (
+        SkillGovernanceRejectedError,
+        evaluate_skill_selection_fail_closed,
+    )
+
+    decision = evaluate_skill_selection_fail_closed(
+        skill_name,
+        mode="explicit",
+        historical_intent=False,
+    )
+    if decision is not None and not decision.allowed:
+        raise SkillGovernanceRejectedError(decision)
+
     # Track active usage for Curator lifecycle management (#17782)
     try:
         from tools.skill_usage import bump_use
@@ -700,6 +758,19 @@ def build_stacked_skill_invocation_message(
             continue
         loaded_skill, skill_dir, skill_name = loaded
 
+        from agent.skill_governance import (
+            SkillGovernanceRejectedError,
+            evaluate_skill_selection_fail_closed,
+        )
+
+        decision = evaluate_skill_selection_fail_closed(
+            skill_name,
+            mode="explicit",
+            historical_intent=False,
+        )
+        if decision is not None and not decision.allowed:
+            raise SkillGovernanceRejectedError(decision)
+
         # Track active usage for Curator lifecycle management (#17782)
         try:
             from tools.skill_usage import bump_use
@@ -762,12 +833,23 @@ def build_preloaded_skills_prompt(
     prompt_parts: list[str] = []
     loaded_names: list[str] = []
     missing: list[str] = []
+    rejected: set[str] = set()
 
     try:
         from agent.skill_utils import get_disabled_skill_names
         disabled_names = get_disabled_skill_names()
     except Exception:
         disabled_names = set()
+    _protected_task = False
+    try:
+        from agent.skill_governance import (
+            evaluate_skill_selection_fail_closed,
+            probe_protected_task_class,
+        )
+        _protected_task = probe_protected_task_class().protected_task
+    except Exception:
+        evaluate_skill_selection_fail_closed = None
+        _protected_task = True
 
     seen: set[str] = set()
     for raw_identifier in skill_identifiers:
@@ -784,6 +866,20 @@ def build_preloaded_skills_prompt(
         loaded_skill, skill_dir, skill_name = loaded
 
         if skill_name in disabled_names or identifier in disabled_names:
+            missing.append(identifier)
+            continue
+
+        if evaluate_skill_selection_fail_closed is not None:
+            decision = evaluate_skill_selection_fail_closed(
+                skill_name,
+                mode="preload",
+            )
+            if decision is not None and not decision.allowed:
+                rejected.add(identifier)
+                missing.append(identifier)
+                continue
+        elif _protected_task:
+            rejected.add(identifier)
             missing.append(identifier)
             continue
 
@@ -808,5 +904,11 @@ def build_preloaded_skills_prompt(
             )
         )
         loaded_names.append(skill_name)
+
+    if rejected:
+        logger.warning(
+            "Skill preload rejected by governance: %s",
+            sorted(rejected),
+        )
 
     return "\n\n".join(prompt_parts), loaded_names, missing

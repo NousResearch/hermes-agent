@@ -56,6 +56,25 @@ def _symlink_category(skills_dir: Path, linked_root: Path, category: str) -> Pat
     return external_category
 
 
+def _configure_protected_governance(home: Path, registry_entries: str) -> None:
+    (home / "governance").mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        """\
+skills:
+  governance:
+    registry_path: governance/skills-registry.yaml
+    task_class: ardyn_engineering
+    protected_task_classes:
+      - ardyn_engineering
+""",
+        encoding="utf-8",
+    )
+    (home / "governance" / "skills-registry.yaml").write_text(
+        "version: 1\nskills:\n" + registry_entries,
+        encoding="utf-8",
+    )
+
+
 # ---------------------------------------------------------------------------
 # _parse_frontmatter
 # ---------------------------------------------------------------------------
@@ -295,6 +314,56 @@ class TestSkillsList:
         assert result["categories"] == ["linked"]
         assert result["skills"][0]["name"] == "knowledge-brain"
 
+    def test_hides_governance_blocked_skills_when_protected(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _configure_protected_governance(
+            home,
+            """\
+  - name: blocked-skill
+    classification: COMPATIBILITY_ONLY
+  - name: allowed-skill
+    classification: CURRENT
+""",
+        )
+        skills_dir = home / "skills"
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+            _make_skill(skills_dir, "blocked-skill")
+            _make_skill(skills_dir, "allowed-skill")
+            result = json.loads(skills_list())
+
+        assert [skill["name"] for skill in result["skills"]] == ["allowed-skill"]
+
+    def test_fail_closes_when_governance_config_is_malformed(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        (home / "config.yaml").write_text("skills:\n  governance: []\n", encoding="utf-8")
+        skills_dir = home / "skills"
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+            _make_skill(skills_dir, "visible-if-unprotected")
+            result = json.loads(skills_list())
+
+        assert result["skills"] == []
+
+    def test_preserves_unprotected_behavior_when_governance_eval_fails(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        skills_dir = home / "skills"
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", skills_dir),
+            patch(
+                "agent.skill_governance.governance_context",
+                side_effect=RuntimeError("registry unreadable"),
+            ),
+        ):
+            _make_skill(skills_dir, "still-visible")
+            result = json.loads(skills_list())
+
+        assert [skill["name"] for skill in result["skills"]] == ["still-visible"]
+
 
 # ---------------------------------------------------------------------------
 # skill_view
@@ -408,6 +477,56 @@ class TestSkillView:
         result = json.loads(raw)
         assert result["success"] is True
         assert result["name"] == "knowledge-brain"
+
+    def test_view_denies_governance_blocked_skill_when_protected(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _configure_protected_governance(
+            home,
+            """\
+  - name: blocked-skill
+    classification: COMPATIBILITY_ONLY
+""",
+        )
+        skills_dir = home / "skills"
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+            _make_skill(skills_dir, "blocked-skill", body="blocked content")
+            result = json.loads(skill_view("blocked-skill"))
+
+        assert result["success"] is False
+        assert "blocked by skill governance" in result["error"].lower()
+
+    def test_view_fails_closed_when_governance_config_is_malformed(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        (home / "config.yaml").write_text("skills:\n  governance: []\n", encoding="utf-8")
+        skills_dir = home / "skills"
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+            _make_skill(skills_dir, "blocked-by-error", body="content")
+            result = json.loads(skill_view("blocked-by-error"))
+
+        assert result["success"] is False
+        assert "blocked by skill governance" in result["error"].lower()
+
+    def test_view_preserves_unprotected_behavior_when_governance_eval_fails(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        skills_dir = home / "skills"
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", skills_dir),
+            patch(
+                "agent.skill_governance.governance_context",
+                side_effect=RuntimeError("registry unreadable"),
+            ),
+        ):
+            _make_skill(skills_dir, "still-loads", body="visible content")
+            result = json.loads(skill_view("still-loads"))
+
+        assert result["success"] is True
+        assert "visible content" in result["content"]
 
 
 class TestSkillViewSecureSetupOnLoad:

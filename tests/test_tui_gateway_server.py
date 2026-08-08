@@ -3629,6 +3629,30 @@ def _session(agent=None, **extra):
     }
 
 
+def _configure_protected_governance(home: Path) -> None:
+    (home / "governance").mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        """\
+skills:
+  governance:
+    registry_path: governance/skills-registry.yaml
+    task_class: ardyn_engineering
+    protected_task_classes:
+      - ardyn_engineering
+""",
+        encoding="utf-8",
+    )
+    (home / "governance" / "skills-registry.yaml").write_text(
+        """\
+version: 1
+skills:
+  - name: ToolTrust
+    classification: COMPATIBILITY_ONLY
+""",
+        encoding="utf-8",
+    )
+
+
 def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
     calls = {"hooks": []}
 
@@ -6520,7 +6544,7 @@ def _slash_skill_fixtures(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        "agent.skill_commands.get_skill_commands",
+        "agent.skill_commands.get_discoverable_skill_commands",
         lambda: {
             "/work": {"description": "Fresh worktree"},
             "/research": {"description": "Look it up"},
@@ -6589,6 +6613,123 @@ def test_complete_slash_leaves_argument_stages_alone(monkeypatch):
     items = _slash_completions("/details c")
 
     assert [item["text"] for item in items] == ["collapsed", "cycle"]
+
+
+def test_complete_slash_hides_governance_blocked_skills_when_protected(
+    monkeypatch, tmp_path
+):
+    import agent.skill_commands as skill_commands_mod
+    import tools.skills_tool as skills_tool_module
+
+    home = tmp_path / "home"
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    _configure_protected_governance(home)
+    (home / "governance" / "skills-registry.yaml").write_text(
+        """\
+version: 1
+skills:
+  - name: ToolTrust
+    classification: COMPATIBILITY_ONLY
+  - name: SafeSkill
+    classification: CURRENT
+""",
+        encoding="utf-8",
+    )
+    (skills_dir / "ToolTrust").mkdir(parents=True, exist_ok=True)
+    (skills_dir / "ToolTrust" / "SKILL.md").write_text(
+        "---\nname: ToolTrust\ndescription: blocked\n---\n\n# ToolTrust\n\nBlocked.\n",
+        encoding="utf-8",
+    )
+    (skills_dir / "SafeSkill").mkdir(parents=True, exist_ok=True)
+    (skills_dir / "SafeSkill" / "SKILL.md").write_text(
+        "---\nname: SafeSkill\ndescription: allowed\n---\n\n# SafeSkill\n\nAllowed.\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(skills_tool_module, "SKILLS_DIR", skills_dir)
+    skill_commands_mod._skill_commands = {}
+    skill_commands_mod._skill_commands_platform = None
+    monkeypatch.setattr("agent.skill_bundles.get_skill_bundles", lambda: {})
+
+    items = _slash_completions("/s")
+    texts = {item["text"].strip() for item in items if item["kind"] == "skill"}
+
+    assert "safeskill" in texts
+    assert "tooltrust" not in texts
+
+
+def test_complete_slash_hides_bundles_when_governance_config_is_malformed(
+    monkeypatch, tmp_path
+):
+    import agent.skill_bundles as skill_bundles_mod
+    import agent.skill_commands as skill_commands_mod
+    import tools.skills_tool as skills_tool_module
+
+    home = tmp_path / "home"
+    skills_dir = tmp_path / "skills"
+    bundles_dir = tmp_path / "bundles"
+    home.mkdir()
+    skills_dir.mkdir()
+    (home / "config.yaml").write_text("skills:\n  governance: []\n", encoding="utf-8")
+    (skills_dir / "SafeSkill").mkdir(parents=True, exist_ok=True)
+    (skills_dir / "SafeSkill" / "SKILL.md").write_text(
+        "---\nname: SafeSkill\ndescription: allowed\n---\n\n# SafeSkill\n\nAllowed.\n",
+        encoding="utf-8",
+    )
+    bundles_dir.mkdir(parents=True, exist_ok=True)
+    (bundles_dir / "safe-pack.yaml").write_text(
+        "name: safe-pack\nskills:\n  - SafeSkill\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_BUNDLES_DIR", str(bundles_dir))
+    monkeypatch.setattr(skills_tool_module, "SKILLS_DIR", skills_dir)
+    skill_commands_mod._skill_commands = {}
+    skill_commands_mod._skill_commands_platform = None
+    skill_bundles_mod._bundles_cache = {}
+    skill_bundles_mod._bundles_cache_mtime = None
+
+    items = _slash_completions("/safe")
+    texts = {item["text"].strip() for item in items if item["kind"] == "skill"}
+
+    assert "safe-pack" not in texts
+
+
+def test_complete_slash_keeps_bundles_visible_when_unprotected(monkeypatch, tmp_path):
+    import agent.skill_bundles as skill_bundles_mod
+    import agent.skill_commands as skill_commands_mod
+    import tools.skills_tool as skills_tool_module
+
+    home = tmp_path / "home"
+    skills_dir = tmp_path / "skills"
+    bundles_dir = tmp_path / "bundles"
+    skills_dir.mkdir()
+    (skills_dir / "SafeSkill").mkdir(parents=True, exist_ok=True)
+    (skills_dir / "SafeSkill" / "SKILL.md").write_text(
+        "---\nname: SafeSkill\ndescription: allowed\n---\n\n# SafeSkill\n\nAllowed.\n",
+        encoding="utf-8",
+    )
+    bundles_dir.mkdir(parents=True, exist_ok=True)
+    (bundles_dir / "safe-pack.yaml").write_text(
+        "name: safe-pack\nskills:\n  - SafeSkill\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_BUNDLES_DIR", str(bundles_dir))
+    monkeypatch.setattr(skills_tool_module, "SKILLS_DIR", skills_dir)
+    skill_commands_mod._skill_commands = {}
+    skill_commands_mod._skill_commands_platform = None
+    skill_bundles_mod._bundles_cache = {}
+    skill_bundles_mod._bundles_cache_mtime = None
+
+    items = _slash_completions("/safe")
+    texts = {item["text"].strip() for item in items if item["kind"] == "skill"}
+
+    assert "safe-pack" in texts
 
 
 def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypatch):
@@ -8307,7 +8448,7 @@ def test_commands_catalog_ranks_skill_commands_by_recorded_usage(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        "agent.skill_commands.scan_skill_commands",
+        "agent.skill_commands.get_discoverable_skill_commands",
         lambda: {
             "/research": {"name": "research", "description": "Look it up"},
             "/research-paper-writing": {
@@ -8414,6 +8555,92 @@ def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible
     assert "/approve" not in canon
     assert "/deny" not in canon
     assert "/set-home" not in canon
+
+
+def test_commands_catalog_hides_governance_blocked_skills_when_protected(
+    monkeypatch, tmp_path
+):
+    import agent.skill_commands as skill_commands_mod
+    import tools.skills_tool as skills_tool_module
+
+    home = tmp_path / "home"
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    _configure_protected_governance(home)
+    (home / "governance" / "skills-registry.yaml").write_text(
+        """\
+version: 1
+skills:
+  - name: ToolTrust
+    classification: COMPATIBILITY_ONLY
+  - name: SafeSkill
+    classification: CURRENT
+""",
+        encoding="utf-8",
+    )
+    (skills_dir / "ToolTrust").mkdir(parents=True, exist_ok=True)
+    (skills_dir / "ToolTrust" / "SKILL.md").write_text(
+        "---\nname: ToolTrust\ndescription: blocked\n---\n\n# ToolTrust\n\nBlocked.\n",
+        encoding="utf-8",
+    )
+    (skills_dir / "SafeSkill").mkdir(parents=True, exist_ok=True)
+    (skills_dir / "SafeSkill" / "SKILL.md").write_text(
+        "---\nname: SafeSkill\ndescription: allowed\n---\n\n# SafeSkill\n\nAllowed.\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(skills_tool_module, "SKILLS_DIR", skills_dir)
+    skill_commands_mod._skill_commands = {}
+    skill_commands_mod._skill_commands_platform = None
+
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    pairs = dict(resp["result"]["pairs"])
+    assert "/safeskill" in pairs
+    assert "/tooltrust" not in pairs
+    assert "/tooltrust" not in resp["result"]["skills"]
+
+
+def test_skills_manage_browse_fail_closes_when_config_is_unreadable(
+    monkeypatch, tmp_path
+):
+    home = tmp_path / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("skills: [\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    result = types.SimpleNamespace(
+        name="current-skill",
+        description="Alpha",
+        source="community",
+        identifier="repo/current-skill",
+        trust_level="community",
+        extra={},
+    )
+
+    monkeypatch.setattr("tools.skills_hub.GitHubAuth", lambda: object())
+    monkeypatch.setattr("tools.skills_hub.create_source_router", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        "tools.skills_hub.parallel_search_sources",
+        lambda *_a, **_k: ([result], {"community": 1}, []),
+    )
+    monkeypatch.setattr(
+        "agent.skill_governance.rank_skill_search_results",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("simulated ranking failure")),
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "skills.manage",
+            "params": {"action": "browse", "page": 1, "page_size": 20},
+        }
+    )
+
+    assert resp["result"] == {"items": [], "page": 1, "total_pages": 1, "total": 0}
 
 
 def test_session_status_reads_live_gateway_agent(monkeypatch):
@@ -8528,6 +8755,42 @@ def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
 
     assert "error" in resp
     assert "failed" in resp["error"]["message"]
+
+
+def test_command_dispatch_skill_denies_governance_blocked_skill(monkeypatch, tmp_path):
+    import agent.skill_commands as skill_commands_mod
+    import tools.skills_tool as skills_tool_module
+
+    home = tmp_path / "home"
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    _configure_protected_governance(home)
+    (skills_dir / "ToolTrust").mkdir(parents=True, exist_ok=True)
+    (skills_dir / "ToolTrust" / "SKILL.md").write_text(
+        "---\nname: ToolTrust\ndescription: blocked\n---\n\n# ToolTrust\n\nBlocked.\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(skills_tool_module, "SKILLS_DIR", skills_dir)
+    skill_commands_mod._skill_commands = {}
+    skill_commands_mod._skill_commands_platform = None
+
+    server._sessions["sid"] = _session()
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "command.dispatch",
+                "params": {"name": "tooltrust", "arg": "do it", "session_id": "sid"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "error" in resp
+    assert "ToolTrust" in resp["error"]["message"]
+    assert "historical intent" in resp["error"]["message"]
 
 
 def test_plugins_list_surfaces_loader_error(monkeypatch):

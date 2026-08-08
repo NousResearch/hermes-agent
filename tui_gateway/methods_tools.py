@@ -331,7 +331,7 @@ def _(rid, params: dict) -> dict:
         skill_count = 0
         skills: dict[str, dict] = {}
         try:
-            from agent.skill_commands import scan_skill_commands
+            from agent.skill_commands import get_discoverable_skill_commands
 
             # Usage + origin per skill command. Surfaces here rather than in a
             # second RPC because every consumer that renders the catalog also
@@ -339,7 +339,7 @@ def _(rid, params: dict) -> dict:
             # loaded once per catalog build.
             usage, origin_of = _skill_usage_lookup()
 
-            for k, info in sorted(scan_skill_commands().items()):
+            for k, info in sorted(get_discoverable_skill_commands().items()):
                 d = str(info.get("description", "Skill"))
                 all_pairs.append([k, d[:120] + ("…" if len(d) > 120 else "")])
                 name = str(info.get("name") or k.lstrip("/"))
@@ -511,12 +511,15 @@ def _(rid, params: dict) -> dict:
 
     if bundle_key is not None:
         try:
+            from agent.skill_governance import SkillGovernanceRejectedError
             bundle_result = build_bundle_invocation_message(
                 bundle_key,
                 arg,
                 task_id=session.get("session_key", "") if session else "",
                 platform=_resolve_session_platform(),
             )
+        except SkillGovernanceRejectedError as exc:
+            return _err(rid, 4018, str(exc))
         except Exception as exc:
             return _err(rid, 4018, f"bundle dispatch failed: {exc}")
 
@@ -546,6 +549,7 @@ def _(rid, params: dict) -> dict:
             scan_skill_commands,
             build_skill_invocation_message,
         )
+        from agent.skill_governance import SkillGovernanceRejectedError
 
         cmds = scan_skill_commands()
         key = f"/{name}"
@@ -565,6 +569,8 @@ def _(rid, params: dict) -> dict:
                         "display": _skill_scaffold_projection(msg),
                     },
                 )
+    except SkillGovernanceRejectedError as exc:
+        return _err(rid, 4018, str(exc))
     except Exception:
         pass
 

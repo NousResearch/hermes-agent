@@ -24,7 +24,7 @@ from agent.skill_bundles import (
     _bundles_dir,
     delete_bundle,
     get_bundle,
-    list_bundles,
+    list_discoverable_bundles,
     reload_bundles,
     save_bundle,
     scan_bundles,
@@ -40,7 +40,7 @@ def _console() -> Console:
 
 def _cmd_list(args) -> None:
     c = _console()
-    bundles = list_bundles()
+    bundles = list_discoverable_bundles()
     if not bundles:
         c.print(
             f"[dim]No bundles installed yet. Create one with:\n"

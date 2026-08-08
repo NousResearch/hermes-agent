@@ -2787,6 +2787,49 @@ def resolve_channel_prompt(
     return None
 
 
+def _filter_auto_bound_skills(skill_names: list[str]) -> list[str]:
+    """Apply governance filtering to automatic channel/topic skill bindings."""
+    if not skill_names:
+        return []
+
+    protected_task = True
+    try:
+        from agent.skill_governance import (
+            evaluate_skill_selection_fail_closed,
+            probe_protected_task_class,
+        )
+        protected_task = probe_protected_task_class().protected_task
+    except Exception:
+        if protected_task:
+            logger.warning(
+                "Auto-bound skill governance unavailable for protected task class; denying %s",
+                skill_names,
+            )
+            return []
+        return skill_names
+
+    allowed: list[str] = []
+    for skill_name in skill_names:
+        try:
+            decision = evaluate_skill_selection_fail_closed(
+                skill_name,
+                mode="auto",
+            )
+        except Exception:
+            if protected_task:
+                logger.warning(
+                    "Auto-bound skill governance evaluation failed for protected task class; denying %s",
+                    skill_name,
+                    exc_info=True,
+                )
+                continue
+            allowed.append(skill_name)
+            continue
+        if decision is None or decision.allowed:
+            allowed.append(skill_name)
+    return allowed
+
+
 def resolve_channel_skills(
     config_extra: dict,
     channel_id: str,
@@ -2829,7 +2872,8 @@ def resolve_channel_skills(
             skills = entry.get("skills") or entry.get("skill")
             if isinstance(skills, str):
                 s = skills.strip()
-                return [s] if s else None
+                resolved = _filter_auto_bound_skills([s]) if s else None
+                return resolved or None
             if isinstance(skills, list) and skills:
                 seen: list[str] = []
                 for name in skills:
@@ -2838,6 +2882,8 @@ def resolve_channel_skills(
                     nm = name.strip()
                     if nm and nm not in seen:
                         seen.append(nm)
+                if seen:
+                    seen = _filter_auto_bound_skills(seen)
                 return seen or None
     return None
 

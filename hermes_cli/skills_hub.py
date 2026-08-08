@@ -41,6 +41,42 @@ def _display_source(r) -> str:
     return r.source
 
 
+def _rank_retrieval_results(
+    results,
+    *,
+    fallback_key=None,
+):
+    """Governance-aware retrieval ordering with protected-task fail-closed.
+
+    Retrieval may fall back to the pre-governance ordering only when the active
+    config parsed safely and does not mark the current task class protected.
+    """
+    ranked = list(results or [])
+    if not ranked:
+        return ranked
+
+    try:
+        from agent.skill_governance import governance_context, rank_skill_search_results
+
+        return rank_skill_search_results(
+            ranked,
+            context=governance_context(mode="retrieval"),
+        )
+    except Exception:
+        probe = None
+        try:
+            from agent.skill_governance import probe_protected_task_class
+
+            probe = probe_protected_task_class()
+        except Exception:
+            probe = None
+        if probe is None or not probe.safe or probe.protected_task:
+            return []
+        if fallback_key is not None:
+            ranked.sort(key=fallback_key)
+        return ranked
+
+
 # ---------------------------------------------------------------------------
 # Shared do_* functions
 # ---------------------------------------------------------------------------
@@ -266,7 +302,14 @@ def do_search(query: str, source: str = "all", limit: int = 10,
     if as_json:
         # Avoid Rich status spinner contaminating stdout — JSON consumers
         # expect a clean parseable stream.
-        results = unified_search(query, sources, source_filter=source, limit=limit)
+        results = _rank_retrieval_results(
+            unified_search(query, sources, source_filter=source, limit=limit),
+            fallback_key=lambda r: (
+                {"builtin": 2, "trusted": 1, "community": 0}.get(r.trust_level, 0) * -1,
+                r.source != "official",
+                r.name.lower(),
+            ),
+        )
         payload = [
             {
                 "name": r.name,
@@ -282,7 +325,14 @@ def do_search(query: str, source: str = "all", limit: int = 10,
 
     c.print(f"\n[bold]Searching for:[/] {query}")
     with c.status("[bold]Searching registries..."):
-        results = unified_search(query, sources, source_filter=source, limit=limit)
+        results = _rank_retrieval_results(
+            unified_search(query, sources, source_filter=source, limit=limit),
+            fallback_key=lambda r: (
+                {"builtin": 2, "trusted": 1, "community": 0}.get(r.trust_level, 0) * -1,
+                r.source != "official",
+                r.name.lower(),
+            ),
+        )
 
     if not results:
         c.print("[dim]No skills found matching your query.[/]\n")
@@ -402,12 +452,18 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
             seen[r.identifier] = r
     deduped = list(seen.values())
 
-    # Sort: official first, then by trust level (desc), then alphabetically
-    deduped.sort(key=lambda r: (
-        -_TRUST_RANK.get(r.trust_level, 0),
-        r.source != "official",
-        r.name.lower(),
-    ))
+    deduped = _rank_retrieval_results(
+        deduped,
+        fallback_key=lambda r: (
+            -_TRUST_RANK.get(r.trust_level, 0),
+            r.source != "official",
+            r.name.lower(),
+        ),
+    )
+
+    if not deduped:
+        c.print("[dim]No skills found in the Skills Hub.[/]\n")
+        return
 
     # Paginate
     total = len(deduped)
@@ -876,8 +932,16 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> di
         rank = _TRUST_RANK.get(r.trust_level, 0)
         if r.identifier not in seen or rank > _TRUST_RANK.get(seen[r.identifier].trust_level, 0):
             seen[r.identifier] = r
-    deduped = list(seen.values())
-    deduped.sort(key=lambda r: (-_TRUST_RANK.get(r.trust_level, 0), r.source != "official", r.name.lower()))
+    deduped = _rank_retrieval_results(
+        list(seen.values()),
+        fallback_key=lambda r: (
+            -_TRUST_RANK.get(r.trust_level, 0),
+            r.source != "official",
+            r.name.lower(),
+        ),
+    )
+    if not deduped:
+        return {"items": [], "page": 1, "total_pages": 1, "total": 0}
     total = len(deduped)
     total_pages = max(1, (total + page_size - 1) // page_size)
     page = max(1, min(page, total_pages))

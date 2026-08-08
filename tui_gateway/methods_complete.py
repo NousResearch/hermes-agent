@@ -226,12 +226,12 @@ def _(rid, params: dict) -> dict:
         from prompt_toolkit.document import Document
         from prompt_toolkit.formatted_text import to_plain_text
 
-        from agent.skill_commands import get_skill_commands
-        from agent.skill_bundles import get_skill_bundles
+        from agent.skill_commands import get_discoverable_skill_commands
+        from agent.skill_bundles import get_discoverable_skill_bundles
 
         completer = SlashCommandCompleter(
-            skill_commands_provider=lambda: get_skill_commands(),
-            skill_bundles_provider=lambda: get_skill_bundles(),
+            skill_commands_provider=lambda: get_discoverable_skill_commands(),
+            skill_bundles_provider=lambda: get_discoverable_skill_bundles(),
         )
         doc = Document(text, len(text))
         # Skill commands and bundles are the only completions offered for an
@@ -240,7 +240,7 @@ def _(rid, params: dict) -> dict:
         # uses — no sniffing the ⚡/▣ meta glyphs, which are display text.
         skill_names = {
             key.lstrip("/").lower()
-            for key in (*get_skill_commands(), *get_skill_bundles())
+            for key in (*get_discoverable_skill_commands(), *get_discoverable_skill_bundles())
         }
         items = [
             {

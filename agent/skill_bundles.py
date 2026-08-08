@@ -205,6 +205,79 @@ def get_skill_bundles() -> Dict[str, Dict[str, Any]]:
     return _bundles_cache
 
 
+def get_discoverable_skill_bundles() -> Dict[str, Dict[str, Any]]:
+    """Return bundle entries safe to advertise in help/completion surfaces.
+
+    Discovery is stricter than explicit dispatch: for protected task classes,
+    or when governance evaluation cannot be trusted, hide any bundle whose
+    loadable members would be denied at invocation time.
+
+    Unprotected task classes preserve the historical behavior and keep the full
+    bundle list even if governance evaluation is unavailable.
+    """
+    bundles = get_skill_bundles()
+    if not bundles:
+        return bundles
+
+    try:
+        from agent.skill_governance import evaluate_skill_selection_fail_closed
+    except Exception:
+        evaluate_skill_selection_fail_closed = None
+
+    if evaluate_skill_selection_fail_closed is None:
+        try:
+            from agent.skill_governance import probe_protected_task_class
+
+            if probe_protected_task_class().protected_task:
+                return {}
+        except Exception:
+            return {}
+        return bundles
+
+    try:
+        from agent.skill_commands import _load_skill_payload
+    except Exception:
+        try:
+            from agent.skill_governance import probe_protected_task_class
+
+            if probe_protected_task_class().protected_task:
+                return {}
+        except Exception:
+            return {}
+        return bundles
+
+    visible: Dict[str, Dict[str, Any]] = {}
+    for cmd_key, info in bundles.items():
+        bundle_skills = info.get("skills") or []
+        seen: set[str] = set()
+        blocked = False
+        for skill_id in bundle_skills:
+            identifier = str(skill_id or "").strip()
+            if not identifier or identifier in seen:
+                continue
+            seen.add(identifier)
+
+            loaded = _load_skill_payload(identifier)
+            if not loaded:
+                # Missing members are skipped at invocation time too.
+                continue
+
+            _loaded_skill, _skill_dir, skill_name = loaded
+            decision = evaluate_skill_selection_fail_closed(
+                skill_name,
+                mode="explicit",
+                historical_intent=False,
+                emit_log=False,
+            )
+            if decision is not None and not decision.allowed:
+                blocked = True
+                break
+
+        if not blocked:
+            visible[cmd_key] = info
+    return visible
+
+
 def resolve_bundle_command_key(command: str) -> Optional[str]:
     """Resolve a user-typed command to its canonical bundle slash key.
 
@@ -247,6 +320,12 @@ def reload_bundles() -> Dict[str, Any]:
 def list_bundles() -> List[Dict[str, Any]]:
     """Return a sorted list of bundle info dicts for display."""
     bundles = get_skill_bundles()
+    return sorted(bundles.values(), key=lambda b: b["slug"])
+
+
+def list_discoverable_bundles() -> List[Dict[str, Any]]:
+    """Return governance-filtered bundle info dicts for display surfaces."""
+    bundles = get_discoverable_skill_bundles()
     return sorted(bundles.values(), key=lambda b: b["slug"])
 
 
@@ -312,6 +391,19 @@ def build_bundle_invocation_message(
             missing.append(identifier)
             continue
         loaded_skill, skill_dir, skill_name = loaded
+
+        from agent.skill_governance import (
+            SkillGovernanceRejectedError,
+            evaluate_skill_selection_fail_closed,
+        )
+
+        decision = evaluate_skill_selection_fail_closed(
+            skill_name,
+            mode="explicit",
+            historical_intent=False,
+        )
+        if decision is not None and not decision.allowed:
+            raise SkillGovernanceRejectedError(decision)
 
         # Per-platform / global disabled gate. Checked against the loaded
         # skill's canonical name (identifiers may be paths or aliases).

@@ -357,7 +357,10 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData 
     let child
 
     try {
-      child = spawnFn('ssh', args, { stdio: [useStdinPipe ? 'pipe' : 'ignore', 'pipe', 'pipe'] })
+      child = spawnFn('ssh', args, {
+        stdio: [useStdinPipe ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+        windowsHide: true
+      })
     } catch (error) {
       reject(error)
 
@@ -720,7 +723,7 @@ class SshConnection {
         target(this.user, this.host)
       ]
 
-      const child = this._spawnFn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'] })
+      const child = this._spawnFn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true })
       const tunnel = { child, alive: true }
       this._tunnels.set(spec, tunnel)
       let stderr = ''

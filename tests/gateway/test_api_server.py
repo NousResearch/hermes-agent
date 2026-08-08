@@ -209,7 +209,7 @@ class TestAdapterInit:
         )
         monkeypatch.setattr(
             "gateway.run.GatewayRunner._load_reasoning_config",
-            staticmethod(lambda: {"enabled": True, "effort": "xhigh"}),
+            staticmethod(lambda model="": {"enabled": True, "effort": "xhigh"}),
         )
         monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
         monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
@@ -2447,6 +2447,21 @@ def _make_routing_adapter(routes) -> APIServerAdapter:
     return APIServerAdapter(config)
 
 
+def _api_server_user_config() -> dict:
+    """Gateway config selecting only the ``terminal`` toolset for api_server.
+
+    ``known_builtin_toolsets`` marks the recently-shipped toolsets as already
+    offered, so ``_enable_recently_shipped_toolsets`` does not back-fill them
+    and the toolset assertions below can stay exact.
+    """
+    from hermes_cli.tools_config import _RECENTLY_SHIPPED_TOOLSETS
+
+    return {
+        "platform_toolsets": {"api_server": ["terminal"]},
+        "known_builtin_toolsets": {"api_server": sorted(_RECENTLY_SHIPPED_TOOLSETS)},
+    }
+
+
 def _patch_create_agent_runtime(monkeypatch, captured: dict, fake_agent_cls):
     """Stub out every external dependency of _create_agent."""
     monkeypatch.setattr("run_agent.AIAgent", fake_agent_cls)
@@ -2480,6 +2495,36 @@ class TestModelRoutesParsing:
 
     def test_route_without_model_is_dropped(self):
         adapter = _make_routing_adapter({"bad": {"provider": "openrouter"}})
+        assert adapter._model_routes == {}
+
+    def test_route_toolsets_are_parsed(self):
+        adapter = _make_routing_adapter(
+            {"a": {"model": "m", "toolsets": [" web ", "no_mcp"]}}
+        )
+        assert adapter._model_routes["a"]["toolsets"] == ["web", "no_mcp"]
+
+    def test_route_with_invalid_toolsets_is_dropped(self):
+        adapter = _make_routing_adapter(
+            {"bad": {"model": "m", "toolsets": "no_mcp"}}
+        )
+        assert adapter._model_routes == {}
+
+    def test_route_with_empty_toolsets_is_dropped(self):
+        adapter = _make_routing_adapter(
+            {"bad": {"model": "m", "toolsets": []}}
+        )
+        assert adapter._model_routes == {}
+
+    def test_route_reasoning_effort_is_parsed(self):
+        adapter = _make_routing_adapter(
+            {"a": {"model": "m", "reasoning_effort": " HIGH "}}
+        )
+        assert adapter._model_routes["a"]["reasoning_effort"] == "high"
+
+    def test_route_with_invalid_reasoning_effort_is_dropped(self):
+        adapter = _make_routing_adapter(
+            {"bad": {"model": "m", "reasoning_effort": "warp-nine"}}
+        )
         assert adapter._model_routes == {}
 
 
@@ -2524,6 +2569,185 @@ class TestModelRoutesHandlers:
 
 
 class TestModelRoutesAgentCreation:
+    def test_bare_no_mcp_uses_default_native_tools(self, monkeypatch):
+        from hermes_cli.tools_config import _get_platform_tools
+        from model_tools import get_tool_definitions
+
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools", _get_platform_tools
+        )
+        adapter = _make_routing_adapter(
+            {"alias": {"model": "other/model", "toolsets": ["no_mcp"]}}
+        )
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        adapter._create_agent(session_id="s1", route=adapter._resolve_route("alias"))
+
+        assert captured["enabled_toolsets"]
+        schemas = get_tool_definitions(
+            enabled_toolsets=captured["enabled_toolsets"], quiet_mode=True
+        )
+        assert {schema["function"]["name"] for schema in schemas} >= {
+            "terminal",
+            "process",
+        }
+
+    def test_bare_no_mcp_preserves_native_tools_without_mutating_global_config(
+        self, monkeypatch
+    ):
+        from hermes_cli.tools_config import _get_platform_tools
+        from model_tools import get_tool_definitions
+
+        captured = {}
+        user_config = _api_server_user_config()
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: user_config)
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools", _get_platform_tools
+        )
+        adapter = _make_routing_adapter(
+            {"alias": {"model": "other/model", "toolsets": ["no_mcp"]}}
+        )
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        adapter._create_agent(session_id="s1", route=adapter._resolve_route("alias"))
+
+        assert captured["enabled_toolsets"] == ["terminal"]
+        schemas = get_tool_definitions(
+            enabled_toolsets=captured["enabled_toolsets"], quiet_mode=True
+        )
+        assert {schema["function"]["name"] for schema in schemas} >= {
+            "terminal",
+            "process",
+        }
+        assert user_config == _api_server_user_config()
+
+    def test_route_toolsets_override_global_selection(self, monkeypatch):
+        from hermes_cli.tools_config import _get_platform_tools
+        from model_tools import get_tool_definitions
+
+        captured = {}
+        user_config = _api_server_user_config()
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: user_config)
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools", _get_platform_tools
+        )
+        adapter = _make_routing_adapter(
+            {"alias": {"model": "other/model", "toolsets": ["file"]}}
+        )
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        adapter._create_agent(session_id="s1", route=adapter._resolve_route("alias"))
+
+        assert captured["enabled_toolsets"] == ["file"]
+        schema_names = {
+            schema["function"]["name"]
+            for schema in get_tool_definitions(
+                enabled_toolsets=captured["enabled_toolsets"], quiet_mode=True
+            )
+        }
+        assert "read_file" in schema_names
+        assert "terminal" not in schema_names
+        assert user_config == _api_server_user_config()
+
+    def test_unknown_route_toolset_falls_back_to_global_selection(
+        self, monkeypatch, caplog
+    ):
+        from hermes_cli.tools_config import _get_platform_tools
+
+        captured = {}
+        user_config = _api_server_user_config()
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: user_config)
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools", _get_platform_tools
+        )
+        adapter = _make_routing_adapter(
+            {"alias": {"model": "other/model", "toolsets": ["weeb", "no_mcp"]}}
+        )
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        adapter._create_agent(session_id="s1", route=adapter._resolve_route("alias"))
+
+        assert captured["enabled_toolsets"] == ["terminal"]
+        assert "unknown toolset(s) weeb" in caplog.text
+        assert user_config == _api_server_user_config()
+
+    def test_route_overrides_reasoning_effort(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(lambda model="": {"enabled": True, "effort": "high"}),
+        )
+        adapter = _make_routing_adapter(
+            {"alias": {"model": "other/model", "reasoning_effort": "low"}}
+        )
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        adapter._create_agent(session_id="s1", route=adapter._resolve_route("alias"))
+
+        assert captured["reasoning_config"] == {"enabled": True, "effort": "low"}
+
+    def test_route_model_selects_per_model_reasoning_override(self, monkeypatch):
+        captured = {}
+        reasoning_models = []
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        def load_reasoning(model=""):
+            reasoning_models.append(model)
+            return {"enabled": True, "effort": "xhigh"}
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(load_reasoning),
+        )
+        adapter = _make_routing_adapter({"alias": {"model": "routed/model"}})
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        adapter._create_agent(session_id="s1", route=adapter._resolve_route("alias"))
+
+        assert reasoning_models == ["routed/model"]
+        assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
+
 
     def test_route_provider_resolves_provider_credentials(self, monkeypatch):
         captured = {}
@@ -2557,6 +2781,61 @@ class TestModelRoutesAgentCreation:
 
     def test_session_model_override_beats_route(self, monkeypatch):
         """A user-issued /model on the session must win over static route config."""
+        from hermes_cli.tools_config import _get_platform_tools
+
+        captured = {}
+        user_config = _api_server_user_config()
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        reasoning_models = []
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(
+                lambda model="": reasoning_models.append(model)
+                or {"enabled": True, "effort": "high"}
+            ),
+        )
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: user_config)
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools", _get_platform_tools
+        )
+        adapter = _make_routing_adapter(
+            {"alias": {
+                "model": "route/model",
+                "api_key": "sk-route",
+                "reasoning_effort": "low",
+                "toolsets": ["file"],
+            }}
+        )
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(
+            adapter,
+            "_session_model_override_for",
+            lambda key: {
+                "model": "session/override-model",
+                "provider": "session-provider",
+                "api_key": "sk-session",
+                "base_url": "https://session.example/v1",
+                "api_mode": "responses",
+            },
+        )
+
+        adapter._create_agent(session_id="s1", route=adapter._resolve_route("alias"))
+
+        assert captured["model"] == "session/override-model"
+        assert captured["provider"] == "session-provider"
+        assert captured["api_key"] == "sk-session"
+        assert captured["base_url"] == "https://session.example/v1"
+        assert captured["api_mode"] == "responses"
+        assert reasoning_models == ["session/override-model"]
+        assert captured["reasoning_config"] == {"enabled": True, "effort": "high"}
+        assert captured["enabled_toolsets"] == ["terminal"]
+
+    def test_session_override_resolves_provider_credentials(self, monkeypatch):
         captured = {}
 
         class FakeAgent:
@@ -2564,26 +2843,52 @@ class TestModelRoutesAgentCreation:
                 captured.update(kwargs)
 
         _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
-        adapter = _make_routing_adapter({"alias": {"model": "route/model", "api_key": "sk-route"}})
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+            lambda provider: {
+                "provider": provider,
+                "api_key": "sk-session-resolved",
+                "base_url": "https://session-resolved.example/v1",
+                "api_mode": "responses",
+                "model": "provider/default-model",
+            },
+        )
+        adapter = _make_routing_adapter({})
         monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
         monkeypatch.setattr(
             adapter,
             "_session_model_override_for",
             lambda key: {
                 "model": "session/override-model",
-                "provider": "sessionprov",
-                "api_key": "sk-session",
-                "base_url": "https://session.example/v1",
-                "api_mode": "responses",
-                "credential_pool": "pool-session",
+                "provider": "session-provider",
             },
         )
 
-        adapter._create_agent(session_id="s1", route=adapter._resolve_route("alias"))
+        adapter._create_agent(session_id="s1")
 
         assert captured["model"] == "session/override-model"
-        assert captured["provider"] == "sessionprov"
-        assert captured["api_key"] == "sk-session"
+        assert captured["provider"] == "session-provider"
+        assert captured["api_key"] == "sk-session-resolved"
+        assert captured["base_url"] == "https://session-resolved.example/v1"
+        assert captured["api_mode"] == "responses"
+
+    def test_session_override_lookup_reads_gateway_runner(self, monkeypatch):
+        """_session_model_override_for consults GatewayRunner._session_model_overrides."""
+        adapter = _make_routing_adapter({})
+
+        class FakeRunner:
+            _session_model_overrides = {"chan-1": {"model": "user/model"}}
+            rehydrated = []
+
+            @classmethod
+            def _rehydrate_session_model_override(cls, session_key):
+                cls.rehydrated.append(session_key)
+
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: FakeRunner())
+        assert adapter._session_model_override_for("chan-1") == {"model": "user/model"}
+        assert adapter._session_model_override_for("chan-2") is None
+        assert adapter._session_model_override_for(None) is None
+        assert FakeRunner.rehydrated == ["chan-1", "chan-2"]
 
 
 # ---------------------------------------------------------------------------

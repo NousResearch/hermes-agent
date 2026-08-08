@@ -196,7 +196,10 @@ Delete a stored response.
 
 ### GET /v1/models
 
-Lists the agent as an available model. The advertised model name defaults to the [profile](/user-guide/profiles) name (or `hermes-agent` for the default profile). Required by most frontends for model discovery.
+Lists the agent and configured model-route aliases as available models. The
+advertised base model name defaults to the [profile](/user-guide/profiles) name
+(or `hermes-agent` for the default profile). Required by most frontends for
+model discovery.
 
 `/v1/models` is intentionally the cheap OpenAI-compat surface. It does **not**
 enumerate every authenticated provider/model combination Hermes can route to,
@@ -573,6 +576,33 @@ gateway:
 
 `port`, `key`, `host`, `cors_origins`, and `model_name` are automatically bridged into the platform's `extra` settings, so they behave exactly like their `API_SERVER_*` environment-variable counterparts. Environment variables take precedence over `config.yaml` values. The block is also accepted under `gateway.platforms.api_server:` or a top-level `platforms.api_server:` section.
 
+`config.yaml` can additionally map an OpenAI request's `model` field to a
+server-side model route:
+
+```yaml
+gateway:
+  platforms:
+    api_server:
+      extra:
+        model_routes:
+          coding:
+            model: "openai/gpt-4o-mini"
+            provider: "openai"
+            toolsets: [web, no_mcp]  # Optional: only for requests using "coding"
+            reasoning_effort: "low"  # Optional: only for requests using "coding"
+```
+
+Configured aliases are returned by `GET /v1/models`. A route can also set a
+provider API key or base URL. Its `toolsets` use the normal API-server toolset
+resolution and do not modify global configuration. The value must be a
+non-empty list of available toolsets, configured MCP server names, or the
+`no_mcp` sentinel. Unknown names leave the normal API-server tool selection in
+place. A bare `no_mcp` keeps the normal native tool selection while disabling
+MCP servers. Its `reasoning_effort` accepts the normal Hermes levels (`none`,
+`minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`) and does not modify
+global configuration. A session-level `/model` selection takes precedence over
+a route.
+
 ### Concurrent-run cap
 
 The API server limits how many agent runs may execute at once across the OpenAI-compatible and Runs endpoints. The cap is read from `gateway.api_server.max_concurrent_runs` (default **10**; `0` disables the limit, negative values clamp to 0). When the cap is reached, new run-starting requests are rejected with **HTTP 429** `Too many concurrent runs (max N)` — clients should back off and retry.
@@ -657,6 +687,9 @@ In Open WebUI, add each as a separate connection. The model dropdown shows `alic
 
 - **Response storage** — stored responses (for `previous_response_id`) are persisted in SQLite and survive gateway restarts. Max 100 stored responses (LRU eviction).
 - **No file upload** — inline images are supported on both `/v1/chat/completions` and `/v1/responses`, but uploaded files (`file`, `input_file`, `file_id`) and non-image document inputs are not supported through the API.
+- **Unmapped model names are cosmetic** — configure a `model_routes` alias
+  when a request's `model` field should select a server-side model; otherwise
+  the server uses its configured default.
 - **Simple OpenAI clients still see an alias** — `/v1/models` advertises the
   stable Hermes alias (`hermes-agent` or the active profile name). Richer
   clients can send explicit `provider` / `model_options` overrides on requests.

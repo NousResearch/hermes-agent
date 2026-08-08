@@ -51,7 +51,7 @@ def _mock_mode(mode):
         yield
 
 
-def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
+def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None, **kwargs):
     """Minimal mock dispatcher reused across tests."""
     if function_name == "terminal":
         return json.dumps({"output": "mock", "exit_code": 0})

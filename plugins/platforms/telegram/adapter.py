@@ -1189,6 +1189,19 @@ class TelegramAdapter(BasePlatformAdapter):
         thread_id = metadata.get("thread_id") or metadata.get("message_thread_id")
         return str(thread_id) if thread_id is not None else None
 
+    _TOPIC_QUALIFIED_CHAT_ID_RE = re.compile(r"^\s*(-?\d+):(\d+)\s*$")
+
+    @classmethod
+    def _split_topic_qualified_chat_id(
+        cls,
+        chat_id: str,
+    ) -> tuple[str, Optional[str]]:
+        """Split legacy ``chat_id:thread_id`` values at the send boundary."""
+        match = cls._TOPIC_QUALIFIED_CHAT_ID_RE.fullmatch(str(chat_id))
+        if not match:
+            return str(chat_id), None
+        return match.group(1), match.group(2)
+
     @classmethod
     def _metadata_direct_messages_topic_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
         if not metadata:
@@ -4540,6 +4553,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
+
+        chat_id, target_thread_id = self._split_topic_qualified_chat_id(chat_id)
+        if target_thread_id and self._metadata_thread_id(metadata) is None:
+            metadata = {**(metadata or {}), "thread_id": target_thread_id}
         
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via

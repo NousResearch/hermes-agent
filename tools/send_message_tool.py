@@ -453,6 +453,8 @@ def _handle_send(args):
                 home = HomeChannel(platform=platform, chat_id=wx_home, name="Weixin Home")
         if home:
             chat_id = home.chat_id
+            if thread_id is None:
+                thread_id = getattr(home, "thread_id", None)
             used_home_channel = True
         else:
             home_env = _HOME_CHANNEL_ENV_OVERRIDES.get(
@@ -1233,6 +1235,11 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 
         # Telegram accepts a numeric chat_id OR an @username string; normalize
         # rather than force-int so username home channels don't crash (#13206).
+        topic_target = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(str(chat_id))
+        if topic_target:
+            chat_id = topic_target.group(1)
+            if thread_id is None:
+                thread_id = topic_target.group(2)
         int_chat_id = normalize_telegram_chat_id(chat_id)
         media_files = media_files or []
         thread_kwargs = {}

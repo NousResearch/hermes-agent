@@ -139,6 +139,35 @@ async def test_plain_markdown_stays_on_legacy_path():
 
 
 @pytest.mark.asyncio
+async def test_send_accepts_legacy_topic_qualified_chat_id():
+    """Legacy home values may still encode ``chat_id:thread_id`` together."""
+    adapter = _make_adapter()
+
+    result = await adapter.send("-1003703772259:4294967297", RICH_CONTENT)
+
+    assert result.success is True
+    api_kwargs = _rich_api_kwargs(adapter)
+    assert api_kwargs["chat_id"] == -1003703772259
+    assert api_kwargs["message_thread_id"] == 4294967297
+
+
+@pytest.mark.asyncio
+async def test_explicit_metadata_thread_overrides_qualified_chat_id():
+    adapter = _make_adapter()
+
+    result = await adapter.send(
+        "-1003703772259:4294967297",
+        RICH_CONTENT,
+        metadata={"thread_id": "777"},
+    )
+
+    assert result.success is True
+    api_kwargs = _rich_api_kwargs(adapter)
+    assert api_kwargs["chat_id"] == -1003703772259
+    assert api_kwargs["message_thread_id"] == 777
+
+
+@pytest.mark.asyncio
 async def test_expect_edits_metadata_keeps_preview_on_legacy_path():
     adapter = _make_adapter()
 

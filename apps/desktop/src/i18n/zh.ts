@@ -1531,7 +1531,11 @@ export const zh: Translations = {
       actionStarted: name => `${name} 已启动 — 正在跟踪日志…`,
       actionFailed: name => `${name} 启动失败`,
       running: '运行中…',
-      viewLog: '操作日志'
+      viewLog: '操作日志',
+      tailExhausted: '已停止跟踪此操作 — 日志跟踪超时时它仍在运行。',
+      tailDegraded: '已停止跟踪此操作 — 状态接口已停止响应。',
+      recheckStatus: '检查状态',
+      recheckStatusBusy: '正在检查…'
     }
   },
 

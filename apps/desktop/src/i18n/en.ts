@@ -1335,7 +1335,11 @@ export const en: Translations = {
       actionStarted: name => `${name} started — tailing log...`,
       actionFailed: name => `${name} failed to start`,
       running: 'Running...',
-      viewLog: 'Action log'
+      viewLog: 'Action log',
+      tailExhausted: 'Stopped following this action — it was still running when the log tail timed out.',
+      tailDegraded: 'Stopped following this action — the status endpoint stopped responding.',
+      recheckStatus: 'Check status',
+      recheckStatusBusy: 'Checking...'
     }
   },
 

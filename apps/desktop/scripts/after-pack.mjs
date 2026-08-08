@@ -9,9 +9,10 @@
  * install.ps1, which the update path doesn't use).
  *
  * Windows-only: rcedit edits PE resources, irrelevant on macOS/Linux where the
- * app identity comes from the bundle Info.plist / desktop entry. Best-effort:
- * a stamp failure must never fail an otherwise-good build (worst case is the
- * stock icon, not a broken app), so we log and resolve rather than throw.
+ * app identity comes from the bundle Info.plist / desktop entry. Local builds
+ * remain best-effort. Official release builds set
+ * HERMES_DESKTOP_RELEASE_SIGNING=1 and fail closed: signing a stock Electron
+ * binary would permanently bind the wrong identity into a published artifact.
  *
  * electron-builder passes a context with:
  *   - electronPlatformName: 'win32' | 'darwin' | 'linux'
@@ -35,7 +36,9 @@ export default async function afterPack(context) {
   try {
     await stampExeIdentity(exe, desktopRoot)
   } catch (err) {
-    // Never fail the build over a cosmetic stamp.
+    if (process.env.HERMES_DESKTOP_RELEASE_SIGNING === '1') {
+      throw new Error(`release exe identity stamp failed: ${err.message}`, { cause: err })
+    }
     console.warn(`[after-pack] exe identity stamp failed (${err.message}); Hermes.exe keeps the stock Electron icon`)
   }
 }

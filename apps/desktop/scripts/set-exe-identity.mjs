@@ -34,6 +34,10 @@
 // stampExeIdentity() resolves on success and rejects on failure; the caller
 // (after-pack.mjs) swallows the rejection so a stamp failure never fails an
 // otherwise-good build (worst case: stock icon, not a broken app).
+//
+// Official releases are the deliberate exception. The release-only builder
+// overlay enables signing on a controlled CI runner after this afterPack stamp
+// and makes any branding failure fatal.
 
 import { resolve, join } from 'node:path'
 import { existsSync } from 'node:fs'

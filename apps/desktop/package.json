@@ -36,6 +36,7 @@
     "dist:win": "npm run build && npm run builder -- --win",
     "dist:win:msi": "npm run build && npm run builder -- --win msi",
     "dist:win:nsis": "npm run build && npm run builder -- --win nsis",
+    "dist:win:release": "npm run build && npm run builder -- --config electron-builder.release.cjs --win nsis msi",
     "dist:linux": "npm run build && npm run builder -- --linux AppImage deb rpm",
     "perf": "node scripts/perf/run.mjs",
     "perf:serve": "node scripts/perf/serve.mjs",

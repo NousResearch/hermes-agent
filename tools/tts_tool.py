@@ -2819,14 +2819,6 @@ def text_to_speech_tool(
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
 
-    try:
-        from tools.tts_text_normalize import prepare_spoken_text
-        text = prepare_spoken_text(text, max_chars=None)
-    except Exception:
-        text = text.strip()
-    if not text:
-        return tool_error("Text is empty after TTS cleanup", success=False)
-
     tts_config = _load_tts_config()
 
     # When the model supplies a speed parameter, inject it into the config
@@ -2847,6 +2839,40 @@ def text_to_speech_tool(
     # so a user's ``tts.providers.openai.command`` can't override the real
     # OpenAI handler.
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
+
+    # skip_markdown_strip gates BOTH cleanup stages: the shared spoken-text
+    # normalizer (prepare_spoken_text, which also rewrites markdown/SSML) AND
+    # the markdown stripper below. An SSML-aware command CLI must receive the
+    # raw markup untouched, so an opted-out provider bypasses normalization
+    # entirely — resolve the config here, before any text mangling runs.
+    skip_strip = bool(
+        command_provider_config
+        and command_provider_config.get("skip_markdown_strip")
+    )
+
+    if not skip_strip:
+        try:
+            from tools.tts_text_normalize import prepare_spoken_text
+            text = prepare_spoken_text(text, max_chars=None)
+        except Exception:
+            text = text.strip()
+        if not text:
+            return tool_error("Text is empty after TTS cleanup", success=False)
+    else:
+        text = text.strip()
+        if not text:
+            return tool_error("Text is empty after TTS cleanup", success=False)
+
+    # Strip markdown formatting before TTS dispatch.
+    # Without this, providers like Edge TTS verbalize raw markdown artifacts
+    # ("double-asterisk Bold double-asterisk" instead of just "Bold").
+    # The other two TTS call sites (_send_voice_reply in gateway/run.py and
+    # the Auto-TTS path in gateway/platforms/base.py) already strip markdown;
+    # this brings the agent-callable tool path in line with them.
+    # Command-providers can opt out via tts.providers.<name>.skip_markdown_strip
+    # for SSML-aware CLIs that want raw markup passed through.
+    if not skip_strip:
+        text = _strip_markdown_for_tts(text)
 
     # Truncate very long text with a warning. The cap is per-provider
     # (OpenAI 4096, xAI 15k, MiniMax 10k, ElevenLabs model-aware, etc.).

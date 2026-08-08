@@ -53,6 +53,7 @@ _RUNTIME_NOTE = "\n\n[Runtime note:"
 _BUNDLE_MARKER = " skill bundle,"
 _BUNDLE_USER_INSTRUCTION = "\nUser instruction: "
 _BUNDLE_FIRST_SKILL_BLOCK = "\n\n[Loaded as part of the "
+_SKILL_CACHE_TAIL_SEPARATOR = "\n\n" + _SINGLE_SKILL_INSTRUCTION
 
 # The skill name sits in the first quoted span of the activation note, for both
 # the single-skill and the bundle header ("work" / "/clean /work").
@@ -68,6 +69,38 @@ SKILL_SCAFFOLD_SQL_LIKE = _SKILL_INVOCATION_PREFIX + "%"
 # the joint (a bundle instruction cut off by the head window); callers cut the
 # description there rather than show the skill body on the far side.
 SKILL_EXCERPT_JOINT = "\x1e"
+
+
+def split_skill_invocation_cache_prefix(content: Any) -> Optional[tuple[str, str]]:
+    """Split a scaffolded skill turn into stable prefix and volatile tail.
+
+    Single-skill builders and cron append the caller's instruction after the
+    loaded skill content. Keeping this parser beside the canonical scaffold
+    markers lets request-local prompt caching place a breakpoint before that
+    volatile instruction without changing the stored message string.
+
+    Returns ``None`` for ordinary messages, bare skill invocations, and bundle
+    layouts whose user instruction precedes the loaded skill blocks.
+    """
+    if (
+        not isinstance(content, str)
+        or not content.startswith(_SKILL_INVOCATION_PREFIX)
+    ):
+        return None
+
+    separator_idx = content.rfind(_SKILL_CACHE_TAIL_SEPARATOR)
+    if separator_idx <= 0:
+        return None
+
+    stable_prefix = content[:separator_idx]
+    if (
+        _SINGLE_SKILL_MARKER not in stable_prefix
+        and _BUNDLE_MARKER not in stable_prefix
+    ):
+        return None
+
+    volatile_tail = content[separator_idx:]
+    return stable_prefix, volatile_tail
 
 
 def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:

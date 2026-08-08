@@ -14,6 +14,8 @@ import copy
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
+from agent.skill_commands import split_skill_invocation_cache_prefix
+
 
 @dataclass(frozen=True)
 class PromptCachePlan:
@@ -58,6 +60,18 @@ def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = 
         return
 
     if isinstance(content, str):
+        skill_split = split_skill_invocation_cache_prefix(content)
+        if skill_split is not None:
+            stable_prefix, volatile_tail = skill_split
+            msg["content"] = [
+                {
+                    "type": "text",
+                    "text": stable_prefix,
+                    "cache_control": cache_marker,
+                },
+                {"type": "text", "text": volatile_tail},
+            ]
+            return
         msg["content"] = [
             {"type": "text", "text": content, "cache_control": cache_marker}
         ]
@@ -194,6 +208,7 @@ def strip_anthropic_cache_control(
         content = msg.get("content")
         if not isinstance(content, list):
             continue
+        skill_prefix_shape = _is_skill_invocation_cache_split(content)
         if any(isinstance(part, dict) and "cache_control" in part for part in content):
             content = [
                 {k: v for k, v in part.items() if k != "cache_control"}
@@ -211,10 +226,33 @@ def strip_anthropic_cache_control(
         ) and (
             len(content) == 1
             or (msg.get("role") == "system" and len(content) == 2)
+            or skill_prefix_shape
         )
         if decoration_shape:
             msg["content"] = "".join(part["text"] for part in content)
     return api_messages
+
+
+def _is_skill_invocation_cache_split(content: list[Any]) -> bool:
+    """Recognize the exact two-block shape produced for a skill invocation."""
+    if len(content) != 2:
+        return False
+    stable, volatile = content
+    if not isinstance(stable, dict) or not isinstance(volatile, dict):
+        return False
+    if set(stable) != {"type", "text", "cache_control"}:
+        return False
+    if set(volatile) != {"type", "text"}:
+        return False
+    if stable.get("type") != "text" or volatile.get("type") != "text":
+        return False
+    if not isinstance(stable.get("text"), str) or not isinstance(
+        volatile.get("text"), str
+    ):
+        return False
+
+    split = split_skill_invocation_cache_prefix(stable["text"] + volatile["text"])
+    return split == (stable["text"], volatile["text"])
 
 
 def strip_anthropic_tool_cache_control(tools: List[Dict[str, Any]] | None) -> List[Dict[str, Any]]:

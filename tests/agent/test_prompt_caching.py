@@ -13,6 +13,21 @@ from agent.prompt_caching import (
 
 
 MARKER = {"type": "ephemeral"}
+_SKILL_INSTRUCTION_MARKER = (
+    "The user has provided the following instruction alongside the skill invocation: "
+)
+
+
+def _skill_invocation(instruction: str = "") -> str:
+    stable = (
+        '[IMPORTANT: The user has invoked the "triage" skill, indicating they want '
+        "you to follow its instructions. The full skill content is loaded below.]\n\n"
+        "# Triage\n\n"
+        "Inspect the report carefully and preserve the stable instructions."
+    )
+    if not instruction:
+        return stable
+    return f"{stable}\n\n{_SKILL_INSTRUCTION_MARKER}{instruction}"
 
 
 def _native_marker_indexes(messages):
@@ -164,6 +179,73 @@ class TestPromptCachePlan:
 
         assert "cache_control" in tools[-1]
         assert "cache_control" not in stripped[-1]
+
+
+class TestSkillInvocationPrefixCaching:
+    def test_volatile_tail_does_not_change_marked_skill_prefix(self):
+        first = _skill_invocation("ticket=one timestamp=10:00")
+        second = _skill_invocation("ticket=two timestamp=10:01")
+
+        first_marked = apply_anthropic_cache_control(
+            [{"role": "user", "content": first}]
+        )[0]["content"]
+        second_marked = apply_anthropic_cache_control(
+            [{"role": "user", "content": second}]
+        )[0]["content"]
+
+        assert len(first_marked) == len(second_marked) == 2
+        assert first_marked[0] == second_marked[0]
+        assert first_marked[0]["cache_control"] == MARKER
+        assert "cache_control" not in first_marked[1]
+        assert first_marked[1]["text"] != second_marked[1]["text"]
+        assert "ticket=one" not in first_marked[0]["text"]
+        assert "ticket=one" in first_marked[1]["text"]
+
+    def test_request_plan_keeps_canonical_skill_message_as_string(self):
+        original = _skill_invocation("process delivery 123")
+        messages = [{"role": "user", "content": original}]
+
+        plan = build_prompt_cache_plan(messages, [])
+
+        assert messages == [{"role": "user", "content": original}]
+        assert isinstance(messages[0]["content"], str)
+        assert isinstance(plan.messages[0]["content"], list)
+        assert "cache_control" not in plan.messages[0]["content"][1]
+
+    def test_strip_reconstructs_exact_string_for_non_caching_failover(self):
+        original = _skill_invocation("process delivery 123")
+        marked = apply_anthropic_cache_control(
+            [{"role": "user", "content": original}]
+        )
+
+        strip_anthropic_cache_control(marked)
+
+        assert marked == [{"role": "user", "content": original}]
+
+    def test_instruction_marker_quoted_inside_skill_uses_final_tail(self):
+        quoted = (
+            _skill_invocation()
+            + f"\n\nExample: {_SKILL_INSTRUCTION_MARKER}not a real event"
+            + f"\n\n{_SKILL_INSTRUCTION_MARKER}actual event"
+        )
+
+        content = apply_anthropic_cache_control(
+            [{"role": "user", "content": quoted}]
+        )[0]["content"]
+
+        assert len(content) == 2
+        assert "not a real event" in content[0]["text"]
+        assert "actual event" not in content[0]["text"]
+        assert content[1]["text"].endswith("actual event")
+
+    def test_bare_skill_and_ordinary_user_message_keep_whole_message_layout(self):
+        for original in (_skill_invocation(), "ordinary user request"):
+            content = apply_anthropic_cache_control(
+                [{"role": "user", "content": original}]
+            )[0]["content"]
+            assert content == [
+                {"type": "text", "text": original, "cache_control": MARKER}
+            ]
 
 
 class TestApplyCacheMarker:
@@ -463,7 +545,6 @@ class TestStripAnthropicCacheControl:
         assert isinstance(content, list) and len(content) == 2
         assert content[0] == {"type": "text", "text": "see"}
         assert content[1]["type"] == "image_url"
-
 
 
 

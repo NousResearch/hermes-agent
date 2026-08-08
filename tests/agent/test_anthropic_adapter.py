@@ -717,6 +717,28 @@ class TestConvertMessages:
         assert isinstance(system, list)
         assert system[0]["cache_control"] == {"type": "ephemeral"}
 
+    def test_skill_prefix_cache_marker_survives_user_message_conversion(self):
+        skill_turn = (
+            '[IMPORTANT: The user has invoked the "triage" skill, indicating they want '
+            "you to follow its instructions. The full skill content is loaded below.]\n\n"
+            "Stable triage instructions.\n\n"
+            "The user has provided the following instruction alongside the skill "
+            "invocation: ticket=123"
+        )
+        messages = apply_anthropic_cache_control(
+            [{"role": "user", "content": skill_turn}],
+            native_anthropic=True,
+        )
+
+        _, result = convert_messages_to_anthropic(messages)
+
+        blocks = result[0]["content"]
+        assert len(blocks) == 2
+        assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+        assert "ticket=123" not in blocks[0]["text"]
+        assert "cache_control" not in blocks[1]
+        assert "ticket=123" in blocks[1]["text"]
+
 
     def test_assistant_cache_control_blocks_are_preserved(self):
         messages = apply_anthropic_cache_control([

@@ -134,6 +134,42 @@ class TestScanAssembledCronPrompt:
 
 class TestBuildJobPromptScansSkillContent:
 
+    def test_prompt_cache_isolates_volatile_tail_after_multiple_skills(
+        self, cron_env
+    ):
+        hermes_home, scheduler = cron_env
+        _plant_skill(hermes_home, "triage", "Stable triage guidance.")
+        _plant_skill(hermes_home, "report", "Stable reporting guidance.")
+
+        common = {
+            "id": "job-cache",
+            "name": "cache boundary",
+            "skills": ["triage", "report"],
+        }
+        first = scheduler._build_job_prompt(
+            {**common, "prompt": "ticket=one time=10:00"}
+        )
+        second = scheduler._build_job_prompt(
+            {**common, "prompt": "ticket=two time=10:01"}
+        )
+
+        from agent.prompt_caching import apply_anthropic_cache_control
+
+        first_blocks = apply_anthropic_cache_control(
+            [{"role": "user", "content": first}]
+        )[0]["content"]
+        second_blocks = apply_anthropic_cache_control(
+            [{"role": "user", "content": second}]
+        )[0]["content"]
+
+        assert isinstance(first, str) and isinstance(second, str)
+        assert len(first_blocks) == len(second_blocks) == 2
+        assert first_blocks[0] == second_blocks[0]
+        assert first_blocks[0]["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in first_blocks[1]
+        assert "ticket=one" in first_blocks[1]["text"]
+        assert "ticket=one" not in first_blocks[0]["text"]
+
     def test_builtin_style_github_api_example_is_allowed(self, cron_env):
         hermes_home, scheduler = cron_env
         _plant_skill(
@@ -260,6 +296,36 @@ class TestBuildJobPromptScansSkillContent:
         assert "Bundle member should win." in prompt
         assert "Standalone skill should not win." not in prompt
 
+    def test_prompt_cache_isolates_tail_after_bundle_loaded_by_cron(
+        self, cron_env
+    ):
+        hermes_home, scheduler = cron_env
+        _plant_skill(hermes_home, "bundle-member", "Stable bundled guidance.")
+        _plant_bundle(hermes_home, "article-pipeline", ["bundle-member"])
+
+        common = {
+            "id": "job-bundle-cache",
+            "name": "bundle cache boundary",
+            "skills": ["article-pipeline"],
+        }
+        first = scheduler._build_job_prompt({**common, "prompt": "ticket=one"})
+        second = scheduler._build_job_prompt({**common, "prompt": "ticket=two"})
+
+        from agent.prompt_caching import apply_anthropic_cache_control
+
+        first_blocks = apply_anthropic_cache_control(
+            [{"role": "user", "content": first}]
+        )[0]["content"]
+        second_blocks = apply_anthropic_cache_control(
+            [{"role": "user", "content": second}]
+        )[0]["content"]
+
+        assert len(first_blocks) == len(second_blocks) == 2
+        assert first_blocks[0] == second_blocks[0]
+        assert first_blocks[0]["cache_control"] == {"type": "ephemeral"}
+        assert "ticket=one" not in first_blocks[0]["text"]
+        assert "ticket=one" in first_blocks[1]["text"]
+
 
 # ---------------------------------------------------------------------------
 # Script-output injection — runtime DATA must not be strict-scanned
@@ -346,5 +412,4 @@ class TestScriptOutputNotStrictScanned:
         assert prompt is not None
         assert "\u200b" not in prompt
         assert "item oneitem two" in prompt
-
 

@@ -7269,6 +7269,8 @@ const desktopInstallationId = loadOrCreateInstallationId(DESKTOP_INSTALLATION_PA
 const sshBootstrapCoordinator = createBootstrapCoordinator()
 
 let sshQuitTeardownDone = false
+let backendQuitTeardownDone = false
+let backendQuitTeardownPromise = null
 
 function sshScopeKey(profile) {
   return connectionScopeKey(profile) || ''
@@ -8320,6 +8322,27 @@ function stopAllPoolBackends() {
   for (const profile of [...backendPool.keys()]) {
     stopPoolBackend(profile)
   }
+}
+
+// Escalating variant of stopAllPoolBackends() for teardown paths that must
+// not orphan a backend: SIGTERM each pool backend, then waitForBackendExit()
+// SIGKILLs any that swallow SIGTERM after the 5s grace. Mirrors
+// teardownPoolBackendAndWait() applied to every pool entry.
+async function teardownAllPoolBackendsAndWait() {
+  const processes = [...backendPool.keys()].map(profile => {
+    const entry = backendPool.get(profile)
+
+    if (!entry) {
+      return null
+    }
+
+    backendPool.delete(profile)
+    stopBackendChild(entry.process)
+
+    return entry.process
+  }).filter(Boolean)
+
+  await Promise.all(processes.map(entry => waitForBackendExit(entry)))
 }
 
 // Returns the profile name whose backend was torn down, or null when the
@@ -12028,8 +12051,37 @@ app.on('before-quit', event => {
     disposeTerminalSession(id)
   }
 
-  stopBackendChild(backendConnectionState.getProcess())
-  stopAllPoolBackends()
+  // The backend (`hermes serve` → uvicorn) swallows SIGTERM: its graceful
+  // shutdown handler is installed (SigCgt) but the process never exits, so
+  // a fire-and-forget SIGTERM orphans the gateway. The KDE-launched
+  // transient unit (ExitType=cgroup) then stays "active" with MainPID=0 as
+  // long as the cgroup holds the leaked process — every Desktop launch
+  // leaks a ~364 MB `hermes serve` until SIGKILL'd. Escalate the same way
+  // teardownPrimaryBackendAndWait() does: SIGTERM now, then
+  // waitForBackendExit() SIGKILLs after the 5s grace. Mirror the SSH
+  // teardown guard so the re-entrant app.quit() below doesn't loop.
+  if (!backendQuitTeardownDone) {
+    const quittingBackend = backendConnectionState.getProcess()
+    backendQuitTeardownDone = true
+    event.preventDefault()
+
+    // SIGTERM every backend (graceful attempt), then escalate survivors.
+    stopBackendChild(quittingBackend)
+    backendQuitTeardownPromise = Promise.all([
+      waitForBackendExit(quittingBackend),
+      teardownAllPoolBackendsAndWait()
+    ]).then(() => {
+      backendQuitTeardownPromise = null
+      app.quit()
+    })
+  } else if (backendQuitTeardownPromise) {
+    // Re-entrant pass triggered by a CONCURRENT teardown path (e.g. the SSH
+    // block above finished first) while our escalation is still pending:
+    // hold the quit — the promise's app.quit() fires once backends are
+    // reaped, so a fast ssh path can't let the app exit mid-escalation and
+    // re-orphan the gateway.
+    event.preventDefault()
+  }
 })
 
 app.on('window-all-closed', () => {

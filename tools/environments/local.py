@@ -374,6 +374,13 @@ def _is_hermes_internal_secret(key: str) -> bool:
     ``KEY`` / ``SECRET`` / ``TOKEN``; the terminal backend's narrower name-based
     blocklist did not, which is the leak this predicate closes.
 
+    - ``OP_SERVICE_ACCOUNT_TOKEN`` and every ``OP_SESSION_*`` var — 1Password
+      CLI auth material.  The ``op`` child receives the token explicitly via
+      ``agent.secret_sources.onepassword._op_child_env``; no other spawned
+      child (terminal, browser worker, ACP executor, computer-use driver,
+      TUI/Node host) has a legitimate need for either, so both are stripped
+      unconditionally (mirrors the Bitwarden ``BWS_ACCESS_TOKEN`` handling).
+
     This is the single source of truth for "Hermes-internal dynamic secret"
     across every spawn path — the terminal ``_make_run_env`` /
     ``_sanitize_subprocess_env`` filters, the Docker passthrough filter, and the
@@ -390,6 +397,17 @@ def _is_hermes_internal_secret(key: str) -> bool:
     if upper.startswith("GATEWAY_RELAY_") and (
         upper.endswith("_SECRET") or upper.endswith("_KEY") or upper.endswith("_TOKEN")
     ):
+        return True
+    # 1Password auth material — the service-account token (exact name) and
+    # every OP_SESSION_* var (interactive-session credentials).  The op child
+    # gets the token via its own explicit allowlisted env; nothing else does.
+    # OP_CONNECT_TOKEN (1Password Connect server auth) is the same class and
+    # is stripped too; the op child receives it explicitly from the allowlist.
+    if upper == "OP_SERVICE_ACCOUNT_TOKEN":
+        return True
+    if upper == "OP_CONNECT_TOKEN":
+        return True
+    if upper.startswith("OP_SESSION_"):
         return True
     return False
 

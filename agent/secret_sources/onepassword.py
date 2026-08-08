@@ -31,19 +31,25 @@ Design summary
 
 The atomic-write / ``0600`` / TTL cache mechanics are shared with the other
 backends via :mod:`agent.secret_sources._cache` — successful, complete pulls
-are cached in-process and on disk under ``<hermes_home>/cache/op_cache.json``
+are cached in-process and on disk under ``<hermes_home>/cache/op_cache.enc.json``
 so back-to-back short-lived ``hermes`` invocations don't re-shell ``op`` for
-every reference.  The disk file holds only resolved secret *values*; auth
-material is fingerprinted, never stored.
+every reference.  The disk cache is **encrypted-only** (AES-GCM, keyed off the
+auth material; never plaintext).  A legacy plaintext ``op_cache.json`` from an
+older Hermes is re-encrypted and removed on first read.  The disk file holds
+only resolved secret *values*; auth material is fingerprinted, never stored.
+With ``cache_ttl_seconds: 0`` there is no disk persistence at all (memory-only)
+— plaintext is never an option.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -115,15 +121,25 @@ _OP_ENV_ALLOWLIST = (
 _CacheKey = Tuple[str, str, str, str]  # (auth_fp, account, home, refs_fp)
 _CACHE: Dict[_CacheKey, CachedFetch] = {}
 
+# Disk cache is ENCRYPTED-ONLY.  The plaintext ``op_cache.json`` written by
+# older Hermes versions stored every resolved secret value at rest — the same
+# vulnerability class the BWS series (#77008) eliminated.  Values now persist
+# only as AES-GCM ciphertext (``op_cache.enc.json``), keyed off the same auth
+# material that feeds the cache-key fingerprint; the raw token never touches
+# disk.  ``cache_ttl_seconds: 0`` disables disk persistence entirely
+# (memory-only) — plaintext is never an option.
 _DISK_CACHE_BASENAME = "op_cache.json"
+_ENCRYPTED_CACHE_BASENAME = "op_cache.enc.json"
+_ENCRYPTED_CACHE_VERSION = 1
+_ENCRYPTED_CACHE_INFO = b"hermes-onepassword-encrypted-cache-v1"
 
 
 def _disk_key_str(cache_key: _CacheKey) -> str:
     """Serialize a cache key for on-disk storage, omitting home_path.
 
     The disk file is already partitioned by home (it lives under
-    ``<home>/cache/``), so the path provides the home dimension; folding it
-    into the key string too would be redundant.
+    ``<home>/cache/``), so the path provides the home dimension; folding
+    it into the key string too would be redundant.
     """
     auth_fp, account, _home, refs_fp = cache_key
     return f"{auth_fp}|{account}|{refs_fp}"
@@ -135,8 +151,198 @@ _DISK_CACHE: DiskCache = DiskCache(
 
 
 def _disk_cache_path(home_path: Optional[Path] = None) -> Path:
-    """Path to the on-disk cache (exposed for tests and direct callers)."""
+    """Path to the legacy plaintext on-disk cache (removed on migration)."""
     return _DISK_CACHE.path(home_path)
+
+
+def _encrypted_disk_cache_path(home_path: Optional[Path] = None) -> Path:
+    """Path to the encrypted on-disk cache."""
+    from agent.secret_sources._cache import resolve_cache_home
+
+    return resolve_cache_home(home_path) / "cache" / _ENCRYPTED_CACHE_BASENAME
+
+
+def _b64e(raw: bytes) -> str:
+    """Base64-encode bytes for JSON payload storage."""
+    import base64
+
+    return base64.b64encode(raw).decode("ascii")
+
+
+def _b64d(text: str) -> bytes:
+    """Base64-decode a JSON payload field."""
+    import base64
+
+    return base64.b64decode(text)
+
+
+def _auth_key_material(token_env: str) -> str:
+    """Return the key-derivation material for the encrypted cache.
+
+    The same auth material that feeds ``_auth_fingerprint`` — the
+    service-account token plus OP_ACCOUNT / OP_CONNECT / OP_SESSION_*
+    identity vars.  The raw value is used to derive the AES key and is
+    never persisted or logged.
+    """
+    source_env = get_source_environment()
+    parts: List[str] = [
+        f"token={source_env.get(token_env, '')}",
+        f"account={source_env.get('OP_ACCOUNT', '')}",
+        f"connect_host={source_env.get('OP_CONNECT_HOST', '')}",
+        f"connect_token={source_env.get('OP_CONNECT_TOKEN', '')}",
+    ]
+    for key in sorted(source_env):
+        if key.startswith("OP_SESSION_"):
+            parts.append(f"{key}={source_env[key]}")
+    return "\n".join(parts)
+
+
+def _derive_encrypted_cache_key(auth_material: str, salt: bytes) -> bytes:
+    """Derive the local cache encryption key from the auth material."""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+    return HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        info=_ENCRYPTED_CACHE_INFO,
+    ).derive(auth_material.encode("utf-8"))
+
+
+def _write_encrypted_disk_cache(
+    *,
+    cache_key: _CacheKey,
+    auth_material: str,
+    entry: CachedFetch,
+    home_path: Optional[Path] = None,
+) -> bool:
+    """Persist an encrypted cache entry atomically.
+
+    Best-effort by design: cache write failure must never block a fresh
+    ``op read``.  The raw auth material is not stored; it only derives the
+    AES key.  A successful write removes the legacy plaintext cache so
+    stale secret values cannot remain on disk.
+
+    Returns True when the encrypted write (and legacy-plaintext removal)
+    completed; False when a non-fatal error was swallowed.
+    """
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    path = _encrypted_disk_cache_path(home_path)
+    try:
+        cache_dir = path.parent
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(cache_dir, 0o700)
+        except OSError:
+            pass
+        salt = os.urandom(16)
+        nonce = os.urandom(12)
+        serialized_key = _disk_key_str(cache_key)
+        key = _derive_encrypted_cache_key(auth_material, salt)
+        plaintext = json.dumps(
+            {"secrets": entry.secrets, "fetched_at": entry.fetched_at},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        ciphertext = AESGCM(key).encrypt(
+            nonce, plaintext, serialized_key.encode("utf-8")
+        )
+        payload = {
+            "version": _ENCRYPTED_CACHE_VERSION,
+            "key": serialized_key,
+            "salt": _b64e(salt),
+            "nonce": _b64e(nonce),
+            "ciphertext": _b64e(ciphertext),
+        }
+        fd, tmp = tempfile.mkstemp(
+            prefix=".op_cache_enc_", suffix=".tmp", dir=str(cache_dir)
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, path)
+            # A successful encrypted write completes migration; remove the
+            # legacy plaintext cache so stale secrets cannot remain on disk.
+            try:
+                _disk_cache_path(home_path).unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+            return True
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except Exception:  # noqa: BLE001 — best-effort cache only
+        return False
+
+
+def _read_encrypted_disk_cache(
+    *,
+    cache_key: _CacheKey,
+    auth_material: str,
+    max_age_seconds: float,
+    home_path: Optional[Path] = None,
+) -> Optional[CachedFetch]:
+    """Return a decrypted encrypted-cache entry if it matches and is in-window."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    if max_age_seconds <= 0:
+        return None
+    path = _encrypted_disk_cache_path(home_path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return None
+        serialized_key = _disk_key_str(cache_key)
+        if payload.get("version") != _ENCRYPTED_CACHE_VERSION:
+            return None
+        if payload.get("key") != serialized_key:
+            return None
+        salt = _b64d(str(payload.get("salt", "")))
+        nonce = _b64d(str(payload.get("nonce", "")))
+        ciphertext = _b64d(str(payload.get("ciphertext", "")))
+        key = _derive_encrypted_cache_key(auth_material, salt)
+        raw = AESGCM(key).decrypt(
+            nonce, ciphertext, serialized_key.encode("utf-8")
+        )
+        inner = json.loads(raw.decode("utf-8"))
+        if not isinstance(inner, dict):
+            return None
+        secrets = inner.get("secrets")
+        inner_fetched_at = inner.get("fetched_at")
+        if not isinstance(secrets, dict) or not isinstance(inner_fetched_at, (int, float)):
+            return None
+        entry_age = time.time() - float(inner_fetched_at)
+        if entry_age < 0 or entry_age > max_age_seconds:
+            return None
+        typed = {
+            k: v for k, v in secrets.items()
+            if isinstance(k, str) and isinstance(v, str)
+        }
+        return CachedFetch(secrets=typed, fetched_at=float(inner_fetched_at))
+    except Exception:  # noqa: BLE001 — cache miss on parse/decrypt/I/O errors
+        return None
+
+
+def _remove_legacy_plaintext_cache(home_path: Optional[Path] = None) -> None:
+    """Delete the legacy plaintext op_cache.json if it exists.
+
+    Best-effort: never raises.  Called on the memory-only path so a
+    pre-upgrade plaintext cache does not survive the encrypted-only
+    policy.
+    """
+    try:
+        _disk_cache_path(home_path).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +550,7 @@ def fetch_onepassword_secrets(
         return {}, warnings
 
     token_value = get_source_environment().get(token_env, "").strip()
+    auth_material = _auth_key_material(token_env)
     cache_key: _CacheKey = (
         _auth_fingerprint(token_env),
         account or "",
@@ -355,11 +562,35 @@ def fetch_onepassword_secrets(
         cached = _CACHE.get(cache_key)
         if cached and cached.is_fresh(cache_ttl_seconds):
             return dict(cached.secrets), warnings
-        disk_cached = _DISK_CACHE.read(cache_key, cache_ttl_seconds, home_path)
+        # Encrypted-only storage policy: the disk cache is ALWAYS AES-GCM
+        # encrypted.  With encryption disabled there is NO disk read at all
+        # — plaintext is never consulted.  A legacy plaintext op_cache.json
+        # from an older Hermes is re-encrypted and removed on the way out.
+        disk_cached = _read_encrypted_disk_cache(
+            cache_key=cache_key,
+            auth_material=auth_material,
+            max_age_seconds=cache_ttl_seconds,
+            home_path=home_path,
+        )
+        if disk_cached is None:
+            disk_cached = _migrate_legacy_plaintext_cache(
+                cache_key=cache_key,
+                auth_material=auth_material,
+                max_age_seconds=cache_ttl_seconds,
+                home_path=home_path,
+            )
         if disk_cached is not None:
             # Promote into L1 so later fetches in this process skip the disk read.
             _CACHE[cache_key] = disk_cached
             return dict(disk_cached.secrets), warnings
+
+        # Memory-only mode (cache_ttl_seconds <= 0): neither disk read above
+        # can return an entry (both short-circuit on a non-positive TTL), so a
+        # pre-upgrade plaintext op_cache.json would otherwise survive untouched.
+        # Sweep it — plaintext must not survive the encrypted-only policy even
+        # when disk persistence is disabled.
+        if cache_ttl_seconds <= 0:
+            _remove_legacy_plaintext_cache(home_path)
 
     op = binary or find_op(binary_path)
     if op is None:
@@ -383,9 +614,54 @@ def fetch_onepassword_secrets(
     if use_cache and not read_errors and secrets:
         entry = CachedFetch(secrets=dict(secrets), fetched_at=time.time())
         _CACHE[cache_key] = entry
-        _DISK_CACHE.write(cache_key, entry, cache_ttl_seconds, home_path)
+        # Memory-only (ttl <= 0): L1 only — never persist to disk.
+        if cache_ttl_seconds > 0:
+            _write_encrypted_disk_cache(
+                cache_key=cache_key,
+                auth_material=auth_material,
+                entry=entry,
+                home_path=home_path,
+            )
 
     return secrets, warnings
+
+
+def _migrate_legacy_plaintext_cache(
+    *,
+    cache_key: _CacheKey,
+    auth_material: str,
+    max_age_seconds: float,
+    home_path: Optional[Path] = None,
+) -> Optional[CachedFetch]:
+    """Re-encrypt a legacy plaintext cache entry and return it.
+
+    Older Hermes versions persisted the cross-process cache as plaintext
+    ``op_cache.json``.  With the encrypted-only policy, a leftover
+    plaintext file is migrated on first read: the entry is read from the
+    legacy DiskCache (honoring ``max_age_seconds``), written to the
+    encrypted cache — whose writer removes the plaintext file on success
+    (see ``_write_encrypted_disk_cache``) — and returned to the caller so
+    the cached values are served without a live fetch.
+
+    Returns None when there is no legacy plaintext entry for ``cache_key``
+    (or it is outside ``max_age_seconds``); the caller then falls through
+    to a live fetch.  Best-effort by design: a migration failure is
+    treated as a plain cache miss and never raises.
+    """
+    try:
+        legacy = _DISK_CACHE.read(cache_key, max_age_seconds, home_path)
+        if legacy is None:
+            return None
+        if _write_encrypted_disk_cache(
+            cache_key=cache_key,
+            auth_material=auth_material,
+            entry=legacy,
+            home_path=home_path,
+        ):
+            return legacy
+        return None
+    except Exception:  # noqa: BLE001 — migration must never block startup
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -671,6 +947,10 @@ def clear_caches(home_path: Optional[Path] = None) -> None:
     """
     _CACHE.clear()
     _DISK_CACHE.clear(home_path)
+    try:
+        _encrypted_disk_cache_path(home_path).unlink()
+    except (FileNotFoundError, OSError):
+        pass
 
 
 def _reset_cache_for_tests(home_path: Optional[Path] = None) -> None:

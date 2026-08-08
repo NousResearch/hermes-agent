@@ -348,39 +348,31 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "moonshotai/kimi-k2.6",
         "minimaxai/minimax-m3",
     ],
+    # Kimi Coding Plan live wire IDs only (GET api.kimi.com/coding/v1/models).
+    # Do not list retired catalog aliases (kimi-k3 / kimi-k2.*) — curated-first
+    # merge would pin those slugs above bare live ids and break selection.
     "kimi-coding": [
-        "kimi-k3",
-        "kimi-k2.7-code",
-        "kimi-k2.6",
-        "kimi-k2.5",
+        "k3",
+        "k3-256k",
         "kimi-for-coding",
         "kimi-for-coding-highspeed",
-        "kimi-k2-thinking",
-        "kimi-k2-thinking-turbo",
-        "kimi-k2-turbo-preview",
-        "kimi-k2-0905-preview",
     ],
     "kimi-coding-cn": [
-        "kimi-k3",
-        "kimi-k2.7-code",
-        "kimi-k2.7-code-highspeed",
-        "kimi-k2.6",
-        "kimi-k2.5",
-        "kimi-k2-thinking",
-        "kimi-k2-turbo-preview",
-        "kimi-k2-0905-preview",
+        "k3",
+        "k3-256k",
+        "kimi-for-coding",
+        "kimi-for-coding-highspeed",
     ],
     "stepfun": [
         "step-3.5-flash",
         "step-3.5-flash-2603",
     ],
+    # Moonshot (legacy direct) must not list Coding Plan-only SKUs
+    # (see TestKimiMoonshotModelListIsolation). Share the two flagship
+    # wire ids that Coding Plan and current Moonshot routing both accept.
     "moonshot": [
-        "kimi-k3",
-        "kimi-k2.6",
-        "kimi-k2.5",
-        "kimi-k2-thinking",
-        "kimi-k2-turbo-preview",
-        "kimi-k2-0905-preview",
+        "k3",
+        "k3-256k",
     ],
     "minimax": [
         "MiniMax-M3",
@@ -2286,8 +2278,38 @@ def _provider_keys(provider: str) -> set[str]:
 
 # Retired model IDs kept for /model auto-detect only — not shown in pickers.
 # DeepSeek cut these off on 2026-07-24; model_normalize remaps them on the wire.
+# Kimi Coding Plan retired public slugs (2026-07/08): live catalog is only
+# k3 / k3-256k / kimi-for-coding / kimi-for-coding-highspeed.
 _PROVIDER_RETIRED_ALIASES: dict[str, tuple[str, ...]] = {
     "deepseek": ("deepseek-chat", "deepseek-reasoner"),
+    "kimi-coding": (
+        "kimi-k3",
+        "kimi-k2.7-code",
+        "kimi-k2.6",
+        "kimi-k2.5",
+        "kimi-k2-thinking",
+        "kimi-k2-thinking-turbo",
+        "kimi-k2-turbo-preview",
+        "kimi-k2-0905-preview",
+    ),
+    "kimi-coding-cn": (
+        "kimi-k3",
+        "kimi-k2.7-code",
+        "kimi-k2.7-code-highspeed",
+        "kimi-k2.6",
+        "kimi-k2.5",
+        "kimi-k2-thinking",
+        "kimi-k2-turbo-preview",
+        "kimi-k2-0905-preview",
+    ),
+    "moonshot": (
+        "kimi-k3",
+        "kimi-k2.6",
+        "kimi-k2.5",
+        "kimi-k2-thinking",
+        "kimi-k2-turbo-preview",
+        "kimi-k2-0905-preview",
+    ),
 }
 
 
@@ -2323,8 +2345,10 @@ _BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
 # surfaced newest model stays at the top even when the live API lags. OpenCode
 # Zen / Go re-expose dozens of upstream vendors and rotate them frequently, so
 # their stale curated entries must not pollute the top of the picker. (#49129)
+# Kimi Coding Plan: live GET /v1/models is the SoT for wire ids (k3 / k3-256k /
+# kimi-for-coding*); retired public slugs must not win curated-first merge.
 _LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset(
-    {"opencode-zen", "opencode-go"}
+    {"opencode-zen", "opencode-go", "kimi-coding", "kimi-coding-cn"}
 )
 
 
@@ -2742,11 +2766,12 @@ def _model_dedup_key(model_id: str) -> str:
     """Case-insensitive dedup key that also folds picker-search aliases.
 
     Some providers serve the same model under both a curated public slug and
-    a bare live wire id (Kimi Coding Plan lists its flagship as ``k3`` while
-    the curated catalog carries ``kimi-k3``). Folding through the search-alias
-    table keeps the curated-first merge from emitting both as separate rows.
-    The row that survives is the primary list's entry; selection still sends
-    whichever id the surviving row carries.
+    a bare live wire id (Kimi Coding Plan flagship wire id is ``k3``; older
+    catalogs used ``kimi-k3``). Folding through the search-alias table keeps
+    the curated-first merge from emitting both as separate rows. The row that
+    survives is the primary list's entry; selection still sends whichever id
+    the surviving row carries — so curated Kimi lists must lead with the
+    live wire id (``k3``), not the retired public slug.
     """
     key = str(model_id).strip().lower()
     try:

@@ -176,7 +176,14 @@ def _(rid, params: dict) -> dict:
             # their own source.
             deny = frozenset({"kanban", "tool"})
 
-            limit = int(params.get("limit", 200) or 200)
+            # Clamp before slicing: a negative limit is a valid Python slice
+            # (``rows[:-n]`` drops the tail) and would silently return the
+            # wrong set. Huge limits also force oversized DB fetches.
+            try:
+                limit = int(params.get("limit", 200) or 200)
+            except (TypeError, ValueError):
+                limit = 200
+            limit = max(1, min(limit, 500))
             # Over-fetch modestly so per-source filtering doesn't leave us
             # short; the compression-tip projection in ``list_sessions_rich``
             # can also merge rows.
@@ -3132,7 +3139,12 @@ def _(rid, params: dict) -> dict:
 @method("spawn_tree.list")
 def _(rid, params: dict) -> dict:
     session_id = str(params.get("session_id") or "").strip()
-    limit = int(params.get("limit") or 50)
+    # Same negative-slice hazard as session.list — clamp before ``[:limit]``.
+    try:
+        limit = int(params.get("limit") or 50)
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(limit, 500))
     cross_session = bool(params.get("cross_session"))
 
     if cross_session:

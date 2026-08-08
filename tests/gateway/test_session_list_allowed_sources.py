@@ -69,3 +69,46 @@ def test_session_list_surfaces_all_user_facing_sources(monkeypatch):
     assert "tool-1" not in ids
 
 
+def test_session_list_clamps_negative_limit(monkeypatch):
+    """Negative limit must not reverse-slice (``rows[:-n]``) the result set."""
+    rows = [
+        {"id": f"s{i}", "source": "cli", "started_at": i}
+        for i in range(10)
+    ]
+    db = _StubDB(rows)
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+
+    resp = _call(limit=-3)
+    sessions = resp["result"]["sessions"]
+    # Clamped to 1 — never drops the tail via negative slicing.
+    assert len(sessions) == 1
+    # Stub returns rows in insertion order; first surviving row is s0.
+    assert sessions[0]["id"] == "s0"
+
+
+def test_session_list_clamps_huge_limit(monkeypatch):
+    """Huge limits must not request unbounded DB fetches."""
+    rows = [{"id": "only", "source": "cli", "started_at": 1}]
+    db = _StubDB(rows)
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+
+    resp = _call(limit=99999)
+    assert "error" not in resp
+    # fetch_limit = max(clamped_limit * 2, 200) with clamp=500 → 1000
+    assert db.calls[0]["limit"] == 1000
+
+
+def test_session_list_invalid_limit_falls_back(monkeypatch):
+    rows = [{"id": "a", "source": "cli", "started_at": 1}]
+    db = _StubDB(rows)
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+
+    resp = server.handle_request({
+        "id": "1",
+        "method": "session.list",
+        "params": {"limit": "not-a-number"},
+    })
+    assert "error" not in resp
+    assert len(resp["result"]["sessions"]) == 1
+
+

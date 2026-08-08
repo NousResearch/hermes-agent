@@ -82,6 +82,12 @@ def _parse_comma_list(value: str) -> List[str]:
     return [v.strip() for v in value.split(",") if v.strip()]
 
 
+def set_signal_notify_self(params: Dict[str, Any], account: str, chat_id: str) -> None:
+    """Render linked-device self-chat replies as incoming on the primary device."""
+    if str(chat_id).strip() == str(account).strip():
+        params["notifySelf"] = True
+
+
 def _guess_extension(data: bytes) -> str:
     """Guess file extension from magic bytes.
 
@@ -1077,6 +1083,7 @@ class SignalAdapter(BasePlatformAdapter):
             params["groupId"] = chat_id[6:]
         else:
             params["recipient"] = [await self._resolve_recipient(chat_id)]
+            set_signal_notify_self(params, self.account, chat_id)
 
         logger.info("[Signal] Sending response (%d chars) to %s", len(plain_text), chat_id)
         result = await self._rpc("send", params)
@@ -1251,6 +1258,7 @@ class SignalAdapter(BasePlatformAdapter):
             base_params["groupId"] = chat_id[6:]
         else:
             base_params["recipient"] = [await self._resolve_recipient(chat_id)]
+            set_signal_notify_self(base_params, self.account, chat_id)
 
         att_batches = [
             attachments[i:i + SIGNAL_MAX_ATTACHMENTS_PER_MSG]
@@ -1403,6 +1411,7 @@ class SignalAdapter(BasePlatformAdapter):
             params["groupId"] = chat_id[6:]
         else:
             params["recipient"] = [await self._resolve_recipient(chat_id)]
+            set_signal_notify_self(params, self.account, chat_id)
 
         result = await self._rpc("send", params)
         if result is not None:
@@ -1445,6 +1454,7 @@ class SignalAdapter(BasePlatformAdapter):
             params["groupId"] = chat_id[6:]
         else:
             params["recipient"] = [await self._resolve_recipient(chat_id)]
+            set_signal_notify_self(params, self.account, chat_id)
 
         result = await self._rpc("send", params)
         if result is not None:

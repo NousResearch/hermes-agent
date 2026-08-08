@@ -12,6 +12,7 @@ from gateway.config import Platform
 
 def _make_httpx_mock():
     """Create a mock httpx module with proper sync json()."""
+    requests = []
 
     class AsyncBaseTransport:
         pass
@@ -32,19 +33,23 @@ def _make_httpx_mock():
         async def __aexit__(self, *a):
             pass
         async def post(self, *args, **kwargs):
+            requests.append(kwargs.get("json"))
             return MockResp()
 
     httpx_mock = ModuleType("httpx")
     httpx_mock.AsyncClient = lambda timeout=None: MockClient()
     httpx_mock.AsyncBaseTransport = AsyncBaseTransport  # Needed by Telegram adapter
     httpx_mock.Proxy = Proxy  # Needed by telegram-bot library
+    setattr(httpx_mock, "requests", requests)
     return httpx_mock
 
 
 @pytest.fixture(autouse=True)
 def inject_httpx(monkeypatch):
     """Inject mock httpx into sys.modules before imports."""
-    monkeypatch.setitem(sys.modules, "httpx", _make_httpx_mock())
+    httpx_mock = _make_httpx_mock()
+    monkeypatch.setitem(sys.modules, "httpx", httpx_mock)
+    return httpx_mock
 
 
 class TestSendSignalMediaFiles:
@@ -76,6 +81,29 @@ class TestSendSignalMediaFiles:
         assert result["success"] is True  # Should succeed despite missing file
         assert "warnings" in result
         assert "Some media files were skipped" in str(result["warnings"])
+
+    def test_send_signal_self_chat_sets_notify_self(self, inject_httpx):
+        from tools.send_message_tool import _send_signal
+
+        account = "test-account"
+        extra = {"http_url": "http://localhost:8080", "account": account}
+
+        result = asyncio.run(_send_signal(extra, account, "Hello self"))
+
+        assert result["success"] is True
+        requests = getattr(inject_httpx, "requests")
+        assert requests[0]["params"]["notifySelf"] is True
+
+    def test_send_signal_other_recipient_omits_notify_self(self, inject_httpx):
+        from tools.send_message_tool import _send_signal
+
+        extra = {"http_url": "http://localhost:8080", "account": "test-account"}
+
+        result = asyncio.run(_send_signal(extra, "other-recipient", "Hello other"))
+
+        assert result["success"] is True
+        requests = getattr(inject_httpx, "requests")
+        assert "notifySelf" not in requests[0]["params"]
 
 
 class TestSendSignalMediaRestrictions:
@@ -179,7 +207,7 @@ class TestSendSignalMediaWarningMessages:
 class TestSendSignalGroupChats:
     """Test that _send_signal handles group chats correctly."""
 
-    def test_send_signal_group_with_attachments(self, tmp_path):
+    def test_send_signal_group_with_attachments(self, tmp_path, inject_httpx):
         """Group chat messages with attachments should use groupId parameter."""
         from tools.send_message_tool import _send_signal
 
@@ -193,6 +221,9 @@ class TestSendSignalGroupChats:
         )
 
         assert result["success"] is True
+        requests = getattr(inject_httpx, "requests")
+        assert requests[0]["params"]["groupId"] == "abc123=="
+        assert "notifySelf" not in requests[0]["params"]
 
 
 class TestSendSignalConfigLoading:

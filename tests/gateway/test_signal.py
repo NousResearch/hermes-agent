@@ -363,7 +363,7 @@ class TestSignalSendImageFile:
     @pytest.mark.asyncio
     async def test_send_image_file_sends_via_rpc(self, monkeypatch, tmp_path):
         """send_image_file should send image as attachment via signal-cli RPC."""
-        adapter = _make_signal_adapter(monkeypatch)
+        adapter = _make_signal_adapter(monkeypatch, account="self-account")
         mock_rpc, captured = _stub_rpc({"timestamp": 1234567890})
         adapter._rpc = mock_rpc
         adapter._stop_typing_indicator = AsyncMock()
@@ -371,17 +371,20 @@ class TestSignalSendImageFile:
         img_path = tmp_path / "chart.png"
         img_path.write_bytes(b"\x89PNG" + b"\x00" * 100)
 
-        result = await adapter.send_image_file(chat_id="+155****4567", image_path=str(img_path))
+        result = await adapter.send_image_file(
+            chat_id=adapter.account, image_path=str(img_path)
+        )
 
         assert result.success is True
         assert len(captured) == 1
         assert captured[0]["method"] == "send"
         assert captured[0]["params"]["account"] == adapter.account
-        assert captured[0]["params"]["recipient"] == ["+155****4567"]
+        assert captured[0]["params"]["recipient"] == [adapter.account]
+        assert captured[0]["params"]["notifySelf"] is True
         assert captured[0]["params"]["attachments"] == [str(img_path)]
         assert captured[0]["params"]["message"] == ""  # caption=None → ""
         # Typing indicator must be stopped before sending
-        adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
+        adapter._stop_typing_indicator.assert_awaited_once_with(adapter.account)
         # Timestamp must be tracked for echo-back prevention
         assert 1234567890 in adapter._recent_sent_timestamps
 
@@ -405,6 +408,25 @@ class TestSignalSendImageFile:
 
         assert result.success is False
         assert "too large" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_other_recipient_omits_notify_self(
+        self, monkeypatch, tmp_path
+    ):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1234567890})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        img_path = tmp_path / "chart.png"
+        img_path.write_bytes(b"\x89PNG" + b"\x00" * 100)
+
+        result = await adapter.send_image_file(
+            chat_id="other-recipient", image_path=str(img_path)
+        )
+
+        assert result.success is True
+        assert "notifySelf" not in captured[0]["params"]
 
 
 class TestSignalRecipientResolution:
@@ -438,6 +460,36 @@ class TestSignalRecipientResolution:
         assert captured[1]["method"] == "send"
         assert captured[1]["params"]["recipient"] == ["68680952-6d86-45bc-85e0-1a4d186d53ee"]
 
+    @pytest.mark.asyncio
+    async def test_self_chat_keeps_notify_self_after_uuid_resolution(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+        captured = []
+        self_uuid = "68680952-6d86-45bc-85e0-1a4d186d53ee"
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params)})
+            if method == "listContacts":
+                return [
+                    {
+                        "number": adapter.account,
+                        "uuid": self_uuid,
+                        "isRegistered": True,
+                    }
+                ]
+            if method == "send":
+                return {"timestamp": 1234567890}
+            return None
+
+        adapter._rpc = mock_rpc
+
+        result = await adapter.send(chat_id=adapter.account, content="hello")
+
+        assert result.success is True
+        assert captured[1]["method"] == "send"
+        assert captured[1]["params"]["recipient"] == [self_uuid]
+        assert captured[1]["params"]["notifySelf"] is True
+
 
 # ---------------------------------------------------------------------------
 # send_voice method (#5105)
@@ -447,7 +499,7 @@ class TestSignalSendVoice:
     @pytest.mark.asyncio
     async def test_send_voice_sends_via_rpc(self, monkeypatch, tmp_path):
         """send_voice should send audio as attachment via signal-cli RPC."""
-        adapter = _make_signal_adapter(monkeypatch)
+        adapter = _make_signal_adapter(monkeypatch, account="self-account")
         mock_rpc, captured = _stub_rpc({"timestamp": 1234567890})
         adapter._rpc = mock_rpc
         adapter._stop_typing_indicator = AsyncMock()
@@ -455,13 +507,16 @@ class TestSignalSendVoice:
         audio_path = tmp_path / "reply.ogg"
         audio_path.write_bytes(b"OggS" + b"\x00" * 100)
 
-        result = await adapter.send_voice(chat_id="+155****4567", audio_path=str(audio_path))
+        result = await adapter.send_voice(
+            chat_id=adapter.account, audio_path=str(audio_path)
+        )
 
         assert result.success is True
         assert captured[0]["method"] == "send"
         assert captured[0]["params"]["attachments"] == [str(audio_path)]
         assert captured[0]["params"]["message"] == ""  # caption=None → ""
-        adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
+        assert captured[0]["params"]["notifySelf"] is True
+        adapter._stop_typing_indicator.assert_awaited_once_with(adapter.account)
         assert 1234567890 in adapter._recent_sent_timestamps
 
 
@@ -674,15 +729,28 @@ class TestSignalSendReturnsMessageId:
 
     @pytest.mark.asyncio
     async def test_send_returns_none_message_id_even_with_timestamp(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch)
-        mock_rpc, _ = _stub_rpc({"timestamp": 1712345678000})
+        adapter = _make_signal_adapter(monkeypatch, account="self-account")
+        mock_rpc, captured = _stub_rpc({"timestamp": 1712345678000})
         adapter._rpc = mock_rpc
         adapter._stop_typing_indicator = AsyncMock()
 
-        result = await adapter.send(chat_id="+155****4567", content="hello")
+        result = await adapter.send(chat_id=adapter.account, content="hello")
 
         assert result.success is True
         assert result.message_id is None
+        assert captured[0]["params"]["notifySelf"] is True
+
+    @pytest.mark.asyncio
+    async def test_send_other_recipient_omits_notify_self(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1712345678000})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send(chat_id="other-recipient", content="hello")
+
+        assert result.success is True
+        assert "notifySelf" not in captured[0]["params"]
 
 
 class TestSignalSendResultValidation:
@@ -1055,17 +1123,18 @@ class TestSignalSendMultipleImages:
 
     @pytest.mark.asyncio
     async def test_single_batch_under_limit(self, monkeypatch, tmp_path):
-        adapter = _make_signal_adapter(monkeypatch)
+        adapter = _make_signal_adapter(monkeypatch, account="self-account")
         mock_rpc, captured = _stub_rpc_responses([{"timestamp": 1}])
         adapter._rpc = mock_rpc
         adapter._stop_typing_indicator = AsyncMock()
 
         images = _make_image_files(tmp_path, 5)
-        await adapter.send_multiple_images(chat_id="+155****4567", images=images)
+        await adapter.send_multiple_images(chat_id=adapter.account, images=images)
 
         assert len(captured) == 1
         params = captured[0]["params"]
-        assert params["recipient"] == ["+155****4567"]
+        assert params["recipient"] == [adapter.account]
+        assert params["notifySelf"] is True
         assert params["message"] == ""
         assert len(params["attachments"]) == 5
         # raise_on_rate_limit must be opted into so the retry loop sees 429s

@@ -173,18 +173,90 @@ def test_actual_profile_fetch_models_normalizes_env_base_url(monkeypatch):
         def read(self):
             return json.dumps({"data": [{"id": "actual/local-model"}]}).encode()
 
-    def _urlopen(req, timeout=0):
+    def _open(req, timeout=0):
         seen["url"] = req.full_url
         seen["auth"] = req.get_header("Authorization")
         seen["timeout"] = timeout
         return _Response()
 
-    monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+    monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", _open)
 
     assert profile.fetch_models(api_key=None, timeout=1.5) == ["actual/local-model"]
     assert seen["url"] == DEFAULT_ACTUAL_LOCAL_BASE_URL + "/models"
     assert seen["auth"] is None
     assert seen["timeout"] == 1.5
+
+
+def test_actual_profile_fetch_models_drops_credential_on_cross_origin_redirect(monkeypatch):
+    """fetch_models must route through the shared redirect-credential guard.
+
+    ActualProfile overrides ProviderProfile.fetch_models with its own
+    base_url resolution, and previously called raw urllib.request.urlopen
+    directly instead of the base class's open_credentialed_url — losing the
+    protection that strips the Authorization header when a redirect leaves
+    the original host. Exercises the real SafeCredentialRedirectHandler
+    (no mocking of open_credentialed_url itself) against a local HTTP
+    server that 302s to a different origin, mirroring
+    test_urllib_security.py's end-to-end redirect tests.
+    """
+    import http.server
+    import threading
+
+    _clear_actual_env(monkeypatch)
+    profile = get_provider_profile("actual")
+
+    received_auth_headers: list[str | None] = []
+
+    class _RedirectTargetHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            received_auth_headers.append(self.headers.get("Authorization"))
+            body = json.dumps({"data": [{"id": "should-not-be-trusted"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    target_server = http.server.HTTPServer(("127.0.0.1", 0), _RedirectTargetHandler)
+    target_thread = threading.Thread(target=target_server.serve_forever, daemon=True)
+    target_thread.start()
+    target_port = target_server.server_address[1]
+
+    class _RedirectingHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{target_port}/models")
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    redirect_server = http.server.HTTPServer(("127.0.0.1", 0), _RedirectingHandler)
+    redirect_thread = threading.Thread(target=redirect_server.serve_forever, daemon=True)
+    redirect_thread.start()
+    redirect_port = redirect_server.server_address[1]
+
+    try:
+        result = profile.fetch_models(
+            api_key="actual-secret-token",
+            base_url=f"http://127.0.0.1:{redirect_port}",
+            timeout=5.0,
+        )
+    finally:
+        redirect_server.shutdown()
+        target_server.shutdown()
+        redirect_thread.join(timeout=2.0)
+        target_thread.join(timeout=2.0)
+
+    assert result == ["should-not-be-trusted"], (
+        "sanity check: the redirect must actually have been followed"
+    )
+    assert received_auth_headers == [None], (
+        "Authorization header leaked to a different origin after a redirect"
+    )
 
 
 def test_actual_provider_model_ids_use_local_profile_catalog(monkeypatch):

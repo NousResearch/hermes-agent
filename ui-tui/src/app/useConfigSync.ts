@@ -6,6 +6,7 @@ import type { GatewayClient } from '../gatewayClient.js'
 import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
 import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
+import { setToolContextPreviewMax } from '../lib/text.js'
 
 import { applyConfiguredTuiTheme } from './createGatewayEventHandler.js'
 import {
@@ -207,6 +208,24 @@ const _pasteCollapseLinesFromConfig = (cfg: ConfigFullResponse | null): number =
   return 5
 }
 
+const _toolPreviewLengthFromConfig = (cfg: ConfigFullResponse | null): null | number => {
+  const raw = cfg?.config?.display?.tool_preview_length
+
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
+    return Math.round(raw)
+  }
+
+  if (typeof raw === 'string') {
+    const n = parseInt(raw, 10)
+
+    if (Number.isFinite(n) && n >= 0) {
+      return n
+    }
+  }
+
+  return null
+}
+
 const _pasteCollapseCharsFromConfig = (cfg: ConfigFullResponse | null): number => {
   if (!cfg?.config) {
     return 2000
@@ -267,6 +286,12 @@ export const applyDisplay = (
   // the last-good state and lets the next successful poll refresh it.
   if (setVoiceRecordKey && cfg) {
     setVoiceRecordKey(_voiceRecordKeyFromConfig(cfg))
+  }
+
+  // Same null-guard as the voice key above: a transient RPC failure must not
+  // reset a configured preview length back to the built-in cap.
+  if (cfg) {
+    setToolContextPreviewMax(_toolPreviewLengthFromConfig(cfg))
   }
 
   patchUiState({

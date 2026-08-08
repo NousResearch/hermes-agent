@@ -474,6 +474,45 @@ def test_config_roundtrip(server, tmp_path):
     assert server._load_cfg()["model"] == "test/model"
 
 
+# ── display.tool_preview_length → _tool_ctx ──────────────────────────
+#
+# Exercises the real config path (config.yaml on disk → _load_cfg →
+# _load_tool_preview_len → _tool_ctx) rather than poking globals, so a
+# regression in any link of the chain fails these tests.
+
+_LONG_COMMAND = "echo " + " ".join(f"word{i}" for i in range(60))
+
+
+def test_tool_ctx_unset_keeps_legacy_80_cap(server, tmp_path):
+    server._hermes_home = tmp_path
+    server._save_cfg({"display": {}})
+    ctx = server._tool_ctx("terminal", {"command": _LONG_COMMAND})
+    assert len(ctx) == 80
+    assert ctx.endswith("...")
+
+
+def test_tool_ctx_honours_configured_preview_length(server, tmp_path):
+    server._hermes_home = tmp_path
+    server._save_cfg({"display": {"tool_preview_length": 40}})
+    ctx = server._tool_ctx("terminal", {"command": _LONG_COMMAND})
+    assert len(ctx) == 40
+    assert ctx.endswith("...")
+
+
+def test_tool_ctx_preview_length_zero_is_unlimited(server, tmp_path):
+    server._hermes_home = tmp_path
+    server._save_cfg({"display": {"tool_preview_length": 0}})
+    ctx = server._tool_ctx("terminal", {"command": _LONG_COMMAND})
+    assert ctx == _LONG_COMMAND
+
+
+def test_tool_ctx_invalid_preview_length_falls_back(server, tmp_path):
+    server._hermes_home = tmp_path
+    server._save_cfg({"display": {"tool_preview_length": "not-a-number"}})
+    ctx = server._tool_ctx("terminal", {"command": _LONG_COMMAND})
+    assert len(ctx) == 80
+
+
 # ── _cli_exec_blocked ────────────────────────────────────────────────
 
 

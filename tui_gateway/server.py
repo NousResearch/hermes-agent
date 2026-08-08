@@ -4135,6 +4135,26 @@ def _load_tool_progress_mode() -> str:
     return mode if mode in {"off", "new", "all", "verbose"} else "all"
 
 
+def _load_tool_preview_len() -> int | None:
+    """Configured ``display.tool_preview_length``, or None when unset.
+
+    Read per call through the mtime-cached ``_load_cfg()`` rather than
+    mirrored into ``agent.display``'s process-global preview limit: the
+    gateway serves multiple sessions (and, via session.resume, multiple
+    profiles) from one process, so mutating the global on config loads
+    would race across sessions. A per-call read also covers every
+    transport (stdio entry, WebSocket, compute host) without each needing
+    its own startup initialisation.
+    """
+    raw = (_load_cfg().get("display") or {}).get("tool_preview_length")
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        return max(int(raw), 0)
+    except (TypeError, ValueError):
+        return None
+
+
 def _gui_surface_toolsets(platform: str) -> set[str]:
     """Toolsets that exist because of the CLIENT on the other end, not the host.
 
@@ -5257,7 +5277,14 @@ def _tool_ctx(name: str, args: dict) -> str:
     try:
         from agent.display import build_tool_preview
 
-        return build_tool_preview(name, args, max_len=80) or ""
+        # display.tool_preview_length governs this preview like it does the
+        # CLI spinner's (cli.py seeds agent.display's global from the same
+        # key; 0 = unlimited). Unset keeps the pre-config cap of 80 so the
+        # default row layout is unchanged.
+        limit = _load_tool_preview_len()
+        return build_tool_preview(
+            name, args, max_len=80 if limit is None else limit
+        ) or ""
     except Exception:
         return ""
 

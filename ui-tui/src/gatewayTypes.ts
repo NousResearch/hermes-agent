@@ -91,6 +91,11 @@ export interface ConfigDisplayConfig {
   streaming?: boolean
   thinking_mode?: string
   /**
+   * Max chars for tool-call context previews in trail lines; 0 = unlimited.
+   * Same key the CLI spinner honours. Unset keeps the built-in cap.
+   */
+  tool_preview_length?: null | number | string
+  /**
    * Nudge the user toward the /agents spawn-tree dashboard the first time a
    * turn starts delegating, via a one-time transient activity hint.  Opens
    * nothing — just advertises the command.  Default true.

@@ -133,3 +133,22 @@ def now() -> datetime:
     return datetime.now().astimezone()
 
 
+# Date-only line format shared with the system-prompt build
+# (``agent/system_prompt.py`` uses the same strftime for the
+# ``Conversation started:`` value), so the stored prompt and the volatile
+# per-turn tail use identical date bytes.
+_DATE_ONLY_FORMAT = "%A, %B %d, %Y"
+
+
+def current_date_line() -> str:
+    """Return the date-only ``Today's date: <date>`` line for this turn.
+
+    Delivered as API-only current-turn user context (via the
+    ``api_content`` sidecar channel), never into the system prompt.  The
+    date-only granularity keeps any caller that persists the composed bytes
+    byte-stable for the full day; precise wall-clock time remains available
+    to the model via tools.
+    """
+    return f"Today's date: {now().strftime(_DATE_ONLY_FORMAT)}"
+
+

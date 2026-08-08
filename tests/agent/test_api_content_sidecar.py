@@ -24,6 +24,7 @@ import sys
 import tempfile
 import threading
 import types
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import MagicMock, patch
 
@@ -32,6 +33,9 @@ import pytest
 from agent.memory_manager import build_memory_context_block
 from agent.turn_context import build_turn_context, compose_user_api_content
 from hermes_state import SessionDB
+
+_MAY_17 = datetime(2026, 5, 17, 9, 30, tzinfo=timezone.utc)
+_DATE_SUNDAY = "Today's date: Sunday, May 17, 2026"
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +252,7 @@ def _stub_runtime_main():
 class TestPrologueStamping:
     def test_stamps_api_content_from_plugin_context(self):
         agent = _FakeAgent()
-        with patch(
+        with patch("hermes_time.now", return_value=_MAY_17), patch(
             "hermes_cli.plugins.invoke_hook",
             return_value=[{"context": "PLUGIN-CTX"}],
         ):
@@ -258,16 +262,22 @@ class TestPrologueStamping:
         assert msg["api_content"] == compose_user_api_content(
             "hello", ctx.ext_prefetch_cache, ctx.plugin_user_context
         )
-        assert msg["api_content"] == "hello\n\nPLUGIN-CTX"
+        assert msg["api_content"] == "hello\n\nPLUGIN-CTX\n\n" + _DATE_SUNDAY
         # The early persist saw the stamped sidecar (written in one insert).
-        assert agent.api_content_at_persist == "hello\n\nPLUGIN-CTX"
+        assert agent.api_content_at_persist == "hello\n\nPLUGIN-CTX\n\n" + _DATE_SUNDAY
 
-    def test_no_stamp_without_injections(self):
+    def test_date_tail_stamps_even_without_plugin(self):
+        """Every string turn carries the date-only volatile tail, so the
+        sidecar is stamped even when there is no plugin/prefetch context."""
         agent = _FakeAgent()
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+        with patch("hermes_time.now", return_value=_MAY_17), patch(
+            "hermes_cli.plugins.invoke_hook", return_value=[]
+        ):
             ctx = _build(agent)
-        assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
-        assert agent.api_content_at_persist is None
+        msg = ctx.messages[ctx.current_turn_user_idx]
+        assert msg["content"] == "hello"
+        assert msg["api_content"] == "hello\n\n" + _DATE_SUNDAY
+        assert agent.api_content_at_persist == "hello\n\n" + _DATE_SUNDAY
 
     def test_no_stamp_for_codex_app_server(self):
         """codex_app_server turns bypass the api_messages build, so the
@@ -497,13 +507,16 @@ class TestWireInvariant:
         handler.response_queue.append(_tc_resp("read_file", '{"file_path": "/nonexistent-path"}'))
         handler.response_queue.append(_text_resp("done"))
 
-        agent.run_conversation("hello please", conversation_history=[], task_id="t")
+        with patch("hermes_time.now", return_value=_MAY_17):
+            agent.run_conversation(
+                "hello please", conversation_history=[], task_id="t"
+            )
 
         reqs = _chat_requests(handler)
         assert len(reqs) == 2
         sent_1 = _user_messages(reqs[0])[0]["content"]
         sent_2 = _user_messages(reqs[1])[0]["content"]
-        assert sent_1 == "hello please\n\nPLUGIN-CTX"
+        assert sent_1 == "hello please\n\nPLUGIN-CTX\n\n" + _DATE_SUNDAY
         assert sent_2 == sent_1  # repeated builds: identical bytes
 
         # The sidecar never reaches the provider.
@@ -523,28 +536,34 @@ class TestWireInvariant:
 
         # ── Turn N ──
         agent1 = make_agent()
-        agent1.run_conversation("hello please", conversation_history=[], task_id="t1")
-        turn_n_user = _user_messages(_chat_requests(handler)[0])[0]
-        turn_n_bytes = json.dumps(turn_n_user, sort_keys=True)
+        with patch("hermes_time.now", return_value=_MAY_17):
+            agent1.run_conversation(
+                "hello please", conversation_history=[], task_id="t1"
+            )
+            turn_n_user = _user_messages(_chat_requests(handler)[0])[0]
+            turn_n_bytes = json.dumps(turn_n_user, sort_keys=True)
 
-        # ── Turn N+1: fresh agent, history reloaded from the store ──
-        history = db.get_messages_as_conversation(sid)
-        # The stored history carries the sidecar, not the injected content.
-        assert history[0]["content"] == "hello please"
-        assert history[0]["api_content"] == turn_n_user["content"]
+            # ── Turn N+1: fresh agent, history reloaded from the store ──
+            history = db.get_messages_as_conversation(sid)
+            # The stored history carries the sidecar, not the injected content.
+            assert history[0]["content"] == "hello please"
+            assert history[0]["api_content"] == turn_n_user["content"]
 
-        handler.captured_requests = []
-        agent2 = make_agent()
-        agent2.run_conversation(
-            "second question", conversation_history=history, task_id="t2"
-        )
+            handler.captured_requests = []
+            agent2 = make_agent()
+            agent2.run_conversation(
+                "second question", conversation_history=history, task_id="t2"
+            )
 
-        replayed = _user_messages(_chat_requests(handler)[0])[0]
-        assert json.dumps(replayed, sort_keys=True) == turn_n_bytes
+            replayed = _user_messages(_chat_requests(handler)[0])[0]
+            assert json.dumps(replayed, sort_keys=True) == turn_n_bytes
 
-        # And the new current-turn message got its own injection + sidecar.
-        current = _user_messages(_chat_requests(handler)[0])[-1]
-        assert current["content"] == "second question\n\nPLUGIN-CTX"
+            # And the new current-turn message got its own injection + sidecar.
+            current = _user_messages(_chat_requests(handler)[0])[-1]
+            assert (
+                current["content"]
+                == "second question\n\nPLUGIN-CTX\n\n" + _DATE_SUNDAY
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -628,7 +647,7 @@ class TestPrologueMoaAndInPlaceBackfill:
             {"role": "user", "content": big},
             {"role": "assistant", "content": big},
         ]
-        with patch(
+        with patch("hermes_time.now", return_value=_MAY_17), patch(
             "hermes_cli.plugins.invoke_hook",
             return_value=[{"context": "PLUGIN-CTX"}],
         ):
@@ -636,9 +655,9 @@ class TestPrologueMoaAndInPlaceBackfill:
 
         msg = ctx.messages[ctx.current_turn_user_idx]
         assert msg["content"] == "hello"
-        assert msg["api_content"] == "hello\n\nPLUGIN-CTX"
+        assert msg["api_content"] == "hello\n\nPLUGIN-CTX\n\n" + _DATE_SUNDAY
         agent._session_db.set_latest_user_api_content.assert_called_once_with(
-            "sess-1", "hello", "hello\n\nPLUGIN-CTX"
+            "sess-1", "hello", "hello\n\nPLUGIN-CTX\n\n" + _DATE_SUNDAY
         )
 
 

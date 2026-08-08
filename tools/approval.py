@@ -1000,6 +1000,40 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 # Detection
 # =========================================================================
 
+# Windows absolute paths are unambiguous command-line path syntax. Preserve
+# their separators before the generic POSIX shell escape fold below; otherwise
+# ``C:\Windows\System32\cmd.exe`` becomes ``C:WindowsSystem32cmd.exe`` and
+# destroys the word boundary every ``\bcmd\b``-style safety rule relies on.
+# Quoted paths get a separate expression so spaces remain part of the path.
+_WINDOWS_QUOTED_ABSOLUTE_PATH_RE = re.compile(
+    r"(?P<quote>[\"'])(?P<path>(?:[A-Za-z]:[\\/]|(?:\\\\|//)(?:[?.][\\/])?)[^\"'\r\n]+)(?P=quote)"
+)
+_WINDOWS_UNQUOTED_ABSOLUTE_PATH_RE = re.compile(
+    r"(?P<path>(?:[A-Za-z]:[\\/]|(?:\\\\|//)(?:[?.][\\/])?)[^\s\"'`;|&<>()]+)"
+)
+
+
+def _normalize_windows_absolute_path_separators(command: str) -> str:
+    r"""Rewrite separators inside unambiguous Windows absolute path tokens.
+
+    Drive-rooted, UNC, and extended/device paths are normalized to forward
+    slashes. This preserves executable-name word boundaries while leaving shell
+    escape obfuscation outside those path tokens available to the existing
+    ``r\m -> rm`` fold.
+    """
+
+    def _quoted_replacement(match: re.Match) -> str:
+        quote = match.group("quote")
+        path = match.group("path").replace("\\", "/")
+        return f"{quote}{path}{quote}"
+
+    command = _WINDOWS_QUOTED_ABSOLUTE_PATH_RE.sub(_quoted_replacement, command)
+    return _WINDOWS_UNQUOTED_ABSOLUTE_PATH_RE.sub(
+        lambda match: match.group("path").replace("\\", "/"),
+        command,
+    )
+
+
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command string before dangerous-pattern matching.
 
@@ -1042,6 +1076,9 @@ def _normalize_command_for_detection(command: str) -> str:
     # first would eat the prefix the Hermes-home fold needs.
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
+    # Preserve unambiguous Windows path separators as token boundaries before
+    # the generic POSIX shell backslash-escape fold below (#71890).
+    command = _normalize_windows_absolute_path_separators(command)
     # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
     command = re.sub(r'\\([^\n])', r'\1', command)
     # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.

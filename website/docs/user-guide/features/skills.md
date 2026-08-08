@@ -299,6 +299,21 @@ Settings are stored under `skills.config` in your config.yaml. `hermes config mi
 
 See [Skill Settings](/user-guide/configuration#skill-settings) and [Creating Skills — Config Settings](/developer-guide/creating-skills#config-settings-configyaml) for details.
 
+### Skill Model Routing
+
+A skill can choose the provider and model used for its invocation:
+
+```yaml
+metadata:
+  hermes:
+    provider: openrouter
+    model: openai/gpt-5.5
+```
+
+The model must already be configured in Hermes. `provider` is optional when the
+model belongs to the current provider. This override applies only to that
+skill turn; it does not change the session's default model.
+
 ## Skill Directory Structure
 
 ```text

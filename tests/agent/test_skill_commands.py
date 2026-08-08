@@ -10,6 +10,7 @@ import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
+    get_skill_model_config,
     resolve_skill_command_key,
     scan_skill_commands,
 )
@@ -51,6 +52,26 @@ def _symlink_category(skills_dir: Path, linked_root: Path, category: str) -> Pat
 
 
 class TestScanSkillCommands:
+
+    def test_reads_skill_model_config_from_hermes_metadata(self, tmp_path):
+        _make_skill(
+            tmp_path,
+            "modelled",
+            frontmatter_extra=(
+                "metadata:\n"
+                "  hermes:\n"
+                "    provider: openrouter\n"
+                "    model: openai/gpt-5.5\n"
+            ),
+        )
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            scan_skill_commands()
+
+        assert get_skill_model_config("/modelled") == {
+            "provider": "openrouter",
+            "model": "openai/gpt-5.5",
+        }
 
 
 

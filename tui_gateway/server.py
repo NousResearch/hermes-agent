@@ -1689,6 +1689,7 @@ def _compute_host_turn_frame(
         "cwd": _session_cwd(session),
         "profile_home": session.get("profile_home") or "",
         "model_override": session.get("model_override"),
+        "pending_skill_model_override": session.get("pending_skill_model_override"),
         "reasoning_config_override": session.get("create_reasoning_override"),
         "service_tier_override": session.get("create_service_tier_override"),
         "source": _session_source(session),
@@ -1797,6 +1798,8 @@ def _submit_prompt_to_compute_host(
         return _err(rid, 5019, f"compute-host dispatch failed: {exc}")
     with session["history_lock"]:
         session["_compute_host_active"] = True
+        if frame.get("pending_skill_model_override") is not None:
+            session.pop("pending_skill_model_override", None)
         if image_paths is None:
             session["attached_images"] = []
     return _ok(rid, {"status": "streaming", "turn_isolation": True})
@@ -4732,6 +4735,50 @@ def _apply_pending_model_switch(sid: str, session: dict) -> None:
             "error",
             sid,
             {"message": f"Could not switch model: {e}"},
+        )
+
+
+def _apply_pending_skill_model_override(sid: str, session: dict) -> None:
+    """Apply a skill's provider/model to the next turn, then restore it."""
+    config = session.pop("pending_skill_model_override", None)
+    model = config.get("model") if isinstance(config, dict) else ""
+    if not str(model or "").strip():
+        return
+    if session.get("agent") is None:
+        _emit(
+            "error",
+            sid,
+            {"message": "Could not apply the skill model: agent unavailable"},
+        )
+        return
+
+    provider = str(config.get("provider") or "").strip()
+    raw = f"{str(model).strip()} --once"
+    if provider:
+        raw += f" --provider {provider}"
+    previous_restore = session.get("one_turn_model_restore")
+    try:
+        result = _apply_model_switch(
+            sid,
+            session,
+            raw,
+            confirm_expensive_model=True,
+            pin_session_override=False,
+            persist_override=False,
+        )
+        if previous_restore is not None:
+            session["one_turn_model_restore"] = previous_restore
+        if result.get("confirm_required"):
+            _emit(
+                "error",
+                sid,
+                {"message": result.get("confirm_message") or result.get("warning") or ""},
+            )
+    except Exception as exc:
+        _emit(
+            "error",
+            sid,
+            {"message": f"Could not apply the skill model: {exc}"},
         )
 
 
@@ -9524,6 +9571,7 @@ def _run_prompt_submit(
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
 ) -> None:
+    _apply_pending_skill_model_override(sid, session)
     with session["history_lock"]:
         if (
             queued_prompt_generation is not None

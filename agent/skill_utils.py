@@ -695,6 +695,34 @@ def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
     }
 
 
+def extract_skill_model_config(frontmatter: Dict[str, Any]) -> Dict[str, str] | None:
+    """Return the optional provider/model override declared by a skill.
+
+    The canonical form is ``metadata.hermes.model`` and
+    ``metadata.hermes.provider``.  Top-level keys remain accepted for small
+    personal skills and backwards-compatible frontmatter parsing.
+    """
+    metadata = frontmatter.get("metadata")
+    hermes = metadata.get("hermes") if isinstance(metadata, dict) else None
+    hermes = hermes if isinstance(hermes, dict) else {}
+
+    model_value = hermes.get("model", frontmatter.get("model"))
+    provider_value = hermes.get("provider", frontmatter.get("provider"))
+    if isinstance(model_value, dict):
+        provider_value = model_value.get("provider", provider_value)
+        model_value = model_value.get("model")
+
+    model = str(model_value).strip() if model_value is not None else ""
+    provider = str(provider_value).strip() if provider_value is not None else ""
+    if not model:
+        return None
+
+    result = {"model": model}
+    if provider:
+        result["provider"] = provider
+    return result
+
+
 # ── Skill config extraction ───────────────────────────────────────────────
 
 

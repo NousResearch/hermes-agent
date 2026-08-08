@@ -766,11 +766,13 @@ class WebhookAdapter(BasePlatformAdapter):
         # using /skill-name slash commands — the gateway's command parser
         # would intercept those and break the flow.
         skills = route_config.get("skills", [])
+        skill_model_config = None
         if skills:
             try:
                 from agent.skill_commands import (
                     build_skill_invocation_message,
                     get_skill_commands,
+                    get_skill_model_config,
                 )
 
                 skill_cmds = get_skill_commands()
@@ -782,6 +784,7 @@ class WebhookAdapter(BasePlatformAdapter):
                         )
                         if skill_content:
                             prompt = skill_content
+                            skill_model_config = get_skill_model_config(cmd_key)
                             break  # Load the first matching skill
                     else:
                         logger.warning(
@@ -903,6 +906,11 @@ class WebhookAdapter(BasePlatformAdapter):
             source=source,
             raw_message=payload,
             message_id=delivery_id,
+            metadata=(
+                {"_hermes_skill_model": skill_model_config}
+                if skill_model_config
+                else {}
+            ),
         )
 
         logger.info(

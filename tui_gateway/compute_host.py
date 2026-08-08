@@ -445,6 +445,9 @@ class ComputeHost:
 
             session = self._ensure_server_session(server, frame)
             with session["history_lock"]:
+                pending_skill_model = frame.get("pending_skill_model_override")
+                if isinstance(pending_skill_model, dict):
+                    session["pending_skill_model_override"] = pending_skill_model
                 queued_prompt_generation = frame.get("queued_prompt_generation")
                 if (
                     queued_prompt_generation is not None

@@ -375,14 +375,19 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     """Scan ~/.hermes/skills/ and return a mapping of /command -> skill info.
 
     Returns:
-        Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
+        Dict mapping "/skill-name" to skill metadata, including an optional
+        ``model_config`` from ``metadata.hermes``.
     """
     global _skill_commands, _skill_commands_platform
     _skill_commands_platform = _resolve_skill_commands_platform()
     _skill_commands = {}
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, skill_matches_environment, _get_disabled_skill_names
-        from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+        from agent.skill_utils import (
+            extract_skill_model_config,
+            get_external_skills_dirs,
+            iter_skill_index_files,
+        )
         from hermes_cli.commands import resolve_command
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
@@ -454,12 +459,16 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                             name, cmd_key, _skill_commands[cmd_key]["name"],
                         )
                         continue
-                    _skill_commands[cmd_key] = {
+                    skill_entry = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),
                         "skill_dir": str(skill_md.parent),
                     }
+                    model_config = extract_skill_model_config(frontmatter)
+                    if model_config:
+                        skill_entry["model_config"] = model_config
+                    _skill_commands[cmd_key] = skill_entry
                 except Exception:
                     continue
     except Exception:
@@ -480,6 +489,12 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     ):
         scan_skill_commands()
     return _skill_commands
+
+
+def get_skill_model_config(cmd_key: str) -> Optional[Dict[str, str]]:
+    """Return a skill's optional provider/model override, if declared."""
+    config = get_skill_commands().get(cmd_key, {}).get("model_config")
+    return dict(config) if isinstance(config, dict) else None
 
 
 def reload_skills() -> Dict[str, Any]:

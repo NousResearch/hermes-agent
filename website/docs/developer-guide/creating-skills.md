@@ -163,6 +163,21 @@ terminal:
 
 See `skills/apple/` for examples of macOS-only skills.
 
+### Per-skill Model
+
+A skill can route its invocation through a configured provider and model:
+
+```yaml
+metadata:
+  hermes:
+    provider: openrouter
+    model: openai/gpt-5.5
+```
+
+The model must already be configured in Hermes. The provider is optional when
+the model belongs to the current provider. Routing applies to that skill turn
+only and does not change the session's default model.
+
 ## Secure Setup on Load
 
 Use `required_environment_variables` when a skill needs an API key or token. Missing values do **not** hide the skill from discovery. Instead, Hermes prompts for them securely when the skill is loaded in the local CLI.

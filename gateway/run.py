@@ -15869,6 +15869,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from agent.skill_commands import (
                     get_skill_commands,
                     build_skill_invocation_message,
+                    get_skill_model_config,
                     resolve_skill_command_key,
                 )
                 skill_cmds = get_skill_commands()
@@ -15932,6 +15933,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if stacked_result:
                             msg, _loaded, _missing = stacked_result
                             event.text = msg
+                            event.metadata = getattr(event, "metadata", None) or {}
+                            for _stacked_key in [cmd_key, *extra_keys]:
+                                _skill_model = get_skill_model_config(_stacked_key)
+                                if _skill_model:
+                                    event.metadata["_hermes_skill_model"] = _skill_model
+                                    break
                             # Fall through to normal message processing
                         else:
                             return f"Failed to load stacked skills for /{command}."
@@ -15941,6 +15948,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                         if msg:
                             event.text = msg
+                            event.metadata = getattr(event, "metadata", None) or {}
+                            _skill_model = get_skill_model_config(cmd_key)
+                            if _skill_model:
+                                event.metadata["_hermes_skill_model"] = _skill_model
                             # Fall through to normal message processing with skill content
                 else:
                     # Not an active skill — check if it's a known-but-disabled or
@@ -16968,9 +16979,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # skill content in their conversation history from the first message.
         _auto = getattr(event, "auto_skill", None)
         if _is_new_session and _auto:
+            event.metadata = getattr(event, "metadata", None) or {}
             _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
             try:
                 from agent.skill_commands import _load_skill_payload, _build_skill_message
+                from agent.skill_utils import extract_skill_model_config, parse_frontmatter
                 _combined_parts: list[str] = []
                 _loaded_names: list[str] = []
                 for _sname in _skill_names:
@@ -16985,6 +16998,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if _part:
                             _combined_parts.append(_part)
                             _loaded_names.append(_sname)
+                            if "_hermes_skill_model" not in event.metadata:
+                                _frontmatter, _ = parse_frontmatter(
+                                    str(_loaded_skill.get("content") or "")
+                                )
+                                _skill_model = extract_skill_model_config(_frontmatter)
+                                if _skill_model:
+                                    event.metadata["_hermes_skill_model"] = _skill_model
                     else:
                         logger.warning("[Gateway] Auto-skill '%s' not found", _sname)
                 if _combined_parts:
@@ -16997,6 +17017,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
             except Exception as e:
                 logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
+
+        _skill_model_error = await self._apply_skill_model_override(
+            event, session_key
+        )
+        if _skill_model_error:
+            return {
+                "final_response": _skill_model_error,
+                "messages": [],
+                "api_calls": 0,
+                "tools": [],
+                "completed": False,
+            }
 
         # ── Turn lease (#64934) ────────────────────────────────────────
         # Session resolution is FINAL here (get_or_create → async-delegation

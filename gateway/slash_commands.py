@@ -103,6 +103,82 @@ class GatewaySlashCommandsMixin:
 
     async_session_store: AsyncSessionStore
 
+    async def _apply_skill_model_override(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        model_config: Optional[dict] = None,
+    ) -> Optional[str]:
+        """Apply a skill's provider/model for this turn only."""
+        config = model_config or (getattr(event, "metadata", {}) or {}).get(
+            "_hermes_skill_model"
+        )
+        if not isinstance(config, dict) or not str(config.get("model") or "").strip():
+            return None
+
+        from gateway.run import _load_gateway_config
+        from hermes_cli.model_switch import switch_model
+
+        user_config = _load_gateway_config() or {}
+        try:
+            current_model, runtime = self._resolve_session_agent_runtime(
+                source=event.source,
+                session_key=session_key,
+                user_config=user_config,
+            )
+        except Exception as exc:
+            logger.warning("Could not resolve current model for skill override: %s", exc)
+            return f"⚠️ Could not apply the skill model override: {exc}"
+
+        user_providers = user_config.get("providers")
+        custom_providers = user_config.get("custom_providers")
+        try:
+            from hermes_cli.config import get_compatible_custom_providers
+
+            custom_providers = get_compatible_custom_providers(user_config)
+        except Exception:
+            pass
+
+        current_api_key = runtime.get("api_key")
+        try:
+            result = await asyncio.to_thread(
+                switch_model,
+                raw_input=str(config["model"]).strip(),
+                current_provider=str(runtime.get("provider") or ""),
+                current_model=str(current_model or ""),
+                current_base_url=str(runtime.get("base_url") or ""),
+                current_api_key=current_api_key if isinstance(current_api_key, str) else "",
+                explicit_provider=str(config.get("provider") or "").strip(),
+                user_providers=user_providers,
+                custom_providers=custom_providers,
+            )
+        except Exception as exc:
+            logger.warning("Skill model override failed: %s", exc)
+            return f"⚠️ Skill model override failed: {exc}"
+        if not result.success:
+            return f"⚠️ Skill model override failed: {result.error_message}"
+
+        state = self._session_state(session_key)
+        snapshot = state.conversation.one_turn_restore or self._snapshot_session_model_override(
+            session_key
+        )
+        state.conversation.model_override = {
+            "model": result.new_model,
+            "provider": result.target_provider,
+            "api_key": result.api_key,
+            "base_url": result.base_url,
+            "api_mode": result.api_mode,
+        }
+        state.conversation.one_turn_restore = snapshot
+        self._evict_cached_agent(session_key)
+        logger.info(
+            "Applied skill model override for session=%s: model=%s provider=%s",
+            session_key,
+            result.new_model,
+            result.target_provider,
+        )
+        return None
+
     def _typed_command_prefix_for(self, platform) -> str:
         """Return the prefix users can always type to reach Hermes commands.
 

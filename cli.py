@@ -9071,6 +9071,64 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception as exc:
                 logger.warning("CLI one-turn model restore failed: %s", exc)
 
+    def _apply_skill_model_override(self, cmd_key: str) -> bool:
+        """Apply a skill's provider/model for the next turn only."""
+        from agent.skill_commands import get_skill_model_config
+        from hermes_cli.config import load_config
+        from hermes_cli.model_switch import switch_model
+
+        config = get_skill_model_config(cmd_key)
+        if not config:
+            return True
+
+        user_config = load_config() or {}
+        custom_providers = user_config.get("custom_providers")
+        try:
+            from hermes_cli.config import get_compatible_custom_providers
+
+            custom_providers = get_compatible_custom_providers(user_config)
+        except Exception:
+            pass
+
+        result = switch_model(
+            raw_input=config["model"],
+            current_provider=self.provider or "",
+            current_model=self.model or "",
+            current_base_url=self.base_url or "",
+            current_api_key=self.api_key if isinstance(self.api_key, str) else "",
+            explicit_provider=config.get("provider", ""),
+            user_providers=user_config.get("providers"),
+            custom_providers=custom_providers,
+        )
+        if not result.success:
+            _cprint(f"  ✗ Skill model override failed: {result.error_message}")
+            return False
+
+        self._pending_one_turn_model_restore = (
+            getattr(self, "_pending_one_turn_model_restore", None)
+            or self._snapshot_model_runtime()
+        )
+        self.model = result.new_model
+        self.provider = result.target_provider
+        self.requested_provider = result.target_provider
+        self._explicit_api_key = result.api_key
+        self._explicit_base_url = result.base_url
+        if result.api_key:
+            self.api_key = result.api_key
+        if result.base_url:
+            self.base_url = result.base_url
+        if result.api_mode:
+            self.api_mode = result.api_mode
+        # The next turn must be built with the declared route. Rebuilding here
+        # also keeps the existing agent's cached provider/client untouched.
+        self.agent = None
+        self._active_agent_route_signature = None
+        _cprint(
+            f"  ⚡ Skill model: {result.target_provider} / {result.new_model} "
+            "(this turn only)"
+        )
+        return True
+
     @staticmethod
     def _compute_model_picker_viewport(
         selected: int,
@@ -10503,7 +10561,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             ChatConsole().print(
                                 f"[yellow]Skipped missing skills: {', '.join(missing)}[/]"
                             )
-                        if hasattr(self, '_pending_input'):
+                        if (
+                            hasattr(self, '_pending_input')
+                            and self._apply_skill_model_override(base_cmd)
+                        ):
                             self._pending_input.put(msg)
                     else:
                         ChatConsole().print(
@@ -10514,11 +10575,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 msg = build_skill_invocation_message(
                     base_cmd, user_instruction, task_id=self.session_id
                 )
-                if msg:
+                if (
+                    msg
+                    and hasattr(self, '_pending_input')
+                    and self._apply_skill_model_override(base_cmd)
+                ):
                     skill_name = skill_commands[base_cmd]["name"]
                     print(f"\n⚡ Loading skill: {skill_name}")
-                    if hasattr(self, '_pending_input'):
-                        self._pending_input.put(msg)
+                    self._pending_input.put(msg)
                 else:
                     ChatConsole().print(f"[bold red]Failed to load skill for {base_cmd}[/]")
             else:

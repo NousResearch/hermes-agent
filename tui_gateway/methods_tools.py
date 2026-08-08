@@ -545,6 +545,7 @@ def _(rid, params: dict) -> dict:
         from agent.skill_commands import (
             scan_skill_commands,
             build_skill_invocation_message,
+            get_skill_model_config,
         )
 
         cmds = scan_skill_commands()
@@ -554,17 +555,20 @@ def _(rid, params: dict) -> dict:
                 key, arg, task_id=session.get("session_key", "") if session else ""
             )
             if msg:
-                return _ok(
-                    rid,
-                    {
-                        "type": "skill",
-                        "message": msg,
-                        "name": cmds[key].get("name", name),
-                        # UIs render this, never `message` — the expanded skill
-                        # body is model-facing scaffolding.
-                        "display": _skill_scaffold_projection(msg),
-                    },
-                )
+                model_config = get_skill_model_config(key)
+                if model_config and session is not None:
+                    session["pending_skill_model_override"] = model_config
+                payload = {
+                    "type": "skill",
+                    "message": msg,
+                    "name": cmds[key].get("name", name),
+                    # UIs render this, never `message` — the expanded skill
+                    # body is model-facing scaffolding.
+                    "display": _skill_scaffold_projection(msg),
+                }
+                if model_config:
+                    payload["model_config"] = model_config
+                return _ok(rid, payload)
     except Exception:
         pass
 

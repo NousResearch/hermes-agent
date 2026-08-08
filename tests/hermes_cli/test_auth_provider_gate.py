@@ -98,6 +98,61 @@ def test_stale_env_pool_entry_does_not_count_when_var_unset(tmp_path, monkeypatc
     assert is_provider_explicitly_configured("deepseek") is False
 
 
+def _write_dotenv(tmp_path, payload: dict) -> None:
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    lines = [f"{key}={value}" for key, value in payload.items()]
+    (hermes_home / ".env").write_text("\n".join(lines) + "\n")
+
+
+def test_api_key_in_dotenv_counts_as_explicit_without_restart(tmp_path, monkeypatch):
+    """A provider API key added to ~/.hermes/.env mid-session is picked up by
+    is_provider_explicitly_configured() without a serve restart (#77007).
+
+    The runtime credential resolver (get_env_value_prefer_dotenv) prefers the
+    live .env read over os.environ; the explicit-config gate must agree so the
+    desktop picker and the readiness gate report the same state.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "providers": {},
+        "active_provider": None,
+        "credential_pool": {},
+    })
+    # Key exists ONLY in ~/.hermes/.env — never in the process environment.
+    _write_dotenv(tmp_path, {"DEEPSEEK_API_KEY": "sk-dotenv-only-secret"})
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("deepseek") is True
+
+
+def test_env_pool_entry_counts_when_key_resolves_via_dotenv(tmp_path, monkeypatch):
+    """An env-seeded credential-pool entry resolves through the live dotenv
+    read, not only os.environ (#77007, #55790): rotating the key in .env
+    keeps the provider visible in explicit-only pickers."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "providers": {},
+        "active_provider": None,
+        "credential_pool": {
+            "deepseek": [{
+                "id": "aaa111",
+                "source": "env:DEEPSEEK_API_KEY",
+                "auth_type": "api_key",
+            }],
+        },
+    })
+    _write_dotenv(tmp_path, {"DEEPSEEK_API_KEY": "sk-dotenv-only-secret"})
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("deepseek") is True
+
+
+
 
 
 

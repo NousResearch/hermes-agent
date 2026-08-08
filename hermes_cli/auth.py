@@ -1851,6 +1851,11 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     # Exclude CLAUDE_CODE_OAUTH_TOKEN — it's set by Claude Code itself,
     # not by the user explicitly configuring anthropic in Hermes.
     _IMPLICIT_ENV_VARS = {"CLAUDE_CODE_OAUTH_TOKEN"}
+    # Resolve via the live-dotenv-aware resolver so a key added to
+    # ~/.hermes/.env while `hermes serve` is running is picked up
+    # immediately (matches the credential resolver used at runtime;
+    # see get_env_value_prefer_dotenv in hermes_cli.config).
+    from hermes_cli.config import get_env_value_prefer_dotenv
     pconfig = PROVIDER_REGISTRY.get(normalized)
     # Fallback to ProviderDef from models.dev catalog when the provider
     # isn't in the manually-maintained PROVIDER_REGISTRY (e.g. openrouter).
@@ -1862,7 +1867,7 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
         for env_var in pconfig.api_key_env_vars:
             if env_var in _IMPLICIT_ENV_VARS:
                 continue
-            if has_usable_secret(os.getenv(env_var, "")):
+            if has_usable_secret(get_env_value_prefer_dotenv(env_var)):
                 return True
 
     # 4. Check persisted credential-pool entries that came from EXPLICIT flows
@@ -1881,7 +1886,7 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
                 # the user deletes the env var (#55790) — only count it when
                 # the referenced var still resolves to a usable secret NOW.
                 env_var = entry.get("source", "").split(":", 1)[1].strip()
-                if env_var and has_usable_secret(os.getenv(env_var, "")):
+                if env_var and has_usable_secret(get_env_value_prefer_dotenv(env_var)):
                     return True
                 continue
             if (

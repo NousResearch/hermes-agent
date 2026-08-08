@@ -1414,6 +1414,26 @@ class APIServerAdapter(BasePlatformAdapter):
         self._direct_model_requests: bool = _coerce_request_bool(
             extra.get("direct_model_requests"), default=False
         )
+        # Sandbox isolation: controls the Docker container ``task_id`` used by
+        # ``run_conversation`` on this API-server surface.
+        #
+        #   "per_session" (default): each session gets its own container
+        #     (task_id=session_id), matching the Telegram/Discord gateway and
+        #     main's current behavior.  Files and packages installed by one
+        #     session do not leak to others — the safe default for multi-user
+        #     and multi-session deployments.
+        #
+        #   "shared": all API sessions share one container (task_id="default"),
+        #     preserving the behavior from #7127.  Opt-in for single-user
+        #     Open WebUI setups where container reuse across conversations is
+        #     desirable.
+        #
+        # Config (platforms.api_server.extra in the gateway config):
+        #   sandbox_isolation: "shared"   # opt-in for the legacy shared container
+        #
+        # Per AGENTS.md this is a behavioral setting and lives in config.yaml,
+        # not .env (no env-var fallback).
+        self._sandbox_isolation: str = extra.get("sandbox_isolation", "per_session")
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -6168,7 +6188,15 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                     if agent_ref is not None:
                         agent_ref[0] = agent
-                    effective_task_id = session_id or str(uuid.uuid4())
+                    # Sandbox isolation: "shared" mode forces a single
+                    # container (task_id="default") for all API sessions,
+                    # preserving the #7127 legacy behavior.  Default
+                    # "per_session" uses the session id so each conversation
+                    # gets its own container (matches the messaging gateways).
+                    if self._sandbox_isolation == "shared":
+                        effective_task_id = "default"
+                    else:
+                        effective_task_id = session_id or str(uuid.uuid4())
                     # Baseline for selective background-process reaping on
                     # SSE client disconnect — mirrors gateway/run.py's
                     # gateway-turn cleanup (#76115); this API-server surface
@@ -6645,7 +6673,14 @@ class APIServerAdapter(BasePlatformAdapter):
                         unregister_gateway_notify,
                     )
 
-                    effective_task_id = session_id or run_id
+                    # Sandbox isolation: "shared" mode forces a single
+                    # container (task_id="default") for all API runs;
+                    # default "per_session" uses the session id (or run id
+                    # fallback) so each conversation gets its own container.
+                    if self._sandbox_isolation == "shared":
+                        effective_task_id = "default"
+                    else:
+                        effective_task_id = session_id or run_id
                     approval_token = None
                     session_tokens = []
                     with self._profile_scope(request_profile):

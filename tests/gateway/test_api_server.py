@@ -288,13 +288,15 @@ class TestConcurrencyCap:
 # ---------------------------------------------------------------------------
 
 
-def _make_adapter(api_key: str = "", cors_origins=None) -> APIServerAdapter:
+def _make_adapter(api_key: str = "", cors_origins=None, sandbox_isolation=None) -> APIServerAdapter:
     """Create an adapter with optional API key."""
     extra = {}
     if api_key:
         extra["key"] = api_key
     if cors_origins is not None:
         extra["cors_origins"] = cors_origins
+    if sandbox_isolation is not None:
+        extra["sandbox_isolation"] = sandbox_isolation
     config = PlatformConfig(enabled=True, extra=extra)
     return APIServerAdapter(config)
 
@@ -390,6 +392,87 @@ class TestAgentExecution:
             user_message="hello",
             conversation_history=[],
             task_id="session-123",
+        )
+
+    @pytest.mark.asyncio
+    async def test_per_session_isolation_default_uses_session_id_as_task_id(self):
+        """Default (no config) is per_session: task_id == session_id, matching
+        main's behavior.  This is the safe default — each conversation gets its
+        own Docker container sandbox."""
+        adapter = _make_adapter()
+        assert adapter._sandbox_isolation == "per_session"
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "ok"}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                session_id="sess-per-session",
+                requested_model="MiniMax-M3",
+                requested_provider="minimax",
+                model_options={"reasoning": {"enabled": False}, "fast": False},
+            )
+        mock_agent.run_conversation.assert_called_once_with(
+            user_message="hello",
+            conversation_history=[],
+            task_id="sess-per-session",
+        )
+
+    @pytest.mark.asyncio
+    async def test_shared_isolation_uses_default_task_id(self):
+        """Explicit sandbox_isolation="shared" opts into the legacy #7127
+        behavior: all API sessions share one container (task_id="default")."""
+        adapter = _make_adapter(sandbox_isolation="shared")
+        assert adapter._sandbox_isolation == "shared"
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "ok"}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                session_id="sess-shared",
+                requested_model="MiniMax-M3",
+                requested_provider="minimax",
+                model_options={"reasoning": {"enabled": False}, "fast": False},
+            )
+        # Even though a session_id is provided, "shared" mode forces
+        # task_id="default" so all sessions land in the same container.
+        mock_agent.run_conversation.assert_called_once_with(
+            user_message="hello",
+            conversation_history=[],
+            task_id="default",
+        )
+
+    @pytest.mark.asyncio
+    async def test_per_session_isolation_explicit_uses_session_id_as_task_id(self):
+        """Explicit sandbox_isolation="per_session" confirms the opt-in path
+        matches the default — session_id drives task_id."""
+        adapter = _make_adapter(sandbox_isolation="per_session")
+        assert adapter._sandbox_isolation == "per_session"
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "ok"}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                session_id="sess-explicit-per",
+                requested_model="MiniMax-M3",
+                requested_provider="minimax",
+                model_options={"reasoning": {"enabled": False}, "fast": False},
+            )
+        mock_agent.run_conversation.assert_called_once_with(
+            user_message="hello",
+            conversation_history=[],
+            task_id="sess-explicit-per",
         )
 
     @pytest.mark.asyncio

@@ -3190,6 +3190,44 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return result
 
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a previously sent Discord message.
+
+        Used by the stream consumer's cleanup path (see
+        ``display.platforms.<name>.cleanup_progress`` in config.yaml)
+        to remove tool-progress indicator messages after the final
+        response lands.
+
+        Discord's API supports deletion of bot-posted messages in any
+        channel the bot can see.  Failures (NotFound, Forbidden) are
+        non-fatal — the caller logs at debug level and leaves the
+        progress bubbles in place as breadcrumbs.
+        """
+        if not DISCORD_AVAILABLE or not self._client:
+            return False
+        try:
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+            if not channel:
+                return False
+
+            message = await channel.fetch_message(int(message_id))
+            await message.delete()
+            return True
+        except (discord.NotFound, discord.Forbidden) as e:
+            logger.debug(
+                "[%s] Cannot delete message %s in chat %s (no access or already gone): %s",
+                self.name, message_id, chat_id, e,
+            )
+            return False
+        except Exception as e:
+            logger.warning(
+                "[%s] Failed to delete message %s: %s",
+                self.name, message_id, e,
+            )
+            return False
+
     async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
 

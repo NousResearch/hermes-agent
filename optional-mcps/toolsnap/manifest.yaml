@@ -1,0 +1,56 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: toolsnap
+description: Deterministic web/data microtools — clean page extraction (98% median token cut), HTML tables, PDFs, CSV/JSON query, sitemaps, RSS, link checks. Free core, no account.
+source: https://toolsnap.app/agents
+
+# ToolSnap is a remote MCP server on Cloudflare Workers (streamable HTTP).
+# Nothing to install locally; free tools work the moment the server connects.
+transport:
+  type: http
+  url: https://mcp.toolsnap.app/mcp
+
+# No credentials needed. Free tools (35 of 38) require no account, no API key,
+# no wallet. The three paid tools (screenshot_url, keyword_research,
+# remove_background, $0.03–$0.04/call) settle per call via x402 USDC on Base
+# and need an x402-capable client — see post_install.
+auth:
+  type: none
+
+# Curated default: the deterministic web/data extraction surface plus the
+# catalog helpers. Everything else (encoders, hashes, wallet/account tools,
+# paid tools) stays visible in the install-time checklist for opt-in.
+tools:
+  default_enabled:
+    - fetch_extract
+    - fetch_html
+    - fetch_metadata
+    - fetch_structured
+    - html_to_markdown
+    - html_table_extract
+    - page_links
+    - link_check
+    - rss_parse
+    - sitemap_parse
+    - csv_query
+    - json_query
+    - pdf_text_extract
+    - count_tokens
+    - tool_catalog
+    - use_tool
+    - task_recipes
+
+post_install: |
+  Free tools work immediately — try:
+    fetch_extract { "url": "https://example.com" }
+
+  Unlike LLM-based page summarization, ToolSnap extraction is pure parsing:
+  exact quotes, stable output, no auxiliary-model cost. Discover the full
+  38-tool catalog with tool_catalog() and run anything via use_tool.
+
+  Paid tools (screenshot_url, keyword_research, remove_background) return an
+  x402 402 Payment Required. To pay automatically, run the local pay-proxy
+  (wallet key never leaves your machine):
+    https://github.com/icosaedro-git/toolsnap-mcp#paid-tools--connect-through-the-pay-proxy

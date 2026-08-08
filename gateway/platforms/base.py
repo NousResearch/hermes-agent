@@ -1553,6 +1553,7 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".toml": "application/toml",
     ".ini": "text/plain",
     ".cfg": "text/plain",
+    ".gcode": "text/plain",
     ".zip": "application/zip",
     ".doc": "application/msword",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1647,7 +1648,7 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     # Audio (delivered as voice/audio where supported)
     ".mp3", ".m2a", ".wav", ".ogg", ".opus", ".m4a", ".flac",
     # Documents (uploaded as file attachments)
-    ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".epub",
+    ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".epub", ".gcode",
     # Spreadsheets / data
     ".xlsx", ".xls", ".ods", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml",
     # Geospatial / GIS (#24032)

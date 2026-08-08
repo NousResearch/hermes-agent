@@ -380,6 +380,11 @@ class ByteRoverMemoryProvider(MemoryProvider):
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [QUERY_SCHEMA, CURATE_SCHEMA, STATUS_SCHEMA]
 
+    def read_only_tool_names(self) -> frozenset:
+        # brv_curate stores content (`brv curate`) and stays blocked in
+        # temporary chats.
+        return frozenset({"brv_query", "brv_status"})
+
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if tool_name == "brv_query":
             return self._tool_query(args)

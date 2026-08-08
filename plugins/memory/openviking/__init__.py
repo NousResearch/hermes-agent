@@ -4774,6 +4774,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
             ADD_RESOURCE_SCHEMA,
         ]
 
+    def read_only_tool_names(self) -> frozenset:
+        # viking_remember/forget/add_resource commit to the OpenViking store
+        # and stay blocked in temporary chats; search/read/browse are GETs.
+        return frozenset({"viking_search", "viking_read", "viking_browse"})
+
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if not self._ensure_client():
             return tool_error("OpenViking server not connected")

@@ -80,6 +80,9 @@ def test_the_incognito_glyph_is_actually_used_somewhere():
         ("skill_manage", "delete"),
         ("cronjob", "create"),
         ("cronjob", "remove"),
+        # run is durable-by-proxy: its transient prompt lands in the
+        # cron-run session's persisted transcript.
+        ("cronjob", "run"),
     ],
 )
 def test_durable_writes_are_blocked_in_a_temporary_chat(tool, action):

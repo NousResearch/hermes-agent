@@ -682,6 +682,14 @@ class RetainDBMemoryProvider(MemoryProvider):
             FILE_INGEST_SCHEMA, FILE_DELETE_SCHEMA,
         ]
 
+    def read_only_tool_names(self) -> frozenset:
+        # remember/forget/upload_file/ingest_file/delete_file mutate the
+        # RetainDB backend and stay blocked in temporary chats.
+        return frozenset({
+            "retaindb_profile", "retaindb_search", "retaindb_context",
+            "retaindb_list_files", "retaindb_read_file",
+        })
+
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if not self._client:
             return tool_error("RetainDB not initialized")

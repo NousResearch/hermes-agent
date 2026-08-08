@@ -187,6 +187,23 @@ class MemoryProvider(ABC):
         """
         raise NotImplementedError(f"Provider {self.name} does not handle tool {tool_name}")
 
+    def read_only_tool_names(self) -> frozenset:
+        """Names from get_tool_schemas() whose handlers NEVER durably mutate
+        the backend.
+
+        Consumed by the temporary-chat ("/temp", --no-session) write guard:
+        tools listed here stay callable in a temporary chat; every other tool
+        of this provider is refused there. The default is empty — i.e. all
+        tools are treated as writes — so a provider that doesn't declare its
+        read side fails CLOSED. A blocked read tool degrades a temporary chat;
+        an allowed write tool breaks its no-trace promise, which is worse.
+
+        A tool that can write on ANY argument combination (e.g. a profile
+        tool that reads without an argument but updates with one) must NOT be
+        listed: classification is per tool name, not per call.
+        """
+        return frozenset()
+
     def shutdown(self) -> None:
         """Clean shutdown — flush queues, close connections."""
 

@@ -514,6 +514,11 @@ class Mem0MemoryProvider(MemoryProvider):
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [SEARCH_SCHEMA, ADD_SCHEMA, UPDATE_SCHEMA, DELETE_SCHEMA]
 
+    def read_only_tool_names(self) -> frozenset:
+        # mem0_add/update/delete mutate the backend and stay blocked in
+        # temporary chats.
+        return frozenset({"mem0_search"})
+
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if self._backend is None:
             err = getattr(self, "_init_error", "unknown error")

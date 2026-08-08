@@ -1964,6 +1964,11 @@ class HindsightMemoryProvider(MemoryProvider):
             return []
         return [RETAIN_SCHEMA, RECALL_SCHEMA, REFLECT_SCHEMA]
 
+    def read_only_tool_names(self) -> frozenset:
+        # hindsight_retain writes to the memory bank (aretain_batch) and
+        # stays blocked in temporary chats; recall/reflect only query.
+        return frozenset({"hindsight_recall", "hindsight_reflect"})
+
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if tool_name == "hindsight_retain":
             content = args.get("content", "")

@@ -1410,6 +1410,13 @@ class HonchoMemoryProvider(MemoryProvider):
             return []
         return list(ALL_TOOL_SCHEMAS)
 
+    def read_only_tool_names(self) -> frozenset:
+        # honcho_profile and honcho_conclude are read/write hybrids
+        # (profile updates the peer card when `card` is passed; conclude
+        # creates/deletes conclusions). Classification is per tool name, so
+        # both stay blocked in temporary chats, including their read modes.
+        return frozenset({"honcho_search", "honcho_reasoning", "honcho_context"})
+
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         """Handle a Honcho tool call, with lazy session init for tools-only mode."""
         if self._cron_skipped:

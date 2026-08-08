@@ -531,6 +531,28 @@ def _run_agent_tool_execution_middleware(
 
         block_message = scope_block
         block_error_type = "tool_scope_block"
+        if block_message is None and getattr(agent, "ephemeral", False):
+            # Temporary (/temp, --no-session) chat: refuse write-side
+            # memory/skill_manage/cronjob actions and external memory-provider
+            # write tools. This middleware is the one dispatch point BOTH
+            # executors share — the guard inside invoke_tool is unreachable
+            # for these tools because single calls and barrier
+            # (non-parallel-safe) tools always take the sequential executor,
+            # whose inline and registry branches dispatch without invoke_tool.
+            # Checked against final_args (post-rewrite), i.e. what would
+            # actually execute.
+            from agent.agent_runtime_helpers import (
+                check_ephemeral_provider_memory_block,
+                check_ephemeral_tool_block,
+            )
+
+            block_message = check_ephemeral_tool_block(function_name, final_args)
+            if block_message is None:
+                block_message = check_ephemeral_provider_memory_block(
+                    agent, function_name
+                )
+            if block_message is not None:
+                block_error_type = "ephemeral_block"
         if block_message is None:
             block_error_type = "plugin_block"
 

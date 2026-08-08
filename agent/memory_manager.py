@@ -826,6 +826,23 @@ class MemoryManager:
         """Check if any provider handles this tool."""
         return tool_name in self._tool_to_provider
 
+    def is_write_tool(self, tool_name: str) -> bool:
+        """True when this provider tool can durably mutate its backend.
+
+        Feeds the temporary-chat write guard, so unknowns fail CLOSED: a tool
+        not covered by its provider's read_only_tool_names() declaration — or
+        a declaration that raises — is treated as a write. Tools no provider
+        owns return False; they are not memory-provider tools at all and are
+        someone else's policy problem.
+        """
+        provider = self._tool_to_provider.get(tool_name)
+        if provider is None:
+            return False
+        try:
+            return tool_name not in provider.read_only_tool_names()
+        except Exception:
+            return True
+
     def handle_tool_call(
         self, tool_name: str, args: Dict[str, Any], **kwargs
     ) -> str:

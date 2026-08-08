@@ -1639,6 +1639,14 @@ def _build_child_agent(
             thinking_callback=child_thinking_cb,
             session_db=getattr(parent_agent, "_session_db", None),
             parent_session_id=getattr(parent_agent, "session_id", None),
+            # A temporary (/temp, --no-session) parent's contract must cover
+            # its children: the child gets a FRESH session id that is not in
+            # the hermes_state temporary registry, so without this flag its
+            # transcript — whose prompt typically distills the temporary
+            # conversation — would persist as a normal subagent session, and
+            # its own memory/skill/cron writes would dodge the parent's
+            # tool guard.
+            ephemeral=bool(getattr(parent_agent, "ephemeral", False)),
             providers_allowed=child_providers_allowed,
             providers_ignored=child_providers_ignored,
             providers_order=child_providers_order,

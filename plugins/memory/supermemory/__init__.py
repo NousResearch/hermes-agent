@@ -934,6 +934,15 @@ class SupermemoryMemoryProvider(MemoryProvider):
             schemas.append(schema)
         return with_kebab_aliases(schemas)
 
+    def read_only_tool_names(self) -> frozenset:
+        # store/forget mutate Supermemory and stay blocked in temporary
+        # chats. The kebab-case names are real registered schemas (see
+        # with_kebab_aliases above), so the read side must list both forms.
+        return frozenset({
+            "supermemory_search", "supermemory_profile",
+            "supermemory-search", "supermemory-profile",
+        })
+
     def _tool_store(self, args: dict) -> str:
         content = str(args.get("content") or "").strip()
         if not content:

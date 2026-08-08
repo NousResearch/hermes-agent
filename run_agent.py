@@ -2361,7 +2361,14 @@ class AIAgent:
         """
         if not self.save_trajectories:
             return
-        
+        # Persistence-isolated agents (/temp sessions, --no-session one-shots,
+        # background review forks) leave no trace even when the operator runs
+        # with trajectory capture on: a trajectory line is the full message
+        # history, which is exactly what a temporary chat promises not to
+        # write down.
+        if getattr(self, "_persist_disabled", False):
+            return
+
         trajectory = self._convert_to_trajectory_format(messages, user_query, completed)
         _save_trajectory_to_file(trajectory, self.model, completed)
 

@@ -1,7 +1,7 @@
 ---
 name: github-issues
 description: "Create, triage, label, assign GitHub issues via gh or REST."
-version: 1.1.0
+version: 1.2.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -103,6 +103,45 @@ import sys, json
 for i in json.load(sys.stdin)['items']:
     print(f\"#{i['number']}  {i['state']:6}  {i['title']}\")"
 ```
+
+## 1.5. Check Repository Issue Templates
+
+**Before creating an issue**, check if the target repository has custom issue templates in `.github/ISSUE_TEMPLATE/`. Many projects (including Hermes itself) require specific formats and required fields. Using the wrong format wastes maintainer time.
+
+### Check for Templates
+
+**With gh:**
+
+```bash
+gh api repos/$OWNER/$REPO/contents/.github/ISSUE_TEMPLATE --jq '.[].name' 2>/dev/null || echo "No issue templates found"
+```
+
+**With curl:**
+
+```bash
+curl -s -H "Authorization: token $GITHUB_TOKEN" \
+  "https://api.github.com/repos/$OWNER/$REPO/contents/.github/ISSUE_TEMPLATE" \
+  | python3 -c "
+import sys, json
+try:
+    for f in json.load(sys.stdin):
+        print(f['name'])
+except:
+    print('No issue templates found or directory missing')"
+```
+
+If templates exist, **read them** to understand the required fields:
+
+```bash
+# gh: download the template contents
+for tpl in $(gh api repos/$OWNER/$REPO/contents/.github/ISSUE_TEMPLATE --jq '.[].name' 2>/dev/null); do
+  echo "=== $tpl ==="
+  gh api repos/$OWNER/$REPO/contents/.github/ISSUE_TEMPLATE/$tpl --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || true
+  echo ""
+done
+```
+
+Then fill the issue body following the template's structure (required fields, section headers, labels, etc.). If the repo uses YAML form-based templates (like Hermes does with `bug_report.yml` / `feature_request.yml`), match your issue body fields to what the form expects rather than writing free-form markdown.
 
 ## 2. Creating Issues
 

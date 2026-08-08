@@ -22,6 +22,7 @@ Configuration in config.yaml::
               - ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
             home_channel: ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
             poll_interval: 4           # seconds between poll sweeps
+            outbound_mention_pubkeys: {} # display name → exact agent npub/hex
             cli_path: ""               # path to the buzz binary (default: PATH, then ~/bin/buzz)
             credentials_file: ""       # JSON file holding the nsec (fallback for BUZZ_PRIVATE_KEY)
             allowed_users: []          # empty = allow all; entries are hex pubkeys or npubs
@@ -43,6 +44,7 @@ import os
 import re
 import shutil
 import time
+import unicodedata
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
@@ -238,19 +240,94 @@ _OUTBOUND_MENTION_RE = re.compile(r"(?<![\w@])@(?=[^\s@])")
 _MENTION_FALLBACK_MAX_RETRIES = 3
 
 
-def _unresolved_mention_fallback(content: str, error: str) -> Optional[str]:
+def _parse_outbound_mention_pubkeys(value: Any) -> Dict[str, Tuple[str, str]]:
+    """Validate configured display-name → exact-pubkey outbound routing."""
+    if value in (None, ""):
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("Buzz outbound_mention_pubkeys must be a mapping")
+
+    parsed: Dict[str, Tuple[str, str]] = {}
+    for raw_name, raw_pubkey in value.items():
+        name = str(raw_name or "").strip().lstrip("@").strip()
+        pubkey = _normalize_user_ref(str(raw_pubkey or "").strip())
+        if not name or not pubkey:
+            raise ValueError(
+                "Buzz outbound_mention_pubkeys entries require a display name "
+                "and a valid hex or npub identity"
+            )
+        normalized_name = name.casefold()
+        if normalized_name in parsed:
+            raise ValueError(
+                "Buzz outbound_mention_pubkeys contains a duplicate display name"
+            )
+        parsed[normalized_name] = (name, pubkey)
+    return parsed
+
+
+def _is_mention_continuation(char: str) -> bool:
+    return bool(
+        char
+        and (
+            char.isalnum()
+            or char == "_"
+            or char in ".-"
+            or unicodedata.category(char).startswith("M")
+        )
+    )
+
+
+def _complete_mention_spans(content: str, mention: str) -> List[Tuple[int, int]]:
+    """Find complete mention tokens using one casefold normalization contract."""
+    target = mention if mention.startswith("@") else f"@{mention}"
+    normalized_target = target.casefold()
+    spans: List[Tuple[int, int]] = []
+    for start, char in enumerate(content or ""):
+        if char != "@":
+            continue
+        if start and (content[start - 1] == "@" or _is_mention_continuation(content[start - 1])):
+            continue
+        for end in range(start + 2, len(content) + 1):
+            normalized_candidate = content[start:end].casefold()
+            if len(normalized_candidate) > len(normalized_target):
+                break
+            if normalized_candidate != normalized_target:
+                continue
+            if end < len(content) and _is_mention_continuation(content[end]):
+                continue
+            spans.append((start, end))
+            break
+    return spans
+
+
+def _has_complete_mention(content: str, name: str) -> bool:
+    return bool(_complete_mention_spans(content, name))
+
+
+def _unresolved_mention_fallback(
+    content: str,
+    error: str,
+    protected_mentions: Optional[set[str]] = None,
+) -> Optional[str]:
     """Return readable text after a Buzz outbound mention-validation error."""
     error = error or ""
+    protected_mentions = protected_mentions or set()
     match = _MEMBER_MENTION_ERROR_RE.search(error)
     if match:
         mention = match.group(1)
-        fallback = re.sub(
-            rf"(?<![\w@]){re.escape(mention)}",
-            mention[1:],
-            content or "",
-            flags=re.IGNORECASE,
-        )
-    elif _MAX_MENTIONS_ERROR in error.lower():
+        if mention.casefold() in protected_mentions:
+            return None
+        spans = _complete_mention_spans(content or "", mention)
+        if not spans:
+            return None
+        pieces = []
+        cursor = 0
+        for start, end in spans:
+            pieces.extend((content[cursor:start], content[start + 1 : end]))
+            cursor = end
+        pieces.append(content[cursor:])
+        fallback = "".join(pieces)
+    elif _MAX_MENTIONS_ERROR in error.lower() and not protected_mentions:
         fallback = _OUTBOUND_MENTION_RE.sub("", content or "")
     else:
         return None
@@ -401,6 +478,10 @@ class BuzzAdapter(BasePlatformAdapter):
         self.channels: List[str] = [c.strip() for c in raw_channels if isinstance(c, str) and c.strip()]
 
         self.home_channel = (os.getenv("BUZZ_HOME_CHANNEL") or str(extra.get("home_channel", "") or "")).strip()
+
+        self.outbound_mention_pubkeys = _parse_outbound_mention_pubkeys(
+            extra.get("outbound_mention_pubkeys")
+        )
 
         try:
             interval = float(os.getenv("BUZZ_POLL_INTERVAL") or extra.get("poll_interval", _DEFAULT_POLL_INTERVAL))
@@ -636,6 +717,11 @@ class BuzzAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
+        configured_handoffs = set()
+        for name, pubkey in self.outbound_mention_pubkeys.values():
+            if _has_complete_mention(content, name):
+                configured_handoffs.add(f"@{name}".casefold())
+                args += ["--mention", pubkey]
         reply_target = reply_to or (metadata or {}).get("thread_id")
         if reply_target:
             args += ["--reply-to", str(reply_target)]
@@ -643,7 +729,9 @@ class BuzzAdapter(BasePlatformAdapter):
         code, out, err = await self._run_cli(args, input_text=send_content)
         for _ in range(_MENTION_FALLBACK_MAX_RETRIES):
             fallback = (
-                _unresolved_mention_fallback(send_content, err)
+                _unresolved_mention_fallback(
+                    send_content, err, configured_handoffs
+                )
                 if code != 0
                 else None
             )
@@ -1318,6 +1406,10 @@ def validate_config(config) -> bool:
     """Validate that the platform config has enough info to connect."""
     extra = getattr(config, "extra", {}) or {}
     relay = os.getenv("BUZZ_RELAY_URL") or extra.get("relay_url", "")
+    try:
+        _parse_outbound_mention_pubkeys(extra.get("outbound_mention_pubkeys"))
+    except ValueError:
+        return False
     return bool(relay and _resolve_private_key(extra))
 
 
@@ -1439,6 +1531,17 @@ async def _standalone_send(
         return {"error": "Buzz standalone send: no target channel (set BUZZ_HOME_CHANNEL)"}
 
     args = ["messages", "send", "--channel", target, "--content", "-"]
+    try:
+        outbound_mention_pubkeys = _parse_outbound_mention_pubkeys(
+            extra.get("outbound_mention_pubkeys")
+        )
+    except ValueError:
+        return {"error": "Buzz standalone send: invalid outbound_mention_pubkeys"}
+    configured_handoffs = set()
+    for name, pubkey in outbound_mention_pubkeys.values():
+        if _has_complete_mention(message, name):
+            configured_handoffs.add(f"@{name}".casefold())
+            args += ["--mention", pubkey]
     if thread_id:
         args += ["--reply-to", str(thread_id)]
     for path in media_files or []:
@@ -1454,7 +1557,9 @@ async def _standalone_send(
         )
         for _ in range(_MENTION_FALLBACK_MAX_RETRIES):
             fallback = (
-                _unresolved_mention_fallback(send_content, err)
+                _unresolved_mention_fallback(
+                    send_content, err, configured_handoffs
+                )
                 if code != 0
                 else None
             )

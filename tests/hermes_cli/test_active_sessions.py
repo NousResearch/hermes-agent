@@ -167,3 +167,78 @@ def test_release_orphaned_leases_reclaims_only_unowned_own_pid_entries(tmp_path,
         for entry in active_sessions.active_session_registry_snapshot()
     ) == ["kept", "other"]
     assert orphan is not None
+
+
+def test_registry_records_presence_when_cap_is_unset(tmp_path, monkeypatch):
+    """Presence tracking must not be gated on the session cap (#46303).
+
+    ``max_concurrent_sessions`` defaults to ``None``, so gating the registry
+    write on it means the registry is empty for almost every user -- and
+    "is another session attached to this repo?" is unanswerable exactly when
+    it matters. A ``None`` cap means "reject nobody", not "know nobody".
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="solo", surface="cli", config={}
+    )
+
+    assert message is None
+    assert lease is not None
+    snapshot = active_sessions.active_session_registry_snapshot()
+    assert [entry["session_id"] for entry in snapshot] == ["solo"]
+
+    lease.release()
+    assert active_sessions.active_session_registry_snapshot() == []
+
+
+def test_uncapped_sessions_are_recorded_but_never_rejected(tmp_path, monkeypatch):
+    """Recording presence must not start enforcing a limit that isn't set."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    leases = []
+    for index in range(5):
+        lease, message = active_sessions.try_acquire_active_session(
+            session_id=f"s{index}", surface="cli", config={}
+        )
+        assert message is None, f"uncapped session {index} was rejected"
+        assert lease is not None
+        leases.append(lease)
+
+    assert len(active_sessions.active_session_registry_snapshot()) == 5
+
+
+def test_entries_carry_repo_root_so_sessions_are_attributable(tmp_path, monkeypatch):
+    """A registry entry with no repo dimension cannot answer the #46303 question."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    repo_a = tmp_path / "repo_a"
+    (repo_a / ".git").mkdir(parents=True)
+    repo_b = tmp_path / "repo_b"
+    (repo_b / ".git").mkdir(parents=True)
+
+    monkeypatch.chdir(repo_a)
+    active_sessions.try_acquire_active_session(
+        session_id="in_a", surface="cli", config={}
+    )
+    monkeypatch.chdir(repo_b)
+    active_sessions.try_acquire_active_session(
+        session_id="in_b", surface="desktop", config={}
+    )
+
+    found = active_sessions.find_sessions_for_repo(repo_a)
+    assert [entry["session_id"] for entry in found] == ["in_a"]
+
+
+def test_registry_failure_never_blocks_session_start(tmp_path, monkeypatch):
+    """Presence tracking is best-effort: a broken registry must not stop a session."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    def _boom(*args, **kwargs):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(active_sessions, "_write_entries", _boom)
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="degraded", surface="cli", config={}
+    )
+
+    assert message is None
+    assert lease is not None
+    lease.release()

@@ -653,6 +653,7 @@ def show_status(args):
     # way to find out is reading runtime/active_sessions.json by hand.
     try:
         from hermes_cli.active_sessions import (
+            current_repo_root,
             active_session_registry_snapshot,
             format_age,
             resolve_max_concurrent_sessions,
@@ -661,11 +662,11 @@ def show_status(args):
         _cap = resolve_max_concurrent_sessions(config)
     except Exception:
         _cap = None
+    try:
+        _held = active_session_registry_snapshot()
+    except Exception:
+        _held = []
     if _cap:
-        try:
-            _held = active_session_registry_snapshot()
-        except Exception:
-            _held = []
         _full = len(_held) >= _cap
         print(
             "  Slots:        "
@@ -673,12 +674,28 @@ def show_status(args):
                 f"{len(_held)}/{_cap} in use", Colors.YELLOW if _full else Colors.GREEN
             )
         )
+    elif _held:
+        # Without a cap there are no slots to report, but the sessions are still
+        # worth showing: knowing another surface is live in this checkout is the
+        # whole point of tracking them (#46303).
+        print("  Live:         " + color(f"{len(_held)} session(s)", Colors.GREEN))
+    if _held:
         _now = time.time()
+        _here = current_repo_root()
         for _entry in sorted(_held, key=lambda e: e.get("started_at") or 0):
             _age = format_age(_now - float(_entry.get("started_at") or _now))
+            _meta = _entry.get("metadata")
+            _repo = (_meta or {}).get("repo_root") if isinstance(_meta, dict) else None
+            _where = ""
+            if _repo:
+                _where = (
+                    "  ← this repo"
+                    if _here and str(_repo) == str(_here)
+                    else f"  {os.path.basename(str(_repo))}"
+                )
             print(
                 f"                {_entry.get('surface') or 'unknown':<17} "
-                f"{_entry.get('session_id') or '?':<24} {_age}"
+                f"{_entry.get('session_id') or '?':<24} {_age}{_where}"
             )
 
     # =========================================================================

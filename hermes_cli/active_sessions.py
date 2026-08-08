@@ -254,6 +254,56 @@ def _prune_dead(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def current_repo_root(start: Optional[Path] = None) -> Optional[str]:
+    """Return the enclosing git checkout for ``start``, or None if there is none.
+
+    Walks up looking for ``.git`` rather than shelling out to ``git``: this runs
+    on every session start, and a subprocess per session is a poor trade for a
+    field that is advisory.  ``.git`` is a file (not a directory) inside linked
+    worktrees, which is why this tests existence rather than is_dir -- sessions
+    in two worktrees of one repo are exactly the case #46303 is about.
+    """
+    try:
+        current = (start or Path.cwd()).resolve()
+    except OSError:
+        return None
+    for candidate in (current, *current.parents):
+        if (candidate / ".git").exists():
+            return str(candidate)
+    return None
+
+
+def find_sessions_for_repo(
+    repo_root: Any, *, exclude_lease_id: Optional[str] = None
+) -> list[dict[str, Any]]:
+    """Return live registry entries attached to the same checkout.
+
+    Answers the question #46303 opens with -- "is another session already
+    working in this repo?" -- which no caller could ask before, because the
+    registry was only written when ``max_concurrent_sessions`` was set.
+    """
+    try:
+        wanted = str(Path(repo_root).resolve())
+    except (OSError, TypeError):
+        return []
+    matches = []
+    for entry in active_session_registry_snapshot():
+        if exclude_lease_id and str(entry.get("lease_id") or "") == exclude_lease_id:
+            continue
+        metadata = entry.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        recorded = metadata.get("repo_root")
+        if not recorded:
+            continue
+        try:
+            if str(Path(recorded).resolve()) == wanted:
+                matches.append(entry)
+        except OSError:
+            continue
+    return matches
+
+
 @dataclass
 class ActiveSessionLease:
     lease_id: str
@@ -282,13 +332,6 @@ def try_acquire_active_session(
     """
     max_sessions = resolve_max_concurrent_sessions(config)
     lease_id = uuid.uuid4().hex
-    if max_sessions is None:
-        return ActiveSessionLease(
-            lease_id=lease_id,
-            session_id=session_id,
-            surface=surface,
-            enabled=False,
-        ), None
 
     now = time.time()
     entry = {
@@ -300,32 +343,51 @@ def try_acquire_active_session(
         "started_at": now,
         "updated_at": now,
     }
-    if metadata:
-        entry["metadata"] = {
-            str(k): v for k, v in metadata.items() if isinstance(k, str)
-        }
+    entry_metadata = {
+        str(k): v for k, v in (metadata or {}).items() if isinstance(k, str)
+    }
+    # Repo attribution is what makes "is another session already attached to
+    # this checkout?" answerable at all (#46303).  Recorded by default rather
+    # than by caller opt-in so every surface gets it without threading it
+    # through three separate call sites; an explicit metadata repo_root wins.
+    entry_metadata.setdefault("repo_root", current_repo_root())
+    if entry_metadata:
+        entry["metadata"] = entry_metadata
 
     state_path = _state_path()
-    with _FileLock(_lock_path()):
-        raw_entries = _read_entries(state_path)
-        entries = _prune_dead(raw_entries)
-        pruned = len(raw_entries) - len(entries)
-        if pruned:
-            logger.info("Pruned %d stale active session lease(s)", pruned)
-        active_count = len(entries)
-        if active_count >= max_sessions:
+    try:
+        with _FileLock(_lock_path()):
+            raw_entries = _read_entries(state_path)
+            entries = _prune_dead(raw_entries)
+            pruned = len(raw_entries) - len(entries)
+            if pruned:
+                logger.info("Pruned %d stale active session lease(s)", pruned)
+            active_count = len(entries)
+            if max_sessions is not None and active_count >= max_sessions:
+                _write_entries(state_path, entries)
+                logger.info(
+                    "Active session limit reached: active=%d max=%d surface=%s",
+                    active_count,
+                    max_sessions,
+                    surface,
+                )
+                return None, active_session_limit_message(
+                    active_count, max_sessions, entries
+                )
+            entries.append(entry)
             _write_entries(state_path, entries)
-            logger.info(
-                "Active session limit reached: active=%d max=%d surface=%s",
-                active_count,
-                max_sessions,
-                surface,
-            )
-            return None, active_session_limit_message(
-                active_count, max_sessions, entries
-            )
-        entries.append(entry)
-        _write_entries(state_path, entries)
+    except Exception as exc:
+        # Presence tracking is strictly best-effort: a read-only or otherwise
+        # broken registry must never keep a user from starting a session.  Fall
+        # back to the no-op lease so callers can still call release()
+        # unconditionally.
+        logger.warning("Failed to record active session presence: %s", exc)
+        return ActiveSessionLease(
+            lease_id=lease_id,
+            session_id=str(session_id),
+            surface=str(surface),
+            enabled=False,
+        ), None
 
     return ActiveSessionLease(
         lease_id=lease_id,

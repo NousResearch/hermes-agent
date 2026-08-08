@@ -248,6 +248,12 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         # localhost-only mode) — never from the request body.
         identity = security.authenticate(self.headers.get("Authorization"), client_ip)
         if identity is None:
+            security.audit_rejection(
+                decision="rejected_unauthenticated",
+                status=401,
+                client_ip=client_ip,
+                detail="missing or invalid bearer token",
+            )
             self._json(401, protocol.jsonrpc_error(None, protocol.ERR_UNAUTHORIZED, "unauthorized"))
             return
 
@@ -289,10 +295,22 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
 
         if not adapter._rate_limiter.allow(identity):
             protocol.metrics.rate_limit_triggers += 1
+            security.audit_rejection(
+                decision="rejected_rate_limited",
+                status=429,
+                peer=identity,
+                client_ip=client_ip,
+            )
             self._json(429, protocol.jsonrpc_error(req_id, protocol.ERR_RATE_LIMITED, "rate limit exceeded"))
             return
 
         if not security.is_trusted_peer(identity):
+            security.audit_rejection(
+                decision="rejected_untrusted_peer",
+                status=403,
+                peer=identity,
+                client_ip=client_ip,
+            )
             self._json(403, protocol.jsonrpc_error(
                 req_id, protocol.ERR_UNTRUSTED_PEER, f"peer '{identity}' not trusted"))
             return

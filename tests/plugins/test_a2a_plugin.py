@@ -206,6 +206,60 @@ class TestAudit:
         assert rec["peer"] == "peer-y"
         assert rec["task_id"] == "task-1"
 
+    def test_audit_rejection_writes_decision_envelope(self, monkeypatch, tmp_path):
+        """#81003 — rejections must reach a2a_audit.jsonl so the audit log
+        is the single source of truth for ALL inbound outcomes."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        security.audit_rejection(
+            decision="rejected_untrusted_peer",
+            status=403,
+            peer="mallory",
+            client_ip="10.0.0.5",
+            detail="peer not on trusted_peers allow-list",
+        )
+        audit_file = tmp_path / "a2a_audit.jsonl"
+        assert audit_file.exists()
+        rec = json.loads(audit_file.read_text().strip().splitlines()[-1])
+        assert rec["direction"] == "inbound_rejected"
+        assert rec["peer"] == "mallory"
+        envelope = json.loads(rec["summary"])
+        assert envelope["decision"] == "rejected_untrusted_peer"
+        assert envelope["status"] == 403
+        assert envelope["detail"] == "peer not on trusted_peers allow-list"
+
+    def test_audit_rejection_falls_back_to_ip_peer(self, monkeypatch, tmp_path):
+        """No peer name but a client_ip must be recorded as ``ip:<addr>``
+        so credential-stuffing attempts with no token still get a slot."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        security.audit_rejection(
+            decision="rejected_unauthenticated",
+            status=401,
+            client_ip="203.0.113.7",
+        )
+        audit_file = tmp_path / "a2a_audit.jsonl"
+        rec = json.loads(audit_file.read_text().strip().splitlines()[-1])
+        assert rec["direction"] == "inbound_rejected"
+        assert rec["peer"] == "ip:203.0.113.7"
+        envelope = json.loads(rec["summary"])
+        assert envelope["decision"] == "rejected_unauthenticated"
+        assert envelope["status"] == 401
+
+    def test_audit_rejection_truncates_detail(self, monkeypatch, tmp_path):
+        """Very long detail strings must be truncated so a single bad
+        request cannot bloat the audit log unboundedly."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        long_detail = "X" * 1000
+        security.audit_rejection(
+            decision="rejected_parse_error",
+            status=400,
+            client_ip="127.0.0.1",
+            detail=long_detail,
+        )
+        audit_file = tmp_path / "a2a_audit.jsonl"
+        rec = json.loads(audit_file.read_text().strip().splitlines()[-1])
+        envelope = json.loads(rec["summary"])
+        assert len(envelope["detail"]) == 200
+
 
 # --------------------------------------------------------------------------
 # Protocol v1.0 shapes

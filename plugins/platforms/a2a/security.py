@@ -370,3 +370,33 @@ def audit(direction: str, peer: str, task_id: str, summary: str) -> None:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
         logger.debug("A2A: audit write failed", exc_info=True)
+
+
+def audit_rejection(
+    *,
+    decision: str,
+    status: int,
+    peer: str = "",
+    client_ip: str = "",
+    task_id: str = "",
+    detail: str = "",
+) -> None:
+    """Append a rejection audit record.
+
+    Used for every inbound outcome that does NOT result in a successful
+    task — auth failures (401), trust gate failures (403), rate limits
+    (429), and similar. Without this hook, :func:`audit` only sees
+    accepted requests and a fleet has no signal for credential-stuffing,
+    token probing, or lateral-movement attempts. See #81003.
+    """
+    if not peer and client_ip:
+        peer = f"ip:{client_ip}"
+    audit(
+        direction="inbound_rejected",
+        peer=peer or "unknown",
+        task_id=task_id,
+        summary=json.dumps(
+            {"decision": decision, "status": status, "detail": (detail or "")[:200]},
+            ensure_ascii=False,
+        ),
+    )

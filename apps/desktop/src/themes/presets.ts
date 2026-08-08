@@ -15,7 +15,7 @@ const SYSTEM_SANS =
   '"Segoe WPC", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif, ' +
   EMOJI_FALLBACK
 
-const SYSTEM_MONO = 'Menlo, Monaco, "SF Mono", "Courier Prime", monospace, ' + EMOJI_FALLBACK
+const SYSTEM_MONO = 'Menlo, Monaco, "SF Mono", "JetBrains Mono", monospace, ' + EMOJI_FALLBACK
 
 export const DEFAULT_TYPOGRAPHY: DesktopThemeTypography = { fontSans: SYSTEM_SANS, fontMono: SYSTEM_MONO }
 
@@ -91,8 +91,9 @@ export const nousTheme: DesktopTheme = {
   },
   typography: {
     fontSans: SYSTEM_SANS,
-    fontMono: SYSTEM_MONO,
-    fontUrl: 'https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&display=swap'
+    // Native mono faces win on macOS; bundled JetBrains Mono keeps the same
+    // stack fully local on platforms where those faces are unavailable.
+    fontMono: SYSTEM_MONO
   }
 }
 
@@ -128,8 +129,9 @@ export const midnightTheme: DesktopTheme = {
     userBubbleBorder: '#242466'
   },
   typography: {
-    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
-    fontUrl: 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap'
+    // JetBrains Mono is bundled in styles.css; a Google Fonts link here made
+    // every Midnight startup perform redundant third-party requests.
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`
   }
 }
 

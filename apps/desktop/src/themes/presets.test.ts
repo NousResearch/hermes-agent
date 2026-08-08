@@ -1,6 +1,18 @@
 import { describe, expect, it } from 'vitest'
 
-import { BUILTIN_THEME_LIST, DEFAULT_TYPOGRAPHY, EMOJI_FALLBACK } from './presets'
+import { BUILTIN_THEME_LIST, DEFAULT_TYPOGRAPHY, EMOJI_FALLBACK, midnightTheme, nousTheme } from './presets'
+
+describe('bundled theme fonts', () => {
+  it('keeps the default Nous mono stack local', () => {
+    expect(nousTheme.typography?.fontMono).toContain('JetBrains Mono')
+    expect(nousTheme.typography?.fontUrl).toBeUndefined()
+  })
+
+  it('does not fetch the already-bundled JetBrains Mono face', () => {
+    expect(midnightTheme.typography?.fontMono).toContain('JetBrains Mono')
+    expect(midnightTheme.typography?.fontUrl).toBeUndefined()
+  })
+})
 
 // #40364: none of the UI text/mono fonts carry emoji glyphs, so every font
 // stack must end with a color-emoji fallback or emoji render as tofu on

@@ -369,6 +369,16 @@ def _is_hermes_internal_secret(key: str) -> bool:
       ``_ALWAYS_STRIP_KEYS``. Non-secret ``GATEWAY_RELAY_*`` routing hints
       (``GATEWAY_RELAY_URL``, ``GATEWAY_RELAY_PLATFORMS``, …) are NOT matched
       and remain visible.
+    - ``BWS_ACCESS_TOKEN`` — the Bitwarden Secrets Manager bootstrap token,
+      under the **exact** name configured via ``secrets.bitwarden.access_token_env``
+      (default ``BWS_ACCESS_TOKEN``; may be remapped to any name, e.g.
+      ``MY_BWS_TOKEN``). Hermes's own vault credential; no spawned child
+      legitimately needs it. The one child that does — the ``bws`` CLI —
+      receives it explicitly via ``build_subprocess_env(scrub_secrets=False)``
+      in ``agent/secret_sources/bitwarden.py``, never through inheritance.
+      Only the exact configured name is matched (not a ``*_ACCESS_TOKEN``
+      suffix) so legitimate third-party access tokens stay
+      ``env_passthrough``-registerable — see ``tools/env_passthrough.py``.
 
     ``code_execution_tool.py`` already catches these via substring matching on
     ``KEY`` / ``SECRET`` / ``TOKEN``; the terminal backend's narrower name-based
@@ -391,7 +401,89 @@ def _is_hermes_internal_secret(key: str) -> bool:
         upper.endswith("_SECRET") or upper.endswith("_KEY") or upper.endswith("_TOKEN")
     ):
         return True
+    if upper == "BWS_ACCESS_TOKEN" or upper == _get_configured_bws_token_env().upper():
+        # Bitwarden Secrets Manager bootstrap token — the exact configured
+        # access_token_env name (default BWS_ACCESS_TOKEN; may be remapped to
+        # a non-suffix name like MY_BWS_TOKEN), plus the default name itself.
+        # A remapped profile sharing one process with a default profile must
+        # not let the default profile's BWS_ACCESS_TOKEN (which the shared
+        # os.environ carries across profile turns) cross its child boundary
+        # either — the Bitwarden rule holds in both directions.
+        return True
     return False
+
+
+_configured_bws_token_env_by_home: dict[str, str] = {}
+
+
+def _get_configured_bws_token_env() -> str:
+    """Resolve the exact Bitwarden ``access_token_env`` name from config.
+
+    ``BitwardenSource.fetch`` reads the *configured* name
+    (``secrets.bitwarden.access_token_env``, default ``BWS_ACCESS_TOKEN``) —
+    including names that do not end in ``_ACCESS_TOKEN`` (e.g. a user remap to
+    ``MY_BWS_TOKEN``).  Matching that exact name (instead of a global
+    ``*_ACCESS_TOKEN`` suffix) is what keeps legitimate third-party access
+    tokens ``env_passthrough``-registerable.
+
+    Cached **per active Hermes home**: the gateway can serve multiple
+    profiles in one process by switching a context-local Hermes home per
+    turn, so a single process-global cache would keep matching the first
+    profile's token-variable name for every later profile — letting a later
+    profile's differently-named vault bootstrap token pass into child
+    processes.  Keying the cache by the active home (context override →
+    ``HERMES_HOME`` env → platform default) keeps each profile's exact
+    configured name authoritative.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+
+        home_key = str(get_hermes_home())
+    except Exception:
+        # Home resolution can fail in stripped-down environments (no
+        # LOCALAPPDATA/HOME/USERPROFILE, e.g. the test runner's clean env).
+        # Fall back to the process env var, then a shared slot — the old
+        # process-global behavior, never a raise.
+        home_key = os.environ.get("HERMES_HOME", "") or "<unknown-home>"
+    cached = _configured_bws_token_env_by_home.get(home_key)
+    if cached is not None:
+        return cached
+
+    name = "BWS_ACCESS_TOKEN"
+    try:
+        from hermes_cli.config import cfg_get, read_raw_config
+
+        configured = cfg_get(
+            read_raw_config(), "secrets", "bitwarden", "access_token_env"
+        )
+        if isinstance(configured, str) and configured.strip():
+            name = configured.strip()
+    except Exception:
+        pass
+    _configured_bws_token_env_by_home[home_key] = name
+    return name
+
+
+def _is_credential_shaped_password(key: str) -> bool:
+    """True for password-class env names (credential-shaped, not in the
+    static blocklist which only names exact vars like ``EMAIL_PASSWORD``).
+
+    Matches the same class the execute_code sandbox scrubs by substring
+    (``code_execution_tool.py``): ``*_PASSWORD`` names plus the bare
+    ``PASSWORD``, ``PGPASSWORD`` and ``*_PWD`` variants (``MYSQL_PWD``) —
+    but never ``PWD`` itself, which is the shell's working-directory
+    variable.  The terminal path must be at least as protective as the
+    sandbox for the same secret class.
+
+    Stripped by default on every spawn path — a ``DB_PASSWORD`` /
+    ``POSTGRES_PASSWORD`` / ``REDIS_PASSWORD`` value has no business in a
+    child process that did not explicitly request it.  On the terminal path
+    this is passthrough-aware (a skill-registered command that legitimately
+    needs the value still receives it via ``env_passthrough``); on the
+    non-terminal surface it is stripped unconditionally.
+    """
+    upper = key.upper()
+    return "PASSWORD" in upper or (upper.endswith("_PWD") and upper != "PWD")
 
 
 def _inject_context_hermes_home(env: dict) -> None:
@@ -474,6 +566,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         passthrough = _is_passthrough(key)
         if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
             continue
+        if _is_credential_shaped_password(key) and not passthrough:
+            continue
         resolved = _resolve_passthrough_value(key, value) if passthrough else value
         if resolved is not None:
             sanitized[key] = resolved
@@ -489,6 +583,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         else:
             passthrough = _is_passthrough(key)
             if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+                continue
+            if _is_credential_shaped_password(key) and not passthrough:
                 continue
             resolved = _resolve_passthrough_value(key, value) if passthrough else value
             if resolved is not None:
@@ -608,6 +704,12 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     # Tier 1 — always strip.
     for key in _ALWAYS_STRIP_KEYS:
         env.pop(key, None)
+    # *PASSWORD values never belong in a non-terminal child (browser, ACP,
+    # computer-use, dep-ensure, TUI/Node host).  Unlike the terminal path
+    # there is no skill-passthrough concept, so strip unconditionally.
+    for key in list(env):
+        if _is_credential_shaped_password(key):
+            env.pop(key, None)
     # Internal routing hints and Hermes-internal dynamic secrets
     # (``AUXILIARY_<TASK>_API_KEY`` / ``_BASE_URL`` side-LLM credentials,
     # ``GATEWAY_RELAY_*`` relay-auth material) must never reach a child,
@@ -1289,6 +1391,8 @@ def _make_run_env(env: dict) -> dict:
         else:
             passthrough = _is_passthrough(k)
             if k in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+                continue
+            if _is_credential_shaped_password(k) and not passthrough:
                 continue
             value = _resolve_passthrough_value(k, v) if passthrough else v
             if value is not None:

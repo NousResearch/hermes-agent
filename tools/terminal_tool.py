@@ -1329,13 +1329,20 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
 
 # Configuration from environment variables
 
-def _parse_env_var(name: str, default: str, converter: Any = int, type_label: str = "integer"):
+def _parse_env_var(
+    name: str,
+    default: str,
+    converter: Any = int,
+    type_label: str = "integer",
+    env: Optional[Dict[str, str]] = None,
+):
     """Parse an environment variable with *converter*, raising a clear error on bad values.
 
     Without this wrapper, a single malformed env var (e.g. TERMINAL_TIMEOUT=5m)
     causes an unhandled ValueError that kills every terminal command.
     """
-    raw = os.getenv(name, default)
+    source = os.environ if env is None else env
+    raw = source.get(name, default)
     try:
         return converter(raw)
     except (ValueError, json.JSONDecodeError):
@@ -1389,68 +1396,148 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
     return False
 
 
-# One-shot guard for the config-fallback bridge below.  Purely an
-# optimization: after the first attempt either TERMINAL_ENV is set (bridge
-# succeeded — merged config always carries terminal.backend) or the import
-# failed and retrying every call would be wasted work.
-_terminal_config_bridge_attempted = False
+def _terminal_env_snapshot() -> Dict[str, str]:
+    """Return terminal env values with config.yaml bridged in.
 
+    ``apply_terminal_config_to_env()`` is normally called by launch paths
+    before terminal tools run.  A cold-start tool call can arrive before that
+    bridge has completed, so build a local snapshot here as the final guard.
+    Does not mutate process-global env.
 
-def _ensure_terminal_env_bridged() -> None:
-    """Backfill TERMINAL_* env vars from config.yaml when no launcher did.
+    When the bridge fails, stale TERMINAL_* values (except TERMINAL_ENV) are
+    stripped and a ``_config_bridge_failed`` sentinel is set so callers can
+    fail closed instead of silently downgrading an isolated backend to local.
 
-    terminal_tool reads ALL terminal settings from os.environ (TERMINAL_*).
-    The CLI (cli.py ``env_mappings``), the gateway (gateway/run.py
-    ``_terminal_env_map``), and TUI/dashboard PTY launches
-    (``apply_terminal_config_to_env``) bridge ``terminal.*`` config into env
-    vars at startup — but processes that skip all of those paths (``hermes
-    serve`` / the Desktop app backend's in-process agents, the desktop cron
-    ticker, ACP) used to silently fall back to the local backend even when
-    config.yaml selects ``terminal.backend: docker``, running commands on the
-    host the user intended to sandbox (#63141, #54449, #61115, #65696).
-
-    Explicit terminal config keys win: when config.yaml has a ``terminal``
-    section, each key present there overrides its matching env value (which may
-    be stale from ``hermes setup``). Environment values for omitted terminal
-    keys are preserved. When no terminal section exists, exported/.env values
-    keep working unchanged.
+    Also probes raw config readability before bridging to detect a present-but-
+    unparseable config.yaml that ``apply_terminal_config_to_env()`` may silently
+    absorb via its last-known-good fallback.  When the config file exists but
+    cannot be parsed, ``_config_unreadable`` is set alongside
+    ``_config_bridge_failed`` so ``_get_env_config()`` can fail closed.
     """
-    global _terminal_config_bridge_attempted
-    if _terminal_config_bridge_attempted:
-        return
-    _terminal_config_bridge_attempted = True
+    # Save original process-env values so explicit worker overrides
+    # (e.g. kanban subprocess TERMINAL_TIMEOUT) survive the bridge.
+    orig = os.environ
+    env = dict(orig)
+
+    # Probe raw config readability before bridging.  ``apply_terminal_config_to_env()``
+    # calls ``read_raw_config()`` and ``load_config_readonly()``, both of which handle
+    # parse errors gracefully (return ``{}`` / fall back to last-known-good) instead of
+    # raising.  A malformed config + stale ``TERMINAL_ENV=local`` would therefore
+    # silently downgrade an isolated backend to host execution.  Detect that case here
+    # so the sentinel is set regardless of whether the bridge raises.
+    config_unreadable = _probe_config_unreadable()
+
     try:
-        from hermes_cli.config import apply_terminal_config_to_env, read_raw_config
-
-        # If config.yaml has an explicit terminal section, bridge with
-        # override enabled. The helper only overrides env vars for keys present
-        # in that raw section; merged defaults remain backfill-only. Without a
-        # terminal section, preserve an existing TERMINAL_ENV selection or
-        # backfill defaults when no selection exists.
-        raw_config = read_raw_config()
-        has_terminal_section = isinstance(raw_config.get("terminal"), dict)
-
-        if has_terminal_section:
-            # Explicit terminal keys in config.yaml win over matching env values.
-            apply_terminal_config_to_env(env=None, override=True)
-        elif "TERMINAL_ENV" not in os.environ:
-            # No terminal section in config.yaml, TERMINAL_ENV not set —
-            # backfill from config defaults
-            apply_terminal_config_to_env(env=None, override=False)
+        from hermes_cli.config import apply_terminal_config_to_env
+        apply_terminal_config_to_env(env=env)
     except Exception:
-        # Never let a config problem take the terminal tool down — the
-        # historical local default still applies.
-        logger.debug("terminal config → env fallback bridge failed", exc_info=True)
+        logger.debug(
+            "Could not bridge terminal config into env snapshot", exc_info=True,
+        )
+        for key in list(env.keys()):
+            if key.startswith("TERMINAL_") and key != "TERMINAL_ENV":
+                env.pop(key, None)
+        env["_config_bridge_failed"] = "1"
+        if config_unreadable:
+            env["_config_unreadable"] = "1"
+        return env
+
+    # The bridge succeeded (returned normally), but if the underlying config is
+    # unreadable the bridge silently fell back to last-known-good or defaults —
+    # the TERMINAL_* values in ``env`` are not trustworthy.  Wipe them and flag
+    # the failure so ``_get_env_config()`` can fail closed.
+    if config_unreadable:
+        for key in list(env.keys()):
+            if key.startswith("TERMINAL_") and key != "TERMINAL_ENV":
+                env.pop(key, None)
+        env["_config_bridge_failed"] = "1"
+        env["_config_unreadable"] = "1"
+        return env
+
+    # Restore explicit worker overrides for timeout/lifetime so that
+    # subprocess callers (e.g. kanban _default_spawn) that intentionally
+    # set a longer value are not clobbered by config defaults.
+    for key in ("TERMINAL_TIMEOUT", "TERMINAL_LIFETIME_SECONDS"):
+        if key in orig:
+            env[key] = orig[key]
+
+    return env
+
+
+def _probe_config_unreadable() -> bool:
+    """Return True when config.yaml *exists* but cannot be parsed.
+
+    ``read_raw_config()`` returns ``{}`` for both "file absent" and "parse
+    failure".  This helper distinguishes the two: a present-but-malformed
+    config is a security risk (it may carry ``terminal.backend: docker``),
+    while an absent config is safe (just use env vars).
+    """
+    try:
+        from hermes_cli.config import get_config_path, fast_safe_load
+        config_path = get_config_path()
+        config_path.stat()
+        with open(config_path, encoding="utf-8") as f:
+            fast_safe_load(f)
+        return False
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return True
+
+
+def _resolve_backend_type(env: Optional[Dict[str, str]] = None) -> str:
+    """Return the terminal backend type after bridging config.yaml."""
+    source = _terminal_env_snapshot() if env is None else env
+    env_val = source.get("TERMINAL_ENV")
+    if env_val:
+        return env_val
+    return "local"
 
 
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
-    _ensure_terminal_env_bridged()
-    env_type = os.getenv("TERMINAL_ENV", "local")
+    terminal_env = _terminal_env_snapshot()
+    env_type = _resolve_backend_type(terminal_env)
+
+    if terminal_env.get("_config_bridge_failed"):
+        # The config bridge failed — stale TERMINAL_* values were wiped.
+        # Check whether config.yaml intends an isolated backend; if so, fail
+        # closed instead of silently downgrading to host-local execution.
+        #
+        # When ``_config_unreadable`` is set, config.yaml exists but cannot be
+        # parsed — so we cannot confirm the intended backend at all.  Fail closed
+        # immediately; do NOT fall through to ``load_config_readonly()`` (which
+        # would silently return last-known-good/defaults and bypass the guard).
+        if terminal_env.get("_config_unreadable"):
+            raise RuntimeError(
+                "Terminal config bridge failed and config.yaml is unreadable. "
+                "Refusing to run terminal without confirmed backend. "
+                "Check hermes CLI config connectivity."
+            )
+        config_readable = True
+        try:
+            from hermes_cli.config import load_config_readonly
+            cfg = load_config_readonly()
+            intended = cfg.get("terminal", {}).get("backend", "local")
+        except Exception:
+            config_readable = False
+            intended = "local"
+        if not config_readable:
+            raise RuntimeError(
+                "Terminal config bridge failed and config.yaml is unreadable. "
+                "Refusing to run terminal without confirmed backend. "
+                "Check hermes CLI config connectivity."
+            )
+        if intended != "local":
+            raise RuntimeError(
+                f"Terminal config bridge failed. Refusing to downgrade "
+                f"terminal.backend={intended} to local execution. "
+                f"Check hermes CLI config connectivity."
+            )
     
-    mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
+    mount_docker_cwd = terminal_env.get("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
     container_backend = env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
     docker_backend = env_type == "docker"
 
@@ -1459,20 +1546,20 @@ def _get_env_config() -> Dict[str, Any]:
     # until a backend that can consume them is selected; a stale or invalid
     # Docker value should not make local terminal/execute_code unusable.
     if container_backend:
-        container_cpu = _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number")
-        container_memory = _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120")
-        container_disk = _parse_env_var("TERMINAL_CONTAINER_DISK", "51200")
+        container_cpu = _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number", env=terminal_env)
+        container_memory = _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120", env=terminal_env)
+        container_disk = _parse_env_var("TERMINAL_CONTAINER_DISK", "51200", env=terminal_env)
     else:
         container_cpu = 1.0
         container_memory = 5120
         container_disk = 51200
 
     if docker_backend:
-        docker_forward_env = _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON")
-        docker_volumes = _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON")
-        docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON")
-        docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON")
-        docker_shm_size = os.getenv("TERMINAL_DOCKER_SHM_SIZE", "1g")
+        docker_forward_env = _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON", env=terminal_env)
+        docker_volumes = _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON", env=terminal_env)
+        docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON", env=terminal_env)
+        docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON", env=terminal_env)
+        docker_shm_size = terminal_env.get("TERMINAL_DOCKER_SHM_SIZE", "1g")
     else:
         docker_forward_env = []
         docker_volumes = []
@@ -1496,13 +1583,13 @@ def _get_env_config() -> Dict[str, Any]:
     # If Docker cwd passthrough is explicitly enabled, remap the host path to
     # /workspace and track the original host path separately. Otherwise keep the
     # normal sandbox behavior and discard host paths.
-    cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    cwd = terminal_env.get("TERMINAL_CWD", default_cwd)
     from hermes_cli.config import _is_ssh_remote_tilde_cwd
     if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:
-        docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
+        docker_cwd_source = terminal_env.get("TERMINAL_CWD") or _safe_getcwd()
         candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
         if (
             any(candidate.startswith(p) for p in _HOST_CWD_PREFIXES)
@@ -1520,41 +1607,41 @@ def _get_env_config() -> Dict[str, Any]:
 
     return {
         "env_type": env_type,
-        "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
-        "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
+        "modal_mode": coerce_modal_mode(terminal_env.get("TERMINAL_MODAL_MODE", "auto")),
+        "docker_image": terminal_env.get("TERMINAL_DOCKER_IMAGE", default_image),
         "docker_forward_env": docker_forward_env,
-        "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
-        "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
-        "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
-        "vercel_runtime": os.getenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
+        "singularity_image": terminal_env.get("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
+        "modal_image": terminal_env.get("TERMINAL_MODAL_IMAGE", default_image),
+        "daytona_image": terminal_env.get("TERMINAL_DAYTONA_IMAGE", default_image),
+        "vercel_runtime": terminal_env.get("TERMINAL_VERCEL_RUNTIME", "").strip(),
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
-        "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
-        "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
+        "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180", env=terminal_env),
+        "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300", env=terminal_env),
         # SSH-specific config
-        "ssh_host": os.getenv("TERMINAL_SSH_HOST", ""),
-        "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
-        "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
-        "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
+        "ssh_host": terminal_env.get("TERMINAL_SSH_HOST", ""),
+        "ssh_user": terminal_env.get("TERMINAL_SSH_USER", ""),
+        "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22", env=terminal_env),
+        "ssh_key": terminal_env.get("TERMINAL_SSH_KEY", ""),
         # Persistent shell: SSH defaults to the config-level persistent_shell
         # setting (true by default for non-local backends); local is always opt-in.
         # Per-backend env vars override if explicitly set.
-        "ssh_persistent": os.getenv(
+        "ssh_persistent": terminal_env.get(
             "TERMINAL_SSH_PERSISTENT",
-            os.getenv("TERMINAL_PERSISTENT_SHELL", "true"),
+            terminal_env.get("TERMINAL_PERSISTENT_SHELL", "true"),
         ).lower() in {"true", "1", "yes"},
-        "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
+        "local_persistent": terminal_env.get("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
         # Container resource config (applies to docker, singularity, modal,
         # daytona, and vercel_sandbox -- ignored for local/ssh)
         "container_cpu": container_cpu,
         "container_memory": container_memory,     # MB (default 5GB)
         "container_disk": container_disk,        # MB (default 50GB)
-        "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
+        "container_persistent": terminal_env.get("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
         "docker_volumes": docker_volumes,
         "docker_env": docker_env,
-        "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
-        "docker_network": os.getenv("TERMINAL_DOCKER_NETWORK", "true").lower() in {"true", "1", "yes"},
+        "docker_run_as_host_user": terminal_env.get("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
+        "docker_network": terminal_env.get("TERMINAL_DOCKER_NETWORK", "true").lower() in {"true", "1", "yes"},
         "docker_extra_args": docker_extra_args,
         "docker_shm_size": docker_shm_size,
         # Cross-process container reuse (issue #20561).  The docs claim
@@ -1563,14 +1650,14 @@ def _get_env_config() -> Dict[str, Any]:
         # attaching to it instead of always starting a fresh one.  Set to
         # ``false`` for hard per-process isolation (no reuse, container is
         # removed on exit).
-        "docker_persist_across_processes": os.getenv(
+        "docker_persist_across_processes": terminal_env.get(
             "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "true"
         ).lower() in {"true", "1", "yes"},
         # Startup orphan reaper for hermes-tagged containers left behind by
         # crashed / SIGKILL'd previous processes that bypassed atexit.
         # Conservative: only sweeps Exited containers older than 2× the
         # idle-reap window AND scoped to the current profile. Issue #20561.
-        "docker_orphan_reaper": os.getenv(
+        "docker_orphan_reaper": terminal_env.get(
             "TERMINAL_DOCKER_ORPHAN_REAPER", "true"
         ).lower() in {"true", "1", "yes"},
     }

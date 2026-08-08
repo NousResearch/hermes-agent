@@ -487,6 +487,32 @@ def test_one_non_gateway_holder_keeps_the_hard_refusal(monkeypatch):
     assert cli_main._leftover_pausable_gateway_pids(matches) is None
 
 
+def test_serve_backend_holders_are_nominated_like_gateways(monkeypatch):
+    """A secondary profile's `serve` backend (the #81774 gap) is a backend
+    the updater reaps later in the flow (_kill_stale_dashboard_processes),
+    so the guard must nominate it for a stop-and-recheck, not dead-end."""
+    monkeypatch.setitem(
+        sys.modules,
+        "psutil",
+        _fake_psutil_cmdlines(
+            {
+                400: [
+                    r"C:\x\venv\Scripts\python.exe",
+                    "-m",
+                    "hermes_cli.main",
+                    "--profile",
+                    "secondary",
+                    "serve",
+                ],
+                500: GATEWAY_ARGV,
+            }
+        ),
+    )
+    matches = [(400, "python.exe", "..."), (500, "python.exe", "...")]
+
+    assert cli_main._leftover_pausable_gateway_pids(matches) == [400, 500]
+
+
 def test_unreadable_argv_falls_back_to_the_captured_prefix(monkeypatch):
     """psutil failure degrades to the scan's captured cmdline, not a crash.
 

@@ -441,9 +441,103 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     return None
 
 
+def _hermes_subcommand(command: str | None) -> str | None:
+    """Return the ``hermes_cli.main`` subcommand *command* dispatches, or None.
+
+    Shares the gateway matcher's tokenization (quote-aware shlex, case and
+    slash normalization, profile-selector stripping) so the pausable-process
+    classification can never drift from the ``gateway run`` matcher on the
+    same argv. The dispatched subcommand is the first non-flag token after
+    the entrypoint — exactly how ``hermes_cli.main`` dispatches. A nested
+    token (``hermes_cli.main mcp serve``, a chat prompt mentioning serve) is
+    NOT the backend and returns None. Returns None for empty/unparsable
+    command lines and for invocations with no ``hermes_cli.main`` entrypoint
+    (no ``hermes_cli.main`` / ``hermes_cli/main.py`` marker and no
+    ``hermes[.exe]`` token).
+    """
+    if not command:
+        return None
+
+    try:
+        raw_tokens = shlex.split(command, posix=False)
+    except ValueError:
+        raw_tokens = command.split()
+    tokens = [t.strip("\"'").replace("\\", "/").lower() for t in raw_tokens]
+    if not tokens:
+        return None
+
+    joined = " ".join(tokens)
+    has_entry = (
+        "hermes_cli.main" in joined
+        or "hermes_cli/main.py" in joined
+        or any(t.rsplit("/", 1)[-1] in ("hermes", "hermes.exe") for t in tokens)
+    )
+    if not has_entry:
+        return None
+
+    # Drop profile selectors anywhere (same rule as the gateway matcher — the
+    # profile flag and its VALUE can legally sit on either side of the
+    # subcommand token, and a profile named "serve"/"gateway" must not shadow
+    # the real subcommand).
+    filtered: list[str] = []
+    skip_next = False
+    for token in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        if token in ("--profile", "-p"):
+            skip_next = True
+            continue
+        if token.startswith("--profile=") or token.startswith("-p="):
+            continue
+        filtered.append(token)
+
+    entry_seen = False
+    for token in filtered:
+        if not entry_seen:
+            if (
+                token == "hermes_cli.main"
+                or token == "hermes_cli/main.py"
+                or token.endswith("/hermes_cli/main.py")
+                or token.rsplit("/", 1)[-1] in ("hermes", "hermes.exe")
+            ):
+                entry_seen = True
+            continue
+        if token.startswith("-"):
+            continue
+        if token in ("serve", "dashboard"):
+            return token
+        return None
+    return None
+
+
 def looks_like_gateway_command_line(command: str | None) -> bool:
     """Return True only for a real ``gateway run`` process command line."""
     return _gateway_command_subcommand(command) == "run"
+
+
+def looks_like_pausable_hermes_process(command: str | None) -> bool:
+    """Return True for a long-lived Hermes backend the updater can stop.
+
+    The Windows update preflight refuses while any process holds the venv's
+    ``.pyd`` files, but the updater itself pauses gateways
+    (``_pause_windows_gateways_for_update``) and reaps stale ``serve`` /
+    ``dashboard`` backends (``_kill_stale_dashboard_processes``), so those
+    process classes must not dead-end the handoff. This is the shared
+    "is the updater able to stop this holder" predicate used by both the
+    Desktop preflight exemption and the CLI updater's guard fallback, so the
+    two views of the same process table cannot drift apart.
+
+    Accepts ``gateway run`` chains (delegating to the strict canonical
+    matcher — ``run`` only, never ``stop``/``status``/``restart``, and never
+    a process that merely contains the word "gateway") and headless web
+    backends (``hermes_cli.main serve`` / ``dashboard``), profile-selector
+    aware. Anything else — an operator REPL, a stray script — is not the
+    updater's to stop and must keep blocking.
+    """
+    if _gateway_command_subcommand(command) == "run":
+        return True
+    return _hermes_subcommand(command) in ("serve", "dashboard")
 
 
 def looks_like_gateway_runtime_command_line(command: str | None) -> bool:

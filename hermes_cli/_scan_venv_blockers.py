@@ -92,38 +92,44 @@ def _redact_sensitive_cmdline(cmdline: str) -> str:
     return cmdline
 
 
-def _is_pausable_gateway(cmdline: str) -> bool:
-    """Return True when *cmdline* is a gateway process the updater can pause.
+def _is_pausable_hermes_process(cmdline: str) -> bool:
+    """Return True when *cmdline* is a backend the updater can stop itself.
 
     A running gateway shows up in the venv-holder scan as one or both halves
     of its launcher/worker chain (``venv\\Scripts\\python.exe -m
     hermes_cli.main gateway run`` and the uv-side interpreter re-running the
-    same argv). Reporting those as blockers dead-ends the Desktop update:
-    the preflight aborts with ``venv-blocked`` *before* spawning
-    ``hermes-setup``, so the CLI updater's own
-    ``_pause_windows_gateways_for_update()`` — which exists precisely to
-    stop these processes (and is always active: ``hermes-setup`` invokes
-    ``hermes update --yes --gateway``) — never gets the chance to run.
+    same argv). A secondary profile's headless backend (``-m hermes_cli.main
+    [--profile <p>] serve`` / ``dashboard``) is the same long-lived server
+    under a different subcommand. Reporting either as blockers dead-ends the
+    Desktop update: the preflight aborts with ``venv-blocked`` *before*
+    spawning ``hermes-setup``, so the CLI updater's own machinery — which
+    exists precisely to stop these processes — never gets the chance to run
+    (``_pause_windows_gateways_for_update()`` pauses gateways, and
+    ``_kill_stale_dashboard_processes()`` reaps stale serve/dashboard
+    backends; both are always active under ``hermes update --yes``).
 
-    Only gateway invocations are exempted. Anything else running from the
-    venv (an operator's REPL, a stray script, a ``serve`` backend that
-    survived the desktop's own teardown) has no pause machinery downstream
-    and must keep blocking the handoff.
+    Only backends the updater can stop are exempted. Anything else running
+    from the venv (an operator's REPL, a stray script) has no stop machinery
+    downstream and must keep blocking the handoff.
 
-    Delegates to ``gateway.status.looks_like_gateway_command_line`` — the
-    canonical ``gateway run`` matcher (profile-selector aware, shlex
-    tokenization, ``run``-only) — so this exemption, the pause discovery,
-    and the updater's guard fallback all share one parser. A hand-rolled
-    token scan here regressed ``--profile gateway gateway run``: the profile
-    *value* shadowed the subcommand token. An import failure counts as
-    not-pausable — the scan then reports the process as a blocker, which is
-    exactly the pre-exemption behavior.
+    Delegates to ``gateway.status.looks_like_pausable_hermes_process`` — the
+    canonical matcher shared with the pause discovery and the updater's
+    guard fallback (``gateway run`` via the strict ``run``-only parser, plus
+    ``serve``/``dashboard``; profile-selector aware, shlex tokenization) —
+    so the exemption, the pause discovery, and the guard all classify one
+    argv identically. A hand-rolled token scan here regressed
+    ``--profile gateway gateway run``: the profile *value* shadowed the
+    subcommand token. An import failure counts as not-pausable — the scan
+    then reports the process as a blocker, which is exactly the
+    pre-exemption behavior.
     """
     try:
-        from gateway.status import looks_like_gateway_command_line  # noqa: PLC0415
+        from gateway.status import (  # noqa: PLC0415
+            looks_like_pausable_hermes_process,
+        )
     except Exception:
         return False
-    return looks_like_gateway_command_line(cmdline)
+    return looks_like_pausable_hermes_process(cmdline)
 
 
 def main() -> None:
@@ -147,15 +153,17 @@ def main() -> None:
             "cmdline": _redact_sensitive_cmdline(cmdline),
         }
         for pid, name, cmdline in matches
-        if not _is_pausable_gateway(cmdline)
+        if not _is_pausable_hermes_process(cmdline)
     ]
-    exempted = sum(1 for _pid, _name, cmdline in matches if _is_pausable_gateway(cmdline))
+    exempted = sum(
+        1 for _pid, _name, cmdline in matches if _is_pausable_hermes_process(cmdline)
+    )
     data = {
         "ok": True,
         "blocked": bool(processes),
         "processes": processes,
-        # Diagnostic only: gateway processes present but not counted as
-        # blockers because the downstream updater pauses them itself.
+        # Diagnostic only: pausable processes present but not counted as
+        # blockers because the downstream updater stops them itself.
         "pausable_gateways": exempted,
     }
     print(json.dumps(data))

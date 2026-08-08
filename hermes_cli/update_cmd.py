@@ -3019,7 +3019,7 @@ def _venv_launcher_ancestors(pids: list[int]) -> list[int]:
 def _leftover_pausable_gateway_pids(
     matches: list[tuple[int, str, str]],
 ) -> list[int] | None:
-    """PIDs from *matches* when every remaining venv holder is a pausable gateway.
+    """PIDs from *matches* when every remaining venv holder is pausable.
 
     ``_pause_windows_gateways_for_update()`` stops every gateway its discovery
     finds, but the venv-holder guard downstream sees the process table as it
@@ -3027,21 +3027,25 @@ def _leftover_pausable_gateway_pids(
     watchdog) inside the pause→guard window, or one started through a spawn
     path the discovery does not map, still holds venv ``.pyd`` files and
     would dead-end the update — an abort pointed at exactly the kind of
-    process the pause machinery exists to stop.
+    process the pause machinery exists to stop. A headless ``serve`` /
+    ``dashboard`` backend — e.g. a secondary profile's, which the Desktop
+    preflight now exempts — is stopped by the same updater later in the flow
+    (``_kill_stale_dashboard_processes``), so it too must not dead-end the
+    guard.
 
     Holders are classified with the same matcher the Desktop preflight uses
-    to exempt them (``_is_pausable_gateway``), so the preflight's exemption
-    and this guard's tolerance cannot drift apart — matcher drift between
-    two views of the same process table is what produced the launcher/worker
-    dead-end fixed above. The scan captures only a 120-char cmdline prefix,
-    so the live argv is re-read where psutil allows; an unreadable argv
-    falls back to the captured prefix.
+    to exempt them (``_is_pausable_hermes_process``), so the preflight's
+    exemption and this guard's tolerance cannot drift apart — matcher drift
+    between two views of the same process table is what produced the
+    launcher/worker dead-end fixed above. The scan captures only a 120-char
+    cmdline prefix, so the live argv is re-read where psutil allows; an
+    unreadable argv falls back to the captured prefix.
 
-    Returns ``None`` when any holder is not a pausable gateway — an operator
-    REPL, a stray script, or the Desktop backend has no pause machinery
-    downstream, and the guard must keep refusing exactly as before.
+    Returns ``None`` when any holder is not pausable — an operator REPL or a
+    stray script has no stop machinery downstream, and the guard must keep
+    refusing exactly as before.
     """
-    from hermes_cli._scan_venv_blockers import _is_pausable_gateway
+    from hermes_cli._scan_venv_blockers import _is_pausable_hermes_process
 
     try:
         import psutil  # type: ignore
@@ -3056,7 +3060,7 @@ def _leftover_pausable_gateway_pids(
                 argv = " ".join(psutil.Process(int(pid)).cmdline()) or cmdline
             except Exception:
                 pass
-        if not _is_pausable_gateway(argv):
+        if not _is_pausable_hermes_process(argv):
             return None
         pids.append(int(pid))
     return pids
@@ -3624,11 +3628,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
 
     # With gateways paused, anything still running from the venv interpreter
-    # (most commonly the Desktop app's `hermes serve` backend) will keep .pyd
-    # files locked and corrupt the dependency sync below. Refuse rather than
-    # race: killing the desktop backend is futile (the app supervises and
-    # respawns it), so the user must close the app. Deliberately NOT bypassed
-    # by plain --force: the desktop bootstrap updater passes --force to skip
+    # (a `serve` backend — e.g. a secondary profile's, which the Desktop
+    # preflight now exempts — or an operator REPL) will keep .pyd files
+    # locked and corrupt the dependency sync below. Pausable backends
+    # (gateways, serve/dashboard) are stopped here and re-checked; anything
+    # else must be closed by the user. Deliberately NOT bypassed by plain
+    # --force: the desktop bootstrap updater passes --force to skip
     # the hermes.exe shim guard above, but its lock probe only checks the shim
     # and app.asar — a non-desktop venv python holding a .pyd would sail
     # through and corrupt the sync (the exact failure this guard exists for).
@@ -3638,17 +3643,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if _venv_holders:
             _gateway_holders = _m()._leftover_pausable_gateway_pids(_venv_holders)
             if _gateway_holders is not None:
-                # Every remaining holder is a gateway the pause machinery
-                # already owns — respawned by its supervisor inside the
-                # pause→guard window, or up through a spawn path discovery
-                # does not map. Stop them and re-check instead of
-                # dead-ending; the post-update resume (and the supervisor
-                # that respawned them) brings gateways back afterwards.
+                # Every remaining holder is a backend the updater can stop —
+                # a gateway the pause machinery owns (respawned by its
+                # supervisor inside the pause→guard window, or up through a
+                # spawn path discovery does not map), or a serve/dashboard
+                # backend that the update flow reaps at the end anyway
+                # (`_kill_stale_dashboard_processes`). Stop them and
+                # re-check instead of dead-ending; the post-update resume
+                # (and the supervisor that respawned them) brings gateways
+                # back afterwards.
                 from gateway.status import terminate_pid
 
                 print(
-                    f"  ⚠ {len(_gateway_holders)} gateway process(es) still "
-                    "hold the venv after the pause; stopping them"
+                    f"  ⚠ {len(_gateway_holders)} Hermes backend process(es) "
+                    "still hold the venv after the pause; stopping them"
                 )
                 for _pid in _gateway_holders:
                     try:

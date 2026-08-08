@@ -254,6 +254,35 @@ export const sessionMatchesStoredId = (
   storedSessionId: string
 ): boolean => session.id === storedSessionId || session._lineage_root_id === storedSessionId
 
+/** Every id one conversation answers to: the id we were handed, plus the live
+ *  id and lineage root of each session it resolves to.
+ *
+ *  Status sets are published under a session's CURRENT stored id, but a sidebar
+ *  row, a persisted tile, and the route can each hold a different tip of the
+ *  same lineage after a compression. Publishing every alias lets those surfaces
+ *  keep using a plain membership test instead of each re-deriving lineage —
+ *  and getting it wrong, which reads as a running session going idle mid-turn. */
+export function lineageAliases(
+  storedId: string,
+  sessions: readonly Pick<SessionInfo, '_lineage_root_id' | 'id'>[]
+): string[] {
+  const aliases = new Set([storedId])
+
+  for (const session of sessions) {
+    if (!sessionMatchesStoredId(session, storedId)) {
+      continue
+    }
+
+    aliases.add(session.id)
+
+    if (session._lineage_root_id) {
+      aliases.add(session._lineage_root_id)
+    }
+  }
+
+  return [...aliases]
+}
+
 /** True when two ids name the same conversation across compression tip rotation. */
 export function idsShareLineage(
   a: string,

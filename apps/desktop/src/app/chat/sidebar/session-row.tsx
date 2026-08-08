@@ -211,12 +211,7 @@ function SidebarSessionRowImpl({
           }}
         >
           {reorderable ? (
-            <SidebarRowGrab
-              ariaLabel={handleLabel}
-              dragging={dragging}
-              dragHandleProps={dragHandleProps}
-              leadClassName={needsInput ? 'overflow-visible' : undefined}
-            >
+            <SidebarRowGrab ariaLabel={handleLabel} dragging={dragging} dragHandleProps={dragHandleProps}>
               <SessionStatusDot
                 branchStem={branchStem}
                 className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
@@ -225,7 +220,7 @@ function SidebarSessionRowImpl({
               />
             </SidebarRowGrab>
           ) : (
-            <SidebarRowLead className={needsInput ? 'overflow-visible' : 'overflow-hidden'}>
+            <SidebarRowLead className="overflow-hidden">
               <SessionStatusDot branchStem={branchStem} session={session} storedSessionId={session.id} />
             </SidebarRowLead>
           )}

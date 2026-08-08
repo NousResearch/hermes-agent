@@ -169,7 +169,7 @@ terminal:
 
 ### SSH 后端
 
-通过 SSH 在远程服务器上运行命令。使用 ControlMaster 进行连接复用（5 分钟空闲保活）。默认启用持久 shell —— 状态（cwd、环境变量）在命令之间保持。
+通过 SSH 在远程服务器上运行命令。在类 Unix 主机上使用 ControlMaster 进行连接复用（5 分钟空闲保活）。原生 Windows OpenSSH 不支持 ControlMaster 所需的 Unix 域套接字，因此每条命令都会建立新的 SSH 连接。默认启用持久 shell —— 状态（cwd、环境变量）在命令之间保持。
 
 ```yaml
 terminal:

@@ -2888,19 +2888,23 @@ def _detect_venv_python_processes(
     for proc in proc_iter:
         try:
             info = proc.info
+            pid = info.get("pid")
+            exe = info.get("exe")
+            if not exe or pid is None or int(pid) in skip:
+                continue
+            try:
+                exe_norm = str(Path(exe).resolve()).lower()
+            except Exception:
+                exe_norm = str(exe).lower()
+            cmdline_raw = " ".join(info.get("cmdline") or [])
+            cmdline_low = cmdline_raw.lower()
+            try:
+                cwd_val = info.get("cwd") or ""
+            except Exception:
+                cwd_val = ""
+            cwd_low = str(cwd_val).lower().rstrip(os.sep) + os.sep
         except Exception:
             continue
-        pid = info.get("pid")
-        exe = info.get("exe")
-        if not exe or pid is None or int(pid) in skip:
-            continue
-        try:
-            exe_norm = str(Path(exe).resolve()).lower()
-        except (OSError, ValueError):
-            exe_norm = str(exe).lower()
-        cmdline_raw = " ".join(info.get("cmdline") or [])
-        cmdline_low = cmdline_raw.lower()
-        cwd_low = str(info.get("cwd") or "").lower().rstrip(os.sep) + os.sep
 
         # Primary match: the executable itself lives under this venv
         # (venv\Scripts\python(w).exe — the desktop backend / gateway case).

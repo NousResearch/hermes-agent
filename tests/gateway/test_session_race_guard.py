@@ -75,6 +75,25 @@ def _make_event(text="hello", chat_id="12345"):
     return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
 
 
+def _make_shared_event(user_id, text, message_id, *, message_type=MessageType.TEXT):
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        user_id=user_id,
+    )
+    media_urls = [f"/tmp/{message_id}.jpg"] if message_type == MessageType.PHOTO else []
+    media_types = ["image/jpeg"] if media_urls else []
+    return MessageEvent(
+        text=text,
+        message_type=message_type,
+        source=source,
+        message_id=message_id,
+        media_urls=media_urls,
+        media_types=media_types,
+    )
+
+
 # ------------------------------------------------------------------
 # Test 1: Sentinel is placed before _handle_message_with_agent runs
 # ------------------------------------------------------------------
@@ -170,6 +189,41 @@ async def test_recent_telegram_followups_append_in_pending_queue():
     fake_agent.interrupt.assert_not_called()
     adapter = runner.adapters[Platform.TELEGRAM]
     assert adapter._pending_messages[session_key].text == "part one\npart two"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fast_path", ["photo", "telegram-grace", "pending-sentinel"])
+async def test_running_fast_paths_preserve_a_b_a_fifo_order(fast_path, monkeypatch):
+    """A later Alice event must not merge backward across Bob's FIFO tail."""
+    runner = _make_runner()
+    runner.config.group_sessions_per_user = False
+    runner._busy_input_mode = "interrupt"
+    adapter = runner.adapters[Platform.TELEGRAM]
+    message_type = MessageType.PHOTO if fast_path == "photo" else MessageType.TEXT
+    alice_head = _make_shared_event("alice", "A1", "a1", message_type=message_type)
+    bob_middle = _make_shared_event("bob", "B1", "b1", message_type=message_type)
+    alice_tail = _make_shared_event("alice", "A2", "a2", message_type=message_type)
+    session_key = build_session_key(alice_head.source, group_sessions_per_user=False)
+
+    runner._enqueue_fifo(session_key, alice_head, adapter)
+    runner._enqueue_fifo(session_key, bob_middle, adapter)
+    if fast_path == "pending-sentinel":
+        monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "0")
+        runner._running_agents[session_key] = _AGENT_PENDING_SENTINEL
+    else:
+        fake_agent = MagicMock()
+        fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
+        runner._running_agents[session_key] = fake_agent
+        if fast_path == "telegram-grace":
+            import time as _time
+
+            runner._running_agents_ts[session_key] = _time.time()
+
+    await runner._handle_message(alice_tail)
+
+    turns = [adapter._pending_messages[session_key]]
+    turns.extend(runner._queued_events.get(session_key, []))
+    assert [turn.message_id for turn in turns] == ["a1", "b1", "a2"]
 
 
 # ------------------------------------------------------------------

@@ -1,0 +1,6 @@
+name: plan-secretary
+version: 0.1.0
+description: "Turn assistant future-commitments (\"I will do X\") into human-confirmed, session-scoped task plans with due-time reminders. Capture -> confirm -> remind -> resolve, all scoped to the originating session."
+author: "Victor-lys"
+hooks:
+  - post_tool_call

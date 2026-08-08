@@ -24,6 +24,13 @@ RUNTIME_SCHEMA_KEY = "hermes.relay.schema_version"
 RUNTIME_SCHEMA_VERSION = "hermes.relay.runtime.v1"
 RUNTIME_INSTANCE_KEY = "hermes.relay.runtime_instance"
 _PROFILE_KEY_CACHE: dict[str, str] = {}
+# Native ScopeHandle equality is identity-based across Python wrappers; compare
+# by uuid when unwinding nested scopes after a LIFO mismatch.
+_SCOPE_STACK_MISMATCH_MARKERS = (
+    "scope handle is not at the top of the stack",
+    "root scope cannot be removed",
+)
+_MAX_SCOPE_UNWIND_POPS = 64
 
 
 @dataclass
@@ -36,6 +43,9 @@ class RelaySession:
     closing: bool = False
     handle: Any = None
     context: contextvars.Context | None = None
+    # Set when a scope-stack mismatch forced a rebuild. Drain paths may use
+    # this as a signal that waiting for graceful turn completion is futile.
+    scope_stack_healed: bool = False
 
 
 class RelayRuntime:
@@ -313,9 +323,8 @@ class RelayRuntime:
             session.closing = True
             if session.handle is not None:
                 try:
-                    self.run_in_session(
+                    self.pop_scope_resilient(
                         session,
-                        self.relay.scope.pop,
                         session.handle,
                         output={},
                         metadata={
@@ -323,9 +332,14 @@ class RelayRuntime:
                             RUNTIME_INSTANCE_KEY: self.runtime_id,
                         },
                         allow_closing=True,
+                        rebuild_on_failure=False,
                     )
                 except Exception as exc:
+                    # Closing abandons the native stack with the session
+                    # object; a failed pop must not block registry cleanup.
                     failures.append(f"session scope close failed: {exc}")
+                session.handle = None
+                session.context = None
         try:
             self.relay.subscribers.flush()
         except Exception as exc:
@@ -340,6 +354,211 @@ class RelayRuntime:
                 "Hermes Relay session %s closed with errors: %s",
                 session_id,
                 "; ".join(failures),
+            )
+
+    def pop_scope_resilient(
+        self,
+        session: RelaySession,
+        handle: Any,
+        *,
+        output: Any = None,
+        metadata: dict[str, Any] | None = None,
+        allow_closing: bool = False,
+        rebuild_on_failure: bool = True,
+        reason: str = "scope_pop",
+    ) -> bool:
+        """Pop ``handle``, unwinding nested orphans on LIFO mismatch.
+
+        NeMo Relay scopes are strictly stack-ordered. Interrupted compaction,
+        shared-metrics task scopes, or logical-LLM children left above a turn
+        make ``scope.pop(turn_handle)`` raise::
+
+            RuntimeError: invalid argument: scope handle is not at the top of the stack
+
+        Catching that without healing leaves the session stack corrupted so
+        every future ``end_turn`` / ``close_session`` logs the same error.
+        This helper first tries a direct pop, then abandons nested scopes
+        until ``handle`` is top (matched by uuid), then pops it. If the stack
+        is still unusable, optionally rebuild a fresh session root so later
+        turns start clean.
+        """
+        if handle is None:
+            return True
+        meta = metadata or {
+            RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
+            RUNTIME_INSTANCE_KEY: self.runtime_id,
+        }
+        try:
+            self.run_in_session(
+                session,
+                self.relay.scope.pop,
+                handle,
+                output=output,
+                metadata=meta,
+                allow_closing=allow_closing,
+            )
+            return True
+        except Exception as exc:
+            if not _is_scope_stack_mismatch(exc):
+                raise
+            logger.warning(
+                "Hermes Relay scope pop mismatched for session %s (%s); "
+                "unwinding nested scopes",
+                session.session_id,
+                reason,
+                exc_info=True,
+            )
+
+        target_uuid = _scope_handle_uuid(handle)
+        session_uuid = _scope_handle_uuid(session.handle)
+        abandoned = 0
+        get_handle = getattr(self.relay.scope, "get_handle", None)
+        if not callable(get_handle):
+            if rebuild_on_failure and not session.closing:
+                self.rebuild_session_scope(session, reason=reason)
+                return False
+            raise RuntimeError(
+                f"Hermes Relay could not pop scope during {reason} for session "
+                f"{session.session_id} (no get_handle to unwind)"
+            )
+        for _ in range(_MAX_SCOPE_UNWIND_POPS):
+            try:
+                top = self.run_in_session(
+                    session,
+                    get_handle,
+                    allow_closing=allow_closing,
+                )
+            except Exception:
+                break
+            top_uuid = _scope_handle_uuid(top)
+            top_name = str(getattr(top, "name", "") or "")
+            if not top_uuid:
+                break
+            if target_uuid and top_uuid == target_uuid:
+                try:
+                    self.run_in_session(
+                        session,
+                        self.relay.scope.pop,
+                        handle,
+                        output=output,
+                        metadata=meta,
+                        allow_closing=allow_closing,
+                    )
+                    return True
+                except Exception as exc:
+                    if not _is_scope_stack_mismatch(exc):
+                        raise
+                    break
+            if session_uuid and top_uuid == session_uuid:
+                # Target is already gone; session root is current top.
+                return False
+            if top_name == "root":
+                break
+            try:
+                self.run_in_session(
+                    session,
+                    self.relay.scope.pop,
+                    top,
+                    output={"outcome": "abandoned", "reason": reason},
+                    metadata={
+                        **meta,
+                        "hermes.relay.abandoned_scope": True,
+                    },
+                    allow_closing=allow_closing,
+                )
+                abandoned += 1
+            except Exception as exc:
+                if _is_scope_stack_mismatch(exc) and "root scope" in str(exc).lower():
+                    break
+                logger.warning(
+                    "Hermes Relay nested scope abandon failed for session %s",
+                    session.session_id,
+                    exc_info=True,
+                )
+                break
+
+        if abandoned:
+            logger.warning(
+                "Hermes Relay abandoned %d nested scope(s) on session %s during %s",
+                abandoned,
+                session.session_id,
+                reason,
+            )
+
+        if rebuild_on_failure and not session.closing:
+            self.rebuild_session_scope(session, reason=reason)
+            return False
+        raise RuntimeError(
+            f"Hermes Relay could not pop scope during {reason} for session "
+            f"{session.session_id}"
+        )
+
+    def rebuild_session_scope(
+        self,
+        session: RelaySession,
+        *,
+        reason: str,
+    ) -> None:
+        """Replace a corrupted per-session scope stack with a fresh root.
+
+        The previous Context/ScopeStack is abandoned (not shared with other
+        sessions). Callers that still hold child handles on the old stack must
+        treat those handles as invalid after this returns.
+        """
+        with session.lock:
+            if session.closing:
+                return
+            parent_session_id = session.parent_session_id
+            session_id = session.session_id
+
+        # Resolve parent outside session.lock so we never nest
+        # session.lock -> _sessions_lock (ensure_session takes the opposite order).
+        parent_handle = None
+        if parent_session_id:
+            with self._sessions_lock:
+                parent_handle = self._subagent_parent_handles.get(session_id)
+            if parent_handle is None:
+                parent = self.get_session(parent_session_id)
+                if parent is not None:
+                    parent_handle = parent.handle
+
+        scope_metadata = {
+            RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
+            RUNTIME_INSTANCE_KEY: self.runtime_id,
+            "hermes.relay.rebuilt": True,
+            "hermes.relay.rebuild_reason": reason,
+        }
+        if parent_session_id:
+            scope_metadata["nemo_relay_scope_role"] = "subagent"
+        context = contextvars.Context()
+        try:
+            new_handle = context.run(
+                self.relay.scope.push,
+                SESSION_SCOPE,
+                self.relay.ScopeType.Agent,
+                handle=parent_handle,
+                input={},
+                metadata=scope_metadata,
+            )
+        except Exception:
+            logger.warning(
+                "Hermes Relay session %s rebuild failed after %s",
+                session_id,
+                reason,
+                exc_info=True,
+            )
+            raise
+
+        with session.lock:
+            if session.closing:
+                return
+            session.handle = new_handle
+            session.context = context
+            session.scope_stack_healed = True
+            logger.warning(
+                "Hermes Relay rebuilt scope stack for session %s after %s",
+                session_id,
+                reason,
             )
 
     def shutdown(self) -> None:
@@ -657,20 +876,26 @@ class RelaySessionCoordinator:
                     self._finish_logical_calls(turn, outcome=outcome)
                     if turn.handle is not None:
                         try:
-                            lease.host.run_in_session(
+                            lease.host.pop_scope_resilient(
                                 lease.session,
-                                lease.host.relay.scope.pop,
                                 turn.handle,
                                 output={"outcome": outcome},
                                 metadata={
                                     RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
                                     RUNTIME_INSTANCE_KEY: lease.host.runtime_id,
                                 },
+                                reason="turn_finalization",
                             )
                         except Exception:
                             logger.warning(
                                 "Hermes Relay turn finalization failed", exc_info=True
                             )
+                        finally:
+                            # Handles on a rebuilt stack are invalid; clear so
+                            # a double end_turn cannot re-pop a stale uuid.
+                            turn.handle = None
+                            with turn.logical_llm_lock:
+                                turn.logical_llm_calls.clear()
             finally:
                 try:
                     # Delegated agents own one turn. Close their conversation
@@ -741,15 +966,18 @@ class RelaySessionCoordinator:
         for index in range(len(logical_calls) - 1, -1, -1):
             request_id, logical_handle = logical_calls[index]
             try:
-                lease.host.run_in_session(
+                lease.host.pop_scope_resilient(
                     lease.session,
-                    lease.host.relay.scope.pop,
                     logical_handle,
                     output={"outcome": outcome},
                     metadata={
                         RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
                         RUNTIME_INSTANCE_KEY: lease.host.runtime_id,
                     },
+                    # Leave rebuild to turn finalization so one heal covers
+                    # the whole orphaned prefix above the turn handle.
+                    rebuild_on_failure=False,
+                    reason="logical_llm_finalization",
                 )
             except Exception:
                 with turn.logical_llm_lock:
@@ -1027,6 +1255,27 @@ def _load_nemo_relay() -> Any:
 
 def _session_id(event: dict[str, Any]) -> str:
     return str(event.get("session_id") or "")
+
+
+def _scope_handle_uuid(handle: Any) -> str:
+    """Return the stable native uuid for a ScopeHandle-like object."""
+    if handle is None:
+        return ""
+    uuid_value = getattr(handle, "uuid", None)
+    if uuid_value is not None:
+        return str(uuid_value)
+    if isinstance(handle, tuple) and len(handle) >= 3:
+        # Fake handles used by unit tests: ("scope", name, serial)
+        return str(handle[2])
+    return str(handle)
+
+
+def _is_scope_stack_mismatch(exc: BaseException) -> bool:
+    """Detect native LIFO / root-protection errors from nemo_relay.scope.pop."""
+    if not isinstance(exc, RuntimeError):
+        return False
+    message = str(exc).lower()
+    return any(marker in message for marker in _SCOPE_STACK_MISMATCH_MARKERS)
 
 
 def _reset_for_tests() -> None:

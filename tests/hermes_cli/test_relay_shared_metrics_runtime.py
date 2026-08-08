@@ -1316,6 +1316,7 @@ def test_concurrent_turn_skips_relay_before_scope_stack_can_interleave(
 
     assert first.relay_enabled is True
     assert first.handle is not None
+    first_handle = first.handle
     assert second.relay_enabled is False
     assert second.handle is None
     assert relay_runtime.resolve_execution_context("shared-session") == (
@@ -1335,9 +1336,10 @@ def test_concurrent_turn_skips_relay_before_scope_stack_can_interleave(
     turn_closes = [
         event
         for event in direct_runtime.events
-        if event[0] == "scope.pop" and event[1] == first.handle
+        if event[0] == "scope.pop" and event[1] == first_handle
     ]
     assert len(turn_closes) == 1
+    assert first.handle is None
     assert not [
         event
         for event in direct_runtime.events

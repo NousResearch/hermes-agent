@@ -418,6 +418,54 @@ class TestDeliverResultWrapping:
         voice_call = adapter.send_voice.call_args
         assert voice_call[1]["audio_path"] == str(media_path)
 
+    def test_empty_content_after_media_extraction_is_not_reported_delivered(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression for #77763: a cron result whose delivered content is ONLY
+        a ``MEDIA:`` tag whose path fails validation (so both text and media
+        are empty) must NOT be logged as "delivered" — the job reports failure
+        instead of a silent no-op."""
+        from gateway.config import Platform
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+        adapter.send_document = AsyncMock(return_value=MagicMock(success=True))
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        job = {
+            "id": "empty-content-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        # The invalid MEDIA path is filtered out by extract_media/filter, so
+        # both text_to_send and media_files end up empty.
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})):
+            result = _deliver_result(
+                job,
+                "MEDIA:/nonexistent/cron-journal.md",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        # Nothing was sent through the live adapter...
+        adapter.send.assert_not_called()
+        adapter.send_document.assert_not_called()
+        # ... and the job is NOT reported as delivered — an error string is
+        # returned so the failure is visible instead of a silent no-op.
+        assert result is not None
+        assert "nothing to deliver" in result or "empty delivery" in result
+        assert adapter.send.await_count == 0
+
 
 class TestDeliverResultErrorReturns:
     """Verify _deliver_result returns error strings on failure, None on success."""

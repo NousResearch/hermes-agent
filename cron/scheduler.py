@@ -1875,6 +1875,26 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 opened_thread_id = new_thread_id
 
         if live_adapter_ready:
+            # Nothing to deliver: content was emptied by MEDIA extraction (e.g.
+            # a response that is ONLY a ``MEDIA:`` tag whose path failed
+            # validation) and no media survived filtering. Sending an empty
+            # payload would be a no-op; logging "delivered" here would be a lie
+            # (#77763). Fall through to the standalone path (which also guards
+            # empty content) so the job is not reported as successfully
+            # delivered.
+            if not cleaned_delivery_content.strip() and not media_files:
+                logger.warning(
+                    "Job '%s': nothing to deliver to %s:%s (content empty after "
+                    "MEDIA extraction and no media files)",
+                    job["id"], platform_name, chat_id,
+                )
+                err_msg = (
+                    f"empty delivery content for {platform_name}:{chat_id} "
+                    "(nothing to send after MEDIA extraction)"
+                )
+                target_errors.append(err_msg)
+                delivery_errors.append(err_msg)
+                continue
             # Telegram topic routing (#22773, regression fixed #52060): a
             # ``telegram:<positive_chat_id>:<numeric_thread_id>`` cron target is
             # ambiguous — a forum-style topic in a private chat and a genuine
@@ -1938,6 +1958,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 text_to_send = cleaned_delivery_content.strip()
                 adapter_ok = True
                 timed_out = False
+                # Track whether anything was actually dispatched. A cron result
+                # whose delivered content is empty after MEDIA extraction (e.g. a
+                # response that is ONLY a ``MEDIA:`` tag whose path fails
+                # validation) must NOT be reported as "delivered" — otherwise the
+                # job logs success while the target never receives anything
+                # (#77763).
+                anything_dispatched = False
                 if text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
 
@@ -2010,6 +2037,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                     "to avoid duplicate)",
                                     job["id"], platform_name, chat_id,
                                 )
+                                # The send is in flight on the wire — it was
+                                # dispatched, so it counts toward "delivered"
+                                # (#38922) and must not be reported as an
+                                # empty no-op (#77763).
+                                anything_dispatched = True
                         except Exception as ex:
                             # A real send error (not a slow confirmation) — fall
                             # through to the standalone path so the message is
@@ -2062,7 +2094,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                     )
                                 target_errors.append(msg)
                                 adapter_ok = False  # fall through to standalone path
-                            elif (
+                            else:
+                                # Text was confirmed sent by the live adapter.
+                                anything_dispatched = True
+                            if (
                                 send_raw_response
                                 and thread_id
                                 and send_raw_response.get("thread_fallback")
@@ -2085,6 +2120,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # skipped attachments so the drop is visible rather than silently
                 # lost.
                 if adapter_ok and not timed_out and media_files:
+                    anything_dispatched = True
                     routed_media_metadata = dict(media_metadata or {})
                     if transport is not None and transport.is_relay:
                         routed_media_metadata["_relay_logical_platform"] = platform.value
@@ -2111,7 +2147,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     logger.warning("Job '%s': %s", job["id"], msg)
                     delivery_errors.append(msg)
 
-                if adapter_ok:
+                if adapter_ok and anything_dispatched:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
                     # Seed the thread session only now that delivery into it

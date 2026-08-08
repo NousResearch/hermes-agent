@@ -449,8 +449,8 @@ def _list_projects(
     """Call ``bws project list`` and return the parsed list, or None on failure."""
     env = secret_cli_env()
     env["BWS_ACCESS_TOKEN"] = token
-    if server_url:
-        env["BWS_SERVER_URL"] = server_url
+    if dropped := _load_bw().apply_server_url_to_env(env, server_url):
+        console.print(f"  [yellow]{dropped}[/yellow]")
     try:
         res = subprocess.run(
             [str(binary), "project", "list", "--output", "json"],
@@ -489,17 +489,35 @@ def _resolve_server_url(
 ) -> Optional[str]:
     """Pick a Bitwarden server URL: ``--server-url``, then ``BWS_SERVER_URL``, then the existing
     ``secrets.bitwarden.server_url``, then the interactive US / EU / self-hosted menu. None (after
-    printing) when a custom URL is left empty."""
+    printing) when a custom URL is left empty, or when a non-interactive source supplied a URL that
+    fails ``validate_server_url`` — setup must not persist an endpoint the fetch path will refuse
+    to use, and the access token is about to be sent there."""
+    bw = _load_bw()
+
+    def _checked(candidate: str, origin: str) -> Optional[str]:
+        try:
+            return bw.validate_server_url(candidate)
+        except ValueError as exc:
+            console.print(f"  [red]✗ {origin}: {exc}[/red]")
+            return None
+
     if args.server_url and args.server_url.strip():
-        return args.server_url.strip()
+        return _checked(args.server_url.strip(), "--server-url")
     env_url = os.environ.get("BWS_SERVER_URL", "").strip()
     if env_url:
         console.print(f"  Detected [cyan]BWS_SERVER_URL[/cyan]={env_url} in your shell — using it.")
-        return env_url
+        return _checked(env_url, "BWS_SERVER_URL")
     existing = cfg_str(secrets_cfg, "server_url")
     if existing:
-        console.print(f"  Existing config: [cyan]{existing}[/cyan]. "
-                      "Press Enter to keep, or pick a different option below.")
+        try:
+            bw.validate_server_url(existing)
+        except ValueError as exc:
+            # A stored bad value must not dead-end setup — that is what the user came to fix.
+            console.print(f"  [yellow]Ignoring stored server_url: {exc}[/yellow]")
+            existing = ""
+        else:
+            console.print(f"  Existing config: [cyan]{existing}[/cyan]. "
+                          "Press Enter to keep, or pick a different option below.")
     table = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
     table.add_column("#", style="cyan", width=4)
     table.add_column("Region / endpoint")
@@ -515,10 +533,12 @@ def _resolve_server_url(
         return existing
     if idx <= len(_REGION_PRESETS):
         return _REGION_PRESETS[idx - 1][1]
-    custom = console.input("  Enter your Bitwarden server URL (e.g. https://vault.example.com): ").strip()
-    if not custom:
-        console.print("  [red]Empty URL, aborting.[/red]")
-        return None
-    if not custom.startswith(("http://", "https://")):
-        console.print("  [yellow]Warning: URL doesn't start with http:// or https:// — bws may reject it.[/yellow]")
-    return custom
+    while True:
+        custom = console.input("  Enter your Bitwarden server URL (e.g. https://vault.example.com): ").strip()
+        if not custom:
+            console.print("  [red]Empty URL, aborting.[/red]")
+            return None
+        try:
+            return bw.validate_server_url(custom)
+        except ValueError as exc:  # interactive: let them try again instead of aborting setup
+            console.print(f"  [red]{exc}[/red]")

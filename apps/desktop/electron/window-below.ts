@@ -31,10 +31,7 @@ export interface WindowBelowResult {
   } | null
 }
 
-const overlaps = (
-  a: EnumeratedWindow['bounds'],
-  b: EnumeratedWindow['bounds']
-): boolean =>
+const overlaps = (a: EnumeratedWindow['bounds'], b: EnumeratedWindow['bounds']): boolean =>
   a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
 
 /**
@@ -62,10 +59,7 @@ export function pickWindowBelow(
 }
 
 type GetWindowsModule = {
-  openWindows: (options?: {
-    accessibilityPermission?: boolean
-    screenRecordingPermission?: boolean
-  }) => Promise<
+  openWindows: (options?: { accessibilityPermission?: boolean; screenRecordingPermission?: boolean }) => Promise<
     Array<{
       bounds?: { height?: number; width?: number; x?: number; y?: number }
       id?: number
@@ -138,9 +132,7 @@ export async function readWindowBelow(
   const result: WindowBelowResult = {
     frontmost: frontmost ? { app: frontmost.app, title: frontmost.title } : null,
     platform: process.platform,
-    window: below
-      ? { app: below.app, bounds: below.bounds, id: below.id, title: below.title }
-      : null
+    window: below ? { app: below.app, bounds: below.bounds, id: below.id, title: below.title } : null
   }
 
   if (process.platform === 'darwin' && !titlesAvailable) {

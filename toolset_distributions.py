@@ -271,12 +271,17 @@ def sample_toolsets_from_distribution(distribution_name: str) -> List[str]:
         if random.random() * 100 < probability:
             selected_toolsets.append(toolset_name)
     
-    # If no toolsets were selected (can happen with low probabilities), 
-    # ensure at least one toolset is selected by picking the highest probability one
+    # If no toolsets were selected (can happen with low probabilities),
+    # ensure at least one *valid* toolset is selected by picking the highest
+    # probability valid candidate.
     if not selected_toolsets and dist["toolsets"]:
-        # Find toolset with highest probability
-        highest_prob_toolset = max(dist["toolsets"].items(), key=lambda x: x[1])[0]
-        if validate_toolset(highest_prob_toolset):
+        valid_candidates = [
+            (toolset_name, probability)
+            for toolset_name, probability in dist["toolsets"].items()
+            if validate_toolset(toolset_name)
+        ]
+        if valid_candidates:
+            highest_prob_toolset = max(valid_candidates, key=lambda x: x[1])[0]
             selected_toolsets.append(highest_prob_toolset)
     
     return selected_toolsets

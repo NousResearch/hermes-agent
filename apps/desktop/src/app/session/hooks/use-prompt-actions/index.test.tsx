@@ -8,6 +8,7 @@ import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
+import { $hudMode } from '@/store/hud'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import {
   $busy,
@@ -322,6 +323,48 @@ function renderedSeedTexts(seeds: Record<string, unknown>[]): string[] {
     return messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
   })
 }
+
+describe('usePromptActions HUD surface', () => {
+  // The HUD floats over the app the user is really working in, so the gateway
+  // turns this flag into a per-turn hint: look at the window underneath before
+  // reaching for Hermes's own browser and panes.
+  afterEach(() => {
+    cleanup()
+    $hudMode.set(false)
+    vi.restoreAllMocks()
+  })
+
+  async function submitFromHud(hud: boolean) {
+    $hudMode.set(hud)
+
+    const submitted: (Record<string, unknown> | undefined)[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submitted.push(params)
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText("what's under you rn?")
+
+    return submitted[0]
+  }
+
+  it('tags a message typed into the HUD', async () => {
+    expect(await submitFromHud(true)).toMatchObject({ surface: 'hud' })
+  })
+
+  it('says nothing about the surface from the app window', async () => {
+    expect(await submitFromHud(false)).not.toHaveProperty('surface')
+  })
+})
 
 describe('usePromptActions slash session targeting', () => {
   const STORED_SESSION_ID = 'stored-db-xyz789'

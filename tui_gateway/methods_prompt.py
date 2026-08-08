@@ -113,6 +113,11 @@ def _(rid, params: dict) -> dict:
         return err
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
         return _err(rid, 4090, limit_message)
+    # Which desktop window this message was typed into. One session can be
+    # driven from the app window and the HUD in turn, so it is rewritten on
+    # every submit — a HUD message must not leave the next app-window message
+    # claiming the user is still floating over another app.
+    session["client_surface"] = "hud" if params.get("surface") == "hud" else ""
     if truncate_user_ordinal is not None and isinstance(text, str):
         # A rewind/regenerate replays a turn from what the transcript shows. A
         # skill turn shows its invocation, so re-expand it here — otherwise

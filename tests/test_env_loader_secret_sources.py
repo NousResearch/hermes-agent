@@ -361,6 +361,158 @@ def test_apply_external_secret_sources_status_line_suppresses_secret_names(
     assert "LEAK_THIS_TOKEN" not in err
 
 
+def test_status_warning_with_secret_value_is_masked(tmp_path, monkeypatch, capsys):
+    """A source warning that echoes a secret VALUE must be masked in stderr —
+    the merged name-suppression fix covers names, but values are the
+    exfiltration risk."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.test-token")
+    monkeypatch.delenv("LEAK_THIS_API_KEY", raising=False)
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n"
+        "  bitwarden:\n"
+        "    enabled: true\n"
+        "    project_id: test-project\n"
+        "    access_token_env: BWS_ACCESS_TOKEN\n",
+        encoding="utf-8",
+    )
+
+    import agent.secret_sources.bitwarden as bw_module
+
+    monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
+    monkeypatch.setattr(
+        bw_module,
+        "fetch_bitwarden_secrets",
+        lambda **_kw: (
+            {"LEAK_THIS_API_KEY": "sk-super-secret-value-123"},
+            ["bws returned suspicious value sk-super-secret-value-123"],
+        ),
+    )
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
+
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    err = capsys.readouterr().err
+    assert "applied 1 secret" in err
+    assert "sk-super-secret-value-123" not in err
+
+
+def test_status_error_with_secret_value_is_masked(tmp_path, monkeypatch, capsys):
+    """A source error that embeds a known secret VALUE must be masked."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.test-token")
+    # The value is known to Hermes (applied in a prior run / .env) and the
+    # backend error echoes it.
+    monkeypatch.setenv("LEAK_THIS_API_KEY", "sk-error-value-456")
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n"
+        "  bitwarden:\n"
+        "    enabled: true\n"
+        "    project_id: test-project\n"
+        "    access_token_env: BWS_ACCESS_TOKEN\n",
+        encoding="utf-8",
+    )
+
+    import agent.secret_sources.bitwarden as bw_module
+
+    monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
+
+    def _raise_with_value(**_kw):
+        raise RuntimeError("Bitwarden rejected token sk-error-value-456")
+
+    monkeypatch.setattr(bw_module, "fetch_bitwarden_secrets", _raise_with_value)
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
+
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    err = capsys.readouterr().err
+    assert "Bitwarden rejected token" in err  # diagnostic preserved
+    assert "sk-error-value-456" not in err
+
+
+def test_status_warning_with_short_secret_value_is_masked(tmp_path, monkeypatch, capsys):
+    """A warning echoing a SHORT applied value must be masked too.
+
+    The generic env scan in agent.redact skips values shorter than 6 chars
+    (``_known_secret_values``), so a short external-source ``*_TOKEN`` /
+    ``*_PASSWORD`` echoed by a backend is the exact leak the snapshot pass
+    must cover — no minimum-length filter on the authoritative set.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.test-token")
+    monkeypatch.delenv("LEAK_THIS_TOKEN", raising=False)
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n"
+        "  bitwarden:\n"
+        "    enabled: true\n"
+        "    project_id: test-project\n"
+        "    access_token_env: BWS_ACCESS_TOKEN\n",
+        encoding="utf-8",
+    )
+
+    import agent.secret_sources.bitwarden as bw_module
+
+    monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
+    monkeypatch.setattr(
+        bw_module,
+        "fetch_bitwarden_secrets",
+        lambda **_kw: (
+            {"LEAK_THIS_TOKEN": "ab"},
+            ["bws echoed value ab back in the warning"],
+        ),
+    )
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
+
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    err = capsys.readouterr().err
+    assert "bws echoed value" in err  # diagnostic preserved
+    assert "bws echoed value ***" in err  # short value masked
+    assert "value ab" not in err
+
+
+def test_mask_secret_text_scoped_to_own_home_snapshot(tmp_path):
+    """Status masking for one home must not use another home's snapshot.
+
+    Snapshots are intentionally per-home (``_SECRET_SOURCE_VALUES_BY_HOME``);
+    the authoritative set for a status line is the resolved home's own
+    values.  A cross-home value in the text must survive untouched so one
+    profile's status output never depends on — or leaks — another profile's
+    secrets.
+    """
+    home_a = tmp_path / "profile-a"
+    home_b = tmp_path / "profile-b"
+    home_a.mkdir()
+    home_b.mkdir()
+    env_loader._SECRET_SOURCE_VALUES_BY_HOME[str(home_a.resolve())] = {
+        "SHARED_API_KEY": "value-a"
+    }
+    env_loader._SECRET_SOURCE_VALUES_BY_HOME[str(home_b.resolve())] = {
+        "SHARED_API_KEY": "value-b"
+    }
+
+    # Home A's status line: A's own value masked, B's value left alone.
+    out_a = env_loader._mask_secret_text(
+        "warning quoting value-a but not value-b", home_a
+    )
+    assert "warning quoting *** but not value-b" == out_a
+
+    # Home B's status line: B's own value masked, A's value left alone.
+    out_b = env_loader._mask_secret_text(
+        "warning quoting value-b but not value-a", home_b
+    )
+    assert "warning quoting *** but not value-a" == out_b
+
+
 def test_external_secret_values_are_isolated_between_homes(tmp_path, monkeypatch):
     """A later apply for the same key must not mutate an earlier home snapshot."""
     from agent.secret_scope import build_profile_secret_scope

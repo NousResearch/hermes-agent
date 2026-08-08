@@ -676,14 +676,55 @@ def _apply_external_secret_sources(home_path: Path) -> None:
                 file=sys.stderr,
             )
         if src.result.error:
-            print(f"  {src.label}: {src.result.error}", file=sys.stderr)
+            print(
+                f"  {src.label}: {_mask_secret_text(src.result.error, home_path)}",
+                file=sys.stderr,
+            )
             hint = _remediation_hint(src.name, src.result.error_kind, cfg)
             if hint:
-                print(f"  {src.label}: → {hint}", file=sys.stderr)
+                print(
+                    f"  {src.label}: → {_mask_secret_text(hint, home_path)}",
+                    file=sys.stderr,
+                )
         for warn in src.result.warnings:
-            print(f"  {src.label}: {warn}", file=sys.stderr)
+            print(
+                f"  {src.label}: {_mask_secret_text(warn, home_path)}",
+                file=sys.stderr,
+            )
     for conflict in report.conflicts:
-        print(f"  Secret sources: {conflict}", file=sys.stderr)
+        print(
+            f"  Secret sources: {_mask_secret_text(conflict, home_path)}",
+            file=sys.stderr,
+        )
+
+
+def _mask_secret_text(text: str, home_path: str | os.PathLike) -> str:
+    """Mask known secret values out of status text before it reaches stderr.
+
+    Uses the exact values applied from external secret sources for THIS home
+    (``_SECRET_SOURCE_VALUES_BY_HOME[home_key]`` — the authoritative set for
+    what this status line is about) plus the generic credential-env scan in
+    ``agent.redact``.  Error, hint, warning, and conflict lines can carry a
+    secret *value* (a backend echoing it, a remediation hint quoting it);
+    names are already suppressed on the applied-count line.  Snapshot lookup
+    is scoped to ``home_path`` on purpose: snapshots are per-home (status
+    output for one profile must not depend on another profile's values).
+
+    Every non-empty value from the home's snapshot is masked — no minimum
+    length filter, because short external-source ``*_PASSWORD`` / ``*_TOKEN``
+    values (e.g. ``"ab"``) are exactly the ones a backend echo would leak.
+    Best-effort: never raises, never blocks startup.
+    """
+    if not text:
+        return text
+    from agent.redact import mask_known_secret_values
+
+    home_key = str(Path(home_path).resolve())
+    masked = text
+    for value in _SECRET_SOURCE_VALUES_BY_HOME.get(home_key, {}).values():
+        if value and value in masked:
+            masked = masked.replace(value, "***")
+    return mask_known_secret_values(masked)
 
 
 def _remediation_hint(source_name: str, error_kind, secrets_cfg: dict) -> str:

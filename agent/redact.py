@@ -1186,6 +1186,44 @@ def _has_http_method_substring(text: str) -> bool:
     return any(method in upper for method in _HTTP_METHOD_SUBSTRINGS)
 
 
+# Env-var name suffixes that mark a value as a credential.  The regex passes
+# above mask tokens by *shape* (vendor prefixes like ``sk-``); this suffix
+# list drives the exact-value pass below, which masks opaque values that
+# carry no recognizable prefix (e.g. ``MY_SERVICE_TOKEN=abc123randomstring``).
+_CREDENTIAL_VALUE_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY", "_PASSWORD")
+
+
+def _known_secret_values() -> set[str]:
+    """Return the exact values of credential-named env vars, when non-trivial.
+
+    Used by :func:`mask_known_secret_values` to strip a secret's literal
+    value out of text even when it has no recognizable vendor prefix.  Values
+    shorter than 6 chars are skipped — masking ``KEY=true`` or ``TOKEN=1``
+    would mangle ordinary prose while adding no real protection.
+    """
+    values: set[str] = set()
+    for name, value in os.environ.items():
+        if value and len(value) >= 6 and name.upper().endswith(_CREDENTIAL_VALUE_SUFFIXES):
+            values.add(value)
+    return values
+
+
+def mask_known_secret_values(text: str) -> str:
+    """Mask the exact values of known credential env vars wherever they appear.
+
+    Complements the shape-based regex passes: a secret value echoed into a
+    status line, warning, or error message is replaced with ``***`` even when
+    it doesn't match any vendor prefix.  Best-effort — if a value is not
+    currently known to the process it cannot be masked here (the regex passes
+    still catch prefix-shaped tokens).
+    """
+    if not text:
+        return text
+    for value in _known_secret_values():
+        text = text.replace(value, "***")
+    return text
+
+
 class RedactingFormatter(logging.Formatter):
     """Log formatter that redacts secrets from all log messages."""
 

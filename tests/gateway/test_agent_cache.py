@@ -10,6 +10,7 @@ Verifies that the agent cache correctly:
 """
 
 import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -971,6 +972,64 @@ class TestAgentCacheMessageCountRebaseline:
         assert self._guard_would_reuse(runner, "telegram:s1", "s1") is True
         with runner._agent_cache_lock:
             assert runner._agent_cache["telegram:s1"][0] is agent
+
+    @pytest.mark.asyncio
+    async def test_compression_rotation_advances_cached_agent_to_child(self, tmp_path):
+        """A cached agent that performed parent -> child compression stays warm."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("parent", source="telegram")
+        db.create_session("child", source="telegram", parent_session_id="parent")
+        runner = self._runner_with_db(db)
+        agent = SimpleNamespace(session_id="child")
+        session_key = "telegram:rotated"
+
+        with runner._agent_cache_lock:
+            runner._agent_cache[session_key] = (agent, "sig", 0, "parent")
+
+        db.append_message("child", role="user", content="u")
+        db.append_message("child", role="assistant", content="a")
+        await runner._refresh_agent_cache_message_count(
+            session_key,
+            "child",
+            previous_session_id="parent",
+            expected_agent=agent,
+        )
+
+        child_row = db.get_session("child")
+        with runner._agent_cache_lock:
+            cached = runner._agent_cache[session_key]
+        assert cached[0] is agent
+        assert cached[2] == child_row["message_count"]
+        assert cached[3] == "child"
+        assert self._guard_would_reuse(runner, session_key, "child") is True
+
+    @pytest.mark.asyncio
+    async def test_rotation_rebaseline_rejects_stale_parent_agent(self, tmp_path):
+        """A dead-parent/self-heal artifact must still reach the eviction guard."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("parent", source="telegram")
+        db.create_session("child", source="telegram", parent_session_id="parent")
+        runner = self._runner_with_db(db)
+        stale_agent = SimpleNamespace(session_id="parent")
+        session_key = "telegram:stale-parent"
+        original = (stale_agent, "sig", 0, "parent")
+
+        with runner._agent_cache_lock:
+            runner._agent_cache[session_key] = original
+
+        await runner._refresh_agent_cache_message_count(
+            session_key,
+            "child",
+            previous_session_id="parent",
+            expected_agent=stale_agent,
+        )
+
+        with runner._agent_cache_lock:
+            assert runner._agent_cache[session_key] == original
 
 
 class TestCrossProcessInvalidationDefersCleanup:

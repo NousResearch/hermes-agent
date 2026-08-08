@@ -683,16 +683,20 @@ def _get_session_db() -> Optional[Any]:
     return db
 
 
-def load_goal(session_id: str) -> Optional[GoalState]:
+def load_goal(session_id: str, *, raise_on_error: bool = False) -> Optional[GoalState]:
     """Load the goal for a session, or None if none exists."""
     if not session_id:
         return None
     db = _get_session_db()
     if db is None:
+        if raise_on_error:
+            raise RuntimeError("goal database is unavailable")
         return None
     try:
         raw = db.get_meta(_meta_key(session_id))
     except Exception as exc:
+        if raise_on_error:
+            raise
         logger.debug("GoalManager: get_meta failed: %s", exc)
         return None
     if not raw:
@@ -700,6 +704,8 @@ def load_goal(session_id: str) -> Optional[GoalState]:
     try:
         return GoalState.from_json(raw)
     except Exception as exc:
+        if raise_on_error:
+            raise
         logger.warning("GoalManager: could not parse stored goal for %s: %s", session_id, exc)
         return None
 
@@ -744,16 +750,26 @@ def migrate_goal_to_session(old_session_id: str, new_session_id: str, *, reason:
     if not old_session_id or not new_session_id or old_session_id == new_session_id:
         return False
     try:
-        state = load_goal(old_session_id)
+        db = _get_session_db()
+        if db is None:
+            return False
+        source_key = _meta_key(old_session_id)
+        destination_key = _meta_key(new_session_id)
+        source_raw = db.get_meta(source_key)
+        if not source_raw:
+            return False
+        state = GoalState.from_json(source_raw)
         if state is None or getattr(state, "status", None) == "cleared":
             return False
-        # Don't clobber a goal already set on the child (e.g. a resumed
-        # lineage that re-established its own goal).
-        if load_goal(new_session_id) is not None:
+        cleared_state = GoalState.from_json(source_raw)
+        cleared_state.status = "cleared"
+        if not db.move_meta_if_destination_absent(
+            source_key,
+            destination_key,
+            expected_source_value=source_raw,
+            source_replacement_value=cleared_state.to_json(),
+        ):
             return False
-        save_goal(new_session_id, state)
-        # Archive the parent's row so it isn't double-counted as active.
-        clear_goal(old_session_id)
         logger.debug(
             "GoalManager: migrated goal %s -> %s (%s)",
             old_session_id, new_session_id, reason or "rotation",

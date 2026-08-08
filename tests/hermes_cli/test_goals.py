@@ -271,6 +271,59 @@ class TestMigrateGoalToSession:
         assert migrate_goal_to_session("p3", "c3") is False
         assert load_goal("c3").goal == "child already has one"
 
+    @pytest.mark.parametrize("child_status", ["paused", "cleared"])
+    def test_does_not_resurrect_terminal_child_goal(self, hermes_home, child_status):
+        from hermes_cli.goals import save_goal, load_goal, migrate_goal_to_session, GoalState
+
+        save_goal("race-parent", GoalState(goal="stale parent goal"))
+        save_goal(
+            "race-child",
+            GoalState(goal="child control won", status=child_status),
+        )
+
+        assert migrate_goal_to_session("race-parent", "race-child") is False
+        assert load_goal("race-child").status == child_status
+        assert load_goal("race-parent").status == "active"
+
+    def test_rolls_back_child_copy_when_parent_archive_fails(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import save_goal, load_goal, migrate_goal_to_session, GoalState
+
+        save_goal("rollback-parent", GoalState(goal="must survive"))
+        db = goals._get_session_db()
+
+        def install_failure_trigger(conn):
+            conn.execute(
+                """
+                CREATE TRIGGER fail_goal_parent_archive
+                BEFORE UPDATE ON state_meta
+                WHEN OLD.key = 'goal:rollback-parent'
+                BEGIN
+                    SELECT RAISE(ABORT, 'forced parent archive failure');
+                END
+                """
+            )
+
+        db._execute_write(install_failure_trigger)
+
+        assert migrate_goal_to_session("rollback-parent", "rollback-child") is False
+        assert load_goal("rollback-child") is None
+        assert load_goal("rollback-parent").status == "active"
+
+
+def test_load_goal_can_surface_database_read_failures(monkeypatch):
+    from hermes_cli import goals
+
+    class BrokenGoalDB:
+        def get_meta(self, key):
+            raise RuntimeError(f"database locked while reading {key}")
+
+    monkeypatch.setattr(goals, "_get_session_db", lambda: BrokenGoalDB())
+
+    assert goals.load_goal("read-failure") is None
+    with pytest.raises(RuntimeError, match="database locked"):
+        goals.load_goal("read-failure", raise_on_error=True)
+
 
 class TestGoalManagerSubgoals:
     def test_add_subgoal(self, hermes_home):

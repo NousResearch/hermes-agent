@@ -9521,6 +9521,59 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
         self._execute_write(_do)
 
+    def move_meta_if_destination_absent(
+        self,
+        source_key: str,
+        destination_key: str,
+        *,
+        expected_source_value: str,
+        source_replacement_value: str,
+    ) -> bool:
+        """Atomically copy one meta value and replace its source value.
+
+        The move succeeds only when the source still matches the caller's
+        snapshot and the destination is still absent. ``BEGIN IMMEDIATE``
+        serializes the check and both writes, preventing a concurrent control
+        action from being overwritten between the destination check and copy.
+        Any write failure rolls the whole transaction back.
+        """
+        if not source_key or not destination_key or source_key == destination_key:
+            return False
+
+        def _do(conn):
+            source_row = conn.execute(
+                "SELECT value FROM state_meta WHERE key = ?",
+                (source_key,),
+            ).fetchone()
+            if source_row is None:
+                return False
+            source_value = (
+                source_row["value"]
+                if isinstance(source_row, sqlite3.Row)
+                else source_row[0]
+            )
+            if source_value != expected_source_value:
+                return False
+            if conn.execute(
+                "SELECT 1 FROM state_meta WHERE key = ?",
+                (destination_key,),
+            ).fetchone() is not None:
+                return False
+
+            conn.execute(
+                "INSERT INTO state_meta (key, value) VALUES (?, ?)",
+                (destination_key, expected_source_value),
+            )
+            updated = conn.execute(
+                "UPDATE state_meta SET value = ? WHERE key = ? AND value = ?",
+                (source_replacement_value, source_key, expected_source_value),
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError("meta source changed during atomic move")
+            return True
+
+        return self._execute_write(_do)
+
     def retag_kanban_worker_sessions(self, workspaces_root: str) -> int:
         """Retag legacy kanban worker rows from ``cli`` to ``kanban``.
 

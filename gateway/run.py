@@ -7914,16 +7914,83 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _q_state.conversation.queued_events = kept
         return removed
 
-    def _goal_still_active_for_session(self, session_id: str) -> bool:
-        """Best-effort fresh DB check before running a queued continuation."""
+    def _goal_still_active_for_session(
+        self,
+        session_id: str,
+        *,
+        previous_session_id: Optional[str] = None,
+    ) -> Optional[bool]:
+        """Return active/inactive, or ``None`` when goal state is unreadable.
+
+        Compression migrates active goals to the continuation session. If that
+        migration did not complete, retry its atomic move here before deciding
+        whether an already-queued continuation is stale. Never run the
+        continuation against the closed parent session.
+        """
         if not session_id:
             return False
         try:
-            from hermes_cli.goals import GoalManager
-            return GoalManager(session_id=session_id).is_active()
+            from hermes_cli.goals import load_goal, migrate_goal_to_session
+
+            state = load_goal(session_id, raise_on_error=True)
+            if state is not None:
+                return state.status == "active"
+            if previous_session_id and previous_session_id != session_id:
+                previous_state = load_goal(
+                    previous_session_id,
+                    raise_on_error=True,
+                )
+                if previous_state is not None and previous_state.status == "active":
+                    migrate_goal_to_session(
+                        previous_session_id,
+                        session_id,
+                        reason="queued-followup",
+                    )
+                    state = load_goal(session_id, raise_on_error=True)
+                    if state is not None:
+                        return state.status == "active"
+                    previous_state = load_goal(
+                        previous_session_id,
+                        raise_on_error=True,
+                    )
+                    if previous_state is not None and previous_state.status == "active":
+                        return None
+            return False
         except Exception as exc:
             logger.debug("goal continuation: active-state recheck failed: %s", exc)
-            return False
+            return None
+
+    def _defer_goal_continuation_recheck(
+        self,
+        session_key: str,
+        adapter: Any,
+        pending_event: "MessageEvent",
+    ) -> None:
+        """Preserve a queued goal while its DB state cannot be read safely."""
+        metadata = pending_event.metadata
+        if not isinstance(metadata, dict):
+            metadata = {}
+            pending_event.metadata = metadata
+        retry_count = int(metadata.get("_goal_state_rechecks", 0))
+        if retry_count < 1:
+            metadata["_goal_state_rechecks"] = retry_count + 1
+            self._enqueue_fifo(session_key, pending_event, adapter)
+            logger.warning(
+                "Deferring goal continuation for session %s — goal state is temporarily unavailable",
+                session_key or "?",
+            )
+            return
+
+        # A persistent DB failure must not create a hot drain loop. Keep the
+        # event in the runner FIFO so the next real session activity retries it.
+        self._session_state(session_key).conversation.queued_events.insert(
+            0,
+            pending_event,
+        )
+        logger.warning(
+            "Parking goal continuation for session %s until goal state is readable",
+            session_key or "?",
+        )
 
     def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
         try:
@@ -18545,7 +18612,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # here makes the guard fire only on a DIFFERENT process's writes.
             # Fail-safe inside the helper.
             await self._refresh_agent_cache_message_count(
-                session_key, session_entry.session_id
+                session_key,
+                session_entry.session_id,
+                previous_session_id=_run_start_session_id,
             )
 
             # Intentional silence is a delivery decision, not a transcript
@@ -23603,7 +23672,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._evict_cached_agent(session_key)
 
     async def _refresh_agent_cache_message_count(
-        self, session_key: str, session_id: Optional[str]
+        self,
+        session_key: str,
+        session_id: Optional[str],
+        *,
+        previous_session_id: Optional[str] = None,
+        expected_agent: Any = None,
     ) -> None:
         """Re-baseline a cached agent's stored message_count after THIS turn.
 
@@ -23633,7 +23707,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         — the snapshot is intentionally left untouched.  Overwriting it with
         the current session's count would corrupt the original conversation's
         baseline and cause the next switch back to fire the cross-process
-        guard spuriously.  Fail-safe: the legacy 3-tuple shape (no
+        guard spuriously. A completed turn may legitimately rotate its own
+        cached agent from ``previous_session_id`` to ``session_id`` during
+        compression. In that case, advance the tuple only when the cached
+        agent itself now reports the child id (and, when supplied, is the exact
+        ``expected_agent``). This preserves warm-prefix reuse without weakening
+        stale/dead-session eviction. Fail-safe: the legacy 3-tuple shape (no
         ``session_id``) is still re-baselined as before.
         """
         if self._session_db is None or not session_id:
@@ -23659,22 +23738,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 and len(cached) > 2
                 and cached[0] is not _AGENT_PENDING_SENTINEL
             ):
+                if expected_agent is not None and cached[0] is not expected_agent:
+                    return
                 # If the snapshot was taken for a different session_id
                 # (same session_key, different conversation), leave the
                 # snapshot alone — the current session_id's count belongs
                 # to a different DB row (#54947).
                 _snapshot_sid = cached[3] if len(cached) > 3 else None
-                if _snapshot_sid is not None and _snapshot_sid != session_id:
+                _legitimate_rotation = (
+                    _snapshot_sid is not None
+                    and previous_session_id is not None
+                    and previous_session_id != session_id
+                    and _snapshot_sid == previous_session_id
+                    and getattr(cached[0], "session_id", None) == session_id
+                )
+                if (
+                    _snapshot_sid is not None
+                    and _snapshot_sid != session_id
+                    and not _legitimate_rotation
+                ):
                     return
-                if cached[2] != _live:
-                    if _snapshot_sid is None:
+                if cached[2] != _live or _legitimate_rotation:
+                    if _snapshot_sid is None and not _legitimate_rotation:
                         # Legacy 3-tuple: preserve the original 3-element
                         # shape so existing entries stay compatible with
                         # callers that index ``cached[2]`` directly.
                         _cache[session_key] = (cached[0], cached[1], _live)
                     else:
                         _cache[session_key] = (
-                            cached[0], cached[1], _live, _snapshot_sid,
+                            cached[0],
+                            cached[1],
+                            _live,
+                            session_id if _legitimate_rotation else _snapshot_sid,
                         )
 
     def _set_pending_turn_sidecar_notes(self, session_key: str, notes: List[str]) -> None:
@@ -26323,6 +26418,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # new message).
 
                 updated_history = result.get("messages", history)
+                # Compression may rotate the session while the first turn runs.
+                # Every queued follow-up operation must target that live child,
+                # not the now-closed parent supplied to the outer call.
+                followup_session_id = result.get("session_id") or session_id
                 next_source = source
                 next_message = pending
                 next_message_id = None
@@ -26334,12 +26433,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 next_message_type = None
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
-                    if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
-                        logger.info(
-                            "Discarding stale goal continuation for session %s — goal is no longer active",
-                            session_key or "?",
+                    if self._is_goal_continuation_event(pending_event):
+                        goal_active = self._goal_still_active_for_session(
+                            followup_session_id,
+                            previous_session_id=session_id,
                         )
-                        return result
+                        if goal_active is None:
+                            self._defer_goal_continuation_recheck(
+                                session_key,
+                                adapter,
+                                pending_event,
+                            )
+                            return result
+                        if not goal_active:
+                            logger.info(
+                                "Discarding stale goal continuation for session %s — goal is no longer active",
+                                session_key or "?",
+                            )
+                            return result
                     # Resolve the follow-up's session key BEFORE preparing the
                     # inbound text: _prepare_inbound_message_text buffers native
                     # image paths under the key it is given, and the recursive
@@ -26402,17 +26513,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # prefix #46237 was merged to preserve.  The existing
                 # re-baseline in _handle_message_with_agent only runs after the
                 # whole _run_agent chain unwinds — too late for the in-band
-                # follow-up.  Use the same (session_key, session_id) the
-                # recursive call runs under so the snapshot matches exactly
-                # what the follow-up's guard will consult.  Fail-safe in helper.
-                await self._refresh_agent_cache_message_count(session_key, session_id)
+                # follow-up.  Re-baseline the completed turn's cache entry
+                # against the live session returned by that turn.  If the
+                # pending event resolves to a different session key, the
+                # recursive call handles that key separately.  Fail-safe in
+                # helper.
+                await self._refresh_agent_cache_message_count(
+                    session_key,
+                    followup_session_id,
+                    previous_session_id=session_id,
+                    expected_agent=agent_holder[0],
+                )
 
                 followup_result = await self._run_agent(
                     message=next_message,
                     context_prompt=context_prompt,
                     history=updated_history,
                     source=next_source,
-                    session_id=session_id,
+                    session_id=followup_session_id,
                     session_key=next_session_key,
                     run_generation=run_generation,
                     _interrupt_depth=_interrupt_depth + 1,

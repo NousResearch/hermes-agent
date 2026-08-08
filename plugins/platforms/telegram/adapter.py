@@ -24,6 +24,8 @@ from typing import Dict, List, Optional, Set, Any
 
 logger = logging.getLogger(__name__)
 
+_THREAD_ID_UNSET = object()
+
 
 def _redact_telegram_error_text(error: object) -> str:
     """Redact secrets from Telegram transport errors before logging or returning them."""
@@ -234,7 +236,13 @@ async def _shutdown_abandoned_app(app) -> None:
             logger.debug("Abandoned Telegram request shutdown failed", exc_info=True)
 
 try:
-    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram import (
+        Update,
+        Bot,
+        Message,
+        InlineKeyboardButton,
+        InlineKeyboardMarkup,
+    )
     try:
         from telegram import LinkPreviewOptions
     except ImportError:
@@ -247,6 +255,10 @@ try:
         ContextTypes,
         filters,
     )
+    try:
+        from telegram.ext import MessageReactionHandler
+    except ImportError:
+        MessageReactionHandler = None
     from telegram.constants import ParseMode, ChatType
     from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
@@ -262,6 +274,7 @@ except ImportError:
     CommandHandler = Any
     CallbackQueryHandler = Any
     TelegramMessageHandler = Any
+    MessageReactionHandler = Any
     HTTPXRequest = Any
     filters = None
     ParseMode = None
@@ -414,6 +427,7 @@ def check_telegram_requirements() -> bool:
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
+    global MessageReactionHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
         return True
@@ -423,7 +437,11 @@ def check_telegram_requirements() -> bool:
     except Exception:
         return False
     try:
-        from telegram import Update as _Update, Bot as _Bot, Message as _Message
+        from telegram import (
+            Update as _Update,
+            Bot as _Bot,
+            Message as _Message,
+        )
         from telegram import InlineKeyboardButton as _IKB, InlineKeyboardMarkup as _IKM
         try:
             from telegram import LinkPreviewOptions as _LPO
@@ -435,6 +453,10 @@ def check_telegram_requirements() -> bool:
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
         )
+        try:
+            from telegram.ext import MessageReactionHandler as _MRH
+        except ImportError:
+            _MRH = None
         from telegram.constants import ParseMode as _PM, ChatType as _CtT
         from telegram.request import HTTPXRequest as _HR
     except ImportError:
@@ -449,6 +471,7 @@ def check_telegram_requirements() -> bool:
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
     TelegramMessageHandler = _MH
+    MessageReactionHandler = _MRH
     ContextTypes = _CT
     filters = _filters
     ParseMode = _PM
@@ -682,6 +705,7 @@ class TelegramAdapter(BasePlatformAdapter):
     _TEXT_BATCH_FAST_DELAY_S = 0.18
     _TEXT_BATCH_SHORT_LEN = 1024
     _TEXT_BATCH_SHORT_DELAY_S = 0.24
+    _REACTION_UPDATE_DEDUP_LIMIT = 512
 
     @staticmethod
     def _env_float_clamped(
@@ -789,6 +813,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_conflict_recovery_generation: Optional[int] = None
         self._polling_network_error_count: int = 0
         self._polling_generation: int = 0
+        # Bot API update ids are monotonic for a bot token. Keep a bounded set
+        # for reaction events so reconnect/replay cannot start duplicate turns.
+        self._seen_reaction_update_ids: Dict[int, None] = {}
         self._polling_progress_event = asyncio.Event()
         self._polling_progress_accepting: bool = False
         self._polling_progress_verifier_task: Optional[asyncio.Task] = None
@@ -923,6 +950,162 @@ class TelegramAdapter(BasePlatformAdapter):
         torn-down session, producing stale/duplicate deliveries.
         """
         return bool(getattr(self, "_drop_delayed_deliveries", False))
+
+    def _register_application_handlers(self, app: Application) -> None:
+        """Register the complete Telegram handler set on an application.
+
+        ``connect()`` rebuilds the PTB application after an initialization
+        failure, so keeping this in one helper prevents a rebuilt poller from
+        silently losing reaction updates (or any of the normal message
+        handlers).
+        """
+        app.add_handler(TelegramMessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            self._handle_text_message,
+        ))
+        app.add_handler(TelegramMessageHandler(
+            filters.COMMAND,
+            self._handle_command,
+        ))
+        app.add_handler(TelegramMessageHandler(
+            filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
+            self._handle_location_message,
+        ))
+        app.add_handler(TelegramMessageHandler(
+            filters.PHOTO
+            | filters.VIDEO
+            | filters.AUDIO
+            | filters.VOICE
+            | filters.Document.ALL
+            | filters.Sticker.ALL,
+            self._handle_media_message,
+        ))
+        app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+        inbound_reactions = self._coerce_bool_extra("inbound_reactions", False)
+        if inbound_reactions and MessageReactionHandler is None:
+            logger.warning(
+                "[Telegram] inbound_reactions requires python-telegram-bot with "
+                "MessageReactionHandler support"
+            )
+        elif inbound_reactions:
+            app.add_handler(MessageReactionHandler(
+                self._handle_message_reaction,
+                message_reaction_types=MessageReactionHandler.MESSAGE_REACTION_UPDATED,
+            ))
+
+    def _record_sent_message(
+        self,
+        chat_id: Any,
+        message_id: Any,
+        text: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        *,
+        effective_thread_id: Any = _THREAD_ID_UNSET,
+    ) -> None:
+        """Best-effort index of every successful Telegram message delivery."""
+        # The legacy send path did not populate this store before inbound
+        # reactions. Keep the default path free of extra disk writes; rich
+        # messages still need the index for reply-text recovery.
+        if getattr(self, "config", None) is not None:
+            if not self._coerce_bool_extra("inbound_reactions", False) and not bool(
+                getattr(self, "_rich_messages_enabled", False)
+            ):
+                return
+        if chat_id is None or message_id is None:
+            return
+        try:
+            from gateway import rich_sent_store
+            from gateway.session_context import get_session_env
+
+            metadata = metadata or {}
+            if effective_thread_id is _THREAD_ID_UNSET:
+                thread_id = self._metadata_thread_id(metadata)
+                if thread_id is None:
+                    thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
+            else:
+                thread_id = (
+                    str(effective_thread_id)
+                    if effective_thread_id is not None
+                    else None
+                )
+                if (
+                    thread_id is None
+                    and self._metadata_thread_id(metadata)
+                    == self._GENERAL_TOPIC_THREAD_ID
+                ):
+                    # Telegram cannot express a forum's General topic on the
+                    # wire: sends must omit message_thread_id ("1" is rejected)
+                    # and the response omits it too, so send paths resolve an
+                    # explicit None here even though the message landed exactly
+                    # in the requested topic. Restore the logical General
+                    # identity — the forum reaction guard fails closed on
+                    # entries without a thread_id. A deliberate fallback-to-root
+                    # after a stale topic is unaffected: its metadata names the
+                    # dead (non-General) topic id, so it still records no thread.
+                    thread_id = self._GENERAL_TOPIC_THREAD_ID
+            rich_sent_store.record(
+                str(chat_id),
+                str(message_id),
+                text,
+                thread_id=thread_id,
+                sender_id=getattr(getattr(self, "_bot", None), "id", None),
+            )
+        except Exception:
+            # The index is supplemental; it must never turn a successful send
+            # into a failed delivery.
+            pass
+
+    def _record_sent_result(
+        self,
+        chat_id: Any,
+        result: Any,
+        text: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        *,
+        effective_thread_id: Any = _THREAD_ID_UNSET,
+    ) -> None:
+        """Index a PTB message or message collection returned by a send."""
+        results = result if isinstance(result, (list, tuple)) else (result,)
+        for message in results:
+            message_id = getattr(message, "message_id", None)
+            actual_thread_id = _THREAD_ID_UNSET
+            if isinstance(message, dict):
+                message_id = message.get("message_id", message_id)
+                chat = message.get("chat")
+                is_topic_message = bool(message.get("is_topic_message"))
+                is_forum = bool(chat.get("is_forum")) if isinstance(chat, dict) else False
+                if is_topic_message or is_forum:
+                    actual_thread_id = message.get("message_thread_id", _THREAD_ID_UNSET)
+            else:
+                chat = getattr(message, "chat", None)
+                if bool(getattr(message, "is_topic_message", False)) or bool(
+                    getattr(chat, "is_forum", False)
+                ):
+                    actual_thread_id = getattr(
+                        message,
+                        "message_thread_id",
+                        _THREAD_ID_UNSET,
+                    )
+            message_text = (
+                getattr(message, "text", None)
+                or getattr(message, "caption", None)
+                or text
+                or ""
+            )
+            # Telegram may omit ``message_thread_id`` on replies sent to a
+            # forum's General topic even when the request explicitly targeted
+            # that topic. Preserve the requested effective topic in that case;
+            # otherwise the sent index loses topic identity and an incoming
+            # reaction cannot be routed safely.
+            if actual_thread_id is _THREAD_ID_UNSET or actual_thread_id is None:
+                actual_thread_id = effective_thread_id
+            self._record_sent_message(
+                chat_id,
+                message_id,
+                message_text,
+                metadata,
+                effective_thread_id=actual_thread_id,
+            )
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -1418,7 +1601,17 @@ class TelegramAdapter(BasePlatformAdapter):
     ) -> Any:
         """Retry stale private-topic media replies once without the topic anchor."""
         try:
-            return await send_fn(**send_kwargs)
+            result = await send_fn(**send_kwargs)
+            self._record_sent_result(
+                send_kwargs.get("chat_id"),
+                result,
+                send_kwargs.get("text") or send_kwargs.get("caption"),
+                metadata,
+                effective_thread_id=send_kwargs.get(
+                    "message_thread_id", _THREAD_ID_UNSET
+                ),
+            )
+            return result
         except Exception as send_err:
             if not self._should_retry_without_dm_topic_reply_anchor(
                 send_err,
@@ -1439,7 +1632,15 @@ class TelegramAdapter(BasePlatformAdapter):
             retry_kwargs["reply_to_message_id"] = None
             retry_kwargs.pop("message_thread_id", None)
             retry_kwargs.pop("direct_messages_topic_id", None)
-            return await send_fn(**retry_kwargs)
+            result = await send_fn(**retry_kwargs)
+            self._record_sent_result(
+                retry_kwargs.get("chat_id"),
+                result,
+                retry_kwargs.get("text") or retry_kwargs.get("caption"),
+                {},
+                effective_thread_id=None,
+            )
+            return result
 
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
@@ -1952,11 +2153,20 @@ class TelegramAdapter(BasePlatformAdapter):
         if message_id is not None:
             # Telegram won't echo rich content in reply_to_message, so remember
             # what we sent — replies to this message resolve via this index.
-            try:
-                from gateway import rich_sent_store
-                rich_sent_store.record(str(chat_id), str(message_id), content)
-            except Exception:
-                pass
+            actual_thread_id = _THREAD_ID_UNSET
+            if isinstance(msg, dict):
+                actual_thread_id = msg.get("message_thread_id", _THREAD_ID_UNSET)
+            elif hasattr(msg, "message_thread_id"):
+                actual_thread_id = getattr(msg, "message_thread_id")
+            if actual_thread_id is _THREAD_ID_UNSET or actual_thread_id is None:
+                actual_thread_id = thread_kwargs.get("message_thread_id")
+            self._record_sent_message(
+                chat_id,
+                message_id,
+                content,
+                metadata,
+                effective_thread_id=actual_thread_id,
+            )
         return SendResult(
             success=True,
             message_id=str(message_id) if message_id is not None else None,
@@ -2011,6 +2221,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 # rich message; treat as a successful no-op so the caller does
                 # not fall through to a redundant legacy edit.
                 if "not modified" in str(exc).lower():
+                    self._record_sent_message(chat_id, message_id, content, metadata)
                     return SendResult(success=True, message_id=message_id)
                 logger.debug(
                     "[%s] rich editMessageText rejected (%s) — falling back to MarkdownV2 edit",
@@ -2018,6 +2229,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 return None
             if "not modified" in str(exc).lower():
+                self._record_sent_message(chat_id, message_id, content, metadata)
                 return SendResult(success=True, message_id=message_id)
             err_str = str(exc).lower()
             try:
@@ -2040,11 +2252,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # first rich send, so mirror the fresh-send index here too: a streamed
         # final finalized via editMessageText is otherwise never recorded, and
         # replies to it would have no native echo to recover from.
-        try:
-            from gateway import rich_sent_store
-            rich_sent_store.record(str(chat_id), str(message_id), content)
-        except Exception:
-            pass
+        self._record_sent_message(chat_id, message_id, content, metadata)
         return SendResult(success=True, message_id=message_id)
 
     def _should_attempt_rich_draft(self, content: str) -> bool:
@@ -3552,10 +3760,16 @@ class TelegramAdapter(BasePlatformAdapter):
                     # Send a seed message so the topic is visible in Telegram's client.
                     # Empty topics are hidden by the client UI until they contain a message.
                     try:
-                        await self._bot.send_message(
+                        seed_message = await self._bot.send_message(
                             chat_id=normalize_telegram_chat_id(chat_id),
                             message_thread_id=thread_id,
                             text=f"\U0001f4cc {topic_name}",
+                        )
+                        self._record_sent_result(
+                            chat_id,
+                            seed_message,
+                            f"\U0001f4cc {topic_name}",
+                            {"thread_id": str(thread_id)},
                         )
                     except Exception as seed_err:
                         logger.debug(
@@ -3889,24 +4103,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self._bot = self._app.bot
             
             # Register handlers
-            self._app.add_handler(TelegramMessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                self._handle_text_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.COMMAND,
-                self._handle_command
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
-                self._handle_location_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
-                self._handle_media_message
-            ))
-            # Handle inline keyboard button callbacks (update prompts)
-            self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            self._register_application_handlers(self._app)
             
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable
@@ -4021,23 +4218,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         self._app = builder.build()
                         self._bot = self._app.bot
                         # Re-register handlers on the new app
-                        self._app.add_handler(TelegramMessageHandler(
-                            filters.TEXT & ~filters.COMMAND,
-                            self._handle_text_message
-                        ))
-                        self._app.add_handler(TelegramMessageHandler(
-                            filters.COMMAND,
-                            self._handle_command
-                        ))
-                        self._app.add_handler(TelegramMessageHandler(
-                            filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
-                            self._handle_location_message
-                        ))
-                        self._app.add_handler(TelegramMessageHandler(
-                            filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
-                            self._handle_media_message
-                        ))
-                        self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+                        self._register_application_handlers(self._app)
                         # Best-effort discard the old app's resources
                         try:
                             await _shutdown_abandoned_app(old_app)
@@ -4793,6 +4974,16 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                         raise
                 message_ids.append(str(msg.message_id))
+                actual_thread_id = getattr(msg, "message_thread_id", _THREAD_ID_UNSET)
+                if actual_thread_id is _THREAD_ID_UNSET or actual_thread_id is None:
+                    actual_thread_id = effective_thread_id
+                self._record_sent_message(
+                    chat_id,
+                    msg.message_id,
+                    chunk,
+                    metadata,
+                    effective_thread_id=actual_thread_id,
+                )
 
             # Re-trigger typing indicator after sending a message.
             # Telegram clears the typing state when a new message is delivered,
@@ -4965,6 +5156,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = content
+                self._record_sent_message(chat_id, message_id, content, metadata)
                 return SendResult(success=True, message_id=message_id)
 
             formatted = self.format_message(content)
@@ -4978,6 +5170,7 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as fmt_err:
                 # "Message is not modified" is a no-op, not an error
                 if "not modified" in str(fmt_err).lower():
+                    self._record_sent_message(chat_id, message_id, content, metadata)
                     return SendResult(success=True, message_id=message_id)
                 # Fallback: strip MarkdownV2 escapes and retry as clean plain text
                 safe_format_error = _redact_telegram_error_text(fmt_err)
@@ -4992,11 +5185,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     message_id=int(message_id),
                     text=_plain,
                 )
+            self._record_sent_message(chat_id, message_id, content, metadata)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()
             # "Message is not modified" — content identical, treat as success
             if "not modified" in err_str:
+                self._record_sent_message(chat_id, message_id, content, metadata)
                 return SendResult(success=True, message_id=message_id)
             # Reactive split-and-deliver: parse_mode formatting can inflate
             # the payload past the limit even when the raw text was under
@@ -5021,6 +5216,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     text=truncated,
                 )
                 self._last_overflow_preview[_preview_key] = truncated
+                self._record_sent_message(chat_id, message_id, truncated, metadata)
                 return SendResult(success=True, message_id=message_id)
             # Flood control / RetryAfter — short waits are retried inline,
             # long waits return a failure immediately so streaming can fall back
@@ -5045,6 +5241,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         message_id=int(message_id),
                         text=content,
                     )
+                    self._record_sent_message(chat_id, message_id, content, metadata)
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:
                     safe_retry_error = _redact_telegram_error_text(retry_err)
@@ -5183,6 +5380,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 return SendResult(success=False, error=_redact_telegram_error_text(e))
 
+        self._record_sent_message(chat_id, message_id, first_chunk, metadata)
+
         # Step 2 — send each remaining chunk as a continuation message,
         # threaded as a reply to the previous so the user sees them as a
         # contiguous block.  We call self._bot.send_message directly so the
@@ -5292,6 +5491,16 @@ class TelegramAdapter(BasePlatformAdapter):
                     continuation_message_ids=tuple(continuation_ids),
                 )
             new_id = str(getattr(sent_msg, "message_id", "")) or prev_id
+            actual_thread_id = getattr(sent_msg, "message_thread_id", _THREAD_ID_UNSET)
+            if actual_thread_id is _THREAD_ID_UNSET or actual_thread_id is None:
+                actual_thread_id = thread_kwargs.get("message_thread_id")
+            self._record_sent_message(
+                chat_id,
+                new_id,
+                chunk,
+                metadata,
+                effective_thread_id=actual_thread_id,
+            )
             continuation_ids.append(new_id)
             delivered_chunks.append(chunk)
             prev_id = new_id
@@ -5455,7 +5664,15 @@ class TelegramAdapter(BasePlatformAdapter):
 
         message_thread_id = kwargs.get("message_thread_id")
         try:
-            return await self._bot.send_message(**kwargs)
+            result = await self._bot.send_message(**kwargs)
+            self._record_sent_result(
+                kwargs.get("chat_id"),
+                result,
+                kwargs.get("text") or kwargs.get("caption"),
+                {"thread_id": message_thread_id},
+                effective_thread_id=message_thread_id,
+            )
+            return result
         except Exception as send_err:
             if (
                 message_thread_id is not None
@@ -5476,7 +5693,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 retry_kwargs = dict(kwargs)
                 retry_kwargs.pop("message_thread_id", None)
-                return await self._bot.send_message(**retry_kwargs)
+                result = await self._bot.send_message(**retry_kwargs)
+                self._record_sent_result(
+                    retry_kwargs.get("chat_id"),
+                    result,
+                    retry_kwargs.get("text") or retry_kwargs.get("caption"),
+                    {},
+                    effective_thread_id=None,
+                )
+                return result
             raise
 
     async def send_update_prompt(
@@ -9889,6 +10114,280 @@ class TelegramAdapter(BasePlatformAdapter):
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
             timestamp=message.date,
+        )
+
+    @staticmethod
+    def _reaction_emojis(values: Any) -> List[str]:
+        """Return standard emoji values from a Telegram reaction sequence."""
+        emojis: List[str] = []
+        for value in values or ():
+            emoji = value if isinstance(value, str) else getattr(value, "emoji", None)
+            if emoji is None:
+                # Custom-emoji reactions have no standard emoji to pass through
+                # to the model-side note; they are intentionally ignored here.
+                continue
+            emoji = str(emoji)
+            if emoji and emoji not in emojis:
+                emojis.append(emoji)
+        return emojis
+
+    @classmethod
+    def _reaction_delta(cls, old_reaction: Any, new_reaction: Any) -> tuple[List[str], List[str]]:
+        """Return ``(added, removed)`` standard emoji values."""
+        old = cls._reaction_emojis(old_reaction)
+        new = cls._reaction_emojis(new_reaction)
+        return (
+            [emoji for emoji in new if emoji not in old],
+            [emoji for emoji in old if emoji not in new],
+        )
+
+    @staticmethod
+    def _reaction_chat_type(chat: Any) -> str:
+        """Use the same chat-type vocabulary as normal Telegram messages."""
+        raw = getattr(chat, "type", "group") or "group"
+        raw = getattr(raw, "value", raw)
+        raw = str(raw).split(".")[-1].lower()
+        if raw in {"private", "dm"}:
+            return "dm"
+        if raw == "channel":
+            return "channel"
+        if raw in {"supergroup", "group", "forum", "thread"}:
+            return "group"
+        return raw
+
+    @staticmethod
+    def _reaction_note(
+        added: List[str],
+        removed: List[str],
+        target_text: Optional[str],
+    ) -> str:
+        changes: List[str] = []
+        if added:
+            changes.append("added " + " ".join(added))
+        if removed:
+            changes.append("removed " + " ".join(removed))
+        note = "[Telegram reaction: " + "; ".join(changes)
+        compact_text = " ".join(str(target_text or "").split())[:240]
+        if compact_text:
+            quoted = compact_text.replace("\\", "\\\\").replace('"', '\\"')
+            note += f'; on Hermes message "{quoted}"'
+        return note + "]"
+
+    def _claim_reaction_update(self, update_id: Any) -> bool:
+        """Return False for an already-seen reaction update id."""
+        if update_id is None:
+            return True
+        try:
+            key = int(update_id)
+        except (TypeError, ValueError):
+            return True
+        seen = getattr(self, "_seen_reaction_update_ids", None)
+        if not isinstance(seen, dict):
+            seen = {}
+            self._seen_reaction_update_ids = seen
+        if key in seen:
+            return False
+        seen[key] = None
+        while len(seen) > self._REACTION_UPDATE_DEDUP_LIMIT:
+            seen.pop(next(iter(seen)))
+        return True
+
+    async def _handle_message_reaction(self, update: Any, context: Any = None) -> None:
+        """Route an authorized reaction through the normal message pipeline.
+
+        Telegram omits topic identity from reaction updates. The bounded sent
+        index therefore remains the ownership and topic-routing authority. Once
+        verified, the reaction becomes a normal actor-scoped MessageEvent so it
+        is perceived immediately and serialized with ordinary turns.
+        """
+        reaction = getattr(update, "message_reaction", None)
+        chat = getattr(reaction, "chat", None) if reaction is not None else None
+        user = getattr(reaction, "user", None) if reaction is not None else None
+        message_id = getattr(reaction, "message_id", None) if reaction is not None else None
+        if chat is None or message_id is None or user is None or bool(getattr(user, "is_bot", False)):
+            return
+
+        actor_id = str(getattr(user, "id", "") or "").strip()
+        if not actor_id:
+            return
+        chat_id = str(getattr(chat, "id", "") or "").strip()
+        if not chat_id:
+            return
+
+        try:
+            from gateway import rich_sent_store
+
+            entry = rich_sent_store.lookup_entry(
+                chat_id, str(message_id), all_profiles=True,
+            )
+        except Exception:
+            return
+        if not isinstance(entry, dict):
+            return
+
+        added, removed = self._reaction_delta(
+            getattr(reaction, "old_reaction", None),
+            getattr(reaction, "new_reaction", None),
+        )
+        if not added and not removed:
+            return
+
+        runner = getattr(self, "gateway_runner", None)
+        if runner is None:
+            try:
+                from gateway.run import _gateway_runner_ref
+
+                runner = _gateway_runner_ref()
+            except Exception:
+                runner = None
+        if runner is None:
+            return
+
+        entry_sender_id = str(entry.get("sender_id") or "").strip()
+        current_sender_id = str(
+            getattr(getattr(self, "_bot", None), "id", None) or ""
+        ).strip()
+        if entry_sender_id and entry_sender_id != current_sender_id:
+            return
+        if not entry_sender_id:
+            # Legacy entries have no transport-owner stamp. They remain valid
+            # for a single Telegram adapter, but fail closed when several bots
+            # are registered because ownership would otherwise be ambiguous.
+            registered = []
+            primary = (getattr(runner, "adapters", None) or {}).get(Platform.TELEGRAM)
+            if primary is not None:
+                registered.append(primary)
+            for profile_adapters in (
+                getattr(runner, "_profile_adapters", None) or {}
+            ).values():
+                candidate = (profile_adapters or {}).get(Platform.TELEGRAM)
+                if candidate is not None and all(candidate is not item for item in registered):
+                    registered.append(candidate)
+            if len(registered) > 1:
+                return
+
+        raw_thread_id = entry.get("thread_id")
+        thread_id = (
+            str(raw_thread_id).strip()
+            if raw_thread_id is not None and str(raw_thread_id).strip()
+            else None
+        )
+        is_forum = bool(getattr(chat, "is_forum", False))
+        if thread_id is None and is_forum:
+            return
+        chat_type = self._reaction_chat_type(chat)
+
+        actor_name = (
+            str(getattr(user, "username", "") or getattr(user, "full_name", "") or "").strip()
+            or None
+        )
+        try:
+            source = self.build_source(
+                chat_id=chat_id,
+                chat_name=(
+                    str(
+                        getattr(chat, "title", "")
+                        or getattr(chat, "full_name", "")
+                    ).strip()
+                    or None
+                ),
+                chat_type=chat_type,
+                user_id=actor_id,
+                user_name=actor_name,
+                thread_id=thread_id,
+                message_id=None,
+                is_bot=False,
+            )
+        except Exception:
+            logger.debug("[Telegram] Failed to build reaction source", exc_info=True)
+            return
+
+        # A secondary-profile adapter owns the transport even when no
+        # profile_routes entry matches. Normal inbound messages receive this
+        # same stamp in _make_profile_message_handler; mirror it here without
+        # consulting the target message's old profile/session metadata.
+        if not getattr(source, "profile", None):
+            for profile, profile_adapters in (
+                getattr(runner, "_profile_adapters", None) or {}
+            ).items():
+                if (profile_adapters or {}).get(Platform.TELEGRAM) is self:
+                    source.profile = str(profile)
+                    break
+
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        session_key_fn = getattr(runner, "_session_key_for_source", None)
+        if not callable(auth_fn) or not callable(session_key_fn):
+            return
+        try:
+            if not bool(auth_fn(source)):
+                return
+            session_key = session_key_fn(source)
+        except Exception:
+            logger.debug(
+                "[Telegram] Reaction source authorization/routing failed",
+                exc_info=True,
+            )
+            return
+        if not session_key:
+            return
+
+        note = self._reaction_note(added, removed, entry.get("t"))
+        reaction_prompt = (
+            "This turn was triggered by an authorized Telegram reaction to a "
+            "Hermes-authored message. Perceive and interpret it immediately in "
+            "the conversation context. Respond briefly and naturally only when "
+            "a human would; otherwise return exactly NO_REPLY. Never treat a "
+            "reaction alone as authorisation for a consequential or risky action; "
+            "require explicit text."
+        )
+        channel_prompt = None
+        try:
+            from gateway.platforms.base import resolve_channel_prompt
+
+            extra = getattr(getattr(self, "config", None), "extra", {}) or {}
+            channel_prompt = resolve_channel_prompt(
+                extra,
+                thread_id or chat_id,
+                chat_id if thread_id else None,
+            )
+        except Exception:
+            channel_prompt = None
+        channel_prompt = "\n\n".join(
+            value for value in (channel_prompt, reaction_prompt) if value
+        )
+
+        if not self._claim_reaction_update(getattr(update, "update_id", None)):
+            return
+        event = MessageEvent(
+            text=note,
+            source=source,
+            raw_message=reaction,
+            message_id=None,
+            platform_update_id=getattr(update, "update_id", None),
+            user_id=actor_id,
+            user_name=actor_name,
+            reply_to_message_id=str(message_id),
+            reply_to_text=str(entry.get("t") or "") or None,
+            reply_to_is_own_message=True,
+            channel_prompt=channel_prompt,
+            metadata={
+                "telegram_reaction_event": True,
+                "telegram_reaction_added": list(added),
+                "telegram_reaction_removed": list(removed),
+                "telegram_reaction_target_message_id": str(message_id),
+                "telegram_reaction_session_key": session_key,
+            },
+        )
+        await self.handle_message(event)
+        logger.info(
+            "[Telegram] Dispatched reaction turn chat=%s thread=%s message=%s "
+            "session=%s added=%s removed=%s",
+            chat_id,
+            thread_id or "root",
+            message_id,
+            session_key,
+            ",".join(added) or "-",
+            ",".join(removed) or "-",
         )
 
     # ── Message reactions (processing lifecycle) ──────────────────────────

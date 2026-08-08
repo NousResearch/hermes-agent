@@ -14376,6 +14376,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "help": self._handle_help_command,
                 "commands": self._handle_commands_command,
                 "profile": self._handle_profile_command,
+                "bot-ping": self._handle_bot_ping_command,
                 "update": self._handle_update_command,
                 "version": self._handle_version_command,
             }.get(name)
@@ -15421,6 +15422,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "whoami":
             return await self._handle_whoami_command(event)
+
+        if canonical == "bot-ping":
+            return await self._handle_bot_ping_command(event)
 
         if canonical == "status":
             return await self._handle_status_command(event)

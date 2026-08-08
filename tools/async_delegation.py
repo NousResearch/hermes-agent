@@ -613,7 +613,7 @@ def has_live_for_session(
         return False
     with _records_lock:
         return any(
-            r.get("status") in {"running", "stalling", "finalizing"}
+            r.get("status") in _LIVE_STATUSES
             and _matches_session_selectors(
                 r,
                 session_key=session_key,
@@ -1349,6 +1349,11 @@ def _children_activity_from_token(token: Any, now: float) -> Optional[List]:
     return out
 
 
+# Statuses treated as still-in-flight work for session observability /
+# keepalive (matches ``has_live_for_session``).
+_LIVE_STATUSES = frozenset({"running", "stalling", "finalizing"})
+
+
 def list_async_delegations() -> List[Dict[str, Any]]:
     """Snapshot of async delegations (running + recently completed).
 
@@ -1409,6 +1414,40 @@ def list_async_delegations() -> List[Dict[str, Any]]:
             item["children_activity"] = activity
         item["in_tool"] = bool(in_tool)
     return items
+
+
+def list_async_delegations_for_session(
+    session_id: str,
+    *,
+    active_only: bool = True,
+) -> List[Dict[str, Any]]:
+    """Snapshot of async delegations owned by a session id (#81754).
+
+    Matches records where any of ``origin_session_id``, ``session_key``, or
+    ``parent_session_id`` equals ``session_id``. That covers api_server
+    ``/v1/runs`` (``origin_session_id`` is the raw session id while
+    ``session_key`` is often the per-run approval key) and session-chat
+    paths (``session_key`` equals the session id).
+
+    When ``active_only`` is true (default), only live statuses are returned
+    (``running`` / ``stalling`` / ``finalizing``).
+    """
+    sid = (session_id or "").strip()
+    if not sid:
+        return []
+    items = list_async_delegations()
+    out: List[Dict[str, Any]] = []
+    for item in items:
+        if not (
+            str(item.get("origin_session_id") or "") == sid
+            or str(item.get("session_key") or "") == sid
+            or str(item.get("parent_session_id") or "") == sid
+        ):
+            continue
+        if active_only and item.get("status") not in _LIVE_STATUSES:
+            continue
+        out.append(item)
+    return out
 
 
 def interrupt_all(reason: str = "shutdown") -> int:

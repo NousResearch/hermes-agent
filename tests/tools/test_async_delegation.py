@@ -473,6 +473,42 @@ def test_list_async_delegations_exposes_live_activity(monkeypatch):
         gate.set()
 
 
+def test_list_async_delegations_for_session_matches_origin_and_filters(monkeypatch):
+    """Session filter must match origin_session_id even when session_key differs
+    (api_server /v1/runs approval key vs raw session id) (#81754)."""
+    monkeypatch.setattr(ad, "_STALE_CHECK_INTERVAL", 60.0)
+    gate = threading.Event()
+    try:
+        mine = ad.dispatch_async_delegation(
+            goal="mine",
+            context=None,
+            toolsets=None,
+            role="leaf",
+            model="m",
+            session_key="run_abc",
+            origin_session_id="sess-raw",
+            max_async_children=2,
+            runner=lambda: {} if gate.wait(timeout=10) else {},
+        )
+        ad.dispatch_async_delegation(
+            goal="theirs",
+            context=None,
+            toolsets=None,
+            role="leaf",
+            model="m",
+            session_key="other",
+            origin_session_id="other-sess",
+            max_async_children=2,
+            runner=lambda: {"status": "completed"},
+        )
+        active = ad.list_async_delegations_for_session("sess-raw")
+        assert [d["delegation_id"] for d in active] == [mine["delegation_id"]]
+        assert ad.list_async_delegations_for_session("") == []
+        assert ad.list_async_delegations_for_session("run_abc")  # session_key match
+    finally:
+        gate.set()
+
+
 def test_in_tool_stall_uses_higher_threshold(monkeypatch):
     """A frozen child inside a tool gets the in-tool ceiling, not the idle one."""
     _fast_stale_monitor(monkeypatch, idle=0.1, in_tool=10.0, grace=0.1)

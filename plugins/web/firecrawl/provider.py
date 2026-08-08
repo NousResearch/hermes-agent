@@ -430,6 +430,10 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
         Accepted kwargs (others ignored for forward compat):
           - ``format``: ``"markdown"`` or ``"html"``; default is both
             (request both, return markdown when available).
+          - ``headers``: optional ``Dict[str, str]`` of HTTP request headers
+            (e.g. ``User-Agent``, ``Referer``, ``Authorization``) forwarded to
+            Firecrawl's scrape API. Omitted from the call entirely when unset,
+            so existing behavior is unchanged.
 
         Returns the legacy per-URL list-of-results shape. Per-URL failures
         (timeout, SSRF block, scrape error, policy block) become items
@@ -448,6 +452,13 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
             formats = ["html"]
         else:
             formats = ["markdown", "html"]
+
+        # Only forward request headers when the caller supplied a non-empty
+        # mapping — omitting the argument keeps the scrape call byte-for-byte
+        # identical to the previous behavior.
+        headers = kwargs.get("headers") or None
+        if headers is not None and not isinstance(headers, dict):
+            headers = None
 
         # check_website_access is the legacy policy gate; imported at
         # module level (lazy-friendly because the website_policy import is
@@ -486,11 +497,13 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
             try:
                 logger.info("Firecrawl scraping: %s", url)
                 try:
+                    scrape_kwargs: Dict[str, Any] = {"url": url, "formats": formats}
+                    if headers:
+                        scrape_kwargs["headers"] = headers
                     scrape_result = await asyncio.wait_for(
                         asyncio.to_thread(
                             _get_firecrawl_client().scrape,
-                            url=url,
-                            formats=formats,
+                            **scrape_kwargs,
                         ),
                         timeout=60,
                     )

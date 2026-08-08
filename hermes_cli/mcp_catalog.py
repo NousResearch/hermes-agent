@@ -27,16 +27,23 @@ See references/mcp-catalog.md (this repo's skill) for the manifest schema.
 
 from __future__ import annotations
 
+import os
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, List, Optional
 
 import yaml
 
-from hermes_constants import get_hermes_home, get_optional_mcps_dir
+from hermes_constants import (
+    get_hermes_home,
+    get_optional_mcps_dir,
+    venv_python_path,
+)
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import (
@@ -51,6 +58,8 @@ _MANIFEST_VERSION = 1
 
 # Substituted at install time inside `transport.command` / `transport.args`.
 _INSTALL_DIR_VAR = "${INSTALL_DIR}"
+_PYTHON_VAR = "${PYTHON}"
+_VENV_PYTHON_VAR = "${VENV_PYTHON}"
 
 
 # ─── Data classes ────────────────────────────────────────────────────────────
@@ -388,13 +397,78 @@ def _install_root() -> Path:
     return root
 
 
+def _runtime_os_name() -> str:
+    return os.name
+
+
+def _runtime_python_executable() -> str:
+    return sys.executable
+
+
+def _venv_python_path(install_dir: Path, *, os_name: str) -> str:
+    path = venv_python_path(install_dir / ".venv", windows=os_name == "nt")
+    return str(PureWindowsPath(str(path))) if os_name == "nt" else str(path)
+
+
+def _shell_quote(value: str, *, os_name: str) -> str:
+    if os_name == "nt":
+        return subprocess.list2cmdline([value])
+    return shlex.quote(value)
+
+
+def _expand_catalog_vars(
+    value: str,
+    install_dir: Optional[Path],
+    *,
+    for_shell: bool = False,
+    os_name: Optional[str] = None,
+    python_executable: Optional[str] = None,
+) -> str:
+    """Expand trusted catalog path variables for this runtime.
+
+    Bootstrap commands run through a shell and therefore receive quoted
+    substitutions. Transport command/args are persisted as raw argv values.
+    User environment placeholders are deliberately left untouched for the MCP
+    runtime's existing `${ENV_VAR}` expansion.
+    """
+    resolved_os = os_name or _runtime_os_name()
+    needs_install = _INSTALL_DIR_VAR in value or _VENV_PYTHON_VAR in value
+    if needs_install and install_dir is None:
+        variable = (
+            _VENV_PYTHON_VAR if _VENV_PYTHON_VAR in value else _INSTALL_DIR_VAR
+        )
+        raise CatalogError(
+            f"manifest references {variable} but no install block exists"
+        )
+
+    replacements = {
+        _PYTHON_VAR: python_executable or _runtime_python_executable(),
+    }
+    if install_dir is not None:
+        replacements[_INSTALL_DIR_VAR] = str(install_dir)
+        replacements[_VENV_PYTHON_VAR] = _venv_python_path(
+            install_dir, os_name=resolved_os
+        )
+
+    expanded = value
+    for variable, replacement in replacements.items():
+        rendered = (
+            _shell_quote(replacement, os_name=resolved_os)
+            if for_shell
+            else replacement
+        )
+        expanded = expanded.replace(variable, rendered)
+    return expanded
+
+
 def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
     """Execute bootstrap commands in *cwd*. Raise CatalogError on first failure.
 
     Each command runs through the shell (so `&&` etc. work). The output is
     streamed to the user's terminal for visibility.
     """
-    for cmd in commands:
+    for raw_cmd in commands:
+        cmd = _expand_catalog_vars(raw_cmd, cwd, for_shell=True)
         print(color(f"  $ {cmd}", Colors.DIM))
         proc = subprocess.run(cmd, cwd=str(cwd), shell=True)
         if proc.returncode != 0:
@@ -471,13 +545,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
 
 
 def _expand_install_dir(value: str, install_dir: Optional[Path]) -> str:
-    if _INSTALL_DIR_VAR not in value:
-        return value
-    if install_dir is None:
-        raise CatalogError(
-            f"manifest references {_INSTALL_DIR_VAR} but no install block exists"
-        )
-    return value.replace(_INSTALL_DIR_VAR, str(install_dir))
+    return _expand_catalog_vars(value, install_dir)
 
 
 def _prompt_env_vars(specs: List[EnvVarSpec]) -> Dict[str, str]:

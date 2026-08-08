@@ -164,6 +164,15 @@ Note this is distinct from `${INSTALL_DIR}` in catalog manifests, which is
 substituted at install-time with the path the catalog cloned the entry's
 repo into.
 
+Git-installed catalog entries may also use two catalog-owned Python
+placeholders. `${PYTHON}` resolves to the interpreter running Hermes, while
+`${VENV_PYTHON}` resolves to `.venv/bin/python` on POSIX and
+`.venv/Scripts/python.exe` on Windows. In `install.bootstrap` commands these
+values are shell-quoted automatically; in `transport.command` and
+`transport.args` they are stored as raw argv values. This keeps one reviewed
+manifest portable across operating systems and install paths containing
+spaces.
+
 ### Updating tool selection later
 
 ```bash

@@ -9,17 +9,9 @@
 //
 // These helpers are pure so they can be unit-tested without Electron.
 
-/**
- * Parse a `hermes:api` request into the profile name a DELETE targets, or
- * null when the request is not a profile-delete at all (wrong method, wrong
- * path, empty/invalid name).
- */
-export function profileNameFromDeleteRequest(request) {
-  if (!request || String(request.method || 'GET').toUpperCase() !== 'DELETE') {
-    return null
-  }
-
-  const match = String(request.path || '').match(/^\/api\/profiles\/([^/?#]+)(?:[?#].*)?$/)
+/** Parse a profile name from an `/api/profiles/<name>` request path. */
+export function profileNameFromPath(path: unknown): string | null {
+  const match = String(path || '').match(/^\/api\/profiles\/([^/?#]+)(?:[?#].*)?$/)
 
   if (!match) {
     return null
@@ -44,6 +36,15 @@ export function profileNameFromDeleteRequest(request) {
   }
 
   return name.toLowerCase()
+}
+
+/** Parse a `hermes:api` request into the profile name a DELETE targets. */
+export function profileNameFromDeleteRequest(request) {
+  if (!request || String(request.method || 'GET').toUpperCase() !== 'DELETE') {
+    return null
+  }
+
+  return profileNameFromPath(request.path)
 }
 
 export type ProfileDeleteAction = 'noop' | 'teardown-primary' | 'teardown-pool'

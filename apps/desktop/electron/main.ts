@@ -157,6 +157,7 @@ import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
+import { prepareProfileRenameLifecycle } from './profile-rename-routing'
 import { fetchPrimaryProfileSessions } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
@@ -8356,6 +8357,24 @@ async function prepareProfileDeleteRequest(request) {
   return decision.profile
 }
 
+async function prepareProfileRenameRequest(request) {
+  return prepareProfileRenameLifecycle(request, {
+    isValidProfileName: profile => PROFILE_NAME_RE.test(profile),
+    primaryProfileKey,
+    reloadPrimaryWindow: () => {
+      mainWindow?.reload()
+    },
+    restartPrimaryBackend: async () => {
+      await startHermes()
+    },
+    teardownPoolBackendAndWait,
+    teardownPrimaryBackendAndWait,
+    writeActiveDesktopProfile: profile => {
+      writeActiveDesktopProfile(profile)
+    }
+  })
+}
+
 async function startHermes() {
   // Latched-failure short-circuit: once bootstrap has failed in this
   // process, every subsequent startHermes() call re-throws the same error
@@ -10265,64 +10284,81 @@ ipcMain.handle('hermes:api', async (_event, request) => {
     return rerouted
   }
 
+  const profileRename = await prepareProfileRenameRequest(request)
   const tornDownProfile = await prepareProfileDeleteRequest(request)
 
   const profile = request?.profile
-  // After tearing down a backend for profile deletion, route to the primary
-  // backend instead of spawning a fresh pool backend.  A freshly spawned
-  // backend calls ensure_hermes_home() which recreates the profile directory,
-  // defeating the deletion and leaving a zombie process.
-  const routeProfile = resolveRouteProfile(tornDownProfile, profile)
-  const connection = await ensureBackend(routeProfile)
-  const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+  // Route profile mutations through the current primary after teardown instead
+  // of respawning the affected pool backend. For a primary rename, the lifecycle
+  // has already made `default` the temporary primary until the PATCH settles.
+  const routeProfile = profileRename ? profileRename.routeProfile : resolveRouteProfile(tornDownProfile, profile)
+  let response
 
-  const requestPath = pathWithGlobalRemoteProfile(request.path, profile, profileRouteOptions(profile))
+  try {
+    const connection = await ensureBackend(routeProfile)
+    const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
-  const url = `${connection.baseUrl}${requestPath}`
+    const requestPath = pathWithGlobalRemoteProfile(request.path, profile, profileRouteOptions(profile))
+    const url = `${connection.baseUrl}${requestPath}`
 
-  // OAuth gateways authenticate REST via EITHER a native bearer token
-  // (cookieless RFC 8252 flow) OR the HttpOnly session cookie held in the OAuth
-  // partition. Prefer the native bearer when present (mirroring
-  // mintGatewayWsTicket): the native flow never sets a cookie, so routing an
-  // oauth-mode REST call through the cookie-only path returns 401 no_cookie even
-  // though a valid bearer is held. Cookie mode rides Electron's net stack bound
-  // to the OAuth partition so the cookie attaches automatically. Token/local
-  // modes keep using the static session-token header.
-  if (connection.authMode === 'oauth') {
-    // The OAuth path rides electron.net with JSON headers; multipart isn't
-    // wired there. Fail loudly rather than corrupting the upload.
-    if (request?.upload) {
-      throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
-    }
+    // OAuth gateways authenticate REST via EITHER a native bearer token
+    // (cookieless RFC 8252 flow) OR the HttpOnly session cookie held in the OAuth
+    // partition. Prefer the native bearer when present (mirroring
+    // mintGatewayWsTicket): the native flow never sets a cookie, so routing an
+    // oauth-mode REST call through the cookie-only path returns 401 no_cookie even
+    // though a valid bearer is held. Cookie mode rides Electron's net stack bound
+    // to the OAuth partition so the cookie attaches automatically. Token/local
+    // modes keep using the static session-token header.
+    if (connection.authMode === 'oauth') {
+      // The OAuth path rides electron.net with JSON headers; multipart isn't
+      // wired there. Fail loudly rather than corrupting the upload.
+      if (request?.upload) {
+        throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
+      }
 
-    // Native bearer first (cookieless). ensureNativeAccessToken transparently
-    // refreshes a near-expiry AT via /auth/native/refresh; a null return means
-    // no native session (resolveOauthRestAuth then selects the cookie path).
-    const nativeAt = await ensureNativeAccessToken(connection.baseUrl).catch(() => null)
-    const restAuth = resolveOauthRestAuth(nativeAt)
+      // Native bearer first (cookieless). ensureNativeAccessToken transparently
+      // refreshes a near-expiry AT via /auth/native/refresh; a null return means
+      // no native session (resolveOauthRestAuth then selects the cookie path).
+      const nativeAt = await ensureNativeAccessToken(connection.baseUrl).catch(() => null)
+      const restAuth = resolveOauthRestAuth(nativeAt)
 
-    if (restAuth.kind === 'bearer') {
-      return fetchJson(url, null, {
+      if (restAuth.kind === 'bearer') {
+        response = await fetchJson(url, null, {
+          method: request?.method,
+          body: request?.body,
+          timeoutMs,
+          bearer: restAuth.token
+        })
+      } else {
+        response = await fetchJsonViaOauthSession(url, {
+          method: request?.method,
+          body: request?.body,
+          timeoutMs
+        })
+      }
+    } else {
+      response = await fetchJson(url, connection.token, {
         method: request?.method,
         body: request?.body,
-        timeoutMs,
-        bearer: restAuth.token
+        upload: request?.upload,
+        timeoutMs
       })
     }
+  } catch (error) {
+    if (profileRename) {
+      try {
+        await profileRename.rollback()
+      } catch (rollbackError) {
+        rememberLog(`Failed to restore primary profile after rename error: ${String(rollbackError)}`)
+      }
+    }
 
-    return fetchJsonViaOauthSession(url, {
-      method: request?.method,
-      body: request?.body,
-      timeoutMs
-    })
+    throw error
   }
 
-  return fetchJson(url, connection.token, {
-    method: request?.method,
-    body: request?.body,
-    upload: request?.upload,
-    timeoutMs
-  })
+  await profileRename?.complete()
+
+  return response
 })
 
 // One deduper per cross-window cue — the choke point every window shares. Main

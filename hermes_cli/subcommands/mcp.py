@@ -122,5 +122,40 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         help="Catalog entry name (or `official/<name>`)",
     )
 
+    # ── Fixtures (deterministic record/replay for tests) ──────────
+    mcp_fixtures_p = mcp_sub.add_parser(
+        "fixtures",
+        help="Record/replay deterministic MCP server fixtures for tests",
+    )
+    mcp_fixtures_sub = mcp_fixtures_p.add_subparsers(dest="mcp_fixtures_action")
+
+    mcp_fixtures_record = mcp_fixtures_sub.add_parser(
+        "record",
+        help="Record initialize/list_tools/call_tool against a REAL stdio MCP server",
+    )
+    mcp_fixtures_record.add_argument(
+        "name", help="mcp_servers.<name> key from config.yaml"
+    )
+    mcp_fixtures_record.add_argument(
+        "--output", required=True, help="Fixture output path (JSON)"
+    )
+    mcp_fixtures_record.add_argument(
+        "--call",
+        action="append",
+        default=[],
+        metavar="TOOL=JSON_ARGS",
+        help="Record a tool call, e.g. --call read_file='{\"path\": \"a.txt\"}' "
+        "(repeatable)",
+    )
+    mcp_fixtures_record.add_argument(
+        "--timeout", type=float, default=30.0, help="Recording timeout in seconds"
+    )
+
+    mcp_fixtures_replay = mcp_fixtures_sub.add_parser(
+        "replay",
+        help="Self-check: replay a fixture through a real client/server round-trip",
+    )
+    mcp_fixtures_replay.add_argument("fixture", help="Path to a recorded fixture")
+
     add_accept_hooks_flag(mcp_parser)
     mcp_parser.set_defaults(func=cmd_mcp)

@@ -431,7 +431,10 @@ def _(rid, params: dict) -> dict:
 
 @method("command.dispatch")
 def _(rid, params: dict) -> dict:
-    name, arg = params.get("name", "").lstrip("/"), params.get("arg", "")
+    # JSON null for name/arg makes ``.get(..., "")`` return None (key present),
+    # and a bare ``.lstrip`` would crash this inline RPC on the reader thread.
+    name = str(params.get("name") or "").lstrip("/")
+    arg = str(params.get("arg") or "")
     resolved = _resolve_name(name)
     if resolved != name:
         name = resolved
@@ -1080,7 +1083,9 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
 
-    cmd = params.get("command", "").strip()
+    # Same null-key pitfall as command.dispatch: present-but-null ``command``
+    # must not AttributeError on ``.strip()``.
+    cmd = str(params.get("command") or "").strip()
     if not cmd:
         return _err(rid, 4004, "empty command")
 

@@ -104,6 +104,10 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
 
 
 _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
+_HEREDOC_NON_SHELL_EXECUTABLES = frozenset(
+    {"node", "nodejs", "deno", "bun", "ruby", "perl", "php", "lua", "r", "rscript"}
+)
+_PYTHON_EXECUTABLE = re.compile(r"(?i)^python(?:\d+(?:\.\d+)*)?$")
 _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
 _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
 _MAX_REFERENCED_SCRIPT_DEPTH = 8
@@ -186,6 +190,289 @@ def _command_token_index(segment: list[str]) -> Optional[int]:
             continue
         return index
     return None
+
+
+def _classify_heredoc_receiver(receiver: Optional[str]) -> str:
+    """Classify a heredoc receiver for referenced-shell traversal."""
+    if not receiver or "/" in receiver:
+        # An arbitrary path can be named ``python3`` while actually being a
+        # shell script. Only a plain command name is eligible for exemption.
+        return "unknown"
+    name = receiver.lower()
+    if name in _SHELL_EXECUTABLES:
+        return "shell"
+    if _PYTHON_EXECUTABLE.fullmatch(name) or name in _HEREDOC_NON_SHELL_EXECUTABLES:
+        return "non_shell"
+    return "unknown"
+
+
+def _heredoc_receiver(fragment: str) -> Optional[str]:
+    """Return the executable receiving a heredoc in one shell segment."""
+    receiver: Optional[str] = None
+    for segment in _iter_command_segments(fragment):
+        index = _command_token_index(segment)
+        if index is not None:
+            receiver = segment[index]
+    return receiver
+
+
+def _heredoc_receiver_is_overridden(prefix: str, receiver: Optional[str]) -> bool:
+    """Return whether earlier syntax overrides a plain receiver command.
+
+    Shell functions and aliases take precedence over PATH lookup. A command
+    named ``python3`` is therefore not evidence of Python when the same outer
+    line defines or aliases that name before the heredoc invocation.
+    """
+    if not receiver or "/" in receiver:
+        return True
+    name = re.escape(receiver)
+    function_pattern = re.compile(
+        rf"(?:^|[;&|\n]\s*)(?:"
+        rf"function\s+{name}(?:\s*\(\s*\))?"
+        rf"|{name}\s*\(\s*\)"
+        rf")\s*\{{"
+    )
+    alias_pattern = re.compile(
+        rf"(?:^|[;&|\n]\s*)alias\s+{name}\s*="
+    )
+    path_assignment_pattern = re.compile(
+        r"(?:^|[;&|\n]\s*)(?:export\s+)?PATH\s*="
+    )
+    hash_override_pattern = re.compile(
+        rf"(?:^|[;&|\n]\s*)(?:builtin\s+)?hash\s+-p\s+\S+\s+{name}(?:\s|$)"
+    )
+    dynamic_shell_state_pattern = re.compile(
+        r"(?:^|[;&|\n]\s*)(?:(?:source|\.)\s+|eval(?:\s|$))"
+    )
+    return bool(
+        function_pattern.search(prefix)
+        or alias_pattern.search(prefix)
+        or path_assignment_pattern.search(prefix)
+        or hash_override_pattern.search(prefix)
+        or dynamic_shell_state_pattern.search(prefix)
+    )
+
+
+def _iter_heredoc_declarations(
+    line: str,
+    *,
+    prior_outer_text: str = "",
+) -> Iterator[tuple[str, bool, str, bool]]:
+    """Yield heredoc metadata for one outer-shell line.
+
+    The final flag records whether any part of the delimiter word was quoted.
+    Only quoted non-shell heredocs are provably inert shell data: unquoted
+    bodies still perform command substitution before reaching the receiver.
+    """
+    quote: Optional[str] = None
+    escaped = False
+    segment_start = 0
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            index += 1
+            continue
+        if quote is not None:
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+        if char == "#" and (index == 0 or line[index - 1].isspace()):
+            break
+        if char in _CONTROL_CHARS:
+            segment_start = index + 1
+            index += 1
+            continue
+        if not line.startswith("<<", index) or line.startswith("<<<", index):
+            index += 1
+            continue
+
+        cursor = index + 2
+        strip_tabs = False
+        if cursor < len(line) and line[cursor] == "-":
+            strip_tabs = True
+            cursor += 1
+        while cursor < len(line) and line[cursor] in " \t":
+            cursor += 1
+        if cursor >= len(line) or line[cursor] in "\r\n;&|()<>":
+            index += 2
+            continue
+
+        delimiter_chars: list[str] = []
+        delimiter_quoted = False
+        delimiter_quote: Optional[str] = None
+        ansi_c_quote = False
+        unsupported_ansi_escape = False
+        while cursor < len(line):
+            current = line[cursor]
+            if delimiter_quote is not None:
+                if current == delimiter_quote:
+                    delimiter_quote = None
+                    ansi_c_quote = False
+                    cursor += 1
+                    continue
+                if ansi_c_quote and current == "\\":
+                    # Bash $'...' applies ANSI-C escape decoding. Rather than
+                    # guess the resulting delimiter, leave escaped forms to
+                    # the conservative outer-shell scanner below.
+                    unsupported_ansi_escape = True
+                if (
+                    delimiter_quote == '"'
+                    and current == "\\"
+                    and cursor + 1 < len(line)
+                    and line[cursor + 1] in {'"', "\\", "$", "`"}
+                ):
+                    cursor += 1
+                    current = line[cursor]
+                delimiter_chars.append(current)
+                cursor += 1
+                continue
+            if current.isspace() or current in ";&|()<>":
+                break
+            if (
+                current == "$"
+                and cursor + 1 < len(line)
+                and line[cursor + 1] in {"'", '"'}
+            ):
+                delimiter_quoted = True
+                delimiter_quote = line[cursor + 1]
+                ansi_c_quote = delimiter_quote == "'"
+                cursor += 2
+                continue
+            if current in {"'", '"'}:
+                delimiter_quoted = True
+                delimiter_quote = current
+                cursor += 1
+                continue
+            if current == "\\" and cursor + 1 < len(line):
+                delimiter_quoted = True
+                cursor += 1
+                current = line[cursor]
+            delimiter_chars.append(current)
+            cursor += 1
+
+        if delimiter_quote is not None or unsupported_ansi_escape:
+            # Malformed or escape-bearing ANSI-C quoted delimiter: leave the
+            # line to the existing conservative shell scanner rather than
+            # guessing its resulting delimiter.
+            index += 2
+            continue
+        delimiter = "".join(delimiter_chars)
+
+        if delimiter:
+            receiver = _heredoc_receiver(line[segment_start:index])
+            receiver_kind = (
+                "unknown"
+                if _heredoc_receiver_is_overridden(
+                    prior_outer_text + line[:index], receiver
+                )
+                else _classify_heredoc_receiver(receiver)
+            )
+            yield (
+                delimiter,
+                strip_tabs,
+                receiver_kind,
+                delimiter_quoted,
+            )
+        index = max(cursor, index + 2)
+
+
+def _split_outer_shell_and_heredocs(
+    command: str,
+) -> tuple[str, list[tuple[str, str, bool]]]:
+    """Separate outer shell text from heredoc bodies for shell-only traversal.
+
+    Declarations are consumed in shell order. The original command remains
+    untouched for the direct lifecycle scan. Unterminated recognized heredocs
+    consume the remainder as their body; malformed declarations fall back to
+    the existing conservative outer-shell scan.
+    """
+    lines = command.splitlines(keepends=True)
+    if not lines:
+        return command, []
+
+    outer_lines: list[str] = []
+    heredocs: list[tuple[str, str, bool]] = []
+    line_index = 0
+    while line_index < len(lines):
+        line = lines[line_index]
+        line_index += 1
+        # Backslash-newline is removed before shell parsing, including inside
+        # a delimiter word (``<<P\\`` + ``Y`` declares delimiter ``PY``).
+        # Join only outer-shell continuation lines; heredoc body lines are
+        # consumed below without this normalization.
+        while line_index < len(lines):
+            if line.endswith("\\\r\n"):
+                line = line[:-3] + lines[line_index]
+            elif line.endswith("\\\n"):
+                line = line[:-2] + lines[line_index]
+            else:
+                break
+            line_index += 1
+        prior_outer_text = "".join(outer_lines)
+        outer_lines.append(line)
+        declarations = list(
+            _iter_heredoc_declarations(
+                line,
+                prior_outer_text=prior_outer_text,
+            )
+        )
+        for delimiter, strip_tabs, receiver_kind, delimiter_quoted in declarations:
+            body_lines: list[str] = []
+            while line_index < len(lines):
+                candidate = lines[line_index].rstrip("\r\n")
+                if strip_tabs:
+                    candidate = candidate.lstrip("\t")
+                if candidate == delimiter:
+                    line_index += 1
+                    break
+                body_lines.append(lines[line_index])
+                line_index += 1
+            heredocs.append(
+                (receiver_kind, "".join(body_lines), delimiter_quoted)
+            )
+    return "".join(outer_lines), heredocs
+
+
+def _iter_backtick_payloads(text: str) -> Iterator[str]:
+    """Yield legacy command substitutions from an expanding heredoc body.
+
+    Heredoc bodies are not parsed as ordinary shell quoting: in an unquoted
+    heredoc, every unescaped backtick can start/end command substitution even
+    when surrounded by quote-looking data. Preserve escaped characters inside
+    each payload and ignore an unmatched opener, which the shell itself treats
+    as a syntax error rather than executable content.
+    """
+    payload: Optional[list[str]] = None
+    escaped = False
+    for char in text:
+        if escaped:
+            if payload is not None:
+                payload.extend(("\\", char))
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == "`":
+            if payload is None:
+                payload = []
+            else:
+                yield "".join(payload)
+                payload = None
+            continue
+        if payload is not None:
+            payload.append(char)
 
 
 def contains_launchctl_submit_command(command: str) -> bool:
@@ -347,8 +634,15 @@ def _iter_referenced_shell_scripts(
     command: str,
     *,
     cwd: Optional[str] = None,
+    explicit_only: bool = False,
 ) -> Iterator[Path]:
-    """Yield scripts executed directly or through a POSIX shell."""
+    """Yield scripts executed directly or through a POSIX shell.
+
+    ``explicit_only`` retains only ``sh script`` and ``source script`` forms.
+    It is used for quoted non-shell source bodies: explicit shell execution
+    remains protected, while generic slash-looking language syntax is not
+    promoted into an executable path.
+    """
     for segment in _iter_command_segments(command):
         index = _command_token_index(segment)
         if index is None:
@@ -387,6 +681,9 @@ def _iter_referenced_shell_scripts(
                 resolved = _resolve_terminal_script_path(arguments[arg_index], cwd)
                 if resolved is not None:
                     yield resolved
+            continue
+
+        if explicit_only:
             continue
 
         # A bare "/" token is pathlib's division operator in Python sources
@@ -508,23 +805,76 @@ def _contains_unsafe_gateway_action(
     depth: int,
     visited: set[Path],
     read_remote_script: Optional[_ReadRemoteScriptFn] = None,
+    explicit_shell_only: bool = False,
 ) -> bool:
     if _direct_lifecycle_scan(command):
         return True
     if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
         return True
 
-    for payload in _iter_shell_command_payloads(command):
+    # Heredoc bodies are input to a receiving command, not additional outer
+    # shell lines. Keep the direct scan above on the original text, but only
+    # run shell-specific traversal over the outer command and bodies that are
+    # actually consumed by a shell. Unknown receivers remain fail-closed by
+    # taking the shell path.
+    outer_command, heredocs = _split_outer_shell_and_heredocs(command)
+    for payload in _iter_shell_command_payloads(outer_command):
         if _contains_unsafe_gateway_action(
             payload,
             cwd=cwd,
             depth=depth + 1,
             visited=visited,
             read_remote_script=read_remote_script,
+            explicit_shell_only=explicit_shell_only,
         ):
             return True
 
-    for script_path in _iter_referenced_shell_scripts(command, cwd=cwd):
+    for receiver_kind, body, delimiter_quoted in heredocs:
+        if not body:
+            continue
+        # A quoted delimiter suppresses shell expansion, so a clearly
+        # non-shell receiver gets inert source/data. Unquoted bodies still
+        # perform command substitution before stdin delivery and must retain
+        # the conservative shell walk (e.g. $(sh ./restart.sh)).
+        if receiver_kind == "non_shell" and delimiter_quoted:
+            if _contains_unsafe_gateway_action(
+                body,
+                cwd=cwd,
+                depth=depth + 1,
+                # Restricted source-body traversal must not poison the full
+                # outer-shell walk. Keep cycle protection local to this probe.
+                visited=set(visited),
+                read_remote_script=read_remote_script,
+                explicit_shell_only=True,
+            ):
+                return True
+            continue
+        if not delimiter_quoted:
+            for payload in _iter_backtick_payloads(body):
+                if _contains_unsafe_gateway_action(
+                    payload,
+                    cwd=cwd,
+                    depth=depth + 1,
+                    visited=visited,
+                    read_remote_script=read_remote_script,
+                    explicit_shell_only=explicit_shell_only,
+                ):
+                    return True
+        if _contains_unsafe_gateway_action(
+            body,
+            cwd=cwd,
+            depth=depth + 1,
+            visited=visited,
+            read_remote_script=read_remote_script,
+            explicit_shell_only=explicit_shell_only,
+        ):
+            return True
+
+    for script_path in _iter_referenced_shell_scripts(
+        outer_command,
+        cwd=cwd,
+        explicit_only=explicit_shell_only,
+    ):
         try:
             resolved = script_path.resolve(strict=False)
         except (OSError, ValueError):
@@ -559,6 +909,7 @@ def _contains_unsafe_gateway_action(
             depth=depth + 1,
             visited=visited,
             read_remote_script=read_remote_script,
+            explicit_shell_only=explicit_shell_only,
         ):
             return True
     return False

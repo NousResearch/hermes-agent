@@ -709,35 +709,38 @@ class EmailAdapter(BasePlatformAdapter):
                 for uid in data[0].split():
                     if uid in self._seen_uids:
                         continue
-                    self._seen_uids.add(uid)
-                    # Trim periodically to prevent unbounded memory growth
-                    if len(self._seen_uids) > self._seen_uids_max:
-                        self._trim_seen_uids()
 
                     status, msg_data = imap.uid("fetch", uid, "(RFC822)")
                     if status != "OK":
                         continue
 
-                    # IMAP fetch can return unexpected structures (e.g. a
-                    # single bytes item instead of a list of tuples). Guard
-                    # against IndexError / TypeError so one malformed response
-                    # doesn't abort the batch — the UID is already in
-                    # _seen_uids, so an abort would permanently skip the
-                    # remaining messages in this batch.
-                    try:
-                        raw_email = msg_data[0][1]
-                    except (IndexError, TypeError):
+                    # Providers may include closing bytes alongside the RFC822
+                    # tuple. Find the first actual byte payload rather than
+                    # assuming it is always msg_data[0][1]. Crucially, do not
+                    # mark a UID seen until its raw message was fetched: a
+                    # transient malformed response must be retried next poll,
+                    # not silently discarded forever.
+                    raw_email = None
+                    if isinstance(msg_data, (list, tuple)):
+                        for item in msg_data:
+                            if (
+                                isinstance(item, tuple)
+                                and len(item) >= 2
+                                and isinstance(item[1], (bytes, bytearray))
+                            ):
+                                raw_email = item[1]
+                                break
+                    if raw_email is None:
                         logger.warning(
-                            "[Email] Unexpected IMAP response structure for UID %s, skipping",
+                            "[Email] Unexpected IMAP response structure for UID %s; will retry",
                             uid,
                         )
                         continue
-                    if not isinstance(raw_email, (bytes, bytearray)):
-                        logger.warning(
-                            "[Email] Non-bytes IMAP payload for UID %s, skipping", uid
-                        )
-                        continue
                     msg = email_lib.message_from_bytes(raw_email)
+                    self._seen_uids.add(uid)
+                    # Trim periodically to prevent unbounded memory growth
+                    if len(self._seen_uids) > self._seen_uids_max:
+                        self._trim_seen_uids()
 
                     sender_raw = msg.get("From", "")
                     sender_addr = _extract_email_address(sender_raw)

@@ -2229,6 +2229,79 @@ class CuaDriverBackend(ComputerUseBackend):
         Maps hermes `capture(mode, app)` → cua-driver `list_windows` +
         `get_window_state` (ax/som) or `screenshot` (vision).
         """
+        # Windows exposes the desktop backdrop as Progman/WorkerW. Those
+        # shell windows are valid list_windows entries but their UIA tree can
+        # block indefinitely. Use cua-driver's vision-only desktop path in an
+        # explicitly scoped child session instead. The primary auto session
+        # remains window-scoped for normal application capture and input.
+        is_whole_screen = (
+            pid is None
+            and window_id is None
+            and isinstance(app, str)
+            and app.strip().lower() in _SCREEN_CAPTURE_SENTINELS
+        )
+        if is_whole_screen and sys.platform == "win32":
+            desktop_session_id = f"{self._session_id}-desktop-{uuid.uuid4().hex[:8]}"
+            desktop_started = False
+            try:
+                self._call_capture_tool(
+                    "start_session",
+                    {
+                        "session": desktop_session_id,
+                        "capture_scope": "desktop",
+                    },
+                )
+                desktop_started = True
+                desktop_out = self._call_capture_tool(
+                    "get_desktop_state",
+                    {"session": desktop_session_id},
+                )
+                png_b64, image_mime_type = _image_from_tool_result(desktop_out)
+                if not png_b64:
+                    return self._failed_capture(
+                        mode,
+                        "<cua-driver get_desktop_state returned no screenshot>",
+                    )
+                width = height = 0
+                try:
+                    raw = base64.b64decode(png_b64, validate=False)
+                    width, height = _image_dimensions_from_bytes(raw)
+                    png_bytes_len = len(raw)
+                except Exception:
+                    png_bytes_len = len(png_b64) * 3 // 4
+                return CaptureResult(
+                    # get_desktop_state is vision-only: do not claim AX/SOM
+                    # semantics when the caller used the default SOM mode.
+                    mode="vision",
+                    width=width,
+                    height=height,
+                    png_b64=png_b64,
+                    elements=[],
+                    app="screen",
+                    window_title="Desktop",
+                    png_bytes_len=png_bytes_len,
+                    image_mime_type=image_mime_type,
+                )
+            finally:
+                if desktop_started:
+                    try:
+                        self._session.call_tool(
+                            "end_session",
+                            {"session": desktop_session_id},
+                        )
+                    except Exception as exc:
+                        logger.debug("cua-driver desktop session cleanup failed: %s", exc)
+                # CuaMcpSession tracks the most recently declared identity for
+                # ended-session recovery. Restore the primary run identity
+                # after the short-lived desktop child session.
+                try:
+                    self._session.call_tool(
+                        "start_session",
+                        {"session": self._session_id},
+                    )
+                except Exception as exc:
+                    logger.debug("cua-driver primary session restore failed: %s", exc)
+
         # Step 1: enumerate on-screen windows to find target pid/window_id.
         # Surface 3 of NousResearch/hermes-agent#47072: read the canonical
         # `structuredContent.windows` array directly. Pre-fix the wrapper

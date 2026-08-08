@@ -44,6 +44,16 @@ from utils import base_url_host_matches, base_url_hostname, env_var_enabled, ato
 
 logger = logging.getLogger(__name__)
 
+try:
+    from agent.tool_repair_stats import record_repair as _record_repair
+except ImportError:
+    # Expected: stats module absent (minimal/stripped install) — observability is optional.
+    _record_repair = None  # type: ignore[assignment]
+except Exception:
+    # Unexpected: module present but broken — degrade to no-op, NEVER break repair.
+    logger.warning("tool_repair_stats import failed; repair stats disabled", exc_info=True)
+    _record_repair = None  # type: ignore[assignment]
+
 
 # Max consecutive successful credential-pool token refreshes of the SAME entry
 # on a persistent auth failure before we give up and let the fallback chain
@@ -406,6 +416,11 @@ def sanitize_tool_call_arguments(
                     preview,
                 )
                 function["arguments"] = "{}"
+                if _record_repair is not None:
+                    try:
+                        _record_repair("truncated_args", function_name)
+                    except Exception:
+                        pass
 
                 existing_tool_msg = None
                 scan_index = message_index + 1

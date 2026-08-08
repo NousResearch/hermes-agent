@@ -100,6 +100,26 @@ _DEFAULT_POLL_INTERVAL = 4.0
 _MIN_POLL_INTERVAL = 1.0
 _CLI_TIMEOUT = 30.0
 
+# Presence: ``buzz users set-presence`` publishes an ephemeral kind-20001
+# event that the relay stores with a 90-second TTL (buzz-pubsub
+# PRESENCE_TTL_SECS, documented upstream as "3x the 30s heartbeat interval"),
+# so clients age an agent to offline unless its presence is refreshed.
+_PRESENCE_RELAY_TTL = 90.0
+# Heartbeat at the relay's expected 30s cadence: a single missed or failed
+# refresh never flaps the agent offline.  The legacy buzz-acp workers
+# refreshed at 60s, where one miss already expires presence.
+_PRESENCE_HEARTBEAT_INTERVAL = 30.0
+# Presence publishes are bounded well below the heartbeat interval so a hung
+# CLI call cannot stretch the gap between successful refreshes past the relay
+# TTL.  Worst case after one failed refresh (fixed-rate cadence): the failed
+# attempt burns one interval, the next succeeds within interval + timeout —
+# 2*30 + 10 = 70s < 90s.  The generic _CLI_TIMEOUT of 30s would instead allow
+# a 30s hang + 30s sleep to land the retry exactly at the TTL boundary.
+_PRESENCE_PUBLISH_TIMEOUT = 10.0
+# Tighter bound for the best-effort offline publish so a hung relay cannot
+# stall gateway shutdown.
+_PRESENCE_DISCONNECT_TIMEOUT = 5.0
+
 # WebSocket transport (NIP-42 authenticated Nostr subscription).
 # kind 44100 is Buzz's channel-membership event — used for live DM discovery.
 _WS_AUTH_TIMEOUT = 20.0
@@ -310,6 +330,16 @@ async def _exec_buzz(
         proc.kill()
         await proc.wait()
         return 124, "", json.dumps({"error": "timeout", "message": f"buzz {args[0] if args else ''} timed out after {timeout}s"})
+    except asyncio.CancelledError:
+        # Don't leave the CLI running detached: a cancelled call (e.g. the
+        # presence heartbeat during disconnect) must not publish after the
+        # adapter has moved on.
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+        raise
     return (
         proc.returncode if proc.returncode is not None else 4,
         stdout.decode("utf-8", errors="replace"),
@@ -423,6 +453,7 @@ class BuzzAdapter(BasePlatformAdapter):
 
         # Runtime state
         self._poll_task: Optional[asyncio.Task] = None
+        self._presence_task: Optional[asyncio.Task] = None
         self._ws_task: Optional[asyncio.Task] = None
         self._ws_ready: Optional[asyncio.Event] = None
         self._ws_active = False  # True while the WS loop owns inbound delivery
@@ -443,7 +474,13 @@ class BuzzAdapter(BasePlatformAdapter):
 
     # ── buzz-cli plumbing ─────────────────────────────────────────────────
 
-    async def _run_cli(self, args: List[str], *, input_text: Optional[str] = None) -> Tuple[int, str, str]:
+    async def _run_cli(
+        self,
+        args: List[str],
+        *,
+        input_text: Optional[str] = None,
+        timeout: float = _CLI_TIMEOUT,
+    ) -> Tuple[int, str, str]:
         if not self._private_key:
             self._private_key = _resolve_private_key(self._extra)
         return await _exec_buzz(
@@ -452,12 +489,88 @@ class BuzzAdapter(BasePlatformAdapter):
             relay_url=self.relay_url,
             private_key=self._private_key,
             input_text=input_text,
+            timeout=timeout,
         )
+
+    # ── Presence ──────────────────────────────────────────────────────────
+    #
+    # The legacy buzz-acp workers published presence; without it the relay's
+    # 90s Redis TTL expires and every client shows the agent offline even
+    # while the gateway is healthy and answering messages.
+
+    async def _publish_presence(self, status: str, *, timeout: float) -> bool:
+        """Publish presence via ``buzz users set-presence`` (best-effort).
+
+        Presence is cosmetic: failures are logged and swallowed so they can
+        never fail a healthy connect, heartbeat sweep, or shutdown.
+        """
+        if not self.cli_path:
+            return False
+        try:
+            code, _out, err = await self._run_cli(
+                ["users", "set-presence", "--status", status], timeout=timeout
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Buzz: failed to publish '%s' presence", status, exc_info=True)
+            return False
+        if code != 0:
+            logger.warning(
+                "Buzz: failed to publish '%s' presence — %s", status, _cli_error_message(err, code)
+            )
+            return False
+        return True
+
+    async def _presence_heartbeat_loop(self) -> None:
+        """Publish online presence at a fixed cadence until cancelled.
+
+        All presence I/O lives here — including the FIRST publish — so a slow
+        or hung CLI can never delay connect() (the gateway bounds adapter
+        connects with an overall timeout), and an in-flight publish is always
+        cancellable through this task.  The sleep subtracts the time the
+        publish took (fixed-rate cadence, floored to avoid a tight spin), so
+        a slow or failed refresh cannot stretch the gap between successful
+        refreshes past the relay's presence TTL.
+        """
+        clock = asyncio.get_running_loop().time
+        while True:
+            started = clock()
+            await self._publish_presence("online", timeout=_PRESENCE_PUBLISH_TIMEOUT)
+            elapsed = clock() - started
+            await asyncio.sleep(
+                max(_PRESENCE_HEARTBEAT_INTERVAL - elapsed, _PRESENCE_HEARTBEAT_INTERVAL / 2)
+            )
+
+    async def _start_presence(self) -> None:
+        """(Re)start the presence heartbeat.
+
+        Stops any previous heartbeat first so repeated connect() calls never
+        stack loops.  Deliberately performs no CLI work inline — the online
+        publish happens inside the task, so a transient relay error
+        self-heals on a later refresh and connect() latency stays decoupled
+        from the presence CLI.
+        """
+        await self._stop_presence_task()
+        self._presence_task = asyncio.create_task(self._presence_heartbeat_loop())
+
+    async def _stop_presence_task(self) -> None:
+        task, self._presence_task = self._presence_task, None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # pragma: no cover — never leak an unretrieved error
+            logger.debug("Buzz: presence heartbeat ended with error", exc_info=True)
 
     # ── Connection lifecycle ──────────────────────────────────────────────
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        """Verify relay credentials, seed high-water marks, start polling."""
+        """Verify relay credentials, seed high-water marks, start the inbound
+        transport, and publish online presence."""
         if not self.relay_url:
             logger.error("Buzz: relay URL must be configured")
             self._set_fatal_error("config_missing", "BUZZ_RELAY_URL must be set", retryable=False)
@@ -557,6 +670,7 @@ class BuzzAdapter(BasePlatformAdapter):
         if transport_used == "poll":
             self._poll_task = asyncio.create_task(self._poll_loop())
         self._mark_connected()
+        await self._start_presence()
         logger.info(
             "Buzz: connected to %s as %s, watching %d channel(s) via %s%s",
             self.relay_url,
@@ -570,6 +684,10 @@ class BuzzAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop the inbound transport and drop runtime state."""
         self._mark_disconnected()
+        # Stop the heartbeat before anything else so no online refresh can
+        # land after the offline publish below.
+        had_presence = self._presence_task is not None
+        await self._stop_presence_task()
         lock_key = getattr(self, "_lock_key", None)
         if lock_key:
             try:
@@ -594,6 +712,10 @@ class BuzzAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
         self._poll_task = None
+        if had_presence:
+            # Graceful goodbye — clients show offline immediately instead of
+            # waiting out the relay's presence TTL.
+            await self._publish_presence("offline", timeout=_PRESENCE_DISCONNECT_TIMEOUT)
         self._channel_state = {}
         self._poll_count = 0
 

@@ -120,4 +120,5 @@ Check status with `hermes gateway status` — Buzz connection state is reported 
 - **Inbound is polled, not streamed.** The `buzz` CLI is request/response, so the adapter polls `buzz messages get` per watched channel every `poll_interval` seconds (default 4). Expect up to one interval of latency on inbound messages. A future optimization is a websocket transport (the Buzz repo ships `buzz-ws-client` for true streaming).
 - On (re)connect the adapter seeds its high-water mark from the newest events, so channel history is never replayed into the agent.
 - New DM conversations are discovered automatically (every few poll sweeps).
+- **Presence is automatic.** On connect the agent publishes online presence and refreshes it every 30 seconds (the relay expires presence 90 seconds after the last refresh); on graceful shutdown it publishes offline. Presence failures are logged but never interrupt messaging.
 - The private key is passed to the CLI via the subprocess environment — it never appears in argv or logs.

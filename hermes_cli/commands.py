@@ -186,6 +186,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch", execute="profile"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
+    CommandDef("set-prompt", "Set the channel context prompt for the current channel", "Session",
+               gateway_only=True, aliases=("setprompt",), args_hint="<text>"),
+    CommandDef("clear-prompt", "Clear the runtime channel context prompt for the current channel", "Session",
+               gateway_only=True, aliases=("clearprompt",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
 

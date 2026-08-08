@@ -259,6 +259,78 @@ class TestReplyToText:
         assert event.reply_to_text is None
 
 
+class TestLegacyGatewayJsonBoolReplyToMode:
+    """Legacy gateway.json bool reply_to_mode must survive load_gateway_config()."""
+
+    def test_load_gateway_config_bool_false_from_gateway_json(
+        self, tmp_path, monkeypatch
+    ):
+        """gateway.json with reply_to_mode: false -> PlatformConfig + adapter 'off'.
+
+        This is the remaining verified path after config.yaml Discord settings
+        are bridged through DISCORD_REPLY_TO_MODE (see adapter apply_yaml hook).
+        """
+        import json
+
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "gateway.json").write_text(
+            json.dumps(
+                {
+                    "platforms": {
+                        "discord": {
+                            "enabled": True,
+                            "token": "test-token",
+                            "reply_to_mode": False,
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_REPLY_TO_MODE", raising=False)
+        monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+
+        cfg = load_gateway_config()
+        platform_cfg = cfg.platforms[Platform.DISCORD]
+
+        assert platform_cfg.reply_to_mode == "off"
+        assert isinstance(platform_cfg.reply_to_mode, str)
+        assert DiscordAdapter(platform_cfg)._reply_to_mode == "off"
+
+    def test_load_gateway_config_bool_true_from_gateway_json(
+        self, tmp_path, monkeypatch
+    ):
+        """gateway.json with reply_to_mode: true -> PlatformConfig 'first'."""
+        import json
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "gateway.json").write_text(
+            json.dumps(
+                {
+                    "platforms": {
+                        "discord": {
+                            "enabled": True,
+                            "token": "test-token",
+                            "reply_to_mode": True,
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_REPLY_TO_MODE", raising=False)
+        monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+
+        cfg = load_gateway_config()
+        assert cfg.platforms[Platform.DISCORD].reply_to_mode == "first"
+
+
 class TestYamlConfigLoading:
     """Tests for reply_to_mode loaded from config.yaml discord section."""
 

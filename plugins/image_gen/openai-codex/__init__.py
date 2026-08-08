@@ -313,12 +313,13 @@ def _build_responses_payload(
         }],
         "tools": [{
             "type": "image_generation",
+            "action": "generate",
             "model": API_MODEL,
             "size": size,
             "quality": quality,
             "output_format": "png",
             "background": "opaque",
-            "partial_images": 1,
+            "partial_images": 0,
         }],
         # No ``tool_choice`` is sent: the chatgpt.com/backend-api/codex backend
         # rejects every shape we have for forcing the hosted ``image_generation``

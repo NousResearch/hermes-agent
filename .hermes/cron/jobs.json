@@ -1,0 +1,43 @@
+{
+  "jobs": [
+    {
+      "id": "6bbb59e1eeca",
+      "name": "github-bounty-income-30m",
+      "prompt": "Run deterministic GitHub bounty income pipeline with stages: Scout + Score + Repo Analysis Gate + Report. This is a no-agent cron script job. It must always write a local report, including partial reports on timeout or gate failure.\n\nStrict rules:\n- Do not claim bounties.\n- Do not fork repositories.\n- Do not create bounty-target branches.\n- Do not commit, push, comment, or create PRs for bounty targets.\n- Do not clone or fetch target repositories during unattended runs.\n- Only perform read-only scouting, scoring, issue/repository metadata inspection, watchlist inspection, and report writing.\n- TAKE requires clear payout terms, acceptance criteria, active maintainer/project signals, low legal/security risk, plausible implementation path, likely local verification path, and score >= 70.\n- TAKE output is only a reminder requiring user confirmation; it is not permission to start work.\n- SKIP/WATCH must return DONT_NOTIFY plus wakeAgent=false and write a local report.\n\nNever claim or imply guaranteed income. Never run unauthorized scanning, spam comments, disclose private vulnerabilities publicly, fabricate findings, bypass platform rules, publish payout-sensitive data, or perform public GitHub writes.",
+      "skills": [],
+      "skill": null,
+      "model": null,
+      "provider": null,
+      "base_url": null,
+      "script": "github_bounty_income_30m.py",
+      "no_agent": true,
+      "context_from": null,
+      "schedule": {
+        "kind": "interval",
+        "minutes": 30,
+        "display": "every 30m"
+      },
+      "schedule_display": "every 30m",
+      "repeat": {
+        "times": null,
+        "completed": 0
+      },
+      "enabled": true,
+      "state": "scheduled",
+      "paused_at": null,
+      "paused_reason": null,
+      "created_at": "2026-05-13T01:37:46.851387+08:00",
+      "next_run_at": "2026-05-13T03:07:50.236278+08:00",
+      "last_run_at": null,
+      "last_status": null,
+      "last_error": null,
+      "last_delivery_error": null,
+      "deliver": "local",
+      "origin": null,
+      "enabled_toolsets": [],
+      "workdir": "/Users/jason/gittools/HermesAgent",
+      "allow_memory": false
+    }
+  ],
+  "updated_at": "2026-05-13T02:37:50.236502+08:00"
+}

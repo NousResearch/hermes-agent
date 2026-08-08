@@ -1,0 +1,48 @@
+{
+  "sources": [
+    {
+      "id": "algora-public-bounties",
+      "url": "https://algora.io/bounties",
+      "mode": "public_html_read_only",
+      "notes": "Use only the public HTML listing. Do not rely on deep links, stealth browser flows, CAPTCHA workarounds, or residential proxies."
+    }
+  ],
+  "watchlist": [
+    {
+      "id": "kyo-grpc-390",
+      "repo": "getkyo/kyo",
+      "issue": 390,
+      "title": "gRPC Support",
+      "bounty": "$500",
+      "url": "https://github.com/getkyo/kyo/issues/390",
+      "source": "https://algora.io/bounties",
+      "skills": ["Scala", "gRPC", "protobuf", "code generation"],
+      "initial_status": "WATCH",
+      "notes": "Open issue with bounty signal, but multiple attempts and PRs exist. Prefer repo analysis only."
+    },
+    {
+      "id": "isaac-497-rag",
+      "repo": null,
+      "issue": null,
+      "title": "ISAAC-497 Enhanced RAG Pipeline",
+      "bounty": "$850",
+      "url": "https://algora.io/isaac/bounties/clq18zr98000ejs0gt0nv7gwu",
+      "source": "https://algora.io/bounties",
+      "skills": ["Python", "RAG", "LlamaIndex", "scientific documents", "citations"],
+      "initial_status": "LOW_PRIORITY_WATCH",
+      "notes": "Algora listing is public, but GitHub issue/workspace was not found through GitHub CLI search. Competition/comments appear non-trivial."
+    },
+    {
+      "id": "twenty-imap",
+      "repo": "twentyhq/twenty",
+      "issue": 19494,
+      "title": "Twenty IMAP bounty",
+      "bounty": "$2,500",
+      "url": "https://algora.io/twentyhq/home",
+      "source": "https://algora.io/bounties",
+      "skills": ["TypeScript", "Node.js", "IMAP", "CRM sync"],
+      "initial_status": "VERIFY_ONLY",
+      "notes": "High-value Algora bounty, but GitHub issue #19494 is closed and IMAP PR activity is crowded. Verify only."
+    }
+  ]
+}

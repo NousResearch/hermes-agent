@@ -402,6 +402,70 @@ class TestBusySessionAck:
         assert "terminal" in content  # current tool
         assert "10 min" in content  # elapsed
 
+    @pytest.mark.asyncio
+    async def test_platform_busy_ack_can_be_suppressed(self, monkeypatch):
+        """A platform can process busy input without sending a chat ack."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {
+                "display": {
+                    "platforms": {
+                        "telegram": {"busy_ack_enabled": False},
+                    }
+                }
+            },
+        )
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter("telegram")
+
+        event = _make_event(text="follow up", platform_val="telegram")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        agent.interrupt.assert_called_once_with("follow up")
+        adapter._send_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_platform_busy_ack_override_does_not_silence_others(self, monkeypatch):
+        """A platform override does not change acknowledgments elsewhere."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {
+                "display": {
+                    "platforms": {
+                        "telegram": {"busy_ack_enabled": False},
+                    }
+                }
+            },
+        )
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter("discord")
+        event = _make_event(text="follow up", platform_val="discord")
+        sk = build_session_key(event.source)
+
+        runner._running_agents[sk] = MagicMock()
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        adapter._send_with_retry.assert_awaited_once()
 
 class TestBusySessionOnboardingHint:
     """First-touch hint appended to the busy-ack the first time it fires."""
@@ -469,5 +533,4 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", original_agent, executor_task=None
         ) is False
-
 

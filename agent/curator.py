@@ -1952,10 +1952,19 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # terminal. The background-thread runner also hides it; this
         # belt-and-suspenders path matters when a caller invokes
         # run_curator_review(synchronous=True) from the CLI.
-        with open(os.devnull, "w", encoding="utf-8") as _devnull, \
-             contextlib.redirect_stdout(_devnull), \
-             contextlib.redirect_stderr(_devnull):
-            conv_result = review_agent.run_conversation(user_message=prompt)
+        from tools.skill_manager_tool import (
+            _begin_background_review_read_marks,
+            _end_background_review_read_marks,
+        )
+
+        _read_marks_token = _begin_background_review_read_marks()
+        try:
+            with open(os.devnull, "w", encoding="utf-8") as _devnull, \
+                 contextlib.redirect_stdout(_devnull), \
+                 contextlib.redirect_stderr(_devnull):
+                conv_result = review_agent.run_conversation(user_message=prompt)
+        finally:
+            _end_background_review_read_marks(_read_marks_token)
 
         final = ""
         if isinstance(conv_result, dict):

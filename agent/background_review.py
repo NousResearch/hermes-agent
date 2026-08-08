@@ -907,12 +907,16 @@ def _run_review_in_thread(
                     "{tool_name}. Only memory/skill tools are allowed."
                 ),
             )
+            _read_marks_token = None
             try:
-                from tools.skill_manager_tool import _reset_background_review_read_marks
+                from tools.skill_manager_tool import _begin_background_review_read_marks
 
-                _reset_background_review_read_marks()
+                _read_marks_token = _begin_background_review_read_marks()
             except Exception:
-                pass
+                logger.debug(
+                    "Could not initialize background-review read marks",
+                    exc_info=True,
+                )
 
             try:
                 # Routed to a different model -> replay a digest (cache is cold
@@ -932,6 +936,18 @@ def _run_review_in_thread(
                     conversation_history=_review_history,
                 )
             finally:
+                if _read_marks_token is not None:
+                    try:
+                        from tools.skill_manager_tool import (
+                            _end_background_review_read_marks,
+                        )
+
+                        _end_background_review_read_marks(_read_marks_token)
+                    except Exception:
+                        logger.debug(
+                            "Could not release background-review read marks",
+                            exc_info=True,
+                        )
                 clear_thread_tool_whitelist()
 
             # Snapshot review actions before teardown. close() is allowed to

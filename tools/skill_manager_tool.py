@@ -37,6 +37,7 @@ import logging
 import re
 import shutil
 import contextvars as _ctxvars
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -52,9 +53,43 @@ from agent.skill_utils import (
 
 logger = logging.getLogger(__name__)
 
-_background_review_read_paths: "_ctxvars.ContextVar[frozenset[str]]" = _ctxvars.ContextVar(
-    "background_review_read_paths", default=frozenset()
+_background_review_read_scope: "_ctxvars.ContextVar[object | None]" = _ctxvars.ContextVar(
+    "background_review_read_scope", default=None
 )
+_background_review_read_lock = threading.Lock()
+_background_review_read_paths: Dict[object, set[str]] = {}
+
+
+def _begin_background_review_read_marks() -> tuple[
+    "_ctxvars.Token[object | None]",
+    object,
+]:
+    """Create an isolated read-mark scope inherited by tool workers."""
+    scope = object()
+    token = _background_review_read_scope.set(scope)
+    with _background_review_read_lock:
+        _background_review_read_paths[scope] = set()
+    return token, scope
+
+
+def _end_background_review_read_marks(
+    state: tuple["_ctxvars.Token[object | None]", object],
+) -> None:
+    """Drop the scope created by ``_begin`` and restore its prior context."""
+    token, scope = state
+    with _background_review_read_lock:
+        _background_review_read_paths.pop(scope, None)
+    _background_review_read_scope.reset(token)
+
+
+def _ensure_background_review_read_scope() -> object:
+    scope = _background_review_read_scope.get()
+    if scope is None:
+        scope = object()
+        _background_review_read_scope.set(scope)
+    with _background_review_read_lock:
+        _background_review_read_paths.setdefault(scope, set())
+    return scope
 
 
 def mark_background_review_skill_read(path: Path) -> None:
@@ -77,9 +112,9 @@ def mark_background_review_skill_read(path: Path) -> None:
         resolved = str(path.resolve())
     except Exception:
         resolved = str(path)
-    current = set(_background_review_read_paths.get())
-    current.add(resolved)
-    _background_review_read_paths.set(frozenset(current))
+    scope = _ensure_background_review_read_scope()
+    with _background_review_read_lock:
+        _background_review_read_paths[scope].add(resolved)
 
 
 def _background_review_has_read(path: Path) -> bool:
@@ -87,12 +122,18 @@ def _background_review_has_read(path: Path) -> bool:
         resolved = str(path.resolve())
     except Exception:
         resolved = str(path)
-    return resolved in _background_review_read_paths.get()
+    scope = _background_review_read_scope.get()
+    if scope is None:
+        return False
+    with _background_review_read_lock:
+        return resolved in _background_review_read_paths.get(scope, set())
 
 
 def _reset_background_review_read_marks() -> None:
     """Test helper: clear read-before-write marks for the current context."""
-    _background_review_read_paths.set(frozenset())
+    scope = _ensure_background_review_read_scope()
+    with _background_review_read_lock:
+        _background_review_read_paths[scope].clear()
 
 # Import security scanner — external hub installs always get scanned;
 # agent-created skills only get scanned when skills.guard_agent_created is on.

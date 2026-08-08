@@ -195,7 +195,7 @@ class TestEditSkill:
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _edit_skill("my-skill", VALID_SKILL_CONTENT_2)
         assert result["success"] is True
-        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
         assert "Updated description" in content
 
 
@@ -205,7 +205,7 @@ class TestEditSkill:
             result = _edit_skill("my-skill", "no frontmatter")
         assert result["success"] is False
         # Original content should be preserved
-        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
         assert "A test skill" in content
 
 class TestPatchSkill:
@@ -214,7 +214,7 @@ class TestPatchSkill:
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _patch_skill("my-skill", "Do the thing.", "Do the new thing.")
         assert result["success"] is True
-        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
         assert "Do the new thing." in content
 
 
@@ -237,7 +237,7 @@ word word
 
     def test_patch_supporting_file_symlink_escape_blocked(self, tmp_path):
         outside_file = tmp_path / "outside.txt"
-        outside_file.write_text("old text here")
+        outside_file.write_text("old text here", encoding="utf-8")
 
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
@@ -252,7 +252,7 @@ word word
 
         assert result["success"] is False
         assert "escapes" in result["error"].lower()
-        assert outside_file.read_text() == "old text here"
+        assert outside_file.read_text(encoding="utf-8") == "old text here"
 
 
 class TestDeleteSkill:
@@ -317,7 +317,7 @@ class TestRemoveFile:
         outside_dir = tmp_path / "outside"
         outside_dir.mkdir()
         outside_file = outside_dir / "keep.txt"
-        outside_file.write_text("content")
+        outside_file.write_text("content", encoding="utf-8")
 
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
@@ -540,7 +540,8 @@ def _write_external_skill(external_dir: Path, name: str = "ext-skill") -> Path:
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
         f"---\nname: {name}\ndescription: An external skill.\n---\n\n"
-        "# External\n\nBody with OLD_MARKER here.\n"
+        "# External\n\nBody with OLD_MARKER here.\n",
+        encoding="utf-8",
     )
     return skill_dir
 
@@ -565,7 +566,7 @@ class TestExternalSkillMutations:
             result = _patch_skill("ext-skill", "OLD_MARKER", "NEW_MARKER")
 
         assert result["success"] is True, result
-        assert "NEW_MARKER" in (skill_dir / "SKILL.md").read_text()
+        assert "NEW_MARKER" in (skill_dir / "SKILL.md").read_text(encoding="utf-8")
         # No duplicate in local
         assert not (local / "ext-skill").exists()
 
@@ -743,7 +744,7 @@ class TestPinnedGuard:
                 result = _edit_skill("my-skill", VALID_SKILL_CONTENT_2)
         assert result["success"] is True, result
         # Content updated
-        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
         assert "A test skill" not in content
 
     def test_delete_refuses_pinned(self, tmp_path):
@@ -797,7 +798,7 @@ class TestDeleteSkillRmtreeGuard:
         otherwise follow it and delete the link target's contents."""
         victim = tmp_path.parent / "precious_victim"
         victim.mkdir()
-        (victim / "important.txt").write_text("DO NOT DELETE")
+        (victim / "important.txt").write_text("DO NOT DELETE", encoding="utf-8")
         skills = tmp_path / "skills"
         skills.mkdir()
         evil = skills / "evil-skill"
@@ -822,7 +823,7 @@ class TestDeleteSkillRmtreeGuard:
         skills.mkdir()
         outside = tmp_path / "outside_skill"
         outside.mkdir()
-        (outside / "SKILL.md").write_text("x")
+        (outside / "SKILL.md").write_text("x", encoding="utf-8")
         with patch("tools.skill_manager_tool.SKILLS_DIR", skills), \
              patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills]), \
              patch("tools.skill_manager_tool._find_skill",
@@ -947,3 +948,95 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+
+def test_background_review_read_mark_returns_from_worker_thread(tmp_path):
+    """A skill_view worker's mark must authorize the review's next tool call."""
+    import threading
+
+    from tools.skill_manager_tool import (
+        _begin_background_review_read_marks,
+        _background_review_has_read,
+        _end_background_review_read_marks,
+        mark_background_review_skill_read,
+    )
+    from tools.skill_provenance import (
+        BACKGROUND_REVIEW,
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+    from tools.thread_context import propagate_context_to_thread
+
+    target = tmp_path / "reviewed" / "SKILL.md"
+    origin_token = set_current_write_origin(BACKGROUND_REVIEW)
+    marks_token = _begin_background_review_read_marks()
+    try:
+        worker = threading.Thread(
+            target=propagate_context_to_thread(
+                lambda: mark_background_review_skill_read(target)
+            )
+        )
+        worker.start()
+        worker.join(timeout=5)
+
+        assert not worker.is_alive()
+        assert _background_review_has_read(target) is True
+    finally:
+        _end_background_review_read_marks(marks_token)
+        reset_current_write_origin(origin_token)
+
+
+def test_background_review_read_marks_are_scope_isolated(tmp_path):
+    from tools.skill_manager_tool import (
+        _background_review_has_read,
+        _begin_background_review_read_marks,
+        _end_background_review_read_marks,
+        mark_background_review_skill_read,
+    )
+    from tools.skill_provenance import (
+        BACKGROUND_REVIEW,
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+
+    target = tmp_path / "reviewed" / "SKILL.md"
+    origin_token = set_current_write_origin(BACKGROUND_REVIEW)
+    outer_token = _begin_background_review_read_marks()
+    try:
+        mark_background_review_skill_read(target)
+        assert _background_review_has_read(target) is True
+
+        inner_token = _begin_background_review_read_marks()
+        try:
+            assert _background_review_has_read(target) is False
+        finally:
+            _end_background_review_read_marks(inner_token)
+
+        assert _background_review_has_read(target) is True
+    finally:
+        _end_background_review_read_marks(outer_token)
+        reset_current_write_origin(origin_token)
+
+
+def test_background_review_end_releases_the_scope_bound_to_its_token():
+    from tools.skill_manager_tool import (
+        _background_review_read_lock,
+        _background_review_read_paths,
+        _background_review_read_scope,
+        _begin_background_review_read_marks,
+        _end_background_review_read_marks,
+    )
+
+    outer_state = _begin_background_review_read_marks()
+    outer_scope = _background_review_read_scope.get()
+    inner_state = _begin_background_review_read_marks()
+    inner_scope = _background_review_read_scope.get()
+    try:
+        _end_background_review_read_marks(outer_state)
+
+        with _background_review_read_lock:
+            assert outer_scope not in _background_review_read_paths
+            assert inner_scope in _background_review_read_paths
+    finally:
+        _end_background_review_read_marks(inner_state)
+        _background_review_read_scope.set(None)

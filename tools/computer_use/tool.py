@@ -315,6 +315,25 @@ def release_computer_use_session(session_id: str) -> bool:
     return True
 
 
+def _backend_stop_and_clear(session_id: str = "") -> None:
+    """Stop the active backend and clear the cached instance.
+
+    Called after each computer_use tool call so cua-driver doesn't idle at ~45% CPU.
+    The next call to _get_backend() will cold-start a fresh instance (~1-2s).
+    """
+    global _backend
+    with _backend_lock:
+        backend = _backends.pop(session_id, None)
+        _backend_call_locks.pop(session_id, None)
+        if backend is not None:
+            try:
+                backend.stop()
+            except Exception:
+                pass
+        if _backend is backend:
+            _backend = None
+
+
 def _shutdown_backend_atexit() -> None:
     """Stop all cached backends so cua-driver children don't outlive us.
 

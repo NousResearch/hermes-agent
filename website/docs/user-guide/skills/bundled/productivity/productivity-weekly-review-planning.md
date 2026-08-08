@@ -1,15 +1,33 @@
 ---
-name: weekly-review-planning
-description: "Weekly reset: commitments, stalled work, next-week plan."
-version: 0.1.0
-author: Ben Barclay (benbarclay), Hermes Agent
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  hermes:
-    tags: [Weekly-Review, Planning, Tasks, Calendar, Productivity]
-    related_skills: [obsidian, notion, airtable, google-workspace, email-inbox-triage]
+title: "Weekly Review Planning — Weekly reset: commitments, stalled work, next-week plan"
+sidebar_label: "Weekly Review Planning"
+description: "Weekly reset: commitments, stalled work, next-week plan"
 ---
+
+{/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
+
+# Weekly Review Planning
+
+Weekly reset: commitments, stalled work, next-week plan.
+
+## Skill metadata
+
+| | |
+|---|---|
+| Source | Bundled (installed by default) |
+| Path | `skills/productivity/weekly-review-planning` |
+| Version | `0.1.0` |
+| Author | Ben Barclay (benbarclay), Hermes Agent |
+| License | MIT |
+| Platforms | linux, macos, windows |
+| Tags | `Weekly-Review`, `Planning`, `Tasks`, `Calendar`, `Productivity` |
+| Related skills | [`obsidian`](/docs/user-guide/skills/bundled/note-taking/note-taking-obsidian), [`notion`](/docs/user-guide/skills/bundled/productivity/productivity-notion), [`airtable`](/docs/user-guide/skills/bundled/productivity/productivity-airtable), [`google-workspace`](/docs/user-guide/skills/bundled/productivity/productivity-google-workspace), [`email-inbox-triage`](/docs/user-guide/skills/bundled/email/email-email-inbox-triage) |
+
+## Reference: full SKILL.md
+
+:::info
+The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+:::
 
 # Weekly Review and Planning
 

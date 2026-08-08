@@ -112,6 +112,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`powerpoint`](/docs/user-guide/skills/bundled/productivity/productivity-powerpoint) | Create, read, edit .pptx decks with python-pptx. | `productivity/powerpoint` |
 | [`product-price-monitor`](/docs/user-guide/skills/bundled/productivity/productivity-product-price-monitor) | Watch product, flight, or listing prices; alert on target. | `productivity/product-price-monitor` |
 | [`teams-meeting-pipeline`](/docs/user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline) | Teams meeting summaries, job replay, Graph subscriptions. | `productivity/teams-meeting-pipeline` |
+| [`weekly-review-planning`](/docs/user-guide/skills/bundled/productivity/productivity-weekly-review-planning) | Weekly reset: commitments, stalled work, next-week plan. | `productivity/weekly-review-planning` |
 | [`xlsx`](/docs/user-guide/skills/bundled/productivity/productivity-xlsx) | Create, read, edit Excel .xlsx workbooks and CSVs. | `productivity/xlsx` |
 
 ## research

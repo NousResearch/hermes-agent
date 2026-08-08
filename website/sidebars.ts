@@ -272,6 +272,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/productivity/productivity-powerpoint',
                     'user-guide/skills/bundled/productivity/productivity-product-price-monitor',
                     'user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline',
+                    'user-guide/skills/bundled/productivity/productivity-weekly-review-planning',
                     'user-guide/skills/bundled/productivity/productivity-xlsx',
                   ],
                 },

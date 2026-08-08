@@ -2060,8 +2060,14 @@ def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str
 
 
 def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
-    """AGENTS.md — top-level only (no recursive walk)."""
-    for name in ["AGENTS.md", "agents.md"]:
+    """AGENTS.override.md / AGENTS.md — top-level only (no recursive walk).
+
+    ``AGENTS.override.md`` wins over ``AGENTS.md`` so a developer can keep a
+    personal, typically-gitignored override next to the committed project
+    instructions without editing the tracked file (same convention as
+    earendil-works/pi#7681).
+    """
+    for name in ["AGENTS.override.md", "AGENTS.md", "agents.md"]:
         candidate = cwd_path / name
         if candidate.exists():
             try:

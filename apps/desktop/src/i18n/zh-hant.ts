@@ -2036,9 +2036,15 @@ export const zhHant = defineLocale({
     errorBody: '沒有資料遺失。您可以現在重試。',
     blockerTitle: '關閉本機預覽以更新 Hermes？',
     blockerBody: 'Hermes 需要在更新前停止這些本機預覽。這不會修改或刪除您的檔案。',
+    foreignBlockerTitle: '關閉其他處理程序以更新 Hermes',
+    foreignBlockerBody:
+      'Hermes 無法安全地自動關閉這些處理程序。請關閉擁有這些處理程序的應用程式、終端機或服務，然後重試更新。',
+    mixedBlockerBody: 'Hermes 可以關閉下方列出的本機預覽。其他處理程序必須手動關閉，更新才能繼續。',
     closePreviewsAndUpdate: '關閉預覽並更新',
+    closePreviewsAndCheckAgain: '關閉預覽並重新檢查',
     localPreview: '本機預覽',
     portLabel: port => `連接埠 ${port}`,
+    pidLabel: pid => `PID ${pid}`,
     technicalDetails: '技術詳細資料',
     notNow: '暫不',
     applyStatus: {

@@ -14,12 +14,7 @@ import {
 import { ErrorIcon, ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
 import { Progress } from '@/components/ui/progress'
-import type {
-  DesktopUpdateBlocker,
-  DesktopUpdateCommit,
-  DesktopUpdateStage,
-  DesktopUpdateStatus
-} from '@/global'
+import type { DesktopUpdateBlocker, DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
 import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
@@ -85,13 +80,7 @@ export function UpdatesOverlay() {
             ? 'error'
             : 'idle'
 
-  const safeBlockers =
-    !isBackend &&
-    apply.error === 'venv-blocked' &&
-    apply.blockers?.length &&
-    apply.blockers.every(blocker => blocker.kind === 'local-preview' && blocker.safeToStop)
-      ? apply.blockers
-      : null
+  const updateBlockers = !isBackend && apply.error === 'venv-blocked' && apply.blockers?.length ? apply.blockers : null
 
   const handleClose = (next: boolean) => {
     if (phase === 'applying') {
@@ -130,15 +119,15 @@ export function UpdatesOverlay() {
 
         {phase === 'guiSkew' && <GuiSkewView message={apply.message} onDone={() => handleClose(false)} />}
 
-        {phase === 'error' && safeBlockers ? (
+        {phase === 'error' && updateBlockers ? (
           <BlockerView
-            blockers={safeBlockers}
+            blockers={updateBlockers}
             onDismiss={() => handleClose(false)}
             onStopAndUpdate={() => void applyUpdates({ stopSafeBlockers: true })}
           />
         ) : null}
 
-        {phase === 'error' && !safeBlockers ? (
+        {phase === 'error' && !updateBlockers ? (
           <ErrorView message={apply.message} onDismiss={() => handleClose(false)} onRetry={handleInstall} />
         ) : null}
 
@@ -441,6 +430,30 @@ function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend
   )
 }
 
+const BLOCKER_COMMAND_LINE_LIMIT = 500
+
+const SENSITIVE_ARGUMENT_NAME =
+  '(?:api[-_]?key|access[-_]?token|refresh[-_]?token|auth[-_]?token|x[-_]?plex[-_]?token|token|password|passwd|client[-_]?secret|secret|authorization)'
+
+const SENSITIVE_COMMAND_TAIL = new RegExp(
+  `((?:^|\\s)(?:(?:--?)${SENSITIVE_ARGUMENT_NAME}(?:\\s*=\\s*|\\s+)|${SENSITIVE_ARGUMENT_NAME}\\s*(?:=|:)\\s*)).*$`,
+  'i'
+)
+
+const SENSITIVE_QUERY_ARGUMENT = new RegExp(`([?&]${SENSITIVE_ARGUMENT_NAME}=)[^&#\\s]+`, 'gi')
+
+export function formatBlockerCommandLine(commandLine: string): string {
+  const redacted = commandLine
+    .replace(SENSITIVE_QUERY_ARGUMENT, '$1[REDACTED]')
+    .replace(SENSITIVE_COMMAND_TAIL, '$1[REDACTED]')
+
+  const characters = Array.from(redacted)
+
+  return characters.length > BLOCKER_COMMAND_LINE_LIMIT
+    ? `${characters.slice(0, BLOCKER_COMMAND_LINE_LIMIT - 1).join('')}…`
+    : redacted
+}
+
 export function BlockerView({
   blockers,
   onDismiss,
@@ -453,25 +466,43 @@ export function BlockerView({
   const { t } = useI18n()
   const u = t.updates
 
+  const safeBlockers = blockers.filter(blocker => blocker.kind === 'local-preview' && blocker.safeToStop)
+  const hasForeignBlockers = safeBlockers.length !== blockers.length
+  const title = hasForeignBlockers ? u.foreignBlockerTitle : u.blockerTitle
+
+  const body = hasForeignBlockers
+    ? safeBlockers.length > 0
+      ? u.mixedBlockerBody
+      : u.foreignBlockerBody
+    : u.blockerBody
+
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
       <div className="flex flex-col items-center gap-3 text-center">
         <div className="grid size-12 place-items-center rounded-full bg-warning/15 text-warning">
           <AlertCircle aria-hidden className="size-6" />
         </div>
-        <DialogTitle className="text-center text-xl font-semibold tracking-tight">{u.blockerTitle}</DialogTitle>
+        <DialogTitle className="text-center text-xl font-semibold tracking-tight">{title}</DialogTitle>
         <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
-          {u.blockerBody}
+          {body}
         </DialogDescription>
       </div>
 
       <div className="grid gap-2">
-        {blockers.map(blocker => (
-          <div className="rounded-lg border border-border/70 bg-muted/35 px-3 py-2.5" key={blocker.pid}>
-            <div className="text-sm font-medium">{blocker.label || u.localPreview}</div>
-            {blocker.port ? <div className="text-xs text-muted-foreground">{u.portLabel(blocker.port)}</div> : null}
-          </div>
-        ))}
+        {blockers.map(blocker => {
+          const isSafePreview = blocker.kind === 'local-preview' && blocker.safeToStop
+
+          return (
+            <div className="rounded-lg border border-border/70 bg-muted/35 px-3 py-2.5" key={blocker.pid}>
+              <div className="text-sm font-medium">
+                {isSafePreview ? blocker.label || u.localPreview : blocker.name}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {isSafePreview && blocker.port ? u.portLabel(blocker.port) : u.pidLabel(blocker.pid)}
+              </div>
+            </div>
+          )
+        })}
       </div>
 
       <details className="rounded-md border border-border/60 px-3 py-2 text-xs text-muted-foreground">
@@ -479,16 +510,18 @@ export function BlockerView({
         <div className="mt-2 grid gap-2 font-mono text-[11px] leading-4">
           {blockers.map(blocker => (
             <div className="break-all" key={blocker.pid}>
-              PID {blocker.pid} · {blocker.cmdline}
+              PID {blocker.pid} · {formatBlockerCommandLine(blocker.cmdline)}
             </div>
           ))}
         </div>
       </details>
 
       <div className="grid gap-1">
-        <Button className="font-semibold" onClick={onStopAndUpdate} size="lg">
-          {u.closePreviewsAndUpdate}
-        </Button>
+        {safeBlockers.length > 0 ? (
+          <Button className="font-semibold" onClick={onStopAndUpdate} size="lg">
+            {hasForeignBlockers ? u.closePreviewsAndCheckAgain : u.closePreviewsAndUpdate}
+          </Button>
+        ) : null}
         <Button onClick={onDismiss} variant="text">
           {u.notNow}
         </Button>

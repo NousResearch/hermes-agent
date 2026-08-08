@@ -66,6 +66,121 @@ MEMORY_BLOCK_HEADERS = {
 
 ENTRY_DELIMITER = "\n§\n"
 
+# ---------------------------------------------------------------------------
+# Scoped memory (issue #28279)
+#
+# An entry may carry an optional scope marker as a text prefix:
+#     [scope: telegram:123456789] Production DB host: 10.0.1.50
+#
+# Scope encodes WHERE the entry may be injected. At snapshot-build time
+# (load_from_disk) entries whose scope does not match the current session are
+# excluded from the system prompt. Live state keeps ALL entries so
+# replace/remove/dedup keep working across scopes, and so the agent that owns
+# a scope can still manage its entries from any session via the memory tool.
+#
+# Supported scope forms (mirrors the issue proposal):
+#     telegram:123456789   exact chat/channel on a platform
+#     telegram:*           any chat on that platform
+#     profile:work         a Hermes profile
+#     (no marker)          global — injected everywhere (backward compatible)
+#
+# The marker is plain entry text: it round-trips through the existing
+# file format, char limits, substring-based replace/remove, and the staged
+# write-approval path without any storage migration.
+# ---------------------------------------------------------------------------
+
+import re
+
+_SCOPE_MARKER_RE = re.compile(r"^\[scope:\s*([^\]]+)\]\s*", re.DOTALL)
+
+# platform | platform:id | platform:* | profile:name — conservative charset,
+# no whitespace/brackets so the marker regex can never be confused.
+_VALID_SCOPE_RE = re.compile(r"^[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.*-]+)?$")
+
+
+def parse_entry_scope(entry: str) -> tuple:
+    """Split an entry into (scope, content). scope is '' when unscoped."""
+    m = _SCOPE_MARKER_RE.match(entry)
+    if not m:
+        return "", entry
+    return m.group(1).strip(), entry[m.end():]
+
+
+def validate_scope(scope: str) -> Optional[str]:
+    """Return an error string if the scope value is malformed, else None."""
+    if not _VALID_SCOPE_RE.match(scope):
+        return (
+            f"Invalid scope '{scope}'. Use 'platform:chat_id' (e.g. "
+            f"'telegram:123456789'), 'platform:*', or 'profile:name'."
+        )
+    return None
+
+
+def scope_matches(scope: str, session_scopes: Optional[List[str]]) -> bool:
+    """True when an entry with ``scope`` may be injected into this session.
+
+    ``session_scopes`` is the identity list of the running session, e.g.
+    ``["telegram", "telegram:123456789", "profile:work"]``. ``None`` means
+    "no filtering" (write-only stores, or callers predating scope support).
+    """
+    scope = (scope or "").strip()
+    if not scope:
+        return True  # global entry
+    if session_scopes is None:
+        return True
+    if scope.endswith(":*"):
+        base = scope[:-2]        # "telegram"
+        prefix = scope[:-1]      # "telegram:"
+        return any(s == base or s.startswith(prefix) for s in session_scopes)
+    return scope in session_scopes
+
+
+def apply_scope_marker(content: str, scope: Optional[str]) -> str:
+    """Prepend the scope marker to entry content (idempotent for same scope)."""
+    if not scope:
+        return content
+    existing, bare = parse_entry_scope(content)
+    if existing == scope:
+        return content
+    return f"[scope: {scope}] {bare if existing else content}"
+
+
+# Sentinel scope value resolved server-side to the running session's own
+# chat scope. The model never sees raw chat IDs in its system prompt, so it
+# cannot construct 'telegram:123456789' itself — it says 'current' and the
+# store resolves it from trusted session context (issue #28279 review).
+CURRENT_SCOPE_SENTINEL = "current"
+
+
+def resolve_scope(scope: str, session_scopes: Optional[List[str]]) -> tuple:
+    """Resolve a model-supplied scope value to a concrete stored scope.
+
+    Returns (resolved_scope, error). 'current' resolves to the session's most
+    specific chat scope ('platform:chat_id' when the session has one, else the
+    bare platform). Any other value is validated and passed through.
+    """
+    scope = (scope or "").strip()
+    if scope != CURRENT_SCOPE_SENTINEL:
+        err = validate_scope(scope)
+        return (scope, err) if not err else ("", err)
+    if not session_scopes:
+        return "", (
+            "Cannot resolve scope 'current': this session has no platform "
+            "identity. Omit scope, or pass an explicit one."
+        )
+    chat_scopes = [s for s in session_scopes
+                   if ":" in s and not s.startswith("profile:")]
+    if chat_scopes:
+        # Most specific chat scope (e.g. 'telegram:123456789').
+        return max(chat_scopes, key=len), None
+    platforms = [s for s in session_scopes if ":" not in s]
+    if platforms:
+        return f"{platforms[0]}:*", None
+    return "", (
+        "Cannot resolve scope 'current': session identity has no platform "
+        "component. Omit scope, or pass an explicit one."
+    )
+
 
 # ---------------------------------------------------------------------------
 # Memory content scanning — lightweight check for injection/exfiltration
@@ -162,11 +277,16 @@ class MemoryStore:
     # turn to budget exhaustion and suppress the user's reply (issue #42405).
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375,
+                 session_scopes: Optional[List[str]] = None):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        # Session identity for scoped-entry filtering (issue #28279), e.g.
+        # ["telegram", "telegram:123456789", "profile:work"]. None disables
+        # filtering entirely (all entries injected — pre-scope behaviour).
+        self.session_scopes = session_scopes
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
         # Per-turn counter of failed at-capacity consolidation attempts; reset
@@ -227,17 +347,62 @@ class MemoryStore:
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
 
+        # Scope filtering happens BEFORE sanitization, snapshot-side only
+        # (issue #28279): entries scoped to another chat/platform/profile are
+        # dropped from the system prompt but stay in live state, so the memory
+        # tool can still list/replace/remove them from any session.
+        snapshot_memory = self._filter_entries_for_scope(self.memory_entries)
+        snapshot_user = self._filter_entries_for_scope(self.user_entries)
+
         # Sanitize entries for the system-prompt snapshot only.  Live state
         # (memory_entries / user_entries) keeps the raw text so the user
         # can see + remove poisoned entries via the memory tool.
-        sanitized_memory = self._sanitize_entries_for_snapshot(self.memory_entries, "MEMORY.md")
-        sanitized_user = self._sanitize_entries_for_snapshot(self.user_entries, "USER.md")
+        sanitized_memory = self._sanitize_entries_for_snapshot(snapshot_memory, "MEMORY.md")
+        sanitized_user = self._sanitize_entries_for_snapshot(snapshot_user, "USER.md")
 
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
             "memory": self._render_block("memory", sanitized_memory),
             "user": self._render_block("user", sanitized_user),
         }
+
+    def _filter_entries_for_scope(self, entries: List[str]) -> List[str]:
+        """Return entries whose scope matches this session (issue #28279).
+
+        Matching entries are returned WITH their scope marker stripped — the
+        marker is routing metadata, not content the model needs to see.
+        Unscoped entries pass through unchanged. ``session_scopes is None``
+        disables filtering (backward compatible).
+        """
+        if self.session_scopes is None:
+            return list(entries)
+        kept: List[str] = []
+        for entry in entries:
+            scope, bare = parse_entry_scope(entry)
+            if not scope:
+                kept.append(entry)
+            elif scope_matches(scope, self.session_scopes):
+                kept.append(bare)
+        return kept
+
+    def _entry_visible(self, entry: str) -> bool:
+        """True when this session may see/mutate the entry.
+
+        Scope is an ACCESS BOUNDARY, not just prompt routing: sessions that
+        don't match an entry's scope must not receive it through any tool
+        result either — error inventories (``current_entries``), match
+        previews, and replace/remove targeting all go through this check.
+        Markers are kept on visible entries here (unlike the snapshot) so the
+        owning session can manage and re-scope them.
+        """
+        if self.session_scopes is None:
+            return True
+        scope, _ = parse_entry_scope(entry)
+        return scope_matches(scope, self.session_scopes)
+
+    def _visible_entries(self, entries: List[str]) -> List[str]:
+        """Filter an entry list down to what this session may see."""
+        return [e for e in entries if self._entry_visible(e)]
 
     @staticmethod
     def _sanitize_entries_for_snapshot(entries: List[str], filename: str) -> List[str]:
@@ -436,7 +601,7 @@ class MemoryStore:
                         f"shorter ones or 'remove' stale or less important entries (see "
                         f"current_entries below), then retry this add — all in this turn."
                     ),
-                    "current_entries": entries,
+                    "current_entries": self._visible_entries(entries),
                     "usage": f"{current:,}/{limit:,}",
                 })
 
@@ -468,13 +633,16 @@ class MemoryStore:
                 return _drift_error(self._path_for(target), bak)
 
             entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+            # Scoped entries invisible to this session are not valid targets:
+            # matching them would leak their text via error/preview paths.
+            matches = [(i, e) for i, e in enumerate(entries)
+                       if old_text in e and self._entry_visible(e)]
 
             if not matches:
                 return self._consolidation_failure({
                     "success": False,
                     "error": f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text of the entry you want to replace.",
-                    "current_entries": entries,
+                    "current_entries": self._visible_entries(entries),
                 })
 
             if len(matches) > 1:
@@ -507,7 +675,7 @@ class MemoryStore:
                         f"entries to make room (see current_entries below), then retry — all "
                         f"in this turn."
                     ),
-                    "current_entries": entries,
+                    "current_entries": self._visible_entries(entries),
                     "usage": f"{current:,}/{limit:,}",
                 })
 
@@ -531,13 +699,15 @@ class MemoryStore:
                 return _drift_error(self._path_for(target), bak)
 
             entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+            # Same visibility rule as replace: invisible entries can't be hit.
+            matches = [(i, e) for i, e in enumerate(entries)
+                       if old_text in e and self._entry_visible(e)]
 
             if not matches:
                 return self._consolidation_failure({
                     "success": False,
                     "error": f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text of the entry you want to remove.",
-                    "current_entries": entries,
+                    "current_entries": self._visible_entries(entries),
                 })
 
             if len(matches) > 1:
@@ -618,7 +788,8 @@ class MemoryStore:
                             target,
                             f"{pos}: content is required (use action='remove' to delete).",
                         )
-                    matches = [j for j, e in enumerate(working) if old_text in e]
+                    matches = [j for j, e in enumerate(working)
+                               if old_text in e and self._entry_visible(e)]
                     if not matches:
                         return self._batch_error(target, f"{pos}: no entry matched '{old_text}'.")
                     if len({working[j] for j in matches}) > 1:
@@ -631,7 +802,8 @@ class MemoryStore:
                 elif act == "remove":
                     if not old_text:
                         return self._batch_error(target, f"{pos}: old_text is required.")
-                    matches = [j for j, e in enumerate(working) if old_text in e]
+                    matches = [j for j, e in enumerate(working)
+                               if old_text in e and self._entry_visible(e)]
                     if not matches:
                         return self._batch_error(target, f"{pos}: no entry matched '{old_text}'.")
                     if len({working[j] for j in matches}) > 1:
@@ -658,7 +830,7 @@ class MemoryStore:
                         f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
                         f"entries in the same batch (see current_entries below), then retry."
                     ),
-                    "current_entries": self._entries_for(target),
+                    "current_entries": self._visible_entries(self._entries_for(target)),
                     "usage": f"{current:,}/{limit:,}",
                 })
 
@@ -675,7 +847,7 @@ class MemoryStore:
         return self._consolidation_failure({
             "success": False,
             "error": message + " No operations were applied (batch is all-or-nothing).",
-            "current_entries": self._entries_for(target),
+            "current_entries": self._visible_entries(self._entries_for(target)),
             "usage": f"{current:,}/{limit:,}",
         })
 
@@ -1026,7 +1198,9 @@ def _missing_old_text_error(store: "MemoryStore", target: str, action: str) -> s
     the call with ``old_text`` set to a unique substring of the entry it means.
     Mirrors the batch path's ``_batch_error`` shape. (issues #43412, #49466)
     """
-    entries = store._entries_for(target)
+    # Only entries visible to this session — the raw store may hold entries
+    # scoped to other chats, which must not leak through error inventories.
+    entries = store._visible_entries(store._entries_for(target))
     current = store._char_count(target)
     limit = store._char_limit(target)
     return json.dumps(
@@ -1051,14 +1225,19 @@ def memory_tool(
     old_text: str = None,
     operations: Optional[List[Dict[str, Any]]] = None,
     store: Optional[MemoryStore] = None,
+    scope: str = None,
 ) -> str:
     """
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
 
     Two shapes:
-      - Single op: action + (content / old_text).
-      - Batch:     operations=[{action, content?, old_text?}, ...] applied
-                   atomically against the final char budget in ONE call.
+      - Single op: action + (content / old_text), optionally scope.
+      - Batch:     operations=[{action, content?, old_text?, scope?}, ...]
+                   applied atomically against the final char budget in ONE call.
+
+    ``scope`` (issue #28279) restricts where an added entry is injected:
+    'platform:chat_id', 'platform:*', or 'profile:name'. Unscoped entries
+    remain global.
 
     Returns JSON string with results.
     """
@@ -1078,6 +1257,20 @@ def memory_tool(
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
+        # Fold per-op scope into content up front so the gate preview, the
+        # atomic char-budget check, and the staged-approval replay all see
+        # the final stored text (issue #28279).
+        folded: List[Dict[str, Any]] = []
+        for op in operations:
+            op = dict(op or {})
+            op_scope = (op.pop("scope", None) or "").strip()
+            if op_scope and op.get("action") == "add" and op.get("content"):
+                resolved, err = resolve_scope(op_scope, store.session_scopes)
+                if err:
+                    return tool_error(err, success=False)
+                op["content"] = apply_scope_marker(op["content"], resolved)
+            folded.append(op)
+        operations = folded
         gate_result = _apply_batch_write_gate(target, operations)
         if gate_result is not None:
             return gate_result
@@ -1089,6 +1282,15 @@ def memory_tool(
     # immediately instead of being staged and only failing at approve time.
     if action == "add" and not content:
         return tool_error("Content is required for 'add' action.", success=False)
+
+    # Scope only applies to add: replace/remove locate entries by substring,
+    # which already works against the stored "[scope: ...] content" text.
+    scope = (scope or "").strip()
+    if scope and action == "add":
+        resolved, err = resolve_scope(scope, store.session_scopes)
+        if err:
+            return tool_error(err, success=False)
+        content = apply_scope_marker(content, resolved)
     if action == "replace" and (not old_text or not content):
         missing = "old_text" if not old_text else "content"
         if not old_text:
@@ -1194,6 +1396,19 @@ MEMORY_SCHEMA = {
                 "type": "string",
                 "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring identifying the existing entry to modify. Omit only for 'add'."
             },
+            "scope": {
+                "type": "string",
+                "description": (
+                    "Optional, 'add' only: restrict where this entry is injected. "
+                    "Use 'current' to pin the entry to THIS chat — it is resolved "
+                    "server-side from the session, so you never need a chat ID. "
+                    "Explicit forms also work: 'platform:*' (all chats on a "
+                    "platform), 'profile:name' (a Hermes profile). Omit for global "
+                    "(injected everywhere). Use scope='current' whenever the fact "
+                    "is private to this conversation (credentials, personal "
+                    "details shared in a DM)."
+                )
+            },
             "operations": {
                 "type": "array",
                 "description": (
@@ -1207,6 +1422,7 @@ MEMORY_SCHEMA = {
                         "action": {"type": "string", "enum": ["add", "replace", "remove"]},
                         "content": {"type": "string", "description": "Entry content for add/replace."},
                         "old_text": {"type": "string", "description": "Substring identifying the entry for replace/remove."},
+                        "scope": {"type": "string", "description": "Optional, add only: injection scope. 'current' pins to this chat (resolved server-side); also 'platform:*' or 'profile:name'."},
                     },
                     "required": ["action"],
                 },
@@ -1230,7 +1446,8 @@ registry.register(
         content=args.get("content"),
         old_text=args.get("old_text"),
         operations=args.get("operations"),
-        store=kw.get("store")),
+        store=kw.get("store"),
+        scope=args.get("scope")),
     check_fn=check_memory_requirements,
     emoji="🧠",
 )

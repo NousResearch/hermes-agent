@@ -456,6 +456,34 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _build_memory_session_scopes(agent) -> Optional[List[str]]:
+    """Build this session's scope identity for scoped memory (issue #28279).
+
+    Returns e.g. ["telegram", "telegram:123456789", "profile:work"], or None
+    when the session has no platform identity at all (scope filtering then
+    stays off, preserving pre-scope behaviour for exotic embedding setups).
+    """
+    scopes: List[str] = []
+    platform = (getattr(agent, "platform", None) or "").strip().lower()
+    if platform:
+        scopes.append(platform)
+        chat_id = str(getattr(agent, "_chat_id", None) or "").strip()
+        if chat_id:
+            scopes.append(f"{platform}:{chat_id}")
+    else:
+        # Interactive/local sessions have no gateway platform — they are the
+        # trusted home base and match "cli"-scoped entries.
+        scopes.append("cli")
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        profile = (get_active_profile_name() or "").strip()
+        if profile:
+            scopes.append(f"profile:{profile}")
+    except Exception:
+        pass
+    return scopes
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -1704,6 +1732,7 @@ def init_agent(
                 agent._memory_store = MemoryStore(
                     memory_char_limit=mem_config.get("memory_char_limit", 2200),
                     user_char_limit=mem_config.get("user_char_limit", 1375),
+                    session_scopes=_build_memory_session_scopes(agent),
                 )
                 agent._memory_store.load_from_disk()
         except Exception:

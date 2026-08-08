@@ -304,7 +304,13 @@ def is_local_model_name(model_name: str) -> bool:
     if not name or name == "none":
         return False
     local_markers = ["ollama", "llama.cpp", "localhost", "127.0.0.1", "local/", "local:", "gguf", "vllm-local"]
-    return any(marker in name for marker in local_markers)
+    if any(marker in name for marker in local_markers):
+        return True
+    # Ollama native format: bare name:tag with no provider prefix (no "/")
+    # e.g. qwen2.5:3b, llama3:8b, mistral:7b, phi3:mini
+    if "/" not in name and re.match(r'^[a-z0-9._-]+:\d+\.?\d*[bBmMkK]$', name):
+        return True
+    return False
 
 
 def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:

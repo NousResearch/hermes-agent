@@ -9,6 +9,7 @@ Environment variables:
     MATTERMOST_TOKEN            Bot token or personal-access token
     MATTERMOST_ALLOWED_USERS    Comma-separated user IDs
     MATTERMOST_HOME_CHANNEL     Channel ID for cron/notification delivery
+    MATTERMOST_MAX_POST_LENGTH  Max chars per post (default: 16383)
 """
 
 from __future__ import annotations
@@ -56,9 +57,8 @@ def _get_scoped_secret(name, default=None):
 
 logger = logging.getLogger(__name__)
 
-# Mattermost post size limit (server default is 16383, but 4000 is the
-# practical limit for readable messages — matching OpenClaw's choice).
-MAX_POST_LENGTH = 4000
+# Mattermost post size limit (server default is 16383).
+MAX_POST_LENGTH = int(os.getenv("MATTERMOST_MAX_POST_LENGTH", "16383"))
 
 # Channel type codes returned by the Mattermost API.
 _CHANNEL_TYPE_MAP = {

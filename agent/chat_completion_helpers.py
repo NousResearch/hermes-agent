@@ -3098,6 +3098,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # models that are simply slow to produce their first token are not
     # affected — they fall under the normal _stream_stale_timeout guard.
     reasoning_seen = {"yes": False}
+    # Set once the reasoning-only watchdog kills an attempt.  The worker's
+    # retry loop reads it and exits WITHOUT retrying: a reasoning-only loop
+    # is prompt-deterministic, so a byte-identical retry would be killed
+    # again; the outer conversation loop's fallback machinery is the right
+    # recovery.  Per-call (never reset per attempt).
+    reasoning_stale_killed = {"yes": False}
     # Stale-stream patience, shared between the httpx socket read timeout
     # (built in ``_call_chat_completions`` below) and the stale-stream detector
     # (computed further down, before the worker thread starts).  Initialized
@@ -3453,6 +3459,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     reasoning_text,
                 )
                 reasoning_parts.append(reasoning_text)
+                if not reasoning_seen["yes"]:
+                    # Anchor the reasoning-only window at the FIRST reasoning
+                    # chunk, not the attempt start: TTFT latency must not eat
+                    # the reasoning budget (#78807 review).
+                    last_content_chunk_time["t"] = time.time()
                 reasoning_seen["yes"] = True  # model entered reasoning mode
                 _fire_first_delta()
                 agent._fire_reasoning_delta(reasoning_text)
@@ -3893,9 +3904,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         elif delta_type == "thinking_delta":
                             thinking_text = getattr(delta, "thinking", "")
                             if thinking_text:
+                                if not reasoning_seen["yes"]:
+                                    # Anchor the reasoning-only window at the
+                                    # FIRST thinking chunk (TTFT must not eat
+                                    # the reasoning budget — #78807 review).
+                                    last_content_chunk_time["t"] = time.time()
                                 reasoning_seen["yes"] = True  # model entered reasoning mode
                                 _fire_first_delta()
                                 agent._fire_reasoning_delta(thinking_text)
+                        elif delta_type == "input_json_delta":
+                            # Tool-call argument JSON is real output: a long
+                            # tool-arg stream must keep the reasoning-only
+                            # watchdog satisfied (#78807 review).
+                            last_content_chunk_time["t"] = time.time()
             if not agent._interrupt_requested:
                 raw_stream = _stream_context["stream"]
                 if raw_stream is not None:
@@ -4028,6 +4049,20 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             "cancellation — exiting without retry.",
                             type(e).__name__,
                         )
+                        return
+                    if reasoning_stale_killed["yes"]:
+                        # The reasoning-only watchdog killed this attempt.  A
+                        # retry would be byte-identical (same prompt, same
+                        # model) and be killed again after another full
+                        # threshold — exit now and let the outer
+                        # conversation loop's fallback machinery recover
+                        # (#78807 review).
+                        logger.warning(
+                            "Streaming worker caught %s after reasoning-only "
+                            "stale kill — exiting without retry.",
+                            type(e).__name__,
+                        )
+                        result["error"] = e
                         return
                     _is_timeout = isinstance(
                         e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout)
@@ -4380,6 +4415,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # config.yaml (seconds; default 300; 0 disables the check).  No env var:
     # behavioral settings live in config.yaml per repo policy.
     _reasoning_only_stale_timeout = 300.0
+    _reasoning_only_stale_timeout_configured = False
     try:
         from hermes_cli.config import load_config_readonly
 
@@ -4387,12 +4423,31 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _agent_cfg = _cfg.get("agent") if isinstance(_cfg, dict) else None
         if isinstance(_agent_cfg, dict):
             _v = _agent_cfg.get("reasoning_only_stale_timeout")
-            if isinstance(_v, (int, float)) and _v > 0:
-                _reasoning_only_stale_timeout = float(_v)
-            elif _v == 0:
-                _reasoning_only_stale_timeout = float("inf")
+            if _v is not None:
+                _reasoning_only_stale_timeout_configured = True
+                # bool is a subclass of int in Python — reject it so
+                # ``reasoning_only_stale_timeout: true`` cannot silently
+                # become a 1-second kill.
+                if isinstance(_v, (int, float)) and not isinstance(_v, bool):
+                    if _v > 0:
+                        _reasoning_only_stale_timeout = float(_v)
+                    elif _v == 0:
+                        _reasoning_only_stale_timeout = float("inf")
     except Exception:
         pass
+    if not _reasoning_only_stale_timeout_configured:
+        # Never fire before the model's established reasoning stale floor
+        # (e.g. deepseek-v4-flash 600s): the no-chunk detector tolerates
+        # that long for thinking phases, so the reasoning-only detector
+        # must too.  Explicit user config wins — the floor applies to the
+        # default only, mirroring the no-chunk path.
+        from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+
+        _reasoning_floor = get_reasoning_stale_timeout_floor(api_kwargs.get("model"))
+        if _reasoning_floor is not None:
+            _reasoning_only_stale_timeout = max(
+                _reasoning_only_stale_timeout, _reasoning_floor
+            )
 
     t = threading.Thread(target=_context_thread_target(_call), daemon=True)
     t.start()
@@ -4524,6 +4579,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # processes the closure.
             last_content_chunk_time["t"] = time.time()
             reasoning_seen["yes"] = False
+            reasoning_stale_killed["yes"] = True
             agent._touch_activity(
                 f"reasoning-only stale after {int(_ro_elapsed)}s, reconnecting"
             )

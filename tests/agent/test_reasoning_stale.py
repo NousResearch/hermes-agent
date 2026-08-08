@@ -11,6 +11,12 @@ fake chunk streams and assert that:
   ``agent.reasoning_only_stale_timeout`` window is exceeded,
 * the threshold is read from config.yaml (``agent`` section),
 * ``0`` disables the check,
+* the window is anchored at the FIRST reasoning chunk (TTFT latency
+  does not eat the budget),
+* the model's reasoning stale floor extends the unconfigured default,
+  while explicit config wins over the floor,
+* a reasoning-only kill is NOT retried (byte-identical retries would be
+  killed again),
 * reasoning-then-content and content-only streams are never killed.
 
 The kill is observed through the same seam a user would see: the poll
@@ -34,7 +40,7 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 
-def _make_agent(tmp_path, monkeypatch, *, reasoning_timeout=0.3):
+def _make_agent(tmp_path, monkeypatch, *, reasoning_timeout=0.3, configure_key=True):
     """Real AIAgent wired to a fake client, with a tiny reasoning threshold."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     # Keep the no-chunk stale detectors far away so any kill is
@@ -42,10 +48,13 @@ def _make_agent(tmp_path, monkeypatch, *, reasoning_timeout=0.3):
     monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "60")
     monkeypatch.setenv("HERMES_STREAM_RETRIES", "2")
     (tmp_path / ".env").write_text("", encoding="utf-8")
-    (tmp_path / "config.yaml").write_text(
-        f"agent:\n  reasoning_only_stale_timeout: {reasoning_timeout}\n",
-        encoding="utf-8",
-    )
+    if configure_key:
+        (tmp_path / "config.yaml").write_text(
+            f"agent:\n  reasoning_only_stale_timeout: {reasoning_timeout}\n",
+            encoding="utf-8",
+        )
+    else:
+        (tmp_path / "config.yaml").write_text("agent: {}\n", encoding="utf-8")
     from run_agent import AIAgent
 
     agent = AIAgent(
@@ -99,7 +108,7 @@ class _FakeStream:
     ``abort_flag`` is set by the patched ``_abort_request_openai_client``
     when the poll loop kills the connection; from then on ``__next__``
     raises like a real aborted socket read, which drives the worker's
-    retry loop exactly like production.
+    exception handling exactly like production.
     """
 
     def __init__(self, chunk_factory, abort_flag, stop_event):
@@ -124,16 +133,22 @@ class _FakeStream:
 
 
 def _wire_fake_client(agent, monkeypatch, chunk_factory, abort_flag, stop_event):
-    """Patch the agent so ``interruptible_streaming_api_call`` streams from a fake."""
+    """Patch the agent so ``interruptible_streaming_api_call`` streams from a fake.
+
+    Returns ``(aborts, statuses, create_calls)`` — the recorded abort
+    reasons, buffered status messages, and the number of stream-create
+    calls (to assert no-retry behavior).
+    """
     aborts: list[str] = []
     statuses: list[str] = []
+    create_calls: list = []
+
+    def _create(**kw):
+        create_calls.append(kw)
+        return _FakeStream(chunk_factory, abort_flag, stop_event)
 
     dummy_client = SimpleNamespace(
-        chat=SimpleNamespace(
-            completions=SimpleNamespace(
-                create=lambda **kw: _FakeStream(chunk_factory, abort_flag, stop_event)
-            )
-        )
+        chat=SimpleNamespace(completions=SimpleNamespace(create=_create))
     )
     monkeypatch.setattr(
         agent,
@@ -150,7 +165,7 @@ def _wire_fake_client(agent, monkeypatch, chunk_factory, abort_flag, stop_event)
         "_buffer_status",
         lambda msg: statuses.append(msg),
     )
-    return aborts, statuses
+    return aborts, statuses, create_calls
 
 
 def _call_kwargs() -> dict:
@@ -162,18 +177,19 @@ def _call_kwargs() -> dict:
 
 class TestReasoningOnlyStaleKill:
     def test_reasoning_only_stream_is_killed_after_threshold(self, tmp_path, monkeypatch):
-        """A stream emitting only reasoning chunks is killed and reconnected."""
+        """A stream emitting only reasoning chunks is killed, without retry."""
         from agent import chat_completion_helpers as h
 
         agent = _make_agent(tmp_path, monkeypatch, reasoning_timeout=0.3)
         abort_flag = {"aborted": False}
         stop_event = threading.Event()
-        aborts, statuses = _wire_fake_client(
+        aborts, statuses, create_calls = _wire_fake_client(
             agent, monkeypatch, _reasoning_chunk, abort_flag, stop_event
         )
 
-        # The stream never produces content; every retry attempt dies the
-        # same way, so the call ultimately surfaces the connection error.
+        # The stream never produces content; the reasoning-only kill aborts
+        # it and the worker exits WITHOUT retrying, so the call surfaces the
+        # connection error.
         with pytest.raises(Exception):
             h.interruptible_streaming_api_call(agent, _call_kwargs())
 
@@ -182,6 +198,11 @@ class TestReasoningOnlyStaleKill:
         )
         assert any("has been reasoning" in s for s in statuses), (
             f"expected user-facing reasoning status, statuses={statuses}"
+        )
+        # Byte-identical retries would be killed again: exactly ONE stream
+        # attempt must be made.
+        assert len(create_calls) == 1, (
+            f"reasoning-only kill must not retry, create_calls={len(create_calls)}"
         )
 
     def test_threshold_read_from_config_yaml(self, tmp_path, monkeypatch):
@@ -192,7 +213,7 @@ class TestReasoningOnlyStaleKill:
         agent = _make_agent(tmp_path, monkeypatch, reasoning_timeout=600.0)
         abort_flag = {"aborted": False}
         stop_event = threading.Event()
-        aborts, _ = _wire_fake_client(
+        aborts, _, _ = _wire_fake_client(
             agent, monkeypatch, _reasoning_chunk, abort_flag, stop_event
         )
 
@@ -222,7 +243,7 @@ class TestReasoningOnlyStaleKill:
         agent = _make_agent(tmp_path, monkeypatch, reasoning_timeout=0)
         abort_flag = {"aborted": False}
         stop_event = threading.Event()
-        aborts, _ = _wire_fake_client(
+        aborts, _, _ = _wire_fake_client(
             agent, monkeypatch, _reasoning_chunk, abort_flag, stop_event
         )
 
@@ -238,6 +259,98 @@ class TestReasoningOnlyStaleKill:
         stop_event.set()
         thread.join(timeout=10)
         assert not thread.is_alive(), "call should complete after the stream ends"
+
+    def test_ttft_does_not_eat_reasoning_budget(self, tmp_path, monkeypatch):
+        """The window is anchored at the first reasoning chunk, not attempt start."""
+        from agent import chat_completion_helpers as h
+
+        agent = _make_agent(tmp_path, monkeypatch, reasoning_timeout=0.3)
+        abort_flag = {"aborted": False}
+        stop_event = threading.Event()
+        state = {"reasoning_started": None}
+        abort_times: list = []
+
+        def _slow_reasoning_chunk_factory():
+            if state["reasoning_started"] is None:
+                # Simulate TTFT: the provider is silent for 0.5s before the
+                # first chunk (a reasoning chunk) arrives.
+                time.sleep(0.5)
+                state["reasoning_started"] = time.time()
+            return _reasoning_chunk()
+
+        aborts, _, _ = _wire_fake_client(
+            agent, monkeypatch, _slow_reasoning_chunk_factory, abort_flag, stop_event
+        )
+
+        def _record_abort(client, reason=None):
+            abort_times.append(time.time())
+            aborts.append(reason)
+            abort_flag["aborted"] = True
+
+        monkeypatch.setattr(agent, "_abort_request_openai_client", _record_abort)
+
+        with pytest.raises(Exception):
+            h.interruptible_streaming_api_call(agent, _call_kwargs())
+
+        assert state["reasoning_started"] is not None
+        assert abort_times, "reasoning-only kill should have fired"
+        # The kill must come ~0.3s AFTER reasoning started, not 0.3s after
+        # the attempt start (which would be ~0.2s before reasoning began).
+        elapsed_after_reasoning = abort_times[0] - state["reasoning_started"]
+        assert elapsed_after_reasoning >= 0.25, (
+            f"TTFT must not eat the reasoning budget; "
+            f"kill {elapsed_after_reasoning:.2f}s after reasoning started "
+            f"(threshold 0.3s)"
+        )
+
+    def test_reasoning_floor_extends_unconfigured_default(self, tmp_path, monkeypatch):
+        """Without explicit config, the model's reasoning floor raises the default."""
+        from agent import chat_completion_helpers as h
+        from agent import reasoning_timeouts
+
+        agent = _make_agent(tmp_path, monkeypatch, configure_key=False)
+        # deepseek-v4-flash's real floor is 600s; patch it down to a value
+        # that is still ABOVE the 300s default so the test stays fast while
+        # proving the floor extends the default (300s would have killed).
+        monkeypatch.setattr(reasoning_timeouts, "get_reasoning_stale_timeout_floor", lambda model: 600.0)
+        abort_flag = {"aborted": False}
+        stop_event = threading.Event()
+        aborts, _, _ = _wire_fake_client(
+            agent, monkeypatch, _reasoning_chunk, abort_flag, stop_event
+        )
+
+        def _run():
+            h.interruptible_streaming_api_call(agent, _call_kwargs())
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+        time.sleep(1.5)  # far beyond the 300s default scaled down for test speed
+        assert "reasoning_only_stale_kill" not in aborts, (
+            f"reasoning floor must extend the default, aborts={aborts}"
+        )
+        stop_event.set()
+        thread.join(timeout=10)
+        assert not thread.is_alive(), "call should complete after the stream ends"
+
+    def test_explicit_config_wins_over_reasoning_floor(self, tmp_path, monkeypatch):
+        """Explicit config is NOT raised by the model's reasoning floor."""
+        from agent import chat_completion_helpers as h
+        from agent import reasoning_timeouts
+
+        agent = _make_agent(tmp_path, monkeypatch, reasoning_timeout=0.3)
+        monkeypatch.setattr(reasoning_timeouts, "get_reasoning_stale_timeout_floor", lambda model: 600.0)
+        abort_flag = {"aborted": False}
+        stop_event = threading.Event()
+        aborts, _, _ = _wire_fake_client(
+            agent, monkeypatch, _reasoning_chunk, abort_flag, stop_event
+        )
+
+        with pytest.raises(Exception):
+            h.interruptible_streaming_api_call(agent, _call_kwargs())
+
+        assert "reasoning_only_stale_kill" in aborts, (
+            f"explicit config must win over the floor, aborts={aborts}"
+        )
 
 
 class TestNoFalsePositive:
@@ -261,7 +374,7 @@ class TestNoFalsePositive:
                 return _reasoning_chunk()
             return _content_chunk("hello")
 
-        aborts, _ = _wire_fake_client(
+        aborts, _, _ = _wire_fake_client(
             agent, monkeypatch, _chunk_factory, abort_flag, stop_event
         )
         response_box: list = []
@@ -286,7 +399,7 @@ class TestNoFalsePositive:
         agent = _make_agent(tmp_path, monkeypatch, reasoning_timeout=0.1)
         abort_flag = {"aborted": False}
         stop_event = threading.Event()
-        aborts, _ = _wire_fake_client(
+        aborts, _, _ = _wire_fake_client(
             agent, monkeypatch, lambda: _content_chunk("hello"), abort_flag, stop_event
         )
         response_box: list = []

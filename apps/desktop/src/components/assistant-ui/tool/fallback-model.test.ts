@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { setRuntimeI18nLocale } from '@/i18n'
 
@@ -393,6 +393,15 @@ describe('clampForDisplay', () => {
     expect(clamped.startsWith('x'.repeat(MAX_TOOL_RENDER_CHARS))).toBe(true)
     expect(clamped).toContain('5,000 more characters truncated')
     expect(clamped).toContain('Copy')
+  })
+
+  it('pins the English truncation copy to en-US number formatting', () => {
+    const localeSpy = vi.spyOn(Number.prototype, 'toLocaleString').mockReturnValue('5,000')
+
+    clampForDisplay('x'.repeat(MAX_TOOL_RENDER_CHARS + 5_000))
+
+    expect(localeSpy).toHaveBeenCalledWith('en-US')
+    localeSpy.mockRestore()
   })
 })
 

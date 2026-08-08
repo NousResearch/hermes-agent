@@ -438,6 +438,18 @@ describe('renderRpcResult', () => {
       )
     })
 
+    it('pins English usage copy to en-US number formatting', () => {
+      const localeSpy = vi.spyOn(Number.prototype, 'toLocaleString').mockImplementation(function (this: number) {
+        return String(this)
+      })
+
+      renderRpcResult({ calls: 12, input: 1_234, output: 56, total: 1_290 }, 'usage')
+
+      expect(localeSpy).toHaveBeenCalledTimes(4)
+      expect(localeSpy.mock.calls).toEqual([['en-US'], ['en-US'], ['en-US'], ['en-US']])
+      localeSpy.mockRestore()
+    })
+
     it('appends credits_lines when present', () => {
       const body = renderRpcResult(
         {

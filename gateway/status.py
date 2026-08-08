@@ -15,19 +15,22 @@ import copy
 import hashlib
 import json
 import logging
+import math
 import os
 import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from hermes_constants import get_hermes_home, _get_platform_default_hermes_home
 from typing import Any, Callable, NamedTuple, Optional
-from utils import atomic_json_write
+from utils import atomic_json_write, atomic_replace
 
 if sys.platform == "win32":
     import msvcrt
@@ -48,6 +51,7 @@ _WINDOWS_LOCK_OFFSET = 1024 * 1024
 _GATEWAY_RUNNING_PID_CACHE_TTL_SECONDS = 1.0
 _gateway_running_pid_cache_lock = threading.Lock()
 _gateway_running_pid_cache: dict[tuple[str, bool, bool], tuple[float, tuple[Any, ...], Optional[int]]] = {}
+_starts_log_thread_lock = threading.RLock()
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +72,54 @@ def _get_starts_log_path() -> Path:
     return get_hermes_home() / "gateway-starts.log"
 
 
+@contextmanager
+def _locked_starts_log(path: Path):
+    """Serialize the start-ledger read/modify/write across threads/processes."""
+    lock_path = path.with_name(f"{path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with _starts_log_thread_lock:
+        handle = open(lock_path, "a+b")
+        try:
+            if _IS_WINDOWS:
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                if _IS_WINDOWS:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
+
+
+def _atomic_write_start_times(path: Path, timestamps: list[float]) -> None:
+    """Atomically persist the line-oriented ledger using a unique temp file."""
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.stem}_", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(repr(ts) for ts in timestamps) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        atomic_replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def record_start_and_check_storm(
     max_starts: int = 5, window_s: float = 120.0, *, backoff_cap_s: float = 300.0
 ) -> Optional[StormInfo]:
@@ -86,34 +138,34 @@ def record_start_and_check_storm(
         path = _get_starts_log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        now = datetime.now(timezone.utc).timestamp()
+        with _locked_starts_log(path):
+            now = datetime.now(timezone.utc).timestamp()
 
-        existing: list[float] = []
-        if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    existing.append(float(line))
-                except ValueError:
-                    continue
+            existing: list[float] = []
+            if path.exists():
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        timestamp = float(line)
+                    except ValueError:
+                        continue
+                    # A future or non-finite value can otherwise stay in every
+                    # window forever and manufacture the maximum backoff.
+                    if math.isfinite(timestamp) and timestamp <= now:
+                        existing.append(timestamp)
 
-        existing.append(now)
+            existing.append(now)
 
-        # Keep only starts within the sliding window for the storm decision.
-        recent = [ts for ts in existing if now - ts <= window_s]
+            # Keep only starts within the sliding window for the storm decision.
+            recent = [ts for ts in existing if 0 <= now - ts <= window_s]
 
-        # Ring-buffer what we persist so the file stays bounded even if the
-        # window is wide or starts are frequent.
-        keep = max(max_starts * 4, 40)
-        to_write = existing[-keep:]
-
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(
-            "\n".join(repr(ts) for ts in to_write) + "\n", encoding="utf-8"
-        )
-        os.replace(tmp, path)
+            # Ring-buffer what we persist so the file stays bounded even if the
+            # window is wide or starts are frequent.
+            keep = max(max_starts * 4, 40)
+            to_write = existing[-keep:]
+            _atomic_write_start_times(path, to_write)
 
         if len(recent) > max_starts:
             backoff = min(

@@ -31,10 +31,12 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from typing import List, Optional
 
 from hermes_constants import get_hermes_home
+from utils import atomic_json_write
 
 logger = logging.getLogger("gateway.run")
 
@@ -52,19 +54,32 @@ def _load_boots() -> List[float]:
     try:
         raw = _state_path().read_text(encoding="utf-8")
         data = json.loads(raw)
+        if not isinstance(data, dict):
+            return []
         boots = data.get("boots", [])
-        return [float(t) for t in boots if isinstance(t, (int, float))]
-    except (OSError, ValueError, TypeError):
+        if not isinstance(boots, list):
+            return []
+        return [
+            float(t)
+            for t in boots
+            if isinstance(t, (int, float)) and math.isfinite(float(t))
+        ]
+    except (OSError, ValueError, TypeError, AttributeError):
         return []
 
 
 def _save_boots(boots: List[float]) -> None:
     try:
         path = _state_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"boots": boots}), encoding="utf-8")
-    except OSError:
+        atomic_json_write(path, {"boots": boots}, indent=None)
+    except (OSError, TypeError, ValueError):
         pass
+
+
+def _recent_boots(boots: List[float], ts: float, window_seconds: int) -> List[float]:
+    """Return finite observations inside the past window, never the future."""
+    cutoff = ts - max(1, window_seconds)
+    return [t for t in boots if math.isfinite(t) and cutoff <= t <= ts]
 
 
 def record_restart_interrupted_boot(
@@ -79,8 +94,7 @@ def record_restart_interrupted_boot(
     persistence failure returns the in-memory list without raising.
     """
     ts = time.time() if now is None else now
-    cutoff = ts - max(1, window_seconds)
-    boots = [t for t in _load_boots() if t >= cutoff]
+    boots = _recent_boots(_load_boots(), ts, window_seconds)
     boots.append(ts)
     _save_boots(boots)
     return boots
@@ -103,9 +117,8 @@ def is_restart_loop_tripped(
     if max_restarts <= 0:
         return False
     ts = time.time() if now is None else now
-    cutoff = ts - max(1, window_seconds)
     try:
-        recent = [t for t in _load_boots() if t >= cutoff]
+        recent = _recent_boots(_load_boots(), ts, window_seconds)
     except Exception:  # pragma: no cover — _load_boots already guards
         return False
     return len(recent) >= max_restarts

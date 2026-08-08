@@ -9,6 +9,7 @@ import asyncio
 import inspect
 import ipaddress
 import logging
+import math
 import os
 import random
 import re
@@ -5098,7 +5099,23 @@ class BasePlatformAdapter(ABC):
         if not error:
             return False
         lowered = error.lower()
+        # Connection/pool acquisition timeouts happen before a request is sent
+        # and are safe to retry.  Only read/write/unspecified delivery timeouts
+        # are ambiguous.
+        if "connecttimeout" in lowered or "connect timeout" in lowered:
+            return False
+        if "pooltimeout" in lowered or "pool timeout" in lowered:
+            return False
         return "timed out" in lowered or "readtimeout" in lowered or "writetimeout" in lowered
+
+    @staticmethod
+    def _valid_retry_after(value: Any) -> Optional[float]:
+        """Return a safe server delay, or None for malformed/non-positive data."""
+        try:
+            delay = float(value)
+        except (TypeError, ValueError):
+            return None
+        return delay if math.isfinite(delay) and delay > 0 else None
 
     def _unwrap_ephemeral(self, response: Any) -> Tuple[Optional[str], int]:
         """Unwrap a handler response into (text, ttl_seconds).
@@ -5179,18 +5196,18 @@ class BasePlatformAdapter(ABC):
             return result
 
         error_str = result.error or ""
-        is_network = result.retryable or self._is_retryable_error(error_str)
-
         # Timeout errors are not safe to retry (message may have been
-        # delivered) and not formatting errors — return the failure as-is.
-        if not is_network and self._is_timeout_error(error_str):
+        # delivered) and not formatting errors.  This safety classification
+        # outranks an adapter's retryable hint.
+        if self._is_timeout_error(error_str):
             return result
+        is_network = result.retryable or self._is_retryable_error(error_str)
 
         if is_network:
             # Retry with exponential backoff for transient errors.
             # Honor server-requested retry_after (e.g. Telegram FloodWait)
             # when present — it is authoritative over our backoff schedule.
-            server_retry_after = result.retry_after
+            server_retry_after = self._valid_retry_after(result.retry_after)
             for attempt in range(1, max_retries + 1):
                 if server_retry_after is not None:
                     delay = server_retry_after + random.uniform(0, 1)
@@ -5212,8 +5229,9 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
                 error_str = result.error or ""
-                if result.retry_after is not None:
-                    server_retry_after = result.retry_after
+                if self._is_timeout_error(error_str):
+                    return result
+                server_retry_after = self._valid_retry_after(result.retry_after)
                 if not (result.retryable or self._is_retryable_error(error_str)):
                     break  # error switched to non-transient — fall through to plain-text fallback
             else:

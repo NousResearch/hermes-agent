@@ -153,6 +153,7 @@ import {
 import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import { extractOoxmlPreviewText, OOXML_PREVIEW_EXTENSIONS } from './ooxml-preview'
 import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
@@ -4908,13 +4909,28 @@ async function previewFileTarget(rawTarget, baseDir) {
   const isHtml = PREVIEW_HTML_EXTENSIONS.has(ext)
   const isImage = mimeType.startsWith('image/')
   const isPdf = PREVIEW_PDF_EXTENSIONS.has(ext) || mimeType === 'application/pdf'
-  const previewKind = isHtml ? 'html' : isImage ? 'image' : isPdf ? 'pdf' : metadata.binary ? 'binary' : 'text'
+  // OOXML (.docx/.pptx/.xlsx) is a ZIP container, so byte-sniffing always
+  // calls it binary. Classify it as previewable text up front; readFileText
+  // does the real extraction, and falls back to the binary guard on failure.
+  const isOffice = OOXML_PREVIEW_EXTENSIONS.has(ext)
+
+  const previewKind = isHtml
+    ? 'html'
+    : isImage
+      ? 'image'
+      : isPdf
+        ? 'pdf'
+        : isOffice
+          ? 'text'
+          : metadata.binary
+            ? 'binary'
+            : 'text'
 
   return {
-    binary: metadata.binary,
+    binary: isOffice ? false : metadata.binary,
     byteSize: metadata.byteSize,
     kind: 'file',
-    large: metadata.large,
+    large: isOffice ? false : metadata.large,
     label: path.basename(resolved),
     language: PREVIEW_LANGUAGE_BY_EXT[ext] || 'text',
     mimeType,
@@ -10807,6 +10823,28 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
   })
 
   const ext = path.extname(resolvedPath).toLowerCase()
+
+  if (OOXML_PREVIEW_EXTENSIONS.has(ext)) {
+    const officeText = await extractOoxmlPreviewText(resolvedPath, ext, stat.size)
+
+    if (officeText != null) {
+      const truncated = officeText.length > TEXT_PREVIEW_MAX_BYTES
+
+      return {
+        binary: false,
+        byteSize: truncated ? TEXT_PREVIEW_MAX_BYTES : officeText.length,
+        language: 'text',
+        mimeType: mimeTypeForPath(resolvedPath),
+        path: resolvedPath,
+        text: truncated ? officeText.slice(0, TEXT_PREVIEW_MAX_BYTES) : officeText,
+        truncated
+      }
+    }
+    // Extraction failed (corrupt archive, encrypted document, legacy binary
+    // format under a modern extension) — fall through to the raw-byte read
+    // below, whose looksBinary() check restores the existing binary guard.
+  }
+
   const handle = await fs.promises.open(resolvedPath, 'r')
   const bytesToRead = Math.min(stat.size, TEXT_PREVIEW_MAX_BYTES)
 

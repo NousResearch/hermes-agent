@@ -324,18 +324,18 @@ function renderedSeedTexts(seeds: Record<string, unknown>[]): string[] {
   })
 }
 
+// The HUD floats over the app the user is really working in, so the gateway
+// turns this flag into a per-turn hint: read the window underneath and work in
+// it, rather than reaching for Hermes's own browser and panes.
 describe('usePromptActions HUD surface', () => {
-  // The HUD floats over the app the user is really working in, so the gateway
-  // turns this flag into a per-turn hint: look at the window underneath before
-  // reaching for Hermes's own browser and panes.
   afterEach(() => {
     cleanup()
     $hudMode.set(false)
     vi.restoreAllMocks()
   })
 
-  async function submitFromHud(hud: boolean) {
-    $hudMode.set(hud)
+  async function submitFrom(window: 'app' | 'hud') {
+    $hudMode.set(window === 'hud')
 
     const submitted: (Record<string, unknown> | undefined)[] = []
 
@@ -358,11 +358,11 @@ describe('usePromptActions HUD surface', () => {
   }
 
   it('tags a message typed into the HUD', async () => {
-    expect(await submitFromHud(true)).toMatchObject({ surface: 'hud' })
+    expect(await submitFrom('hud')).toMatchObject({ surface: 'hud' })
   })
 
   it('says nothing about the surface from the app window', async () => {
-    expect(await submitFromHud(false)).not.toHaveProperty('surface')
+    expect(await submitFrom('app')).not.toHaveProperty('surface')
   })
 })
 

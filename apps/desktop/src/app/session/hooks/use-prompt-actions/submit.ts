@@ -620,10 +620,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           session_id: targetId,
           text,
           ...(interrupted && { interrupted }),
-          // Typed into the floating HUD, which means the user is looking at
-          // another app rather than at Hermes. The gateway turns this into a
-          // per-turn hint so the agent reads the window underneath and works
-          // in it, instead of reaching for its own browser and panes.
+          // Typed into the floating HUD, so the user is looking at another app
+          // rather than at Hermes. The gateway turns this into a per-turn hint
+          // to read the window underneath and work in it.
           ...($hudMode.get() && { surface: 'hud' }),
           // A queue drain is a "run after" message, never a live-turn
           // correction. The flag tells the gateway's busy path to hold it for

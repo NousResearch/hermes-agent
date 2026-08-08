@@ -706,8 +706,8 @@ def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
     a surface of our own. Left to itself the model answers from its own
     browser and panes, which is the wrong half of the screen.
 
-    It is a per-turn fact, not a platform: one desktop session can be driven
-    from the app window on one turn and the HUD on the next. So it rides the
+    It is a per-turn fact, not a platform — one desktop session can be driven
+    from the app window on one turn and the HUD on the next — so it rides the
     model-bound message beside the reaction / speech-interrupted notes rather
     than the system prompt, which has to stay byte-stable for a conversation's
     whole life.

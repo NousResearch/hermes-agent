@@ -1827,6 +1827,18 @@ def build_skills_system_prompt(
             "normally and load with skill_view(name) as usual.)"
         )
 
+    # ── Description truncation (progressive disclosure) ──────────
+    # Truncate long skill descriptions to reduce system prompt token usage.
+    # Agent sees name + short hint (~50 chars); full content loaded via skill_view().
+    # Config: skills.description_max_chars (default: 50, 0 = disabled)
+    _desc_max_chars = 50
+    try:
+        from hermes_cli.config import get_config
+        _skills_cfg = get_config().get("skills", {})
+        _desc_max_chars = int(_skills_cfg.get("description_max_chars", 50))
+    except Exception:
+        pass
+
     if not skills_by_category:
         result = ""
     else:
@@ -1848,6 +1860,9 @@ def build_skills_system_prompt(
                     continue
                 seen.add(name)
                 if desc:
+                    # Truncate description for progressive disclosure
+                    if _desc_max_chars > 0 and len(desc) > _desc_max_chars:
+                        desc = desc[:_desc_max_chars].rsplit(" ", 1)[0] + "…"
                     index_lines.append(f"    - {name}: {desc}")
                 else:
                     index_lines.append(f"    - {name}")

@@ -1786,9 +1786,10 @@ def _tui_need_rebuild(root: Path) -> bool:
     """True when ``dist/entry.js`` is missing or older than TUI inputs.
 
     The TUI bundle is self-contained. Rebuilding it on every launch adds a
-    visible cold-start tax on slow Termux CPUs, while a simple mtime freshness
-    check still rebuilds immediately after source updates, dependency updates,
-    or local edits. Set ``HERMES_TUI_FORCE_BUILD=1`` to force the old behaviour.
+    visible cold-start tax and lets concurrent launches mutate the same output,
+    while a simple mtime freshness check still rebuilds immediately after
+    source updates, dependency updates, or local edits. Set
+    ``HERMES_TUI_FORCE_BUILD=1`` to force the old behaviour.
     """
     force = (os.environ.get("HERMES_TUI_FORCE_BUILD") or "").strip().lower()
     if force in {"1", "true", "yes", "on"}:
@@ -1936,7 +1937,9 @@ def _ensure_tui_workspace(tui_dir: Path) -> None:
     sys.exit(1)
 
 
-def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
+def _make_tui_argv(
+    tui_dir: Path, tui_dev: bool, *, _preparation_locked: bool = False
+) -> tuple[list[str], Path]:
     """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR prebuilt or esbuild)."""
     _ensure_tui_node()
 
@@ -1997,12 +2000,18 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             node = _node_bin("node")
             return [node, "--expose-gc", str(bundled)], bundled.parent
 
+    if not _preparation_locked:
+        from hermes_cli.tui_preparation_lock import tui_preparation_lock
+
+        with tui_preparation_lock(_workspace_root(tui_dir)):
+            return _make_tui_argv(tui_dir, tui_dev, _preparation_locked=True)
+
     # No prebuilt bundle available (or --dev, which never uses one) — we're
     # about to npm install/build from source, so the workspace must exist.
     if not ext_dir:
         _ensure_tui_workspace(tui_dir)
 
-    # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
+    # 2. Normal flow: npm install/build if stale, then node dist/entry.js.
     #    --dev flow: npm install if needed, then tsx src/entry.tsx.
     #    Existing desktop behaviour runs npm from the workspace root.  Termux
     #    scopes the install to ui-tui so launch does not pull desktop/web
@@ -2121,12 +2130,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             return [str(tsx), "src/entry.tsx"], tui_dir
         return [npm, "start"], tui_dir
 
-    # Desktop/dev launches retain the historical "always rebuild" behaviour.
-    # Termux cold starts use the freshness check because esbuild startup is
-    # expensive on old mobile CPUs.
-    should_build = True
-    if termux_startup:
-        should_build = did_install or termux_need_rebuild
+    should_build = did_install or _tui_need_rebuild(tui_dir)
 
     if should_build:
         npm = _node_bin("npm")

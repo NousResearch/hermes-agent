@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
+from agent.redact import redact_sensitive_text
 from agent.secret_scope import get_secret as _get_secret
 from agent.credential_persistence import (
     is_borrowed_credential_source,
@@ -404,7 +405,13 @@ def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[st
         normalized["reason"] = reason.strip()
     message = error_context.get("message")
     if isinstance(message, str) and message.strip():
-        normalized["message"] = message.strip()
+        # Redact API keys and tokens from error messages before persisting.
+        # Upstream providers (Anthropic, OpenAI, xAI) sometimes echo back the
+        # key in error responses (e.g. "Invalid API key: sk-ant-...").  Without
+        # redaction, _mark_exhausted stores the raw message in
+        # last_error_message and to_dict() flushes it to auth.json on disk
+        # (GH-71994).
+        normalized["message"] = redact_sensitive_text(message.strip())
     reset_at = (
         error_context.get("reset_at")
         or error_context.get("resets_at")

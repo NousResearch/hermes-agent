@@ -27,6 +27,16 @@ import { $attentionSessionIds, $stalledSessionIds, $workingSessionIds } from './
 
 export type SessionDotState = 'background' | 'idle' | 'needs-input' | 'stalled' | 'unread' | 'working'
 
+/** The sidebar row's arc. A quiet turn is still authoritatively running, so
+ *  `stalled` keeps it; a blocking prompt drops it, because the amber dot is the
+ *  louder cue and two treatments at once fight each other. */
+export const showsRunningArc = (state: SessionDotState): boolean => state === 'stalled' || state === 'working'
+
+/** Whether this turn is the session's own, live: brighter title, and the row's
+ *  age yields to the actions menu. Wider than the arc — a turn waiting on an
+ *  answer has not ended. */
+export const hasLiveTurn = (state: SessionDotState): boolean => showsRunningArc(state) || state === 'needs-input'
+
 let dotStates: Readonly<Record<string, SessionDotState>> = {}
 
 export const $sessionDotStateById = computed(

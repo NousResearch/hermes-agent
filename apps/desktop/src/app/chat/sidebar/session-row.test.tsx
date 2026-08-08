@@ -4,8 +4,11 @@ import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
+import { createClientSessionState } from '@/lib/chat-runtime'
+import type * as ChatRuntime from '@/lib/chat-runtime'
 import type * as ComposerStatusStore from '@/store/composer-status'
 import type * as SessionStore from '@/store/session'
+import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type * as SessionStatesStore from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
 
@@ -41,7 +44,14 @@ vi.mock('@/app/chat/session-drag', () => ({ startSessionDrag: vi.fn() }))
 // props itself only proves the MOCK forwards them, not that the real
 // component does. This file exercises the actual production component so a
 // regression in its ref/prop forwarding fails here again.
-vi.mock('@/lib/chat-runtime', () => ({ sessionTitle: (s: SessionInfo) => (s as unknown as { title: string }).title }))
+// Only `sessionTitle` is overridden (makeSession fakes a bare `title` the real
+// one wouldn't read); the rest of the module is genuine so the arc test can
+// build session state with the same factory the app uses.
+vi.mock('@/lib/chat-runtime', async importOriginal => {
+  const actual = await importOriginal<typeof ChatRuntime>()
+
+  return { ...actual, sessionTitle: (s: SessionInfo) => (s as unknown as { title: string }).title }
+})
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
 vi.mock('@/lib/session-source', () => ({
   handoffOriginSource: (state?: string, platform?: string) => (state && platform ? platform : null),
@@ -124,13 +134,51 @@ const handoffAvatar = (container: HTMLElement) =>
 
 const noop = vi.fn()
 
+const renderRow = (session: SessionInfo) =>
+  render(
+    <SidebarSessionRow
+      isPinned={false}
+      isSelected={false}
+      onArchive={noop}
+      onDelete={noop}
+      onPin={noop}
+      onResume={noop}
+      session={session}
+    />
+  )
+
+// The row no longer takes its running state as a prop, so this drives the real
+// store the way the app does. $workingSessionIds is the actual computed here
+// (the mock above only overrides its siblings), which is what makes this cover
+// the wiring rather than the predicate — the arc has gone missing before.
+describe('SidebarSessionRow running arc', () => {
+  afterEach(() => {
+    clearAllSessionStates()
+  })
+
+  const arc = (container: HTMLElement) => container.querySelector('.arc-row')
+
+  it('paints no arc for a settled session', () => {
+    const { container } = renderRow(makeSession({ title: 'Settled' }))
+
+    expect(arc(container)).toBeNull()
+  })
+
+  it('paints the arc while the session is running', () => {
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true })
+
+    const { container } = renderRow(makeSession({ title: 'Running' }))
+
+    expect(arc(container)).toBeTruthy()
+  })
+})
+
 describe('SidebarSessionRow', () => {
   it('keeps an aria-label on the kebab without wrapping it in a Tip', () => {
     render(
       <SidebarSessionRow
         isPinned={false}
         isSelected={false}
-        isWorking={false}
         onArchive={noop}
         onDelete={noop}
         onPin={noop}
@@ -148,7 +196,6 @@ describe('SidebarSessionRow', () => {
       <SidebarSessionRow
         isPinned={false}
         isSelected={false}
-        isWorking={false}
         onArchive={noop}
         onDelete={noop}
         onPin={noop}
@@ -165,7 +212,6 @@ describe('SidebarSessionRow', () => {
       <SidebarSessionRow
         isPinned={false}
         isSelected={false}
-        isWorking={false}
         onArchive={noop}
         onDelete={noop}
         onPin={noop}

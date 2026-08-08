@@ -3477,6 +3477,7 @@ def looks_like_codex_intermediate_ack(
     assistant_content: str,
     messages: List[Dict[str, Any]],
     require_workspace: bool = True,
+    require_no_tools: bool = True,
 ) -> bool:
     """Detect a planning/ack message that should continue instead of ending the turn.
 
@@ -3487,11 +3488,15 @@ def looks_like_codex_intermediate_ack(
     is ``true`` or a model-list), so general autonomous workflows ("I'll run a
     health check on the server", "I'll start the deployment") — which carry a
     future-ack and an action verb but no filesystem reference — are caught too.
-    The future-ack + short-content + no-prior-tools + action-verb requirements
-    always apply, which is what keeps conversational "I'll help you brainstorm"
-    replies from tripping it.
+    The future-ack + short-content + action-verb requirements always apply.
+    ``require_no_tools`` defaults to True for conversation-loop compatibility;
+    delegation finalization sets it to False because a child that says "I will
+    now write the report" after gathering data still has not delivered one.
     """
-    if any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages):
+    had_tool_result = any(
+        isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages
+    )
+    if require_no_tools and had_tool_result:
         return False
 
     assistant_text = agent._strip_think_blocks(assistant_content or "").strip().lower()
@@ -3499,6 +3504,18 @@ def looks_like_codex_intermediate_ack(
         return False
     if len(assistant_text) > 1200:
         return False
+
+    # Delegation finalization deliberately checks after tools too, but that
+    # path must be stricter than the no-tool conversation-loop detector. A
+    # completed report may quote a model saying "I will inspect..."; only a
+    # short response that *starts* with the future-intent phrase is itself an
+    # unfinished handoff.
+    if had_tool_result and not require_no_tools:
+        if len(assistant_text) > 400 or not re.match(
+            r"^(i['’]ll|i will|let me|i can do that|i can help with that)\b",
+            assistant_text,
+        ):
+            return False
 
     has_future_ack = bool(
         re.search(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b", assistant_text)

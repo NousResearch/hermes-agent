@@ -49,9 +49,31 @@ class DeliveryTransport:
 
     async def send(self, logical_platform: Platform, chat_id: str, content: str,
                    metadata: Optional[Dict[str, Any]]) -> Any:
-        """Send through this transport while preserving the logical platform."""
-        return await (self.adapter.send_for_platform(logical_platform, chat_id, content, metadata=metadata)
-                      if self.is_relay else self.adapter.send(chat_id, content, metadata=metadata))
+        """Send through this transport while preserving the logical platform.
+
+        The native branch bottoms out in the adapter's wrapped ``send`` (see
+        ``BasePlatformAdapter.__init_subclass__``), which owns the egress guardrail. The relay
+        branch calls ``send_for_platform``, which never passes through the wrapper, so it runs
+        the full guard here. A veto returns a non-retryable failure whose error text is the
+        stable ``BLOCK_ERROR`` constant: the detailed reason is only logged, because free-text
+        reasons reaching ``classify_send_error`` substring matching could mark the delivery
+        *target* dead over a one-off *content* veto.
+        """
+        if not self.is_relay:
+            return await self.adapter.send(chat_id, content, metadata=metadata)
+        from hermes_durability.egress import BLOCK_ERROR, EgressBlocked, guard_outbound_text
+
+        try:
+            content = guard_outbound_text(
+                content, platform=getattr(logical_platform, "value", str(logical_platform)),
+                category="delivery_relay")
+        except EgressBlocked as exc:
+            from gateway.platforms.base import SendResult
+
+            logger.warning("[delivery] Egress guardrail blocked %s relay send: %s",
+                           logical_platform, exc.reason)
+            return SendResult(success=False, error=BLOCK_ERROR, retryable=False)
+        return await self.adapter.send_for_platform(logical_platform, chat_id, content, metadata=metadata)
 
 
 def resolve_delivery_transport(platform: Platform, config: GatewayConfig,
@@ -208,7 +230,11 @@ class DeliveryRouter:
                  f"**Timestamp:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]
         lines += [f"**Job ID:** {job_id}"] if job_id else []
         lines += [f"**{key}:** {value}" for key, value in (metadata or {}).items()] + ["", "---", "", content]
-        output_path.write_text("\n".join(lines), encoding="utf-8")
+        # Atomic (tmp + fsync + rename): a crash mid-write must not leave a torn markdown file
+        # that looks like a complete cron delivery.
+        from utils import atomic_write_text
+
+        atomic_write_text(output_path, "\n".join(lines), encoding="utf-8", create_mode=0o644)
         return {"path": str(output_path), "timestamp": timestamp}
 
     def _save_full_output(self, content: str, job_id: str) -> Path:
@@ -216,7 +242,9 @@ class DeliveryRouter:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = get_hermes_home() / "cron" / "output" / f"{job_id}_{timestamp}.txt"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        from utils import atomic_write_text
+
+        atomic_write_text(path, content, encoding="utf-8", create_mode=0o644)
         return path
 
     def _filter_silence_narration_enabled(self) -> bool:

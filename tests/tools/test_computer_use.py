@@ -129,6 +129,124 @@ class TestDispatch:
         assert drag_kw["from_element"] == 1
         assert drag_kw["to_element"] == 5
 
+    @pytest.mark.parametrize(
+        ("action", "action_args", "call_name"),
+        [
+            ("click", {"element": 1}, "click"),
+            ("double_click", {"element": 1}, "click"),
+            ("right_click", {"element": 1}, "click"),
+            ("middle_click", {"element": 1}, "click"),
+            (
+                "drag",
+                {"from_element": 1, "to_element": 2},
+                "drag",
+            ),
+            ("scroll", {"direction": "down"}, "scroll"),
+            ("type", {"text": "safe foreground"}, "type"),
+            ("key", {"keys": "ctrl+s"}, "key"),
+        ],
+    )
+    def test_kde_x11_input_is_forced_to_foreground_before_dispatch(
+        self, noop_backend, monkeypatch, action, action_args, call_name
+    ):
+        """KDE/X11 must never inherit Cua's uinput-backed background default.
+
+        Cua's foreground X11 routes use XTEST/AT-SPI and do not create the
+        ephemeral uinput pointer that can crash the Plasma/Qt session.
+        """
+        from tools.computer_use import tool as cu_tool
+
+        monkeypatch.setattr(cu_tool.sys, "platform", "linux")
+        monkeypatch.setenv("DISPLAY", ":0")
+        monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
+        monkeypatch.setenv("XDG_CURRENT_DESKTOP", "KDE")
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+
+        result = cu_tool.handle_computer_use(
+            {"action": action, "delivery_mode": "background", **action_args}
+        )
+
+        parsed = json.loads(result)
+        assert "error" not in parsed
+        call = next(kwargs for name, kwargs in noop_backend.calls if name == call_name)
+        assert call["delivery_mode"] == "foreground"
+
+    def test_kde_x11_foreground_policy_applies_before_approval(self, noop_backend, monkeypatch):
+        from tools.computer_use import tool as cu_tool
+
+        monkeypatch.setattr(cu_tool.sys, "platform", "linux")
+        monkeypatch.setenv("DISPLAY", ":0")
+        monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
+        monkeypatch.setenv("XDG_SESSION_DESKTOP", "plasma")
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        seen = []
+
+        def approve(action, args, session_id):
+            seen.append((action, dict(args), session_id))
+            return "approve_once"
+
+        cu_tool.set_approval_callback(approve)
+        result = cu_tool.handle_computer_use(
+            {"action": "click", "element": 1}, session_id="kde-x11"
+        )
+
+        assert "error" not in json.loads(result)
+        assert seen[0][1]["delivery_mode"] == "foreground"
+
+    def test_explicit_x11_wins_over_stale_wayland_display(self, monkeypatch):
+        from tools.computer_use import tool as cu_tool
+
+        monkeypatch.setattr(cu_tool.sys, "platform", "linux")
+        monkeypatch.setenv("DISPLAY", ":0")
+        monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+        monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
+        monkeypatch.setenv("XDG_CURRENT_DESKTOP", "KDE")
+
+        assert cu_tool._is_kde_x11_session()
+
+    @pytest.mark.parametrize(
+        "environment",
+        [
+            {
+                "DISPLAY": ":0",
+                "XDG_SESSION_TYPE": "wayland",
+                "XDG_CURRENT_DESKTOP": "KDE",
+                "WAYLAND_DISPLAY": "wayland-0",
+            },
+            {
+                "DISPLAY": ":0",
+                "XDG_SESSION_TYPE": "x11",
+                "XDG_CURRENT_DESKTOP": "GNOME",
+            },
+        ],
+    )
+    def test_non_kde_x11_sessions_keep_requested_background_delivery(
+        self, noop_backend, monkeypatch, environment
+    ):
+        from tools.computer_use import tool as cu_tool
+
+        monkeypatch.setattr(cu_tool.sys, "platform", "linux")
+        for name in (
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "XDG_SESSION_TYPE",
+            "XDG_CURRENT_DESKTOP",
+            "XDG_SESSION_DESKTOP",
+            "DESKTOP_SESSION",
+            "KDE_FULL_SESSION",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        for name, value in environment.items():
+            monkeypatch.setenv(name, value)
+
+        result = cu_tool.handle_computer_use(
+            {"action": "click", "element": 1, "delivery_mode": "background"}
+        )
+
+        assert "error" not in json.loads(result)
+        click = next(kwargs for name, kwargs in noop_backend.calls if name == "click")
+        assert click["delivery_mode"] == "background"
+
 
     def test_capture_forwards_exact_pid_window_target(self, noop_backend):
         from tools.computer_use.tool import handle_computer_use

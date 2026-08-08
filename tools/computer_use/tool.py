@@ -91,6 +91,14 @@ _DESTRUCTIVE_ACTIONS = frozenset({
     "cua_browser_set_input_files", "cua_browser_download",
 })
 
+# Native input actions whose Cua foreground implementation uses XTEST/AT-SPI
+# on X11. Keep browser and focus-management actions out: they have separate
+# routing and approval contracts.
+_DELIVERY_MODE_ACTIONS = frozenset({
+    "click", "double_click", "right_click", "middle_click",
+    "drag", "scroll", "type", "key",
+})
+
 # Hard-blocked key combinations. Mirrored from #4562 — these are destructive
 # regardless of approval level (e.g. logout kills the session Hermes runs in).
 _BLOCKED_KEY_COMBOS = {
@@ -140,6 +148,58 @@ def _is_blocked_type(text: str) -> Optional[str]:
         if pat.search(text):
             return pat.pattern
     return None
+
+
+def _desktop_value_is_kde(value: Optional[str]) -> bool:
+    if not value:
+        return False
+    return any(
+        token.strip().lower() in {"kde", "plasma"}
+        for token in re.split(r"[:;,]", value)
+    )
+
+
+def _is_kde_x11_session() -> bool:
+    """Return whether Cua's MPX/uinput pointer path is unsafe here.
+
+    Plasma 6 / Qt 6.11 clients on X11 can crash session-wide as soon as an
+    ephemeral uinput pointer is announced by Xorg. Wayland is explicitly
+    excluded. ``DISPLAY`` is accepted as the X11 signal when session services
+    do not inherit ``XDG_SESSION_TYPE``.
+    """
+    if sys.platform != "linux":
+        return False
+
+    session_type = os.environ.get("XDG_SESSION_TYPE", "").strip().lower()
+    if session_type == "wayland":
+        return False
+    if session_type != "x11" and os.environ.get("WAYLAND_DISPLAY"):
+        return False
+
+    is_x11 = session_type == "x11" or bool(os.environ.get("DISPLAY"))
+    is_kde = any(
+        _desktop_value_is_kde(os.environ.get(name))
+        for name in (
+            "XDG_CURRENT_DESKTOP",
+            "XDG_SESSION_DESKTOP",
+            "DESKTOP_SESSION",
+        )
+    ) or os.environ.get("KDE_FULL_SESSION", "").strip().lower() in {
+        "1", "true", "yes",
+    }
+    return is_x11 and is_kde
+
+
+def _apply_platform_input_safety(action: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize unsafe platform delivery before approval and dispatch."""
+    normalized = dict(args)
+    if action in _DELIVERY_MODE_ACTIONS and _is_kde_x11_session():
+        # Cua's foreground X11 routes use XTEST/AT-SPI and never create the
+        # MPX uinput pointer. Force this even when a model explicitly requests
+        # background: creating the device is itself the dangerous operation,
+        # so falling back after an error would be too late.
+        normalized["delivery_mode"] = "foreground"
+    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +506,7 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     action = (args.get("action") or "").strip().lower()
     if not action:
         return json.dumps({"error": "missing `action`"})
+    args = _apply_platform_input_safety(action, args)
     # Per-run key for approval-state and daemon-mode isolation across
     # concurrent sessions.
     session_id = str(kwargs.get("session_id") or "")

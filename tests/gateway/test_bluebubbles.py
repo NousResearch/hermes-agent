@@ -280,15 +280,69 @@ class TestBlueBubblesAttachmentDownload:
 
 
 class TestBlueBubblesWebhookUrl:
-    """_webhook_url property normalises local hosts to 'localhost'."""
+    """_webhook_url keeps advertise family consistent with TCPSite bind.
+
+    IPv4 loopback/wildcard binds advertise ``127.0.0.1`` (macOS Node.js
+    resolves bare localhost to ``::1`` first). IPv6 any-address binds
+    advertise ``[::1]`` — never rewrite IPv6 bind → IPv4 register.
+    """
 
     def test_default_host(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
-        # Default webhook_host is 0.0.0.0 → normalized to localhost
-        assert "localhost" in adapter._webhook_url
+        # Default webhook_host is 127.0.0.1 → normalised to 127.0.0.1
+        assert adapter._webhook_url.startswith("http://127.0.0.1:")
         assert str(adapter.webhook_port) in adapter._webhook_url
         assert adapter.webhook_path in adapter._webhook_url
 
+    @pytest.mark.parametrize("host", ["0.0.0.0", "127.0.0.1", "localhost"])
+    def test_ipv4_bind_hosts_advertise_127_0_0_1(self, monkeypatch, host):
+        adapter = _make_adapter(monkeypatch, webhook_host=host)
+        assert adapter._webhook_url.startswith("http://127.0.0.1:")
+
+    @pytest.mark.parametrize("host", ["::", "::0", "[::]"])
+    def test_ipv6_any_bind_advertises_loopback_v6(self, monkeypatch, host):
+        """Bind family :: must not be rewritten to IPv4 127.0.0.1."""
+        adapter = _make_adapter(monkeypatch, webhook_host=host)
+        assert adapter._webhook_url.startswith("http://[::1]:")
+        assert "127.0.0.1" not in adapter._webhook_url
+
+    def test_custom_host_preserved(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, webhook_host="192.168.1.50")
+        assert "192.168.1.50" in adapter._webhook_url
+
+    def test_legacy_webhook_urls_returns_localhost_variant(self, monkeypatch):
+        """When using a loopback host, _legacy_webhook_urls includes the old
+        ``localhost``-based URL that a prior Hermes version would have
+        registered.
+        """
+        adapter = _make_adapter(monkeypatch)
+        # Default webhook_host is 127.0.0.1 → legacy was localhost
+        assert len(adapter._legacy_webhook_urls) == 1
+        assert adapter._legacy_webhook_urls[0].startswith("http://localhost:")
+
+    def test_legacy_webhook_urls_empty_when_custom_host(self, monkeypatch):
+        """A non-loopback host was never normalised to localhost."""
+        adapter = _make_adapter(monkeypatch, webhook_host="192.168.1.50")
+        assert adapter._legacy_webhook_urls == []
+
+    def test_register_url_embeds_password(self, monkeypatch):
+        """_webhook_register_url should append ?password=... for inbound auth."""
+        adapter = _make_adapter(monkeypatch, password="secret123")
+        assert adapter._webhook_register_url.endswith("?password=secret123")
+        assert adapter._webhook_register_url.startswith(adapter._webhook_url)
+
+    def test_register_url_url_encodes_password(self, monkeypatch):
+        """Passwords with special characters must be URL-encoded."""
+        adapter = _make_adapter(monkeypatch, password="W9fTC&L5JL*@")
+        assert "password=W9fTC%26L5JL%2A%40" in adapter._webhook_register_url
+
+    def test_register_url_for_log_masks_password(self, monkeypatch):
+        """Log-safe webhook URLs must never expose the webhook password."""
+        adapter = _make_adapter(monkeypatch, password="W9fTC&L5JL*@")
+        safe_url = adapter._webhook_register_url_for_log
+        assert safe_url.endswith("?password=***")
+        assert "W9fTC" not in safe_url
+        assert "%26" not in safe_url
 
     def test_register_url_omits_query_when_no_password(self, monkeypatch):
         """If no password is configured, the register URL should be the bare URL."""
@@ -401,6 +455,157 @@ class TestBlueBubblesWebhookRegistration:
         assert ok is True
         assert not post_called, "Should reuse existing, not POST again"
 
+
+    # -- legacy localhost migration --
+
+    def test_register_migrates_legacy_localhost_webhook(self, monkeypatch):
+        """When a stale ``localhost`` registration exists, _register_webhook
+        removes it before creating the new ``127.0.0.1`` registration.
+        This is the upgrade path from pre-IPv4-fix Hermes versions.
+        """
+        import asyncio
+        adapter = _make_adapter(monkeypatch, password="secret123")
+        current_url = adapter._webhook_register_url
+        legacy_url = adapter._legacy_webhook_urls[0] + "?password=secret123"
+
+        deleted_ids = []
+        all_webhooks = [
+            {"id": 42, "url": legacy_url, "events": ["new-message"]},
+        ]
+
+        async def mock_get(url, *args, **kwargs):
+            class R:
+                status_code = 200
+                def raise_for_status(self): pass
+                def json(self_inner):
+                    return {"status": 200, "data": list(all_webhooks)}
+            return R()
+
+        async def mock_delete(url, *args, **kwargs):
+            deleted_ids.append("42")
+            all_webhooks.clear()
+            class R:
+                status_code = 200
+                def raise_for_status(self): pass
+            return R()
+
+        async def mock_post(path, payload, *args, **kwargs):
+            class R:
+                status_code = 200
+                def raise_for_status(self): pass
+                def json(self_inner):
+                    return {"status": 200, "data": {}}
+            return R()
+
+        adapter.client = type("MockClient", (), {
+            "get": mock_get, "post": mock_post, "delete": mock_delete,
+        })()
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            adapter._register_webhook()
+        )
+        assert ok is True
+        # The stale localhost registration should have been deleted
+        assert len(deleted_ids) > 0, "Legacy localhost webhook should be migrated"
+
+    
+    def test_register_migrates_bare_legacy_localhost_without_password_query(
+        self, monkeypatch
+    ):
+        """Pre-326cbbe registrations used bare localhost URLs (no ?password=).
+
+        Even when the current install has a password, migration must still
+        find and remove the bare historical form.
+        """
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch, password="secret123")
+        bare_legacy = adapter._legacy_webhook_urls[0]
+        assert "?" not in bare_legacy
+
+        deleted_ids = []
+        all_webhooks = [
+            {"id": 77, "url": bare_legacy, "events": ["new-message"]},
+        ]
+
+        async def mock_get(url, *args, **kwargs):
+            class R:
+                status_code = 200
+
+                def raise_for_status(self):
+                    pass
+
+                def json(self_inner):
+                    return {"status": 200, "data": list(all_webhooks)}
+
+            return R()
+
+        async def mock_delete(url, *args, **kwargs):
+            deleted_ids.append(77)
+            all_webhooks.clear()
+
+            class R:
+                status_code = 200
+
+                def raise_for_status(self):
+                    pass
+
+            return R()
+
+        async def mock_post(path, payload, *args, **kwargs):
+            class R:
+                status_code = 200
+
+                def raise_for_status(self):
+                    pass
+
+                def json(self_inner):
+                    return {"status": 200, "data": {}}
+
+            return R()
+
+        adapter.client = type(
+            "MockClient",
+            (),
+            {"get": mock_get, "post": mock_post, "delete": mock_delete},
+        )()
+
+        ok = asyncio.get_event_loop().run_until_complete(adapter._register_webhook())
+        assert ok is True
+        assert 77 in deleted_ids, "Bare pre-password localhost webhook must be migrated"
+
+    def test_register_skips_migration_when_no_legacy(self, monkeypatch):
+        """No stale registrations → migration is a no-op, normal register proceeds."""
+        import asyncio
+        adapter = _make_adapter(monkeypatch, webhook_host="192.168.1.50")
+        # Custom host → _legacy_webhook_urls is empty → no migration
+
+        current_url = adapter._webhook_register_url
+
+        async def mock_get(path, *args, **kwargs):
+            class R:
+                status_code = 200
+                def raise_for_status(self): pass
+                def json(self_inner):
+                    return {"status": 200, "data": []}
+            return R()
+
+        async def mock_post(path, payload, *args, **kwargs):
+            class R:
+                status_code = 200
+                def raise_for_status(self): pass
+                def json(self_inner):
+                    return {"status": 200, "data": {}}
+            return R()
+
+        adapter.client = type("MockClient", (), {
+            "get": mock_get, "post": mock_post, "delete": lambda *a, **k: None,
+        })()
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            adapter._register_webhook()
+        )
+        assert ok is True
 
     # -- _unregister_webhook --
 

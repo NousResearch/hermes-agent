@@ -113,13 +113,32 @@ def test_reload_updated_runtime_modules_restores_new_hermes_constants_symbol(mon
 
 def _make_update_side_effect(
     current_branch="main",
-    commit_count="3",
+    upstream_commit_count="3",
+    local_ahead_count="0",
     ff_only_fails=False,
     reset_fails=False,
     fetch_fails=False,
     fetch_stderr="",
+    rebase_succeeds=True,
 ):
-    """Build a subprocess.run side_effect for cmd_update tests."""
+    """Build a subprocess.run side_effect for cmd_update tests.
+
+    ``upstream_commit_count`` answers the pre-#74885 update check
+    ``git rev-list HEAD..origin/<branch> --count`` ("how many commits on
+    origin is the local branch missing?"). The default of ``"3"`` matches
+    the pre-#74885 expectation that origin has new commits, so existing
+    tests that drive the "fetch → pull → reset" flow observe the same
+    behaviour they did before.
+
+    ``local_ahead_count`` answers the #74885 ``git rev-list
+    origin/<branch>..HEAD --count`` check ("how many local commits does
+    origin NOT have?"). The default of ``"0"`` matches the pre-#74885
+    expectation that the local branch has nothing ahead of origin, so the
+    destructive ``reset --hard`` fallback still fires when ff-only fails.
+    Tests that want to exercise the new rebase-preferred path set
+    ``local_ahead_count="3"`` (or similar) and optionally
+    ``rebase_succeeds=False`` to drive the conflict-then-reset branch.
+    """
     recorded = []
 
     def side_effect(cmd, **kwargs):
@@ -133,8 +152,14 @@ def _make_update_side_effect(
             return SimpleNamespace(stdout=f"{current_branch}\n", stderr="", returncode=0)
         if "checkout" in joined and "main" in joined:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if "rev-list" in joined:
-            return SimpleNamespace(stdout=f"{commit_count}\n", stderr="", returncode=0)
+        if "rev-list" in joined and "HEAD..origin" in joined:
+            return SimpleNamespace(stdout=f"{upstream_commit_count}\n", stderr="", returncode=0)
+        if "rev-list" in joined and "origin" in joined and "..HEAD" in joined:
+            return SimpleNamespace(stdout=f"{local_ahead_count}\n", stderr="", returncode=0)
+        if "rebase" in joined and "origin" in joined:
+            if rebase_succeeds:
+                return SimpleNamespace(stdout="Rebase succeeded.\n", stderr="", returncode=0)
+            return SimpleNamespace(stdout="", stderr="CONFLICT in foo.py\n", returncode=1)
         if "--ff-only" in joined:
             if ff_only_fails:
                 return SimpleNamespace(
@@ -191,6 +216,219 @@ def test_cmd_update_skips_stash_restore_when_reset_fails(monkeypatch, tmp_path, 
 
     out = capsys.readouterr().out
     assert "preserved in stash" in out
+
+
+def test_cmd_update_rebases_when_local_ahead_of_origin(monkeypatch, tmp_path, capsys):
+    """#74885: when ff-only fails AND the local branch has commits ahead of
+    origin, prefer ``git rebase origin/<branch>`` over the destructive
+    ``reset --hard`` so the user's local commits are preserved. Successful
+    rebase should fall through to the normal post-pull path."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    restore_calls = []
+    monkeypatch.setattr(
+        hermes_main, "_restore_stashed_changes",
+        lambda *a, **kw: restore_calls.append(1) or True,
+    )
+
+    side_effect, recorded = _make_update_side_effect(
+        local_ahead_count="3",
+        ff_only_fails=True,
+        rebase_succeeds=True,
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    # No reset --hard should have been attempted (rebase preserved the work).
+    assert not any(
+        "reset" in " ".join(c) and "--hard" in " ".join(c) for c in recorded
+    ), f"reset --hard should not run when rebase succeeds; recorded: {recorded}"
+    # Rebase SHOULD have been invoked.
+    assert any("rebase" in " ".join(c) for c in recorded), (
+        f"rebase should run when local branch is ahead of origin; recorded: {recorded}"
+    )
+    out = capsys.readouterr().out
+    assert "rebasing onto remote to preserve your work" in out
+
+
+def test_cmd_update_falls_back_to_reset_when_rebase_conflicts(
+    monkeypatch, tmp_path, capsys
+):
+    """#74885: rebase fails (conflict). Abort the rebase and fall back to the
+    destructive reset so the install can still recover. The user must still
+    get a clear warning that local commits will be lost and ``git reflog``
+    can recover them. The fallback reset succeeding is fine — the install
+    continues; the warning is the load-bearing change."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+
+    side_effect, recorded = _make_update_side_effect(
+        local_ahead_count="2",
+        ff_only_fails=True,
+        rebase_succeeds=False,
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    # No SystemExit expected: rebase-conflict falls back to reset, which
+    # succeeds in this fixture, so the install continues. The user-visible
+    # behaviour change is the warning + git reflog hint, which we assert below.
+    hermes_main.cmd_update(SimpleNamespace())
+
+    # Both rebase AND reset --hard should have been invoked.
+    assert any("rebase" in " ".join(c) for c in recorded)
+    assert any(
+        "reset" in " ".join(c) and "--hard" in " ".join(c) for c in recorded
+    )
+    # rebase --abort was issued to leave the user's history untouched.
+    assert any("--abort" in " ".join(c) for c in recorded)
+    out = capsys.readouterr().out
+    # Backup ref message must appear so the user knows where to recover
+    # their commits outside the reflog window (#74885 reviewer feedback).
+    assert "Backed up local branch to refs/hermes-backups/pre-update-" in out
+    assert "Your local commits are preserved at" in out
+
+
+def test_cmd_update_exits_when_rebase_and_reset_both_fail(
+    monkeypatch, tmp_path, capsys
+):
+    """#74885: worst case — rebase fails AND reset fails (e.g. disk full). We
+    must still surface the recovery instructions and exit 1 so the user
+    doesn't continue thinking the install succeeded."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+
+    side_effect, recorded = _make_update_side_effect(
+        local_ahead_count="2",
+        ff_only_fails=True,
+        rebase_succeeds=False,
+        reset_fails=True,
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    out = capsys.readouterr().out
+    # The new backup-ref message plus the original recovery instructions
+    # should both surface so the user knows their commits are safe at
+    # refs/hermes-backups/pre-update-* and how to retry the reset manually.
+    assert "Your commits are safe at refs/hermes-backups/pre-update-" in out
+    assert "git fetch origin && git reset --hard origin/main" in out
+
+
+def test_cmd_update_exits_when_revlis_fails_without_resetting(
+    monkeypatch, tmp_path, capsys
+):
+    """#74885 reviewer feedback: ``git rev-list origin/HEAD..HEAD --count``
+    returning non-zero exit (corrupt repo, missing origin ref, etc.) must NOT
+    be coerced to "0 local commits ahead" — that path leads straight into the
+    destructive ``reset --hard`` and silently wipes user work. Refuse to
+    proceed and exit 1 instead."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+
+    side_effect_calls = {"rev_list": 0, "reset": 0, "rebase": 0}
+    recorded = []
+
+    def side_effect(cmd, **kwargs):
+        recorded.append(cmd)
+        joined = " ".join(str(c) for c in cmd)
+        if "rev-list" in joined and "origin" in joined and "..HEAD" in joined:
+            side_effect_calls["rev_list"] += 1
+            # Simulate git failing (e.g. origin ref missing): non-zero exit,
+            # empty stdout. This is the dangerous case the reviewer flagged:
+            # pre-fix this was coerced to ahead_count=0 and proceeded to
+            # `reset --hard origin/<branch>`.
+            return SimpleNamespace(
+                stdout="",
+                stderr="fatal: bad revision 'origin/main'\n",
+                returncode=128,
+            )
+        if "rev-list" in joined and "HEAD..origin" in joined:
+            # Earlier "are there updates?" check; just report 3 commits so the
+            # flow reaches our patch path (it must arrive there for the rev-list
+            # returncode != 0 path to be exercised).
+            return SimpleNamespace(stdout="3\n", stderr="", returncode=0)
+        if "reset" in joined and "--hard" in joined:
+            side_effect_calls["reset"] += 1
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "rebase" in joined:
+            side_effect_calls["rebase"] += 1
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "--ff-only" in joined:
+            return SimpleNamespace(
+                stdout="",
+                stderr="fatal: Not possible to fast-forward, aborting.\n",
+                returncode=128,
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    # rev-list was called exactly once; reset and rebase must NOT have run.
+    assert side_effect_calls["rev_list"] == 1
+    assert side_effect_calls["reset"] == 0
+    assert side_effect_calls["rebase"] == 0
+
+    out = capsys.readouterr().out
+    assert "refusing to reset without knowing whether local commits exist" in out
+
+
+def test_cmd_update_exits_when_backup_ref_creation_fails(
+    monkeypatch, tmp_path, capsys
+):
+    """#74885 reviewer feedback: if the durable backup ref cannot be created
+    (e.g. permissions on refs/hermes-backups/), we MUST refuse to rebase or
+    reset. Without a backup, the rebase+reset dance can destroy local commits
+    even with the conflict-abort fallback, because ``git reset --hard`` walks
+    past the reflog window."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+
+    side_effect_calls = {"backup": 0, "reset": 0, "rebase": 0}
+    recorded = []
+
+    def side_effect(cmd, **kwargs):
+        recorded.append(cmd)
+        joined = " ".join(str(c) for c in cmd)
+        if "rev-list" in joined and "origin" in joined and "..HEAD" in joined:
+            return SimpleNamespace(stdout="2\n", stderr="", returncode=0)
+        if "rev-list" in joined and "HEAD..origin" in joined:
+            return SimpleNamespace(stdout="3\n", stderr="", returncode=0)
+        if "update-ref" in joined:
+            side_effect_calls["backup"] += 1
+            return SimpleNamespace(
+                stdout="",
+                stderr="error: cannot lock ref\n",
+                returncode=1,
+            )
+        if "reset" in joined and "--hard" in joined:
+            side_effect_calls["reset"] += 1
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "rebase" in joined:
+            side_effect_calls["rebase"] += 1
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "--ff-only" in joined:
+            return SimpleNamespace(
+                stdout="",
+                stderr="fatal: Not possible to fast-forward, aborting.\n",
+                returncode=128,
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    # Backup ref creation was attempted exactly once; rebase/reset must NOT
+    # have run, otherwise we'd be right back at the reviewer's complaint
+    # about silent data loss.
+    assert side_effect_calls["backup"] == 1
+    assert side_effect_calls["rebase"] == 0
+    assert side_effect_calls["reset"] == 0
+
+    out = capsys.readouterr().out
+    assert "refusing to rebase or reset without a safety net" in out
 
 
 # ---------------------------------------------------------------------------

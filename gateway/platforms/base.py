@@ -6108,6 +6108,14 @@ class BasePlatformAdapter(ABC):
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
 
+                # Stop the refresh loop before the first user-visible final
+                # delivery.  Telegram has no explicit "clear typing" action:
+                # if an in-flight refresh is processed after sendMessage, the
+                # client shows the bot typing for ~5 seconds after it replied.
+                # Cancelling and awaiting the task here closes that race while
+                # preserving the indicator during handler and TTS generation.
+                await _stop_typing_task()
+
                 # Play TTS audio before text (voice-first experience)
                 _tts_caption_delivered = False
                 _tts_cleanup_paths = {_tts_requested_path, _tts_path} - {None}

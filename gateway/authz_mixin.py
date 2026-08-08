@@ -72,6 +72,37 @@ def _platform_gate_env(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
 
 
+def _platform_gate_env_present(name: str) -> tuple[bool, str]:
+    """Read a platform gate while preserving absent-vs-explicit-empty.
+
+    Under multiplex, the active profile secret scope is authoritative and a
+    missing key must not fall through to another profile's process env.
+    """
+    if not name:
+        return False, ""
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        scope = current_secret_scope()
+        multiplex = is_multiplex_active()
+        if scope is not None:
+            if name in scope:
+                value = scope.get(name)
+                return True, "" if value is None else str(value).strip()
+            if multiplex:
+                return False, ""
+        elif multiplex:
+            # Fail closed: process env may belong to another profile.
+            return False, ""
+    except Exception:
+        # Authorization isolation failures must never fall through to process
+        # environment values that may belong to another profile.
+        return False, ""
+    if name not in os.environ:
+        return False, ""
+    return True, str(os.environ[name]).strip()
+
+
 def _coerce_allow_set(raw) -> set[str]:
     """Parse allowlist values from config or env var into a set of strings.
 
@@ -552,22 +583,36 @@ class GatewayAuthorizationMixin:
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
         }
 
-        # Plugin platforms: check the registry for auth env var names
+        plugin_authorization: dict = {}
+        plugin_entry = None
+
+        # Plugin platforms: check the registry for auth env var names and an
+        # optional live config-backed policy resolver.
         if source.platform not in platform_env_map:
             try:
                 from gateway.platform_registry import platform_registry
-                entry = platform_registry.get(source.platform.value)
-                if entry:
-                    if entry.allowed_users_env:
-                        platform_env_map[source.platform] = entry.allowed_users_env
-                    if entry.allow_all_env:
-                        platform_allow_all_map[source.platform] = entry.allow_all_env
+
+                plugin_entry = platform_registry.get(source.platform.value)
+                if plugin_entry:
+                    if plugin_entry.allowed_users_env:
+                        platform_env_map[source.platform] = plugin_entry.allowed_users_env
+                    if plugin_entry.allow_all_env:
+                        platform_allow_all_map[source.platform] = plugin_entry.allow_all_env
+                    if plugin_entry.authorization_config_fn is not None:
+                        resolved = plugin_entry.authorization_config_fn(adapter_profile)
+                        if isinstance(resolved, dict):
+                            plugin_authorization = resolved
             except Exception:
                 pass
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
-        if platform_allow_all_var and _auth_env(platform_allow_all_var).lower() in {"true", "1", "yes"}:
+        allow_all_present, allow_all_value = _platform_gate_env_present(
+            platform_allow_all_var
+        )
+        if not allow_all_present and "allow_all_users" in plugin_authorization:
+            allow_all_value = str(plugin_authorization["allow_all_users"]).strip()
+        if allow_all_value.lower() in {"true", "1", "yes"}:
             return True
 
         # Adapter-verified role auth: the Discord adapter already confirmed the
@@ -598,7 +643,14 @@ class GatewayAuthorizationMixin:
             return True
 
         # Check platform-specific and global allowlists
-        platform_allowlist = _auth_env(platform_env_map.get(source.platform, ""))
+        platform_allowlist_var = platform_env_map.get(source.platform, "")
+        allowlist_present, platform_allowlist = _platform_gate_env_present(
+            platform_allowlist_var
+        )
+        if not allowlist_present and "allowed_users" in plugin_authorization:
+            platform_allowlist = ",".join(
+                sorted(_coerce_allow_set(plugin_authorization["allowed_users"]))
+            )
         group_user_allowlist = ""
         group_chat_allowlist = ""
         if source.chat_type in {"group", "forum"}:
@@ -736,7 +788,21 @@ class GatewayAuthorizationMixin:
         # allowlist and still works everywhere for backward compatibility.
         allowed_ids = set()
         if platform_allowlist:
-            allowed_ids.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
+            platform_allowed_ids = {
+                uid.strip() for uid in platform_allowlist.split(",") if uid.strip()
+            }
+            normalizer = (
+                plugin_entry.authorization_user_normalizer
+                if plugin_entry is not None
+                else None
+            )
+            if normalizer is not None:
+                platform_allowed_ids = {
+                    normalized
+                    for value in platform_allowed_ids
+                    if (normalized := normalizer(value))
+                }
+            allowed_ids.update(platform_allowed_ids)
         if group_user_allowlist:
             allowed_ids.update(uid.strip() for uid in group_user_allowlist.split(",") if uid.strip())
         if global_allowlist:
@@ -748,6 +814,10 @@ class GatewayAuthorizationMixin:
             return True
 
         check_ids = {user_id}
+        if plugin_entry is not None and plugin_entry.authorization_user_normalizer:
+            normalized_user_id = plugin_entry.authorization_user_normalizer(user_id)
+            if normalized_user_id:
+                check_ids.add(normalized_user_id)
         if "@" in user_id:
             check_ids.add(user_id.split("@")[0])
 
@@ -787,6 +857,7 @@ class GatewayAuthorizationMixin:
         platform: Optional[Platform],
         *,
         profile: Optional[str] = None,
+        source: Optional[SessionSource] = None,
     ) -> str:
         """Return how unauthorized DMs should be handled for a platform.
 
@@ -798,15 +869,18 @@ class GatewayAuthorizationMixin:
         3. Explicit global ``unauthorized_dm_behavior`` in config — wins for
            chat-shaped platforms when no per-platform override is set.
         4. When an adapter-level DM policy opts into pairing or silent drop, honor it.
-        5. When an allowlist (``PLATFORM_ALLOWED_USERS``,
-           ``PLATFORM_GROUP_ALLOWED_USERS`` / ``PLATFORM_GROUP_ALLOWED_CHATS``,
-           or ``GATEWAY_ALLOWED_USERS``) is configured, default to ``"ignore"`` —
-           the allowlist signals that the owner has deliberately restricted
-           access; spamming unknown contacts with pairing codes is both noisy
-           and a potential info-leak. (#9337)
+        5. When a core-platform or plugin-provided allowlist is configured,
+           default to ``"ignore"`` — the allowlist signals that the owner has
+           deliberately restricted access; spamming unknown contacts with
+           pairing codes is both noisy and a potential info-leak. (#9337)
         6. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
         """
         config = getattr(self, "config", None)
+        policy_profile = (
+            self._adapter_profile_for_source(source)
+            if source is not None
+            else profile
+        )
 
         # Check for an explicit per-platform override first.
         if config and hasattr(config, "get_unauthorized_dm_behavior") and platform:
@@ -835,7 +909,7 @@ class GatewayAuthorizationMixin:
         # Prefer the profile-scoped live adapter's resolved policy in multiplex
         # mode; fall back to the default profile's config.extra.
         if platform:
-            dm_policy = self._adapter_dm_policy(platform, profile=profile)
+            dm_policy = self._adapter_dm_policy(platform, profile=policy_profile)
             if not dm_policy and config and hasattr(config, "platforms"):
                 platform_cfg = config.platforms.get(platform)
                 extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
@@ -850,6 +924,43 @@ class GatewayAuthorizationMixin:
         # if any allowlist is configured for this platform, silently drop
         # unauthorized messages instead of sending pairing codes.
         if platform:
+            # Plugin platforms can supply both env-backed gates and a live,
+            # profile-scoped config policy.  Apply the same absent-vs-empty env
+            # precedence used by _is_user_authorized: an explicit env value
+            # overrides config, including an explicitly empty value.
+            try:
+                from gateway.platform_registry import platform_registry
+
+                plugin_entry = platform_registry.get(platform.value)
+                if plugin_entry is not None:
+                    allowlist_present, plugin_allowlist = (
+                        _platform_gate_env_present(plugin_entry.allowed_users_env)
+                    )
+                    if plugin_allowlist:
+                        return "ignore"
+                    if (
+                        not allowlist_present
+                        and plugin_entry.authorization_config_fn is not None
+                    ):
+                        resolved = plugin_entry.authorization_config_fn(policy_profile)
+                        if isinstance(resolved, dict) and _coerce_allow_set(
+                            resolved.get("allowed_users")
+                        ):
+                            return "ignore"
+            except Exception as exc:
+                # Central authorization also denies when a plugin policy cannot
+                # be resolved. Never turn that fail-closed denial into an
+                # externally visible pairing response.
+                from gateway.run import logger
+
+                logger.warning(
+                    "Failed to resolve runtime authorization policy for %s; "
+                    "ignoring unauthorized DM: %s",
+                    platform.value,
+                    exc,
+                )
+                return "ignore"
+
             platform_env_map = {
                 Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
                 Platform.DISCORD:  "DISCORD_ALLOWED_USERS",

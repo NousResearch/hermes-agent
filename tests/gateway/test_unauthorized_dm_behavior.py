@@ -1,3 +1,4 @@
+import weakref
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -293,6 +294,116 @@ async def test_signal_with_allowlist_ignores_unauthorized_dm(monkeypatch):
     assert result is None
     runner.pairing_store.generate_code.assert_not_called()
     adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_buzz_config_allowlist_uses_transport_profile_and_ignores_unauthorized_dm(
+    monkeypatch, tmp_path
+):
+    """A routed Buzz DM must use its transport profile and remain silent."""
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from plugins.platforms.buzz.adapter import (
+        _load_runtime_authorization_config,
+        _normalize_user_ref,
+    )
+
+    _clear_auth_env(monkeypatch)
+    monkeypatch.delenv("BUZZ_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("BUZZ_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    allowed_pubkey = "a" * 64
+    unauthorized_pubkey = "b" * 64
+    (tmp_path / "config.yaml").write_text(
+        "buzz:\n"
+        "  extra:\n"
+        f"    allowed_users: [{allowed_pubkey}]\n"
+        "    allow_all_users: false\n",
+        encoding="utf-8",
+    )
+
+    buzz = Platform("buzz")
+    previous_entry = platform_registry.get("buzz")
+    platform_registry.register(
+        PlatformEntry(
+            name="buzz",
+            label="Buzz",
+            adapter_factory=lambda _cfg: None,
+            check_fn=lambda: True,
+            allowed_users_env="BUZZ_ALLOWED_USERS",
+            allow_all_env="BUZZ_ALLOW_ALL_USERS",
+            authorization_config_fn=_load_runtime_authorization_config,
+            authorization_user_normalizer=_normalize_user_ref,
+        )
+    )
+    try:
+        config = GatewayConfig(
+            platforms={buzz: PlatformConfig(enabled=True)},
+        )
+        runner, adapter = _make_runner(buzz, config)
+
+        class _TransportAdapter:
+            pass
+
+        transport_adapter = _TransportAdapter()
+        transport_adapter.send = adapter.send
+        runner.adapters[buzz] = transport_adapter
+        event = _make_event(buzz, unauthorized_pubkey, "unauthorized-dm")
+        event.source.profile = "routed-runtime"
+        event.source._transport_adapter_ref = weakref.ref(transport_adapter)
+
+        result = await runner._handle_message(event)
+
+        assert result is None
+        runner.pairing_store.generate_code.assert_not_called()
+        adapter.send.assert_not_awaited()
+    finally:
+        platform_registry.unregister("buzz")
+        if previous_entry is not None:
+            platform_registry.register(previous_entry)
+
+
+@pytest.mark.asyncio
+async def test_plugin_runtime_policy_error_ignores_unauthorized_dm(monkeypatch):
+    """Policy lookup failures must deny silently, never offer pairing."""
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    _clear_auth_env(monkeypatch)
+    platform_name = "runtime-policy-error-test"
+    allowed_env = "RUNTIME_POLICY_ERROR_TEST_ALLOWED_USERS"
+    allow_all_env = "RUNTIME_POLICY_ERROR_TEST_ALLOW_ALL_USERS"
+    monkeypatch.delenv(allowed_env, raising=False)
+    monkeypatch.delenv(allow_all_env, raising=False)
+
+    def _raise_policy_error(_profile):
+        raise RuntimeError("config unavailable")
+
+    platform_registry.register(
+        PlatformEntry(
+            name=platform_name,
+            label="Runtime policy error test",
+            adapter_factory=lambda _cfg: None,
+            check_fn=lambda: True,
+            allowed_users_env=allowed_env,
+            allow_all_env=allow_all_env,
+            authorization_config_fn=_raise_policy_error,
+        )
+    )
+    platform = Platform(platform_name)
+    try:
+        runner, adapter = _make_runner(
+            platform,
+            GatewayConfig(platforms={platform: PlatformConfig(enabled=True)}),
+        )
+
+        result = await runner._handle_message(
+            _make_event(platform, "unknown-user", "unauthorized-dm")
+        )
+
+        assert result is None
+        runner.pairing_store.generate_code.assert_not_called()
+        adapter.send.assert_not_awaited()
+    finally:
+        platform_registry.unregister(platform_name)
 
 
 @pytest.mark.asyncio

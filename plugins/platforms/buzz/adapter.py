@@ -344,6 +344,75 @@ def _parse_json_list(stdout: str) -> List[dict]:
     return [item for item in data if isinstance(item, dict)]
 
 
+def _load_runtime_authorization_config(profile: Optional[str] = None) -> dict:
+    """Resolve the live, profile-scoped Buzz access policy from config.yaml."""
+    from hermes_cli.config import load_config_readonly
+
+    if profile:
+        from hermes_cli.profiles import get_profile_dir
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        token = set_hermes_home_override(str(get_profile_dir(profile)))
+        try:
+            config = load_config_readonly()
+        finally:
+            reset_hermes_home_override(token)
+    else:
+        config = load_config_readonly()
+    merged: Dict[str, Any] = {}
+
+    def _merge(candidate: Any) -> None:
+        if not isinstance(candidate, dict):
+            return
+        merged.update(
+            {
+                key: value
+                for key, value in candidate.items()
+                if key
+                not in {"enabled", "token", "home_channel", "home_channels", "extra"}
+            }
+        )
+        extra = candidate.get("extra")
+        if isinstance(extra, dict):
+            merged.update(extra)
+
+    if isinstance(config, dict):
+        gateway = config.get("gateway")
+        gateway_platforms = (
+            gateway.get("platforms") if isinstance(gateway, dict) else None
+        )
+        if isinstance(gateway_platforms, dict):
+            _merge(gateway_platforms.get("buzz"))
+
+        platforms = config.get("platforms")
+        if isinstance(platforms, dict):
+            _merge(platforms.get("buzz"))
+
+        if isinstance(gateway, dict):
+            _merge(gateway.get("buzz"))
+        _merge(config.get("buzz"))
+
+    policy: dict = {}
+    if "allowed_users" in merged:
+        raw_allowed = merged["allowed_users"]
+        if isinstance(raw_allowed, str):
+            raw_allowed = raw_allowed.split(",")
+        if not isinstance(raw_allowed, (list, tuple)):
+            raw_allowed = []
+        policy["allowed_users"] = [
+            normalized
+            for entry in raw_allowed
+            if isinstance(entry, str)
+            and (normalized := _normalize_user_ref(entry))
+        ]
+    if "allow_all_users" in merged:
+        policy["allow_all_users"] = merged["allow_all_users"]
+    return policy
+
+
 # ---------------------------------------------------------------------------
 # Buzz Adapter
 # ---------------------------------------------------------------------------
@@ -400,16 +469,6 @@ class BuzzAdapter(BasePlatformAdapter):
             os.getenv("BUZZ_TRANSPORT") or str(extra.get("transport", "auto") or "auto")
         ).strip().lower()
         self.transport = _transport if _transport in ("auto", "websocket", "poll") else "auto"
-
-        # Auth: entries may be hex pubkeys or npubs; normalized to hex
-        raw_allowed = os.getenv("BUZZ_ALLOWED_USERS") or extra.get("allowed_users", [])
-        if isinstance(raw_allowed, str):
-            raw_allowed = raw_allowed.split(",")
-        self._allowed_pubkeys: set = {
-            normalized
-            for entry in raw_allowed
-            if isinstance(entry, str) and (normalized := _normalize_user_ref(entry))
-        }
 
         # Secret — resolved lazily (never at import/registration time and
         # never logged).  connect() re-resolves it to fail fast with a clear
@@ -1036,12 +1095,6 @@ class BuzzAdapter(BasePlatformAdapter):
         if not is_dm and self.require_mention and not self._is_mentioned(content):
             return
 
-        # Adapter-level allow-list (the gateway applies BUZZ_ALLOWED_USERS /
-        # BUZZ_ALLOW_ALL_USERS centrally as well; empty list = no filter here).
-        if self._allowed_pubkeys and pubkey not in self._allowed_pubkeys:
-            logger.debug("Buzz: ignoring message from unauthorized pubkey %s…", pubkey[:8])
-            return
-
         # Strip a leading @mention so slash commands (@Chip /whoami ->
         # /whoami) and clean prompts are recognized. DM messages often still
         # open with "@Chip" even though no mention is required there, so the
@@ -1210,6 +1263,45 @@ class BuzzAdapter(BasePlatformAdapter):
             state["seen"][event_id] = None
             self._trim_seen(state)
 
+    @staticmethod
+    def _should_ack_sender(user_id: str, profile: Optional[str] = None) -> bool:
+        """Return whether the live Buzz policy admits a cosmetic acknowledgement."""
+        sender = _normalize_user_ref(user_id)
+
+        def explicit_value(name: str) -> Tuple[bool, str]:
+            from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+            scope = current_secret_scope()
+            if scope is not None and name in scope:
+                value = scope.get(name)
+                return True, "" if value is None else str(value)
+            if is_multiplex_active():
+                return False, ""
+            if name in os.environ:
+                return True, os.environ.get(name, "")
+            return False, ""
+
+        policy = _load_runtime_authorization_config(profile)
+
+        allow_all_present, allow_all_value = explicit_value(
+            "BUZZ_ALLOW_ALL_USERS"
+        )
+        if not allow_all_present and "allow_all_users" in policy:
+            allow_all_value = str(policy["allow_all_users"])
+        if allow_all_value.strip().lower() in {"true", "1", "yes"}:
+            return True
+
+        allowed_present, allowed_value = explicit_value("BUZZ_ALLOWED_USERS")
+        if allowed_present:
+            allowed = {
+                normalized
+                for raw in allowed_value.split(",")
+                if (normalized := _normalize_user_ref(raw))
+            }
+        else:
+            allowed = set(policy.get("allowed_users", []))
+        return bool(sender and sender in allowed)
+
     async def _dispatch_message(
         self,
         text: str,
@@ -1242,12 +1334,17 @@ class BuzzAdapter(BasePlatformAdapter):
 
         await self.handle_message(event)
         
-        # Add a "seen" reaction after dispatching — signals to the user that
-        # their message was received and is being processed.
-        try:
-            await self.send_reaction(chat_id, message_id, "👀")
-        except Exception:
-            logger.debug("Buzz: reaction failed for message %s", message_id[:12], exc_info=True)
+        # Acknowledgements are cosmetic only; central authorization remains
+        # the enforcement point. Keep unauthorized traffic silent.
+        if self._should_ack_sender(user_id, getattr(source, "profile", None)):
+            try:
+                await self.send_reaction(chat_id, message_id, "👀")
+            except Exception:
+                logger.debug(
+                    "Buzz: reaction failed for message %s",
+                    message_id[:12],
+                    exc_info=True,
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -1307,13 +1404,6 @@ def _apply_yaml_config(yaml_cfg: dict, buzz_cfg: dict) -> Optional[dict]:
         if isinstance(channels, (list, tuple)):
             channels = ",".join(str(c) for c in channels)
         os.environ["BUZZ_CHANNELS"] = str(channels)
-    allowed = extra.get("allowed_users")
-    if allowed is not None and not os.getenv("BUZZ_ALLOWED_USERS"):
-        if isinstance(allowed, (list, tuple)):
-            allowed = ",".join(str(a) for a in allowed)
-        os.environ["BUZZ_ALLOWED_USERS"] = str(allowed)
-    if "allow_all_users" in extra and not os.getenv("BUZZ_ALLOW_ALL_USERS"):
-        os.environ["BUZZ_ALLOW_ALL_USERS"] = str(extra["allow_all_users"]).lower()
     if "require_mention" in extra and not os.getenv("BUZZ_REQUIRE_MENTION"):
         os.environ["BUZZ_REQUIRE_MENTION"] = str(extra["require_mention"]).lower()
     return None
@@ -1510,9 +1600,11 @@ def register(ctx):
         # cron jobs fail with "No live adapter" when cron runs separately
         # from the gateway.
         standalone_sender_fn=_standalone_send,
-        # Auth env vars for _is_user_authorized() integration
+        # Auth env vars and live config resolver for central authorization.
         allowed_users_env="BUZZ_ALLOWED_USERS",
         allow_all_env="BUZZ_ALLOW_ALL_USERS",
+        authorization_config_fn=_load_runtime_authorization_config,
+        authorization_user_normalizer=_normalize_user_ref,
         # Display
         emoji="🐝",
         # Buzz identities are pubkeys, not phone numbers

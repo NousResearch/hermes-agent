@@ -142,6 +142,158 @@ class TestBuzzAdapterInit:
         adapter = BuzzAdapter(PlatformConfig(enabled=True, extra={"relay_url": "https://cfg.relay"}))
         assert adapter.relay_url == "https://env.relay"
 
+    def test_runtime_authorization_config_normalizes_buzz_identities(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "buzz:\n"
+            "  extra:\n"
+            f"    allowed_users: [{SELF_NPUB}, {OTHER_PUBKEY.upper()}]\n"
+            "    allow_all_users: false\n",
+            encoding="utf-8",
+        )
+
+        policy = _buzz_mod._load_runtime_authorization_config()
+
+        assert policy == {
+            "allowed_users": [SELF_PUBKEY, OTHER_PUBKEY],
+            "allow_all_users": False,
+        }
+
+    def test_runtime_authorization_config_supports_gateway_buzz_path(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "gateway:\n"
+            "  buzz:\n"
+            "    extra:\n"
+            f"      allowed_users: [{SELF_NPUB}]\n"
+            "      allow_all_users: true\n",
+            encoding="utf-8",
+        )
+
+        assert _buzz_mod._load_runtime_authorization_config() == {
+            "allowed_users": [SELF_PUBKEY],
+            "allow_all_users": True,
+        }
+
+    def test_runtime_authorization_config_uses_gateway_precedence(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    buzz:\n"
+            "      extra:\n"
+            f"        allowed_users: [{OTHER_PUBKEY}]\n"
+            "  buzz:\n"
+            "    extra:\n"
+            "      allow_all_users: true\n"
+            "platforms:\n"
+            "  buzz:\n"
+            "    extra:\n"
+            "      allow_all_users: false\n"
+            "buzz:\n"
+            "  extra:\n"
+            f"    allowed_users: [{SELF_NPUB}]\n",
+            encoding="utf-8",
+        )
+
+        assert _buzz_mod._load_runtime_authorization_config() == {
+            "allowed_users": [SELF_PUBKEY],
+            "allow_all_users": True,
+        }
+
+    def test_runtime_authorization_config_retains_last_valid_policy(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "buzz:\n"
+            "  extra:\n"
+            f"    allowed_users: [{SELF_NPUB}]\n",
+            encoding="utf-8",
+        )
+        expected = {"allowed_users": [SELF_PUBKEY]}
+        assert _buzz_mod._load_runtime_authorization_config() == expected
+
+        config_path.write_text("buzz: [not: valid", encoding="utf-8")
+
+        assert _buzz_mod._load_runtime_authorization_config() == expected
+
+        config_path.write_text(
+            "buzz:\n"
+            "  extra:\n"
+            f"    allowed_users: [{OTHER_PUBKEY}]\n",
+            encoding="utf-8",
+        )
+        assert _buzz_mod._load_runtime_authorization_config() == {
+            "allowed_users": [OTHER_PUBKEY]
+        }
+
+        config_path.write_text("buzz:\n  extra: {}\n", encoding="utf-8")
+        assert _buzz_mod._load_runtime_authorization_config() == {}
+
+        config_path.unlink()
+        assert _buzz_mod._load_runtime_authorization_config() == {}
+
+    def test_runtime_authorization_config_honors_managed_overlay(
+        self, monkeypatch, tmp_path
+    ):
+        from hermes_cli import managed_scope
+
+        home = tmp_path / "home"
+        managed = tmp_path / "managed"
+        home.mkdir()
+        managed.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+        (home / "config.yaml").write_text(
+            "buzz:\n"
+            "  extra:\n"
+            f"    allowed_users: [{OTHER_PUBKEY}]\n"
+            "    allow_all_users: true\n",
+            encoding="utf-8",
+        )
+        (managed / "config.yaml").write_text(
+            "buzz:\n"
+            "  extra:\n"
+            f"    allowed_users: [{SELF_NPUB}]\n"
+            "    allow_all_users: false\n",
+            encoding="utf-8",
+        )
+        managed_scope.invalidate_managed_cache()
+
+        assert _buzz_mod._load_runtime_authorization_config() == {
+            "allowed_users": [SELF_PUBKEY],
+            "allow_all_users": False,
+        }
+
+    def test_runtime_authorization_config_reads_requested_profile(
+        self, monkeypatch, tmp_path
+    ):
+        from hermes_cli.profiles import get_profile_dir
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            f"buzz:\n  extra:\n    allowed_users: [{OTHER_PUBKEY}]\n",
+            encoding="utf-8",
+        )
+        secondary = get_profile_dir("secondary")
+        secondary.mkdir(parents=True)
+        (secondary / "config.yaml").write_text(
+            f"buzz:\n  extra:\n    allowed_users: [{SELF_NPUB}]\n",
+            encoding="utf-8",
+        )
+
+        assert _buzz_mod._load_runtime_authorization_config("secondary") == {
+            "allowed_users": [SELF_PUBKEY]
+        }
+
 
 # ── CLI error contract ────────────────────────────────────────────────────
 
@@ -245,10 +397,214 @@ class TestMentionGating:
 
 
     @pytest.mark.asyncio
-    async def test_allowlist_blocks_unauthorized(self, adapter):
+    async def test_access_policy_is_deferred_to_central_authorization(self, adapter):
         adapter._allowed_pubkeys = {"b" * 64}
         await self._poll_with(adapter, _event("e1", content="@Chip hello", created_at=10))
-        assert adapter._dispatched == []
+        assert [item["message_id"] for item in adapter._dispatched] == ["e1"]
+
+
+class TestAcknowledgementAuthorization:
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_sender_gets_no_seen_reaction(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "buzz:\n"
+            "  extra:\n"
+            f"    allowed_users: [{SELF_NPUB}]\n"
+            "    allow_all_users: false\n",
+            encoding="utf-8",
+        )
+        adapter = _make_adapter()
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = AsyncMock()
+        adapter.send_reaction = AsyncMock(return_value=True)
+
+        await adapter._dispatch_message(
+            text="test",
+            chat_id=CHANNEL,
+            chat_type="group",
+            user_id=OTHER_PUBKEY,
+            user_name="Other",
+            message_id="e1",
+            created_at=10,
+        )
+
+        adapter.handle_message.assert_awaited_once()
+        adapter.send_reaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_allowlisted_sender_keeps_seen_reaction(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "buzz:\n"
+            "  extra:\n"
+            f"    allowed_users: [{OTHER_PUBKEY.upper()}]\n"
+            "    allow_all_users: false\n",
+            encoding="utf-8",
+        )
+        adapter = _make_adapter()
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = AsyncMock()
+        adapter.send_reaction = AsyncMock(return_value=True)
+
+        await adapter._dispatch_message(
+            text="test",
+            chat_id=CHANNEL,
+            chat_type="group",
+            user_id=OTHER_PUBKEY,
+            user_name="Other",
+            message_id="e1",
+            created_at=10,
+        )
+
+        adapter.send_reaction.assert_awaited_once_with(CHANNEL, "e1", "👀")
+
+    @pytest.mark.asyncio
+    async def test_explicit_env_allowlist_controls_seen_reaction(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("BUZZ_ALLOWED_USERS", OTHER_PUBKEY.upper())
+        (tmp_path / "config.yaml").write_text(
+            "buzz:\n  extra:\n    allow_all_users: false\n",
+            encoding="utf-8",
+        )
+        adapter = _make_adapter()
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = AsyncMock()
+        adapter.send_reaction = AsyncMock(return_value=True)
+
+        await adapter._dispatch_message(
+            text="test",
+            chat_id=CHANNEL,
+            chat_type="group",
+            user_id=OTHER_PUBKEY,
+            user_name="Other",
+            message_id="e1",
+            created_at=10,
+        )
+
+        adapter.send_reaction.assert_awaited_once_with(CHANNEL, "e1", "👀")
+
+    @pytest.mark.asyncio
+    async def test_noncanonical_allow_all_env_does_not_ack_sender(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("BUZZ_ALLOW_ALL_USERS", "on")
+        (tmp_path / "config.yaml").write_text(
+            "buzz:\n  extra:\n    allow_all_users: false\n",
+            encoding="utf-8",
+        )
+        adapter = _make_adapter()
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = AsyncMock()
+        adapter.send_reaction = AsyncMock(return_value=True)
+
+        await adapter._dispatch_message(
+            text="test",
+            chat_id=CHANNEL,
+            chat_type="group",
+            user_id=OTHER_PUBKEY,
+            user_name="Other",
+            message_id="e1",
+            created_at=10,
+        )
+
+        adapter.handle_message.assert_awaited_once()
+        adapter.send_reaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_explicit_empty_allowlist_env_keeps_runtime_allow_all_reaction(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("BUZZ_ALLOWED_USERS", "")
+        (tmp_path / "config.yaml").write_text(
+            "buzz:\n  extra:\n    allow_all_users: true\n",
+            encoding="utf-8",
+        )
+        adapter = _make_adapter()
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = AsyncMock()
+        adapter.send_reaction = AsyncMock(return_value=True)
+
+        await adapter._dispatch_message(
+            text="test",
+            chat_id=CHANNEL,
+            chat_type="group",
+            user_id=OTHER_PUBKEY,
+            user_name="Other",
+            message_id="e1",
+            created_at=10,
+        )
+
+        adapter.send_reaction.assert_awaited_once_with(CHANNEL, "e1", "👀")
+
+    @pytest.mark.asyncio
+    async def test_explicit_allow_all_env_keeps_runtime_allowlist_reaction(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("BUZZ_ALLOW_ALL_USERS", "false")
+        (tmp_path / "config.yaml").write_text(
+            "buzz:\n"
+            "  extra:\n"
+            f"    allowed_users: [{OTHER_PUBKEY}]\n",
+            encoding="utf-8",
+        )
+        adapter = _make_adapter()
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = AsyncMock()
+        adapter.send_reaction = AsyncMock(return_value=True)
+
+        await adapter._dispatch_message(
+            text="test",
+            chat_id=CHANNEL,
+            chat_type="group",
+            user_id=OTHER_PUBKEY,
+            user_name="Other",
+            message_id="e1",
+            created_at=10,
+        )
+
+        adapter.send_reaction.assert_awaited_once_with(CHANNEL, "e1", "👀")
+
+    @pytest.mark.asyncio
+    async def test_multiplex_ack_uses_active_profile_scope(self, monkeypatch, tmp_path):
+        from agent import secret_scope
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("BUZZ_ALLOW_ALL_USERS", "true")
+        (tmp_path / "config.yaml").write_text("buzz:\n  extra: {}\n", encoding="utf-8")
+        token = secret_scope.set_secret_scope({"BUZZ_ALLOWED_USERS": SELF_PUBKEY})
+        secret_scope.set_multiplex_active(True)
+        try:
+            adapter = _make_adapter()
+            adapter._message_handler = AsyncMock()
+            adapter.handle_message = AsyncMock()
+            adapter.send_reaction = AsyncMock(return_value=True)
+
+            await adapter._dispatch_message(
+                text="test",
+                chat_id=CHANNEL,
+                chat_type="group",
+                user_id=OTHER_PUBKEY,
+                user_name="Other",
+                message_id="e1",
+                created_at=10,
+            )
+
+            adapter.handle_message.assert_awaited_once()
+            adapter.send_reaction.assert_not_awaited()
+        finally:
+            secret_scope.reset_secret_scope(token)
+            secret_scope.set_multiplex_active(False)
 
 
 # ── DM classification via p-tags (issue #68871) ──────────────────────────
@@ -505,6 +861,8 @@ class TestBuzzPluginRegistration:
         assert kwargs["cron_deliver_env_var"] == "BUZZ_HOME_CHANNEL"
         assert kwargs["allowed_users_env"] == "BUZZ_ALLOWED_USERS"
         assert kwargs["allow_all_env"] == "BUZZ_ALLOW_ALL_USERS"
+        assert callable(kwargs["authorization_config_fn"])
+        assert callable(kwargs["authorization_user_normalizer"])
         assert callable(kwargs["standalone_sender_fn"])
         assert callable(kwargs["env_enablement_fn"])
         assert set(kwargs["required_env"]) == {"BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY"}

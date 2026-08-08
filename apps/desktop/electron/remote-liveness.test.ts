@@ -257,7 +257,7 @@ describe('revalidatePooledRemoteBackends', () => {
   const harness = (entries: Array<[string, { process?: unknown; remoteBaseUrl?: null | string }]>) => {
     const unreachable = new Set<string>()
     const log = vi.fn()
-    const stopBackend = vi.fn()
+    const stopBackend = vi.fn(() => true)
 
     const probe = vi.fn(async (url: string) => {
       if ([...unreachable].some(base => url.startsWith(base))) {
@@ -309,7 +309,10 @@ describe('revalidatePooledRemoteBackends', () => {
     }
 
     await expect(pool.run(tracker)).resolves.toEqual({ dropped: ['coder'] })
-    expect(pool.stopBackend).toHaveBeenCalledWith('coder')
+    expect(pool.stopBackend).toHaveBeenCalledWith('coder', {
+      process: null,
+      remoteBaseUrl: 'https://remote.example.com/'
+    })
   })
 
   it('clears the streak when the host answers again', async () => {
@@ -348,6 +351,26 @@ describe('revalidatePooledRemoteBackends', () => {
 
     await expect(pool.run(tracker)).resolves.toEqual({ dropped: ['coder'] })
     expect(pool.stopBackend).toHaveBeenCalledTimes(1)
-    expect(pool.stopBackend).toHaveBeenCalledWith('coder')
+    expect(pool.stopBackend).toHaveBeenCalledWith('coder', {
+      process: null,
+      remoteBaseUrl: 'https://dead.example.com'
+    })
+  })
+
+  it('does not report a stale descriptor as dropped when its replacement is current', async () => {
+    const pool = harness([['coder', { process: null, remoteBaseUrl: 'https://remote.example.com' }]])
+    pool.stopBackend.mockReturnValue(false)
+    pool.unreachable.add('https://remote.example.com')
+    const tracker = new RemoteLivenessTracker()
+
+    for (let attempt = 1; attempt < REMOTE_LIVENESS_FAILURE_LIMIT; attempt += 1) {
+      await pool.run(tracker)
+    }
+
+    await expect(pool.run(tracker)).resolves.toEqual({ dropped: [] })
+    expect(pool.stopBackend).toHaveBeenCalledWith('coder', {
+      process: null,
+      remoteBaseUrl: 'https://remote.example.com'
+    })
   })
 })

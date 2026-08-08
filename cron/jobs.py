@@ -604,7 +604,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     # Cron fields: minute hour day month weekday [year]
     parts = schedule.split()
     if len(parts) >= 5 and all(
-        re.match(r'^[\d\*\-,/]+$', p) for p in parts[:5]
+        re.match(r'^[\d\*\-,/L#?]+$', p) for p in parts[:5]
     ):
         if not _ensure_croniter():
             raise ValueError("Cron expressions require 'croniter' package. Install with: pip install croniter")

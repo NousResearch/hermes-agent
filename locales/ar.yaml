@@ -50,6 +50,22 @@ gateway:
   config_read_failed: "⚠️ تعذّر قراءة config.yaml: {error}"
   config_save_failed: "⚠️ تعذّر حفظ الإعدادات: {error}"
 
+  session_info:
+    model:                 "◆ النموذج: `{model}`"
+    provider:              "◆ المزوّد: {provider}"
+    context:               "◆ السياق: {context} رمزًا ({source})"
+    endpoint:              "◆ نقطة النهاية: {endpoint}"
+    ctx_source_config:     "من الإعدادات"
+    ctx_source_default:    "افتراضي - عيّن model.context_length في الإعدادات للتجاوز"
+    ctx_source_detected:   "مكتشف تلقائيًا"
+
+  auto_reset:
+    notice:                "◐ تمت إعادة تعيين الجلسة تلقائيًا ({reason}). تم مسح سجل المحادثة.\nاستخدم /resume لتصفّح جلسة سابقة واستعادتها.\nيمكن ضبط توقيت إعادة التعيين في config.yaml ضمن session_reset."
+    reason_suspended:      "تم إيقاف الجلسة السابقة أو مقاطعتها"
+    reason_resume_pending_expired: "انتهت مهلة الاستعادة بعد إعادة تشغيل البوابة"
+    reason_daily:          "الجدول اليومي عند الساعة {hour}:00"
+    reason_idle:           "غير نشطة منذ {duration}"
+
   model:
     error_prefix:           "خطأ: {error}"
     switched:               "تم التبديل إلى النموذج `{model}`"

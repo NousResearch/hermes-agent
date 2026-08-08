@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
+import { mergeActiveWork, normalizeActiveWork, quitGuardAction, quitPromptFor } from './quit-guard'
 
 test('normalizeActiveWork drops junk and keeps the count at least the title count', () => {
   assert.deepEqual(normalizeActiveWork(null), { count: 0, titles: [] })
@@ -59,4 +59,24 @@ test('quitPromptFor speaks singular for one chat', () => {
   assert.ok(prompt)
   assert.equal(prompt.message, 'Hermes is still working on 1 chat.')
   assert.ok(prompt.detail.includes('mid-turn'))
+})
+
+test('quitGuardAction asks on the first quit gesture', () => {
+  assert.equal(quitGuardAction({ confirmed: false, promptOpen: false, skipConfirm: false }), 'prompt')
+})
+
+test('quitGuardAction holds a second quit while the confirmation is unanswered', () => {
+  assert.equal(quitGuardAction({ confirmed: false, promptOpen: true, skipConfirm: false }), 'hold')
+})
+
+test('quitGuardAction lets the answered quit and automated teardown through', () => {
+  assert.equal(quitGuardAction({ confirmed: true, promptOpen: false, skipConfirm: false }), 'proceed')
+  assert.equal(quitGuardAction({ confirmed: false, promptOpen: false, skipConfirm: true }), 'proceed')
+})
+
+test('quitGuardAction keeps the fall-through latches ahead of the hold', () => {
+  // Both latches are cleared before app.quit() re-enters before-quit, but a
+  // hold that outranked them would deadlock the quit with no dialog to answer.
+  assert.equal(quitGuardAction({ confirmed: true, promptOpen: true, skipConfirm: false }), 'proceed')
+  assert.equal(quitGuardAction({ confirmed: false, promptOpen: true, skipConfirm: true }), 'proceed')
 })

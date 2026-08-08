@@ -159,7 +159,7 @@ import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import { fetchPrimaryProfileSessions } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
-import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
+import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitGuardAction, quitPromptFor } from './quit-guard'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
   RemoteLivenessTracker,
@@ -2611,8 +2611,9 @@ let updateInFlight = false
 // actually dies and the hand-off script can proceed immediately.
 let isQuittingForHandoff = false
 
-// Quit-guard latches: one while the confirmation is on screen (a second
-// Cmd-Q must not stack dialogs), one after the user has said "quit anyway"
+// Quit-guard latches: one while the confirmation is on screen (a second Cmd-Q
+// must not stack dialogs, and must not quit out from under the unanswered one
+// either — see quitGuardAction), one after the user has said "quit anyway"
 // (the app.quit() that follows re-enters before-quit and must pass through).
 let quitPromptOpen = false
 let quitConfirmedWithActiveWork = false
@@ -11916,15 +11917,35 @@ function configureSpellChecker() {
 }
 
 // Ask before a quit kills a turn in flight. True when the quit was intercepted
-// and the confirmation is on screen; "Quit Anyway" re-enters before-quit with
-// the latch set and falls straight through to the teardown below.
+// — either because the confirmation was just raised, or because one is already
+// on screen; "Quit Anyway" re-enters before-quit with the latch set and falls
+// straight through to the teardown below.
 function heldQuitForActiveWork(event: Electron.Event): boolean {
-  if (SKIP_QUIT_CONFIRM || quitConfirmedWithActiveWork || quitPromptOpen) {
+  const action = quitGuardAction({
+    confirmed: quitConfirmedWithActiveWork,
+    promptOpen: quitPromptOpen,
+    skipConfirm: SKIP_QUIT_CONFIRM
+  })
+
+  if (action === 'proceed') {
     return false
   }
 
-  const prompt = quitPromptFor(mergeActiveWork(activeWorkByWebContents.values()), isQuittingForHandoff)
   const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+
+  if (action === 'hold') {
+    // A confirmation is already up and unanswered. Hold this quit and put the
+    // sheet back in front instead of quitting behind it.
+    event.preventDefault()
+
+    if (parent && !parent.isDestroyed()) {
+      parent.focus()
+    }
+
+    return true
+  }
+
+  const prompt = quitPromptFor(mergeActiveWork(activeWorkByWebContents.values()), isQuittingForHandoff)
 
   if (!prompt || !parent || parent.isDestroyed()) {
     return false

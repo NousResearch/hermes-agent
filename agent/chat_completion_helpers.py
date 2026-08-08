@@ -221,6 +221,32 @@ def _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs: dict) -> dic
     return anthropic_kwargs
 
 
+def _merge_opencode_go_session_header(agent, kwargs: dict) -> dict:
+    """Merge OpenCode Go's ``x-opencode-session`` header onto non-OpenAI-wire kwargs.
+
+    ``OpenCodeGoProfile.build_api_kwargs_extras`` is only consulted by the
+    chat_completions transport; the anthropic_messages route opencode-go's
+    MiniMax/Qwen routing uses (and the codex_responses route, for parity)
+    must merge the session-affinity header themselves. See #81584.
+    """
+    if getattr(agent, "provider", None) != "opencode-go":
+        return kwargs
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("opencode-go")
+        if profile is not None:
+            _, top_level = profile.build_api_kwargs_extras(
+                model=agent.model, session_id=getattr(agent, "session_id", None)
+            )
+            extra_headers = top_level.get("extra_headers")
+            if extra_headers:
+                kwargs.setdefault("extra_headers", {}).update(extra_headers)
+    except Exception as exc:  # noqa: BLE001 — never block a turn on a header
+        logger.debug("OpenCode Go session-header merge failed: %s", exc)
+    return kwargs
+
+
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.getenv(name, str(default)))
@@ -1358,7 +1384,8 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         # the profile hook that produces them is only consulted by the
         # OpenAI-wire transport. Merge them here so Messages traffic keeps
         # product attribution and sticky routing.
-        return _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs)
+        anthropic_kwargs = _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs)
+        return _merge_opencode_go_session_header(agent, anthropic_kwargs)
 
     # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
     # The adapter handles message/tool conversion and boto3 calls directly.
@@ -1434,7 +1461,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
                     getattr(agent, "log_prefix", ""), exc,
                 )
 
-        return _ct.build_kwargs(
+        codex_kwargs = _ct.build_kwargs(
             model=agent.model,
             messages=_msgs_for_codex,
             tools=tools_for_api,
@@ -1454,6 +1481,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             ),
             context_management=_context_management,
         )
+        return _merge_opencode_go_session_header(agent, codex_kwargs)
 
     # ── chat_completions (default) ─────────────────────────────────────
     _ct = agent._get_transport()

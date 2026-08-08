@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent.portal_tags import get_conversation_context
+from agent.transports.codex import _cache_scope_from_session_id
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -56,7 +58,35 @@ class OpenCodeGoProfile(ProviderProfile):
         return self.default_max_tokens
 
     def build_api_kwargs_extras(
-        self, *, reasoning_config: dict | None = None, model: str | None = None, **context
+        self,
+        *,
+        reasoning_config: dict | None = None,
+        model: str | None = None,
+        session_id: str | None = None,
+        **context,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        extra_body, top_level = self._reasoning_api_kwargs_extras(
+            reasoning_config=reasoning_config, model=model
+        )
+
+        # OpenCode Go's chat_completions relay 400s "Model is unavailable" for
+        # some backends (e.g. deepseek-v4-flash) unless a stable per-conversation
+        # session-affinity header is present. Reuse the same session_id
+        # resolution as OpenRouter's x-grok-conv-id (ambient conversation
+        # context first, falling back to the explicit session_id, so
+        # auxiliary calls with no session handle still get one) so the value
+        # stays stable across turns and rotates when the conversation does,
+        # without leaking to other providers. See hermes-agent#81584.
+        session_key = _cache_scope_from_session_id(get_conversation_context() or session_id)
+        if session_key:
+            extra_headers = dict(top_level.get("extra_headers") or {})
+            extra_headers["x-opencode-session"] = session_key
+            top_level["extra_headers"] = extra_headers
+
+        return extra_body, top_level
+
+    def _reasoning_api_kwargs_extras(
+        self, *, reasoning_config: dict | None = None, model: str | None = None
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}

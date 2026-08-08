@@ -1,5 +1,6 @@
 import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
+import { readFileSync } from 'node:fs'
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
@@ -157,7 +158,40 @@ export function applyPrintableInsert(
 
 export const shouldRouteMultiCharInputAsPaste = (text: string): boolean => text.includes('\n')
 
-export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boolean {
+// Memoized WSL2 kernel probe, mirroring cli.py's own
+// _preserve_ctrl_enter_newline() (issue #22379): WSL_DISTRO_NAME (the
+// distro registration name, e.g. "Ubuntu") never contains "microsoft",
+// so relying on it alone leaves WSL undetected on every normal install.
+// The WSL2 kernel's own version string does contain "microsoft" (e.g.
+// "...microsoft-standard-WSL2"), so fall back to reading it directly.
+// Computed once and cached: this check backs a function that runs on
+// every Enter keystroke, and synchronous file reads on every call would
+// be wasteful.
+let _wsl2KernelCache: boolean | null = null
+
+function isWsl2Kernel(): boolean {
+  if (_wsl2KernelCache !== null) {
+    return _wsl2KernelCache
+  }
+  _wsl2KernelCache = false
+  for (const path of ['/proc/version', '/proc/sys/kernel/osrelease']) {
+    try {
+      if (readFileSync(path, 'utf8').toLowerCase().includes('microsoft')) {
+        _wsl2KernelCache = true
+        break
+      }
+    } catch {
+      // File doesn't exist (non-Linux) or isn't readable -- try the next
+      // path, or fall through to false if none matched.
+    }
+  }
+  return _wsl2KernelCache
+}
+
+export function shouldPreserveCtrlJNewline(
+  env: MinimalEnv = process.env,
+  wsl2KernelCheck: () => boolean = isWsl2Kernel
+): boolean {
   if (env.WT_SESSION) {
     return true
   }
@@ -178,7 +212,16 @@ export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boole
     return true
   }
 
-  return (env.WSL_DISTRO_NAME ?? '').toLowerCase().includes('microsoft')
+  // WSL_DISTRO_NAME is the distro registration name (e.g. "Ubuntu",
+  // "Debian", "kali-linux") -- it never contains "microsoft". Its mere
+  // presence is the reliable signal: it's only injected inside WSL.
+  if (env.WSL_DISTRO_NAME) {
+    return true
+  }
+
+  // Env vars can be scrubbed (e.g. under sudo) -- fall back to reading
+  // the kernel version string directly.
+  return wsl2KernelCheck()
 }
 
 function prevPos(s: string, p: number) {

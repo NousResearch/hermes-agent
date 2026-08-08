@@ -19,6 +19,25 @@ describe('shouldPreserveCtrlJNewline', () => {
   it('keeps bare local POSIX LF-compatible prompts submitting on Ctrl+J', () => {
     expect(shouldPreserveCtrlJNewline({ TERM: 'xterm-256color' })).toBe(false)
   })
+
+  it('preserves Ctrl+J as newline on WSL via WSL_DISTRO_NAME alone (issue #77283)', () => {
+    // WSL_DISTRO_NAME is the distro REGISTRATION name (e.g. "Ubuntu",
+    // "Debian", "kali-linux") -- it never contains "microsoft". Its mere
+    // presence (not a substring match against it) is the reliable signal.
+    expect(
+      shouldPreserveCtrlJNewline({ WSL_DISTRO_NAME: 'Ubuntu', TERM: 'xterm-256color' })
+    ).toBe(true)
+  })
+
+  it('falls back to the /proc-based WSL2 kernel probe when env vars are scrubbed', () => {
+    // e.g. under sudo, where WSL_DISTRO_NAME and friends may not survive.
+    expect(
+      shouldPreserveCtrlJNewline({ TERM: 'xterm-256color' }, () => true)
+    ).toBe(true)
+    expect(
+      shouldPreserveCtrlJNewline({ TERM: 'xterm-256color' }, () => false)
+    ).toBe(false)
+  })
 })
 
 describe('shouldPassThroughToGlobalHandler', () => {

@@ -135,3 +135,213 @@ def test_sessions_export_cli_prompt_only_stdout(monkeypatch, capsys):
     }
 
 
+# ─── `sessions export <directory>` ────────────────────────────────────────
+#
+# `hermes sessions export --help` documents the positional as an output
+# *directory* for md/qmd, and the bulk md/qmd branch honours that. Every
+# single-file writer in `cmd_sessions` instead called `open(args.output, "w")`
+# on the raw positional, so handing it a directory raised an uncaught
+# `IsADirectoryError` — for `--only` and `--format html` only after the whole
+# export had already been rendered. A missing parent directory raised an
+# equally uncaught `FileNotFoundError` at the same lines.
+
+
+class _FakeSessionDB:
+    """Minimal ``SessionDB`` stand-in covering the export command's reads."""
+
+    def __init__(self):
+        self.closed = False
+
+    def resolve_session_id(self, session_id):
+        return "sess-123"
+
+    def export_session(self, session_id):
+        return _sample_session()
+
+    def export_all(self, source=None):
+        return [_sample_session()]
+
+    def get_session(self, session_id):
+        return {"id": session_id, "model": "test/model"}
+
+    def get_messages_as_conversation(self, session_id):
+        return [
+            {"role": "user", "content": "Why is login broken?"},
+            {"role": "assistant", "content": "I will inspect the auth middleware."},
+        ]
+
+    def close(self):
+        self.closed = True
+
+
+def _run_sessions_export(monkeypatch, argv):
+    """Drive ``hermes sessions export`` end-to-end against a stub database."""
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    db = _FakeSessionDB()
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: db)
+    monkeypatch.setattr(sys, "argv", ["hermes", "sessions", "export"] + argv)
+    main_mod.main()
+    return db
+
+
+def test_prompt_only_md_export_into_directory(monkeypatch, capsys, tmp_path):
+    """``--format md --only user-prompts <dir>`` is the documented invocation.
+
+    The positional is documented as a directory for md and ``--only`` is
+    documented as supported for md, yet the same command line only worked
+    once ``--only`` was dropped.
+    """
+    _run_sessions_export(
+        monkeypatch,
+        [
+            str(tmp_path),
+            "--format",
+            "md",
+            "--only",
+            "user-prompts",
+            "--session-id",
+            "sess",
+        ],
+    )
+
+    written = tmp_path / "user-prompts.md"
+    assert written.is_file()
+    assert "Why is login broken?" in written.read_text(encoding="utf-8")
+    assert str(written) in capsys.readouterr().out
+
+
+def test_prompt_only_jsonl_export_into_directory(monkeypatch, capsys, tmp_path):
+    _run_sessions_export(
+        monkeypatch,
+        [
+            str(tmp_path),
+            "--format",
+            "jsonl",
+            "--only",
+            "user-prompts",
+            "--session-id",
+            "sess",
+        ],
+    )
+
+    written = tmp_path / "user-prompts.jsonl"
+    assert written.is_file()
+    records = [
+        json.loads(line) for line in written.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [record["text"] for record in records] == [
+        "Why is login broken?",
+        "Only show me the prompts.",
+    ]
+    assert str(written) in capsys.readouterr().out
+
+
+def test_html_export_into_directory(monkeypatch, capsys, tmp_path):
+    _run_sessions_export(
+        monkeypatch,
+        [str(tmp_path), "--format", "html", "--session-id", "sess"],
+    )
+
+    written = tmp_path / "sessions.html"
+    assert written.is_file()
+    assert "<html" in written.read_text(encoding="utf-8").lower()
+    assert str(written) in capsys.readouterr().out
+
+
+def test_trace_single_session_export_into_directory(monkeypatch, capsys, tmp_path):
+    """``--format trace`` accepted a directory for many sessions but not one.
+
+    Five lines apart in the same function, the multi-session trace branch
+    does ``Path(args.output)`` + ``mkdir(parents=True, exist_ok=True)`` while
+    the single-session branch opened the same positional as a file.
+    """
+    _run_sessions_export(
+        monkeypatch,
+        [str(tmp_path), "--format", "trace", "--session-id", "sess"],
+    )
+
+    written = tmp_path / "sess-123.trace.jsonl"
+    assert written.is_file()
+    assert written.read_text(encoding="utf-8").strip()
+    assert str(written) in capsys.readouterr().out
+
+
+def test_jsonl_session_export_into_directory(monkeypatch, capsys, tmp_path):
+    _run_sessions_export(
+        monkeypatch,
+        [str(tmp_path), "--format", "jsonl", "--session-id", "sess"],
+    )
+
+    written = tmp_path / "sess-123.jsonl"
+    assert written.is_file()
+    assert json.loads(written.read_text(encoding="utf-8"))["id"] == "sess-123"
+    assert str(written) in capsys.readouterr().out
+
+
+def test_jsonl_bulk_export_into_directory(monkeypatch, capsys, tmp_path):
+    _run_sessions_export(monkeypatch, [str(tmp_path), "--format", "jsonl"])
+
+    written = tmp_path / "sessions.jsonl"
+    assert written.is_file()
+    assert json.loads(written.read_text(encoding="utf-8"))["id"] == "sess-123"
+    assert str(written) in capsys.readouterr().out
+
+
+def test_export_creates_missing_parent_directory(monkeypatch, tmp_path):
+    """A not-yet-existing parent raised a bare ``FileNotFoundError``."""
+    target = tmp_path / "nested" / "deep" / "prompts.md"
+
+    _run_sessions_export(
+        monkeypatch,
+        [
+            str(target),
+            "--format",
+            "md",
+            "--only",
+            "user-prompts",
+            "--session-id",
+            "sess",
+        ],
+    )
+
+    assert target.is_file()
+    assert "Why is login broken?" in target.read_text(encoding="utf-8")
+
+
+def test_prompt_only_md_stdout_dash_unchanged(monkeypatch, capsys):
+    """Behaviour-preservation guard: ``-`` still streams to stdout."""
+    _run_sessions_export(
+        monkeypatch,
+        ["-", "--format", "md", "--only", "user-prompts", "--session-id", "sess"],
+    )
+
+    out = capsys.readouterr().out
+    assert "Why is login broken?" in out
+    assert "Exported" not in out
+
+
+def test_prompt_only_md_plain_file_path_unchanged(monkeypatch, capsys, tmp_path):
+    """Behaviour-preservation guard: a file path still writes that exact file."""
+    target = tmp_path / "prompts.md"
+
+    _run_sessions_export(
+        monkeypatch,
+        [
+            str(target),
+            "--format",
+            "md",
+            "--only",
+            "user-prompts",
+            "--session-id",
+            "sess",
+        ],
+    )
+
+    assert target.is_file()
+    assert "Why is login broken?" in target.read_text(encoding="utf-8")
+    assert not (tmp_path / "user-prompts.md").exists()
+    assert str(target) in capsys.readouterr().out
+
+

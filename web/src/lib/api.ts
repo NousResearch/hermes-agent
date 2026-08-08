@@ -2404,6 +2404,8 @@ export interface MoaConfigResponse {
     reference_max_tokens?: number | null;
     /** Fan-out cadence (user_turn default | per_iteration | every_n:N) — round-tripped. */
     fanout?: string;
+    /** Cap on concurrent advisor calls (1 = sequential; null = default ceiling) — round-tripped. */
+    max_concurrent_references?: number | null;
     enabled: boolean;
   }>;
   reference_models: MoaModelSlot[];

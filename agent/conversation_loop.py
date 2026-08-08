@@ -1873,6 +1873,9 @@ def run_conversation(
                     degraded_reference_policy=str(
                         moa_config.get("degraded_reference_policy") or "loud"
                     ),
+                    max_concurrent_references=moa_config.get(
+                        "max_concurrent_references"
+                    ),
                     agent=agent,
                 )
                 if _moa_context:

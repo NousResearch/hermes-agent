@@ -175,6 +175,44 @@ benchmarks justify a costlier default. Presets that want per-step advising
 back set `fanout: per_iteration` explicitly.
 :::
 
+### Limiting advisor concurrency with `max_concurrent_references`
+
+By default the reference fan-out dispatches **every advisor at once** (up to
+a built-in ceiling of 8 concurrent calls). For remote APIs that is the right
+shape — the turn only waits as long as the slowest advisor. Some local
+inference servers cannot handle concurrent requests, though: LM Studio's JIT
+loader (`model.lmstudio_load_mode: jit`) aborts a model load when another
+load request arrives on the same GPU, so a parallel fan-out over several
+LM Studio models ends up loading only one of them.
+
+Set `max_concurrent_references: 1` on a preset to force a fully **sequential**
+fan-out — each advisor runs, completes, and is unloaded before the next one
+starts, so every JIT-loaded model gets a chance to answer. Any positive
+integer works as a cap (e.g. `2` on a dual-GPU box); unset, `0`, or invalid
+values fall back to the default ceiling.
+
+```yaml
+moa:
+  presets:
+    local:
+      reference_models:
+        - provider: lmstudio
+          model: qwen/qwen3.6-27b
+        - provider: lmstudio
+          model: llama/llama-4-70b
+      aggregator:
+        provider: lmstudio
+        model: qwen/qwen3.6-27b
+      max_concurrent_references: 1   # sequential: one JIT load at a time
+```
+
+:::note
+The sequential fan-out still waits for every advisor before the aggregator
+acts — it only removes the concurrency, not the join semantics. With local
+models this trades per-turn latency for correctness; with remote APIs keep
+the default (parallel) shape.
+:::
+
 ### Privacy filter for advisor outputs
 
 Advisor outputs can echo sensitive data from the conversation — emails,

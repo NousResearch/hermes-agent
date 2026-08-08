@@ -606,6 +606,162 @@ class TestSaveSessionLogRedactsSecrets:
         # Image part preserved untouched
         assert parts[1]["image_url"]["url"].startswith("data:image")
 
+    def test_redacts_tool_call_arguments(self, agent, tmp_path):
+        """Assistant tool_calls arguments are a credential-bearing field too."""
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        secret = "sk-proj-abc123def456ghi789jkl012mno"
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": f'{{"cmd": "echo {secret}"}}'},
+                    }
+                ],
+            },
+        ]
+        agent._save_session_log(messages)
+        snapshot = (tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8")
+        assert secret not in snapshot
+
+
+class TestHookTranscriptPath:
+    """Regression: ``_hook_transcript_path`` — the tool-hook transcript writer.
+
+    Feature PR #39939 exposes an atomic, redacted transcript snapshot path to
+    the pre/post tool hooks. Unlike the opt-in ``_save_session_log`` writer,
+    this path is driven by hook demand (a registered listener), so it must
+    write even when ``sessions.write_json_snapshots`` is off — while keeping
+    every safety invariant of the shared snapshot writer: session-ID
+    sanitization (traversal containment), credential redaction, and atomic
+    writes that never leave partial content under concurrency.
+    """
+
+    def test_writes_contained_file_even_when_optin_disabled(self, agent, tmp_path):
+        # Hooks need the transcript regardless of the opt-in JSON flag.
+        agent._session_json_enabled = False
+        agent.logs_dir = tmp_path
+        path = agent._hook_transcript_path([{"role": "user", "content": "hi"}])
+        assert path, "writer must return a non-empty path when it can write"
+        written = Path(path)
+        assert written.exists()
+        assert written.resolve().parent == tmp_path.resolve()
+        assert written.name == f"session_{agent.session_id}.json"
+
+    def test_no_session_id_returns_empty_and_writes_nothing(self, agent, tmp_path):
+        agent.logs_dir = tmp_path
+        agent.session_id = ""
+        assert agent._hook_transcript_path([{"role": "user", "content": "hi"}]) == ""
+        assert list(tmp_path.glob("session_*.json")) == []
+
+    def test_no_messages_returns_empty_and_writes_nothing(self, agent, tmp_path):
+        agent.logs_dir = tmp_path
+        agent._session_messages = []
+        assert agent._hook_transcript_path([]) == ""
+        assert list(tmp_path.glob("session_*.json")) == []
+
+    def test_traversal_session_id_stays_in_logs_dir(self, agent, tmp_path):
+        # A traversal-shaped session ID (untrusted X-Hermes-Session-Id header)
+        # must not redirect the hook snapshot outside the sessions directory.
+        # logs_dir is nested inside the unique per-test tmp_path so the escape
+        # check is scoped to a tree pytest guarantees is clean (no reliance on
+        # a shared tmp base that a prior run could have polluted).
+        logs_dir = tmp_path / "hermes" / "sessions"
+        logs_dir.mkdir(parents=True)
+        agent.logs_dir = logs_dir
+        agent.session_id = "../../pwned_escape/pwned"
+        path = agent._hook_transcript_path([{"role": "user", "content": "hi"}])
+        assert path
+        # Exactly one snapshot, contained directly in logs_dir.
+        written = list(logs_dir.glob("session_*.json"))
+        assert len(written) == 1, "writer must produce a single contained snapshot"
+        assert written[0].resolve().parent == logs_dir.resolve()
+        assert Path(path).resolve().parent == logs_dir.resolve()
+        # No JSON snapshot escaped logs_dir anywhere in the unique test tree.
+        stray = [
+            p for p in tmp_path.rglob("*.json")
+            if p.resolve().parent != logs_dir.resolve()
+        ]
+        assert stray == [], f"session id escaped logs_dir: {stray}"
+
+    def test_redacts_credentials_in_hook_transcript(self, agent, tmp_path, monkeypatch):
+        # The hook path must inherit the same secret redaction as _save_session_log.
+        monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+        agent.logs_dir = tmp_path
+        secret = "sk-proj-abc123def456ghi789jkl012mno"
+        path = agent._hook_transcript_path(
+            [{"role": "tool", "content": f"Authorization: Bearer {secret}"}]
+        )
+        assert path
+        assert secret not in Path(path).read_text(encoding="utf-8")
+
+    def test_redacts_tool_call_arguments_in_hook_transcript(self, agent, tmp_path, monkeypatch):
+        # tool_calls[].function.arguments carries the raw JSON sent to a tool
+        # and can embed credentials just like message content. The demand-driven
+        # hook writer (default-on when a hook is registered) must redact them.
+        monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+        agent.logs_dir = tmp_path
+        secret = "sk-proj-abc123def456ghi789jkl012mno"
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": f'{{"command": "echo {secret}"}}',
+                        },
+                    }
+                ],
+            },
+        ]
+        path = agent._hook_transcript_path(messages)
+        assert path
+        assert secret not in Path(path).read_text(encoding="utf-8")
+        # The writer must never mutate the caller's live message list.
+        assert secret in messages[0]["tool_calls"][0]["function"]["arguments"]
+
+    def test_concurrent_writes_never_produce_partial_content(self, agent, tmp_path):
+        # Concurrent pre/post snapshot generation for the same session must
+        # never yield malformed/partial JSON — atomic replace guarantees a
+        # reader always sees a complete transcript.
+        agent.logs_dir = tmp_path
+        messages = [
+            {"role": "user", "content": "x" * 4000},
+            {"role": "assistant", "content": "y" * 4000},
+        ]
+        errors: list[str] = []
+
+        def _worker():
+            for _ in range(12):
+                try:
+                    p = agent._hook_transcript_path(messages)
+                    if p:
+                        json.loads(Path(p).read_text(encoding="utf-8"))
+                except Exception as exc:  # pragma: no cover - only on corruption
+                    errors.append(repr(exc))
+
+        threads = [threading.Thread(target=_worker) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=20)
+
+        assert not errors, f"concurrent snapshot writes corrupted the transcript: {errors[:3]}"
+        written = list(tmp_path.glob("session_*.json"))
+        assert len(written) == 1
+        data = json.loads(written[0].read_text(encoding="utf-8"))
+        assert data["message_count"] == 2
+
 
 class TestGetMessagesUpToLastAssistant:
     def test_empty_list(self, agent):
@@ -1944,8 +2100,31 @@ class TestConcurrentToolExecution:
                 enabled_toolsets=agent.enabled_toolsets,
                 disabled_toolsets=agent.disabled_toolsets,
                 tool_request_middleware_trace=[],
+                transcript_path="",
             )
             assert result == "result"
+
+    def test_invoke_tool_passes_transcript_path_to_handle_function_call(self, agent, monkeypatch):
+        """Tool hooks should receive the transcript path generated from messages."""
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: name == "pre_tool_call")
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: None,
+        )
+        agent._hook_transcript_path = MagicMock(return_value="/tmp/session_agent.json")
+        messages = [{"role": "user", "content": "check repo"}]
+
+        with patch("run_agent.handle_function_call", return_value="result") as mock_hfc:
+            result = agent._invoke_tool(
+                "web_search",
+                {"q": "test"},
+                "task-1",
+                messages=messages,
+            )
+
+        assert result == "result"
+        agent._hook_transcript_path.assert_called_once_with(messages)
+        assert mock_hfc.call_args.kwargs["transcript_path"] == "/tmp/session_agent.json"
 
     def test_sequential_tool_callbacks_fire_in_order(self, agent):
         tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")

@@ -30,6 +30,32 @@ class TestHandleFunctionCall:
         assert "error" in result
         assert "totally_fake_tool_xyz" in result["error"]
 
+    def test_tool_hooks_receive_session_and_tool_call_ids(self):
+        with (
+            patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            result = handle_function_call(
+                "web_search",
+                {"q": "test"},
+                task_id="task-1",
+                tool_call_id="call-1",
+                session_id="session-1",
+                transcript_path="/tmp/session_session-1.json",
+            )
+
+        assert result == '{"ok":true}'
+        kwargs_by_hook = {
+            hook_call.args[0]: hook_call.kwargs
+            for hook_call in mock_invoke_hook.call_args_list
+        }
+        assert kwargs_by_hook["pre_tool_call"]["transcript_path"] == (
+            "/tmp/session_session-1.json"
+        )
+        assert kwargs_by_hook["post_tool_call"]["transcript_path"] == (
+            "/tmp/session_session-1.json"
+        )
 
 
     def test_post_tool_call_receives_non_negative_integer_duration_ms(self):

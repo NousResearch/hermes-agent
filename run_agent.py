@@ -2959,27 +2959,31 @@ class AIAgent:
             return redacted
         return content
 
-    def _save_session_log(self, messages: List[Dict[str, Any]] = None):
-        """Optional per-session JSON snapshot writer.
+    @staticmethod
+    def _redact_tool_calls(tool_calls):
+        """Redact secrets from assistant tool-call argument strings.
 
-        Gated by ``sessions.write_json_snapshots`` (default False).  state.db
-        is the canonical message store; this writer exists only for users
-        whose external tooling consumes ``~/.hermes/sessions/session_{sid}.json``
-        directly.  When the flag is off this is a fast no-op.
-
-        When enabled, rewrites the snapshot after every persistence point with
-        the full message list (assistant content normalized via
-        ``_clean_session_content`` to convert REASONING_SCRATCHPAD to think
-        tags).  The truncation guard ("don't overwrite a larger log with
-        fewer messages") is preserved so resume + branch don't clobber a
-        fuller existing snapshot.
+        ``tool_calls`` entries carry the raw ``function.arguments`` JSON string
+        sent to a tool, which can embed credentials (API keys, bearer tokens)
+        exactly like message content. Each entry is copied so the caller's live
+        message list is never mutated. Respects ``HERMES_REDACT_SECRETS`` via
+        ``redact_sensitive_text`` — a no-op when disabled.
         """
-        if not getattr(self, "_session_json_enabled", False):
-            return
-        messages = messages or self._session_messages
-        if not messages:
-            return
+        if not isinstance(tool_calls, list):
+            return tool_calls
+        redacted = []
+        for call in tool_calls:
+            if isinstance(call, dict):
+                call = dict(call)
+                fn = call.get("function")
+                if isinstance(fn, dict) and isinstance(fn.get("arguments"), str):
+                    fn = dict(fn)
+                    fn["arguments"] = redact_sensitive_text(fn["arguments"])
+                    call["function"] = fn
+            redacted.append(call)
+        return redacted
 
+    def _session_log_path(self) -> Optional[Path]:
         # Re-derive the target path each call so /branch and /compress
         # session-id changes land in the right file without any re-point
         # bookkeeping at the call sites.  Sanitize the session ID into a
@@ -2987,11 +2991,14 @@ class AIAgent:
         # untrusted input (X-Hermes-Session-Id header) and must not escape
         # the sessions directory.
         try:
+            if not self.session_id:
+                return None
             safe_sid = _safe_session_filename_component(self.session_id)
-            log_file = self.logs_dir / f"session_{safe_sid}.json"
+            return self.logs_dir / f"session_{safe_sid}.json"
         except Exception:
-            return
+            return None
 
+    def _write_session_log_snapshot(self, log_file: Path, messages: List[Dict[str, Any]]) -> bool:
         try:
             cleaned = []
             for msg in messages:
@@ -3010,6 +3017,14 @@ class AIAgent:
                 if "content" in msg:
                     msg = dict(msg)
                     msg["content"] = self._redact_message_content(msg.get("content"))
+                # Assistant tool-call arguments carry the raw JSON sent to a
+                # tool, which can embed credentials just like message content.
+                # The hook transcript writer is demand-driven (any registered
+                # pre/post hook), independent of the JSON-snapshot opt-in, so
+                # redact tool-call arguments before they reach disk too.
+                if isinstance(msg.get("tool_calls"), list):
+                    msg = dict(msg)
+                    msg["tool_calls"] = self._redact_tool_calls(msg["tool_calls"])
                 cleaned.append(msg)
 
             # Guard: never overwrite a larger session log with fewer messages.
@@ -3024,7 +3039,7 @@ class AIAgent:
                             "Skipping session log overwrite: existing has %d messages, current has %d",
                             existing_count, len(cleaned),
                         )
-                        return
+                        return True
                 except Exception:
                     pass  # corrupted existing file — allow the overwrite
 
@@ -3047,10 +3062,51 @@ class AIAgent:
                 indent=2,
                 default=str,
             )
+            return True
 
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to save session log: {e}")
+            return False
+
+    def _hook_transcript_path(self, messages: List[Dict[str, Any]] = None) -> str:
+        """Write and return a JSON transcript path for tool-hook consumers."""
+        messages = messages or self._session_messages
+        if not messages:
+            return ""
+        log_file = self._session_log_path()
+        if log_file is None:
+            return ""
+        if self._write_session_log_snapshot(log_file, messages):
+            return str(log_file)
+        return str(log_file) if log_file.exists() else ""
+
+    def _save_session_log(self, messages: List[Dict[str, Any]] = None):
+        """Optional per-session JSON snapshot writer.
+
+        Gated by ``sessions.write_json_snapshots`` (default False).  state.db
+        is the canonical message store; this writer exists only for users
+        whose external tooling consumes ``~/.hermes/sessions/session_{sid}.json``
+        directly.  When the flag is off this is a fast no-op.
+
+        When enabled, rewrites the snapshot after every persistence point with
+        the full message list (assistant content normalized via
+        ``_clean_session_content`` to convert REASONING_SCRATCHPAD to think
+        tags).  The truncation guard ("don't overwrite a larger log with
+        fewer messages") is preserved so resume + branch don't clobber a
+        fuller existing snapshot.
+        """
+        if not getattr(self, "_session_json_enabled", False):
+            return
+        messages = messages or self._session_messages
+        if not messages:
+            return
+
+        log_file = self._session_log_path()
+        if log_file is None:
+            return
+
+        self._write_session_log_snapshot(log_file, messages)
 
 
     def interrupt(self, message: Optional[str] = None, *, hard_cancel: bool = False) -> None:

@@ -2351,6 +2351,7 @@ def _get_pre_tool_call_directive_details(
     turn_id: str = "",
     api_request_id: str = "",
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
+    transcript_path: str = "",
 ) -> _PreToolCallDirective:
     """Check ``pre_tool_call`` hooks for a blocking or approval directive.
 
@@ -2398,6 +2399,7 @@ def _get_pre_tool_call_directive_details(
         turn_id=turn_id,
         api_request_id=api_request_id,
         middleware_trace=list(middleware_trace or []),
+        transcript_path=transcript_path,
     )
 
     for result in hook_results:
@@ -2430,6 +2432,7 @@ def get_pre_tool_call_directive(
     turn_id: str = "",
     api_request_id: str = "",
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
+    transcript_path: str = "",
 ) -> tuple[Optional[str], Optional[str]]:
     """Check ``pre_tool_call`` hooks for a blocking or approval directive.
 
@@ -2442,6 +2445,7 @@ def get_pre_tool_call_directive(
         tool_name, args, task_id=task_id, session_id=session_id,
         tool_call_id=tool_call_id, turn_id=turn_id,
         api_request_id=api_request_id, middleware_trace=middleware_trace,
+        transcript_path=transcript_path,
     )
     return (details.action, details.message)
 
@@ -2455,6 +2459,7 @@ def get_pre_tool_call_block_message(
     turn_id: str = "",
     api_request_id: str = "",
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
+    transcript_path: str = "",
 ) -> Optional[str]:
     """Back-compat shim: return only a ``block`` message (or ``None``).
 
@@ -2467,6 +2472,7 @@ def get_pre_tool_call_block_message(
         tool_name, args, task_id=task_id, session_id=session_id,
         tool_call_id=tool_call_id, turn_id=turn_id,
         api_request_id=api_request_id, middleware_trace=middleware_trace,
+        transcript_path=transcript_path,
     )
     return message if directive == "block" else None
 
@@ -2480,6 +2486,7 @@ def resolve_pre_tool_block(
     turn_id: str = "",
     api_request_id: str = "",
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
+    transcript_path: str = "",
 ) -> Optional[str]:
     """Resolve the pre_tool_call directive to a final block message (or None).
 
@@ -2499,6 +2506,7 @@ def resolve_pre_tool_block(
         tool_name, args, task_id=task_id, session_id=session_id,
         tool_call_id=tool_call_id, turn_id=turn_id,
         api_request_id=api_request_id, middleware_trace=middleware_trace,
+        transcript_path=transcript_path,
     )
     if details.action == "block":
         return details.message

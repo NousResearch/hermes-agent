@@ -113,6 +113,27 @@ def agent_runtime_owns_post_tool_hook(agent: Any, function_name: str) -> bool:
     return bool(memory_manager and memory_manager.has_tool(function_name))
 
 
+def tool_hook_transcript_path(agent: Any, messages: list | None = None) -> str:
+    """Return a transcript path only when tool hooks can consume it."""
+    if not messages:
+        return ""
+    try:
+        from hermes_cli.plugins import has_hook
+
+        if not (has_hook("pre_tool_call") or has_hook("post_tool_call")):
+            return ""
+    except Exception:
+        return ""
+
+    writer = getattr(agent, "_hook_transcript_path", None)
+    if not callable(writer):
+        return ""
+    try:
+        return writer(messages) or ""
+    except Exception:
+        return ""
+
+
 def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
     """
     Convert internal message format to trajectory format for saving.
@@ -2825,6 +2846,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     if not isinstance(function_args, dict):
         function_args = {}
 
+    transcript_path = tool_hook_transcript_path(agent, messages)
+
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
     try:
         from hermes_cli.middleware import apply_tool_request_middleware
@@ -2858,6 +2881,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                 middleware_trace=list(_tool_middleware_trace),
+                transcript_path=transcript_path,
             )
         except Exception:
             block_message = None
@@ -2878,6 +2902,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 error_type="plugin_block",
                 error_message=block_message,
                 middleware_trace=list(_tool_middleware_trace),
+                transcript_path=transcript_path,
             )
         except Exception:
             pass
@@ -2900,6 +2925,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                 duration_ms=int((time.monotonic() - tool_start_time) * 1000),
                 middleware_trace=list(_tool_middleware_trace),
+                transcript_path=transcript_path,
             )
         except Exception:
             pass
@@ -3016,6 +3042,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 tool_request_middleware_trace=list(_tool_middleware_trace),
+                transcript_path=transcript_path,
             )
             if skip_tool_execution_middleware:
                 dispatch_kwargs["skip_tool_execution_middleware"] = True

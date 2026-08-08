@@ -10,8 +10,10 @@ from pathlib import Path
 
 try:
     from . import holographic as hrr
+    from . import textseg
 except ImportError:
     import holographic as hrr  # type: ignore[no-redef]
+    import textseg  # type: ignore[no-redef]
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
@@ -45,25 +47,15 @@ CREATE INDEX IF NOT EXISTS idx_facts_trust    ON facts(trust_score DESC);
 CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category);
 CREATE INDEX IF NOT EXISTS idx_entities_name  ON entities(name);
 
+-- Standalone FTS table (NOT content=facts external-content): it stores its
+-- own segmented copy of the text so CJK content can be pre-segmented in
+-- Python before indexing (see textseg.py). rowid == facts.fact_id.
+-- Maintained by MemoryStore's Python write paths, not SQL triggers —
+-- triggers can't call the segmenter, and external-content 'delete'
+-- commands corrupt the index if the segmenter's output ever drifts
+-- between versions.
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts
-    USING fts5(content, tags, content=facts, content_rowid=fact_id);
-
-CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
-    INSERT INTO facts_fts(rowid, content, tags)
-        VALUES (new.fact_id, new.content, new.tags);
-END;
-
-CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
-    INSERT INTO facts_fts(facts_fts, rowid, content, tags)
-        VALUES ('delete', old.fact_id, old.content, old.tags);
-END;
-
-CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
-    INSERT INTO facts_fts(facts_fts, rowid, content, tags)
-        VALUES ('delete', old.fact_id, old.content, old.tags);
-    INSERT INTO facts_fts(rowid, content, tags)
-        VALUES (new.fact_id, new.content, new.tags);
-END;
+    USING fts5(content, tags);
 
 CREATE TABLE IF NOT EXISTS memory_banks (
     bank_id    INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -180,6 +172,129 @@ class MemoryStore:
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
         self._conn.commit()
+        self._ensure_fts_schema()
+
+    def _ensure_fts_schema(self) -> None:
+        """Migrate/repair the FTS index so it matches this process's capabilities.
+
+        Four situations force a full FTS rebuild:
+
+        1. Legacy schema — facts_fts was an external-content table kept in
+           sync by SQL triggers, which index raw (unsegmented) text and
+           corrupt silently if 'delete' values drift. Detected via the
+           table's DDL / leftover triggers.
+        2. Mode change — the index was built with a different segmentation
+           mode than this process would use (jieba installed or removed
+           since; recorded in PRAGMA user_version).
+        3. Count drift — row count mismatch between facts and facts_fts.
+           Happens when a process running pre-migration code (no triggers
+           anymore, no Python-side indexing yet) wrote facts after the
+           migration.
+        4. Content drift — rows exist in both tables but the indexed copy
+           is stale. Happens when a legacy process UPDATEs an existing fact
+           after migration removed the triggers (counts match but the
+           standalone FTS row was never refreshed). Detected by spot-
+           checking sampled rows so the index self-heals instead of
+           silently serving wrong content forever.
+        """
+        desired = textseg.current_fts_mode()
+        current = int(self._conn.execute("PRAGMA user_version").fetchone()[0])
+
+        legacy = False
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='facts_fts'"
+        ).fetchone()
+        if row is not None and row["sql"] and "content=" in row["sql"]:
+            legacy = True
+        trigger_count = self._conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'"
+            " AND name IN ('facts_ai', 'facts_ad', 'facts_au')"
+        ).fetchone()[0]
+        if trigger_count:
+            legacy = True
+
+        drift = False
+        if not legacy and current == desired:
+            n_facts = self._conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
+            try:
+                n_fts = self._conn.execute("SELECT COUNT(*) FROM facts_fts").fetchone()[0]
+            except sqlite3.OperationalError:
+                n_fts = -1
+            drift = n_facts != n_fts
+            # COUNT equality alone doesn't catch stale UPDATEs by a
+            # legacy process (content changed, rowid unchanged). Spot-
+            # check sampled rows so a content-level mismatch also
+            # triggers a rebuild.
+            if not drift:
+                drift = self._verify_fts_integrity()
+
+        if legacy or current != desired or drift:
+            self._rebuild_fts(desired)
+            # A segmentation-mode change also invalidates stored HRR
+            # vectors (encode_text tokenizes differently now), so recompute
+            # them from source text. Content-drift-only heals skip this —
+            # vectors are keyed to content, not to the FTS index.
+            if legacy or current != desired:
+                self.rebuild_all_vectors()
+
+    def _verify_fts_integrity(self) -> bool:
+        """Spot-check: verify indexed content equals segmented source content.
+
+        Returns True if any FTS row is stale (a rebuild is needed).
+
+        When migration removes the legacy triggers, an already-running
+        pre-migration process that UPDATEs an existing fact leaves the
+        standalone FTS row unchanged — COUNT equality passes but the
+        indexed copy is wrong. Sampling catches this without a full table
+        scan on every open.
+        """
+        rows = self._conn.execute(
+            "SELECT fact_id, content, tags FROM facts ORDER BY fact_id LIMIT 20"
+        ).fetchall()
+        for r in rows:
+            fts_row = self._conn.execute(
+                "SELECT content, tags FROM facts_fts WHERE rowid = ?",
+                (r["fact_id"],),
+            ).fetchone()
+            if fts_row is None:
+                return True
+            want_content = textseg.segment_for_index(r["content"] or "")
+            want_tags = textseg.segment_for_index(r["tags"] or "")
+            if fts_row["content"] != want_content or fts_row["tags"] != want_tags:
+                return True
+        return False
+
+    def _rebuild_fts(self, mode: int) -> None:
+        """Drop and rebuild facts_fts from the facts table, segmenting content."""
+        self._conn.execute("DROP TRIGGER IF EXISTS facts_ai")
+        self._conn.execute("DROP TRIGGER IF EXISTS facts_ad")
+        self._conn.execute("DROP TRIGGER IF EXISTS facts_au")
+        self._conn.execute("DROP TABLE IF EXISTS facts_fts")
+        self._conn.execute("CREATE VIRTUAL TABLE facts_fts USING fts5(content, tags)")
+        rows = self._conn.execute("SELECT fact_id, content, tags FROM facts").fetchall()
+        for r in rows:
+            self._conn.execute(
+                "INSERT INTO facts_fts(rowid, content, tags) VALUES (?, ?, ?)",
+                (
+                    r["fact_id"],
+                    textseg.segment_for_index(r["content"] or ""),
+                    textseg.segment_for_index(r["tags"] or ""),
+                ),
+            )
+        self._conn.execute(f"PRAGMA user_version = {int(mode)}")
+        self._conn.commit()
+
+    def _fts_index_fact(self, fact_id: int, content: str, tags: str) -> None:
+        """Insert/replace one fact's row in the standalone FTS index."""
+        self._conn.execute("DELETE FROM facts_fts WHERE rowid = ?", (fact_id,))
+        self._conn.execute(
+            "INSERT INTO facts_fts(rowid, content, tags) VALUES (?, ?, ?)",
+            (
+                fact_id,
+                textseg.segment_for_index(content or ""),
+                textseg.segment_for_index(tags or ""),
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -218,6 +333,9 @@ class MemoryStore:
                     "SELECT fact_id FROM facts WHERE content = ?", (content,)
                 ).fetchone()
                 return int(row["fact_id"])
+
+            # Index into the standalone FTS table (segmented for CJK)
+            self._fts_index_fact(fact_id, content, tags)
 
             # Entity extraction and linking
             for name in self._extract_entities(content):
@@ -331,6 +449,14 @@ class MemoryStore:
             )
             self._conn.commit()
 
+            # Refresh the FTS row when indexed columns changed
+            if content is not None or tags is not None:
+                final = self._conn.execute(
+                    "SELECT content, tags FROM facts WHERE fact_id = ?", (fact_id,)
+                ).fetchone()
+                self._fts_index_fact(fact_id, final["content"], final["tags"])
+                self._conn.commit()
+
             # If content changed, re-extract entities
             if content is not None:
                 self._conn.execute(
@@ -365,6 +491,7 @@ class MemoryStore:
                 "DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,)
             )
             self._conn.execute("DELETE FROM facts WHERE fact_id = ?", (fact_id,))
+            self._conn.execute("DELETE FROM facts_fts WHERE rowid = ?", (fact_id,))
             self._conn.commit()
             self._rebuild_bank(row["category"])
             return True

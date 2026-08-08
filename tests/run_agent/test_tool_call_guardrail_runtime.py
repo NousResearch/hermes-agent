@@ -153,6 +153,32 @@ def test_sequential_after_call_appends_guidance_to_tool_result_without_extra_mes
     assert "repeated_exact_failure_warning" in messages[0]["content"]
 
 
+def test_mcp_wrapped_application_error_drives_runtime_guardrail_warning():
+    tool_name = "mcp_example_materialize_artifact"
+    agent = _make_agent(tool_name)
+    args = {"artifact_id": "example-1", "source": "same source"}
+    _seed_exact_failures(agent, tool_name, args, count=1)
+    tc = _mock_tool_call(tool_name, json.dumps(args), "c-mcp-warn")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+    application_error = {
+        "ok": False,
+        "error": {
+            "code": "duplicate_artifact",
+            "message": "generated artifact was already processed",
+            "retryable": True,
+        },
+    }
+    wrapped = json.dumps({"result": json.dumps(application_error)})
+
+    with patch("run_agent.handle_function_call", return_value=wrapped):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    assert len(messages) == 1
+    assert "repeated_exact_failure_warning" in messages[0]["content"]
+    assert agent._tool_guardrail_halt_decision is None
+
+
 def test_same_tool_failure_warning_tells_model_to_recover_with_tools():
     agent = _make_agent("terminal")
     guardrails = getattr(agent, "_tool_guardrails")

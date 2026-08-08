@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.display import _detect_tool_failure
+from agent.tool_guardrails import classify_tool_failure
 from tools import mcp_tool
 
 
@@ -107,3 +109,35 @@ class TestStructuredContentPreservation:
         raw = handler({})
         data = json.loads(raw)
         assert data["result"] == payload
+
+    def test_transport_success_application_failure_is_classified(
+        self, _patch_mcp_server
+    ):
+        """Application failure remains visible when MCP transport succeeds."""
+        session = _patch_mcp_server
+        payload = {
+            "ok": False,
+            "error": {
+                "code": "operation_rejected",
+                "message": "operation was rejected",
+            },
+        }
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock(json.dumps(payload))],
+                is_error=False,
+            )
+        )
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+
+        result = handler({})
+
+        assert json.loads(result) == {"result": json.dumps(payload)}
+        assert _detect_tool_failure("mcp_test_server_my_tool", result) == (
+            True,
+            " [operation was rejected]",
+        )
+        assert classify_tool_failure("mcp_test_server_my_tool", result) == (
+            True,
+            " [operation was rejected]",
+        )

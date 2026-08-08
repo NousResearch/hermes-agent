@@ -18,7 +18,10 @@ from urllib.parse import urlsplit
 
 from utils import safe_json_loads
 from agent.redact import redact_sensitive_text
-from agent.tool_result_classification import file_mutation_result_landed
+from agent.tool_result_classification import (
+    file_mutation_result_landed,
+    structured_tool_failure_message,
+)
 
 # ANSI escape codes for coloring tool failure indicators
 _RED = "\033[31m"
@@ -1335,11 +1338,10 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
             if data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True, " [full]"
 
-    # Structured error in JSON result (any tool that surfaces {"error": ...}).
-    if isinstance(data, dict):
-        err = data.get("error") or data.get("message")
-        if err and (data.get("success") is False or "error" in data):
-            return True, f" [{_trim_error(str(err))}]"
+    # Structured error in a direct or MCP-wrapped application result.
+    failure_message = structured_tool_failure_message(data)
+    if failure_message:
+        return True, f" [{_trim_error(failure_message)}]"
 
     # Generic heuristic for non-terminal tools
     # Multimodal tool results (dicts with _multimodal=True) are not strings —

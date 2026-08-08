@@ -97,6 +97,32 @@ class TestDetectToolFailureStructured:
         assert _detect_tool_failure("web_search", result) == (False, "")
 
 
+    def test_mcp_result_envelope_surfaces_typed_application_error(self):
+        application_error = {
+            "ok": False,
+            "error": {
+                "code": "duplicate_artifact",
+                "message": "generated artifact was already processed",
+                "retryable": True,
+            },
+        }
+        result = json.dumps({"result": json.dumps(application_error)})
+
+        is_failure, suffix = _detect_tool_failure(
+            "mcp_example_materialize_artifact", result
+        )
+
+        assert is_failure is True
+        assert "already processed" in suffix
+
+    def test_mcp_result_envelope_does_not_flag_successful_application_result(self):
+        result = json.dumps({"result": json.dumps({"ok": True, "data": "done"})})
+
+        assert _detect_tool_failure("mcp_example_inspect_artifact", result) == (
+            False,
+            "",
+        )
+
 
 class TestGetCuteToolMessageFailureSuffix:
     """End-to-end: failure suffix is appended by get_cute_tool_message."""

@@ -111,6 +111,28 @@ def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution()
 
 
 
+def test_mcp_wrapped_application_error_counts_as_guardrail_failure():
+    wrapped = json.dumps(
+        {
+            "result": json.dumps(
+                {
+                    "ok": False,
+                    "error": {
+                        "code": "duplicate_artifact",
+                        "message": "generated artifact was already processed",
+                        "retryable": True,
+                    },
+                }
+            )
+        }
+    )
+
+    failed, suffix = classify_tool_failure(
+        "mcp_example_materialize_artifact", wrapped
+    )
+
+    assert failed is True
+    assert "already processed" in suffix
 
 
 
@@ -167,7 +189,6 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
     assert decision.action == "block"
     assert decision.code == "loop_web_search_cap"
     assert decision.should_halt is True
-
 
 
 

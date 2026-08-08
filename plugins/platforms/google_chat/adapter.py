@@ -711,6 +711,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
         #       replies still land in the right visual thread without
         #       re-coupling sessions to threads.
         self._last_inbound_thread: Dict[str, str] = {}
+        # space type ("dm" | "group") per
+        # chat_id, populated from inbound envelopes. Used by cron
+        # notification seeding (_seed_cron_notification) to choose
+        # between thread-keyed (group) and space-level (DM) seeds.
+        self._space_types: Dict[str, str] = {}
         # Inbound message count per (chat_id, thread_name). Drives the
         # DM main-flow vs side-thread heuristic in _build_message_event
         # and the outbound thread routing in _resolve_thread_id.
@@ -1832,6 +1837,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
             self._last_sender_by_chat[space_name] = sender_email.strip().lower()
 
         chat_type = "dm" if space_type in {"DIRECT_MESSAGE", "DM"} else "group"
+        # remember the space type for cron
+        # notification seeding at send time.
+        if space_name:
+            self._space_types[space_name] = chat_type
         text = msg.get("argumentText") or msg.get("text") or ""
         text = text.strip()
 
@@ -1894,7 +1903,19 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # always reply in-thread.
         if chat_type == "dm":
             is_side_thread = prev_thread_count > 0
-            session_thread_id = thread_name if is_side_thread else None
+            # DMs keep ONE space-level
+            # session even for replies inside per-message threads. Google
+            # Chat nests every reply in the replied-to message's thread;
+            # keying the session by that thread (the old side-thread
+            # behaviour) isolated the reply from the DM's history, so the
+            # agent had no context when the user replied in a DM. Threads
+            # still drive OUTBOUND placement via _last_inbound_thread (the
+            # bot's reply nests visually in the user's thread), but the
+            # SESSION key stays the whole DM. Tradeoff: parallel threads in
+            # a DM share one rolling context (the upstream isolation existed
+            # to stop cross-thread leakage — deliberately desired here for a
+            # single-operator DM; group spaces below remain thread-isolated).
+            session_thread_id = None
             # Outbound thread cache: populated only when side-thread, so
             # _resolve_thread_id falls through to "no thread" on main
             # flow and the bot reply lands as a top-level sibling.
@@ -2145,6 +2166,23 @@ class GoogleChatAdapter(BasePlatformAdapter):
                     raise
             if last_result is None:
                 return SendResult(success=False, error="empty message")
+            # cron/automation
+            # notification context seeding. Cron deliveries carry job_id
+            # in metadata and are sent as top-level messages; Google Chat
+            # gives each its own thread, so a reply in that thread would
+            # hit a session with no record of the brief. Seed the
+            # delivered message's thread session (groups) or the DM
+            # session (DMs use space-level keys — see
+            # _build_message_event) with the brief so a reply has
+            # context. Best-effort: a delivered notification is never
+            # failed by a seeding problem.
+            if (metadata or {}).get("job_id") and not thread_id:
+                try:
+                    self._seed_cron_notification(last_result, chat_id, content)
+                except Exception:
+                    logger.debug(
+                        "[GoogleChat] cron notification seed failed", exc_info=True
+                    )
             # Mark the chat's typing slot as "consumed" so the base class's
             # _keep_typing loop (which may iterate one more time before
             # typing_task.cancel() lands) does not post a fresh marker that
@@ -2155,6 +2193,60 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return last_result
         finally:
             self.resume_typing_for_chat(chat_id)
+
+    def _seed_cron_notification(
+        self, send_result: SendResult, chat_id: str, content: str
+    ) -> None:
+        """Seed session context for a cron-delivered notification.
+
+        Groups: the delivered
+        message's own thread session (``spaces/X/threads/Y`` from the
+        send response — Google Chat gives every top-level message its own
+        thread) gets the brief as a labelled user turn, so a reply in
+        that thread continues with the brief in context. DMs: sessions
+        are space-level (see _build_message_event), so the brief is
+        mirrored into the DM session instead. Mirrors the scheduler's
+        ``_seed_cron_thread_session`` pattern: create the session row,
+        then append via ``gateway.mirror.mirror_to_session``. Best-effort.
+        """
+        resp = getattr(send_result, "raw_response", None) or {}
+        resp_thread = (resp.get("thread") or {}).get("name")
+        space_kind = self._space_types.get(chat_id, "group")
+        seed_thread = None if space_kind == "dm" else resp_thread
+        session_store = getattr(self, "_session_store", None)
+        if session_store is None:
+            return
+        try:
+            from gateway.config import Platform
+            from gateway.session import SessionSource
+
+            dest_source = SessionSource(
+                platform=Platform("google_chat"),
+                chat_id=chat_id,
+                chat_name="",
+                chat_type="dm" if space_kind == "dm" else "group",
+                thread_id=seed_thread,
+                user_id="system:cron",
+                user_name="Cron",
+            )
+            session_store.get_or_create_session(dest_source)
+        except Exception:
+            logger.debug("[GoogleChat] cron seed session create failed", exc_info=True)
+            return
+        try:
+            from gateway.mirror import mirror_to_session
+
+            mirror_to_session(
+                "google_chat",
+                chat_id,
+                f"[Cron delivery]\n{content}",
+                source_label="cron",
+                thread_id=seed_thread,
+                user_id="system:cron",
+                role="user",
+            )
+        except Exception:
+            logger.debug("[GoogleChat] cron seed mirror failed", exc_info=True)
 
     async def send_card(
         self,
@@ -2622,7 +2714,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
                     "[GoogleChat] outbound thread-count incr failed",
                     exc_info=True,
                 )
-        return SendResult(success=True, message_id=resp.get("name"))
+        # expose the raw response (carries the
+        # created message's thread name) so send() can seed cron
+        # notification sessions with the delivered brief.
+        return SendResult(
+            success=True, message_id=resp.get("name"), raw_response=resp
+        )
 
     async def send_typing(self, chat_id: str, metadata: Any = None) -> None:
         """Post a visible 'Hermes is thinking…' marker message.

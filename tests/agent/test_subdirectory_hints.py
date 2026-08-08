@@ -178,7 +178,8 @@ class TestSubdirectoryHintTracker:
         (subdir / "AGENTS.md").write_text("Install-tree contributor guide")
         monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", install_tree.resolve())
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
-        monkeypatch.setenv("TERMINAL_CWD", str(home / session_root))
+        session_cwd = home if session_root == "home" else install_tree
+        monkeypatch.setenv("TERMINAL_CWD", str(session_cwd))
 
         agent = AIAgent(
             model="test-model",
@@ -194,6 +195,7 @@ class TestSubdirectoryHintTracker:
             "read_file", {"path": str(subdir / "loop.py")}
         )
 
+        assert hint_tracker.working_dir == session_cwd.resolve()
         assert hint_tracker.allow_install_tree is expect_hint
         assert (result is not None) is expect_hint
         if expect_hint:

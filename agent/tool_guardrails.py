@@ -555,6 +555,21 @@ def _coerce_args(args: Mapping[str, Any] | None) -> Mapping[str, Any]:
 
 
 def _result_hash(result: str | None) -> str:
+    # #19814 — the raw tool result can arrive as a dict/list rather than a JSON
+    # string.  safe_json_loads() returns None for a non-str, so ``canonical``
+    # would fall through to the container itself and _sha256()'s
+    # .encode("utf-8") would raise AttributeError.  Normalize first.
+    if result is not None and not isinstance(result, str):
+        try:
+            result = json.dumps(
+                result,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+        except TypeError:
+            result = str(result)
     parsed = safe_json_loads(result or "")
     if parsed is not None:
         try:

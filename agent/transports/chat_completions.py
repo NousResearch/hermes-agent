@@ -19,6 +19,37 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
+def _is_multimodal_envelope(value: Any) -> bool:
+    """True for the ``{"_multimodal": True, "content": [...]}`` tool-result envelope.
+
+    Mirrors ``agent.tool_dispatch_helpers._is_multimodal_tool_result`` deliberately
+    rather than importing it: a transport should not pull in the tool-dispatch layer
+    (which reaches into ``tools.*``).  Keep the two in sync if the envelope changes.
+    """
+    return (
+        isinstance(value, dict)
+        and value.get("_multimodal") is True
+        and isinstance(value.get("content"), list)
+    )
+
+
+def _tool_content_needs_stringify(msg: dict[str, Any]) -> bool:
+    """True for a ``role: "tool"`` message whose content cannot go on the wire.
+
+    Chat Completions requires ``content`` to be a string on tool messages.  Plugin
+    tools (e.g. the ``custom-tools`` plugin) may return a ``dict``; passing it
+    through makes strict providers reject the whole request with
+    ``messages.N.content: Invalid input``.  Recognized multimodal envelopes are
+    left alone so the multimodal path can still handle them.  See #19814.
+    """
+    if msg.get("role") != "tool":
+        return False
+    content = msg.get("content")
+    if content is None or isinstance(content, str):
+        return False
+    return not _is_multimodal_envelope(content)
+
+
 def _static_prompt_instructions(messages: list[dict[str, Any]]) -> str:
     """Return the stable system/developer prefix used for cache routing.
 
@@ -270,6 +301,9 @@ class ChatCompletionsTransport(ProviderTransport):
             if any(isinstance(k, str) and k.startswith("_") for k in msg):
                 needs_sanitize = True
                 break
+            if _tool_content_needs_stringify(msg):
+                needs_sanitize = True
+                break
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
                 for tc in tool_calls:
@@ -325,6 +359,12 @@ class ChatCompletionsTransport(ProviderTransport):
                 out_msg = mutable_msg()
                 for key in internal_keys:
                     out_msg.pop(key, None)
+
+            if _tool_content_needs_stringify(msg):
+                # #19814 — stringify non-str tool content before it hits the wire.
+                mutable_msg()["content"] = json.dumps(
+                    msg["content"], ensure_ascii=False, default=str
+                )
 
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):

@@ -270,6 +270,92 @@ class TestWeixinChunkDelivery:
         assert send_message_mock.await_count == 2
         assert sleep_mock.await_count == 1
 
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_open_circuit_uses_exponential_backoff(self, send_message_mock, sleep_mock):
+        """Regression test for #77836: each consecutive rate-limit re-open must
+        double the cooldown (1x, 2x, 4x ...) up to the configured cap instead of
+        resetting to the same flat window on every retry."""
+        adapter = self._connected_adapter()
+        adapter._send_chunk_retries = 0
+        adapter._send_chunk_retry_delay_seconds = 0
+        adapter._rate_limit_circuit_threshold = 1
+        adapter._rate_limit_circuit_window_seconds = 60
+        adapter._rate_limit_circuit_open_seconds = 60
+        adapter._rate_limit_circuit_backoff_factor = 2.0
+        adapter._rate_limit_circuit_max_open_seconds = 600
+
+        send_message_mock.return_value = {
+            "ret": weixin.RATE_LIMIT_ERRCODE,
+            "errcode": weixin.RATE_LIMIT_ERRCODE,
+            "errmsg": "frequency limit",
+        }
+
+        expected = [60.0, 120.0, 240.0, 480.0, 600.0, 600.0]
+        for idx, want in enumerate(expected):
+            result = asyncio.run(adapter.send("wxid_test123", "msg"))
+            assert result.success is False
+            assert "cooldown" in (result.error or "")
+            remaining = adapter._rate_limit_cooldown_remaining()
+            assert remaining > 0, f"iteration {idx}: circuit should be open"
+            assert abs(remaining - want) < 1.5, (
+                f"iteration {idx}: expected ~{want:.0f}s cooldown, got {remaining:.1f}s"
+            )
+            # Simulate the cooldown expiring before the gateway retries the message.
+            adapter._rate_limit_circuit_until = 0.0
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_no_event_recorded_while_circuit_open(self, send_message_mock, sleep_mock):
+        """Regression test for #77836: sends during the cooldown window must fail
+        fast without recording new events or extending the cooldown."""
+        adapter = self._connected_adapter()
+        adapter._send_chunk_retries = 3
+        adapter._send_chunk_retry_delay_seconds = 0
+        adapter._rate_limit_circuit_threshold = 1
+        adapter._rate_limit_circuit_open_seconds = 60
+
+        # Open the circuit as if a previous send had tripped it.
+        adapter._open_rate_limit_circuit()
+        until_before = adapter._rate_limit_circuit_until
+        events_before = list(adapter._rate_limit_events)
+
+        result = asyncio.run(adapter.send("wxid_test123", "blocked"))
+
+        assert result.success is False
+        assert "cooldown" in (result.error or "")
+        assert send_message_mock.await_count == 0
+        assert adapter._rate_limit_circuit_until == until_before
+        assert adapter._rate_limit_events == events_before
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_stale_session_minus_2_does_not_open_circuit(self, send_message_mock, sleep_mock):
+        """Regression test for #77836: errcode=-2 with 'unknown error' is a
+        stale-session signal and must never trip the rate-limit circuit breaker."""
+        adapter = self._connected_adapter()
+        adapter._send_chunk_retries = 1
+        adapter._send_chunk_retry_delay_seconds = 0
+        adapter._rate_limit_circuit_threshold = 1
+        adapter._rate_limit_circuit_open_seconds = 60
+
+        send_message_mock.return_value = {
+            "ret": weixin.RATE_LIMIT_ERRCODE,
+            "errcode": weixin.RATE_LIMIT_ERRCODE,
+            "errmsg": "unknown error",
+        }
+
+        result = asyncio.run(adapter.send("wxid_test123", "hello"))
+
+        assert result.success is False
+        assert "cooldown" not in (result.error or "")
+        assert "session expired" in (result.error or "")
+        # Tokenless retry happens once; neither attempt trips the breaker.
+        assert send_message_mock.await_count == 2
+        assert adapter._rate_limit_cooldown_remaining() == 0.0
+        assert adapter._rate_limit_events == []
+        assert adapter._rate_limit_backoff_multiplier == 1.0
+
 
 class TestWeixinOutboundMedia:
 

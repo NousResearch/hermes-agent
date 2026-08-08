@@ -121,6 +121,23 @@ def _ensure_telegram_mock() -> None:
     if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
         return  # Real library is installed — nothing to mock
 
+    # Prefer the REAL library whenever it is importable. The mock below is
+    # process-wide and permanent, and it poisons every later-collected test
+    # that needs genuine PTB classes (tests/test_telegram_polling_progress_ptb
+    # subclasses the real BaseRequest) whenever a gateway file collects
+    # first. PTB is a production dependency, so in a normal venv this branch
+    # always wins; the mock survives only for genuinely PTB-less environments.
+    try:
+        import telegram  # noqa: F401
+        import telegram.constants  # noqa: F401
+        import telegram.error  # noqa: F401
+        import telegram.ext  # noqa: F401
+        import telegram.request  # noqa: F401
+        if hasattr(sys.modules.get("telegram"), "__file__"):
+            return
+    except ImportError:
+        pass
+
     mod = MagicMock()
     mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
     # One shared PTB-faithful enum namespace per constant, attached to BOTH

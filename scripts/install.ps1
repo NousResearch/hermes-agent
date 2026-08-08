@@ -1676,12 +1676,13 @@ function Test-SystemNodeReady {
     if (-not (Get-Command node -ErrorAction SilentlyContinue)) { return $false }
 
     $version = node --version
-    if (-not (Test-NodeVersionOk $version)) {
+    if (Test-NodeVersionOk $version) {
+        Ensure-NodeExeOnPath | Out-Null
+    } else {
         Write-Warn "Node.js $version is too old (Hermes requires Node >=22.22.0)"
         return $false
     }
 
-    Ensure-NodeExeOnPath | Out-Null
     $npmRange = Get-NpmRange
     $npmCmd = Get-Command npm.cmd -ErrorAction SilentlyContinue
     if (-not $npmCmd) {

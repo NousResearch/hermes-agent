@@ -218,6 +218,11 @@ import {
 } from './window-state'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 import {
+  buildWindowsCliUpdateScript,
+  resolveHermesCliBinary as resolveHermesCliBinaryPath,
+  shouldUseWindowsCliUpdateHandoff
+} from './windows-cli-update-handoff'
+import {
   buildPathExtCandidates,
   chooseUpdaterArgs,
   getVenvSitePackagesEntries,
@@ -2863,31 +2868,38 @@ async function applyUpdates(opts = {}) {
     }
 
     if (!updater) {
-      // No staged updater binary — this is a CLI-installed user (they ran
-      // `hermes desktop`, never the Tauri installer that self-copies
-      // hermes-setup.exe into HERMES_HOME). They DO have a working `hermes`
-      // on PATH / in the venv, so the correct path is the one-liner in their
-      // native medium. We show the EXACT command, branch-pinned to the
-      // checkout they're on — bare `hermes update` defaults to main and would
-      // silently switch a bb/gui (or any non-main) install off-branch. Mirror
-      // the GUI button's contract: append --branch <current> for non-main
-      // checkouts, keep it bare for main so the card stays clean.
+      // No staged hermes-setup.exe. Prefer a detached CLI handoff when a
+      // working hermes is available (#46755 / #46779): quit first so the
+      // Windows venv shim unlocks, then run `hermes update` and relaunch.
+      // Only fall back to the manual dialog when no CLI can be resolved.
       const updateRoot = resolveUpdateRoot()
-      let command = 'hermes update'
+      let branch = 'main'
 
       try {
         const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
         const current = (head.stdout || '').trim()
 
         if (head.code === 0 && current && current !== 'HEAD') {
-          const branch = await resolveHealedBranch(updateRoot, current)
-
-          if (branch !== 'main') {
-            command = `hermes update --branch ${branch}`
-          }
+          branch = await resolveHealedBranch(updateRoot, current)
         }
       } catch {
-        // Best-effort: fall back to bare `hermes update` if branch detection fails.
+        // best effort — bare main
+      }
+
+      const hermesCli = resolveHermesCliBinary(updateRoot)
+
+      if (shouldUseWindowsCliUpdateHandoff({ isWindows: IS_WINDOWS, stagedUpdater: updater, hermesCli })) {
+        const handedOff = await handOffWindowsCliUpdate({ updateRoot, branch, hermesCli })
+
+        if (handedOff) {
+          return { ok: true, handedOff: true, via: 'cli' }
+        }
+      }
+
+      let command = 'hermes update'
+
+      if (branch && branch !== 'main') {
+        command = `hermes update --branch ${branch}`
       }
 
       rememberLog(`[updates] no staged updater; surfacing manual \`${command}\` for CLI install at ${updateRoot}`)
@@ -3134,16 +3146,137 @@ async function handOffWindowsBootstrapRecovery(reason) {
   return true
 }
 
-// Resolve the hermes CLI to drive an in-app update: prefer the venv shim in
-// the install we're updating, fall back to `hermes` on PATH.
+// Resolve the hermes CLI to drive an in-app / CLI handoff update: prefer the
+// venv shim in the install we're updating (Scripts on Windows, bin on POSIX),
+// fall back to `hermes` on PATH. See windows-cli-update-handoff.ts.
 function resolveHermesCliBinary(updateRoot) {
-  const venvHermes = path.join(updateRoot, 'venv', 'bin', 'hermes')
+  return resolveHermesCliBinaryPath(updateRoot, {
+    fileExists,
+    findOnPath,
+    isWindows: IS_WINDOWS
+  })
+}
 
-  if (fileExists(venvHermes)) {
-    return venvHermes
+/**
+ * Windows Update when hermes-setup.exe is missing but a hermes CLI exists
+ * (#46755 / #46779). Detach a cmd watcher that waits for this process to exit
+ * (shim unlock), runs `hermes update --yes`, then relaunches the desktop.
+ * Returns true when the handoff was spawned successfully.
+ */
+async function handOffWindowsCliUpdate({ updateRoot, branch, hermesCli }) {
+  const handoffConflict = updateHandoffConflict(HERMES_HOME)
+
+  if (handoffConflict) {
+    rememberLog(`[updates] refusing CLI hand-off: ${handoffConflict.message}`)
+    emitUpdateProgress({ stage: 'error', message: handoffConflict.message, percent: null })
+
+    return false
   }
 
-  return findOnPath('hermes') || null
+  preflightStateDb(HERMES_HOME, rememberLog)
+
+  const lock = await releaseBackendLockForUpdate(updateRoot)
+
+  if (!lock.unlocked) {
+    const message =
+      'Update aborted: another process is holding the Hermes install open ' +
+      '(a second Hermes window or a terminal running hermes?). Close it and retry.'
+
+    rememberLog(`[updates] CLI hand-off aborted: shim still locked at ${updateRoot}`)
+    emitUpdateProgress({ stage: 'error', message, percent: null })
+    startHermes().catch(() => {})
+
+    return false
+  }
+
+  if (IS_WINDOWS) {
+    const scanOutcome = await scanVenvBlockers(updateRoot)
+
+    if (scanOutcome.kind === 'blocked') {
+      const message = formatBlockerMessage(scanOutcome.result)
+      rememberLog(`[updates] CLI hand-off aborted: ${message}`)
+      emitUpdateProgress({ stage: 'error', message, percent: null })
+      startHermes().catch(() => {})
+
+      return false
+    }
+
+    if (scanOutcome.kind === 'probe-failure') {
+      const message = formatProbeFailedMessage()
+      rememberLog(`[updates] CLI hand-off venv-blocker probe failed: ${scanOutcome.error}`)
+      emitUpdateProgress({ stage: 'error', message, percent: null })
+      startHermes().catch(() => {})
+
+      return false
+    }
+  }
+
+  const scriptBody = buildWindowsCliUpdateScript({
+    desktopPid: process.pid,
+    hermesCmd: hermesCli,
+    updateRoot,
+    hermesHome: HERMES_HOME,
+    branch,
+    relaunchExe: process.execPath,
+    relaunchArgs: collectRelaunchArgs(process.argv.slice(1))
+  })
+
+  const scriptPath = path.join(app.getPath('temp'), `hermes-desktop-cli-update-${Date.now()}.cmd`)
+
+  try {
+    fs.writeFileSync(scriptPath, scriptBody, { encoding: 'utf8' })
+  } catch (err) {
+    rememberLog(`[updates] CLI hand-off script write failed: ${err?.message || err}`)
+
+    return false
+  }
+
+  const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
+  let child
+
+  try {
+    child = spawn(
+      process.env.ComSpec || 'cmd.exe',
+      ['/d', '/c', scriptPath],
+      hiddenWindowsChildOptions({
+        cwd: updateRoot,
+        env: {
+          ...process.env,
+          HERMES_HOME,
+          PATH: pathWithHermesManagedNode(venvBin)
+        },
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true
+      })
+    )
+    child.unref()
+  } catch (err) {
+    rememberLog(`[updates] CLI hand-off spawn failed: ${err?.message || err}`)
+
+    return false
+  }
+
+  if (Number.isInteger(child.pid)) {
+    writeUpdateMarker(HERMES_HOME, child.pid)
+  }
+
+  rememberLog(
+    `[updates] no staged updater; handed off to CLI watcher ${scriptPath} via ${hermesCli} (branch=${branch || 'main'})`
+  )
+  emitUpdateProgress({
+    stage: 'restart',
+    message:
+      'Updating Hermes — this window will close and reopen when the update finishes. Don’t reopen Hermes yourself.',
+    percent: 100
+  })
+
+  isQuittingForHandoff = true
+  setTimeout(() => {
+    app.quit()
+  }, UPDATE_HANDOFF_DWELL_MS)
+
+  return true
 }
 
 // Spawn a command and stream each output line to the update progress channel.

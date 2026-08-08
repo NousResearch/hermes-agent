@@ -1823,6 +1823,28 @@ def _send_compute_host_control(
     )
 
 
+def _compression_rpc_timeout(session: dict) -> float:
+    """Match a compute-host wait to the affected session's compression budget."""
+    profile_home = session.get("profile_home") if isinstance(session, dict) else None
+    home_token = (
+        set_hermes_home_override(str(profile_home)) if profile_home else None
+    )
+    try:
+        cfg = _load_cfg()
+    finally:
+        if home_token is not None:
+            reset_hermes_home_override(home_token)
+
+    auxiliary = cfg.get("auxiliary") if isinstance(cfg, dict) else {}
+    compression = auxiliary.get("compression") if isinstance(auxiliary, dict) else {}
+    from agent.auxiliary_client import resolve_auxiliary_task_timeout
+
+    return resolve_auxiliary_task_timeout(
+        "compression",
+        task_config=compression if isinstance(compression, dict) else {},
+    )
+
+
 def _emit_approval_request(sid: str, data: dict | None) -> None:
     """Emit an ``approval.request`` event to the TUI client with the command
     redacted. The approval payload is built from the RAW command string, so a
@@ -12702,11 +12724,17 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     if _session_uses_compute_host(session) and name in _MUTATES_WHILE_RUNNING:
         route_name = f"slash.{name}"
         try:
+            timeout_kwargs = (
+                {"timeout": _compression_rpc_timeout(session)}
+                if name == "compress"
+                else {}
+            )
             ack = _send_compute_host_control(
                 sid,
                 route_name=route_name,
                 command=command,
                 wait=True,
+                **timeout_kwargs,
             )
         except Exception as exc:
             return f"compute-host {route_name} failed: {exc}"

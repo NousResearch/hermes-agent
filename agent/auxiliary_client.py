@@ -7615,6 +7615,31 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
     return default
 
 
+def resolve_auxiliary_task_timeout(
+    task: str,
+    *,
+    task_config: Optional[Dict[str, Any]] = None,
+    default: float = _DEFAULT_AUX_TIMEOUT,
+) -> float:
+    """Resolve a config-derived auxiliary timeout, including task-specific floors.
+
+    ``task_config`` lets profile-aware runtimes supply the exact config block
+    they already resolved instead of reloading the process-global config.
+    """
+    if task_config is None:
+        effective = _get_task_timeout(task, default)
+    else:
+        raw = task_config.get("timeout") if isinstance(task_config, dict) else None
+        try:
+            effective = float(raw) if raw is not None else default
+        except (TypeError, ValueError):
+            effective = default
+
+    if task == "compression":
+        effective = max(effective, _COMPRESSION_TIMEOUT_FLOOR_SECONDS)
+    return effective
+
+
 def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
     """Resolve the effective timeout for an auxiliary LLM call.
 
@@ -7626,10 +7651,9 @@ def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
     explicit ``timeout=`` — explicit per-call deadlines are always honoured —
     and it is a minimum (``max``), so a config value already above it is kept.
     """
-    effective = timeout if timeout is not None else _get_task_timeout(task)
-    if timeout is None and task == "compression":
-        effective = max(effective, _COMPRESSION_TIMEOUT_FLOOR_SECONDS)
-    return effective
+    if timeout is not None:
+        return timeout
+    return resolve_auxiliary_task_timeout(task)
 
 
 def _get_task_extra_body(task: str) -> Dict[str, Any]:

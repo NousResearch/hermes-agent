@@ -2517,7 +2517,7 @@ def _(rid, params: dict) -> dict:
                 route_name="session.compress",
                 command=command,
                 wait=True,
-                timeout=120.0,
+                timeout=_compression_rpc_timeout(session),
             )
         except Exception as exc:
             return _err(rid, 5019, f"compute-host compress failed: {exc}")

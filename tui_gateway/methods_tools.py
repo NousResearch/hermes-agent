@@ -974,6 +974,7 @@ def _(rid, params: dict) -> dict:
                     route_name="slash.compress",
                     command=command,
                     wait=True,
+                    timeout=_compression_rpc_timeout(session),
                 )
             except Exception as exc:
                 return _err(rid, 5019, f"compute-host slash.compress failed: {exc}")

@@ -406,7 +406,7 @@ def test_slash_exec_compress_flag_on_applies_host_control_mirror(monkeypatch):
             self.controls = []
 
         def control(self, sid, *, route_name, payload=None, wait=True, timeout=30.0):
-            self.controls.append((sid, route_name, dict(payload or {}), wait))
+            self.controls.append((sid, route_name, dict(payload or {}), wait, timeout))
             return {
                 "type": "control.ack",
                 "sid": sid,
@@ -427,6 +427,11 @@ def test_slash_exec_compress_flag_on_applies_host_control_mirror(monkeypatch):
     session = _session(agent=None, agent_ready=threading.Event(), _compute_host_active=True)
     server._sessions["sid"] = session
     monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(
+        server,
+        "_compression_rpc_timeout",
+        lambda affected: 3600.0 if affected is session else pytest.fail("wrong session"),
+    )
     monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: fake)
     monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
     monkeypatch.setattr(server, "_compress_session_history", lambda *a, **k: (_ for _ in ()).throw(AssertionError("parent compressed")))
@@ -446,6 +451,7 @@ def test_slash_exec_compress_flag_on_applies_host_control_mirror(monkeypatch):
     assert resp["result"]["output"] == "Compressed 4 → 2 messages"
     assert fake.controls[0][1] == "slash.compress"
     assert fake.controls[0][2]["command"] == "/compress focus"
+    assert fake.controls[0][4] == 3600.0
     assert session["session_key"] == "host-rotated-key"
     assert session["history_version"] == 9
     assert server._session_info(None, session)["model"] == "host-model"
@@ -7621,7 +7627,56 @@ def test_session_compress_returns_compute_host_history(monkeypatch):
     }
 
 
-def test_session_compress_forwards_120_second_budget_to_compute_host(monkeypatch):
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        (120, 300.0),
+        (3600, 3600.0),
+        ("invalid", 300.0),
+    ],
+)
+def test_compression_rpc_timeout_matches_effective_model_budget(
+    monkeypatch, configured, expected
+):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"auxiliary": {"compression": {"timeout": configured}}},
+    )
+
+    assert server._compression_rpc_timeout({}) == expected
+
+
+def test_compression_rpc_timeout_uses_affected_session_profile(
+    monkeypatch, tmp_path
+):
+    launch_home = tmp_path / "launch"
+    remote_home = tmp_path / "profiles" / "remote"
+    launch_home.mkdir()
+    remote_home.mkdir(parents=True)
+    (launch_home / "config.yaml").write_text(
+        "auxiliary:\n  compression:\n    timeout: 600\n",
+        encoding="utf-8",
+    )
+    (remote_home / "config.yaml").write_text(
+        "auxiliary:\n  compression:\n    timeout: 3600\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    server._cfg_cache = None
+    server._cfg_mtime = None
+    server._cfg_path = None
+
+    assert (
+        server._compression_rpc_timeout({"profile_home": str(remote_home)})
+        == 3600.0
+    )
+    # The session-scoped override is reset after the read; subsequent launch
+    # profile requests still resolve against the gateway's own profile.
+    assert server._compression_rpc_timeout({}) == 600.0
+
+
+def test_session_compress_forwards_configured_budget_to_compute_host(monkeypatch):
     session = _session(agent=None, _compute_host_active=True)
     server._sessions["sid"] = session
     calls = []
@@ -7640,6 +7695,11 @@ def test_session_compress_forwards_120_second_budget_to_compute_host(monkeypatch
 
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
     monkeypatch.setattr(server, "_send_compute_host_control", send_control)
+    monkeypatch.setattr(
+        server,
+        "_compression_rpc_timeout",
+        lambda affected: 3600.0 if affected is session else pytest.fail("wrong session"),
+    )
 
     try:
         resp = server.handle_request(
@@ -7656,7 +7716,7 @@ def test_session_compress_forwards_120_second_budget_to_compute_host(monkeypatch
                 "route_name": "session.compress",
                 "command": "/compress",
                 "wait": True,
-                "timeout": 120.0,
+                "timeout": 3600.0,
             },
         )
     ]
@@ -10551,6 +10611,38 @@ def test_mirror_slash_side_effects_allowed_when_idle(monkeypatch):
     # Should NOT contain "session busy" — the switch went through.
     assert "session busy" not in warning
     assert applied["model"]
+
+
+def test_mirror_slash_compress_forwards_configured_budget_to_compute_host(monkeypatch):
+    calls = []
+
+    def send_control(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"type": "control.ack", "output": "compressed"}
+
+    monkeypatch.setattr(server, "_send_compute_host_control", send_control)
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
+    session = _session(agent=None, running=False, _compute_host_active=True)
+    monkeypatch.setattr(
+        server,
+        "_compression_rpc_timeout",
+        lambda affected: 3600.0 if affected is session else pytest.fail("wrong session"),
+    )
+
+    output = server._mirror_slash_side_effects("sid", session, "/compress")
+
+    assert output == "compressed"
+    assert calls == [
+        (
+            ("sid",),
+            {
+                "route_name": "slash.compress",
+                "command": "/compress",
+                "wait": True,
+                "timeout": 3600.0,
+            },
+        )
+    ]
 
 
 def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):

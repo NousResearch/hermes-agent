@@ -186,7 +186,7 @@ Token 只显示一次。如果丢失，你需要重置并生成新的 token。�
 你可以使用以下格式直接构建邀请 URL：
 
 ```
-https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=309237763136
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=274878024768
 ```
 
 将 `YOUR_APP_ID` 替换为第一步中的 Application ID。
@@ -204,15 +204,14 @@ https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+application
 ### 推荐的附加权限
 
 - **Send Messages in Threads** — 在线程对话中响应
-- **Create Public Threads** - create threads
 - **Add Reactions** — 对消息添加反应以示确认
 
 ### 权限整数
 
 | 级别 | 权限整数 | 包含内容 |
 |-------|-------------------|-----------------|
-| 最低 | `117760` | View Channels、Send Messages、Read Message History、Attach Files |
-| 推荐 | `309237763136` | 以上所有权限，加上 Embed Links、Send Messages in Threads、Add Reactions, Create Public Threads |
+| 最低 | `117760` | View Channels、Send Messages、Embed Links、Attach Files、Read Message History |
+| 推荐 | `274878024768` | 以上所有权限，加上 Send Messages in Threads、Add Reactions |
 
 ## 第六步：邀请到你的服务器
 

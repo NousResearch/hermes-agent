@@ -40,8 +40,8 @@ class TestMattermostDisplayHygiene:
             "mattermost",
             "interim_assistant_messages",
             default=True,
-            platform=Platform.MATTERMOST,
-            require_platform_override_for={Platform.MATTERMOST},
+            platform_value="mattermost",
+            require_platform_override_for={"mattermost"},
         ) is True
 
 
@@ -54,8 +54,8 @@ class TestMattermostDisplayHygiene:
             "telegram",
             "thinking_progress",
             default=False,
-            platform=Platform.TELEGRAM,
-            require_platform_override_for={Platform.MATTERMOST},
+            platform_value="telegram",
+            require_platform_override_for={"mattermost"},
         ) is True
 
 

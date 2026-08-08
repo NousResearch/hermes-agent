@@ -17,8 +17,9 @@ Environment variables:
     MATRIX_ALLOWED_USERS    Comma-separated Matrix user IDs (@user:server)
     MATRIX_ALLOWED_ROOMS    Comma-separated Matrix room IDs allowed to trigger turns
     MATRIX_HOME_ROOM        Room ID for cron/notification delivery
-    MATRIX_REACTIONS        Set "false" to disable processing lifecycle reactions
-                            (eyes/checkmark/cross). Default: true
+    MATRIX_REACTIONS        truthy aliases enable processing lifecycle reactions
+                            (eyes/checkmark/cross); falsy aliases including ``off``
+                            disable them. Default: true
     MATRIX_REQUIRE_MENTION      Require @mention in rooms (default: true)
     MATRIX_FREE_RESPONSE_ROOMS  Comma-separated room IDs exempt from mention requirement
                                 (alias of matrix.free_response_rooms)
@@ -71,6 +72,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 from agent.secret_scope import UnscopedSecretError, get_secret
+from utils import env_var_enabled
 
 try:
     from mautrix.types import (
@@ -1271,9 +1273,10 @@ class MatrixAdapter(BasePlatformAdapter):
         ).lower() in ("true", "1", "yes")
 
         # Reactions: configurable via MATRIX_REACTIONS (default: true).
-        self._reactions_enabled: bool = os.getenv(
-            "MATRIX_REACTIONS", "true"
-        ).lower() not in {"false", "0", "no"}
+        # Shared falsy aliases (including ``off``) disable lifecycle reactions.
+        self._reactions_enabled: bool = env_var_enabled(
+            "MATRIX_REACTIONS", default="true"
+        )
         self._pending_reactions: dict[tuple[str, str], str] = {}
         # Delay before redacting reactions so Matrix homeservers have time to
         # deliver the final message event without tripping "missing event"

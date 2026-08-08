@@ -407,7 +407,49 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
             prompt=prompt,
         ))
 
-    return json.dumps(result)
+    return _postprocess_video_generate_result(json.dumps(result), task_id=task_id)
+
+
+def _postprocess_video_generate_result(raw: str, task_id: str | None = None) -> str:
+    """Annotate successful local video results with backend-visible paths.
+
+    ``video`` remains the host/gateway-deliverable path (or URL). When the
+    active terminal backend has a different filesystem,
+    ``agent_visible_video`` gives the path the agent can use with
+    terminal/file tools — same contract as ``image_generate``'s
+    ``agent_visible_image`` and ``text_to_speech``'s
+    ``agent_visible_file_path``.
+    """
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return raw
+
+    if not isinstance(payload, dict) or not payload.get("success"):
+        return raw
+
+    from tools.image_generation_tool import (
+        _active_terminal_env,
+        _agent_visible_cache_path,
+        _force_artifact_sync,
+        _looks_like_absolute_file_path,
+    )
+
+    video = payload.get("video")
+    if not isinstance(video, str) or not _looks_like_absolute_file_path(video):
+        return raw
+
+    env = _active_terminal_env(task_id)
+    agent_path = _agent_visible_cache_path(video, env)
+    if not agent_path or agent_path == video:
+        return raw
+
+    if env is not None:
+        _force_artifact_sync(env)
+
+    payload.setdefault("host_video", video)
+    payload.setdefault("agent_visible_video", agent_path)
+    return json.dumps(payload, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
@@ -437,10 +479,13 @@ _GENERIC_DESCRIPTION = (
     "`hermes tools` → Video Generation; the agent does not pick them. "
     "Long-running generations may take 30 seconds to several minutes — "
     "the call blocks until the video is ready. Returns the result in the "
-    "`video` field — either an HTTP URL or an absolute file path. To show "
-    "it to the user, reference that path/URL in your response using the "
-    "file-delivery convention for the current platform (your platform "
-    "guidance describes how files are delivered here)."
+    "`video` field — either an HTTP URL or an absolute file path. Under a "
+    "sandbox terminal backend, local-file results may also include "
+    "`agent_visible_video` for terminal/file follow-up (`video` stays the "
+    "host/gateway path). To show it to the user, reference that path/URL "
+    "in your response using the file-delivery convention for the current "
+    "platform (your platform guidance describes how files are delivered "
+    "here)."
 )
 
 

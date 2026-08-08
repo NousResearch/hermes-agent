@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { isLikelyProseCodeBlock } from './markdown-code'
+import { isLikelyProseCodeBlock, isLikelyProseFence } from './markdown-code'
 
 describe('isLikelyProseCodeBlock', () => {
   it('detects prose that Streamdown mislabels as an unknown language', () => {
@@ -19,5 +19,59 @@ describe('isLikelyProseCodeBlock', () => {
 
   it('keeps real code blocks', () => {
     expect(isLikelyProseCodeBlock('ts', 'const value = { bunny: true };\nreturn value')).toBe(false)
+  })
+
+  it('keeps zsh command blocks as code even when they look like prose lines', () => {
+    expect(
+      isLikelyProseCodeBlock(
+        'zsh',
+        [
+          'cd ~/Documents/dan-personal',
+          'bash -n install.sh',
+          'brew bundle check --file=packages/Brewfile',
+          'env -i HOME="$HOME" USER="$USER" LOGNAME="$LOGNAME" SHELL=/bin/zsh TERM=xterm-256color \\',
+          "  /bin/zsh -lic 'command -v brew && command -v starship && command -v gh && command -v stow'"
+        ].join('\n')
+      )
+    ).toBe(false)
+  })
+
+  it('keeps text-labeled shell command blocks as code', () => {
+    expect(
+      isLikelyProseCodeBlock(
+        'text',
+        [
+          'cd ~/Documents/',
+          'bash -n install.sh',
+          'brew bundle check --file=packages/Brewfile',
+          'env -i HOME="$HOME" USER="$USER" LOGNAME="$LOGNAME" SHELL=/bin/zsh TERM=xterm-256color \\',
+          "/bin/zsh -lic 'command -v brew && command -v starship && command -v gh && command -v stow'"
+        ].join('\n')
+      )
+    ).toBe(false)
+  })
+
+  it('keeps explicit plain-text file-list fences as code', () => {
+    const paths = [
+      'apps/desktop/src/components/assistant-ui/thread/index.tsx',
+      'apps/desktop/src/components/assistant-ui/markdown-text.tsx',
+      'apps/desktop/src/lib/markdown-code.ts',
+      'apps/desktop/src/lib/markdown-preprocess.ts',
+      'apps/desktop/src/styles.css'
+    ].join('\n')
+
+    expect(isLikelyProseFence('text', paths)).toBe(false)
+    expect(isLikelyProseCodeBlock('text', paths)).toBe(false)
+  })
+
+  it('still demotes untagged prose that starts with shell-like English words', () => {
+    const prose = [
+      'Make sure to invite everyone before Friday.',
+      'Command the team to use the shared checklist.',
+      'Git ready after the lunch update.'
+    ].join('\n')
+
+    expect(isLikelyProseFence('', prose)).toBe(true)
+    expect(isLikelyProseCodeBlock('', prose)).toBe(true)
   })
 })

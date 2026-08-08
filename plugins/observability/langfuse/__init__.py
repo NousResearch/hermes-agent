@@ -22,6 +22,7 @@ Optional env vars:
 """
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
@@ -1125,6 +1126,67 @@ def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = No
     )
 
 
+_SHUTDOWN_HOOK_INSTALLED = False
+
+
+def _shutdown_langfuse() -> None:
+    """Close lingering trace observations, then flush and shut down the client.
+
+    A turn that never reaches _finish_trace (interrupted, tool-only final
+    step, or empty final content) leaves its root_span observation context
+    manager suspended in _TRACE_STATE. Its ``_create_span_with_parent_context``
+    generator is only finalized by GC on interpreter exit, by which point
+    OpenTelemetry's module globals have already been cleared -- so
+    ``use_span``'s ``isinstance(span, Span)`` raises
+    ``TypeError: isinstance() arg 2 must be a type`` (the "Exception ignored
+    in: ..._create_span_with_parent_context" spam printed on CLI exit).
+    Close every suspended context manager HERE, while the interpreter is
+    still healthy, so Langfuse receives complete traces and the process
+    exits cleanly.
+    """
+    with _STATE_LOCK:
+        states = list(_TRACE_STATE.values())
+        _TRACE_STATE.clear()
+    for state in states:
+        try:
+            for observation in state.generations.values():
+                _end_observation(observation)
+            for observation in state.tools.values():
+                _end_observation(observation)
+            for queue in state.pending_tools_by_name.values():
+                for observation in queue:
+                    _end_observation(observation)
+            _end_observation(state.root_span)
+            # __exit__ drives the suspended _create_span_with_parent_context
+            # generator to completion -- this is what the GC/teardown path
+            # used to do fatally late.
+            if state.root_ctx is not None:
+                state.root_ctx.__exit__(None, None, None)
+        except Exception as exc:  # pragma: no cover - fail-open
+            _debug(f"shutdown trace '{state.trace_id}' failed: {exc}")
+
+    client = _get_langfuse()
+    if client is not None:
+        try:
+            client.flush()
+            client.shutdown()
+        except Exception as exc:  # pragma: no cover - fail-open
+            _debug(f"langfuse shutdown failed: {exc}")
+
+
+def _install_shutdown_cleanup() -> None:
+    global _SHUTDOWN_HOOK_INSTALLED
+    if _SHUTDOWN_HOOK_INSTALLED:
+        return
+    _SHUTDOWN_HOOK_INSTALLED = True
+    atexit.register(_shutdown_langfuse)
+
+
+def _on_session_finalize(*, session_id: str = "", platform: str = "", **_: Any) -> None:
+    """Session-boundary cleanup so incomplete traces are closed and flushed."""
+    _shutdown_langfuse()
+
+
 def register(ctx) -> None:
     # Register for both hook name variants so the plugin works across
     # Hermes versions.  pre_api_request / post_api_request fire per API
@@ -1135,3 +1197,8 @@ def register(ctx) -> None:
     ctx.register_hook("post_llm_call", on_post_llm_call)
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("post_tool_call", on_post_tool_call)
+    # Session-boundary + interpreter-exit cleanup: closes any suspended
+    # observation generators a non-finalized turn left behind, then flushes
+    # and shuts down the client (prevents OTel teardown TypeError spam).
+    ctx.register_hook("on_session_finalize", _on_session_finalize)
+    _install_shutdown_cleanup()

@@ -25,11 +25,13 @@ class TestManifest:
         data = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text())
         assert data["name"] == "langfuse"
         assert data["version"]
-        # All six hooks the plugin implements.
+        # All seven hooks the plugin implements (six observation hooks
+        # plus on_session_finalize for exit-time cleanup).
         assert set(data["hooks"]) == {
             "pre_api_request", "post_api_request",
             "pre_llm_call", "post_llm_call",
             "pre_tool_call", "post_tool_call",
+            "on_session_finalize",
         }
         # Required env vars are the user-facing HERMES_ prefixed keys.
         assert "HERMES_LANGFUSE_PUBLIC_KEY" in data["requires_env"]
@@ -779,3 +781,153 @@ class TestUsageFromSanitizedResponse:
 
         assert seen["resp"] is resp
         assert captured["usage_details"] == {"input": 7, "output": 3}
+
+
+# ---------------------------------------------------------------------------
+# Exit-time cleanup: _shutdown_langfuse / on_session_finalize close any
+# suspended observations a non-finalized turn left behind (interrupted,
+# tool-only-final, or empty-final turns never reach _finish_trace), then
+# flush and shut down the client.  Without this the suspended
+# ``_create_span_with_parent_context`` generators are only finalized by GC
+# during interpreter teardown, when OpenTelemetry's module globals have
+# already been cleared -- surfacing as
+# ``TypeError: isinstance() arg 2 must be a type`` spam on CLI exit.
+# ---------------------------------------------------------------------------
+
+class _FakeObservation:
+    """Duck-typed observation: records update()/end() calls."""
+
+    def __init__(self, name=""):
+        self.name = name
+        self.ended = False
+        self.updated = []
+
+    def update(self, **kwargs):
+        self.updated.append(kwargs)
+
+    def end(self):
+        self.ended = True
+
+
+class _FakeRootContext:
+    """Duck-typed context manager standing in for the suspended
+    ``_AgnosticContextManager`` returned by ``start_as_current_observation``.
+    """
+
+    def __init__(self):
+        self.exited = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.exited = exc
+        return False
+
+    def start_observation(self, **kwargs):
+        return _FakeObservation(kwargs.get("name", ""))
+
+
+class _FakeClient:
+    """Duck-typed Langfuse client for shutdown-path assertions."""
+
+    def __init__(self):
+        self.flushed = 0
+        self.shutdown_called = 0
+
+    def flush(self):
+        self.flushed += 1
+
+    def shutdown(self):
+        self.shutdown_called += 1
+
+
+class TestShutdownCleanup:
+
+    def _fresh_plugin(self):
+        mod_name = "plugins.observability.langfuse"
+        sys.modules.pop(mod_name, None)
+        mod = importlib.import_module(mod_name)
+        mod._TRACE_STATE.clear()
+        mod._SHUTDOWN_HOOK_INSTALLED = False
+        return mod
+
+    def _inject_suspended_trace(self, mod):
+        root_ctx = _FakeRootContext()
+        root_span = _FakeObservation("root")
+        child = _FakeObservation("child")
+        state = mod.TraceState(
+            trace_id="t1",
+            root_ctx=root_ctx,
+            root_span=root_span,
+        )
+        state.generations["child"] = child
+        state.tools["tool"] = _FakeObservation("tool")
+        mod._TRACE_STATE["session::turn"] = state
+        return root_ctx, root_span, child
+
+    def test_shutdown_langfuse_clears_state_and_closes_suspended_observations(self, monkeypatch):
+        mod = self._fresh_plugin()
+        client = _FakeClient()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+        root_ctx, root_span, child = self._inject_suspended_trace(mod)
+
+        mod._shutdown_langfuse()
+
+        assert mod._TRACE_STATE == {}
+        assert root_span.ended and child.ended
+        # The suspended _create_span_with_parent_context generator is driven
+        # to completion via root_ctx.__exit__, NOT deferred to GC/teardown.
+        assert root_ctx.exited is not None
+        # Client flushed + shut down exactly once.
+        assert client.flushed == 1
+        assert client.shutdown_called == 1
+
+    def test_shutdown_langfuse_idempotent_when_nothing_pending(self, monkeypatch):
+        mod = self._fresh_plugin()
+        client = _FakeClient()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+
+        mod._shutdown_langfuse()
+        mod._shutdown_langfuse()
+
+        assert mod._TRACE_STATE == {}
+        assert client.shutdown_called == 2
+
+    def test_on_session_finalize_delegates_to_shutdown(self, monkeypatch):
+        mod = self._fresh_plugin()
+        client = _FakeClient()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+        _, root_span, child = self._inject_suspended_trace(mod)
+
+        mod._on_session_finalize(session_id="sess-1", platform="cli", extra=1)
+
+        assert mod._TRACE_STATE == {}
+        assert root_span.ended and child.ended
+
+    def test_install_shutdown_cleanup_registers_atexit_once(self, monkeypatch):
+        mod = self._fresh_plugin()
+        import atexit
+
+        registered = []
+        monkeypatch.setattr(
+            atexit, "register", lambda fn, *a, **k: registered.append(fn)
+        )
+
+        mod._install_shutdown_cleanup()
+        mod._install_shutdown_cleanup()
+
+        assert registered == [mod._shutdown_langfuse]
+
+    def test_register_binds_session_finalize_hook(self, monkeypatch):
+        mod = self._fresh_plugin()
+        bound = {}
+
+        class _Ctx:
+            @staticmethod
+            def register_hook(name, fn):
+                bound[name] = fn
+
+        mod.register(_Ctx())
+
+        assert bound.get("on_session_finalize") is mod._on_session_finalize

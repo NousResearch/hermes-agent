@@ -416,6 +416,7 @@ markers = [
     "requires_wal: needs the runtime to actually enable SQLite WAL mode (skipped where Hermes falls back to journal_mode=DELETE)",
     "no_isolate: opt out of per-file subprocess isolation (tests share mutable module-level state)",
     "ssh: marks tests requiring a reachable SSH server (skipped in normal CI)",
+    "real_windows_gateway_respawn: opt out of the autouse stub that no-ops the update flow's Windows gateway pause/resume",
 ]
 # integration tests take way too long to run in the normal CI environments
 addopts = "-m 'not integration'"

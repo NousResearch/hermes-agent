@@ -16,6 +16,30 @@ export interface CronJobFormState {
   workdir: string;
 }
 
+/**
+ * Parse a deep-link job key of the form "<profile>:<jobId>" (or a bare
+ * "<jobId>", defaulting the profile to "default"). This is the inverse of
+ * getJobKey in CronPage and keeps the triple identical across URL + list.
+ */
+export function parseDeepLinkJobKey(key: string): { profile: string; id: string } {
+  const idx = key.indexOf(":");
+  if (idx === -1) return { profile: "default", id: key };
+  return { profile: key.slice(0, idx) || "default", id: key.slice(idx + 1) };
+}
+
+/**
+ * Find the job addressed by a deep-link key within a loaded job list.
+ * Returns the job, or null when it is not in `jobs` (e.g. still loading or
+ * deleted). Pure and trivial to unit-test; used by CronPage's ?job= handling.
+ */
+export function findJobByDeepLink(
+  jobs: CronJob[],
+  key: string,
+): CronJob | null {
+  const { id } = parseDeepLinkJobKey(key);
+  return jobs.find((j) => j.id === id) ?? null;
+}
+
 /** Split a comma/newline list (or array) into trimmed, non-empty items. */
 export function splitCronList(value: unknown): string[] {
   const items = Array.isArray(value)

@@ -4,6 +4,8 @@ import {
   buildCronJobPayload,
   cronJobHasExecutionContent,
   cronJobFormFromJob,
+  findJobByDeepLink,
+  parseDeepLinkJobKey,
   splitCronList,
   type CronJobFormState,
 } from "./cron-job";
@@ -119,5 +121,38 @@ describe("cronJobFormFromJob", () => {
     expect(cronJobFormFromJob(job)).toMatchObject({
       schedule: "2026-02-03T14:00:00+08:00",
     });
+  });
+});
+
+describe("cron deep-link helpers", () => {
+  it("parses a profile:job key", () => {
+    expect(parseDeepLinkJobKey("delinat:abc123")).toEqual({
+      profile: "delinat",
+      id: "abc123",
+    });
+  });
+
+  it("defaults a bare job id to the default profile", () => {
+    expect(parseDeepLinkJobKey("abc123")).toEqual({
+      profile: "default",
+      id: "abc123",
+    });
+  });
+
+  it("handles an empty profile segment", () => {
+    expect(parseDeepLinkJobKey(":abc123")).toEqual({
+      profile: "default",
+      id: "abc123",
+    });
+  });
+
+  it("finds a job by its bare id within a loaded list", () => {
+    const jobs = [{ id: "one", enabled: true }, { id: "two", enabled: true }];
+    expect(findJobByDeepLink(jobs, "delinat:two")?.id).toBe("two");
+  });
+
+  it("returns null when the job is not in the loaded list", () => {
+    const jobs = [{ id: "one", enabled: true }];
+    expect(findJobByDeepLink(jobs, "delinat:missing")).toBeNull();
   });
 });

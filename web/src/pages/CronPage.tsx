@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router";
 import { Clock, Pause, Pencil, Play, Trash2, X, Zap } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -18,6 +19,8 @@ import {
   buildCronJobPayload,
   cronJobHasExecutionContent,
   cronJobFormFromJob,
+  findJobByDeepLink,
+  parseDeepLinkJobKey,
   type CronJobFormState,
 } from "@/lib/cron-job";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
@@ -555,7 +558,18 @@ export default function CronPage() {
     emptyCronJobForm,
   );
   const [saving, setSaving] = useState(false);
-  const closeEditModal = useCallback(() => setEditJob(null), []);
+
+  // URL search params for ?job=<profile>:<id> deep links (see below).
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const closeEditModal = useCallback(() => {
+    setEditJob(null);
+    // Clear the deep-link URL param when the modal is closed so the URL
+    // stays a projection of the current state (matches ?profile= behavior).
+    const next = new URLSearchParams(searchParams);
+    if (next.has("job")) next.delete("job");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
   const editModalRef = useModalBehavior({
     open: editJob !== null,
     onClose: closeEditModal,
@@ -575,6 +589,64 @@ export default function CronPage() {
     setEditJob(job);
     setEditForm(editorFormFromJob(job));
   }, []);
+
+  // ── Cron-job deep linking ─────────────────────────────────────────
+  // A URL like /cron?job=<profile>:<jobId> opens (and highlights) that
+  // specific job. This lets external dashboards and cron report links land
+  // straight on a job so the user can inspect/edit it. Mirrors the repo's
+  // existing "state-first, URL-as-projection" ?profile= convention
+  // (see ProfileProvider) and ChatPage's useSearchParams usage.
+  const pendingDeepLink = useRef<string | null>(null);
+  const deepLinkJobParam = searchParams.get("job");
+
+  const openJobByKey = useCallback((key: string) => {
+    // Prefer the already-loaded list (works for the default "all" profile).
+    const existing = findJobByDeepLink(jobs, key);
+    if (existing) {
+      openEditModal(existing);
+      return;
+    }
+    const { profile, id } = parseDeepLinkJobKey(key);
+    // Otherwise the target lives in another (or not-yet-loaded) profile:
+    // switch to it and let the profile-switch effect open the job once loaded.
+    if (profile && profile !== selectedProfile) {
+      pendingDeepLink.current = id;
+      setSelectedProfile(profile);
+    }
+  }, [jobs, openEditModal, selectedProfile]);
+
+  // On first mount: if the URL carries ?job=<profile>:<id>, resolve it.
+  // Waits until jobs for the (possibly switched) profile have loaded before
+  // marking the deep link as handled, so an early empty `jobs` can't swallow it.
+  // openJobByKey handles a cross-profile target by switching selectedProfile
+  // and stashing the id for the profile-switch effect below.
+  const deepLinkHandled = useRef(false);
+  useEffect(() => {
+    if (!deepLinkJobParam || deepLinkHandled.current) return;
+    if (jobs.length === 0) return; // still loading — wait for the list
+    openJobByKey(deepLinkJobParam);
+    deepLinkHandled.current = true;
+  }, [deepLinkJobParam, jobs, openJobByKey, selectedProfile]);
+
+  // Profile switch requested by a deep link: once jobs for it load, open it.
+  useEffect(() => {
+    if (!pendingDeepLink.current) return;
+    const target = pendingDeepLink.current;
+    if (!jobs.some((j) => j.id === target)) return;
+    pendingDeepLink.current = null;
+    const job = jobs.find((j) => j.id === target);
+    if (job) openEditModal(job);
+  }, [jobs, openEditModal]);
+
+  // Keep the URL in sync when the user opens the edit modal so the state is
+  // shareable (matches the ?profile= projection behavior).
+  const openEditModalAndSyncUrl = useCallback((job: CronJob) => {
+    openEditModal(job);
+    const next = new URLSearchParams(searchParams);
+    next.set("job", getJobKey(job));
+    setSearchParams(next, { replace: true });
+  }, [openEditModal, searchParams, setSearchParams]);
+
 
   const loadJobs = useCallback(() => {
     api
@@ -676,6 +748,13 @@ export default function CronPage() {
         getJobProfile(editJob),
       );
       showToast("Saved changes ✓", "success");
+      // Keep the URL projection accurate after a save: reflect the (possibly
+      // changed) job key, or drop the param once the edit modal closes.
+      if (searchParams.has("job")) {
+        const next = new URLSearchParams(searchParams);
+        next.set("job", getJobKey(editJob));
+        setSearchParams(next, { replace: true });
+      }
       setEditJob(null);
       loadJobs();
     } catch (e) {
@@ -1106,7 +1185,7 @@ export default function CronPage() {
                     size="icon"
                     title="Edit job"
                     aria-label="Edit job"
-                    onClick={() => openEditModal(job)}
+                    onClick={() => openEditModalAndSyncUrl(job)}
                   >
                     <Pencil />
                   </Button>

@@ -86,6 +86,10 @@ Each entry requires both `provider` and `model`. Entries missing either field ar
 | Hugging Face | `huggingface` | `HF_TOKEN` |
 | Custom endpoint | `custom` | `base_url` + `key_env` (see below) |
 
+:::warning Gemini fallback authentication
+A fallback with `provider: gemini` always uses the configured Google AI Studio key's API quota and, if the key is on a paid tier, its separate API billing—even if you have a Google AI Pro or Ultra subscription. Hermes never substitutes Gemini CLI OAuth, Antigravity, or Vertex AI credentials for this fallback. Without a configured Gemini API key, the entry is skipped instead of switching to a differently billed Google route. See the [Google Gemini guide](/guides/google-gemini).
+:::
+
 ### Custom Endpoint Fallback
 
 For a custom OpenAI-compatible endpoint, add `base_url` and optionally `key_env`:

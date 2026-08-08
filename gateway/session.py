@@ -877,6 +877,33 @@ class SessionEntry:
     model_override: Optional[Dict[str, str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
+        if self.ephemeral:
+            # Temporary chat: persist only what routing and the
+            # restart-downgrade guard need. The full record would be the
+            # disk analogue of the session row the DB layer refuses for
+            # temporary sessions — display name, usage/cost totals,
+            # reset/resume introspection, session lineage (prev_session_id)
+            # and model override all profile a chat the user was told is not
+            # written down. Serialization is allowlist-shaped on purpose:
+            # a field added to the full record below stays OUT of the
+            # temporary record until someone deliberately adds it here.
+            result: Dict[str, Any] = {
+                "session_key": self.session_key,
+                "session_id": self.session_id,
+                "created_at": self.created_at.isoformat(),
+                "updated_at": self.updated_at.isoformat(),
+                "platform": self.platform.value if self.platform else None,
+                "chat_type": self.chat_type,
+                # Thread-context watermarks and similar routing state a live
+                # chat needs to keep delivering into the right thread.
+                "metadata": self.metadata,
+                "ephemeral": True,
+                "suspended": self.suspended,
+                "expiry_finalized": self.expiry_finalized,
+            }
+            if self.origin:
+                result["origin"] = self.origin.to_dict()
+            return result
         result = {
             "session_key": self.session_key,
             "session_id": self.session_id,

@@ -117,6 +117,29 @@ class TestNonLocalBackendConfinement:
         assert res.origin == "file"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "backend,visible",
+        [
+            ("modal", "/root/.hermes/cache/images/inbound.png"),
+            ("ssh", "~/.hermes/cache/images/inbound.png"),
+        ],
+    )
+    async def test_agent_visible_cache_path_host_read_without_sandbox(
+        self, tmp_path, monkeypatch, backend, visible
+    ):
+        """Gateway injects agent-visible cache paths; from_agent must invert them
+        on every relocated backend so vision host-reads without a warm sandbox."""
+        home = tmp_path / "hermes"
+        isrc = _reload(monkeypatch, home)
+        monkeypatch.setenv("TERMINAL_ENV", backend)
+        cached = home / "cache" / "images" / "inbound.png"
+        cached.parent.mkdir(parents=True)
+        cached.write_bytes(PNG)
+        res = await isrc.resolve_image_source(visible, isrc.ResolveContext())
+        assert res.data == PNG
+        assert res.origin == "file"
+
+    @pytest.mark.asyncio
     async def test_desktop_upload_images_dir_host_read(self, tmp_path, monkeypatch):
         """Desktop/clipboard uploads under ``HERMES_HOME/images`` are host-read.
 

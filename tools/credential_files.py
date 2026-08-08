@@ -474,13 +474,21 @@ def from_agent_visible_cache_path(
 ) -> str:
     """Translate a sandbox/container cache path back to its host path.
 
-    Inverse of :func:`to_agent_visible_cache_path`. Returns the input unchanged
-    when the active backend is not Docker, or when the path is not under any
+    Inverse of :func:`to_agent_visible_cache_path`. Uses the same per-backend
+    base selection so a path the gateway rendered for modal/ssh/daytona/
+    vercel_sandbox round-trips to the host staging file (the media-resolver
+    host-read fast path). Returns the input unchanged when the active backend
+    does not translate cache paths, or when the path is not under any
     auto-mounted cache directory — the caller then treats a still-container
     path as "no host file" and falls back to an in-container read.
     """
-    if os.environ.get("TERMINAL_ENV", "local") != "docker":
-        return container_path
+    backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
+    if backend in ("docker", "modal"):
+        pass  # /root/.hermes default
+    elif backend in ("ssh", "daytona", "vercel_sandbox"):
+        container_base = "~/.hermes"
+    else:
+        return container_path  # local, singularity, unknown: already a host path
 
     path = Path(container_path)
     for mount in get_cache_directory_mounts(container_base=container_base):

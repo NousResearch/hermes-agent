@@ -473,6 +473,59 @@ class TestToAgentVisiblePathPerBackend:
         assert to_agent_visible_cache_path("/etc/hosts") == "/etc/hosts"
 
 
+class TestFromAgentVisiblePathPerBackend:
+    """Inverse of TestToAgentVisiblePathPerBackend: agent-visible cache paths
+    must round-trip to the host staging file on every backend that relocates
+    the Hermes cache. Incomplete after #76577 left from_agent docker-only, so
+    modal/ssh inbound vision fell through to a cold-sandbox SourceNotFound."""
+
+    def _staged(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        (hermes_home / "attachments").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        return str(hermes_home / "attachments" / "drop.zip")
+
+    @pytest.mark.parametrize("backend", ["docker", "modal"])
+    def test_root_hermes_roundtrips(self, tmp_path, monkeypatch, backend):
+        staged = self._staged(tmp_path, monkeypatch)
+        monkeypatch.setenv("TERMINAL_ENV", backend)
+        from tools.credential_files import (
+            from_agent_visible_cache_path,
+            to_agent_visible_cache_path,
+        )
+        visible = to_agent_visible_cache_path(staged)
+        assert visible == "/root/.hermes/attachments/drop.zip"
+        assert from_agent_visible_cache_path(visible) == staged
+
+    @pytest.mark.parametrize("backend", ["ssh", "daytona", "vercel_sandbox"])
+    def test_tilde_hermes_roundtrips(self, tmp_path, monkeypatch, backend):
+        staged = self._staged(tmp_path, monkeypatch)
+        monkeypatch.setenv("TERMINAL_ENV", backend)
+        from tools.credential_files import (
+            from_agent_visible_cache_path,
+            to_agent_visible_cache_path,
+        )
+        visible = to_agent_visible_cache_path(staged)
+        assert visible == "~/.hermes/attachments/drop.zip"
+        assert from_agent_visible_cache_path(visible) == staged
+
+    @pytest.mark.parametrize("backend", ["local", "singularity", ""])
+    def test_untranslated_backends_keep_input(self, tmp_path, monkeypatch, backend):
+        self._staged(tmp_path, monkeypatch)
+        monkeypatch.setenv("TERMINAL_ENV", backend)
+        from tools.credential_files import from_agent_visible_cache_path
+        assert (
+            from_agent_visible_cache_path("/root/.hermes/attachments/drop.zip")
+            == "/root/.hermes/attachments/drop.zip"
+        )
+
+    def test_non_cache_path_passes_through(self, tmp_path, monkeypatch):
+        self._staged(tmp_path, monkeypatch)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        from tools.credential_files import from_agent_visible_cache_path
+        assert from_agent_visible_cache_path("/etc/hosts") == "/etc/hosts"
+
+
 class TestIterCacheFiles:
     """Tests for iter_cache_files()."""
 

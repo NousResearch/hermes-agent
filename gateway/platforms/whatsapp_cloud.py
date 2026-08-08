@@ -22,7 +22,8 @@ Phase scope (this file evolves across phases):
             media download via the Graph media endpoint, voice-note opus
             conversion via ffmpeg with graceful MP3 fallback when ffmpeg
             isn't on PATH. Document text injection for readable types.
-- Phase 5 — 24-hour conversation window + template fallback.
+- Phase 5 — 24-hour conversation window + template fallback (planned, not yet
+  implemented).
 
 Required env vars to enable the adapter:
 - WHATSAPP_CLOUD_PHONE_NUMBER_ID  (the Graph URL path component)

@@ -10,7 +10,16 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
+import {
+  type CSSProperties,
+  Fragment,
+  type KeyboardEvent,
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useRef,
+  useState
+} from 'react'
 
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
@@ -72,6 +81,10 @@ import { type DoubleTapContext, startPaneDrag } from './drag-session'
 import { forceLoneHeaderForPanes } from './lone-header'
 import { useActiveTabVisible } from './tab-strip-scroll'
 import { paneChrome } from './track-model'
+
+function paneDomId(kind: 'panel' | 'tab', groupId: string, paneId: string): string {
+  return `tree-${kind}-${groupId}-${paneId.replace(/[^a-zA-Z0-9_-]/g, char => `-${char.charCodeAt(0).toString(16)}-`)}`
+}
 
 /** Right-click zone menu: the tab verbs (close this / others / to the right /
  *  all) plus the strip's own chrome toggles. Same items and icons as a session
@@ -307,6 +320,87 @@ export function TreeGroup({
   // one the zone menu's Close and ⌘W use.
   const closeTab = (paneId: string) => closeTabPane(paneId)
 
+  const focusTab = (paneId: string) => {
+    window.requestAnimationFrame(() => {
+      document.getElementById(paneDomId('tab', node.id, paneId))?.focus()
+    })
+  }
+
+  const selectAndFocusTab = (paneId: string) => {
+    clearTabSelection()
+
+    if (node.minimized) {
+      restoreTreePane(paneId)
+    } else {
+      activateTreePane(node.id, paneId)
+    }
+
+    focusTab(paneId)
+  }
+
+  const handleTabKeyDown = (event: KeyboardEvent<HTMLElement>, index: number, vertical = false) => {
+    let nextIndex: number | null = null
+
+    switch (event.key) {
+      case 'ArrowLeft':
+        if (vertical) {
+          return
+        }
+
+        nextIndex = index === 0 ? shown.length - 1 : index - 1
+
+        break
+
+      case 'ArrowRight':
+        if (vertical) {
+          return
+        }
+
+        nextIndex = index === shown.length - 1 ? 0 : index + 1
+
+        break
+
+      case 'ArrowUp':
+        if (!vertical) {
+          return
+        }
+
+        nextIndex = index === 0 ? shown.length - 1 : index - 1
+
+        break
+
+      case 'ArrowDown':
+        if (!vertical) {
+          return
+        }
+
+        nextIndex = index === shown.length - 1 ? 0 : index + 1
+
+        break
+
+      case 'Home':
+        nextIndex = 0
+
+        break
+
+      case 'End':
+        nextIndex = shown.length - 1
+
+        break
+
+      default:
+        return
+    }
+
+    event.preventDefault()
+    event.stopPropagation()
+    const nextPaneId = shown[nextIndex]
+
+    if (nextPaneId) {
+      selectAndFocusTab(nextPaneId)
+    }
+  }
+
   // A pane whose store owns Close keeps the gesture even when the pane itself
   // is uncloseable — the workspace tab empties to a fresh draft rather than
   // leaving the tree.
@@ -376,7 +470,7 @@ export function TreeGroup({
               className="flex min-h-0 flex-col overflow-y-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
               role="tablist"
             >
-              {shown.map(paneId => {
+              {shown.map((paneId, index) => {
                 const closeable = closeableTab(paneId)
                 const title = paneFor(paneId)?.title ?? paneId
 
@@ -384,16 +478,20 @@ export function TreeGroup({
                   <PaneTab
                     // Match the horizontal minimized strip: no tab is "active"
                     // while collapsed (there's no content surface to merge into).
+                    aria-controls={paneDomId('panel', node.id, paneId)}
                     aria-selected={paneId === activeId}
                     data-tree-tab={paneId}
+                    id={paneDomId('tab', node.id, paneId)}
                     key={paneId}
                     onClick={event => {
                       event.stopPropagation()
                       restoreTreePane(paneId)
                     }}
                     onClose={closeable ? () => closeTab(paneId) : undefined}
+                    onKeyDown={event => handleTabKeyDown(event, index, true)}
                     role="tab"
                     side={railSide}
+                    tabIndex={paneId === activeId ? 0 : -1}
                     vertical
                   >
                     <PaneTabLabel>{title}</PaneTabLabel>
@@ -444,7 +542,7 @@ export function TreeGroup({
               </>
             }
           >
-            {shown.map(paneId => {
+            {shown.map((paneId, index) => {
               const isActive = paneId === activeId && !node.minimized
               const chrome = paneChrome(paneFor(paneId))
               const closeable = closeableTab(paneId)
@@ -454,10 +552,13 @@ export function TreeGroup({
               const tab = (
                 <PaneTab
                   active={isActive}
+                  aria-controls={paneDomId('panel', node.id, paneId)}
                   aria-selected={isActive}
                   data-tree-tab={paneId}
+                  id={paneDomId('tab', node.id, paneId)}
                   key={paneId}
                   onClose={closeable ? () => closeTab(paneId) : undefined}
+                  onKeyDown={e => handleTabKeyDown(e, index)}
                   onPointerDown={e => {
                     // Chrome's tab-selection grammar, ahead of activate/drag:
                     // Shift-click ranges from the anchor, ⌥-click (Ctrl-click
@@ -543,6 +644,7 @@ export function TreeGroup({
                   role="tab"
                   selected={isSelected}
                   style={{ cursor: 'grab' }}
+                  tabIndex={isActive ? 0 : -1}
                 >
                   {chrome.tabLead ? (
                     <span className="ml-2 -mr-1 flex shrink-0 items-center">{chrome.tabLead()}</span>
@@ -611,8 +713,11 @@ export function TreeGroup({
               return (
                 <div
                   aria-hidden={!isActive || undefined}
+                  aria-labelledby={paneDomId('tab', node.id, paneId)}
                   className={cn('absolute inset-0 overflow-auto', !isActive && 'pointer-events-none invisible')}
+                  id={paneDomId('panel', node.id, paneId)}
                   key={paneId}
+                  role="tabpanel"
                   {...hiddenPaneProps(!isActive)}
                 >
                   {pane?.render ? (

@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -46,11 +46,15 @@ vi.mock('@/app/chat/session-drag', () => ({ startSessionDrag: vi.fn() }))
 // regression in its ref/prop forwarding fails here again.
 // Only `sessionTitle` is overridden (makeSession fakes a bare `title` the real
 // one wouldn't read); the rest of the module is genuine so the arc test can
-// build session state with the same factory the app uses.
+// build session state with the same factory the app uses. It is a spy because
+// the row calls it exactly once per render, which is how the isolation test
+// below counts repaints.
+const sessionTitle = vi.fn((s: SessionInfo) => (s as unknown as { title: string }).title)
+
 vi.mock('@/lib/chat-runtime', async importOriginal => {
   const actual = await importOriginal<typeof ChatRuntime>()
 
-  return { ...actual, sessionTitle: (s: SessionInfo) => (s as unknown as { title: string }).title }
+  return { ...actual, sessionTitle: (s: SessionInfo) => sessionTitle(s) }
 })
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
 vi.mock('@/lib/session-source', () => ({
@@ -170,6 +174,36 @@ describe('SidebarSessionRow running arc', () => {
     const { container } = renderRow(makeSession({ title: 'Running' }))
 
     expect(arc(container)).toBeTruthy()
+  })
+
+  // The row owns its status subscription so a turn starting repaints that row
+  // and nothing else — not its siblings, and not the list around them. Rows
+  // render once per fiber, so counting `sessionTitle` counts repaints.
+  it('repaints only the session whose turn started', () => {
+    render(
+      <>
+        {[makeSession({ id: 's1', title: 'One' }), makeSession({ id: 's2', title: 'Two' })].map(session => (
+          <SidebarSessionRow
+            isPinned={false}
+            isSelected={false}
+            key={session.id}
+            onArchive={noop}
+            onDelete={noop}
+            onPin={noop}
+            onResume={noop}
+            session={session}
+          />
+        ))}
+      </>
+    )
+    sessionTitle.mockClear()
+
+    act(() => {
+      publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true })
+    })
+
+    expect(sessionTitle).toHaveBeenCalledTimes(1)
+    expect(sessionTitle).toHaveBeenCalledWith(expect.objectContaining({ id: 's1' }))
   })
 })
 

@@ -2338,7 +2338,10 @@ async def test_progress_later_event_redaction_keeps_event_ownership(
     assert CrossEventProgressLaterSecretAgent.SECRET not in rendered
     assert "Searching the web for g" in rendered
     assert "Browsing ood OPENAI_API_KEY=" in rendered
-    assert "opaque...l123" in rendered
+    # Current main's redaction hardening may mask the already-masked value a
+    # second time; the invariant is that the env key remains visible while its
+    # value is fully redacted.
+    assert "OPENAI_API_KEY=***" in rendered
     assert "Searching the web for good OPENAI_API_KEY=" not in rendered
 
 

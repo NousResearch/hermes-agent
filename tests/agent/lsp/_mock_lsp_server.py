@@ -117,6 +117,12 @@ def main():
                     "message": "synthetic error from mock-lsp",
                 }
             ]
+            if script == "silent":
+                # Never publishes diagnostics and the pull endpoint is
+                # rejected (below).  Models a slow server that only
+                # re-reports after a didChange it never receives — the
+                # baseline snapshot has to wait out its full budget.
+                continue
             if script == "stale":
                 # Ghost scenario: publish an error for the ORIGINAL
                 # content, then never publish again after edits.
@@ -159,7 +165,7 @@ def main():
             continue
 
         if msg.get("method") == "textDocument/diagnostic":
-            if script in {"stale", "slow_push"}:
+            if script in {"stale", "slow_push", "silent"}:
                 # These scripts model push-only servers so the ghost
                 # can't be papered over by the pull channel.
                 write_message(

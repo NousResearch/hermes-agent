@@ -686,7 +686,11 @@ class TestChatMessagesToResponsesInputMessageItems:
                             base_url="https://chatgpt.com/backend-api/codex")
         messages = [{"role": "assistant", "content": "Hello world"}]
         items = _chat_messages_to_responses_input(messages)
-        assert items == [{"role": "assistant", "content": "Hello world"}]
+        # Assistant message items must carry the Responses API ``type`` field
+        # ("message"); strict Responses servers (llama.cpp) reject role-only
+        # items with HTTP 400 "Cannot determine type of 'item'" (#76657).
+        assert items == [{"type": "message", "role": "assistant",
+                          "content": [{"type": "output_text", "text": "Hello world"}]}]
 
 
 

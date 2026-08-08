@@ -446,24 +446,37 @@ def _iter_custom_providers(config: Optional[dict] = None):
         config = _load_config_safe()
     if config is None:
         return
-    custom_providers = config.get("custom_providers")
-    if not isinstance(custom_providers, list):
-        # Fall back to the v12+ providers dict via the compatibility layer
-        try:
-            from hermes_cli.config import get_compatible_custom_providers
+    # Yield the legacy ``custom_providers:`` list raw (per-entry, unnormalized)
+    # so entries with a base_url the normalizer rejects — placeholders, typos,
+    # legacy shapes that still seed today — keep their ``config:<name>`` pool
+    # source instead of disappearing and being pruned from auth.json as stale
+    # (#81182). The v12+ ``providers:`` dict is then appended via the
+    # compatibility layer; a normalized-name collision keeps the legacy entry.
+    seen_names = set()
+    legacy_list = config.get("custom_providers")
+    if isinstance(legacy_list, list):
+        for entry in legacy_list:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            norm = _normalize_custom_pool_name(name)
+            seen_names.add(norm)
+            yield norm, entry
+    try:
+        from hermes_cli.config import providers_dict_to_custom_providers
 
-            custom_providers = get_compatible_custom_providers(config)
-        except Exception:
-            return
-    if not custom_providers:
-        return
-    for entry in custom_providers:
-        if not isinstance(entry, dict):
-            continue
-        name = entry.get("name")
-        if not isinstance(name, str):
-            continue
-        yield _normalize_custom_pool_name(name), entry
+        for entry in providers_dict_to_custom_providers(config.get("providers")):
+            name = entry.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            norm = _normalize_custom_pool_name(name)
+            if norm in seen_names:
+                continue
+            yield norm, entry
+    except Exception:
+        pass
 
 
 def get_custom_provider_pool_key(base_url: Optional[str], provider_name: Optional[str] = None) -> Optional[str]:

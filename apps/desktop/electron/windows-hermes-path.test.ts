@@ -21,7 +21,8 @@ import {
   buildPathExtCandidates,
   chooseUpdaterArgs,
   getVenvSitePackagesEntries,
-  resolveVenvHermesCommand
+  resolveVenvHermesCommand,
+  venvBaseInterpreterPresent
 } from './windows-hermes-path'
 
 test('buildPathExtCandidates: Windows tries PATHEXT extensions before the empty extension', () => {
@@ -56,6 +57,49 @@ test('chooseUpdaterArgs: destructive --repair only when NO real-install signal i
 test('chooseUpdaterArgs: passes the branch through unchanged in both cases', () => {
   assert.deepEqual(chooseUpdaterArgs(true, 'release/1.2'), ['--update', '--branch', 'release/1.2'])
   assert.deepEqual(chooseUpdaterArgs(false, 'release/1.2'), ['--repair', '--branch', 'release/1.2'])
+})
+
+test('venvBaseInterpreterPresent: allows --update when the recorded Windows base interpreter exists', () => {
+  const present = venvBaseInterpreterPresent('venv', {
+    isWindows: true,
+    joinPath: (...segments) => segments.join('/'),
+    readFile: filePath => {
+      assert.equal(filePath, 'venv/pyvenv.cfg')
+      return 'home = uv-base'
+    },
+    fileExists: filePath => filePath === 'uv-base/python.exe'
+  })
+
+  assert.equal(present, true)
+  assert.deepEqual(chooseUpdaterArgs(present, 'main'), ['--update', '--branch', 'main'])
+})
+
+test('venvBaseInterpreterPresent: forces --repair when a Windows venv base interpreter is missing', () => {
+  const present = venvBaseInterpreterPresent('venv', {
+    isWindows: true,
+    joinPath: (...segments) => segments.join('/'),
+    readFile: () => 'home = deleted-uv-base',
+    fileExists: () => false
+  })
+
+  assert.equal(present, false)
+  assert.deepEqual(chooseUpdaterArgs(present, 'main'), ['--repair', '--branch', 'main'])
+})
+
+test('venvBaseInterpreterPresent: keeps unknown config states on the non-destructive path', () => {
+  let checkedBase = false
+  const present = venvBaseInterpreterPresent('venv', {
+    isWindows: true,
+    joinPath: (...segments) => segments.join('/'),
+    readFile: () => undefined,
+    fileExists: () => {
+      checkedBase = true
+      return false
+    }
+  })
+
+  assert.equal(present, true)
+  assert.equal(checkedBase, false)
 })
 
 function makeDeps(overrides: Partial<Parameters<typeof resolveVenvHermesCommand>[2]> = {}) {

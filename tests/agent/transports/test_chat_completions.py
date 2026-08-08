@@ -56,7 +56,50 @@ class TestChatCompletionsBasic:
 
 
 
+    def test_convert_messages_keeps_extra_content_for_gemini(self, transport):
+        """Gemini 3 thinking models require the thought_signature replayed on
+        every turn — stripping it would 400. Keep extra_content for Gemini
+        targets (including aggregator slugs like google/gemini-3-pro).
+        """
+        for model in ("gemini-3-pro", "google/gemini-3-pro-preview", "gemini-3-flash"):
+            msgs = self._msg_with_extra_content()
+            result = transport.convert_messages(msgs, model=model)
+            assert result[0]["tool_calls"][0]["extra_content"] == {
+                "google": {"thought_signature": "SIG_123"}
+            }, model
 
+    def test_convert_messages_strips_extra_content_for_gemma(self, transport):
+        """Gemma models do NOT use the Gemini-3 thinking format and 400 on
+        ``extra_content``. A cross-model fallback (gemini-3-flash → gemma-4-31b-it)
+        carries a stale Gemini thought_signature in tool-call history; it must be
+        stripped before reaching Gemma. (#36907)
+        """
+        for model in ("gemma-4-31b-it", "google/gemma-3-27b"):
+            msgs = self._msg_with_extra_content()
+            result = transport.convert_messages(msgs, model=model)
+            assert "extra_content" not in result[0]["tool_calls"][0], model
+            # Original list untouched (deepcopy-on-demand)
+            assert "extra_content" in msgs[0]["tool_calls"][0], model
+
+    def test_convert_messages_strips_tool_name(self, transport):
+        """Internal `tool_name` (used for FTS indexing in the SQLite store) is
+        not part of the OpenAI Chat Completions schema. Strict providers like
+        Moonshot/Kimi reject it with HTTP 400 'Extra inputs are not permitted'.
+        """
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "call_1", "type": "function",
+                             "function": {"name": "execute_code", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_1", "tool_name": "execute_code",
+             "content": "result"},
+        ]
+        result = transport.convert_messages(msgs)
+        assert "tool_name" not in result[2]
+        assert result[2]["content"] == "result"
+        assert result[2]["tool_call_id"] == "call_1"
+        # Original list untouched (deepcopy-on-demand)
+        assert msgs[2]["tool_name"] == "execute_code"
 
 
     def test_convert_messages_strips_timestamp(self, transport):

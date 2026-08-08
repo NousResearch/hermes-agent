@@ -25,6 +25,21 @@ class TestParserLimitRecovery:
         assert body.startswith("#!/bin/bash")
         assert f"bash {saved}" in r["message"]
 
+    def test_saved_payload_hint_uses_bash_safe_path(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.setattr(
+            "tools.environments.local._bash_safe_path",
+            lambda path: f"SAFE:{path}",
+        )
+
+        r = _hardline_block_result(_PARSER_LIMIT_DESCRIPTION, "python3 -c 'x'")
+
+        assert "saved to SAFE:" in r["message"]
+        assert "run: terminal(command=\"bash SAFE:" in r["message"]
+        saved_dir = tmp_path / ".hermes" / "cache" / "blocked-scripts"
+        saved = next(saved_dir.glob("*.sh"))
+        assert "# then run it via: bash SAFE:" in saved.read_text()
+
     def test_save_failure_falls_back_to_manual_recipe(self, monkeypatch):
         import tools.approval as ap
         monkeypatch.setattr(ap, "_save_blocked_payload", lambda c: None)

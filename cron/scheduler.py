@@ -2427,21 +2427,29 @@ def _run_job_script(
     # choice explicit here keeps the allowed surface small and auditable.
     suffix = path.suffix.lower()
     if suffix in {".sh", ".bash"}:
-        # Resolve bash dynamically so Windows (Git Bash) and Linux/macOS
-        # all work.  On native Windows without Git for Windows installed
-        # shutil.which returns None — fall back to a clear error rather
-        # than a FileNotFoundError with a confusing "[WinError 2]"
-        # traceback.
-        _bash = shutil.which("bash") or (
-            "/bin/bash" if os.path.isfile("/bin/bash") else None
-        )
+        script_arg = str(path)
+        try:
+            from tools.environments.local import _bash_safe_path, _find_bash
+
+            script_arg = _bash_safe_path(script_arg)
+            _bash = _find_bash()
+        except RuntimeError:
+            # Windows with no usable Git Bash: surface the clear setup error
+            # below instead of spawning the WSL launcher from System32.
+            _bash = None
+        except Exception:
+            # Keep the historical POSIX fallback if the shared helper cannot
+            # be imported in an embedded/minimal environment.
+            _bash = shutil.which("bash") or (
+                "/bin/bash" if os.path.isfile("/bin/bash") else None
+            )
         if _bash is None:
             return False, (
-                f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
+                f"Cannot run .sh/.bash script {path.name!r}: bash not found. "
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
-        )
-        argv = [_bash, str(path)]
+            )
+        argv = [_bash, script_arg]
         env_overlay: dict[str, str] = {}
     else:
         python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)

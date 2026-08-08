@@ -131,3 +131,62 @@ def test_run_job_script_nul_path_fails_cleanly(hermes_env):
     ok, output = _run_job_script("~user\x00bad.sh")
     assert ok is False
     assert "Blocked" in output
+
+
+def test_run_job_script_uses_shared_bash_resolver_and_safe_path(hermes_env, monkeypatch):
+    """Cron .sh execution must not pick WSL bash or pass raw Windows paths."""
+    from cron.scheduler import _run_job_script
+    import tools.environments.local as local_mod
+
+    script = hermes_env / "scripts" / "watch.sh"
+    script.write_text("#!/bin/bash\necho ok\n")
+    git_bash = "C:/Program Files/Git/bin/bash.exe"
+    captured = {}
+
+    class Result:
+        returncode = 0
+        stdout = "ok\n"
+        stderr = ""
+
+    monkeypatch.setattr(
+        "cron.scheduler.shutil.which",
+        lambda _name: r"C:\Windows\System32\bash.exe",
+    )
+    monkeypatch.setattr(local_mod, "_find_bash", lambda: git_bash)
+    monkeypatch.setattr(local_mod, "_bash_safe_path", lambda path: f"SAFE:{path}")
+
+    def fake_run(argv, **_kwargs):
+        captured["argv"] = argv
+        return Result()
+
+    monkeypatch.setattr("cron.scheduler.subprocess.run", fake_run)
+
+    ok, output = _run_job_script(str(script))
+
+    assert ok is True
+    assert output == "ok"
+    assert captured["argv"] == [git_bash, f"SAFE:{script}"]
+
+
+def test_run_job_script_reports_unusable_bash_without_spawning(
+    hermes_env, monkeypatch
+):
+    from cron.scheduler import _run_job_script
+    import tools.environments.local as local_mod
+
+    script = hermes_env / "scripts" / "watch.sh"
+    script.write_text("#!/bin/bash\necho ok\n")
+
+    def no_bash():
+        raise RuntimeError("no git bash")
+
+    def unexpected_spawn(*_args, **_kwargs):
+        raise AssertionError("must not spawn WSL bash")
+
+    monkeypatch.setattr(local_mod, "_find_bash", no_bash)
+    monkeypatch.setattr("cron.scheduler.subprocess.run", unexpected_spawn)
+
+    ok, output = _run_job_script(str(script))
+
+    assert ok is False
+    assert "bash not found" in output

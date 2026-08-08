@@ -552,6 +552,9 @@ function WebhookDetail({ sub }: { sub: WebhookRoute }) {
       <header className="space-y-3">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">{sub.name}</h3>
+          <PanelPill tone={sub.enabled ? 'good' : 'muted'}>
+            {sub.enabled ? w.statusEnabled : w.statusDisabled}
+          </PanelPill>
           {sub.deliver_only && <PanelPill tone="warn">{w.deliverOnly}</PanelPill>}
         </div>
 

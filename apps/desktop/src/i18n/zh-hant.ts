@@ -1341,6 +1341,11 @@ export const zhHant = defineLocale({
     platformIntro: {}
   },
 
+  webhooks: {
+    statusEnabled: '已啟用',
+    statusDisabled: '已停用'
+  },
+
   profiles: {
     close: '關閉設定檔',
     nameHint: '小寫字母、數字、連字號和底線。必須以字母或數字開頭。',

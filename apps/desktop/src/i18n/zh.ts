@@ -1716,6 +1716,8 @@ export const zh: Translations = {
     enabledRestarting: 'Webhook 已启用；网关正在重启…',
     all: '（全部）',
     deliverOnly: '仅投递',
+    statusEnabled: '已启用',
+    statusDisabled: '已禁用',
     createdTitle: '订阅已创建',
     createdSecretHint: '请立即复制密钥 —— 它只显示一次。',
     webhookUrl: 'Webhook URL',

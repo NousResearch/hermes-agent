@@ -1392,6 +1392,11 @@ export const ja = defineLocale({
     platformIntro: {}
   },
 
+  webhooks: {
+    statusEnabled: '有効',
+    statusDisabled: '無効'
+  },
+
   profiles: {
     close: 'プロファイルを閉じる',
     nameHint: '小文字、数字、ハイフン、アンダースコア。文字または数字で始める必要があります。',

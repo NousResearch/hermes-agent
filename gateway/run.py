@@ -21647,15 +21647,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if home.scope_id:
                         metadata["scope_id"] = home.scope_id
                 send_metadata = _non_conversational_metadata(metadata, platform=platform)
-                if send_metadata is not None or transport.is_relay:
-                    result = await transport.send(
-                        platform,
-                        str(home.chat_id),
-                        message,
-                        metadata=send_metadata,
-                    )
-                else:
-                    result = await transport.adapter.send(str(home.chat_id), message)
+
+                async def _do_send() -> object:
+                    if send_metadata is not None or transport.is_relay:
+                        return await transport.send(
+                            platform,
+                            str(home.chat_id),
+                            message,
+                            metadata=send_metadata,
+                        )
+                    return await transport.adapter.send(str(home.chat_id), message)
+
+                result = await _do_send()
+                # The Telegram adapter marks its send path as degraded
+                # (`_send_path_degraded`) until the first successful getUpdates
+                # after connecting. The startup notification can race ahead of
+                # that and get dropped with `send_path_degraded` (retryable).
+                # Wait briefly for polling to confirm, then retry once.
+                if (
+                    result is not None
+                    and getattr(result, "success", True) is False
+                    and getattr(result, "error", "") == "send_path_degraded"
+                ):
+                    await asyncio.sleep(3.0)
+                    result = await _do_send()
                 if result is not None and getattr(result, "success", True) is False:
                     logger.warning(
                         "Home-channel startup notification failed for %s:%s: %s",

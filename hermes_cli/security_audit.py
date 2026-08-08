@@ -288,13 +288,25 @@ def _http_post_json(url: str, payload: dict) -> dict:
         url, data=data, headers={"Content-Type": "application/json"}, method="POST"
     )
     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        body = resp.read()
+    try:
+        return json.loads(body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise RuntimeError(
+            f"OSV API returned non-JSON response ({resp.status}): {body[:200]!r}"
+        ) from exc
 
 
 def _http_get_json(url: str) -> dict:
     req = urllib.request.Request(url, method="GET")
     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        body = resp.read()
+    try:
+        return json.loads(body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise RuntimeError(
+            f"OSV API returned non-JSON response ({resp.status}): {body[:200]!r}"
+        ) from exc
 
 
 def _osv_query_batch(components: list[Component]) -> dict[Component, list[str]]:
@@ -318,7 +330,7 @@ def _osv_query_batch(components: list[Component]) -> dict[Component, list[str]]:
         }
         try:
             resp = _http_post_json(OSV_BATCH_URL, payload)
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+        except (urllib.error.URLError, TimeoutError, ConnectionError, RuntimeError) as exc:
             raise RuntimeError(f"OSV batch query failed: {exc}") from exc
         results = resp.get("results") or []
         for comp, result in zip(chunk, results):
@@ -393,7 +405,7 @@ def _osv_fetch_details(vuln_ids: Iterable[str]) -> dict[str, Vulnerability]:
     def _fetch_one(vid: str) -> Vulnerability:
         try:
             rec = _http_get_json(OSV_VULN_URL.format(vid=vid))
-        except (urllib.error.URLError, TimeoutError, ConnectionError):
+        except (urllib.error.URLError, TimeoutError, ConnectionError, RuntimeError):
             return Vulnerability(osv_id=vid)
         return Vulnerability(
             osv_id=vid,

@@ -8023,6 +8023,172 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return self._execute_write(_do)
 
+    def rewind_through_compaction(
+        self, session_id: str, target_message_id: int
+    ) -> Dict[str, Any]:
+        """Reverse a prior :meth:`archive_and_compact` for ``/undo`` (#81130).
+
+        ``archive_and_compact`` soft-archives the live turns (``active=0,
+        compacted=1``) and inserts fresh compacted rows as ``active=1``.
+        ``/undo`` is "back up N user turns via suffix soft-delete", which only
+        sees the LIVE set — the compacted summary + recent exchanges — so it
+        could never reach the pre-compaction history. This method is the
+        inverse: revives the ENTIRE compacted=1 archive for *session_id*
+        (back to ``active=1, compacted=0``) and soft-deletes the live tail
+        at-or-after ``target_message_id`` so the next reload replays the
+        pre-compaction transcript.
+
+        Pre-conditions: ``target_message_id`` must exist in *session_id*, be a
+        user message, and have ``compacted=1, active=0`` — i.e. it lives in
+        the compacted=1 archive produced by ``archive_and_compact``. For a
+        non-compacted target, raise ``ValueError``; the caller (typically
+        ``SessionStore.rewind_session`` or ``HermesCLI.undo_last``) is
+        expected to fall back to :meth:`rewind_to_message` instead.
+
+        Why revive the whole archive (not just rows at/after the target):
+        the user's intent on ``/undo`` after compaction is to recover the
+        pre-compaction state so they can keep working. The pre-compaction
+        transcript is the entire ``active=0, compacted=1`` set — the
+        ``target_message_id`` only marks how far back the LIVE tail should
+        be soft-deleted. Leaving pre-target compacted rows archived would
+        strand most of the pre-compaction history where the user can't see
+        or resume it, which is exactly the bug #81130 reports.
+
+        Returns a dict with ``rewound_count`` (live rows newly soft-deleted),
+        ``revived_count`` (compacted rows re-activated), ``target_message``,
+        and ``new_head_id`` (id of the last still-active row after the
+        rewind, or ``None``). ``sessions.rewind_count`` is incremented
+        exactly once, matching :meth:`rewind_to_message`.
+
+        Why a separate method rather than a flag on ``rewind_to_message``:
+        the live-archive inversion has a distinct SQL shape (cross-flag
+        UPDATE in both directions, whole-archive revive) and a distinct
+        return shape (``revived_count``). Mixing them would broaden
+        ``rewind_to_message``'s contract for callers that don't need the
+        compaction-aware branch.
+        """
+
+        # 1) Validate target up-front (read-only, outside the write txn).
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM messages WHERE id = ? AND session_id = ?",
+                (target_message_id, session_id),
+            ).fetchone()
+        if row is None:
+            raise ValueError(
+                f"message {target_message_id} not found in session {session_id}"
+            )
+        target_row = dict(row)
+        if target_row.get("role") != "user":
+            raise ValueError(
+                f"rewind target must be a 'user' message (got role="
+                f"{target_row.get('role')!r}, id={target_message_id})"
+            )
+        if not (
+            int(target_row.get("compacted", 0) or 0) == 1
+            and int(target_row.get("active", 0) or 0) == 0
+        ):
+            raise ValueError(
+                f"rewind_through_compaction target must live in the compacted=1 "
+                f"archive (got active={target_row.get('active')!r}, "
+                f"compacted={target_row.get('compacted')!r}, "
+                f"id={target_message_id}) — use rewind_to_message for live targets"
+            )
+
+        # Decode content for callers (prefill the prompt buffer).
+        target_row["content"] = self._decode_content(target_row.get("content"))
+
+        rewound_live_ids: List[int] = []
+        revived_compacted_ids: List[int] = []
+
+        def _do(conn):
+            # ORDER MATTERS: soft-delete the live tail FIRST, then revive the
+            # compacted archive. Reversing the order would clobber the
+            # revived rows — once they're flipped to active=1, the live-tail
+            # filter below would catch them too (they satisfy active=1).
+            # Doing the soft-delete first means the live-tail filter only
+            # sees the original (compacted-summary + recent exchange) rows.
+            #
+            # The live-tail filter still keys on id >= target_message_id
+            # so any pre-target live rows (e.g. a pre-compaction user row
+            # the agent appended to the live set after picking the target)
+            # stay alive. After archive_and_compact the live set is the
+            # compact tail, so id >= target naturally covers exactly that
+            # tail without spilling into the archive.
+            cursor = conn.execute(
+                "SELECT id FROM messages "
+                "WHERE session_id = ? AND id >= ? AND active = 1",
+                (session_id, target_message_id),
+            )
+            live_ids = [r[0] for r in cursor.fetchall()]
+            if live_ids:
+                placeholders = ",".join("?" for _ in live_ids)
+                conn.execute(
+                    f"UPDATE messages SET active = 0 WHERE id IN ({placeholders})",
+                    live_ids,
+                )
+            # Revive the ENTIRE compacted=1 archive for this session — not
+            # just rows at/after the target. See the docstring for why: the
+            # user's intent on /undo after compaction is to recover the full
+            # pre-compaction state. compacted=0 on revival distinguishes
+            # these from any earlier compaction boundary that may still
+            # archive older turns elsewhere.
+            cursor = conn.execute(
+                "SELECT id FROM messages "
+                "WHERE session_id = ? AND active = 0 AND compacted = 1",
+                (session_id,),
+            )
+            revived = [r[0] for r in cursor.fetchall()]
+            if revived:
+                placeholders = ",".join("?" for _ in revived)
+                conn.execute(
+                    f"UPDATE messages SET active = 1, compacted = 0 "
+                    f"WHERE id IN ({placeholders})",
+                    revived,
+                )
+            conn.execute(
+                "UPDATE sessions SET rewind_count = COALESCE(rewind_count, 0) + 1 "
+                "WHERE id = ?",
+                (session_id,),
+            )
+            return revived, live_ids
+
+        revived_compacted_ids, rewound_live_ids = self._execute_write(_do)
+
+        # 2) Recompute new head id and message_count. ``message_count`` must
+        # reflect the LIVE set (matches archive_and_compact semantics — the
+        # session's live load returns active=1 rows, so the counter must too).
+        with self._lock:
+            head_row = self._conn.execute(
+                "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1",
+                (session_id,),
+            ).fetchone()
+            count_row = self._conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 1",
+                (session_id,),
+            ).fetchone()
+        new_head_id = head_row[0] if head_row and head_row[0] is not None else None
+        live_count = int(count_row[0]) if count_row and count_row[0] is not None else 0
+        try:
+            with self._lock:
+                self._conn.execute(
+                    "UPDATE sessions SET message_count = ? WHERE id = ?",
+                    (live_count, session_id),
+                )
+        except Exception:
+            logger.debug(
+                "rewind_through_compaction: message_count update failed "
+                "(non-fatal; live load is the source of truth): %s",
+                session_id,
+            )
+
+        return {
+            "rewound_count": len(rewound_live_ids),
+            "revived_count": len(revived_compacted_ids),
+            "target_message": target_row,
+            "new_head_id": new_head_id,
+        }
+
     # =========================================================================
     # Search
     # =========================================================================

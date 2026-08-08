@@ -1081,6 +1081,7 @@ class SessionSearchMixin:
         session_id: str,
         limit: int = 20,
         include_inactive: bool = False,
+        include_compacted: bool = False,
     ) -> List[Dict[str, Any]]:
         """Return the *limit* most-recent user messages, newest first.
 
@@ -1098,9 +1099,31 @@ class SessionSearchMixin:
         made ``/undo`` soft-delete from a marker instead of the last real turn —
         same class of index skew as the prompt.submit ordinal bug.
 
-        By default only active messages are returned.
+        By default only active messages are returned. Pass ``include_inactive``
+        to also surface rows soft-deleted by ``rewind_to_message`` (hidden from
+        re-prompts and search), or ``include_compacted=True`` to also surface
+        rows in the compacted=1 archive produced by ``archive_and_compact``
+        (issue #81130). ``include_compacted`` is consumed by ``/undo`` so the
+        rewind target picker can step across a compaction boundary: the
+        compacted=1 rows are still on disk, still indexed in FTS, and still
+        carry the original user content. ``rewind_to_message`` won't act on
+        them, but ``rewind_through_compaction`` revives them as the inverse
+        of ``archive_and_compact``.
         """
-        active_clause = "" if include_inactive else " AND active = 1"
+        # Build the row-visibility clause. ``include_inactive`` is the broad
+        # "show every row" switch (used by tests / diagnostics). The narrower
+        # ``include_compacted`` switch adds the compacted=1 archive — the
+        # rows ``archive_and_compact`` left on disk for #38763 durability
+        # — so ``/undo`` can step across a compaction boundary (#81130).
+        if include_inactive:
+            active_clause = ""
+        elif include_compacted:
+            # Live rows OR compacted-archived rows. The compacted=1 rows
+            # are the durable history archive; rewind_to_message won't act
+            # on them, but rewind_through_compaction does.
+            active_clause = " AND (active = 1 OR (active = 0 AND compacted = 1))"
+        else:
+            active_clause = " AND active = 1"
         # Match CLI/desktop: only real user turns, not timeline bookkeeping.
         display_clause = " AND (display_kind IS NULL OR display_kind = '')"
         # Legacy standalone compaction handoffs (persisted pre-#80622) are

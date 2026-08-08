@@ -8495,19 +8495,44 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         # Soft-delete the truncated rows on disk so re-prompts and search
         # see the clean transcript while the rows survive for audit.
+        # Cross-compaction-boundary undo (#81130): the picker also surfaces
+        # rows from the compacted=1 archive produced by ``archive_and_compact``,
+        # so ``/undo`` can step back into the pre-compaction transcript. When
+        # the picked target lives in the compacted archive, the call routes
+        # through ``rewind_through_compaction`` (the inverse of
+        # ``archive_and_compact``: revives the compacted rows and soft-deletes
+        # the live tail) instead of ``rewind_to_message``. The CLI's
+        # in-memory ``conversation_history`` is then reloaded from the DB so
+        # the next turn's prompt-cache rebuild lands on the revived set
+        # instead of the stale compacted summary.
         rewound_rows = 0
+        revived_rows = 0
+        crossed_compaction_boundary = False
         if self._session_db is not None and self.session_id:
             try:
                 recents = self._session_db.list_recent_user_messages(
-                    self.session_id, limit=max(turns_undone, 10)
+                    self.session_id,
+                    limit=max(turns_undone, 10),
+                    include_compacted=True,
                 )
                 if recents:
                     target_idx = min(turns_undone - 1, len(recents) - 1)
                     target_id = recents[target_idx]["id"]
-                    result = self._session_db.rewind_to_message(
-                        self.session_id, target_id
+                    target_is_compacted = self._undo_target_is_compacted(
+                        target_id
                     )
-                    rewound_rows = result.get("rewound_count", 0)
+                    if target_is_compacted:
+                        crossed_compaction_boundary = True
+                        result = self._session_db.rewind_through_compaction(
+                            self.session_id, target_id
+                        )
+                        rewound_rows = result.get("rewound_count", 0)
+                        revived_rows = result.get("revived_count", 0)
+                    else:
+                        result = self._session_db.rewind_to_message(
+                            self.session_id, target_id
+                        )
+                        rewound_rows = result.get("rewound_count", 0)
                     # Prefer the DB's decoded target text for the prefill —
                     # it's the canonical persisted copy.
                     db_text = self._undo_content_to_text(
@@ -8521,6 +8546,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 logger.debug("undo: soft-delete skipped: %s", e)
             except Exception as e:
                 logger.debug("undo: soft-delete failed: %s", e)
+
+        # After crossing a compaction boundary, the in-memory
+        # ``conversation_history`` no longer matches the durable live set:
+        # the compacted summary / recent exchanges were soft-deleted on
+        # disk and the revived pre-compaction rows aren't represented in
+        # memory at all. Reload from the DB so the next turn's prompt and
+        # the system-prompt cache rebuild land on the revived transcript
+        # rather than the stale compacted summary. The flush-index reset
+        # below still drives the append-only flush on the next turn.
+        if crossed_compaction_boundary and self._session_db is not None and self.session_id:
+            try:
+                self.conversation_history = (
+                    self._session_db.get_messages_as_conversation(self.session_id)
+                )
+            except Exception as e:
+                logger.debug("undo: post-compaction reload failed: %s", e)
 
         # Agent surgery: invalidate the system-prompt cache and reset the
         # flush index so the next turn re-flushes from the truncated head.
@@ -8551,9 +8592,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         turn_word = "turn" if turns_undone == 1 else "turns"
         msg_count = rewound_rows or removed_count
+        boundary_note = ""
+        if crossed_compaction_boundary and revived_rows:
+            boundary_note = (
+                f" (revived {revived_rows} pre-compaction row(s); "
+                f"compaction summary discarded)"
+            )
         print(
             f"(^_^)b Undid {turns_undone} {turn_word} ({msg_count} message(s)). "
             f"Backed up to: \"{removed_text[:60]}{'...' if len(removed_text) > 60 else ''}\""
+            f"{boundary_note}"
         )
         remaining = len(self.conversation_history)
         print(f"  {remaining} message(s) remaining in history.")
@@ -8576,6 +8624,36 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             ]
             return "\n".join(t for t in parts if t)
         return ""
+
+    def _undo_target_is_compacted(self, target_id: int) -> bool:
+        """True iff ``target_id`` is in the compacted=1 archive.
+
+        Small read-only probe that powers the cross-compaction-boundary
+        routing in :meth:`undo_last` (#81130). Returns False when the DB
+        cannot answer so the call falls back to the standard soft-delete
+        path (no live row, no race window).
+        """
+        db = self._session_db
+        sid = self.session_id
+        if db is None or not sid:
+            return False
+        try:
+            with db._lock:
+                row = db._conn.execute(
+                    "SELECT active, compacted FROM messages "
+                    "WHERE id = ? AND session_id = ?",
+                    (target_id, sid),
+                ).fetchone()
+        except Exception:
+            return False
+        if row is None:
+            return False
+        active = row["active"] if hasattr(row, "keys") else row[0]
+        compacted = row["compacted"] if hasattr(row, "keys") else row[1]
+        try:
+            return int(active or 0) == 0 and int(compacted or 0) == 1
+        except (TypeError, ValueError):
+            return False
 
     def _prefill_input_buffer(self, text: str) -> None:
         """Place ``text`` in the active prompt_toolkit buffer, editable."""

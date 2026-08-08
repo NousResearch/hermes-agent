@@ -343,7 +343,12 @@ class A2AAdapter(BasePlatformAdapter):
         super().__init__(config=config, platform=platform)
 
         extra = getattr(config, "extra", {}) or {}
-        self.port = int(os.getenv("A2A_PORT") or extra.get("port", _DEFAULT_PORT))
+        # Mirror IRC_PORT (#40598): malformed A2A_PORT / extra.port must not
+        # ValueError during adapter construction and take the platform down.
+        try:
+            self.port = int(os.getenv("A2A_PORT") or extra.get("port", _DEFAULT_PORT))
+        except (ValueError, TypeError):
+            self.port = _DEFAULT_PORT
         self.host = security.resolve_bind_host()
         self.agent_name = _default_agent_name()
         self._advertised_toolsets = [

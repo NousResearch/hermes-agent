@@ -89,6 +89,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes pets` | Browse, install, and select [petdex](../user-guide/features/pets.md) animated pets shown across the CLI, TUI, and desktop app. Subcommands: `list`, `install`, `select`, `show`, `off`, `scale`, `remove`, `doctor`. |
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
 | `hermes insights` | Show token/cost/activity analytics. |
+| `hermes inbox` | One view of everything in flight: background processes, async delegations, failed cron runs, undelivered results, and open chat surfaces. |
 | `hermes claw` | OpenClaw migration helpers. |
 | `hermes import-agent` | Import a Claude Code (`~/.claude`) or Codex CLI (`~/.codex`) setup. |
 | `hermes dashboard` | Launch the web dashboard for managing config, API keys, and sessions. |
@@ -1479,6 +1480,27 @@ hermes insights [--days N] [--source platform]
 |--------|-------------|
 | `--days <n>` | Analyze the last `n` days (default: 30). |
 | `--source <platform>` | Filter by source such as `cli`, `telegram`, or `discord`. |
+
+## `hermes inbox`
+
+```bash
+hermes inbox [--json]
+```
+
+A unified, read-only snapshot of Hermes activity — inspired by "what's in
+progress, what needs attention, what finished" agent inboxes. Aggregates
+four stores without mutating any of them:
+
+| Section | Source | What appears |
+|---------|--------|--------------|
+| Needs attention | delegations + cron + processes | Stalled/unknown delegations, results dropped after failed deliveries (last 7 days), failed or paused cron jobs, orphaned background-process checkpoint entries whose PID is gone. |
+| In progress | `~/.hermes/processes.json` + `state.db` | Live background processes and running async delegations. |
+| Finished, not yet delivered | `state.db` | Completed delegation results still waiting to re-enter their conversation. |
+| Scheduled | `cron/jobs.json` | Active cron jobs and their next run times. |
+| Open surfaces | active-session leases | Currently open CLI/TUI/gateway chat surfaces (live PIDs only). |
+
+`--json` emits the raw snapshot for scripts and dashboards. Works whether or
+not a gateway is running, and never blocks on a locked database.
 
 ## `hermes claw`
 

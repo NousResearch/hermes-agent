@@ -8,7 +8,15 @@ import {
   SESSION_WATCHDOG_TIMEOUT_MS
 } from '@/store/session-states'
 
-import { rehydrateLiveSessionStatuses } from './use-background-sync'
+import { rehydrateLiveSessionStatuses, windowIsActivelyViewed } from './use-background-sync'
+
+describe('windowIsActivelyViewed', () => {
+  it('requires both DOM visibility and keyboard focus', () => {
+    expect(windowIsActivelyViewed({ focused: true, visibilityState: 'visible' })).toBe(true)
+    expect(windowIsActivelyViewed({ focused: false, visibilityState: 'visible' })).toBe(false)
+    expect(windowIsActivelyViewed({ focused: true, visibilityState: 'hidden' })).toBe(false)
+  })
+})
 
 describe('rehydrateLiveSessionStatuses', () => {
   beforeEach(() => {

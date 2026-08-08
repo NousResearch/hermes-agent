@@ -19,10 +19,12 @@ describe('useElapsedSeconds', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
     __resetElapsedTimerRegistryForTests()
   })
 
   afterEach(() => {
+    vi.restoreAllMocks()
     vi.useRealTimers()
     __resetElapsedTimerRegistryForTests()
   })
@@ -72,16 +74,33 @@ describe('useElapsedSeconds', () => {
 
     expect(screen.getByTestId('elapsed').textContent).toBe('0')
   })
+
+  it('pauses UI ticks without focus and catches up immediately on return', () => {
+    render(<Probe active timerKey="tool:background" />)
+    vi.mocked(document.hasFocus).mockReturnValue(false)
+    window.dispatchEvent(new Event('blur'))
+
+    act(() => {
+      vi.advanceTimersByTime(5_000)
+    })
+    expect(screen.getByTestId('elapsed').textContent).toBe('0')
+
+    vi.mocked(document.hasFocus).mockReturnValue(true)
+    act(() => window.dispatchEvent(new Event('focus')))
+    expect(screen.getByTestId('elapsed').textContent).toBe('5')
+  })
 })
 
 describe('useMeasuredDuration', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
     __resetElapsedTimerRegistryForTests()
   })
 
   afterEach(() => {
+    vi.restoreAllMocks()
     vi.useRealTimers()
     __resetElapsedTimerRegistryForTests()
   })
@@ -152,5 +171,18 @@ describe('useMeasuredDuration', () => {
     second.rerender(<DurationProbe active={false} timerKey="reasoning:m1:7" />)
 
     expect(screen.getByTestId('measured').textContent).toBe('2')
+  })
+
+  it('records the real finish time even if the UI clock was paused', () => {
+    const probe = render(<DurationProbe active timerKey="reasoning:background" />)
+    vi.mocked(document.hasFocus).mockReturnValue(false)
+    window.dispatchEvent(new Event('blur'))
+
+    act(() => {
+      vi.advanceTimersByTime(5_000)
+    })
+    probe.rerender(<DurationProbe active={false} timerKey="reasoning:background" />)
+
+    expect(screen.getByTestId('measured').textContent).toBe('5')
   })
 })

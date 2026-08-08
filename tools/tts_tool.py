@@ -3452,8 +3452,9 @@ def stream_tts_to_speaker(
     speak each sentence the moment it's ready — the conversational path.
 
     Provider-agnostic. A registered streaming provider (ElevenLabs, OpenAI, …)
-    plays chunked PCM through one sounddevice stream for the lowest latency;
-    every other provider (edge, the default) is spoken per-sentence via the sync
+    plays chunked PCM through one output stream for the lowest latency; on
+    macOS, ElevenLabs uses ``ffplay`` rather than PortAudio/CoreAudio. Every
+    other provider (edge, the default) is spoken per-sentence via the sync
     ``text_to_speech_tool`` path, so audio still starts on sentence one instead
     of after the whole reply.
 
@@ -3469,6 +3470,7 @@ def stream_tts_to_speaker(
 
     try:
         output_stream = None
+        output_stream_is_ffplay = False
         streamer = None  # type: ignore[assignment]
         _worker_thread = None
         _audio_queue = None  # type: ignore[assignment]
@@ -3479,6 +3481,7 @@ def stream_tts_to_speaker(
         # per-sentence sync synthesis (universal — edge + every non-streamer).
         from tools.tts_streaming import SentenceChunker, resolve_streaming_provider
         streamer = resolve_streaming_provider(tts_config, preferred=provider)
+        stream_provider = (provider or _get_provider(tts_config)).lower()
 
         # No chunked streamer: per-sentence sync synthesis, pipelined so the
         # next sentence synthesizes while the current one plays (closed in the
@@ -3488,17 +3491,31 @@ def stream_tts_to_speaker(
         stream_max_len = 0
         if streamer is not None:
             try:
-                stream_max_len = _resolve_max_text_length(
-                    provider or _get_provider(tts_config), tts_config
-                )
+                stream_max_len = _resolve_max_text_length(stream_provider, tts_config)
             except Exception:
                 stream_max_len = 0
-            # On macOS, skip the sounddevice OutputStream entirely: PortAudio/
-            # CoreAudio init triggers a kTCCServiceMediaLibrary permission
-            # prompt even though output needs no media-library access. Leaving
-            # output_stream=None routes each sentence through the tempfile
-            # -> play_audio_file -> afplay path. See PR #62601 / #13291.
-            if platform.system() == "Darwin":
+            # Do not initialize sounddevice output for ElevenLabs on macOS:
+            # its PortAudio/CoreAudio callback can crash alongside the STT
+            # input stream. ffplay consumes its raw PCM without that callback.
+            if platform.system() == "Darwin" and stream_provider == "elevenlabs":
+                ffplay = shutil.which("ffplay")
+                if ffplay:
+                    try:
+                        output_stream = subprocess.Popen(
+                            [
+                                ffplay, "-f", "s16le", "-ar", str(streamer.sample_rate),
+                                "-ac", str(streamer.channels), "-nodisp", "-autoexit",
+                                "-loglevel", "quiet", "-",
+                            ],
+                            stdin=subprocess.PIPE,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            creationflags=windows_hide_flags(),
+                        )
+                        output_stream_is_ffplay = True
+                    except OSError as exc:
+                        logger.debug("ffplay streaming failed to start: %s", exc)
+            elif platform.system() == "Darwin":
                 output_stream = None
             else:
                 try:
@@ -3595,7 +3612,51 @@ def stream_tts_to_speaker(
         def _playback_worker() -> None:
             """Single consumer: play audio segments from the queue in order."""
             assert streamer is not None
-            if output_stream is not None:
+            if output_stream_is_ffplay:
+                try:
+                    from tools.voice_mode import mark_audio_output_active
+                except Exception:
+                    def mark_audio_output_active(_active):
+                        return None
+
+                mark_audio_output_active(True)
+                try:
+                    ffplay_available = True
+                    while True:
+                        chunk_queue = _audio_queue.get()
+                        if chunk_queue is None:
+                            break
+                        if stop_event.is_set():
+                            while chunk_queue.get() is not None:
+                                pass
+                            continue
+                        fallback_chunks = []
+                        while True:
+                            chunk = chunk_queue.get()
+                            if chunk is None:
+                                break
+                            if stop_event.is_set():
+                                continue
+                            if ffplay_available:
+                                try:
+                                    output_stream.stdin.write(chunk)
+                                    output_stream.stdin.flush()
+                                except (BrokenPipeError, OSError, ValueError) as exc:
+                                    logger.warning(
+                                        "ffplay PCM write failed; falling back to tempfile: %s",
+                                        exc,
+                                    )
+                                    ffplay_available = False
+                                    fallback_chunks.append(chunk)
+                            else:
+                                fallback_chunks.append(chunk)
+                        if fallback_chunks:
+                            _play_via_tempfile(
+                                iter(fallback_chunks), stop_event, streamer.sample_rate
+                            )
+                finally:
+                    mark_audio_output_active(False)
+            elif output_stream is not None:
                 import numpy as _np
 
                 try:
@@ -3853,11 +3914,22 @@ def stream_tts_to_speaker(
             t.join(timeout=10.0)
         # Always close the audio output stream to avoid locking the device
         if output_stream is not None:
-            try:
-                output_stream.stop()
-                output_stream.close()
-            except Exception:
-                pass
+            if output_stream_is_ffplay:
+                try:
+                    output_stream.stdin.close()
+                except Exception:
+                    pass
+                try:
+                    output_stream.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    output_stream.kill()
+                    output_stream.wait()
+            else:
+                try:
+                    output_stream.stop()
+                    output_stream.close()
+                except Exception:
+                    pass
         tts_done_event.set()
 
 

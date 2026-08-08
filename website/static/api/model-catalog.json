@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-03T22:03:15Z",
+  "updated_at": "2026-08-06T22:00:00Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -150,14 +150,6 @@
           "description": "free"
         },
         {
-          "id": "poolside/laguna-m.1:free",
-          "description": "free"
-        },
-        {
-          "id": "tencent/hy3:free",
-          "description": "free"
-        },
-        {
           "id": "nvidia/nemotron-3-super-120b-a12b:free",
           "description": "free"
         },
@@ -166,8 +158,56 @@
           "description": "free"
         },
         {
-          "id": "inclusionai/ring-2.6-1t:free",
+          "id": "nvidia/nemotron-3.5-content-safety:free",
+          "description": "free (no tools)"
+        },
+        {
+          "id": "nvidia/nemotron-3-nano-30b-a3b:free",
           "description": "free"
+        },
+        {
+          "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+          "description": "free"
+        },
+        {
+          "id": "nvidia/nemotron-nano-9b-v2:free",
+          "description": "free"
+        },
+        {
+          "id": "nvidia/nemotron-nano-12b-v2-vl:free",
+          "description": "free"
+        },
+        {
+          "id": "poolside/laguna-s-2.1:free",
+          "description": "free"
+        },
+        {
+          "id": "poolside/laguna-xs-2.1:free",
+          "description": "free"
+        },
+        {
+          "id": "inclusionai/ling-3.0-flash:free",
+          "description": "free"
+        },
+        {
+          "id": "cohere/north-mini-code:free",
+          "description": "free"
+        },
+        {
+          "id": "google/gemma-4-26b-a4b-it:free",
+          "description": "free"
+        },
+        {
+          "id": "google/gemma-4-31b-it:free",
+          "description": "free"
+        },
+        {
+          "id": "openai/gpt-oss-20b:free",
+          "description": "free"
+        },
+        {
+          "id": "openrouter/free",
+          "description": "free (router)"
         }
       ]
     },

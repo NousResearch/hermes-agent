@@ -615,6 +615,42 @@ def _redact_approval_command(cmd: "str | None") -> str:
     return redact_sensitive_text(str(cmd or ""), force=True)
 
 
+_REACTION_ADDED_PREFIX = "reaction:added:"
+# Reaction tapbacks accepted as an approval response.  Deliberately narrow:
+# only an explicit thumbs-up/thumbs-down counts, so no other emoji can ever
+# resolve a dangerous-command prompt.  Unicode covers the normalized form
+# every adapter emits; the name forms are Slack/Feishu fallbacks for when a
+# reaction reaches this path before emoji translation (Feishu's emoji_type is
+# uppercase — callers lowercase before matching).
+_APPROVE_REACTIONS = frozenset({"👍", "thumbsup", "+1"})
+_DENY_REACTIONS = frozenset({"👎", "thumbsdown", "-1"})
+
+
+def _approval_reaction_word(text: str) -> Optional[str]:
+    """Map a synthetic reaction message to an approval word, else ``None``.
+
+    Reactions enter the gateway on the normal message path as the
+    cross-platform synthetic text ``reaction:added:<emoji>`` /
+    ``reaction:removed:<emoji>`` (Slack, Feishu and Photon adapters all use
+    this shape).  A 👍 tapback on an approval prompt is the natural way to
+    answer it, so map added-thumbs reactions onto the existing plain-text
+    approve/deny vocabulary.
+
+    Only ``reaction:added:`` is honored — un-reacting is not a decision, so
+    ``reaction:removed:👍`` must not approve and ``reaction:removed:👎`` must
+    not deny.  Callers must still gate on ``has_blocking_approval``; this
+    helper only classifies the text.  ``text`` is expected lowercased.
+    """
+    if not text.startswith(_REACTION_ADDED_PREFIX):
+        return None
+    name = text[len(_REACTION_ADDED_PREFIX):].strip().strip(":")
+    if name in _APPROVE_REACTIONS:
+        return "👍"
+    if name in _DENY_REACTIONS:
+        return "👎"
+    return None
+
+
 def _format_exec_approval_fallback(
     command: str,
     description: str,
@@ -8946,6 +8982,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _raw_text = (event.text or "").strip().lower()
                 _approve_words = {"approve", "yes", "ok", "okay", "confirm", "y", "👍"}
                 _deny_words = {"deny", "no", "reject", "cancel", "n", "👎"}
+                # A 👍/👎 tapback on the approval prompt is the natural way to
+                # answer it.  Reactions arrive here as the synthetic
+                # `reaction:added:<emoji>` message adapters already emit, so
+                # fold the thumbs forms into the plain-text vocabulary above.
+                # This runs INSIDE the has_blocking_approval gate, so a
+                # reaction can only ever resolve an approval that is actually
+                # pending — and only thumbs reactions, never arbitrary emoji.
+                _reaction_word = _approval_reaction_word(_raw_text)
+                if _reaction_word is not None:
+                    _raw_text = _reaction_word
                 _approval_handler = None
                 _normalized_args = ""
                 if _raw_text in _approve_words:

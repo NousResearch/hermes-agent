@@ -76,4 +76,28 @@ def test_terminal_cwd_pinned_to_workspace(monkeypatch, tmp_path):
     assert captured["cwd"] == str(workspace)
     assert captured["env"]["HERMES_KANBAN_WORKSPACE"] == str(workspace)
 
+def test_terminal_cwd_not_pinned_for_nonexistent_workspace(monkeypatch, tmp_path):
+    """A non-directory workspace must not become the worker's TERMINAL_CWD.
+
+    The inherited value belongs to the dispatcher's active profile, so it is
+    cleared with the rest of the terminal config bridge. The assignee process
+    can then resolve its own profile default instead of receiving either the
+    gateway anchor or a meaningless nonexistent path.
+    """
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "w").mkdir(parents=True)
+    (root / "profiles" / "w" / "config.yaml").write_text(
+        "toolsets:\n  - kanban\n", encoding="utf-8"
+    )
+    root.joinpath("config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("TERMINAL_CWD", "/pre/existing/anchor")
+
+    from hermes_cli import kanban_db as kb
+
+    missing = tmp_path / "does-not-exist"
+    captured = _capture_spawn_env(kb, monkeypatch, str(missing))
+
+    # Neither the gateway anchor nor the invalid workspace reaches the worker.
+    assert "TERMINAL_CWD" not in captured["env"]
 

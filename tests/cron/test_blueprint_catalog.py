@@ -73,6 +73,29 @@ class TestScheduleResolution:
         assert spec["schedule"] == "0 8 * * *"
 
 
+class TestAllBlueprints:
+    """Catalog-wide invariants — guard every entry, not just the spot-checks above."""
+
+    @pytest.mark.parametrize("blueprint", CATALOG, ids=lambda b: b.key)
+    def test_defaults_render_without_leftover_placeholders(self, blueprint):
+        # Filling with defaults must resolve every {slot} in both the schedule
+        # and the prompt. A leftover "{...}" means a template references a slot
+        # the blueprint doesn't define (or a renamed one).
+        spec = fill_blueprint(blueprint, {})
+        assert "{" not in spec["schedule"] and "}" not in spec["schedule"], spec["schedule"]
+        assert "{" not in spec["prompt"] and "}" not in spec["prompt"], spec["prompt"]
+        # Non-passthrough schedules are standard 5-field cron expressions.
+        assert len(spec["schedule"].split()) == 5, spec["schedule"]
+
+    @pytest.mark.parametrize("blueprint", CATALOG, ids=lambda b: b.key)
+    def test_prompt_has_no_internal_jargon(self, blueprint):
+        # prompt_template is the instruction sent to the agent at run time. It
+        # talks to the user about their automation (meals, news, habits…), so it
+        # must not leak the internal "blueprint" concept — a class of bug left
+        # behind by the plan->blueprint rename.
+        assert "blueprint" not in blueprint.prompt_template.lower(), blueprint.key
+
+
 class TestValidation:
     def test_invalid_time_rejected(self):
         with pytest.raises(BlueprintFillError, match="invalid time"):

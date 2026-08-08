@@ -45,6 +45,14 @@ _OVERALL_GLYPH = {
     "failed":   "❌",
 }
 
+# Minimum cua-driver-rs version for the structuredContent.elements frame
+# (trycua/cua#1961) that Hermes' `_parse_elements_from_structured` (Surface 2
+# of #47072) reads. Older builds fall back to the markdown tree where bounds
+# are always (0,0,0,0) — computer-use works for element-index clicks but
+# pixel-coordinate clicks (UIElement.center()) silently degrade. Doctor
+# flags this as a version_gate failure instead of letting it stay silent.
+_MIN_SUPPORTED_CUA_VERSION = (0, 10, 0)
+
 
 class HealthReportUnavailable(RuntimeError):
     """health_report MCP tool denied or returned a non-schema payload.
@@ -133,6 +141,46 @@ def _normalize_version_token(text: str) -> str:
         return ""
     m = re.search(r"(\d+\.\d+(?:\.\d+)?(?:[-+][\w.]+)?)", text)
     return m.group(1) if m else text.strip().lower()
+
+
+def _parse_version_tuple(text: str) -> Optional[Tuple[int, int, int]]:
+    """Parse ``X.Y.Z`` (or ``X.Y``) into a comparable tuple, or None."""
+    token = _normalize_version_token(text)
+    m = re.match(r"(\d+)\.(\d+)(?:\.(\d+))?", token)
+    if not m:
+        return None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0))
+
+
+def _version_gate_check(version_text: str, minimum: Tuple[int, int, int]) -> Dict[str, Any]:
+    """Build the version_gate check for the composite fallback report.
+
+    Fails when the version parses and is older than ``minimum``; skips when
+    the version can't be parsed (don't mislead on exotic version strings).
+    """
+    parsed = _parse_version_tuple(version_text)
+    if parsed is None:
+        return {
+            "name": "version_gate",
+            "status": "skip",
+            "message": f"could not parse version {version_text!r}",
+        }
+    min_str = ".".join(str(x) for x in minimum)
+    if parsed >= minimum:
+        return {
+            "name": "version_gate",
+            "status": "pass",
+            "message": f"{version_text} >= {min_str} (structuredContent frames supported)",
+        }
+    return {
+        "name": "version_gate",
+        "status": "fail",
+        "message": (
+            f"{version_text} is older than {min_str}; "
+            "bounds/pixel coordinates are unavailable"
+        ),
+        "hint": "Run `hermes computer-use install --upgrade` to install the latest cua-driver.",
+    }
 
 
 def _build_identity(binary: str, report: Dict[str, Any]) -> Dict[str, Any]:
@@ -543,6 +591,11 @@ def _compose_fallback_report(
         "status": ver_status,
         "message": ver_msg,
     })
+
+    # version_gate — flag cua-driver builds too old for the
+    # structuredContent frame (bounds/pixel coordinates), so the silent
+    # (0,0,0,0) degradation becomes a diagnosable failure with an upgrade hint.
+    checks.append(_version_gate_check(str(driver_version), _MIN_SUPPORTED_CUA_VERSION))
 
     # platform_supported — doctor runs wherever the binary runs
     supported = plat in ("darwin", "linux", "windows")

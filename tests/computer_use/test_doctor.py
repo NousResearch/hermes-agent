@@ -491,3 +491,57 @@ class TestDaemonAutostartProbe:
         assert status == "skip"
         assert "not resolved" in msg
 
+
+class TestVersionGate:
+    """version_gate check — flags drivers too old for structuredContent frames."""
+
+    def _gate(self, version: str):
+        from tools.computer_use import doctor
+
+        return doctor._version_gate_check(version, doctor._MIN_SUPPORTED_CUA_VERSION)
+
+    def test_new_version_passes(self):
+        check = self._gate("cua-driver 0.19.1")
+        assert check["status"] == "pass"
+        assert "structuredContent" in check["message"]
+
+    def test_old_version_fails_with_hint(self):
+        check = self._gate("cua-driver 0.2.0")
+        assert check["status"] == "fail"
+        assert "install --upgrade" in check["hint"]
+
+    def test_exactly_minimum_passes(self):
+        check = self._gate("cua-driver 0.10.0")
+        assert check["status"] == "pass"
+
+    def test_below_minimum_fails(self):
+        check = self._gate("cua-driver 0.9.5")
+        assert check["status"] == "fail"
+
+    def test_unparseable_skips(self):
+        check = self._gate("garbage")
+        assert check["status"] == "skip"
+        assert "could not parse" in check["message"]
+
+    def test_prerelease_version_comparable(self):
+        # 0.16.0-rc1 parses as 0.16.0 → passes the 0.10 gate.
+        check = self._gate("cua-driver 0.16.0-rc1")
+        assert check["status"] == "pass"
+
+
+class TestParseVersionTuple:
+    def test_full(self):
+        from tools.computer_use import doctor
+
+        assert doctor._parse_version_tuple("cua-driver 0.19.1") == (0, 19, 1)
+
+    def test_two_part(self):
+        from tools.computer_use import doctor
+
+        assert doctor._parse_version_tuple("cua-driver 0.10") == (0, 10, 0)
+
+    def test_none_for_garbage(self):
+        from tools.computer_use import doctor
+
+        assert doctor._parse_version_tuple("garbage") is None
+

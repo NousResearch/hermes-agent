@@ -2,9 +2,11 @@ import json
 import os
 import stat
 import threading
+import urllib.error
 
 import pytest
 
+from agent.memory_manager import build_memory_context_block
 from plugins.memory.supermemory import (
     SupermemoryMemoryProvider,
     _clean_text_for_capture,
@@ -456,3 +458,140 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+def _http_error(status: int, reason: str) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        url="https://api.supermemory.ai/v4/memories",
+        code=status,
+        msg=reason,
+        hdrs={},
+        fp=None,
+    )
+
+
+def _sdk_http_error(status: int, reason: str):
+    sdk = pytest.importorskip("supermemory")
+    httpx = pytest.importorskip("httpx")
+    request = httpx.Request("POST", "https://api.supermemory.ai/v4/memories")
+    response = httpx.Response(status, request=request)
+    return sdk.APIStatusError(reason, response=response, body={"error": reason})
+
+
+def test_sdk_402_tool_error_is_actionable(provider):
+    def exhausted(*args, **kwargs):
+        raise _sdk_http_error(402, "Payment Required")
+
+    provider._client.add_memory = exhausted
+
+    result = json.loads(provider._tool_store({"content": "Remember this durable preference"}))
+
+    assert "HTTP 402 Payment Required" in result["error"]
+    assert "credits may be exhausted" in result["error"]
+
+
+@pytest.mark.parametrize("status", [401, 429, 500])
+def test_non_402_sdk_errors_do_not_claim_credit_exhaustion(provider, status):
+    def failed(*args, **kwargs):
+        raise _sdk_http_error(status, "Request failed")
+
+    provider._client.add_memory = failed
+
+    result = json.loads(provider._tool_store({"content": "Remember this durable preference"}))
+
+    assert "credits may be exhausted" not in result["error"]
+    assert provider.prefetch("What should I work on next?") == ""
+
+
+@pytest.mark.parametrize(
+    ("tool", "args", "client_method"),
+    [
+        ("_tool_search", {"query": "durable preference"}, "search_memories"),
+        ("_tool_forget", {"id": "mem_123"}, "forget_memory"),
+        ("_tool_profile", {}, "get_profile"),
+    ],
+)
+def test_402_is_actionable_for_every_remaining_tool(provider, tool, args, client_method):
+    def exhausted(*args, **kwargs):
+        raise _sdk_http_error(402, "Payment Required")
+
+    setattr(provider._client, client_method, exhausted)
+
+    result = json.loads(getattr(provider, tool)(args))
+
+    assert "HTTP 402 Payment Required" in result["error"]
+    assert "credits may be exhausted" in result["error"]
+
+
+def test_prefetch_402_returns_only_a_transient_warning_context(provider):
+    def exhausted(*args, **kwargs):
+        raise _sdk_http_error(402, "Payment Required")
+
+    provider._client.get_profile = exhausted
+
+    context = provider.prefetch("What should I work on next?")
+    injected = build_memory_context_block(context)
+
+    assert "<supermemory-context>" not in context
+    assert injected.count("<memory-context>") == 1
+    assert injected.count("HTTP 402 Payment Required") == 1
+
+
+def test_background_memory_write_402_merges_warning_with_next_recall(provider):
+    def exhausted(*args, **kwargs):
+        raise _sdk_http_error(402, "Payment Required")
+
+    provider._client.profile_response = {
+        "static": ["Jordan prefers concise docs"],
+        "dynamic": [],
+        "search_results": [],
+    }
+    provider._client.add_memory = exhausted
+    provider.on_memory_write("add", "memory", "Jordan likes concise docs")
+    provider._write_thread.join(timeout=1)
+
+    merged = provider.prefetch("What should I work on next?")
+
+    assert "Supermemory warning" in merged
+    assert "memory write" in merged
+    assert "Jordan prefers concise docs" in merged
+    assert "Supermemory warning" not in provider.prefetch("What should I work on next?")
+
+
+def test_session_switch_402_surfaces_once_on_next_prefetch(provider):
+    def exhausted(*args, **kwargs):
+        raise _http_error(402, "Payment Required")
+
+    provider.sync_turn("Please remember this project", "I will keep it in context")
+    provider._client.ingest_conversation = exhausted
+    provider.on_session_switch("session-2")
+
+    warning = provider.prefetch("What should I work on next?")
+
+    assert "Supermemory warning" in warning
+    assert "session switch ingest" in warning
+
+
+def test_session_end_402_surfaces_after_real_end_then_switch_ordering(provider):
+    def exhausted(*args, **kwargs):
+        raise _http_error(402, "Payment Required")
+
+    provider._client.ingest_conversation = exhausted
+    provider.on_session_end([
+        {"role": "user", "content": "Please remember this project"},
+        {"role": "assistant", "content": "I will keep it in context"},
+    ])
+    provider.on_session_switch("session-2")
+
+    warning = provider.prefetch("What should I work on next?")
+
+    assert "Supermemory warning" in warning
+    assert "session ingest" in warning
+
+
+def test_initialize_clears_pending_warning_from_prior_session(provider):
+    provider._record_credit_exhaustion("memory write")
+
+    provider.initialize("session-2", hermes_home=provider._hermes_home, platform="cli")
+
+    assert provider.prefetch("What should I work on next?") == ""

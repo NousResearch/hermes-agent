@@ -722,6 +722,48 @@ def _print_update_completion(message: str) -> None:
         print(f"=== hermes-update completed {action_id} ===")
 
 
+def _clear_stale_sqlite_sidecars(db_path: Path) -> None:
+    """Delete the WAL / shared-memory / rollback-journal files next to *db_path*.
+
+    Call this immediately before overwriting a database file with a snapshot
+    image. Quick snapshots are produced by ``backup._safe_copy_db`` through
+    ``sqlite3.backup()``, so the image is already checkpointed and owns no WAL —
+    which is exactly why ``backup._EXCLUDED_SUFFIXES`` refuses to ship sidecars
+    inside a snapshot. Copying the image over the destination replaces only the
+    main database file, so any ``-wal`` / ``-shm`` left behind by the *old*
+    database (a crashed writer, or a second Hermes process the updater's drain
+    did not stop) survives and is replayed over the fresh image on the next
+    open. The result passes ``PRAGMA integrity_check`` while serving the old
+    database's contents, and the first checkpoint folds it in permanently.
+
+    Removing them is safe here specifically: they belong to a database the
+    caller has already declared corrupt and is about to discard.
+    """
+    for suffix in ("-wal", "-shm", "-journal"):
+        db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
+
+
+def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
+    """Replace *state_path* with the snapshot image at *snap_state*.
+
+    Shared by both post-update auto-restore paths (the ZIP update and the git
+    pull). The destination's stale sidecars are cleared before the copy, so the
+    restored image cannot be silently overwritten by the corrupt database's WAL
+    replay — see :func:`_clear_stale_sqlite_sidecars`.
+
+    Returns ``True`` when the restored file passes an integrity check. Raises
+    ``OSError`` if the copy itself fails, which callers already report.
+    """
+    from hermes_cli.backup import verify_sqlite_integrity
+
+    _clear_stale_sqlite_sidecars(state_path)
+    shutil.copy2(snap_state, state_path)
+    restored = verify_sqlite_integrity(
+        state_path, check_header=True, run_pragma=True
+    )
+    return bool(restored.get("valid"))
+
+
 def _update_via_zip(args):
     """Update Hermes Agent by downloading a ZIP archive.
 
@@ -1031,15 +1073,9 @@ def _update_via_zip(args):
                             )
                             if _snap_ok.get("valid"):
                                 try:
-                                    import shutil as _shutil
-
-                                    _shutil.copy2(_snap_state, _state_path)
-                                    _restored_ok = verify_sqlite_integrity(
-                                        _state_path,
-                                        check_header=True,
-                                        run_pragma=True,
-                                    )
-                                    if _restored_ok.get("valid"):
+                                    if _restore_state_db_from_snapshot(
+                                        _state_path, _snap_state
+                                    ):
                                         print(
                                             "  ✓ Auto-restored from snapshot "
                                             f"{_snap_dir.name}"
@@ -4302,15 +4338,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             )
                             if _snap_ok.get("valid"):
                                 try:
-                                    import shutil as _shutil
-
-                                    _shutil.copy2(_snap_state, _state_path)
-                                    _restored_ok = verify_sqlite_integrity(
-                                        _state_path,
-                                        check_header=True,
-                                        run_pragma=True,
-                                    )
-                                    if _restored_ok.get("valid"):
+                                    if _restore_state_db_from_snapshot(
+                                        _state_path, _snap_state
+                                    ):
                                         print(
                                             "  ✓ Auto-restored from pre-update "
                                             f"snapshot ({_pre_snap_id})"

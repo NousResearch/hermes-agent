@@ -13,6 +13,7 @@ import {
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
+import { $voiceFollowUpIdleSeconds } from '@/store/voice-prefs'
 
 import { useMicRecorder } from './use-mic-recorder'
 
@@ -44,6 +45,13 @@ interface VoiceConversationOptions {
 /** How long a barge-triggered interrupt may take to settle before we submit
  *  the captured utterance anyway. */
 const INTERRUPT_SETTLE_TIMEOUT_MS = 5_000
+
+/** Legacy no-speech cycle length when `voice.follow_up_idle_seconds` is 0
+ *  (always-rearm mode). */
+const LEGACY_IDLE_SILENCE_MS = 12_000
+
+/** Hard cap on a single listen cycle when follow-up idle is disabled. */
+const LEGACY_TURN_TIMEOUT_MS = 60_000
 
 export function useVoiceConversation({
   busy,
@@ -147,8 +155,22 @@ export function useVoiceConversation({
 
       try {
         const result = await handle.stop()
+        const followUpIdleSeconds = $voiceFollowUpIdleSeconds.get()
+        const endOnIdle = followUpIdleSeconds > 0
 
+        // No speech in the follow-up window (or mic unavailable). With
+        // voice.follow_up_idle_seconds > 0, end the voice conversation so a
+        // hands-free multi-turn loop can't stay armed forever. With 0, keep
+        // the legacy always-rearm behavior.
         if (!result || (!result.heardSpeech && !forceTranscribe) || !onTranscribeAudio) {
+          if (endOnIdle) {
+            dropSpeechSession()
+            setStatus('idle')
+            onStopWordRef.current?.()
+
+            return
+          }
+
           if (enabledRef.current && !mutedRef.current && !busyRef.current && statusRef.current !== 'speaking') {
             pendingStartRef.current = true
           }
@@ -162,7 +184,10 @@ export function useVoiceConversation({
           const transcript = (await onTranscribeAudio(result.audio)).trim()
 
           if (!transcript) {
-            if (enabledRef.current) {
+            // Speech energy was detected but STT returned nothing — give one
+            // more listen cycle rather than killing the conversation on a
+            // transcription miss.
+            if (enabledRef.current && !mutedRef.current && !busyRef.current) {
               pendingStartRef.current = true
             }
 
@@ -233,11 +258,18 @@ export function useVoiceConversation({
     }
 
     try {
-      // VAD tuning mirrors `tools.voice_mode` defaults so the browser loop matches the CLI.
+      // Follow-up window from voice.follow_up_idle_seconds. When > 0, wait that
+      // long for the user to start speaking; no speech ends the conversation
+      // in handleTurn. When 0, keep the legacy short idle cycle + always-rearm.
+      const followUpIdleSeconds = $voiceFollowUpIdleSeconds.get()
+      const followUpIdleMs = followUpIdleSeconds > 0 ? Math.round(followUpIdleSeconds * 1000) : 0
+      const idleSilenceMs = followUpIdleMs > 0 ? followUpIdleMs : LEGACY_IDLE_SILENCE_MS
+      const turnTimeoutMs = followUpIdleMs > 0 ? followUpIdleMs : LEGACY_TURN_TIMEOUT_MS
+
       await handle.start({
         silenceLevel: 0.075,
         silenceMs: 1_250,
-        idleSilenceMs: 12_000,
+        idleSilenceMs,
         onError: error => {
           notifyError(error, voiceCopy.microphoneFailed)
           pendingStartRef.current = false
@@ -246,13 +278,10 @@ export function useVoiceConversation({
         onSilence: () => void handleTurn()
       })
       setStatus('listening')
-      // Clear any prior turn-timeout before arming a fresh one. Each listen
-      // cycle reassigns turnTimeoutRef; without clearing first, a stale 60s
-      // timer from an earlier cycle survives and later fires handleTurn() in
-      // the middle of a new listen, cutting it short (or, after enough idle
-      // re-listens, wedging the loop into a state it doesn't re-arm from).
+      // Clear any prior turn-timeout before arming a fresh one so a stale timer
+      // can't fire mid-listen after a re-arm.
       clearTurnTimeout()
-      turnTimeoutRef.current = window.setTimeout(() => void handleTurn(), 60_000)
+      turnTimeoutRef.current = window.setTimeout(() => void handleTurn(), turnTimeoutMs)
     } catch (error) {
       notifyError(error, voiceCopy.couldNotStartSession)
       pendingStartRef.current = false

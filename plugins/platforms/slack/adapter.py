@@ -111,6 +111,33 @@ _SLACK_SPECIAL_MENTION_RE = re.compile(
     r"<!(?:everyone|channel|here)(?:\|[^>\n]*)?>", re.IGNORECASE
 )
 
+# A user-mention token as it appears in a mrkdwn/plain_text string, optionally
+# carrying a display label (``<@U123|alice>``). Only the ID is captured, so a
+# labelled mention normalizes to the bare ``<@U123>`` the gates compare against.
+# The ID class is deliberately permissive: the gates substring-compare against
+# whatever ``auth.test`` reported, so a narrower charset here would silently drop
+# the very mention this is meant to recover. Group mentions use ``<!...>`` and are
+# handled by _SLACK_SPECIAL_MENTION_RE, so ``<@`` is always a user mention.
+_SLACK_USER_MENTION_RE = re.compile(r"<@([^>|\s]+)(?:\|[^>]*)?>")
+
+# mrkdwn blockquote markers. Slack escapes a literal ``>`` in message text to
+# ``&gt;``, so both forms reach us. Quoting via mrkdwn is a carrier the
+# structured ``rich_text_quote`` node check cannot see.
+_SLACK_BLOCKQUOTE_PREFIXES = (">", "&gt;")
+
+# Rich-text containers whose contents are *displayed*, not spoken. Quoted text
+# carries someone else's words; code/preformatted text carries a token being
+# shown to the reader (a log line, a payload dump, an example). A ``<@UID>``
+# inside either is not an address, so neither may summon the bot — the same
+# contract #52390 established for ``rich_text_quote``, applied to every carrier
+# that shares its "verbatim content" nature.
+_SLACK_VERBATIM_RICH_TEXT_TYPES = ("rich_text_quote", "rich_text_preformatted")
+
+# An mrkdwn inline code span (``` `<@U123>` ```). Only single-line spans are
+# matched, so a lone stray backtick in prose strips nothing. Triple-backtick
+# runs are consumed by the fence handling in _extract_mention_tokens.
+_SLACK_MRKDWN_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+
 # Cap on how many thread-root images are downloaded and delivered when the
 # bot is mentioned mid-thread (cold-start hydrate). Prior thread messages'
 # attachments are surfaced as text markers only — the root is special
@@ -322,6 +349,42 @@ def check_slack_requirements() -> bool:
     return ensure_and_bind("platform.slack", _import, globals(), prompt=False)
 
 
+def _extract_mention_tokens(value: str) -> list:
+    """Return the ``<@UID>`` tokens authored in a mrkdwn string.
+
+    Labelled mentions (``<@U123|alice>``) normalize to the bare ``<@U123>`` the
+    gates compare against.
+
+    Two kinds of region are skipped, because a token inside them is being shown
+    rather than addressed to anyone:
+
+    * Lines opening with a mrkdwn blockquote marker — quoted/forwarded content,
+      the same contract the structured ``rich_text_quote`` check enforces
+      applied to the carrier that check cannot see.
+    * Fenced (``` ``` ```) and inline (`` ` ``) code spans. Slack does not
+      linkify mrkdwn inside code, so a token there notifies nobody; a bot that
+      dumps a payload or relays a log line must not summon us with it.
+    """
+    tokens: list = []
+    in_fence = False
+    for line in value.split("\n"):
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            # An odd number of runs opens or closes the fence; an even number
+            # (```code```) opens and closes on this line, leaving state as-is.
+            # Either way the line itself is code, so nothing is harvested.
+            if stripped.count("```") % 2:
+                in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if stripped.startswith(_SLACK_BLOCKQUOTE_PREFIXES):
+            continue
+        scanned = _SLACK_MRKDWN_INLINE_CODE_RE.sub(" ", line)
+        tokens.extend(f"<@{uid}>" for uid in _SLACK_USER_MENTION_RE.findall(scanned))
+    return tokens
+
+
 def _collect_slack_block_mentions(blocks: list) -> list:
     """Return ``<@UID>`` mention tokens authored in non-quoted Block Kit text.
 
@@ -330,53 +393,132 @@ def _collect_slack_block_mentions(blocks: list) -> list:
     a ``user`` element).  This walker recovers those mentions so the gates can
     see Block-Kit-only mentions instead of silently dropping them (#52387).
 
-    Mentions nested inside ``rich_text_quote`` (quoted/forwarded content) are
-    deliberately ignored, so quoted text cannot trick the bot into responding
-    (matches the existing channel-routing contract).
+    Two carriers exist and both are recovered. The WYSIWYG composer emits a
+    structured ``user`` element, while an app building blocks by hand writes the
+    raw ``<@UID>`` token into a ``section``/``header``/``context`` block's
+    ``text`` or ``fields`` string, where there is no ``user`` node to find.
+
+    Mentions inside verbatim content are deliberately ignored, so text the
+    author is *displaying* rather than speaking cannot trick the bot into
+    responding (matches the existing channel-routing contract). That covers
+    ``rich_text_quote`` (quoted/forwarded content) and ``rich_text_preformatted``
+    plus ``style.code`` elements (a token shown as code — a log line, a payload
+    dump). The flag propagates down the subtree, so a mention nested any depth
+    below a verbatim node stays ignored.
     """
     mentions: list = []
 
-    def _walk(node, in_quote: bool) -> None:
+    def _is_code_styled(node: dict) -> bool:
+        # ``style`` is a dict on inline elements but a plain string on
+        # ``rich_text_list`` ("bullet"/"ordered"), so the type check matters.
+        style = node.get("style")
+        return isinstance(style, dict) and bool(style.get("code"))
+
+    def _walk(node, in_verbatim: bool) -> None:
         if isinstance(node, list):
             for item in node:
-                _walk(item, in_quote)
+                _walk(item, in_verbatim)
             return
         if not isinstance(node, dict):
             return
         node_type = node.get("type")
-        quoted = in_quote or node_type == "rich_text_quote"
-        if node_type == "user" and not quoted:
+        verbatim = (
+            in_verbatim
+            or node_type in _SLACK_VERBATIM_RICH_TEXT_TYPES
+            or _is_code_styled(node)
+        )
+        if node_type == "user" and not verbatim:
             uid = node.get("user_id", "")
             if uid:
                 mentions.append(f"<@{uid}>")
-        for key in ("elements", "element"):
+        for key in ("elements", "element", "text", "fields"):
             child = node.get(key)
-            if child is not None:
-                _walk(child, quoted)
+            if child is None:
+                continue
+            if isinstance(child, str):
+                if not verbatim:
+                    mentions.extend(_extract_mention_tokens(child))
+                continue
+            _walk(child, verbatim)
 
     try:
         _walk(blocks, False)
     except Exception:  # pragma: no cover - defensive, never break gating
-        return []
+        pass  # Keep whatever was collected before the malformed node.
     return mentions
 
 
-def _slack_mention_detection_text(event: dict) -> str:
-    """Return the text used for @mention detection on a Slack message event.
+def _collect_slack_attachment_mentions(attachments: list) -> list:
+    """Return ``<@UID>`` mention tokens authored in legacy ``attachments``.
 
-    Combines the flat top-level ``text`` with any ``<@UID>`` mentions recovered
-    from non-quoted Block Kit blocks (#52387), so a genuine Block-Kit-only
-    mention reaches the gates while quoted/forwarded mentions stay ignored.
+    Alertmanager, Grafana, PagerDuty and CI bots post with an empty top-level
+    ``text`` and the real content — including any ``<@UID>`` addressed at the
+    bot — inside attachment fields or attachment-nested ``blocks``. Without this
+    such a message carries no detectable mention at all.
+
+    Message unfurls and forwarded shares are skipped: they carry someone else's
+    words, so a pasted permalink must not summon the bot. This mirrors the
+    ``is_msg_unfurl`` skip on the agent-text path and the ``rich_text_quote``
+    carve-out in :func:`_collect_slack_block_mentions`.
+
+    ``fallback`` is deliberately not scanned — Slack never renders it, so a
+    mention living only there is invisible in the channel and notifies nobody.
     """
-    flat = event.get("text", "") or ""
+    mentions: list = []
+    if not isinstance(attachments, (list, tuple)):
+        return mentions
+    for att in attachments:
+        if not isinstance(att, dict):
+            continue
+        if att.get("is_msg_unfurl") or att.get("is_share"):
+            continue
+        # Per-attachment so one malformed sibling cannot discard the genuine
+        # mentions already collected from the attachments before it.
+        try:
+            strings = [
+                att[key]
+                for key in ("pretext", "title", "text")
+                if isinstance(att.get(key), str)
+            ]
+            for field in att.get("fields") or []:
+                if not isinstance(field, dict):
+                    continue
+                strings += [
+                    field[key]
+                    for key in ("title", "value")
+                    if isinstance(field.get(key), str)
+                ]
+            for value in strings:
+                mentions.extend(_extract_mention_tokens(value))
+            nested = att.get("blocks")
+            if nested:
+                mentions += _collect_slack_block_mentions(nested)
+        except Exception:  # pragma: no cover - defensive, never break gating
+            continue
+    return mentions
+
+
+def _slack_recovered_mentions(event: dict) -> list:
+    """Return ``<@UID>`` tokens addressed outside a message's flat ``text``.
+
+    Slack's flat ``text`` carries neither Block-Kit-only mentions nor mentions
+    authored in legacy ``attachments`` (#52387), so the gates would never see
+    them. They are returned as a separate list rather than spliced into the
+    routing text on purpose: that text is also matched against user-configured
+    wake-word regexes and inspected for a *leading* mention, and appending
+    tokens to it would break anchored patterns and make an attachment-only
+    mention masquerade as the message's opening token.
+    """
+    mentions: list = []
     blocks = event.get("blocks")
-    if not blocks:
-        return flat
-    mentions = _collect_slack_block_mentions(blocks)
-    extra = [m for m in mentions if m not in flat]
-    if not extra:
-        return flat
-    return (flat.strip() + "\n" + " ".join(extra)).strip()
+    if blocks:
+        mentions += _collect_slack_block_mentions(blocks)
+    attachments = event.get("attachments")
+    if attachments:
+        mentions += _collect_slack_attachment_mentions(attachments)
+    # The same user is often addressed in more than one carrier (a section
+    # block and an attachment mirroring it), so dedupe.
+    return list(dict.fromkeys(mentions))
 
 
 def _rewrite_known_bang_command(text: str) -> str:
@@ -5222,18 +5364,16 @@ class SlackAdapter(BasePlatformAdapter):
         # the bot even though the reply itself carries no mention.
         if is_thread_reply:
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-            if bot_uid:
-                parent_text = await self._fetch_thread_parent_text(
-                    channel_id=channel_id,
-                    thread_ts=event_thread_ts,
-                    team_id=team_id,
-                    strip_bot_mention=False,
-                )
-                if parent_text and f"<@{bot_uid}>" in parent_text:
-                    # Remember the thread so later replies skip the fetch.
-                    if not self._slack_strict_mention():
-                        self._register_mentioned_thread(event_thread_ts)
-                    return True
+            if bot_uid and await self._thread_parent_mentions_bot(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                bot_uid=bot_uid,
+                team_id=team_id,
+            ):
+                # Remember the thread so later replies skip the fetch.
+                if not self._slack_strict_mention():
+                    self._register_mentioned_thread(event_thread_ts)
+                return True
         return False
 
     async def _handle_slack_message(
@@ -5339,12 +5479,13 @@ class SlackAdapter(BasePlatformAdapter):
             if allow_bots == "none":
                 return
             elif allow_bots == "mentions":
-                # Include Block-Kit-only mentions, not just the flat text (#52387)
-                text_check = _slack_mention_detection_text(event)
-                if self._bot_user_id and f"<@{self._bot_user_id}>" not in text_check:
+                # Include block/attachment-only mentions, not just flat text (#52387)
+                if self._bot_user_id and not self._slack_event_mentions_bot(
+                    event, self._bot_user_id
+                ):
                     logger.debug(
                         "[Slack] Dropping bot message under allow_bots=mentions: "
-                        "no <@%s> mention in flat text or blocks",
+                        "no <@%s> mention in flat text, blocks or attachments",
                         self._bot_user_id,
                     )
                     return
@@ -5613,11 +5754,9 @@ class SlackAdapter(BasePlatformAdapter):
         #   3. The message is in a thread where the bot was previously @mentioned, OR
         #   4. There's an existing session for this thread (survives restarts)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-        # Detect mentions authored only inside Block Kit blocks too (#52387)
-        routing_text = _slack_mention_detection_text(event) or original_text or ""
-        is_mentioned = bool(
-            (bot_uid and f"<@{bot_uid}>" in routing_text)
-            or self._slack_message_matches_mention_patterns(routing_text)
+        # Detect mentions authored only in blocks or attachments too (#52387)
+        routing_text, is_mentioned = self._slack_mention_gate_inputs(
+            event, bot_uid, original_text
         )
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
@@ -7492,38 +7631,30 @@ class SlackAdapter(BasePlatformAdapter):
             )
         return content, parent_text
 
-    async def _fetch_thread_parent_text(
+    async def _fetch_thread_parent_event(
         self,
         channel_id: str,
         thread_ts: str,
         team_id: str = "",
-        strip_bot_mention: bool = True,
-    ) -> str:
-        """Return the text of the thread parent message.
-
-        Used for reply_to_text injection (mention stripped) and for the
-        parent-mentioned-bot wake check (#24848 — pass
-        ``strip_bot_mention=False`` so the ``<@bot>`` token is preserved).
+    ) -> Optional[dict]:
+        """Return the raw thread-parent message payload, or ``None``.
 
         Uses the same per-thread cache as :meth:`_fetch_thread_context` to avoid
         hitting ``conversations.replies`` twice. Falls back to a cheap single-
-        message fetch (``limit=1, inclusive=True``) when the cache is cold.
+        message fetch (``limit=1, inclusive=True``) when the cache holds no raw
+        payloads (cold, or a legacy entry predating ``messages``).
 
-        Returns empty string on any failure — callers should treat an empty
-        return as "no parent context to inject".
+        Callers that need a *decision* about the parent must use this rather than
+        :meth:`_fetch_thread_parent_text`: the rendered text deliberately
+        preserves quoted and shared content for the agent to read, which is the
+        opposite of what a mention gate needs.
         """
         cache_key = f"{channel_id}:{thread_ts}:{team_id}"
-        now = time.monotonic()
         cached = self._thread_context_cache.get(cache_key)
-        if cached and (now - cached.fetched_at) < self._THREAD_CACHE_TTL:
-            if strip_bot_mention:
-                return cached.parent_text
-            # The cached parent_text has the bot mention stripped; recover
-            # the raw text from the cached message payloads when available.
+        if cached and (time.monotonic() - cached.fetched_at) < self._THREAD_CACHE_TTL:
             for msg in cached.messages:
-                if msg.get("ts", "") == thread_ts:
-                    return (msg.get("text") or "").strip()
-            # No raw payloads cached (legacy entry) — fall through to fetch.
+                if isinstance(msg, dict) and msg.get("ts", "") == thread_ts:
+                    return msg
 
         try:
             client = self._get_client(channel_id, team_id=team_id)
@@ -7535,17 +7666,77 @@ class SlackAdapter(BasePlatformAdapter):
             )
             messages = result.get("messages", []) if result else []
             if not messages:
-                return ""
+                return None
             parent = messages[0]
-            if parent.get("ts", "") != thread_ts:
-                return ""
+            if not isinstance(parent, dict) or parent.get("ts", "") != thread_ts:
+                return None
+            return parent
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[Slack] Failed to fetch thread parent: %s", exc)
+            return None
+
+    async def _thread_parent_mentions_bot(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        bot_uid: str,
+        team_id: str = "",
+    ) -> bool:
+        """Return True when the thread PARENT @-mentioned the bot (#24848).
+
+        The decision is derived from the raw parent event through
+        :meth:`_slack_event_mentions_bot` — the very predicate the live channel
+        gates use — so every carve-out those gates honour applies here too:
+        ``rich_text_quote``, code/preformatted content, mrkdwn blockquote lines,
+        ``is_msg_unfurl``/``is_share`` attachments, and ``fallback``.
+
+        Deriving it from :meth:`_fetch_thread_parent_text` instead would wake the
+        bot on quoted or shared content, because that renderer intentionally
+        preserves both for the agent to read.
+        """
+        if not bot_uid:
+            return False
+        parent = await self._fetch_thread_parent_event(
+            channel_id, thread_ts, team_id=team_id
+        )
+        if not parent:
+            return False
+        return self._slack_event_mentions_bot(parent, bot_uid)
+
+    async def _fetch_thread_parent_text(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        team_id: str = "",
+    ) -> str:
+        """Return the display text of the thread parent, bot mention stripped.
+
+        Used for reply_to_text injection. This is *display* text — it surfaces
+        quoted and shared content on purpose — so it must never be substring-
+        tested to decide whether the parent addressed the bot; use
+        :meth:`_thread_parent_mentions_bot` for that.
+
+        Returns empty string on any failure — callers should treat an empty
+        return as "no parent context to inject".
+        """
+        cache_key = f"{channel_id}:{thread_ts}:{team_id}"
+        cached = self._thread_context_cache.get(cache_key)
+        if cached and (time.monotonic() - cached.fetched_at) < self._THREAD_CACHE_TTL:
+            return cached.parent_text
+
+        parent = await self._fetch_thread_parent_event(
+            channel_id, thread_ts, team_id=team_id
+        )
+        if not parent:
+            return ""
+        try:
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
             text = self._render_message_text(parent, bot_uid=bot_uid or "")
-            if strip_bot_mention and bot_uid:
+            if bot_uid:
                 text = text.replace(f"<@{bot_uid}>", "").strip()
             return text
         except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("[Slack] Failed to fetch thread parent text: %s", exc)
+            logger.debug("[Slack] Failed to render thread parent text: %s", exc)
             return ""
 
     async def _collect_thread_root_images(
@@ -8320,6 +8511,37 @@ class SlackAdapter(BasePlatformAdapter):
             "yes",
             "on",
         }
+
+    def _slack_event_mentions_bot(self, event: dict, bot_uid: str) -> bool:
+        """Return True when ``event`` @-mentions ``bot_uid`` in any carrier.
+
+        Checks the flat ``text`` plus the mentions recovered from Block Kit
+        blocks and legacy ``attachments`` (#52387) — where alert/CI apps put
+        them when the top-level text is empty.
+        """
+        if not bot_uid:
+            return False
+        token = f"<@{bot_uid}>"
+        if token in (event.get("text") or ""):
+            return True
+        return token in _slack_recovered_mentions(event)
+
+    def _slack_mention_gate_inputs(
+        self, event: dict, bot_uid: str, flat_text: str = ""
+    ) -> Tuple[str, bool]:
+        """Return ``(routing_text, is_mentioned)`` for the channel routing gates.
+
+        ``routing_text`` is the flat message text and nothing else — the
+        wake-word patterns and the leading-mention check both read it, so
+        recovered mentions are reported through ``is_mentioned`` instead of
+        being spliced in (see :func:`_slack_recovered_mentions`).
+        """
+        routing_text = flat_text or event.get("text") or ""
+        is_mentioned = bool(
+            self._slack_event_mentions_bot(event, bot_uid)
+            or self._slack_message_matches_mention_patterns(routing_text)
+        )
+        return routing_text, is_mentioned
 
     def _slack_message_addressed_to_other_user(self, text: str, self_uids: set) -> bool:
         """Return True when ``text`` opens by @-mentioning a non-bot user.

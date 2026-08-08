@@ -7470,10 +7470,12 @@ def _enqueue_prompt(
 
     Used when a prompt arrives mid-turn (see ``_handle_busy_submit``). Text-only
     arrivals share a slot and merge losslessly (mirroring the consecutive-user
-    merge in ``repair_message_sequence``). Image-bearing submissions stay as
-    separate envelopes, so their attachment ownership and chronology survive.
-    ``transport`` is pinned so the drained turn streams back to the client that
-    sent it even if the session transport is rebound meanwhile.
+    merge in ``repair_message_sequence``) with follow-ups prefixed as explicit
+    ``Also, `` guidance. Image-bearing submissions stay as separate envelopes,
+    so their attachment ownership and chronology survive. ``transport`` is
+    pinned so the drained turn streams back to the client that sent it even if
+    the session transport is rebound meanwhile.
+
     """
     image_paths = list(image_paths or [])
     queued = {"text": text, "transport": transport}
@@ -7489,12 +7491,14 @@ def _enqueue_prompt(
         and not session.get("queued_prompts")
     ):
         prev = existing["text"]
-        existing["text"] = f"{prev}\n\n{text}" if prev and text else (prev or text)
+        existing["text"] = f"{prev}\n\nAlso, {text}" if prev and text else (prev or text)
+        existing["transport"] = transport
         return
     if existing:
         session.setdefault("queued_prompts", []).append(queued)
         return
     session["queued_prompt"] = queued
+
 
 
 def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:

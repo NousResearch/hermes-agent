@@ -3480,12 +3480,83 @@ def _text_to_speech_single(
         return tool_error(error_msg, success=False)
 
 
+def _postprocess_tts_result(raw: str, task_id: str | None = None) -> str:
+    """Annotate successful local audio results with backend-visible paths.
+
+    ``file_path`` / ``file_paths`` / ``media_tag`` remain host paths so the
+    gateway can deliver ``MEDIA:`` natively. When the active terminal backend
+    has a different filesystem, ``agent_visible_file_path`` (and plural) give
+    the path the agent can use with terminal/file tools — same contract as
+    ``image_generate``'s ``agent_visible_image``.
+    """
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return raw
+
+    if not isinstance(payload, dict) or not payload.get("success"):
+        return raw
+
+    # Reuse the image-gen helpers so SSH remote-home / docker / modal /
+    # force-sync behavior stays one code path.
+    from tools.image_generation_tool import (
+        _active_terminal_env,
+        _agent_visible_cache_path,
+        _force_artifact_sync,
+        _looks_like_absolute_file_path,
+    )
+
+    file_path = payload.get("file_path")
+    file_paths = payload.get("file_paths")
+    hosts: list[str] = []
+    if isinstance(file_path, str) and _looks_like_absolute_file_path(file_path):
+        hosts.append(file_path)
+    if isinstance(file_paths, list):
+        for path in file_paths:
+            if (
+                isinstance(path, str)
+                and _looks_like_absolute_file_path(path)
+                and path not in hosts
+            ):
+                hosts.append(path)
+    if not hosts:
+        return raw
+
+    env = _active_terminal_env(task_id)
+    translated: dict[str, str] = {}
+    for host in hosts:
+        agent_path = _agent_visible_cache_path(host, env)
+        if agent_path and agent_path != host:
+            translated[host] = agent_path
+    if not translated:
+        return raw
+
+    if env is not None:
+        _force_artifact_sync(env)
+
+    if isinstance(file_path, str) and file_path in translated:
+        payload.setdefault("host_file_path", file_path)
+        payload.setdefault("agent_visible_file_path", translated[file_path])
+
+    if isinstance(file_paths, list):
+        agent_list = [
+            translated[path] if isinstance(path, str) and path in translated else path
+            for path in file_paths
+        ]
+        if agent_list != list(file_paths):
+            payload.setdefault("host_file_paths", list(file_paths))
+            payload.setdefault("agent_visible_file_paths", agent_list)
+
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def text_to_speech_tool(
     text: str,
     output_path: Optional[str] = None,
     speed: Optional[float] = None,
     instructions: Optional[str] = None,
     provider: Optional[str] = None,
+    task_id: Optional[str] = None,
 ) -> str:
     """Convert text to speech audio with long-form chunking.
 
@@ -3510,8 +3581,11 @@ def text_to_speech_tool(
         instructions: Optional voice-design guidance (tone, emotion, pacing).
         provider: Optional TTS provider override.
 
-    Returns:
+        Returns:
         str: JSON result with success, file_path, file_paths, and MEDIA tag.
+            Under a relocated terminal backend the payload may also include
+            ``agent_visible_file_path`` / ``agent_visible_file_paths`` for
+            sandbox-side follow-up (``file_path`` stays the host/gateway path).
     """
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
@@ -3663,7 +3737,7 @@ def text_to_speech_tool(
         if voice_compatible:
             media_tag = f"[[audio_as_voice]]\n{media_tag}"
 
-        return json.dumps({
+        return _postprocess_tts_result(json.dumps({
             "success": True,
             "file_path": final_paths[0],
             "file_paths": final_paths,
@@ -3678,7 +3752,7 @@ def text_to_speech_tool(
                 "max_file_bytes": delivery_profile.max_file_bytes,
                 "target_file_bytes": delivery_profile.target_file_bytes,
             },
-        }, ensure_ascii=False)
+        }, ensure_ascii=False), task_id=task_id)
     except ValueError as exc:
         error_msg = f"TTS delivery error ({provider}): {exc}"
         logger.error("%s", error_msg)
@@ -4450,7 +4524,7 @@ from tools.registry import registry, tool_error
 
 TTS_SCHEMA = {
     "name": "text_to_speech",
-    "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as native audio. Compatible providers render as a voice bubble on Telegram; otherwise audio is sent as a regular attachment. In CLI mode, saves to ~/voice-memos/. Voice and provider are user-configured (built-in providers like edge/openai or custom command providers under tts.providers.<name>), not model-selected.",
+    "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as native audio. Compatible providers render as a voice bubble on Telegram; otherwise audio is sent as a regular attachment. In CLI mode, saves to ~/voice-memos/. Under a sandbox terminal backend, local-file results may also include agent_visible_file_path for terminal/file follow-up. Voice and provider are user-configured (built-in providers like edge/openai or custom command providers under tts.providers.<name>), not model-selected.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -4499,7 +4573,9 @@ registry.register(
         output_path=args.get("output_path"),
         speed=args.get("speed"),
         instructions=args.get("instructions"),
-        provider=args.get("provider")),
+        provider=args.get("provider"),
+        task_id=kw.get("task_id"),
+    ),
     check_fn=check_tts_requirements,
     emoji="🔊",
 )

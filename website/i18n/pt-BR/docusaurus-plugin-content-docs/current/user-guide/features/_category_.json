@@ -1,0 +1,8 @@
+{
+  "label": "Recursos",
+  "position": 4,
+  "link": {
+    "type": "generated-index",
+    "description": "Explore os recursos do Hermes Agent."
+  }
+}

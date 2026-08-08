@@ -48,7 +48,7 @@ import zipfile
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Set, Tuple
 
 import yaml
 
@@ -15298,29 +15298,119 @@ _CONSOLE_OUTPUT_LIMIT = 50000
 # default thread pool (asyncio.to_thread), we run console commands on a small
 # dedicated, bounded pool: a leaked worker is capped, and concurrent console
 # execution is bounded to a fixed number of threads regardless of reconnects.
+#
+# Bounding it alone isn't enough, though: a wedged worker holds its slot for the
+# life of the process, so once all four are wedged every later command queues
+# behind threads that will never return and the console is dead for every
+# session and profile until Hermes restarts. So track which submissions actually
+# timed out and swap in a fresh pool when none are left.
 _CONSOLE_EXECUTOR_MAX_WORKERS = 4
 _console_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _console_executor_lock = threading.Lock()
+# Bumped on every recycle. Timeout bookkeeping is keyed by generation so state
+# recorded against a retired pool can never reach into its replacement.
+_console_executor_generation = 0
+# generation -> the futures that actually exceeded _CONSOLE_COMMAND_TIMEOUT_SECONDS
+# and are therefore presumed to hold a worker thread forever. Only the generation
+# that ran a future may hold or clear that future's mark, and a command that
+# never timed out is never in the set, so an ordinary completion cannot clear
+# some other command's mark. Bounded by _CONSOLE_EXECUTOR_MAX_WORKERS entries for
+# the live generation; a retired generation's marks are dropped wholesale.
+_console_stuck_futures: Dict[int, Set[concurrent.futures.Future[Any]]] = {}
 
 
-def _get_console_executor() -> concurrent.futures.ThreadPoolExecutor:
-    """Lazily create the bounded console worker pool (once per process)."""
+def _new_console_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """Build a fresh bounded console worker pool and arm its exit teardown."""
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=_CONSOLE_EXECUTOR_MAX_WORKERS,
+        thread_name_prefix="hermes-console",
+    )
+    # Bind teardown to THIS executor rather than reading the module global:
+    # after a recycle the global points at the replacement, so a global-reading
+    # callback would shut the wrong pool down and never touch the retired one.
+    # Don't wait on in-flight workers either -- a stuck 60s console command must
+    # not block shutdown (cancel_futures drops anything not yet started).
+    atexit.register(lambda: executor.shutdown(wait=False, cancel_futures=True))
+    return executor
+
+
+def _submit_console_command(
+    fn: Callable[[], Any],
+) -> Tuple[concurrent.futures.Future[Any], int]:
+    """Submit a console command, returning its future and the pool generation.
+
+    Selecting the pool and submitting to it happen under one lock so that a
+    concurrent recycle can never hand back an executor that is already shut
+    down by the time we submit.
+    """
     global _console_executor
-    if _console_executor is None:
-        with _console_executor_lock:
-            if _console_executor is None:
-                _console_executor = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=_CONSOLE_EXECUTOR_MAX_WORKERS,
-                    thread_name_prefix="hermes-console",
-                )
-                # Ensure the pool is torn down on interpreter exit. Don't wait on
-                # in-flight workers: a stuck 60s console command must not block
-                # shutdown (cancel_futures drops anything not yet started).
-                atexit.register(
-                    lambda: _console_executor
-                    and _console_executor.shutdown(wait=False, cancel_futures=True)
-                )
-    return _console_executor
+    with _console_executor_lock:
+        if _console_executor is None:
+            _console_executor = _new_console_executor()
+        generation = _console_executor_generation
+        _console_stuck_futures.setdefault(generation, set())
+        future = _console_executor.submit(fn)
+    # Registered outside the lock: add_done_callback runs the callback inline
+    # when the future has already finished, and that callback takes this lock.
+    future.add_done_callback(
+        functools.partial(_release_console_future, generation=generation)
+    )
+    return future, generation
+
+
+def _release_console_future(
+    future: concurrent.futures.Future[Any], *, generation: int
+) -> None:
+    """Clear ``future``'s own stuck mark once it finally returns.
+
+    A no-op unless that future had previously timed out *and* the generation
+    that ran it is still live, which is what keeps a late completion from a
+    retired pool out of the replacement's bookkeeping.
+    """
+    with _console_executor_lock:
+        stuck = _console_stuck_futures.get(generation)
+        if stuck is not None:
+            stuck.discard(future)
+
+
+def _note_console_command_stuck(
+    future: concurrent.futures.Future[Any], generation: int
+) -> None:
+    """Mark a timed-out command's worker as wedged, recycling a full pool.
+
+    Only called from the timeout path, so a command that merely succeeded never
+    touches this state. Once every worker in the live pool is wedged the pool is
+    swapped for a fresh one; the old threads can't be killed, only abandoned.
+    """
+    global _console_executor, _console_executor_generation
+    retired: Optional[concurrent.futures.ThreadPoolExecutor] = None
+    with _console_executor_lock:
+        if generation != _console_executor_generation:
+            # Its pool is already retired, so its slot no longer matters.
+            return
+        if future.done():
+            # It returned while we were giving up on the await, so the worker is
+            # merely slow, not wedged, and must not count toward the threshold.
+            # ``done()`` flips before done-callbacks run and those callbacks take
+            # this same lock, so this check cannot race with the release path.
+            return
+        stuck = _console_stuck_futures.setdefault(generation, set())
+        stuck.add(future)
+        if len(stuck) < _CONSOLE_EXECUTOR_MAX_WORKERS:
+            return
+        retired = _console_executor
+        _console_stuck_futures.pop(generation, None)
+        _console_executor_generation = generation + 1
+        _console_executor = _new_console_executor()
+        _console_stuck_futures[_console_executor_generation] = set()
+    _log.warning(
+        "console worker pool exhausted by %d stuck commands; recycled generation %d -> %d",
+        _CONSOLE_EXECUTOR_MAX_WORKERS,
+        generation,
+        generation + 1,
+    )
+    if retired is not None:
+        retired.shutdown(wait=False, cancel_futures=True)
 
 
 def _console_profile_from_ws(ws: WebSocket) -> Optional[str]:
@@ -15587,20 +15677,29 @@ async def console_ws(ws: WebSocket) -> None:
     async def run_command(line: str, *, confirmed: bool, command_id: int) -> None:
         nonlocal active_task, pending_confirmation, command_generation
         try:
-            loop = asyncio.get_running_loop()
-            result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    _get_console_executor(),
-                    functools.partial(
-                        _execute_console_line,
-                        engine,
-                        line,
-                        confirmed=confirmed,
-                        profile=profile,
-                    ),
-                ),
-                timeout=_CONSOLE_COMMAND_TIMEOUT_SECONDS,
+            # Submit directly rather than via loop.run_in_executor so we keep
+            # the raw concurrent.futures.Future: asyncio.wait_for can only
+            # abandon the *await*, never the worker thread, so that future is
+            # the only handle on whether the thread ever comes back.
+            cf_future, executor_generation = _submit_console_command(
+                functools.partial(
+                    _execute_console_line,
+                    engine,
+                    line,
+                    confirmed=confirmed,
+                    profile=profile,
+                )
             )
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.wrap_future(cf_future),
+                    timeout=_CONSOLE_COMMAND_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                # Nothing can interrupt the worker, so record the wedged slot;
+                # the pool recycles itself once every worker is gone.
+                _note_console_command_stuck(cf_future, executor_generation)
+                raise
         except asyncio.CancelledError:
             raise
         except asyncio.TimeoutError:

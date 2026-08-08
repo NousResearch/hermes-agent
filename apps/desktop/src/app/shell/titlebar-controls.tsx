@@ -21,7 +21,7 @@ import {
   toggleSidebarOpen
 } from '@/store/layout'
 
-import { appViewForPath, isOverlayView, SETTINGS_ROUTE } from '../routes'
+import { appViewForPath, isOverlayView } from '../routes'
 
 import { titlebarButtonClass } from './titlebar'
 
@@ -183,13 +183,6 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       title: t.titlebar.layoutEditorTitle
     },
     {
-      active: hapticsMuted,
-      icon: <Codicon name={hapticsMuted ? 'mute' : 'unmute'} />,
-      id: 'haptics',
-      label: hapticsMuted ? t.titlebar.unmuteHaptics : t.titlebar.muteHaptics,
-      onSelect: toggleHaptics
-    },
-    {
       // No `title`: TitlebarToolButton passes `title` to TipKeybindLabel as a
       // text OVERRIDE, so a long sentence there replaces the short label and
       // crowds the ⌘⇧H hint off the tooltip. Label only — the hint is appended
@@ -204,14 +197,11 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       }
     },
     {
-      actionId: 'keybinds.openPanel',
-      icon: <Codicon name="keyboard" />,
-      id: 'keybinds',
-      label: t.titlebar.openKeybinds,
-      onSelect: () => {
-        triggerHaptic('open')
-        navigate(`${SETTINGS_ROUTE}?tab=keybinds`)
-      }
+      active: hapticsMuted,
+      icon: <Codicon name={hapticsMuted ? 'mute' : 'unmute'} />,
+      id: 'haptics',
+      label: hapticsMuted ? t.titlebar.unmuteHaptics : t.titlebar.muteHaptics,
+      onSelect: toggleHaptics
     },
     {
       actionId: 'nav.settings',

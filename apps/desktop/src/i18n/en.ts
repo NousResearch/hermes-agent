@@ -202,7 +202,6 @@ export const en: Translations = {
     unmuteHaptics: 'Unmute haptics',
     openSettings: 'Open settings',
     openStarmap: 'Open memory graph',
-    openKeybinds: 'Keyboard shortcuts',
     enterHud: 'HUD mode',
     exitHud: 'Exit HUD mode',
     layoutEditor: 'Layout editor',

@@ -1,5 +1,8 @@
 """Tests for the central command registry and autocomplete."""
 
+from pathlib import Path
+
+import pytest
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
@@ -622,6 +625,81 @@ class TestDiscordSkillCmdKeyDispatch:
         assert len(name) <= _CMD_NAME_LIMIT, "Name should be clamped to 32 chars"
         assert key == cmd_key, (
             f"cmd_key must be the original /{long_name}, got {key!r}"
+        )
+
+    def test_skill_menu_handles_symlinked_hermes_home(self, tmp_path, monkeypatch):
+        """Skills remain visible when HERMES_HOME is a symlink.
+
+        ``scan_skill_commands`` preserves the configured lexical path, while
+        the gateway collectors also check resolved roots.  This is the actual
+        layout used when ``~/.hermes`` points at another filesystem.  Flat
+        Discord/Telegram menus and Discord ``/skill``-by-category must all
+        agree.
+        """
+        from unittest.mock import patch
+
+        import agent.skill_commands as skill_commands_module
+        import tools.skills_tool as skills_tool_module
+        from agent.skill_commands import scan_skill_commands
+        from hermes_cli.commands import discord_skill_commands_by_category
+
+        real_home = tmp_path / "external-drive" / "hermes"
+        skill_dir = real_home / "skills" / "symlink-visible-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: symlink-visible-skill\n"
+            "description: A skill behind a symlink.\n"
+            "---\n\n"
+            "# Symlink-visible skill\n"
+        )
+
+        linked_home = tmp_path / "home" / ".hermes"
+        linked_home.parent.mkdir()
+        try:
+            linked_home.symlink_to(real_home, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        linked_skills = linked_home / "skills"
+        monkeypatch.setenv("HERMES_HOME", str(linked_home))
+        # Keep this scan isolated from other tests in this subprocess.
+        monkeypatch.setattr(skill_commands_module, "_skill_commands", {})
+        monkeypatch.setattr(skill_commands_module, "_skill_commands_platform", None)
+
+        with (
+            patch.object(skills_tool_module, "SKILLS_DIR", linked_skills),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+        ):
+            discovered = scan_skill_commands()
+            skill_path = Path(discovered["/symlink-visible-skill"]["skill_md_path"])
+            assert skill_path == linked_skills / "symlink-visible-skill" / "SKILL.md"
+            assert skill_path.resolve() != skill_path
+
+            discord_entries, hidden = discord_skill_commands(
+                max_slots=100, reserved_names=set(),
+            )
+            telegram_entries, _ = telegram_menu_commands(max_commands=100)
+            categories, uncategorized, cat_hidden = discord_skill_commands_by_category(
+                reserved_names=set(),
+            )
+
+        assert hidden == 0
+        assert any(
+            name == "symlink-visible-skill" and key == "/symlink-visible-skill"
+            for name, _desc, key in discord_entries
+        )
+        assert any(name == "symlink_visible_skill" for name, _desc in telegram_entries)
+        # Root-level skill under the scan root → uncategorized in /skill picker.
+        assert cat_hidden == 0
+        assert any(
+            name == "symlink-visible-skill" and key == "/symlink-visible-skill"
+            for name, _desc, key in uncategorized
+        )
+        assert not any(
+            name == "symlink-visible-skill"
+            for entries in categories.values()
+            for name, _desc, _key in entries
         )
 
 

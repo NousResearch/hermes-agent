@@ -18,6 +18,7 @@ import subprocess
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from utils import is_truthy_value
@@ -855,6 +856,60 @@ _clamp_telegram_names = _clamp_command_names
 # Shared skill/plugin collection for gateway platforms
 # ---------------------------------------------------------------------------
 
+def _skill_path_variants(path: str | Path) -> list[Path]:
+    """Return lexical and resolved forms of a skill or scan-root path.
+
+    The skill scanner walks configured paths as written, so discovered
+    ``skill_md_path`` values retain symlink components (e.g.
+    ``~/.hermes -> /mnt/hermes``).  Callers that resolve roots must still
+    match those lexical paths — keep both forms: resolving fixes aliases
+    such as a symlinked ``HERMES_HOME``, and retaining the lexical form
+    preserves intentionally symlinked skills under a local root.
+    """
+    path = Path(path)
+    variants = [path]
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError):
+        pass
+    else:
+        if resolved != path:
+            variants.append(resolved)
+    return variants
+
+
+def _unique_skill_path_variants(*paths: str | Path) -> list[Path]:
+    """Expand *paths* to lexical+resolved variants, preserving order."""
+    roots: list[Path] = []
+    for path in paths:
+        for variant in _skill_path_variants(path):
+            if variant not in roots:
+                roots.append(variant)
+    return roots
+
+
+def _matching_skill_root(
+    path: str | Path,
+    roots: list[Path],
+) -> tuple[Path, Path] | None:
+    """Return ``(path_variant, root)`` if *path* lives under any *root*.
+
+    The returned pair shares a path form (lexical or resolved) so callers
+    can safely compute ``path_variant.relative_to(root)`` for category
+    derivation.  Returns ``None`` when no root matches.
+    """
+    for path_variant in _skill_path_variants(path):
+        for root in roots:
+            if path_variant.is_relative_to(root):
+                return path_variant, root
+    return None
+
+
+def _path_is_under_any(path: str | Path, roots: list[Path]) -> bool:
+    """True if any form of *path* is relative to any entry in *roots*."""
+    return _matching_skill_root(path, roots) is not None
+
+
 def _collect_gateway_skill_entries(
     platform: str,
     max_slots: int,
@@ -927,27 +982,22 @@ def _collect_gateway_skill_entries(
         from agent.skill_commands import get_skill_commands
         from tools.skills_tool import SKILLS_DIR
         from agent.skill_utils import get_external_skills_dirs
-        _skills_dir = str(SKILLS_DIR.resolve())
-        _hub_dir = str((SKILLS_DIR / ".hub").resolve()).rstrip("/") + "/"
-        # Build set of allowed directory prefixes: local skills dir + any
-        # user-configured ``skills.external_dirs``. Ensure each prefix ends
-        # with ``/`` so ``/my-skills`` does not also match ``/my-skills-extra``.
-        # Without this widening, external skills are visible in
-        # ``hermes skills list`` and the agent's ``/skill-name`` dispatch but
-        # silently excluded from gateway slash menus (#8110).
-        _allowed_prefixes = [_skills_dir.rstrip("/") + "/"]
-        _allowed_prefixes.extend(
-            str(d).rstrip("/") + "/" for d in get_external_skills_dirs()
+
+        # Keep lexical + resolved forms so symlink-aliased HERMES_HOME and
+        # intentionally symlinked skill dirs both pass the membership filter.
+        _allowed_roots = _unique_skill_path_variants(
+            SKILLS_DIR, *get_external_skills_dirs(),
         )
+        _hub_roots = _skill_path_variants(Path(SKILLS_DIR) / ".hub")
         skill_cmds = get_skill_commands()
         for cmd_key in sorted(skill_cmds):
             info = skill_cmds[cmd_key]
             skill_path = info.get("skill_md_path", "")
             if not skill_path:
                 continue
-            if not any(skill_path.startswith(prefix) for prefix in _allowed_prefixes):
+            if not _path_is_under_any(skill_path, _allowed_roots):
                 continue
-            if skill_path.startswith(_hub_dir):
+            if _path_is_under_any(skill_path, _hub_roots):
                 continue
             skill_name = info.get("name", "")
             if skill_name in _platform_disabled:
@@ -1063,9 +1113,12 @@ def discord_skill_commands_by_category(
     the agent's ``/skill-name`` dispatch but silently absent from Discord's
     ``/skill`` autocomplete.
 
-    Filtering mirrors :func:`discord_skill_commands`: hub skills excluded,
-    per-platform disabled excluded, names clamped to 32 chars, descriptions
-    clamped to 100 chars.
+    Filtering mirrors :func:`discord_skill_commands` via the shared path
+    helpers (:func:`_matching_skill_root` / :func:`_path_is_under_any`):
+    hub skills excluded, per-platform disabled excluded, names clamped to
+    32 chars, descriptions clamped to 100 chars.  Symlinked ``HERMES_HOME``
+    and intentionally symlinked skill directories are accepted the same way as
+    the flat collector.
 
     The legacy 25-group × 25-subcommand caps (from the old nested
     ``/skill <cat> <name>`` layout) are **not** applied — the live caller
@@ -1084,8 +1137,6 @@ def discord_skill_commands_by_category(
         - *hidden_count*: skills dropped due to name clamp collisions
           against already-registered command names.
     """
-    from pathlib import Path as _P
-
     _platform_disabled: set[str] = set()
     try:
         from agent.skill_utils import get_disabled_skill_names
@@ -1109,20 +1160,16 @@ def discord_skill_commands_by_category(
         from agent.skill_utils import get_external_skills_dirs
         from tools.skills_tool import SKILLS_DIR
 
-        _skills_dir = SKILLS_DIR.resolve()
-        _hub_dir = (SKILLS_DIR / ".hub").resolve()
-        # Build list of (resolved_root, is_local) tuples. Each external dir
-        # becomes its own scan root for category derivation — a skill at
-        # ``<external>/mlops/foo/SKILL.md`` is still categorized as "mlops".
-        _scan_roots: list[_P] = [_skills_dir]
+        # Lexical + resolved variants of each scan root so category
+        # derivation stays consistent with the flat collector's filter.
+        # A skill at ``<external>/mlops/foo/SKILL.md`` is still
+        # categorized as "mlops".
         try:
-            for ext in get_external_skills_dirs():
-                try:
-                    _scan_roots.append(_P(ext).resolve())
-                except Exception:
-                    continue
+            _external_dirs = list(get_external_skills_dirs())
         except Exception:
-            pass
+            _external_dirs = []
+        _scan_roots = _unique_skill_path_variants(SKILLS_DIR, *_external_dirs)
+        _hub_roots = _skill_path_variants(Path(SKILLS_DIR) / ".hub")
         skill_cmds = get_skill_commands()
 
         for cmd_key in sorted(skill_cmds):
@@ -1130,23 +1177,16 @@ def discord_skill_commands_by_category(
             skill_path = info.get("skill_md_path", "")
             if not skill_path:
                 continue
-            sp = _P(skill_path).resolve()
             # Hub skills are loaded via the skill hub, not surfaced as
             # slash commands.
-            if str(sp).startswith(str(_hub_dir)):
+            if _path_is_under_any(skill_path, _hub_roots):
                 continue
-            # Accept skill if it lives under any scan root; record the
-            # matching root so we can derive the category correctly.
-            matched_root: _P | None = None
-            for root in _scan_roots:
-                try:
-                    sp.relative_to(root)
-                except ValueError:
-                    continue
-                matched_root = root
-                break
-            if matched_root is None:
+            # Accept skill if it lives under any scan root; record a
+            # form-matched (path, root) pair so relative_to stays valid.
+            matched = _matching_skill_root(skill_path, _scan_roots)
+            if matched is None:
                 continue
+            sp, matched_root = matched
 
             skill_name = info.get("name", "")
             if skill_name in _platform_disabled:

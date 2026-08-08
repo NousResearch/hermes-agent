@@ -2448,8 +2448,15 @@ _OWN_POLICY_OPEN_ENV = {
 }
 
 
-def _own_policy_open_startup_violation(config) -> Optional[str]:
-    """Return a startup-abort reason when open policy lacks allow-all opt-in."""
+def _own_policy_open_violations(config) -> List[Tuple["Platform", Optional[str]]]:
+    """Return every enabled platform whose open policy lacks an allow-all opt-in.
+
+    Reports *all* offenders (rather than short-circuiting on the first) so the
+    caller can quarantine them individually. A single misconfigured platform —
+    including one that is enabled but cannot even connect, e.g. an unpaired
+    WhatsApp — must not decide the fate of every other platform in the gateway.
+    """
+    violations: List[Tuple["Platform", Optional[str]]] = []
     for platform, platform_config in getattr(config, "platforms", {}).items():
         if not getattr(platform_config, "enabled", False):
             continue
@@ -2477,8 +2484,22 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
         )
         if platform_opted_in:
             continue
-        return f"{platform.value}: open policy without allow-all opt-in"
-    return None
+        violations.append((platform, allow_all_env))
+    return violations
+
+
+def _own_policy_open_startup_violation(config) -> Optional[str]:
+    """Return a startup-abort reason when open policy lacks allow-all opt-in.
+
+    Single-offender view of :func:`_own_policy_open_violations`, kept for the
+    per-profile multiplex path where refusing just that profile is the correct
+    scope (the profile *is* the unit of isolation there).
+    """
+    violations = _own_policy_open_violations(config)
+    if not violations:
+        return None
+    platform, _ = violations[0]
+    return f"{platform.value}: open policy without allow-all opt-in"
 
 
 # Sentinel placed into _running_agents immediately when a session starts
@@ -8064,6 +8085,68 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
+    def _quarantine_open_policy_platforms(self) -> bool:
+        """Disable platforms whose ``open`` policy lacks an allow-all opt-in.
+
+        The gate stays fail-closed for the platform that violates it — the
+        platform is disabled, so it accepts nothing — but an unrelated healthy
+        platform (e.g. Telegram) must not lose service because another one
+        (e.g. an unpaired WhatsApp) is misconfigured.
+
+        Returns ``True`` when the caller must abort startup, which happens only
+        if *every* enabled platform failed the gate: quarantining them all would
+        otherwise leave a gateway running with no transports at all.
+        """
+        violations = _own_policy_open_violations(self.config)
+        if not violations:
+            return False
+
+        for platform, allow_all_env in violations:
+            flag = allow_all_env or "a platform allow-all flag"
+            logger.error(
+                "Disabling %s: dm_policy/group_policy is set to 'open' but "
+                "neither GATEWAY_ALLOW_ALL_USERS nor %s is enabled. Set the "
+                "opt-in flag or move the policy off 'open' to re-enable it; "
+                "the remaining platforms continue to start.",
+                platform.value,
+                flag,
+            )
+            self.config.platforms[platform].enabled = False
+            # Record *why* it is down. Without this the runtime status keeps
+            # whatever the platform last reported, so a previously-healthy
+            # adapter would still read "connected" after being quarantined —
+            # actively misleading rather than merely stale.
+            self._update_platform_runtime_status(
+                platform.value,
+                platform_state="disabled",
+                error_code="open_policy_no_opt_in",
+                error_message=(
+                    "Disabled at startup: dm_policy/group_policy is 'open' but "
+                    f"neither GATEWAY_ALLOW_ALL_USERS nor {flag} is enabled."
+                ),
+            )
+
+        if any(
+            getattr(pc, "enabled", False)
+            for pc in getattr(self.config, "platforms", {}).values()
+        ):
+            return False
+
+        reason = (
+            f"{violations[0][0].value}: open policy without allow-all opt-in"
+        )
+        logger.error(
+            "Refusing to start: every enabled platform failed the "
+            "open-policy gate."
+        )
+        try:
+            from gateway.status import write_runtime_status
+            write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
+        except Exception:
+            pass
+        self._request_clean_exit(reason)
+        return True
+
     # ------------------------------------------------------------------
     # Per-platform circuit breaker (pause/resume) — used by the reconnect
     # watcher when a retryable failure recurs past a threshold, and by the
@@ -11062,28 +11145,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "dm_policy/group_policy: open on the platform."
             )
 
-        reason = _own_policy_open_startup_violation(self.config)
-        if reason:
-            platform_value = reason.split(":", 1)[0]
-            allow_all_env = None
-            for platform, open_env in _OWN_POLICY_OPEN_ENV.items():
-                if platform.value == platform_value:
-                    allow_all_env = open_env[2]
-                    break
-            logger.error(
-                "Refusing to start: %s has dm_policy/group_policy set to 'open' "
-                "but neither GATEWAY_ALLOW_ALL_USERS nor %s is enabled.",
-                platform_value,
-                allow_all_env or "a platform allow-all flag",
-            )
-            try:
-                from gateway.status import write_runtime_status
-                write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
-            except Exception:
-                pass
-            self._request_clean_exit(reason)
+        if self._quarantine_open_policy_platforms():
             return True
-        
+
+
         # Discover Python plugins before shell hooks so plugin block
         # decisions take precedence in tie cases.  The CLI startup path
         # does this via an explicit call in hermes_cli/main.py; the

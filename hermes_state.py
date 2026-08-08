@@ -7070,7 +7070,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return row[0] if row else None
 
-    def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
+    def _insert_message_rows(
+        self,
+        conn,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+        *,
+        compaction_group: Optional[int] = None,
+        source_message_ids: Optional[List[Optional[int]]] = None,
+    ) -> tuple[int, int]:
         """Insert *messages* as fresh active rows for *session_id*.
 
         Shared by :meth:`replace_messages` (delete-then-insert) and
@@ -7129,12 +7137,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
             api_content = msg.get("api_content")
 
+            source_mid = (
+                source_message_ids[inserted]
+                if source_message_ids and inserted < len(source_message_ids)
+                else None
+            )
             conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active, api_content, display_kind, display_metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, active, api_content,
+                   display_kind, display_metadata, compaction_group, source_message_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -7157,6 +7171,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
                     _scrub_surrogates(msg.get("display_kind")) if isinstance(msg.get("display_kind"), str) else None,
                     self._encode_display_metadata(msg.get("display_metadata")),
+                    compaction_group,
+                    source_mid,
                 ),
             )
             inserted += 1
@@ -7240,6 +7256,62 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             return cursor.fetchone() is not None
 
+    def _map_projection_to_sources(
+        self,
+        source_rows: List[Any],
+        projected_messages: List[Dict[str, Any]],
+    ) -> List[Optional[int]]:
+        """Map each projection message to the source row it was copied from.
+
+        Returns a list parallel to *projected_messages* where each element is
+        either the ``id`` of the matched source row or ``None`` (for new rows
+        like summaries). Matches forward from the head then backward from the
+        tail so duplicate content resolves by position.
+        """
+        if not source_rows or not projected_messages:
+            return [None] * len(projected_messages)
+
+        source_sigs = [
+            (row["role"], self._encode_content(self._decode_content(row["content"])))
+            for row in source_rows
+        ]
+        proj_sigs = [
+            (msg.get("role", "unknown"), self._encode_content(msg.get("content")))
+            for msg in projected_messages
+        ]
+
+        mapped: List[Optional[int]] = [None] * len(projected_messages)
+        used: set[int] = set()
+
+        pi = 0
+        si = 0
+        while pi < len(projected_messages) and si < len(source_rows):
+            if proj_sigs[pi] == source_sigs[si]:
+                mapped[pi] = int(source_rows[si]["id"])
+                used.add(si)
+                pi += 1
+                si += 1
+            else:
+                break
+
+        prefix_end = pi
+
+        pi = len(projected_messages) - 1
+        si = len(source_rows) - 1
+        while pi >= prefix_end and si >= 0:
+            if si in used:
+                si -= 1
+                continue
+            if proj_sigs[pi] == source_sigs[si]:
+                mapped[pi] = int(source_rows[si]["id"])
+                used.add(si)
+                pi -= 1
+                si -= 1
+            else:
+                break
+
+        return mapped
+
     def archive_and_compact(
         self,
         session_id: str,
@@ -7275,30 +7347,38 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         def _do(conn):
             patched_model_config = None
             if model_config_patch is not None:
-                # on_missing="raise": a prune/compaction must not commit
-                # against a vanished session row (the compressor's caller
-                # converts the raised error into a safe keep-the-original
-                # no-op), unlike the flag setters which tolerate missing rows.
                 patched_model_config = self._merge_model_config_json(
                     conn, session_id, model_config_patch, on_missing="raise"
                 )
 
-            # Soft-archive the live turns: active=0 hides them from the live
-            # context load, compacted=1 marks them as "summarized away" (vs
-            # rewind/undo's active=0+compacted=0, which means "user took it
-            # back"). search_messages includes compacted=1 rows by default so
-            # the pre-compaction transcript stays discoverable; live-context
-            # loads (active=1 only) still exclude them.
-            conn.execute(
-                "UPDATE messages SET active = 0, compacted = 1 "
-                "WHERE session_id = ? AND active = 1",
+            source_rows = conn.execute(
+                "SELECT id, role, content FROM messages "
+                "WHERE session_id = ? AND active = 1 ORDER BY id",
                 (session_id,),
+            ).fetchall()
+
+            max_group = conn.execute(
+                "SELECT COALESCE(MAX(compaction_group), 0) "
+                "FROM messages WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()[0]
+            new_group = max_group + 1
+
+            source_message_ids = self._map_projection_to_sources(
+                source_rows, compacted_messages
+            )
+
+            conn.execute(
+                "UPDATE messages SET active = 0, compacted = 1, "
+                "compaction_group = ? "
+                "WHERE session_id = ? AND active = 1",
+                (new_group, session_id),
             )
             inserted, tool_calls_total = self._insert_message_rows(
-                conn, session_id, compacted_messages
+                conn, session_id, compacted_messages,
+                compaction_group=new_group,
+                source_message_ids=source_message_ids,
             )
-            # message_count / tool_call_count reflect the LIVE (active) set —
-            # the archived rows are still on disk but not part of the live count.
             if model_config_patch is None:
                 conn.execute(
                     "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
@@ -7923,12 +8003,20 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         disk with ``active=0`` for audit / forensic inspection — use
         :meth:`get_messages` with ``include_inactive=True`` to see them.
 
+        **Compaction-aware.**  When the target row carries a
+        ``source_message_id`` (set by :meth:`archive_and_compact`), the
+        rewind crosses the compaction boundary: the entire current
+        projection is retired, the archived source rows for that
+        compaction group are restored, and the suffix starting at the
+        mapped source row is truncated.
+
         Returns a dict::
 
             {
                 "rewound_count": int,    # number of rows newly flipped to active=0
                 "target_message": dict,  # full row dict of the target
                 "new_head_id":   int|None  # id of the last still-active row, or None
+                "crossed_compaction": bool  # True when a compaction boundary was crossed
             }
 
         Raises ``ValueError`` if the target message does not exist in
@@ -7941,7 +8029,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         target is a no-op on row state but still bumps the counter.
         """
 
-        # 1) Validate target up-front (read-only, outside the write txn).
         with self._lock:
             row = self._conn.execute(
                 "SELECT * FROM messages WHERE id = ? AND session_id = ?",
@@ -7958,34 +8045,94 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 f"{target_row.get('role')!r}, id={target_message_id})"
             )
 
-        # Decode content for callers (prefill the prompt buffer).
         target_row["content"] = self._decode_content(target_row.get("content"))
 
-        rewound: List[int] = []
+        crossed_compaction = False
+        rewound_count = 0
 
         def _do(conn):
-            cursor = conn.execute(
-                "SELECT id FROM messages "
-                "WHERE session_id = ? AND id >= ? AND active = 1",
-                (session_id, target_message_id),
-            )
-            ids = [r[0] for r in cursor.fetchall()]
-            if ids:
-                placeholders = ",".join("?" for _ in ids)
-                conn.execute(
-                    f"UPDATE messages SET active = 0 WHERE id IN ({placeholders})",
-                    ids,
+            nonlocal crossed_compaction, rewound_count
+
+            source_mid = None
+            live = conn.execute(
+                "SELECT active, source_message_id "
+                "FROM messages WHERE id = ? AND session_id = ?",
+                (target_message_id, session_id),
+            ).fetchone()
+            if live and bool(live["active"]):
+                source_mid = live["source_message_id"]
+
+            if source_mid is not None:
+                source_row = conn.execute(
+                    "SELECT compaction_group FROM messages "
+                    "WHERE id = ? AND session_id = ?",
+                    (source_mid, session_id),
+                ).fetchone()
+                if source_row is not None:
+                    source_group = source_row["compaction_group"]
+                    crossed_compaction = True
+                    conn.execute(
+                        "UPDATE messages SET active = 0 "
+                        "WHERE session_id = ? AND active = 1",
+                        (session_id,),
+                    )
+                    conn.execute(
+                        "UPDATE messages SET active = 1, compacted = 0 "
+                        "WHERE session_id = ? AND compaction_group = ? "
+                        "AND compacted = 1",
+                        (session_id, source_group),
+                    )
+                    truncated = conn.execute(
+                        "UPDATE messages SET active = 0, compacted = 0 "
+                        "WHERE session_id = ? AND compaction_group = ? "
+                        "AND id >= ?",
+                        (session_id, source_group, source_mid),
+                    ).rowcount
+                    rewound_count = truncated
+
+            if not crossed_compaction:
+                cursor = conn.execute(
+                    "SELECT id FROM messages "
+                    "WHERE session_id = ? AND id >= ? AND active = 1",
+                    (session_id, target_message_id),
+                )
+                ids = [r[0] for r in cursor.fetchall()]
+                if ids:
+                    placeholders = ",".join("?" for _ in ids)
+                    conn.execute(
+                        f"UPDATE messages SET active = 0 "
+                        f"WHERE id IN ({placeholders})",
+                        ids,
+                    )
+                rewound_count = len(ids)
+
+            active_rows = conn.execute(
+                "SELECT tool_calls FROM messages "
+                "WHERE session_id = ? AND active = 1",
+                (session_id,),
+            ).fetchall()
+            new_msg_count = len(active_rows)
+            new_tc_count = 0
+            for ar in active_rows:
+                raw_tc = ar["tool_calls"]
+                if not raw_tc:
+                    continue
+                try:
+                    parsed = json.loads(raw_tc)
+                except (json.JSONDecodeError, TypeError):
+                    parsed = None
+                new_tc_count += (
+                    len(parsed) if isinstance(parsed, list) else 1
                 )
             conn.execute(
-                "UPDATE sessions SET rewind_count = COALESCE(rewind_count, 0) + 1 "
-                "WHERE id = ?",
-                (session_id,),
+                "UPDATE sessions SET "
+                "rewind_count = COALESCE(rewind_count, 0) + 1, "
+                "message_count = ?, tool_call_count = ? WHERE id = ?",
+                (new_msg_count, new_tc_count, session_id),
             )
-            return ids
 
-        rewound = self._execute_write(_do)
+        self._execute_write(_do)
 
-        # 2) Compute new head id (largest still-active row id in session).
         with self._lock:
             head_row = self._conn.execute(
                 "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1",
@@ -7994,9 +8141,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         new_head_id = head_row[0] if head_row and head_row[0] is not None else None
 
         return {
-            "rewound_count": len(rewound),
+            "rewound_count": rewound_count,
             "target_message": target_row,
             "new_head_id": new_head_id,
+            "crossed_compaction": crossed_compaction,
         }
 
     def restore_rewound(self, session_id: str, since_message_id: int) -> int:

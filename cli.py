@@ -8490,11 +8490,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         removed_msg = self.conversation_history[cut_idx].get("content", "")
         removed_text = self._undo_content_to_text(removed_msg)
 
-        # Truncate the in-memory history to before that user message.
         self.conversation_history = self.conversation_history[:cut_idx]
 
-        # Soft-delete the truncated rows on disk so re-prompts and search
-        # see the clean transcript while the rows survive for audit.
         rewound_rows = 0
         if self._session_db is not None and self.session_id:
             try:
@@ -8508,16 +8505,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         self.session_id, target_id
                     )
                     rewound_rows = result.get("rewound_count", 0)
-                    # Prefer the DB's decoded target text for the prefill —
-                    # it's the canonical persisted copy.
                     db_text = self._undo_content_to_text(
                         (result.get("target_message") or {}).get("content")
                     )
                     if db_text:
                         removed_text = db_text
+                    if result.get("crossed_compaction"):
+                        self.conversation_history = list(
+                            self._session_db.get_messages_as_conversation(
+                                self.session_id
+                            )
+                        )
             except ValueError as e:
-                # Non-user target / cross-session — keep the in-memory undo
-                # but skip the soft-delete; surface a debug-level note.
                 logger.debug("undo: soft-delete skipped: %s", e)
             except Exception as e:
                 logger.debug("undo: soft-delete failed: %s", e)

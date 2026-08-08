@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
 
 
 @pytest.fixture(autouse=True)
@@ -108,6 +108,26 @@ def _make_adapter(**overrides):
     for key, value in overrides.items():
         setattr(adapter, key, value)
     return adapter
+
+
+def test_invalid_webhook_port_falls_back_to_default():
+    from gateway.platforms.whatsapp_cloud import (
+        DEFAULT_WEBHOOK_PORT,
+        WhatsAppCloudAdapter,
+    )
+
+    adapter = WhatsAppCloudAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "phone_number_id": "1234567890",
+                "access_token": "test-token",
+                "webhook_port": "bad-port",
+            },
+        )
+    )
+
+    assert adapter._webhook_port == DEFAULT_WEBHOOK_PORT
 
 
 @pytest.fixture

@@ -105,6 +105,15 @@ WAMID_DEDUP_CACHE_SIZE = 5000
 # cache. Generous for any realistic number of in-flight prompts / chats.
 INTERACTIVE_STATE_CACHE_SIZE = 1000
 
+
+def _coerce_int(value: object, *, default: int) -> int:
+    """Parse config ints; malformed values must not crash adapter init."""
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
 # Per-type size caps documented by Meta for the Cloud API /media endpoint.
 # These are the hard limits; we refuse uploads above them with a clean
 # error instead of round-tripping to Graph just to be rejected.
@@ -234,7 +243,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._webhook_host: Optional[str] = (
             str(_raw_webhook_host) if _raw_webhook_host else None
         )
-        self._webhook_port: int = int(extra.get("webhook_port", DEFAULT_WEBHOOK_PORT))
+        self._webhook_port: int = _coerce_int(
+            extra.get("webhook_port", DEFAULT_WEBHOOK_PORT),
+            default=DEFAULT_WEBHOOK_PORT,
+        )
         self._webhook_path: str = self._normalize_path(
             extra.get("webhook_path", DEFAULT_WEBHOOK_PATH)
         )

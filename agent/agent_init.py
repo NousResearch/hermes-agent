@@ -1859,6 +1859,22 @@ def init_agent(
         _api_retries = 3
     agent._api_max_retries = _api_retries
 
+    # Empty-response retry count. When the model returns no usable content or
+    # reasoning, retry up to this many times (with a short backoff; see the
+    # empty-response retry block in conversation_loop.run_conversation) before
+    # attempting fallback.  Default 5, overridable via
+    # agent.empty_response_retries in config.yaml.  Some providers (e.g. z.ai
+    # GLM-5-Turbo) return transient empty responses, so a higher default than
+    # the old hardcoded 3 avoids premature fallback-provider switching.
+    try:
+        _empty_retries = int(_agent_section.get("empty_response_retries", 5))
+        # 0 = skip retries; fall through to the fallback attempt (or the
+        # terminal empty path if no fallback chain is configured).
+        _empty_retries = max(_empty_retries, 0)
+    except (TypeError, ValueError):
+        _empty_retries = 5
+    agent._empty_response_retries = _empty_retries
+
     # Initialize context compressor for automatic context management
     # Compresses conversation when approaching model's context limit
     # Configuration via config.yaml (compression section)

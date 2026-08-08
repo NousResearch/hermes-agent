@@ -2719,6 +2719,19 @@ class TestRunConversation:
         agent._use_prompt_caching = False
         agent.compression_enabled = False
         agent.save_trajectories = False
+        # Pin the empty-response retry count so the retry/fallback-logic tests
+        # below are deterministic and decoupled from the production default
+        # (agent._empty_response_retries, default 5; see
+        # test_empty_response_retries_default_is_5).
+        agent._empty_response_retries = 3
+
+    def test_empty_response_retries_default_is_5(self, agent):
+        """init_agent defaults _empty_response_retries to 5 (was hardcoded 3).
+
+        Deliberately does NOT call _setup_agent (which pins it to 3 for the
+        retry-logic tests), so the agent keeps its init_agent default.
+        """
+        assert agent._empty_response_retries == 5
 
     def test_task_start_failure_closes_relay_turn_and_lease(self, agent):
         relay_lease = SimpleNamespace(
@@ -3223,6 +3236,44 @@ class TestRunConversation:
         assert "No reply:" in result["final_response"]
         assert result["api_calls"] == 4  # 1 original + 3 retries
 
+    def test_truly_empty_response_retries_at_default_5(self, agent):
+        """Drives the loop at the production default (5), not the _setup_agent
+        pin of 3, so an off-by-one in the ``< _empty_response_retries`` boundary
+        is caught at the value users actually run."""
+        self._setup_agent(agent)
+        agent._empty_response_retries = 5  # the init_agent default
+        agent.base_url = "http://127.0.0.1:1234/v1"
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        # 6 responses: 1 original + 5 retries, all empty
+        agent.client.chat.completions.create.side_effect = [
+            empty_resp, empty_resp, empty_resp, empty_resp, empty_resp, empty_resp,
+        ]
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("answer me")
+        assert result["completed"] is True
+        assert result["api_calls"] == 6  # 1 original + 5 retries
+
+    def test_truly_empty_response_retries_zero_skips_retries(self, agent):
+        """empty_response_retries=0 skips retries entirely: the empty response
+        falls straight through to the terminal empty path (one API call)."""
+        self._setup_agent(agent)
+        agent._empty_response_retries = 0
+        agent.base_url = "http://127.0.0.1:1234/v1"
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [empty_resp]
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("answer me")
+        assert result["completed"] is True
+        assert result["api_calls"] == 1  # original only; 0 retries
+
     def test_truly_empty_response_succeeds_on_nudge(self, agent):
         """Model produces content after being nudged for empty response."""
         self._setup_agent(agent)
@@ -3354,7 +3405,7 @@ class TestRunConversation:
             result = agent.run_conversation("answer me")
 
         assert result["interrupted"] is True
-        assert "Operation interrupted: retrying empty response from model" in result["final_response"]
+        assert "Operation interrupted during empty-response retry" in result["final_response"]
         assert agent._empty_content_retries == 1
         assert 0.2 in sleep_called
         assert mock_persist.call_count == 2
@@ -3405,7 +3456,7 @@ class TestRunConversation:
         # 7.5s wait, slept in 0.2s increments -> 37.5 -> at least 37 calls
         assert len([c for c in sleep_calls if c == 0.2]) >= 37
 
-        retry_status = [m for m in status_messages if "Empty response from model — retrying (1/3) in 8s" in m]
+        retry_status = [m for m in status_messages if "Empty response from model; retrying" in m and "in 7.5s" in m]
         assert len(retry_status) == 1
 
     def test_partial_stream_recovery_uses_streamed_content(self, agent):

@@ -97,6 +97,12 @@ DEFAULT_CONFIG = {
         # on flaky primaries; raise it if you prefer to tolerate longer
         # provider hiccups on a single provider.
         "api_max_retries": 3,
+        # Max retries when the model returns an empty response (no content or
+        # reasoning) before the agent switches to the fallback provider.  Some
+        # providers (e.g. z.ai GLM-5-Turbo) return transient empty responses,
+        # so a higher count (plus a short backoff) avoids premature fallback.
+        # 0 = never retry, go straight to the fallback attempt.
+        "empty_response_retries": 5,
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.

@@ -108,6 +108,118 @@ class TestSubdirectoryHintTracker:
         # Should be capped
         assert len(result) < 20_000
 
+    def test_skips_hints_in_install_tree(self, tmp_path, monkeypatch):
+        """Install-tree contributor guides must not be injected on tool visits."""
+        from agent import runtime_cwd
+
+        install_tree = tmp_path / "hermes-agent"
+        install_tree.mkdir()
+        (install_tree / "AGENTS.md").write_text("Install-tree contributor guide")
+        monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", install_tree.resolve())
+
+        tracker = SubdirectoryHintTracker(
+            working_dir=str(tmp_path), allow_install_tree=False
+        )
+        result = tracker.check_tool_call(
+            "read_file", {"path": str(install_tree / "agent.py")}
+        )
+
+        assert result is None
+
+    def test_skips_fallback_install_tree_hints(self, tmp_path, monkeypatch):
+        """A fallback cwd in the install tree must not gain hint authority."""
+        from agent import runtime_cwd
+
+        install_tree = tmp_path / "hermes-agent"
+        subdir = install_tree / "apps" / "desktop"
+        subdir.mkdir(parents=True)
+        (subdir / "AGENTS.md").write_text("Desktop contributor guide")
+        monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", install_tree.resolve())
+        monkeypatch.chdir(install_tree)
+
+        tracker = SubdirectoryHintTracker()
+        assert tracker.check_tool_call("read_file", {"path": str(subdir / "main.py")}) is None
+        assert tracker._load_hints_for_directory(subdir) is None
+
+
+    def test_allows_fallback_install_tree_hints_when_opted_in(self, tmp_path, monkeypatch):
+        """CLI/TUI-style callers can deliberately opt into an in-tree cwd."""
+        from agent import runtime_cwd
+
+        install_tree = tmp_path / "hermes-agent"
+        subdir = install_tree / "agent"
+        subdir.mkdir(parents=True)
+        (subdir / "AGENTS.md").write_text("CLI contributor guide")
+        monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", install_tree.resolve())
+        monkeypatch.chdir(install_tree)
+
+        tracker = SubdirectoryHintTracker(allow_install_tree=True)
+        result = tracker.check_tool_call("read_file", {"path": str(subdir / "loop.py")})
+
+        assert result is not None
+        assert "CLI contributor guide" in result
+
+
+    @pytest.mark.parametrize(
+        ("session_root", "expect_hint"),
+        [("home", False), ("hermes-agent", True)],
+    )
+    def test_agent_init_scopes_tui_install_tree_opt_in_to_session_root(
+        self, tmp_path, monkeypatch, session_root, expect_hint
+    ):
+        """TUI hint authority follows its effective session root, not platform."""
+        from agent import runtime_cwd
+        from run_agent import AIAgent
+
+        home = tmp_path / "home"
+        install_tree = home / "hermes-agent"
+        subdir = install_tree / "agent"
+        subdir.mkdir(parents=True)
+        (subdir / "AGENTS.md").write_text("Install-tree contributor guide")
+        monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", install_tree.resolve())
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+        session_cwd = home if session_root == "home" else install_tree
+        monkeypatch.setenv("TERMINAL_CWD", str(session_cwd))
+
+        agent = AIAgent(
+            model="test-model",
+            base_url="http://localhost:9/v1",
+            api_key="test-key",
+            platform="tui",
+            skip_context_files=True,
+            skip_memory=True,
+            quiet_mode=True,
+        )
+        hint_tracker = getattr(agent, "_subdirectory_hints")
+        result = hint_tracker.check_tool_call(
+            "read_file", {"path": str(subdir / "loop.py")}
+        )
+
+        assert hint_tracker.working_dir == session_cwd.resolve()
+        assert hint_tracker.allow_install_tree is expect_hint
+        assert (result is not None) is expect_hint
+        if expect_hint:
+            assert "Install-tree contributor guide" in result
+
+
+    def test_allows_hints_when_developing_inside_install_tree(self, tmp_path, monkeypatch):
+        """An explicit Hermes checkout remains a valid workspace."""
+        from agent import runtime_cwd
+
+        install_tree = tmp_path / "hermes-agent"
+        subdir = install_tree / "agent"
+        subdir.mkdir(parents=True)
+        (subdir / "AGENTS.md").write_text("Nested Hermes development guide")
+        monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", install_tree.resolve())
+
+        tracker = SubdirectoryHintTracker(working_dir=str(install_tree))
+        result = tracker.check_tool_call(
+            "terminal", {"command": f"pwd {subdir}"}
+        )
+
+        assert result is not None
+        assert "Nested Hermes development guide" in result
+
     def test_empty_args(self, project):
         """Empty args should not crash."""
         tracker = SubdirectoryHintTracker(working_dir=str(project))

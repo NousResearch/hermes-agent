@@ -81,9 +81,12 @@ describe('computed $attentionSessionIds', () => {
     expect($attentionSessionIds.get()).toEqual([])
   })
 
-  it('ignores sessions without a storedSessionId', () => {
+  // A chat that hasn't been persisted yet has no stored id, and until it gets
+  // one the surfaces key on its runtime id — so publishing under that is what
+  // lets a clarify prompt on the very first turn reach the row.
+  it('falls back to the runtime id for a session with no storedSessionId', () => {
     publishSessionState('rt1', { ...createClientSessionState(null), needsInput: true })
-    expect($attentionSessionIds.get()).toEqual([])
+    expect($attentionSessionIds.get()).toEqual(['rt1'])
   })
 })
 

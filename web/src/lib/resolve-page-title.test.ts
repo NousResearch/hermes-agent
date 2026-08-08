@@ -49,7 +49,13 @@ describe("resolvePageTitle", () => {
     expect(resolvePageTitle("/whatever", t, [])).toBe("Whatever");
   });
 
-  it("treats root as sessions and trailing slashes as equivalent", () => {
+  it("uses root dashboard plugin metadata before the Sessions fallback", () => {
+    expect(
+      resolvePageTitle("/", t, [{ path: "/", label: "Command Center" }]),
+    ).toBe("Command Center");
+  });
+
+  it("treats root as sessions without a root plugin and trailing slashes as equivalent", () => {
     expect(resolvePageTitle("/", t, [])).toBe("Sessions");
     expect(resolvePageTitle("/mcp/", t, [])).toBe("MCP");
   });

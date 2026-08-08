@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from collections import OrderedDict
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
@@ -45,6 +46,7 @@ _ENV_VARS = (
     "BUZZ_POLL_INTERVAL",
     "BUZZ_CLI_PATH",
     "BUZZ_CREDENTIALS_FILE",
+    "BUZZ_THREAD_SESSIONS",
 )
 
 
@@ -141,6 +143,11 @@ class TestBuzzAdapterInit:
         from gateway.config import PlatformConfig
         adapter = BuzzAdapter(PlatformConfig(enabled=True, extra={"relay_url": "https://cfg.relay"}))
         assert adapter.relay_url == "https://env.relay"
+
+    def test_thread_sessions_default_on_with_env_override(self, monkeypatch):
+        assert _make_adapter().thread_sessions is True
+        monkeypatch.setenv("BUZZ_THREAD_SESSIONS", "false")
+        assert _make_adapter({"thread_sessions": True}).thread_sessions is False
 
 
 # ── CLI error contract ────────────────────────────────────────────────────
@@ -261,11 +268,12 @@ class TestMentionGating:
 
 
 def _tagged_event(event_id, channel, *, content, pubkey=OTHER_PUBKEY,
-                  created_at=1000, kind=9, p=None, reply_to=None):
+                  created_at=1000, kind=9, p=None, reply_to=None, e_tags=None):
     """Event with the tag shapes observed on a live relay (h/p/e tags)."""
     tags = [["h", channel]]
     if reply_to:
         tags.append(["e", reply_to, "", "reply"])
+    tags.extend(e_tags or [])
     if p:
         tags.append(["p", p])
     return {
@@ -276,6 +284,134 @@ def _tagged_event(event_id, channel, *, content, pubkey=OTHER_PUBKEY,
         "kind": kind,
         "tags": tags,
     }
+
+
+class TestThreadSessions:
+
+    @staticmethod
+    def _adapter(extra=None, *, chat_type="group"):
+        adapter = _make_adapter(extra)
+        adapter.require_mention = False
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": chat_type,
+            "last_ts": 0,
+            "seen": OrderedDict(),
+        }
+        adapter._user_names[OTHER_PUBKEY] = "Other"
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = AsyncMock()
+        adapter.send_reaction = AsyncMock(return_value=True)
+        return adapter
+
+    @staticmethod
+    async def _handle(adapter, event):
+        state = adapter._channel_state[CHANNEL]
+        await adapter._handle_event(CHANNEL, state, event)
+        return adapter.handle_message.await_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_top_level_message_uses_event_id_as_thread(self):
+        adapter = self._adapter()
+        event = await self._handle(
+            adapter,
+            _tagged_event("root-a", CHANNEL, content="top level"),
+        )
+        assert event.source.thread_id == "root-a"
+
+    @pytest.mark.asyncio
+    async def test_reply_marker_uses_parent_as_root(self):
+        adapter = self._adapter()
+        event = await self._handle(
+            adapter,
+            _tagged_event("reply-b", CHANNEL, content="reply", reply_to="root-a"),
+        )
+        assert event.source.thread_id == "root-a"
+        assert event.reply_to_message_id == "root-a"
+
+    @pytest.mark.asyncio
+    async def test_nip10_root_marker_wins_over_parent_lookup(self):
+        adapter = self._adapter()
+        event = await self._handle(
+            adapter,
+            _tagged_event(
+                "reply-c",
+                CHANNEL,
+                content="reply",
+                e_tags=[
+                    ["e", "root-a", "", "root"],
+                    ["e", "reply-b", "", "reply"],
+                ],
+            ),
+        )
+        assert event.source.thread_id == "root-a"
+        assert event.reply_to_message_id == "reply-b"
+
+    @pytest.mark.asyncio
+    async def test_last_bare_e_tag_is_parent(self):
+        adapter = self._adapter()
+        event = await self._handle(
+            adapter,
+            _tagged_event(
+                "legacy-reply",
+                CHANNEL,
+                content="legacy reply",
+                e_tags=[["e", "older"], ["e", "parent-b"]],
+            ),
+        )
+        assert event.source.thread_id == "parent-b"
+        assert event.reply_to_message_id == "parent-b"
+
+    @pytest.mark.asyncio
+    async def test_nested_reply_resolves_original_root(self):
+        adapter = self._adapter()
+        await self._handle(
+            adapter,
+            _tagged_event("root-a", CHANNEL, content="root", created_at=1000),
+        )
+        await self._handle(
+            adapter,
+            _tagged_event("reply-b", CHANNEL, content="middle", created_at=1001,
+                          reply_to="root-a"),
+        )
+        event = await self._handle(
+            adapter,
+            _tagged_event("reply-c", CHANNEL, content="nested", created_at=1002,
+                          reply_to="reply-b"),
+        )
+        assert event.source.thread_id == "root-a"
+        assert event.reply_to_message_id == "reply-b"
+        assert event.reply_to_text == "middle"
+
+    @pytest.mark.asyncio
+    async def test_thread_sessions_false_leaves_thread_unset(self):
+        adapter = self._adapter({"thread_sessions": False})
+        event = await self._handle(
+            adapter,
+            _tagged_event("reply-b", CHANNEL, content="reply", reply_to="root-a"),
+        )
+        assert event.source.thread_id is None
+        assert event.reply_to_message_id is None
+
+    @pytest.mark.asyncio
+    async def test_dm_path_does_not_set_thread_id(self):
+        adapter = self._adapter(chat_type="dm")
+        event = await self._handle(
+            adapter,
+            _tagged_event("dm-event", CHANNEL, content="direct"),
+        )
+        assert event.source.thread_id is None
+        assert event.reply_to_message_id is None
+
+    def test_thread_indexes_are_bounded(self):
+        adapter = self._adapter()
+        state = adapter._channel_state[CHANNEL]
+        for index in range(_buzz_mod._THREAD_CACHE_CAP + 10):
+            adapter._cache_thread_event(
+                state,
+                _tagged_event(f"event-{index}", CHANNEL, content=f"text {index}"),
+            )
+        assert len(state["thread_roots"]) == _buzz_mod._THREAD_CACHE_CAP
+        assert len(state["thread_contents"]) == _buzz_mod._THREAD_CACHE_CAP
 
 
 class TestDmClassification:
@@ -384,6 +520,47 @@ class TestDmClassification:
 # ── Sending ───────────────────────────────────────────────────────────────
 
 
+class TestJoinedChannelHotAdd:
+    """New group rooms must become watchable without a gateway restart."""
+
+    @pytest.mark.asyncio
+    async def test_refresh_joined_group_channels_all_joined_mode(self):
+        adapter = _make_adapter(extra={"channels": []})  # all-joined
+        adapter.channels = []
+        cli = _ScriptedCli()
+        new_ch = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        cli.script("channels", "list", [
+            {"channel_id": CHANNEL, "name": "general", "description": "hub"},
+            {"channel_id": new_ch, "name": "🐔⚡-new-epic", "description": "epic room"},
+        ])
+        # seed calls messages get for each new channel
+        cli.script("messages", "get", [])
+        cli.script("messages", "get", [])
+        adapter._run_cli = cli
+        # pre-seed one channel so only the new one is "added"
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 1, "seen": {}}
+        added = await adapter._refresh_joined_group_channels()
+        assert new_ch in added
+        assert new_ch in adapter._channel_state
+        assert CHANNEL not in added
+
+    @pytest.mark.asyncio
+    async def test_refresh_respects_fixed_allowlist(self):
+        adapter = _make_adapter(extra={"channels": [CHANNEL]})
+        adapter.channels = [CHANNEL]
+        cli = _ScriptedCli()
+        outsider = "ffffffff-0000-0000-0000-ffffffffffff"
+        cli.script("channels", "list", [
+            {"channel_id": CHANNEL, "name": "general"},
+            {"channel_id": outsider, "name": "not-allowed"},
+        ])
+        adapter._run_cli = cli
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 1, "seen": {}}
+        added = await adapter._refresh_joined_group_channels()
+        assert added == []
+        assert outsider not in adapter._channel_state
+
+
 class TestBuzzAdapterSend:
 
     @pytest.mark.asyncio
@@ -406,6 +583,50 @@ class TestBuzzAdapterSend:
         assert stdin_text == "hello **markdown**"
         # Our own event id is marked seen for echo suppression
         assert "evt123" in adapter._channel_state[CHANNEL]["seen"]
+
+    @pytest.mark.asyncio
+    async def test_send_metadata_thread_id(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt125", "message": ""})
+        adapter._run_cli = cli
+        await adapter.send(CHANNEL, "threaded", metadata={"thread_id": "root-event"})
+        args, _stdin = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == "root-event"
+
+    @pytest.mark.asyncio
+    async def test_send_prefers_thread_id_over_leaf_reply_to(self):
+        """Gateway always passes reply_to=leaf; thread_id must win for flat trees."""
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt126", "message": ""})
+        adapter._run_cli = cli
+        await adapter.send(
+            CHANNEL,
+            "flat",
+            reply_to="leaf-event",
+            metadata={"thread_id": "root-event"},
+        )
+        args, _stdin = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == "root-event"
+
+    @pytest.mark.asyncio
+    async def test_send_rewrites_leaf_to_cached_root(self):
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 0,
+            "seen": {},
+            "thread_roots": {"leaf-event": "root-event"},
+        }
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt127", "message": ""})
+        adapter._run_cli = cli
+        await adapter.send(CHANNEL, "flat", reply_to="leaf-event")
+        args, _stdin = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == "root-event"
+        # Outbound event maps onto the same root
+        assert adapter._channel_state[CHANNEL]["thread_roots"]["evt127"] == "root-event"
 
 
     @pytest.mark.asyncio

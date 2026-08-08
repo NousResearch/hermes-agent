@@ -149,6 +149,10 @@ def _browser_cdp_selected_frame_private_guard(
     routing: a public parent can embed a private OOPIF, and the supervisor
     dispatches into that child session independently. Navigation/inspection
     allowlisted methods still pass so the model can leave or inspect tabs.
+
+    When the selected frame already has a child ``session_id`` but URL/origin
+    metadata is still empty (common briefly after Target.attachedToTarget),
+    fail closed for non-allowlisted methods instead of dispatching blind.
     """
     try:
         from tools import browser_tool as bt  # type: ignore[import-not-found]
@@ -157,12 +161,22 @@ def _browser_cdp_selected_frame_private_guard(
             return None
         if method in _CDP_PRIVATE_PAGE_ALLOWED_METHODS:
             return None
-        blocked = _private_address_from_candidates(
-            frame_info.get("url"),
-            frame_info.get("origin"),
-        )
+        frame_url = str(frame_info.get("url") or "").strip()
+        frame_origin = str(frame_info.get("origin") or "").strip()
+        blocked = _private_address_from_candidates(frame_url, frame_origin)
         if blocked:
             return _private_page_guard_error(blocked, method)
+        # OOPIF session without address metadata: cannot prove the frame is
+        # public, so do not fail-open into page-content CDP.
+        if frame_info.get("session_id") and not frame_url and not frame_origin:
+            return tool_error(
+                "Blocked: selected OOPIF frame has no URL/origin metadata "
+                f"yet; raw CDP method {method!r} could expose private page "
+                "content or state. Retry after browser_snapshot once the "
+                "frame has navigated.",
+                method=method,
+                cdp_docs=CDP_DOCS_URL,
+            )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "browser_cdp: selected-frame private-page guard probe failed: %s",

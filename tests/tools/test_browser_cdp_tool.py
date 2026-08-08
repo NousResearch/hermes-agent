@@ -551,6 +551,47 @@ def test_frame_id_allowlist_survives_private_oopif(monkeypatch):
     assert len(dispatched) == 1
 
 
+def test_frame_id_blocks_oopif_with_empty_url_and_origin(monkeypatch):
+    """OOPIF session without URL/origin metadata must fail closed for page CDP."""
+    import tools.browser_tool as bt
+    import tools.browser_supervisor as bs
+
+    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(bt, "_current_page_private_url", lambda task_id: None)
+
+    supervisor = _FakeSupervisor(
+        frame_tree={
+            "top": {
+                "frame_id": "top-1",
+                "url": "https://example.com/",
+                "origin": "https://example.com",
+            },
+            "children": [
+                {
+                    "frame_id": "oopif-pending",
+                    "url": "",
+                    "origin": "",
+                    "session_id": "child-session",
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(bs.SUPERVISOR_REGISTRY, "get", lambda task_id: supervisor)
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            params={"expression": "document.body.innerText"},
+            frame_id="oopif-pending",
+            task_id="task-1",
+        )
+    )
+
+    assert "error" in result
+    assert "no URL/origin metadata" in result["error"]
+    assert supervisor.cdp_calls == []
+
+
 def test_page_navigate_to_private_url_blocked_before_cdp(monkeypatch):
     calls = []
 

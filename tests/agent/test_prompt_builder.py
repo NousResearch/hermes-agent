@@ -27,6 +27,7 @@ from agent.prompt_builder import (
     drain_truncation_warnings,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    TOOL_USE_ENFORCEMENT_SKIP_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
@@ -936,6 +937,28 @@ class TestToolUseEnforcementGuidance:
 
     def test_guidance_requires_action(self):
         assert "MUST" in TOOL_USE_ENFORCEMENT_GUIDANCE
+
+
+    def test_skip_models_covers_known_overfire_targets(self):
+        # The fix for upstream #81670 (GPT-5.6 Sol over-verifies under
+        # tool_use_enforcement: auto) targets the new GPT-5.6 family. Make
+        # sure the canonical target is in the skip set, AND that it's a
+        # substring match (not an exact-id match) so the skip survives
+        # provider-prefix variants like ``openai/gpt-5.6`` and
+        # ``azure/gpt-5.6-instruct``.
+        assert "gpt-5.6" in {s for s in TOOL_USE_ENFORCEMENT_SKIP_MODELS}
+        for variant in ("openai/gpt-5.6", "azure/gpt-5.6-instruct", "gpt-5.7"):
+            assert any(s in variant.lower() for s in TOOL_USE_ENFORCEMENT_SKIP_MODELS), variant
+
+
+    def test_skip_models_does_not_mask_earlier_gpt(self):
+        # The skip must NOT match older GPT model ids (gpt-4o, gpt-4.1,
+        # gpt-5, gpt-5-mini etc.), or the fix would silently widen beyond
+        # its scope. ``gpt-5`` (without the .x suffix) is the historic
+        # enforcement-eligible model — excluded here.
+        for model in ("openai/gpt-4o", "openai/gpt-4.1", "openai/gpt-5", "openai/gpt-5-mini"):
+            model_lower = model.lower()
+            assert not any(s in model_lower for s in TOOL_USE_ENFORCEMENT_SKIP_MODELS), model
 
 
 

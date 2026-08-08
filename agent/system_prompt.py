@@ -46,6 +46,7 @@ from agent.prompt_builder import (
     TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    TOOL_USE_ENFORCEMENT_SKIP_MODELS,
     drain_truncation_warnings,
 )
 from agent.runtime_cwd import resolve_context_cwd
@@ -278,9 +279,18 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             model_lower = (agent.model or "").lower()
             _inject = any(p.lower() in model_lower for p in _enforce if isinstance(p, str))
         else:
-            # "auto" or any unrecognised value — use hardcoded defaults
+            # "auto" or any unrecognised value — use hardcoded defaults,
+            # but honor the skip list for models that over-fire on the
+            # enforcement/verification prompts (#81670 — GPT-5.6 Sol, etc.).
             model_lower = (agent.model or "").lower()
-            _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
+            _skip_enforcement = (
+                TOOL_USE_ENFORCEMENT_SKIP_MODELS
+                and any(s in model_lower for s in TOOL_USE_ENFORCEMENT_SKIP_MODELS)
+            )
+            if _skip_enforcement:
+                _inject = False
+            else:
+                _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
         if _inject:
             stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
             _model_lower = (agent.model or "").lower()

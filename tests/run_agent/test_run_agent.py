@@ -1057,6 +1057,113 @@ class TestToolUseEnforcementConfig:
             assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
 
 
+class TestToolUseEnforcementSkipModels:
+    """Tool-use enforcement must be suppressed for the new GPT-5.x family
+    under the unconfigured ``auto`` default — see upstream #81670.
+
+    GPT-5.6 Sol is strongly completion-biased and over-fires on the
+    ``TOOL_USE_ENFORCEMENT_GUIDANCE`` + ``OPENAI_MODEL_EXECUTION_GUIDANCE``
+    prompts (kept making marginal verification tool calls past the user's
+    natural stopping point). The skip list excludes these model ids from
+    auto-mode enforcement; explicit config (``true|false|<list>``) still
+    wins so users can opt back in.
+    """
+
+    def _make_agent(self, model, tool_use_enforcement="auto"):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("terminal", "web_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"tool_use_enforcement": tool_use_enforcement}},
+            ), patch(
+                "hermes_cli.config.load_config_readonly",
+                return_value={"agent": {"tool_use_enforcement": tool_use_enforcement}},
+            ),
+        ):
+            a = AIAgent(
+                model=model,
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_gpt_5_6_skips_enforcement_under_auto(self):
+        from agent.prompt_builder import (
+            OPENAI_MODEL_EXECUTION_GUIDANCE,
+            TOOL_USE_ENFORCEMENT_GUIDANCE,
+        )
+        agent = self._make_agent(model="openai/gpt-5.6")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE not in prompt
+
+    def test_gpt_5_7_skips_enforcement_under_auto(self):
+        from agent.prompt_builder import (
+            OPENAI_MODEL_EXECUTION_GUIDANCE,
+            TOOL_USE_ENFORCEMENT_GUIDANCE,
+        )
+        agent = self._make_agent(model="openai/gpt-5.7")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE not in prompt
+
+    def test_earlier_gpt_still_gets_enforcement_under_auto(self):
+        from agent.prompt_builder import (
+            OPENAI_MODEL_EXECUTION_GUIDANCE,
+            TOOL_USE_ENFORCEMENT_GUIDANCE,
+        )
+        # gpt-5 (without the .x suffix) is the historic enforcement
+        # target — it must still get both blocks. Regression guard for
+        # the skip-list scope (see upstream #81670 comment).
+        agent = self._make_agent(model="openai/gpt-5")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE in prompt
+
+    def test_gpt_4_1_still_gets_enforcement_under_auto(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="openai/gpt-4.1")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_explicit_true_overrides_skip_under_auto(self):
+        # Users who want enforcement on GPT-5.6 can opt in with
+        # ``tool_use_enforcement: true`` — the skip list only affects
+        # unconfigured ``auto``. (``agent_init.py`` resolves ``true`` to
+        # the boolean True here.)
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(
+            model="openai/gpt-5.6", tool_use_enforcement=True
+        )
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_explicit_false_keeps_skip_behavior(self):
+        # Symmetry: explicit ``false`` should ALSO override the skip
+        # path (so users can also opt out of enforcement for older
+        # GPTs). The skip is a property of the ``auto`` default, not a
+        # floor that explicit ``false`` would have to override — but the
+        # dispatch already collapses both branches to ``_inject=False``
+        # in the explicit branch, which is exactly what ``false``
+        # wants. Regression guard: explicit false on the new model
+        # does NOT inject.
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(
+            model="openai/gpt-5.6", tool_use_enforcement=False
+        )
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
+
+
 class TestTaskCompletionGuidance:
     """Tests for the universal task-completion / no-fabrication guidance
     (config.yaml ``agent.task_completion_guidance``).

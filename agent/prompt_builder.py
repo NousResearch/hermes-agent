@@ -325,6 +325,29 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 # Add new patterns here when a model family needs explicit steering.
 TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek")
 
+# Model name substrings that opt OUT of tool-use enforcement (and the
+# companion GPT/Codex execution-discipline block) under the ``auto`` default.
+#
+# Rationale (upstream #81670): GPT-5.6 Sol on the new GPT-5.x family is
+# strongly completion-biased — it already keeps working past the user's
+# intent and prunes superfluous edge checks poorly. The injection prompts
+# (``TOOL_USE_ENFORCEMENT_GUIDANCE`` + ``OPENAI_MODEL_EXECUTION_GUIDANCE``)
+# amplify that by telling it to "continue until verified", "perform a
+# verification pass before finalising", "check prerequisites rather than
+# assuming them", and "don't stop when another tool call would materially
+# improve the result" — for this model the bars read as license to keep
+# making marginal tool calls after the user's task is already satisfied.
+# Skipping both blocks (still under ``auto``) restores the user's natural
+# stopping point without requiring a config change.
+#
+# Only consulted under the unconfigured ``auto`` branch; explicit
+# ``tool_use_enforcement: true|false|<list>`` in config.yaml wins, so a
+# user who wants the enforcement on these models can still opt in.
+# Substring match (case-insensitive) against the agent model id — same
+# shape as ``TOOL_USE_ENFORCEMENT_MODELS`` so adding new skip targets is
+# symmetric with adding new enforcement targets.
+TOOL_USE_ENFORCEMENT_SKIP_MODELS = frozenset({"gpt-5.6", "gpt-5.7"})
+
 # Universal "finish the job" guidance — applied to ALL models, not gated
 # by model family.  Addresses two cross-model failure modes:
 #   1. Stopping after a stub: writing a tiny file or running one command

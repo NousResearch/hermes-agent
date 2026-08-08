@@ -8863,7 +8863,15 @@ def _module_hermes_argv() -> list[str]:
     # ``hermes_cli.main`` is the console-script target declared in
     # pyproject.toml, NOT a top-level ``hermes`` package — there is no
     # ``hermes`` package to import.
-    return [sys.executable, "-m", "hermes_cli.main"]
+    #
+    # ``-P`` (PYTHONSAFEPATH) keeps the worker's ``cwd=workspace`` (see
+    # ``_default_spawn``) out of ``sys.path[0]``. Without it, ``-m`` prepends
+    # the current directory to the module search path, so a task-controlled
+    # workspace file that collides with a real top-level module name (e.g.
+    # ``hermes_bootstrap.py``, imported first thing by ``hermes_cli.main``)
+    # would be imported instead of the installed one — arbitrary code
+    # execution at worker startup, before any task sandboxing applies.
+    return [sys.executable, "-P", "-m", "hermes_cli.main"]
 
 
 def _absolute_hermes_path(path: str) -> str:

@@ -1013,15 +1013,23 @@ def _to_openai_base_url(base_url: str) -> str:
     Some providers (MiniMax, MiniMax-CN) expose an ``/anthropic`` endpoint for
     the Anthropic Messages API and a separate ``/v1`` endpoint for OpenAI chat
     completions.  The auxiliary client uses the OpenAI SDK, so it must hit the
-    ``/v1`` surface.  Passing the raw ``inference_base_url`` causes requests to
-    land on ``/anthropic/chat/completions`` — a 404.
+    provider's OpenAI-compatible surface.  Passing the raw
+    ``inference_base_url`` causes requests to land on
+    ``/anthropic/chat/completions`` — a 404.
+
+    ZAI exposes its general API and Coding Plan on separate endpoints.  Its
+    Anthropic-compatible Coding Plan endpoint maps to ``/api/coding/paas/v4``
+    on the OpenAI wire, not the general ``/api/paas/v4`` endpoint.  Rewriting
+    to the general endpoint changes the billing pool and can return a false
+    insufficient-balance error for a valid Coding Plan key.
     """
     url = str(base_url or "").strip().rstrip("/")
     if url.endswith("/anthropic"):
-        # ZAI (open.bigmodel.cn) uses /api/anthropic for Anthropic wire
-        # but /api/paas/v4 for OpenAI wire — the generic /v1 rewrite is wrong.
-        if "open.bigmodel.cn" in url or "bigmodel" in url:
-            rewritten = url[: -len("/anthropic")] + "/paas/v4"
+        # ZAI uses /api/anthropic for the Coding Plan's Anthropic wire.  The
+        # matching OpenAI-wire endpoint is /api/coding/paas/v4; /api/paas/v4
+        # is the independently billed general API.
+        if "open.bigmodel.cn" in url or "bigmodel" in url or "api.z.ai" in url:
+            rewritten = url[: -len("/anthropic")] + "/coding/paas/v4"
             logger.debug("Auxiliary client: rewrote ZAI base URL %s → %s", url, rewritten)
             return rewritten
         rewritten = url[: -len("/anthropic")] + "/v1"

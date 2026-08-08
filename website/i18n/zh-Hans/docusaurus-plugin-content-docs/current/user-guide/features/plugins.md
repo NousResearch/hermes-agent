@@ -188,20 +188,15 @@ hermes plugins disable <name>     # 从允许列表移除并添加到禁用列�
 
 ## 可用 hook
 
-插件可为以下生命周期事件注册回调。完整详情、回调签名和示例请参见 **[Event Hooks 页面](/user-guide/features/hooks#plugin-hooks)**。
+插件可注册 `hermes_cli.plugins.VALID_HOOKS` 当前接受的 24 个生命周期事件。**[Event Hooks 目录](/user-guide/features/hooks#已发布的-plugin-hook-目录)**是精确触发时机、返回值处理、payload 字段和隐私说明的 canonical reference。
 
-| Hook | 触发时机 |
-|------|-----------|
-| [`pre_tool_call`](/user-guide/features/hooks#pre_tool_call) | 任意工具执行前 |
-| [`post_tool_call`](/user-guide/features/hooks#post_tool_call) | 任意工具返回后 |
-| [`pre_llm_call`](/user-guide/features/hooks#pre_llm_call) | 每轮一次，LLM 循环前 — 可返回 `{"context": "..."}` 以[向用户消息注入上下文](/user-guide/features/hooks#pre_llm_call) |
-| [`post_llm_call`](/user-guide/features/hooks#post_llm_call) | 每轮一次，LLM 循环后（仅成功轮次） |
-| [`on_session_start`](/user-guide/features/hooks#on_session_start) | 新会话创建时（仅第一轮） |
-| [`on_session_end`](/user-guide/features/hooks#on_session_end) | 每次 `run_conversation` 调用结束时 + CLI 退出处理器 |
-| [`on_session_finalize`](/user-guide/features/hooks#on_session_finalize) | CLI/gateway 销毁活跃会话时（`/new`、GC、CLI 退出） |
-| [`on_session_reset`](/user-guide/features/hooks#on_session_reset) | Gateway 换入新会话 key 时（`/new`、`/reset`、`/clear`、空闲轮换） |
-| [`subagent_stop`](/user-guide/features/hooks#subagent_stop) | `delegate_task` 完成后每个子 agent 触发一次 |
-| [`pre_gateway_dispatch`](/user-guide/features/hooks#pre_gateway_dispatch) | Gateway 收到用户消息，在认证和调度之前。返回 `{"action": "skip" \| "rewrite" \| "allow", ...}` 以影响流程。 |
+| 描述性类别 | 已发布 hook |
+|---|---|
+| **指令/控制** | `pre_tool_call`, `pre_llm_call`, `pre_verify`, `pre_gateway_dispatch` |
+| **Transform** | `transform_tool_result`, `transform_terminal_output`, `transform_llm_output` |
+| **观察者** | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `api_request_error`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `on_skill_lifecycle`, `subagent_start`, `subagent_stop`, `pre_approval_request`, `post_approval_response`, `kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked` |
+
+这些类别只描述当前行为，不规定未来命名规则。Plugin middleware 仍是独立的 registry/surface。
 
 ## 插件类型
 

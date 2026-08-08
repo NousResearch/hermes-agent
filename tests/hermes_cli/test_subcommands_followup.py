@@ -64,3 +64,39 @@ def test_mcp_and_acp_accept_hooks_flag():
     # acp takes --accept-hooks at top level
     ns = parser.parse_args(["acp", "--accept-hooks"])
     assert ns.accept_hooks is True
+
+
+def test_skills_optimize_parser_dispatches_to_skills_handler():
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    handler = _h("skills")
+    build_skills_parser(sub, cmd_skills=handler)
+
+    ns = parser.parse_args([
+        "skills",
+        "optimize",
+        "skills/demo",
+        "--candidate",
+        "/tmp/candidate-SKILL.md",
+        "--baseline-score",
+        "0.72",
+        "--candidate-score",
+        "0.81",
+        "--validator",
+        "python eval.py",
+        "--allow-equal",
+        "--dry-run",
+        "--now",
+    ])
+
+    assert ns.command == "skills"
+    assert ns.skills_action == "optimize"
+    assert ns.func is handler
+    assert ns.skill_path == "skills/demo"
+    assert ns.candidate == "/tmp/candidate-SKILL.md"
+    assert ns.baseline_score == 0.72
+    assert ns.candidate_score == 0.81
+    assert ns.validator == "python eval.py"
+    assert ns.allow_equal is True
+    assert ns.dry_run is True
+    assert ns.now is True

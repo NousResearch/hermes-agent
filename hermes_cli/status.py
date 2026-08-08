@@ -209,8 +209,16 @@ def show_status(args):
         if name == "Anthropic":
             continue
         value = _resolve_env(env_ref)
-        has_key = bool(value)
-        display = redact_key(value)
+        self_hosted_firecrawl = False
+        if name == "Firecrawl":
+            value = value.strip()
+            self_hosted_firecrawl = bool(
+                (get_env_value("FIRECRAWL_API_URL") or "").strip()
+            )
+        if self_hosted_firecrawl and not value:
+            has_key, display = True, "self-hosted"
+        else:
+            has_key, display = bool(value), redact_key(value)
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
 
     from hermes_cli.auth import get_anthropic_key

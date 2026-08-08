@@ -3901,6 +3901,12 @@ class APIServerAdapter(BasePlatformAdapter):
             "X-Accel-Buffering": "no",
             "X-Hermes-Session-Id": session_id,
         }
+        # CORS middleware can't inject headers into StreamResponse after
+        # prepare() flushes them, so resolve CORS headers up front (#72892).
+        origin = request.headers.get("Origin", "")
+        cors = self._cors_headers_for_origin(origin) if origin else None
+        if cors:
+            headers.update(cors)
         if gateway_session_key:
             headers["X-Hermes-Session-Key"] = gateway_session_key
         response = web.StreamResponse(status=200, headers=headers)

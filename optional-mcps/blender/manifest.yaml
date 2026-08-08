@@ -22,11 +22,15 @@ transport:
   command: "uvx"
   # Pinned per catalog dependency policy: exact version, and the release must
   # be at least 2 weeks old at pin time (supply-chain cooldown — same rule as
-  # pyproject.toml dependencies). 1.6.4 released 2026-06-11. The catalog never
-  # auto-updates; bumping the pin is a PR to this manifest.
+  # pyproject.toml dependencies). 1.6.5 released 2026-07-29 — emergency bump
+  # before cooldown expiry: 1.6.4 declares `mcp[cli]>=1.3.0` unbounded, so uv
+  # resolves mcp 2.0.0 (removed `mcp.server.fastmcp`) and the server crashes
+  # with ModuleNotFoundError at import. 1.6.5 pins `mcp[cli]<2,>=1.3.0` and is
+  # verified working. The catalog never auto-updates; bumping the pin is a PR
+  # to this manifest.
   args:
-    - "blender-mcp==1.6.4"
-  version: "1.6.4"
+    - "blender-mcp==1.6.5"
+  version: "1.6.5"
   env:
     # Upstream ships anonymous telemetry, on by default. Hermes policy is
     # no outbound telemetry without explicit opt-in, so the catalog entry

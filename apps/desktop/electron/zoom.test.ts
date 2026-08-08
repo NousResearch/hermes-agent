@@ -73,7 +73,7 @@ test('extreme percentages clamp to the level bounds', () => {
   assert.equal(percentToZoomLevel(1_000_000), 9)
 })
 
-test('installZoomReassertOnWindowEvents wires show, restore, resize, and cross-display moves on macOS and Windows', () => {
+test('installZoomReassertOnWindowEvents wires show, restore, resize, cross-display moves, and focus on macOS and Windows', () => {
   const handlers = new Map()
 
   const win = {
@@ -97,7 +97,8 @@ test('installZoomReassertOnWindowEvents wires show, restore, resize, and cross-d
   handlers.get('restore')()
   handlers.get('resized')()
   handlers.get('moved')()
-  assert.equal(calls, 4)
+  handlers.get('focus')()
+  assert.equal(calls, 5)
 })
 
 test('installZoomReassertOnWindowEvents debounces Linux resize and move events at the trailing edge', () => {

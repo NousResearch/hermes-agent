@@ -210,6 +210,7 @@ import { formatBlockerMessage, formatProbeFailedMessage, scanVenvBlockers } from
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { readWindowBelow } from './window-below'
+import { createWindowRevealController } from './window-reveal'
 import {
   computeWindowOptions,
   debounce,
@@ -8725,6 +8726,31 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   })
 }
 
+// Every window we open starts with `show: false` so the renderer's first themed
+// paint lands before it appears, and `ready-to-show` is what reveals it.
+// Electron 40 can drop that event entirely (electron/electron#51972) on
+// Linux/Wayland, remote displays and VMs, leaving the window hidden forever even
+// though the renderer finished loading. Keep the themed path as the preferred
+// reveal, then fall back a few seconds after the renderer loads. `show` and
+// `onRevealed` carry the caller's reveal action and post-visible work; whichever
+// path wins runs them exactly once.
+function wireWindowReveal(win, { show, onRevealed }: { show?: () => void; onRevealed?: () => void } = {}) {
+  const controller = createWindowRevealController(
+    {
+      isDestroyed: () => win.isDestroyed(),
+      isVisible: () => win.isVisible(),
+      show: show ?? (() => win.show())
+    },
+    { onRevealed }
+  )
+
+  win.once('ready-to-show', controller.reveal)
+  win.webContents.once('did-finish-load', controller.scheduleFallback)
+  win.on('closed', controller.dispose)
+
+  return controller
+}
+
 // Secondary "session windows" — one extra OS window per chat so a user can
 // work with multiple chats side by side. The registry guarantees one window
 // per sessionId (re-opening focuses the existing window) and self-cleans on
@@ -8778,11 +8804,7 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
     win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
   }
 
-  win.once('ready-to-show', () => {
-    if (!win.isDestroyed()) {
-      win.show()
-    }
-  })
+  wireWindowReveal(win)
 
   win.on('enter-full-screen', () => sendWindowStateChanged(true))
   win.on('leave-full-screen', () => sendWindowStateChanged(false))
@@ -8860,11 +8882,7 @@ function createInstanceWindow() {
     win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
   }
 
-  win.once('ready-to-show', () => {
-    if (!win.isDestroyed()) {
-      win.show()
-    }
-  })
+  wireWindowReveal(win)
 
   // Per-window fullscreen chrome: send this window its own titlebar inset so its
   // traffic lights hide/show independently of the primary.
@@ -8982,11 +9000,7 @@ function spawnPetOverlayWindow(bounds) {
   // owns its window-fit + scale, and inheriting zoom would crop the sprite.
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('petOverlay'))
 
-  win.once('ready-to-show', () => {
-    if (!win.isDestroyed()) {
-      win.showInactive()
-    }
-  })
+  wireWindowReveal(win, { show: () => win.showInactive() })
 
   win.on('closed', () => {
     if (petOverlayWindow === win) {
@@ -9231,17 +9245,16 @@ function spawnHudWindow(sessionId) {
   win.on('moved', schedulePersistHudState)
   win.on('resized', schedulePersistHudState)
 
-  win.once('ready-to-show', () => {
-    if (win.isDestroyed()) {
-      return
-    }
-
-    win.show()
-    win.focus()
-
-    // Step the app aside: the HUD IS the surface now.
-    if (hudRestoreMainWindow && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.hide()
+  wireWindowReveal(win, {
+    show: () => {
+      win.show()
+      win.focus()
+    },
+    onRevealed: () => {
+      // Step the app aside: the HUD IS the surface now.
+      if (hudRestoreMainWindow && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.hide()
+      }
     }
   })
 
@@ -9454,11 +9467,15 @@ function repositionQuickEntryWindow(win) {
 
 function showQuickEntryWindow() {
   if (!quickEntryWindow || quickEntryWindow.isDestroyed()) {
-    quickEntryWindow = spawnQuickEntryWindow()
-    quickEntryWindow.once('ready-to-show', () => {
-      if (!quickEntryWindow?.isDestroyed()) {
-        quickEntryWindow.show()
-        quickEntryWindow.focus()
+    // Reveal the window this call created, not whatever `quickEntryWindow`
+    // points at by the time the event lands.
+    const win = spawnQuickEntryWindow()
+    quickEntryWindow = win
+
+    wireWindowReveal(win, {
+      show: () => {
+        win.show()
+        win.focus()
       }
     })
 
@@ -9556,6 +9573,8 @@ function createWindow() {
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
+  const createdMainWindow = mainWindow
+
   if (IS_MAC) {
     mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
 
@@ -9579,41 +9598,38 @@ function createWindow() {
     mainWindow.maximize()
   }
 
-  mainWindow.once('ready-to-show', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.show()
-    }
+  const revealController = wireWindowReveal(createdMainWindow, {
+    onRevealed: () => {
+      // Persist geometry as soon as the window is visible so a crash before the
+      // first clean resize/move/close still captures the restored bounds (#56726).
+      schedulePersistWindowState()
 
-    // Persist geometry as soon as the window is visible so a crash before the
-    // first clean resize/move/close still captures the restored bounds (#56726).
-    schedulePersistWindowState()
-
-    // #38216: clear the mid-boot marker only after a window is actually usable.
-    // Keep sticky `fallback` when we launched with --no-sandbox so the next
-    // Start Menu click does not re-enter the GPU FATAL crash loop. The marker
-    // records the app version so the next update re-probes the sandbox.
-    if (IS_WINDOWS) {
-      try {
-        writeSandboxMarker(
-          app.getPath('userData'),
-          markerAfterSuccessfulBoot({
-            fallbackActive: windowsSandboxFallbackSticky,
-            reason: windowsSandboxFallbackReason,
-            appVersion: app.getVersion()
-          })
-        )
-      } catch (error) {
-        rememberLog(`[sandbox] marker update after ready-to-show failed: ${error?.message || error}`)
+      // #38216: clear the mid-boot marker only after a window is actually usable.
+      // Keep sticky `fallback` when we launched with --no-sandbox so the next
+      // Start Menu click does not re-enter the GPU FATAL crash loop. The marker
+      // records the app version so the next update re-probes the sandbox.
+      if (IS_WINDOWS) {
+        try {
+          writeSandboxMarker(
+            app.getPath('userData'),
+            markerAfterSuccessfulBoot({
+              fallbackActive: windowsSandboxFallbackSticky,
+              reason: windowsSandboxFallbackReason,
+              appVersion: app.getVersion()
+            })
+          )
+        } catch (error) {
+          rememberLog(`[sandbox] marker update after main-window reveal failed: ${error?.message || error}`)
+        }
       }
     }
   })
 
-  // Under Playright testing, instantly show the window.
-  // `ready-to-show` doesn't fire in some testing envs.
+  // Under Playwright testing, instantly show the window: `ready-to-show`
+  // doesn't fire in some testing envs, and the suite can't wait out the
+  // production fallback.
   if (process.env.TEST_WORKER_INDEX !== undefined) {
-    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
-      mainWindow.show()
-    }
+    revealController.reveal()
   }
 
   mainWindow.on('will-enter-full-screen', () => sendWindowStateChanged(true))
@@ -9634,7 +9650,6 @@ function createWindow() {
   mainWindow.on('close', () => schedulePersistWindowState.flush())
 
   // the closed wrapper remains truthy, so clear only the window this callback owns.
-  const createdMainWindow = mainWindow
   mainWindow.on('closed', () => {
     closePetOverlay()
     wakeIndicatorController.close()

@@ -45,6 +45,10 @@ logger = logging.getLogger(__name__)
 _CONFIG_PARSE_WARNED: set = set()
 
 
+class InvalidUserConfigError(RuntimeError):
+    """Raised when a run that cannot repair config finds invalid user YAML."""
+
+
 def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
     """Preserve a corrupted ``config.yaml`` by copying it to a timestamped ``.bak``.
 
@@ -770,6 +774,48 @@ from utils import atomic_replace, fast_safe_load
 def get_config_path() -> Path:
     """Get the main config file path."""
     return get_hermes_home() / "config.yaml"
+
+
+def require_parseable_user_config(*, ignore_user_config: bool = False) -> None:
+    """Reject an existing invalid config before a non-interactive agent run.
+
+    Interactive surfaces retain ``load_config()``'s recovery behavior so the
+    operator can repair their configuration. A one-shot or single-query run
+    has no such repair opportunity: allowing defaults there can silently pick
+    a hosted provider/model and spend against credentials loaded from ``.env``.
+
+    Missing and empty files remain valid first-run states. The explicit
+    ``--ignore-user-config``/safe-mode escape hatch also remains authoritative.
+    """
+    if ignore_user_config or os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
+        return
+
+    config_path = get_config_path()
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            data = fast_safe_load(f)
+    except FileNotFoundError:
+        return
+    except Exception as exc:
+        parse_error = exc
+    else:
+        if data is None or isinstance(data, dict):
+            return
+        parse_error = TypeError(
+            f"top-level YAML value must be a mapping, got {type(data).__name__}"
+        )
+
+    backup_path = _backup_corrupt_config(config_path)
+    message = (
+        f"Refusing non-interactive startup because {config_path} is invalid: "
+        f"{parse_error}. Repair the file or pass --ignore-user-config to "
+        "intentionally run with built-in defaults."
+    )
+    if backup_path is not None:
+        message += f" A copy was saved to {backup_path}."
+    logger.error(message)
+    raise InvalidUserConfigError(message) from parse_error
+
 
 def get_env_path() -> Path:
     """Get the .env file path (for API keys)."""

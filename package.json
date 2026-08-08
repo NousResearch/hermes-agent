@@ -50,7 +50,8 @@
     "lodash": "4.18.1",
     "yauzl": "^3.3.1",
     "protobufjs": "^8.7.1",
-    "brace-expansion": "5.0.8"
+    "brace-expansion": "5.0.9",
+    "undici": "7.29.0"
   },
   "engines": {
     "node": ">=22.22.0",
@@ -62,8 +63,8 @@
     "node-pty@1.1.0": true,
     "electron-winstaller@5.4.0": true,
     "agent-browser@0.26.0": true,
-    "electron@40.10.2": true,
     "fsevents@2.3.2": true,
-    "fsevents@2.3.3": true
+    "fsevents@2.3.3": true,
+    "electron@41.10.3": true
   }
 }

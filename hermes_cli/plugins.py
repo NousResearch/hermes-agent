@@ -1462,7 +1462,36 @@ class PluginManager:
             # path actually asks for that platform. Every platform Hermes ships
             # remains available out of the box — it just loads on first use.
             if manifest.source == "bundled" and manifest.kind == "platform":
-                self._register_deferred_platform(manifest)
+                # Explicitly-enabled bundled platform plugins load eagerly so
+                # their client tools/hooks are registered before sessions
+                # compose their toolset (otherwise e.g. the a2a client tools
+                # never reach the agent session). Non-enabled platforms stay
+                # deferred so plain `hermes` invocations don't import heavy
+                # platform SDKs they never use.
+                _enabled_set = set(enabled) if enabled is not None else set()
+                _lk = manifest.key or manifest.name
+                _cands = {manifest.name, _lk}
+                _path_key = None
+                try:
+                    from pathlib import Path
+                    _pp = Path(manifest.path).resolve()
+                    _root = Path(get_bundled_plugins_dir()).resolve()
+                    # as_posix(): canonical keys are forward-slash even on
+                    # Windows (str(relative_to) would yield backslashes there
+                    # and never match user-saved enable keys).
+                    _path_key = _pp.relative_to(_root).as_posix()
+                except (OSError, ValueError):
+                    logger.debug(
+                        "Could not derive path-derived key for plugin %r; "
+                        "falling back to name/key matching only",
+                        _lk,
+                    )
+                if _path_key:
+                    _cands.add(_path_key)
+                if _enabled_set & _cands:
+                    self._load_plugin(manifest)
+                else:
+                    self._register_deferred_platform(manifest)
                 continue
 
             # Everything else (standalone, user-installed backends,

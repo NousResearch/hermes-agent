@@ -536,6 +536,39 @@ class CLICommandsMixin:
         agent_running = getattr(self, "_agent_running", False)
         _cprint(f"  Agent: {'running' if agent_running else 'idle'}")
 
+    def _tokenize_slash_command(
+        self, text: str, *, label: str, example: str
+    ) -> list[str] | None:
+        """Split a typed slash command into tokens, or refuse to run it.
+
+        ``shlex.split`` raises ``ValueError`` ("No closing quotation") when the
+        line has an unbalanced quote. The interactive dispatch guards
+        ``process_command`` with ``except KeyboardInterrupt`` only, so a
+        ``ValueError`` escaping a slash handler unwinds to the outer
+        prompt_toolkit loop and the session dies along with the conversation.
+
+        Returns the tokens, or ``None`` after printing a quoting hint when the
+        line cannot be parsed. Refusing is deliberate: falling back to a naive
+        ``text.split()`` keeps the session alive but lets malformed input run,
+        because ``/cron add 30m "partial`` still splits into a well-formed
+        ``add`` whose schedule (``30m``) validates.
+
+        The hint goes through ``_cli_visible_print`` because ``patch_stdout``
+        swallows bare ``print`` while the prompt_toolkit Application owns the
+        terminal — which is precisely the situation this guard exists for, so a
+        bare ``print`` would leave the refusal silent.
+        """
+        import shlex
+
+        from cli import _cli_visible_print
+
+        try:
+            return shlex.split(text)
+        except ValueError as exc:
+            _cli_visible_print(f"(._.) {label}: {exc}. Nothing was run.")
+            _cli_visible_print(f"      Close the quote, e.g. {example}")
+            return None
+
     def _handle_journey_command(self, cmd_original: str) -> None:
         """Handle /journey — the learning timeline (see `hermes journey`).
 
@@ -546,7 +579,6 @@ class CLICommandsMixin:
         """
         import argparse
         import io
-        import shlex
         from contextlib import redirect_stdout
 
         from cli import _cprint
@@ -555,8 +587,16 @@ class CLICommandsMixin:
         parser = argparse.ArgumentParser(prog="/journey", add_help=False)
         register_cli(parser)
         rest = cmd_original.split(None, 1)
+        if len(rest) > 1:
+            tokens = self._tokenize_slash_command(
+                rest[1], label="/journey", example='/journey delete "my entry"'
+            )
+            if tokens is None:
+                return
+        else:
+            tokens = []
         try:
-            args = parser.parse_args(shlex.split(rest[1]) if len(rest) > 1 else [])
+            args = parser.parse_args(tokens)
         except SystemExit:
             return
 
@@ -1505,7 +1545,6 @@ class CLICommandsMixin:
     def _handle_cron_command(self, cmd: str):
         """Handle the /cron command to manage scheduled tasks."""
         from cli import get_job
-        import shlex
         from tools.cronjob_tools import cronjob as cronjob_tool
 
         def _cron_api(**kwargs):
@@ -1575,7 +1614,11 @@ class CLICommandsMixin:
                     i += 1
             return opts
 
-        tokens = shlex.split(cmd)
+        tokens = self._tokenize_slash_command(
+            cmd, label="/cron", example='/cron add "every 2h" "Check server status"'
+        )
+        if tokens is None:
+            return
 
         if len(tokens) == 1:
             print()
@@ -1805,9 +1848,15 @@ class CLICommandsMixin:
         Delegates to hermes_cli.curator so the CLI and the `hermes curator`
         subcommand share the same handler set.
         """
-        import shlex
-
-        tokens = shlex.split(cmd)[1:] if cmd else []
+        if cmd:
+            tokens = self._tokenize_slash_command(
+                cmd, label="/curator", example='/curator note "a title"'
+            )
+            if tokens is None:
+                return
+            tokens = tokens[1:]
+        else:
+            tokens = []
         if not tokens:
             tokens = ["status"]
 

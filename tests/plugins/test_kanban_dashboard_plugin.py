@@ -19,6 +19,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+from hermes_cli.plugins import get_plugin_manager
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +59,20 @@ def client(kanban_home):
     app = FastAPI()
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
     return TestClient(app)
+
+
+@pytest.fixture
+def generic_events():
+    manager = get_plugin_manager()
+    seen: list[dict] = []
+    saved = {name: list(callbacks) for name, callbacks in manager._hooks.items()}
+    manager._hooks.setdefault("kanban_task_event", []).append(
+        lambda **kwargs: seen.append(kwargs)
+    )
+    try:
+        yield seen
+    finally:
+        manager._hooks = saved
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +128,94 @@ def test_create_task_appears_on_board(client):
     assert ready["tasks"][0]["id"] == task_id
     assert "acme" in data["tenants"]
     assert "researcher" in data["assignees"]
+
+
+def test_dashboard_event_writers_share_generic_post_commit_contract(
+    client, generic_events
+):
+    first = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "first"}
+    ).json()["task"]
+    second = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "second"}
+    ).json()["task"]
+    generic_events.clear()
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{first['id']}",
+        json={"priority": 7, "title": "first edited"},
+    )
+    assert response.status_code == 200, response.text
+    response = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [first["id"], second["id"]], "priority": 9},
+    )
+    assert response.status_code == 200, response.text
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{first['id']}", json={"status": "todo"}
+    )
+    assert response.status_code == 200, response.text
+
+    assert [event["kind"] for event in generic_events] == [
+        "reprioritized",
+        "edited",
+        "reprioritized",
+        "reprioritized",
+        "status",
+    ]
+    assert [event["task_id"] for event in generic_events] == [
+        first["id"], first["id"], first["id"], second["id"], first["id"],
+    ]
+    assert generic_events[-1]["status_to"] == "todo"
+    assert all("payload" not in event for event in generic_events)
+
+    with kb.connect_closing() as conn:
+        rows = conn.execute(
+            "SELECT id, task_id, kind, created_at FROM task_events "
+            "WHERE id IN ({}) ORDER BY id".format(
+                ",".join("?" for _ in generic_events)
+            ),
+            [event["core_event_seq"] for event in generic_events],
+        ).fetchall()
+    assert [
+        (row["id"], row["task_id"], row["kind"], row["created_at"])
+        for row in rows
+    ] == [
+        (
+            event["core_event_seq"], event["task_id"], event["kind"],
+            event["created_at_epoch_s"],
+        )
+        for event in generic_events
+    ]
+
+
+def test_dashboard_reopened_parent_demotion_captures_child_destination(
+    client, generic_events
+):
+    parent = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "parent"}
+    ).json()["task"]
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}", json={"status": "done"}
+    )
+    assert response.status_code == 200, response.text
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "child", "parents": [parent["id"]]},
+    ).json()["task"]
+    assert child["status"] == "ready"
+    generic_events.clear()
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}", json={"status": "todo"}
+    )
+    assert response.status_code == 200, response.text
+
+    status_events = [event for event in generic_events if event["kind"] == "status"]
+    assert [(event["task_id"], event["status_to"]) for event in status_events] == [
+        (parent["id"], "todo"),
+        (child["id"], "todo"),
+    ]
 
 
 def test_patch_board_sets_project_directory(client, tmp_path):

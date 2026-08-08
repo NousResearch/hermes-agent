@@ -101,6 +101,44 @@ _log = logging.getLogger(__name__)
 
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
+KANBAN_EVENT_SCHEMA_VERSION = "hermes.kanban.event.v1"
+FAILURE_COUNT_MAX = 1000
+KANBAN_EVENT_KINDS: frozenset[str] = frozenset({
+    "created", "linked", "unlinked", "decomposed",
+    "assigned", "model_override_set", "reasoning_effort_set", "commented",
+    "attached", "attachment_removed", "edited", "specified", "reprioritized",
+    "promoted", "promoted_manual", "claimed", "claim_rejected",
+    "claim_extended", "reclaimed", "scheduled", "unblocked", "heartbeat",
+    "spawned", "reclaim_deferred", "respawn_guarded", "completed",
+    "dependency_wait", "blocked", "block_loop_detected", "archived", "status",
+    "stale", "timed_out", "protocol_violation", "rate_limited", "crashed",
+    "spawn_failed", "gave_up", "completion_blocked_hallucination",
+    "suspected_hallucinated_references", "tip_scratch_workspace",
+})
+
+
+@dataclass(frozen=True)
+class _KanbanEventNotification:
+    task_id: str
+    kind: str
+    core_event_seq: int
+    created_at_epoch_s: int
+    run_id: Optional[int]
+    status_to: Optional[str]
+    failure_count: Optional[int]
+
+
+@dataclass
+class _KanbanEventTxnFrame:
+    connection: sqlite3.Connection
+    board: Optional[str]
+    profile_name: str
+    notifications: list[_KanbanEventNotification] = field(default_factory=list)
+
+
+_KANBAN_EVENT_TXN_FRAME: ContextVar[Optional[_KanbanEventTxnFrame]] = ContextVar(
+    "hermes_kanban_event_txn_frame", default=None
+)
 
 # Typed block reasons. Distinguishes the two fundamentally different things a
 # worker (or human) means by "blocked", so each can be routed differently
@@ -208,6 +246,42 @@ def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None
         invoke_hook(event, task_id=task_id, profile_name=profile_name, **fields)
     except Exception as exc:  # pragma: no cover - defensive
         _log.debug("kanban lifecycle hook %s failed: %s", event, exc)
+
+
+def _active_profile_name() -> str:
+    """Resolve the active profile using the existing lifecycle convention."""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        return get_active_profile_name()
+    except Exception:
+        return "default"
+
+
+def _fire_kanban_event_hook(
+    frame: _KanbanEventTxnFrame, notification: _KanbanEventNotification
+) -> None:
+    """Dispatch one content-free generic event, fully best-effort."""
+    fields: dict[str, Any] = {
+        "task_id": notification.task_id,
+        "kind": notification.kind,
+        "core_event_seq": notification.core_event_seq,
+        "created_at_epoch_s": notification.created_at_epoch_s,
+        "run_id": notification.run_id,
+        "board": frame.board,
+        "profile_name": frame.profile_name,
+        "kanban_event_schema_version": KANBAN_EVENT_SCHEMA_VERSION,
+    }
+    if notification.status_to is not None:
+        fields["status_to"] = notification.status_to
+    if notification.failure_count is not None:
+        fields["failure_count"] = notification.failure_count
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+
+        invoke_hook("kanban_task_event", **fields)
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.debug("kanban generic event hook failed: %s", exc)
 
 
 # A running task's claim is valid for 15 minutes by default; after that the
@@ -2799,43 +2873,49 @@ def _execute_boundary_with_retry(conn: sqlite3.Connection, sql: str) -> None:
 
 @contextlib.contextmanager
 def write_txn(conn: sqlite3.Connection):
-    """Context manager for an IMMEDIATE write transaction.
+    """Context manager for one non-reentrant IMMEDIATE write transaction.
 
-    Use for any multi-statement write (creating a task + link, claiming a
-    task + recording an event, etc.).  A claim CAS inside this context is
-    atomic -- at most one concurrent writer can succeed.
-
-    The explicit ROLLBACK on exception is wrapped in try/except so that
-    a SQLite auto-rollback (which leaves no active transaction) does not
-    shadow the original exception with a spurious rollback error.
+    Generic event notifications are transaction-owned and flush synchronously,
+    in insertion order, only after COMMIT and the post-commit file invariant
+    both succeed. The frame is detached before callbacks, so callback-origin
+    writes use an independent transaction.
     """
     _assert_not_delegated_child_mutation()
+    if _KANBAN_EVENT_TXN_FRAME.get() is not None:
+        raise sqlite3.OperationalError("cannot start a transaction within a transaction")
     _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
+    frame = _KanbanEventTxnFrame(
+        connection=conn,
+        board=get_current_board(),
+        profile_name=_active_profile_name(),
+    )
+    token = _KANBAN_EVENT_TXN_FRAME.set(frame)
     try:
         yield conn
     except Exception:
         try:
             conn.execute("ROLLBACK")
         except sqlite3.OperationalError:
-            # SQLite has already auto-rolled-back the transaction (typical
-            # under EIO, lock contention, or corruption). Nothing to undo;
-            # do not let this secondary failure shadow the real one.
+            # SQLite may already have auto-rolled back; preserve the real error.
             pass
         raise
     else:
         try:
             _execute_boundary_with_retry(conn, "COMMIT")
         except Exception:
-            # COMMIT exhausted retries with the txn still open; roll back so the
-            # connection isn't poisoned for the next BEGIN IMMEDIATE.
             try:
                 conn.execute("ROLLBACK")
             except sqlite3.OperationalError:
                 pass
             raise
-        # Post-commit file-length check: header page_count must match actual file pages.
-        # A discrepancy means a torn-extend — raise now rather than silently corrupt.
+        # Existing success boundary: committed rows are not notified if this
+        # post-commit integrity check fails.
         _check_file_length_invariant(conn)
+    finally:
+        _KANBAN_EVENT_TXN_FRAME.reset(token)
+
+    for notification in frame.notifications:
+        _fire_kanban_event_hook(frame, notification)
 
 
 # ---------------------------------------------------------------------------
@@ -3269,6 +3349,7 @@ def create_task(
                         "model_override": model_override,
                         "provider_override": provider_override,
                     },
+                    status_to=task_status,
                 )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
@@ -3544,14 +3625,18 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
         parent_status = conn.execute(
             "SELECT status FROM tasks WHERE id = ?", (parent_id,)
         ).fetchone()["status"]
+        linked_status_to = None
         if parent_status != "done":
-            conn.execute(
+            demoted = conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
             )
+            if demoted.rowcount == 1:
+                linked_status_to = "todo"
         _append_event(
             conn, child_id, "linked",
             {"parent": parent_id, "child": child_id},
+            status_to=linked_status_to,
         )
         _inherit_notify_subs(conn, child_id, (parent_id,))
 
@@ -3958,21 +4043,45 @@ def _append_event(
     payload: Optional[dict] = None,
     *,
     run_id: Optional[int] = None,
-) -> None:
-    """Record an event row.  Called from within an already-open txn.
+    status_to: Optional[str] = None,
+    failure_count: Optional[int] = None,
+) -> int:
+    """Insert an event and queue its content-free post-commit notification."""
+    frame = _KANBAN_EVENT_TXN_FRAME.get()
+    if frame is None or frame.connection is not conn:
+        raise RuntimeError("_append_event requires the active write_txn connection")
+    if status_to is not None and status_to not in VALID_STATUSES:
+        raise ValueError(f"invalid event status_to: {status_to!r}")
 
-    ``run_id`` is optional: pass the current run id so UIs can group
-    events by attempt. For events that aren't scoped to a single run
-    (task created/edited/archived, dependency promotion) leave it None
-    and the row carries NULL.
-    """
     now = int(time.time())
     pl = json.dumps(payload, ensure_ascii=False) if payload else None
-    conn.execute(
+    cursor = conn.execute(
         "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
         "VALUES (?, ?, ?, ?, ?)",
         (task_id, run_id, kind, pl, now),
     )
+    if cursor.lastrowid is None:  # pragma: no cover - SQLite INSERT invariant
+        raise RuntimeError("task event insert returned no row id")
+    event_id = int(cursor.lastrowid)
+    queued_failure_count: Optional[int] = None
+    if (
+        isinstance(failure_count, int)
+        and not isinstance(failure_count, bool)
+        and 0 <= failure_count <= FAILURE_COUNT_MAX
+    ):
+        queued_failure_count = failure_count
+    frame.notifications.append(
+        _KanbanEventNotification(
+            task_id=task_id,
+            kind=kind,
+            core_event_seq=event_id,
+            created_at_epoch_s=now,
+            run_id=run_id,
+            status_to=status_to,
+            failure_count=queued_failure_count,
+        )
+    )
+    return event_id
 
 
 def _end_run(
@@ -4214,7 +4323,7 @@ def recompute_ready(
                         "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
                         (task_id,),
                     )
-                _append_event(conn, task_id, "promoted", None)
+                _append_event(conn, task_id, "promoted", None, status_to="ready")
                 promoted += 1
     return promoted
 
@@ -4262,6 +4371,7 @@ def claim_task(
             _append_event(
                 conn, task_id, "claim_rejected",
                 {"reason": "parents_not_done"},
+                status_to="todo",
             )
             return None
         # Defensive: if a prior run somehow leaked (invariant violation from
@@ -4333,6 +4443,7 @@ def claim_task(
             conn, task_id, "claimed",
             {"lock": lock, "expires": expires, "run_id": run_id},
             run_id=run_id,
+            status_to="running",
         )
         claimed = get_task(conn, task_id)
     _fire_kanban_lifecycle_hook(
@@ -4416,6 +4527,7 @@ def claim_review_task(
             {"lock": lock, "expires": expires, "run_id": run_id,
              "source_status": "review"},
             run_id=run_id,
+            status_to="running",
         )
         return get_task(conn, task_id)
 
@@ -4592,6 +4704,7 @@ def release_stale_claims(
                 conn, row["id"], "reclaimed",
                 payload,
                 run_id=run_id,
+                status_to="ready",
             )
             reclaimed += 1
     return reclaimed
@@ -4657,6 +4770,7 @@ def reclaim_task(
             conn, task_id, "reclaimed",
             payload,
             run_id=run_id,
+            status_to="ready",
         )
     # Operator intervention — they've looked at the task, so the
     # consecutive-failures counter is now stale. Give the next retry
@@ -5000,6 +5114,7 @@ def complete_task(
             conn, task_id, "completed",
             completed_payload,
             run_id=run_id,
+            status_to="done",
         )
     # Prose-scan the summary + result for t_<hex> references that do
     # not resolve. Advisory — does not block the completion. Runs in
@@ -5654,27 +5769,11 @@ def block_task(
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
-    recurrences = 0
-    with write_txn(conn):
-        cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
-            (task_id,),
-        ).fetchone()
-        if cur_row is None:
-            return False
-        prev_kind = cur_row["block_kind"] if "block_kind" in cur_row.keys() else None
-        prev_recurrences = (
-            int(cur_row["block_recurrences"])
-            if "block_recurrences" in cur_row.keys()
-            and cur_row["block_recurrences"] is not None
-            else 0
-        )
 
-        # Dependency blocks never enter the human ``blocked`` bucket — they
-        # wait in ``todo`` and let ``recompute_ready`` gate on parents. Routing
-        # here (rather than ``blocked``) is what keeps a cron from ever seeing
-        # a dependency-wait as something to "unblock".
-        if kind == "dependency":
+    # Dependency blocks have their own routing path so the lifecycle hook can
+    # run only after write_txn has committed and completed its invariant check.
+    if kind == "dependency":
+        with write_txn(conn):
             cur = conn.execute(
                 """
                 UPDATE tasks
@@ -5703,17 +5802,34 @@ def block_task(
             _append_event(
                 conn, task_id, "dependency_wait",
                 {"reason": reason, "kind": kind}, run_id=run_id,
+                status_to="todo",
             )
-            _blocked_task = get_task(conn, task_id)
-            _fire_kanban_lifecycle_hook(
-                "kanban_task_blocked",
-                task_id,
-                board=get_current_board(),
-                assignee=_blocked_task.assignee if _blocked_task else None,
-                run_id=run_id,
-                reason=reason,
-            )
-            return True
+            blocked_task = get_task(conn, task_id)
+        _fire_kanban_lifecycle_hook(
+            "kanban_task_blocked",
+            task_id,
+            board=get_current_board(),
+            assignee=blocked_task.assignee if blocked_task else None,
+            run_id=run_id,
+            reason=reason,
+        )
+        return True
+
+    recurrences = 0
+    with write_txn(conn):
+        cur_row = conn.execute(
+            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if cur_row is None:
+            return False
+        prev_kind = cur_row["block_kind"] if "block_kind" in cur_row.keys() else None
+        prev_recurrences = (
+            int(cur_row["block_recurrences"])
+            if "block_recurrences" in cur_row.keys()
+            and cur_row["block_recurrences"] is not None
+            else 0
+        )
 
         # Truly-blocked kinds. Increment the unblock-loop counter when this is a
         # re-block for the SAME reason after a prior unblock. block_task only
@@ -5762,6 +5878,7 @@ def block_task(
                     "limit": BLOCK_RECURRENCE_LIMIT,
                 },
                 run_id=run_id,
+                status_to="triage",
             )
         else:
             if expected_run_id is None:
@@ -5814,6 +5931,7 @@ def block_task(
                 conn, task_id, "blocked",
                 {"reason": reason, "kind": kind, "recurrences": recurrences},
                 run_id=run_id,
+                status_to="blocked",
             )
         _blocked_task = get_task(conn, task_id)
     _fire_kanban_lifecycle_hook(
@@ -5893,6 +6011,7 @@ def promote_task(
             task_id,
             "promoted_manual",
             {"actor": actor, "reason": reason, "forced": force},
+            status_to="ready",
         )
 
     return True, None
@@ -5960,6 +6079,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         _append_event(
             conn, task_id, "unblocked",
             {"status": new_status} if new_status != "ready" else None,
+            status_to=new_status,
         )
         return True
 
@@ -6045,6 +6165,7 @@ def specify_triage_task(
             task_id,
             "specified",
             {"changed_fields": changed_fields} if changed_fields else None,
+            status_to="todo",
         )
     # Outside the write_txn above, so we don't nest BEGIN IMMEDIATE — the
     # ready-promotion pass opens its own IMMEDIATE txn. This runs the same
@@ -6214,6 +6335,7 @@ def decompose_triage_task(
             _append_event(
                 conn, new_id, "created",
                 {"by": author or "decomposer", "from_decompose_of": task_id},
+                status_to="todo",
             )
             _inherit_notify_subs(conn, new_id, (task_id,), created_at=now)
             child_ids.append(new_id)
@@ -6276,6 +6398,7 @@ def decompose_triage_task(
                 "child_ids": child_ids,
                 "root_assignee": root_assignee,
             },
+            status_to="todo",
         )
 
     # Outside the write_txn: promote parent-free children to 'ready'
@@ -6306,7 +6429,10 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             outcome="reclaimed", status="reclaimed",
             summary="task archived with run still active",
         )
-        _append_event(conn, task_id, "archived", None, run_id=run_id)
+        _append_event(
+            conn, task_id, "archived", None,
+            run_id=run_id, status_to="archived",
+        )
     # ``archived`` parents no longer block children, same as ``done``.
     # Promote newly-unblocked dependents immediately instead of waiting
     # for a later dispatcher tick.
@@ -6728,7 +6854,10 @@ def schedule_task(
                 outcome="scheduled",
                 summary=reason,
             )
-        _append_event(conn, task_id, "scheduled", {"reason": reason}, run_id=run_id)
+        _append_event(
+            conn, task_id, "scheduled", {"reason": reason},
+            run_id=run_id, status_to="scheduled",
+        )
         return True
 
 
@@ -7283,6 +7412,7 @@ def enforce_max_runtime(
                 )
                 _append_event(
                     conn, tid, "timed_out", payload, run_id=run_id,
+                    status_to="ready",
                 )
                 timed_out.append(tid)
         # Increment the unified failure counter. Outside the write_txn
@@ -7421,6 +7551,7 @@ def detect_stale_running(
             )
             _append_event(
                 conn, tid, "stale", payload, run_id=run_id,
+                status_to="ready",
             )
             reclaimed.append(tid)
 
@@ -7755,6 +7886,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     conn, row["id"], event_kind,
                     event_payload,
                     run_id=run_id,
+                    status_to="ready",
                 )
                 if rate_limited_exit:
                     # Stamp the failure-error column so ``check_respawn_guard``
@@ -8004,6 +8136,8 @@ def _record_task_failure(
                 payload.update(event_payload_extra)
             _append_event(
                 conn, task_id, "gave_up", payload, run_id=run_id,
+                failure_count=failures,
+                status_to="blocked",
             )
             blocked = True
         else:
@@ -8037,6 +8171,8 @@ def _record_task_failure(
                     conn, task_id, outcome,
                     {"error": error[:500], "failures": failures},
                     run_id=run_id,
+                    failure_count=failures,
+                    status_to="ready",
                 )
             # Timeout/crash path's caller already emitted its own event.
     return blocked

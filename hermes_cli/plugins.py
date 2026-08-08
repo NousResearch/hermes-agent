@@ -216,6 +216,10 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Generic per-row Kanban observer. Fired synchronously by write_txn only
+    # after COMMIT and the post-commit file invariant succeed. The envelope is
+    # content-free; return values are ignored and failures cannot affect state.
+    "kanban_task_event",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

@@ -312,7 +312,8 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
         tid = kb.create_task(conn, title="cycle test", assignee="worker")
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
         # First crash — fired by the dispatcher when the worker PID dies.
-        kb._append_event(conn, tid, kind="crashed")
+        with kb.write_txn(conn):
+            kb._append_event(conn, tid, kind="crashed")
     finally:
         conn.close()
 
@@ -337,7 +338,8 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
         # Second crash — same task, same dispatcher (or a respawn). Append
         # another event to simulate the dispatcher firing crashed a second
         # time during retry.
-        kb._append_event(conn, tid, kind="crashed")
+        with kb.write_txn(conn):
+            kb._append_event(conn, tid, kind="crashed")
     finally:
         conn.close()
 
@@ -488,11 +490,12 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
     try:
         tid = kb.create_task(conn, title="loops forever", assignee="worker")
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
-        kb._append_event(
-            conn, tid, "block_loop_detected",
-            {"reason": "needs credentials", "kind": "needs_input",
-             "recurrences": 2, "limit": kb.BLOCK_RECURRENCE_LIMIT},
-        )
+        with kb.write_txn(conn):
+            kb._append_event(
+                conn, tid, "block_loop_detected",
+                {"reason": "needs credentials", "kind": "needs_input",
+                 "recurrences": 2, "limit": kb.BLOCK_RECURRENCE_LIMIT},
+            )
     finally:
         conn.close()
 

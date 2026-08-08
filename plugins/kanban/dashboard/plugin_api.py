@@ -964,11 +964,11 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     "UPDATE tasks SET priority = ? WHERE id = ?",
                     (int(payload.priority), task_id),
                 )
-                conn.execute(
-                    "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                    "VALUES (?, 'reprioritized', ?, ?)",
-                    (task_id, json.dumps({"priority": int(payload.priority)}),
-                     int(time.time())),
+                kanban_db._append_event(
+                    conn,
+                    task_id,
+                    "reprioritized",
+                    {"priority": int(payload.priority)},
                 )
 
         # --- title / body -------------------------------------------------
@@ -987,11 +987,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 conn.execute(
                     f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", vals,
                 )
-                conn.execute(
-                    "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                    "VALUES (?, 'edited', NULL, ?)",
-                    (task_id, int(time.time())),
-                )
+                kanban_db._append_event(conn, task_id, "edited")
 
         updated = kanban_db.get_task(conn, task_id)
         return {"task": _task_dict(updated) if updated else None}
@@ -1099,10 +1095,13 @@ def _set_status_direct(
                 outcome="reclaimed", status="reclaimed",
                 summary=f"status changed to {new_status} (dashboard/direct)",
             )
-        conn.execute(
-            "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
-            "VALUES (?, ?, 'status', ?, ?)",
-            (task_id, run_id, json.dumps({"status": new_status}), int(time.time())),
+        kanban_db._append_event(
+            conn,
+            task_id,
+            "status",
+            {"status": new_status},
+            run_id=run_id,
+            status_to=new_status,
         )
         if reopening_satisfied_parent:
             # A parent leaving done/archived invalidates any direct child that
@@ -1120,20 +1119,16 @@ def _set_status_direct(
                     (child_id,),
                 )
                 if demoted.rowcount == 1:
-                    conn.execute(
-                        "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                        "VALUES (?, 'status', ?, ?)",
-                        (
-                            child_id,
-                            json.dumps(
-                                {
-                                    "status": "todo",
-                                    "reason": "parent_reopened",
-                                    "parent": task_id,
-                                }
-                            ),
-                            int(time.time()),
-                        ),
+                    kanban_db._append_event(
+                        conn,
+                        child_id,
+                        "status",
+                        {
+                            "status": "todo",
+                            "reason": "parent_reopened",
+                            "parent": task_id,
+                        },
+                        status_to="todo",
                     )
     # If we re-opened something, children may have gone stale.
     if new_status in {"done", "ready"}:
@@ -1310,11 +1305,11 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             "UPDATE tasks SET priority = ? WHERE id = ?",
                             (int(payload.priority), tid),
                         )
-                        conn.execute(
-                            "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                            "VALUES (?, 'reprioritized', ?, ?)",
-                            (tid, json.dumps({"priority": int(payload.priority)}),
-                             int(time.time())),
+                        kanban_db._append_event(
+                            conn,
+                            tid,
+                            "reprioritized",
+                            {"priority": int(payload.priority)},
                         )
                 if payload.clear_model_override or payload.model_override is not None:
                     new_model = (

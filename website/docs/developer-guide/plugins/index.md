@@ -671,12 +671,15 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
+| `kanban_task_event` | Every committed Kanban event row (originating dispatcher, worker/manual, or dashboard process) | `task_id, kind, core_event_seq: int, created_at_epoch_s: int, run_id: int \| None, board: str \| None, profile_name: str, status_to?: str, failure_count?: int, kanban_event_schema_version: str` | ignored |
 
 Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation, and `pre_tool_call`, which can return a block/approve directive.
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 
 The kanban lifecycle hooks fire **after** the board DB change commits, so a callback always sees durable state and can never hold the SQLite write lock. Because kanban workers run as separate `hermes -p <profile> chat -q` subprocesses, `kanban_task_claimed` fires in the **dispatcher** process while `kanban_task_completed` / `kanban_task_blocked` fire in the **worker** process — hook in the dispatcher to observe every transition centrally, or in the worker for per-task in-session context.
+
+`kanban_task_event` is the content-free generic row observer. It fires synchronously after commit and the board file-integrity check, in insertion order within one transaction, and outside the SQLite write lock. Delivery is process-local, best effort, and at most once: there is no replay or durable outbox, sequence gaps do not prove callback loss, and a slow callback delays the originating CLI, worker, dispatcher, or dashboard return path. The callback receives row identity and bounded transition scalars only—never the event payload, task prose, reason, error, filename, PID, or actor metadata.
 
 ### `pre_llm_call` context injection
 

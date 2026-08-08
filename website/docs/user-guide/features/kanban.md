@@ -477,6 +477,8 @@ The dispatcher spawns the worker with the pinned model (`--provider <name>` is p
 
 Board transitions fire [plugin hooks](/user-guide/features/hooks#plugin-hooks): `kanban_task_claimed`, `kanban_task_completed`, and `kanban_task_blocked`, each carrying `task_id` and `profile_name`. Hooks fire **after** the board DB change commits, so callbacks always see durable state. Note the process split: `kanban_task_claimed` fires in the **dispatcher** process, while `kanban_task_completed`/`kanban_task_blocked` fire in the **worker** process — register the hook in the dispatcher profile to observe every transition centrally.
 
+Plugins can also register `kanban_task_event`, a content-free observer for each committed event row. Its envelope includes `task_id`, `kind`, board-local `core_event_seq`, the committed timestamp and run ID, board/profile identifiers, and—when known—bounded `status_to` and `failure_count` scalars. Callbacks run synchronously after commit and outside the SQLite write lock, in insertion order within one transaction. Delivery is process-local, best effort, and at most once; there is no replay or global arrival-order guarantee, and slow callbacks delay the originating dispatcher, worker/manual, or dashboard return path.
+
 ```python
 def register(ctx):
     def on_blocked(task_id=None, profile_name=None, **kw):

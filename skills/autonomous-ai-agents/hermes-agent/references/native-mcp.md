@@ -119,6 +119,12 @@ Examples:
 
 After discovery, MCP tools are automatically injected into all `hermes-*` platform toolsets (CLI, Discord, Telegram, etc.). This means MCP tools are available in every conversation without any additional configuration.
 
+### Image Results
+
+MCP tools can return `ImageContent` blocks, for example screenshots from browser automation servers or rendered panels from visualization tools. Hermes caches valid image blocks in the shared image cache and surfaces them in the tool result as `MEDIA:<path>` tags, so the agent can inspect the image or include it in a final response on platforms that support native media delivery.
+
+Malformed base64, non-image MIME types, and payloads that fail image validation are logged and dropped without failing the whole tool call. Text and structured content from the same result still come through.
+
 ### Connection Lifecycle
 
 - Each server runs as a long-lived asyncio Task in a background daemon thread
@@ -338,7 +344,7 @@ Disable sampling for untrusted servers with `sampling: { enabled: false }`.
 ## Notes
 
 - MCP tools are called synchronously from the agent's perspective but run asynchronously on a dedicated background event loop
-- Tool results are returned as JSON with either `{"result": "..."}` or `{"error": "..."}`
+- Tool results are returned as JSON with either `{"result": "..."}` or `{"error": "..."}`; image content blocks are exposed inside successful results as `MEDIA:<path>` tags
 - The native MCP client is independent of `mcporter` -- you can use both simultaneously
 - Server connections are persistent and shared across all conversations in the same agent process
 - Adding or removing servers requires restarting the agent (no hot-reload currently)

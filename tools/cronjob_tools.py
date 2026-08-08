@@ -523,8 +523,17 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
 
     Returns an error string if blocked, else None (valid).
     """
-    if not script or not script.strip():
-        return None  # empty/None = clearing the field, always OK
+    # Empty / None clears the field. Non-strings (JSON int/list fillers) must
+    # not AttributeError on ``.strip()`` at this security boundary.
+    if script is None or script == "":
+        return None
+    if not isinstance(script, str):
+        return (
+            f"Script path must be a string relative to ~/.hermes/scripts/. "
+            f"Got {type(script).__name__}."
+        )
+    if not script.strip():
+        return None  # whitespace-only = clearing the field, always OK
 
     from hermes_constants import get_hermes_home
 
@@ -1059,6 +1068,13 @@ def cronjob(
     del task_id  # unused but kept for handler signature compatibility
 
     try:
+        # Strict providers may send int/list fillers for ``action``; bare
+        # ``.strip()`` AttributeErrors before any action dispatch.
+        if action is not None and not isinstance(action, str):
+            return tool_error(
+                f"action must be a string, got {type(action).__name__}.",
+                success=False,
+            )
         normalized = (action or "").strip().lower()
 
         if normalized == "create":

@@ -122,6 +122,46 @@ class TestMcpList:
         assert "myserver" in out
         assert "enabled" in out
 
+    def test_list_string_shorthand_coerced_to_url(self, tmp_path, capsys):
+        """A raw string entry is coerced to {'url': str} instead of crashing."""
+        _seed_config(tmp_path, {
+            "broken": "https://example.com/mcp",
+        })
+        from hermes_cli.mcp_config import cmd_mcp_list
+
+        cmd_mcp_list()
+        out = capsys.readouterr().out
+        assert "broken" in out
+        assert "https://example.com/mcp" in out
+        assert "string shorthand" in out.lower() or "coerced" in out.lower()
+
+    def test_list_mixed_string_and_dict(self, tmp_path, capsys):
+        """String entry doesn't abort listing of subsequent dict entries."""
+        _seed_config(tmp_path, {
+            "good": {"url": "https://good.example.com/mcp"},
+            "broken": "https://broken.example.com/mcp",
+        })
+        from hermes_cli.mcp_config import cmd_mcp_list
+
+        cmd_mcp_list()
+        out = capsys.readouterr().out
+        assert "good" in out
+        assert "broken" in out
+
+    def test_list_non_dict_non_string_skipped(self, tmp_path, capsys):
+        """A non-dict, non-string entry is skipped with a warning."""
+        _seed_config(tmp_path, {
+            "good": {"url": "https://good.example.com/mcp"},
+            "bad": 42,
+        })
+        from hermes_cli.mcp_config import cmd_mcp_list
+
+        cmd_mcp_list()
+        out = capsys.readouterr().out
+        assert "good" in out
+        assert "bad" not in out or "skipped" in out.lower()
+        assert "expected dict" in out.lower()
+
 
 # ---------------------------------------------------------------------------
 # Tests: cmd_mcp_remove

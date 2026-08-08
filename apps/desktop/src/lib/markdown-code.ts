@@ -1,6 +1,7 @@
 import { normalize } from '@/lib/text'
 
 const VALID_LANGUAGE_RE = /^[a-z0-9][a-z0-9+#-]*$/i
+const EXPLICIT_TEXT_FENCE_LANGUAGES = new Set(['text', 'plain', 'plaintext'])
 const NON_CODE_FENCE_LANGUAGES = new Set(['', 'text', 'plain', 'plaintext', 'md', 'markdown'])
 
 const COMMON_CODE_LANGUAGES = new Set([
@@ -284,6 +285,10 @@ export function isLikelyProseFence(info: string, body: string): boolean {
     return true
   }
 
+  if (EXPLICIT_TEXT_FENCE_LANGUAGES.has(language)) {
+    return false
+  }
+
   const signals = codeSignals(body)
 
   if (!signals.trimmed) {
@@ -313,6 +318,10 @@ export function isLikelyProseCodeBlock(language: string | undefined, code: strin
   const signals = codeSignals(code || '')
 
   if (!signals.trimmed || signals.codeSignals >= 3) {
+    return false
+  }
+
+  if (EXPLICIT_TEXT_FENCE_LANGUAGES.has(cleanLanguage)) {
     return false
   }
 

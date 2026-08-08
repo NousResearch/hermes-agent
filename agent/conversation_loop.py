@@ -1473,7 +1473,7 @@ def run_conversation(
     # cached gateway agent must recover on the next message if storage did.
     agent._incremental_persistence_failed = False
     # Cause of the most recent persistence failure this turn ('locked',
-    # 'disk', or 'unknown' — see run_agent.classify_persistence_error).
+    # 'disk', or 'unknown' — see hermes_state.classify_persistence_error).
     # Reset alongside the failure flag so a lock-contention diagnosis from a
     # previous turn can never leak into this turn's user-facing explanation.
     agent._last_persistence_error_cause = None
@@ -6510,7 +6510,7 @@ def run_conversation(
                     )
                 except Exception as exc:
                     _tool_turn_persisted = False
-                    from run_agent import classify_persistence_error
+                    from hermes_state import classify_persistence_error
                     agent._last_persistence_error_cause = (
                         classify_persistence_error(exc)
                     )

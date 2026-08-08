@@ -159,7 +159,7 @@ def test_explanation_cause_ignored_for_other_reasons():
 def test_classify_persistence_error_categories():
     import sqlite3
 
-    from run_agent import classify_persistence_error
+    from hermes_state import classify_persistence_error
 
     assert classify_persistence_error(
         sqlite3.OperationalError("database is locked")
@@ -183,7 +183,7 @@ def test_classify_persistence_error_reuses_disk_full_markers():
     must classify as 'disk' — the two classifiers can never drift apart."""
     import errno
 
-    from run_agent import classify_persistence_error
+    from hermes_state import classify_persistence_error
 
     assert classify_persistence_error("ENOSPC writing state.db") == "disk"
     assert classify_persistence_error(
@@ -203,7 +203,7 @@ def test_classify_persistence_error_compression_busy_is_locked():
         CompressionSessionBusyError,
         SessionCompressionInProgressError,
     )
-    from run_agent import classify_persistence_error
+    from hermes_state import classify_persistence_error
 
     assert classify_persistence_error(
         SessionCompressionInProgressError(

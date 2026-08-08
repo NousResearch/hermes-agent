@@ -279,23 +279,6 @@ _MAX_TOOL_WORKERS = 8
 _DB_PERSISTED_MARKER = "_db_persisted"
 
 
-def classify_persistence_error(exc_or_str) -> str:
-    """Classify a session-persistence failure into a coarse cause bucket.
-
-    Thin delegating wrapper: the canonical implementation lives in
-    ``hermes_state`` (beside ``is_disk_full_error``, whose disk-full
-    patterns it reuses so the two classifiers can never drift apart).
-    Kept importable from this module because the turn-finalizer contract
-    and existing callers reference ``run_agent.classify_persistence_error``.
-    The import stays lazy to preserve this module's fast import path —
-    every real caller already has hermes_state loaded (the error being
-    classified came from a SessionDB write).
-    """
-    from hermes_state import classify_persistence_error as _impl
-
-    return _impl(exc_or_str)
-
-
 # Guard so the OpenRouter metadata pre-warm thread is only spawned once per
 # process, not once per AIAgent instantiation.  Without this, long-running
 # gateway processes leak one OS thread per incoming message and eventually
@@ -2323,6 +2306,8 @@ class AIAgent:
             # before it is swallowed into a bare ``False`` — classify it here
             # so the turn-end explanation can distinguish lock contention
             # ("storage was busy, send it again") from disk-full/read-only.
+            from hermes_state import classify_persistence_error
+
             self._last_persistence_error_cause = classify_persistence_error(e)
             logger.warning("Session DB append_message failed: %s", e)
             return False

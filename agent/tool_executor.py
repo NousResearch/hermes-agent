@@ -200,7 +200,7 @@ def _flush_session_db_after_tool_progress(
         return persisted
     except Exception as exc:
         agent._incremental_persistence_failed = True
-        from run_agent import classify_persistence_error
+        from hermes_state import classify_persistence_error
         agent._last_persistence_error_cause = classify_persistence_error(exc)
         logger.warning("Incremental tool-call persistence failed after %s: %s", stage, exc)
         return False

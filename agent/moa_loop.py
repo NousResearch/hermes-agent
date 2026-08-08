@@ -992,11 +992,17 @@ def _render_tool_calls(tool_calls: Any) -> str:
     return "\n".join(lines)
 
 
+_NO_TOOL_HINT = (
+    "You have NO tools — any `[called tool: ...]` or `[tool result: ...]` "
+    "lines above are the ACTING AGENT's history, not yours. Do not restate them "
+    "as if you executed them; describe your advice in plain prose."
+)
+
 _ADVISORY_INSTRUCTION = (
     "[The conversation above is the current state of the task. Give your "
     "most intelligent judgement: what is going on, what should happen next, "
     "what risks or mistakes you see, and how the acting agent should "
-    "proceed.]"
+    f"proceed. {_NO_TOOL_HINT}]"
 )
 
 
@@ -1114,8 +1120,25 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         rendered.append({"role": "user", "content": _ADVISORY_INSTRUCTION})
     elif rendered and rendered[-1].get("role") == "user":
         # Already ends on a user turn (fresh user prompt, no agent action yet).
-        # Leave it — the reference answers that prompt directly.
-        pass
+        #
+        # In user_turn fanout mode this ends-on-user call is the ONLY view the
+        # references actually receive — later tool iterations append the
+        # advisory (with its no-tool hint) to an assistant-ending view, but
+        # their cache signature is the prefix up to the last real user message,
+        # so they HIT the cache and reuse this first call's outputs without
+        # calling the references again. Appending _NO_TOOL_HINT here (as its
+        # own user turn, NOT merged into the last real user message, so the
+        # turn_prefix signature stays byte-identical) is what carries the
+        # no-tool reminder into the default fanout mode. Only attach it when
+        # the view actually shows tool-log text — a fresh prompt with no tool
+        # history has nothing to disclaim, and unconditionally appending would
+        # grow every advisory view (and its prompt-cache prefix) by the hint.
+        if any(
+            "[called tool:" in m.get("content", "")
+            or "[tool result:" in m.get("content", "")
+            for m in rendered
+        ):
+            rendered.append({"role": "user", "content": _NO_TOOL_HINT})
 
     if not rendered:
         # Degenerate case: nothing rendered. Fall back to the latest user turn.
@@ -1989,7 +2012,9 @@ class MoAChatCompletions:
             last_user_idx = None
             for _i in range(len(ref_messages) - 1, -1, -1):
                 _m = ref_messages[_i]
-                if _m.get("role") == "user" and _m.get("content") != _ADVISORY_INSTRUCTION:
+                if _m.get("role") == "user" and _m.get(
+                    "content"
+                ) not in (_ADVISORY_INSTRUCTION, _NO_TOOL_HINT):
                     last_user_idx = _i
                     break
             if last_user_idx is not None:

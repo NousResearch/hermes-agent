@@ -38,8 +38,14 @@ class DaemonThreadPoolExecutor(ThreadPoolExecutor):
     """ThreadPoolExecutor variant whose workers do not block process exit."""
 
     def _adjust_thread_count(self) -> None:
-        # Mirrors CPython's implementation (3.8–3.13) with two changes:
-        # daemon=True and no _threads_queues registration.
+        # Mirrors CPython's ThreadPoolExecutor._adjust_thread_count but:
+        #  - daemon=True so workers don't block process exit
+        #  - No _threads_queues registration (avoids non-daemon atexit joins)
+        #
+        # Python 3.14+ changed _worker's signature to take a context object
+        # created via _create_worker_context(). Earlier versions used
+        # _worker(executor_reference, work_queue, initializer, initargs).
+        # We adapt to whichever signature the running interpreter uses.
         if self._idle_semaphore.acquire(timeout=0):
             return
 
@@ -48,17 +54,41 @@ class DaemonThreadPoolExecutor(ThreadPoolExecutor):
 
         num_threads = len(self._threads)
         if num_threads < self._max_workers:
-            thread_name = "%s_%d" % (self._thread_name_prefix or self, num_threads)
+            thread_name = "%s_%d" % (
+                self._thread_name_prefix or self,
+                num_threads,
+            )
             t = threading.Thread(
                 name=thread_name,
                 target=_worker,
-                args=(
-                    weakref.ref(self, weakref_cb),
-                    self._work_queue,
-                    self._initializer,
-                    self._initargs,
-                ),
+                args=_daemon_worker_args(self, weakref_cb),
                 daemon=True,
             )
             t.start()
             self._threads.add(t)
+
+
+def _daemon_worker_args(executor, weakref_cb):
+    """Build the args tuple for _worker, compatible across Python versions.
+
+    Python 3.14+: _worker(executor_reference, ctx, work_queue)
+    Python 3.8–3.13: _worker(executor_reference, work_queue, initializer, initargs)
+    """
+    if hasattr(executor, "_create_worker_context"):
+        # Python 3.14+
+        ctx = executor._create_worker_context()
+        return (
+            weakref.ref(executor, weakref_cb),
+            ctx,
+            executor._work_queue,
+        )
+    else:
+        # Python 3.8–3.13
+        initializer = getattr(executor, "_initializer", None)
+        initargs = getattr(executor, "_initargs", ())
+        return (
+            weakref.ref(executor, weakref_cb),
+            executor._work_queue,
+            initializer,
+            initargs,
+        )

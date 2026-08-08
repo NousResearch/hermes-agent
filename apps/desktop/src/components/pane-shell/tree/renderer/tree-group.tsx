@@ -69,7 +69,7 @@ import {
 } from '../tab-selection'
 
 import { type DoubleTapContext, startPaneDrag } from './drag-session'
-import { forceLoneHeaderForPanes } from './lone-header'
+import { forceLoneHeaderForPanes, hasCloseableMainTile, resolveZoneHeaderHidden } from './lone-header'
 import { useActiveTabVisible } from './tab-strip-scroll'
 import { paneChrome } from './track-model'
 
@@ -247,11 +247,20 @@ export function TreeGroup({
   // always shows its header (it IS the header).
   // Session-tile ids force the header even before chrome registers — cycling
   // onto a freshly-split tile used to land headerless ("name card missing").
-  const forceLoneHeader = forceLoneHeaderForPanes(shown, id => paneChrome(paneFor(id)), isCollapsePane)
+  const chromeOf = (id: string) => paneChrome(paneFor(id))
+  const forceLoneHeader = forceLoneHeaderForPanes(shown, chromeOf, isCollapsePane)
+  const closeableMainTile = hasCloseableMainTile(shown, chromeOf)
 
   // A full-page view (headerVeto) suppresses the strip while it's the active
   // pane — a page is not a tab-able surface; the bar returns with the chat.
-  const headerHidden = paneChrome(active).headerVeto || (node.headerHidden ?? (shown.length <= 1 && !forceLoneHeader))
+  // Sticky "Hide tab bar" must not trap a closeable preview/Browser without ✕.
+  const headerHidden = resolveZoneHeaderHidden({
+    forceLoneHeader,
+    hasCloseableMainTile: closeableMainTile,
+    headerHiddenFlag: node.headerHidden,
+    headerVeto: Boolean(paneChrome(active).headerVeto),
+    shownLength: shown.length
+  })
 
   // A group collapses ALONG its parent split's axis. In a row that means the
   // WIDTH collapses — a full-width horizontal header would strand a tall

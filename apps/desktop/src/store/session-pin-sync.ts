@@ -22,8 +22,8 @@
  */
 
 import { setSessionPinnedRemote } from '@/hermes'
-import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
-import { $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session'
+import { $pinnedSessionIds, applyPinnedSessionScope, pinSession, unpinSession } from '@/store/layout'
+import { $connection, $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session'
 
 // pin ids we've successfully PATCHed pinned=true this session.
 const mirrored = new Set<string>()
@@ -179,6 +179,14 @@ function reconcile(): void {
 
 // Sync once, then re-sync on pin-set and session-list changes. Call once per app.
 export function watchSessionPins(): void {
+  // Scope the sidebar pin store to THIS window's gateway identity. Every
+  // window shares one localStorage partition, so without a per-connection
+  // scope two windows on different gateways would read/write the same pin set
+  // and cross-reconcile each other's pins (#77318). The subscription fires
+  // immediately with the current connection (boot) and again on every
+  // connection change (soft gateway-mode apply, reconnect); it is a no-op
+  // while the connection identity is unchanged.
+  $connection.subscribe(applyPinnedSessionScope)
   reconcile()
   $pinnedSessionIds.listen(reconcile)
   $sessions.listen(reconcile)

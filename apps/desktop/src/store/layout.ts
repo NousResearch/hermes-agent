@@ -3,9 +3,10 @@ import { atom, computed, type ReadableAtom, type WritableAtom } from 'nanostores
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
+import type { HermesConnection } from '@/global'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { Codecs, persistentAtom } from '@/lib/persisted'
-import { arraysEqual, insertUniqueId, readKey } from '@/lib/storage'
+import { arraysEqual, insertUniqueId, persistBoolean, readKey, writeKey } from '@/lib/storage'
 
 import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride, togglePane } from './panes'
 
@@ -21,6 +22,10 @@ export const FILE_BROWSER_MAX_WIDTH = '20rem'
 export const SIDEBAR_SESSIONS_PAGE_SIZE = 50
 
 const SIDEBAR_PINNED_STORAGE_KEY = 'hermes.desktop.pinnedSessions'
+// Set once (in localStorage) when the first window claims the pre-scope pin
+// set — see applyPinnedSessionScope. Guards the one-time migration so no
+// second gateway can ever inherit another gateway's pins.
+const PINNED_SCOPE_MIGRATED_KEY = 'hermes.desktop.pinnedSessions.scope-migrated'
 const SIDEBAR_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorkspace'
 const SIDEBAR_CRON_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarCronOpen'
 const SIDEBAR_MESSAGING_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarMessagingOpen'
@@ -72,7 +77,100 @@ export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states 
   return typeof override === 'number' ? override : SIDEBAR_DEFAULT_WIDTH
 })
 
-export const $pinnedSessionIds = persistentAtom(SIDEBAR_PINNED_STORAGE_KEY, [] as string[], Codecs.stringArray)
+// ── Connection-scoped pinned set (#77318) ──────────────────────────────────
+// Every BrowserWindow in one app shares the SAME localStorage partition, so a
+// persistentAtom here used to be process-global state: two windows connected
+// to DIFFERENT gateways (local + remote VPS) read and wrote one key — each
+// window's sidebar rendered the other gateway's pins, and each window's
+// pin-sync pull adopted/dropped pins on behalf of the other gateway (#77318).
+// The store is now an in-memory atom whose persistence key is bound to the
+// live connection identity (gateway endpoint + profile, see
+// applyPinnedSessionScope). Windows on different gateways keep fully isolated
+// pin sets; windows on the SAME gateway legitimately share a key, because
+// their pins reconcile against the same backend.
+export const $pinnedSessionIds = atom<string[]>([])
+
+/** Stable scope id for a connection: 'local', or remote.<baseUrl>.<profile>. */
+export function connectionScopeId(connection: HermesConnection | null): string {
+  if (!connection || connection.mode !== 'remote') {
+    return 'local'
+  }
+
+  const base = encodeURIComponent(connection.baseUrl || 'remote')
+  const profile = encodeURIComponent(connection.profile || 'default')
+
+  return `remote.${base}.${profile}`
+}
+
+function pinnedStorageKeyForScope(scope: string): string {
+  return `${SIDEBAR_PINNED_STORAGE_KEY}.${scope}`
+}
+
+let activePinnedScope: string | null = null
+let pinPersistenceBound = false
+
+// Persist the atom to the ACTIVE scope's key. Bound lazily inside
+// applyPinnedSessionScope: a module-load-time bind would fire immediately with
+// the empty seed and clobber the stored pins before the scope is known.
+function bindPinPersistence(): void {
+  if (pinPersistenceBound) {
+    return
+  }
+
+  pinPersistenceBound = true
+  $pinnedSessionIds.subscribe(ids => {
+    if (activePinnedScope !== null) {
+      writeKey(activePinnedScope, Codecs.stringArray.encode([...ids]))
+    }
+  })
+}
+
+/**
+ * Point the sidebar's pinned set at `connection`'s gateway scope, seeding it
+ * from that scope's localStorage key. Wired to `$connection` in
+ * watchSessionPins(), so it runs in every window on boot and on every
+ * connection change (soft gateway-mode apply, reconnect). No-op while the
+ * connection identity is unchanged — a reconnect to the same gateway must
+ * never touch the pins; a null connection keeps the current scope so a
+ * transient request failure can't wipe a window's pin set.
+ *
+ * One-time upgrade: the FIRST scope applied after this fix claims the
+ * pre-scope (unscoped) pin set, which belonged to whichever gateway that
+ * window was connected to. Every later scope starts empty, so a window can
+ * never inherit another gateway's pins again.
+ */
+export function applyPinnedSessionScope(connection: HermesConnection | null): void {
+  if (!connection) {
+    return
+  }
+
+  const scope = pinnedStorageKeyForScope(connectionScopeId(connection))
+
+  if (scope === activePinnedScope) {
+    return
+  }
+
+  activePinnedScope = scope
+
+  let raw = readKey(scope)
+
+  if (readKey(PINNED_SCOPE_MIGRATED_KEY) === null) {
+    if (raw === null) {
+      const legacy = readKey(SIDEBAR_PINNED_STORAGE_KEY)
+
+      if (legacy !== null) {
+        writeKey(scope, legacy)
+        raw = legacy
+      }
+    }
+
+    persistBoolean(PINNED_SCOPE_MIGRATED_KEY, true)
+  }
+
+  $pinnedSessionIds.set(raw !== null ? Codecs.stringArray.decode(raw) : [])
+  bindPinPersistence()
+}
+
 export const $sidebarSessionOrderIds = persistentAtom(
   SIDEBAR_SESSION_ORDER_STORAGE_KEY,
   [] as string[],

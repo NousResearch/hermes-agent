@@ -80,6 +80,39 @@ def _exec_egress(ctx: CommandContext) -> CommandReply:
     return CommandReply(format_status_text())
 
 
+def _exec_vision_toggle(ctx: CommandContext) -> CommandReply:
+    """User-only Vision Router session toggle (/vision on|off).
+
+    Stage-3 limited use: enables the controlled wrapper for the CURRENT
+    process only; never touches persistent config; /vision off is the
+    immediate kill switch (revokes attachment handles and OCR results).
+    """
+    from tools.vision_session_state import vision_session_state
+
+    arg = ctx.args.strip().lower()
+    if arg == "on":
+        vision_session_state.set_enabled(True)
+        vision_session_state.begin_turn()
+        return CommandReply(
+            "Vision Router enabled for this session. "
+            "Limits: 1 logical call per turn, 5 per session. "
+            "Kill switch: /vision off.")
+    if arg == "off":
+        vision_session_state.set_enabled(False)
+        return CommandReply(
+            "Vision Router disabled; all Vision tools removed and "
+            "session sources revoked.")
+    s = vision_session_state.snapshot()
+    text = (
+        f"Vision Router: {'enabled' if s['enabled'] else 'disabled'} · "
+        f"used {s['per_session_used']}/5 this session · "
+        f"turn used {s['per_turn_used']}/1 · "
+        f"attachments {len(s['attachment_handles'])} · "
+        f"OCR results {len(s['ocr_handles'])}"
+    )
+    return CommandReply(text)
+
+
 def _exec_profile(ctx: CommandContext) -> CommandReply:
     """Core /profile data — active profile name + home directory.
 
@@ -234,6 +267,7 @@ def _exec_commands(ctx: CommandContext) -> CommandReply:
 EXECUTORS: dict[str, Callable[[CommandContext], CommandReply]] = {
     "version": _exec_version,
     "egress": _exec_egress,
+    "vision_toggle": _exec_vision_toggle,
     "profile": _exec_profile,
     "bundles": _exec_bundles,
     "gateway_help": _exec_help,

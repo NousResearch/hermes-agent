@@ -110,6 +110,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, args_hint="[off|help|session-id]"),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True),
+    CommandDef("vision", "Enable/disable the Vision Router for this session (limited use)",
+               "Session", cli_only=True, args_hint="[on|off]", execute="vision_toggle"),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
                cli_only=True),
     CommandDef("history", "Show conversation history", "Session",

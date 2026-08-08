@@ -126,6 +126,7 @@ def build_models_payload(
     probe_custom_providers: bool = True,
     probe_current_custom_provider: bool = False,
     for_picker: bool = False,
+    apply_picker_prefs: bool = False,
     max_models: int | None = None,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer
@@ -182,6 +183,13 @@ def build_models_payload(
       list. Rate limits are per-model, so a different model under the same
       provider may still work; hiding the provider strands the user. Set for
       any surface a human is choosing from, not for programmatic resolution.
+    - ``apply_picker_prefs``: apply the user's ``model.picker`` config
+      (``hide`` + ``order``), exactly as the interactive CLI/Discord picker
+      (:func:`hermes_cli.model_switch.list_picker_providers`) already does. Off
+      by default so non-picker consumers see the full set; picker surfaces set
+      it True so every picker honors the same config. Purely cosmetic — typed
+      ``/model <slug>/...`` and every provider stay reachable, and the
+      currently-active provider is never hidden.
     """
     from hermes_cli.model_switch import list_authenticated_providers
 
@@ -266,6 +274,8 @@ def build_models_payload(
         _apply_picker_hints(rows)
     if canonical_order:
         rows = _reorder_canonical(rows)
+    if apply_picker_prefs:
+        rows = _apply_picker_prefs_rows(rows, current_provider=ctx.current_provider)
     if pricing:
         _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier)
     if capabilities:
@@ -304,6 +314,7 @@ def build_model_options_payload(
         include_unconfigured=bool(include_unconfigured),
         picker_hints=True,
         canonical_order=True,
+        apply_picker_prefs=True,
         pricing=True,
         capabilities=True,
         featured=True,
@@ -360,6 +371,7 @@ def build_aux_picker_rows(
     rows = build_models_payload(
         ctx,
         for_picker=True,
+        apply_picker_prefs=True,
         probe_custom_providers=False,
         probe_current_custom_provider=True,
         max_models=max_models,
@@ -655,6 +667,31 @@ def _raw_config_has_enabled_moa_preset() -> bool:
         "fanout",
     }
     return any(key in moa for key in legacy_keys) and bool(moa.get("enabled", True))
+
+
+def _apply_picker_prefs_rows(
+    rows: list[dict], *, current_provider: str = ""
+) -> list[dict]:
+    """Apply the ``model.picker`` prefs (hide + order) to payload rows.
+
+    Brings the desktop / TUI / dashboard ``build_models_payload`` pickers in
+    line with the CLI + Discord ``list_picker_providers`` picker. Delegates to
+    the same :func:`hermes_cli.model_switch._apply_picker_preferences` helper
+    that picker already uses, so the surfaces cannot drift apart. Cosmetic
+    only: the currently-active provider is never hidden, and typed
+    ``/model <slug>/...`` reaches every provider regardless. Best-effort — any
+    failure returns ``rows`` unchanged rather than breaking the picker.
+    """
+    try:
+        from hermes_cli.model_switch import _apply_picker_preferences
+    except Exception:
+        return rows
+    try:
+        return _apply_picker_preferences(
+            rows, current_provider=str(current_provider or "").strip().lower()
+        )
+    except Exception:
+        return rows
 
 
 def _apply_picker_hints(rows: list[dict]) -> None:

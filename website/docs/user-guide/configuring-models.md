@@ -197,6 +197,24 @@ Older configs used a top-level `custom_providers:` list (with `base_url` instead
 
 Changes never invalidate prompt caches on running sessions. That's deliberate: swapping the main model inside a session requires a cache reset (the system prompt contains model-specific content), and we reserve that for the explicit `/model` slash command inside chat.
 
+## Tidying the model picker (`model.picker`)
+
+If you have a lot of authenticated providers, the `/model` picker can get noisy — numbered auto-failover lanes are a common offender. Two optional keys let you tailor the dropdown:
+
+```yaml
+model:
+  picker:
+    hide:  [openai-api, "claude-apx-*"]     # drop from the dropdown
+    order: [anthropic, openai-codex]        # pin to the front
+```
+
+- **`hide`** takes exact slugs (`openai-api`) or glob patterns (`claude-apx-*`, `*-preview`), so one line can collapse a whole provider family. Matching is case-insensitive; unknown slugs are ignored.
+- **`order`** front-anchors the slugs you list, in the order you list them. Everything else keeps its existing relative order behind them. Listing a provider in `order` does **not** hide the others — the two knobs are independent.
+
+Both are **purely cosmetic**. Hiding a provider does not disable it: typed `/model <slug>/<model>` still reaches it, and it remains available to the resolver and to auxiliary tasks. The provider you are **currently on is never hidden**, so you can always see and switch off it.
+
+These prefs apply to every picker surface — the CLI and Discord `/model` pickers, and the desktop / TUI / dashboard model dialogs.
+
 ## Troubleshooting
 
 ### "No authenticated providers" in the picker

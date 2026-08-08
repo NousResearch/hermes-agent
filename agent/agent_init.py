@@ -671,7 +671,20 @@ def init_agent(
 
         agent.api_mode = nous_api_mode(agent.model)
     else:
-        agent.api_mode = "chat_completions"
+        # Host-mandated wire check — LAST, so the elif chain's provider-slug
+        # rewrites (e.g. api.anthropic.com → provider="anthropic", #63425)
+        # always run first. Covers api.meta.ai → codex_responses for prompt
+        # caching (0% on chat vs 93-99% on responses) and future mandates.
+        try:
+            from hermes_cli.providers import host_mandated_api_mode as _host_mandated_api_mode
+
+            _mandated = _host_mandated_api_mode(base_url or "")
+        except Exception:
+            _mandated = None
+        if _mandated is not None:
+            agent.api_mode = _mandated
+        else:
+            agent.api_mode = "chat_completions"
 
     # Credential-pool validation runs AFTER provider auto-detection so
     # a pool scoped to e.g. "anthropic" is not rejected when the agent

@@ -34,7 +34,7 @@ A built-in provider has to line up across a few layers:
 The important abstraction is `api_mode`.
 
 - Most providers use `chat_completions`.
-- Codex uses `codex_responses`.
+- Codex and Meta Model API (`api.meta.ai` — Muse Spark) use `codex_responses` (auto-sends `prompt_cache_retention: 24h` for prompt caching; `api.meta.ai` achieves 93–99% cache hits only on `/v1/responses`).
 - Anthropic uses `anthropic_messages`.
 - A new non-OpenAI protocol usually means adding a new adapter and a new `api_mode` branch.
 
@@ -65,7 +65,7 @@ Use this when the provider does not behave like OpenAI chat completions.
 
 Examples in-tree today:
 
-- `codex_responses`
+- `codex_responses` (OpenAI Codex, xAI Grok, and Meta Muse Spark via `api.meta.ai` — the latter auto-sends `prompt_cache_retention: 24h`)
 - `anthropic_messages`
 
 This path includes everything from Path A plus:

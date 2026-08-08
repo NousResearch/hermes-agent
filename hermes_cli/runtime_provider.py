@@ -134,6 +134,11 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     # providers.is_official_openai_host for the spoof-rejection contract.
     if is_official_openai_host(base_url):
         return "codex_responses"
+    # Meta Model API: prompt caching only on Responses API (0% on
+    # chat/completions vs 93-99% on /responses with retention). Exact
+    # hostname per #32243.
+    if hostname == "api.meta.ai":
+        return "codex_responses"
     if hostname == "api.actual.inc":
         return "codex_responses"
     # Direct native Anthropic host: realign with providers.determine_api_mode,

@@ -230,4 +230,3 @@ class TestCompositeMenuWritesCanonicalKey:
         saved_dis = mock_save_dis.call_args[0][0]
         assert "web/firecrawl" in saved_dis      # canonical key persisted
         assert "web-firecrawl" not in saved_dis   # never the bare name
-

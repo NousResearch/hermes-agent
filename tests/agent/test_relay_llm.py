@@ -39,6 +39,144 @@ def relay_turn(tmp_path, monkeypatch):
         relay_runtime._reset_for_tests()
 
 
+def test_sync_execution_uses_canonical_relay_operation_name(relay_turn, monkeypatch):
+    relay, _turn = relay_turn
+    observed_names = []
+    original_execute = relay.llm.execute
+
+    async def capture_name(name, *args, **kwargs):
+        observed_names.append(name)
+        return await original_execute(name, *args, **kwargs)
+
+    monkeypatch.setattr(relay.llm, "execute", capture_name)
+    monkeypatch.setattr(relay_llm, "_codec", lambda *_args, **_kwargs: None)
+
+    result = relay_llm.execute(
+        {"model": "test-model", "messages": []},
+        lambda _request: {"content": "done"},
+        session_id="session-1",
+        name="custom",
+        model_name="test-model",
+        metadata={"api_mode": "chat_completions"},
+    )
+
+    assert result == {"content": "done"}
+    assert observed_names == ["openai.chat_completions"]
+
+
+@pytest.mark.asyncio
+async def test_async_execution_uses_canonical_relay_operation_name(
+    relay_turn, monkeypatch
+):
+    relay, _turn = relay_turn
+    observed_names = []
+    original_execute = relay.llm.execute
+
+    async def capture_name(name, *args, **kwargs):
+        observed_names.append(name)
+        return await original_execute(name, *args, **kwargs)
+
+    async def provider(_request):
+        return {"content": "done"}
+
+    monkeypatch.setattr(relay.llm, "execute", capture_name)
+    monkeypatch.setattr(relay_llm, "_codec", lambda *_args, **_kwargs: None)
+
+    result = await relay_llm.execute_async(
+        {"model": "test-model", "input": "hello"},
+        provider,
+        session_id="session-1",
+        name="custom",
+        model_name="test-model",
+        metadata={"api_mode": "codex_responses"},
+    )
+
+    assert result == {"content": "done"}
+    assert observed_names == ["openai.responses"]
+
+
+def test_stream_execution_uses_canonical_relay_operation_name(relay_turn, monkeypatch):
+    relay, _turn = relay_turn
+    observed_names = []
+    original_stream_execute = relay.llm.stream_execute
+
+    async def capture_name(name, *args, **kwargs):
+        observed_names.append(name)
+        return await original_stream_execute(name, *args, **kwargs)
+
+    monkeypatch.setattr(relay.llm, "stream_execute", capture_name)
+    monkeypatch.setattr(relay_llm, "_codec", lambda *_args, **_kwargs: None)
+
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: iter([{"delta": "done"}]),
+        session_id="session-1",
+        name="custom",
+        model_name="test-model",
+        finalizer=lambda: {"content": "done"},
+        metadata={"api_mode": "anthropic_messages"},
+    )
+
+    try:
+        assert list(stream) == [{"delta": "done"}]
+    finally:
+        stream.close()
+    assert observed_names == ["anthropic.messages"]
+
+
+def test_unknown_api_mode_preserves_provider_name():
+    assert (
+        relay_llm._relay_operation_name("custom-provider", {"api_mode": "future_api"})
+        == "custom-provider"
+    )
+
+
+@pytest.mark.parametrize(
+    "api_mode",
+    ["chat_completions", "codex_responses", "anthropic_messages"],
+)
+def test_relay_request_body_omits_client_timeout(api_mode):
+    request = {"model": "test-model", "timeout": 1800.0}
+
+    body = relay_llm._relay_request_body(request, {"api_mode": api_mode})
+
+    assert "timeout" not in body
+    assert request["timeout"] == 1800.0
+
+
+def test_unintercepted_provider_callback_preserves_client_timeout(
+    relay_turn, monkeypatch
+):
+    relay, _turn = relay_turn
+    relay_requests = []
+    provider_requests = []
+    original_execute = relay.llm.execute
+
+    async def capture_relay_request(name, request, *args, **kwargs):
+        relay_requests.append(request.content)
+        return await original_execute(name, request, *args, **kwargs)
+
+    def provider(request):
+        provider_requests.append(request)
+        return {"content": "done"}
+
+    monkeypatch.setattr(relay.llm, "execute", capture_relay_request)
+    monkeypatch.setattr(relay_llm, "_codec", lambda *_args, **_kwargs: None)
+
+    result = relay_llm.execute(
+        {"model": "test-model", "messages": [], "timeout": 1800.0},
+        provider,
+        session_id="session-1",
+        name="custom",
+        model_name="test-model",
+        metadata={"api_mode": "chat_completions"},
+    )
+
+    assert result == {"content": "done"}
+    assert relay_requests == [{"model": "test-model", "messages": []}]
+    assert provider_requests[0]["timeout"] == 1800.0
+
+
 def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
     relay, turn = relay_turn
     captured_requests = []
@@ -141,6 +279,39 @@ def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
     assert chunks[0].choices[0].delta.content == "HELLO"
     assert stream.output_modified is True
     assert turn.logical_llm_calls == {}
+
+
+def test_live_stream_defers_runtime_shutdown_until_exhaustion(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "stream-shutdown-profile"))
+    relay_runtime._reset_for_tests()
+    host = relay_runtime.get_runtime()
+    assert host is not None
+    host.retain_managed_execution("test.live-stream")
+    assert host.ensure_session({"session_id": "stream-shutdown"}) is not None
+    chunks = [{"delta": "first"}, {"delta": "second"}]
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: iter(chunks),
+        session_id="stream-shutdown",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=lambda: {"content": "complete"},
+        metadata={"api_mode": "custom"},
+    )
+
+    try:
+        host.shutdown()
+        assert not host._shutdown_complete.is_set()
+
+        assert list(stream) == chunks
+        assert host._shutdown_complete.wait(5)
+    finally:
+        stream.close()
+        host.release_managed_execution("test.live-stream")
+        relay_runtime._reset_for_tests()
 
 
 
@@ -796,6 +967,31 @@ def test_stream_current_streams_iterators_with_predicate(tmp_path, monkeypatch):
         relay_runtime._reset_for_tests()
 
 
+def test_stream_current_primes_lazy_completed_response(relay_turn, monkeypatch):
+    """A lazy Relay stream must run once before Hermes decides its shape."""
+    _relay, _turn = relay_turn
+    completed = _completed_response()
+
+    class LazyCompletedStream:
+        final_response = None
+
+        def _prime_completed_response(self):
+            self.final_response = completed
+
+    lazy_stream = LazyCompletedStream()
+    monkeypatch.setattr(relay_llm, "stream", lambda *args, **kwargs: lazy_stream)
+
+    result = relay_llm.stream_current(
+        {"model": "test-model", "messages": [], "stream": True},
+        lambda request: completed,
+        name="test-provider",
+        model_name="test-model",
+        finalizer=dict,
+        completed_response_predicate=_choices_predicate,
+    )
+
+    assert result is completed
+
 
 def _completed_response(content: str = "done") -> SimpleNamespace:
     return SimpleNamespace(
@@ -833,6 +1029,8 @@ def test_stream_managed_traps_direct_completed_response(relay_turn):
         finalizer=lambda: {},
         completed_response_predicate=_choices_predicate,
     )
+    stream._prime_completed_response()
+    assert stream._closed
     assert list(stream) == []
     assert stream.final_response is not None
     assert stream.final_response.choices[0].message.content == "done"

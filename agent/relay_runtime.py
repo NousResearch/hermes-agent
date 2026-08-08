@@ -8,9 +8,12 @@ import contextvars
 import importlib
 import inspect
 import logging
+import os
 import threading
+import tomllib
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from hermes_constants import get_hermes_home
@@ -23,6 +26,8 @@ LOGICAL_LLM_SCOPE = "hermes.logical_llm_call"
 RUNTIME_SCHEMA_KEY = "hermes.relay.schema_version"
 RUNTIME_SCHEMA_VERSION = "hermes.relay.runtime.v1"
 RUNTIME_INSTANCE_KEY = "hermes.relay.runtime_instance"
+RELAY_PLUGINS_CONFIG_ENV = "HERMES_NEMO_RELAY_PLUGINS_TOML"
+RELAY_PLUGINS_EXECUTION_CONSUMER = "hermes.nemo_relay.plugins"
 _PROFILE_KEY_CACHE: dict[str, str] = {}
 
 
@@ -38,8 +43,190 @@ class RelaySession:
     context: contextvars.Context | None = None
 
 
+class RelayOperationLease:
+    """Keep process-wide Relay plugins alive across a deferred operation."""
+
+    def __init__(self, runtime: "RelayRuntime") -> None:
+        self._lock = threading.Lock()
+        self._runtime: RelayRuntime | None = runtime
+
+    def run_in_session(
+        self,
+        session: RelaySession,
+        callback: Callable[..., Any],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        """Run cleanup while this lease still owns the runtime lifetime."""
+        with self._lock:
+            runtime = self._runtime
+            if runtime is None:
+                raise RuntimeError("Hermes Relay operation lease is released")
+            return runtime._run_in_session_untracked(
+                session,
+                callback,
+                *args,
+                **kwargs,
+            )
+
+    def release(self) -> None:
+        """Release this lease exactly once."""
+        with self._lock:
+            runtime = self._runtime
+            self._runtime = None
+        if runtime is not None:
+            runtime._end_operation()
+
+
+class _ProcessRelayPluginConfiguration:
+    """Own one Relay plugin configuration across profile-scoped hosts."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._owners: set[int] = set()
+        self._active = False
+        self._relay: Any = None
+        self._activation: Any = None
+
+    def acquire(self, owner: Any, relay: Any) -> bool:
+        """Join the process configuration, initializing it for the first host."""
+        owner_id = id(owner)
+        with self._lock:
+            if owner_id in self._owners:
+                return self._active
+            if self._owners:
+                self._owners.add(owner_id)
+                return self._active
+            if self._active and not self._clear_active():
+                logger.warning(
+                    "Hermes Relay plugin cleanup is still pending; refusing to "
+                    "replace the process-global configuration"
+                )
+                return False
+
+            try:
+                plugin_mod = getattr(relay, "plugin", None)
+                configured_inputs = _configured_plugin_inputs(relay)
+                if configured_inputs is None:
+                    return False
+                plugin_config, dynamic_plugins = configured_inputs
+                if dynamic_plugins:
+                    initialize_dynamic = getattr(
+                        plugin_mod,
+                        "initialize_with_dynamic_plugins",
+                        None,
+                    )
+                    if callable(initialize_dynamic):
+                        try:
+                            activation = _resolve_plugin_awaitable(
+                                initialize_dynamic(plugin_config, dynamic_plugins)
+                            )
+                            if activation is None:
+                                raise RuntimeError(
+                                    "NeMo Relay dynamic plugin initialization "
+                                    "returned no activation handle"
+                                )
+                            self._activation = activation
+                        except Exception as exc:
+                            raise RuntimeError(
+                                "Hermes Relay dynamic plugin activation failed"
+                            ) from exc
+                    else:
+                        raise RuntimeError(
+                            "Hermes Relay dynamic plugins require a binding that "
+                            "exposes plugin.initialize_with_dynamic_plugins"
+                        )
+
+                if self._activation is None:
+                    initialize = getattr(plugin_mod, "initialize", None)
+                    if not callable(initialize):
+                        raise RuntimeError(
+                            "installed NeMo Relay binding does not expose "
+                            "plugin.initialize"
+                        )
+                    # Hermes only enters Relay's initialization path after an
+                    # explicit opt-in. Relay currently owns any subsequent ambient
+                    # layering; a future discovery=False API can make this exact.
+                    _resolve_plugin_awaitable(initialize(plugin_config))
+            except Exception as exc:
+                self._activation = None
+                logger.warning(
+                    "Hermes Relay plugin initialization failed: %s",
+                    exc,
+                    exc_info=True,
+                )
+                return False
+
+            self._owners.add(owner_id)
+            self._active = True
+            self._relay = relay
+            return True
+
+    def release(self, owner: Any) -> None:
+        """Release one host and clear Relay after the final host exits."""
+        owner_id = id(owner)
+        with self._lock:
+            if owner_id not in self._owners:
+                return
+            self._owners.remove(owner_id)
+            if self._owners:
+                return
+            self._clear_active()
+
+    def reset_for_tests(self) -> None:
+        """Clear process-global state left by directly constructed test hosts."""
+        with self._lock:
+            self._owners.clear()
+            self._clear_active()
+
+    def retry_pending_cleanup(self) -> None:
+        """Retry a failed final cleanup without disrupting live owners."""
+        with self._lock:
+            if not self._owners:
+                self._clear_active()
+
+    def _clear_active(self) -> bool:
+        relay = self._relay
+        activation = self._activation
+        active = self._active
+        if not active or relay is None:
+            return True
+        try:
+            _flush_relay_subscribers(relay)
+        except Exception:
+            logger.warning(
+                "Hermes Relay plugin subscriber flush failed",
+                exc_info=True,
+            )
+            return False
+        try:
+            if activation is not None:
+                close = getattr(activation, "close", None)
+                if not callable(close):
+                    raise RuntimeError(
+                        "NeMo Relay dynamic plugin activation has no close method"
+                    )
+                _resolve_plugin_awaitable(close())
+            else:
+                _clear_relay_plugins(relay)
+        except Exception:
+            logger.warning(
+                "Hermes Relay plugin configuration cleanup failed",
+                exc_info=True,
+            )
+            return False
+        self._active = False
+        self._relay = None
+        self._activation = None
+        return True
+
+
+_PLUGIN_CONFIGURATION = _ProcessRelayPluginConfiguration()
+atexit.register(_PLUGIN_CONFIGURATION.retry_pending_cleanup)
+
+
 class RelayRuntime:
-    """Own Relay session scopes independently of any exporter or plugin."""
+    """Own Relay session scopes and optional process plugin configuration."""
 
     def __init__(self, relay: Any = None, *, profile_key: str | None = None) -> None:
         self.relay = relay or _load_nemo_relay()
@@ -49,8 +236,20 @@ class RelayRuntime:
         self._sessions: dict[str, RelaySession] = {}
         self._subagent_parents: dict[str, str] = {}
         self._subagent_parent_handles: dict[str, Any] = {}
+        self._closing = False
+        self._shutdown_started = False
+        self._shutdown_complete = threading.Event()
+        self._operations_idle = threading.Event()
+        self._operations_idle.set()
+        self._active_operations = 0
         self._execution_consumers_lock = threading.RLock()
         self._execution_consumers: set[str] = set()
+        self._plugin_configuration_registered = _PLUGIN_CONFIGURATION.acquire(
+            self,
+            self.relay,
+        )
+        if self._plugin_configuration_registered:
+            self.retain_managed_execution(RELAY_PLUGINS_EXECUTION_CONSUMER)
         self._shutdown_registered = True
         atexit.register(self.shutdown)
 
@@ -83,6 +282,8 @@ class RelayRuntime:
         if not session_id:
             return None
         with self._sessions_lock:
+            if self._closing:
+                return None
             session = self._sessions.get(session_id)
             if session is None:
                 parent_session_id = self._subagent_parents.get(session_id, "")
@@ -156,6 +357,8 @@ class RelayRuntime:
         ):
             parent_handle = turn.handle
         with self._sessions_lock:
+            if self._closing:
+                return None
             self._subagent_parents[child_session_id] = parent_session_id
             if parent_handle is not None:
                 self._subagent_parent_handles[child_session_id] = parent_handle
@@ -177,6 +380,8 @@ class RelayRuntime:
     def get_session(self, session_id: str) -> RelaySession | None:
         """Return an active Hermes Relay session without creating one."""
         with self._sessions_lock:
+            if self._closing:
+                return None
             session = self._sessions.get(str(session_id or ""))
         if session is None:
             return None
@@ -197,6 +402,27 @@ class RelayRuntime:
         **kwargs: Any,
     ) -> Any:
         """Run a Relay operation against a session's isolated scope stack."""
+        self._begin_operation()
+        try:
+            return self._run_in_session_untracked(
+                session,
+                callback,
+                *args,
+                allow_closing=allow_closing,
+                **kwargs,
+            )
+        finally:
+            self._end_operation()
+
+    def _run_in_session_untracked(
+        self,
+        session: RelaySession,
+        callback: Callable[..., Any],
+        *args: Any,
+        allow_closing: bool = False,
+        **kwargs: Any,
+    ) -> Any:
+        """Run inside a session whose host-level lifetime is already held."""
         with session.lock:
             if session.closing and not allow_closing:
                 raise RuntimeError("Hermes Relay session is closing")
@@ -225,26 +451,49 @@ class RelayRuntime:
         **kwargs: Any,
     ) -> Any:
         """Create and await an operation inside the session's saved context."""
-        with session.lock:
-            if session.closing and not allow_closing:
-                raise RuntimeError("Hermes Relay session is closing")
-            if session.context is None or session.handle is None:
-                raise RuntimeError("Hermes Relay session context is unavailable")
-            relay_context = session.context.copy()
+        self._begin_operation()
+        try:
+            with session.lock:
+                if session.closing and not allow_closing:
+                    raise RuntimeError("Hermes Relay session is closing")
+                if session.context is None or session.handle is None:
+                    raise RuntimeError("Hermes Relay session context is unavailable")
+                relay_context = session.context.copy()
 
-        context = contextvars.copy_context()
-        for variable, value in relay_context.items():
-            context.run(variable.set, value)
+            context = contextvars.copy_context()
+            for variable, value in relay_context.items():
+                context.run(variable.set, value)
 
-        async def invoke() -> Any:
-            self.relay.get_scope_stack()
-            result = callback(*args, **kwargs)
-            if inspect.isawaitable(result):
-                return await result
-            return result
+            async def invoke() -> Any:
+                self.relay.get_scope_stack()
+                result = callback(*args, **kwargs)
+                if inspect.isawaitable(result):
+                    return await result
+                return result
 
-        task = context.run(asyncio.create_task, invoke())
-        return await task
+            task = context.run(asyncio.create_task, invoke())
+            return await task
+        finally:
+            self._end_operation()
+
+    def _begin_operation(self) -> None:
+        """Admit one Relay call while keeping process plugins alive."""
+        with self._sessions_lock:
+            if self._closing:
+                raise RuntimeError("Hermes Relay runtime is shutting down")
+            self._active_operations += 1
+            self._operations_idle.clear()
+
+    def _end_operation(self) -> None:
+        with self._sessions_lock:
+            self._active_operations -= 1
+            if self._active_operations == 0:
+                self._operations_idle.set()
+
+    def acquire_operation_lease(self) -> RelayOperationLease:
+        """Retain plugin lifetime for work that outlives one Relay await."""
+        self._begin_operation()
+        return RelayOperationLease(self)
 
     def emit_mark(
         self,
@@ -298,6 +547,17 @@ class RelayRuntime:
 
     def close_session(self, event: dict[str, Any]) -> None:
         """Close one session scope and remove it from the core registry."""
+        try:
+            self._begin_operation()
+        except RuntimeError:
+            return
+        try:
+            self._close_session(event)
+        finally:
+            self._end_operation()
+
+    def _close_session(self, event: dict[str, Any]) -> None:
+        """Close one session already admitted by the host lifecycle gate."""
         session_id = _session_id(event)
         with self._sessions_lock:
             session = self._sessions.get(session_id)
@@ -313,7 +573,7 @@ class RelayRuntime:
             session.closing = True
             if session.handle is not None:
                 try:
-                    self.run_in_session(
+                    self._run_in_session_untracked(
                         session,
                         self.relay.scope.pop,
                         session.handle,
@@ -326,10 +586,9 @@ class RelayRuntime:
                     )
                 except Exception as exc:
                     failures.append(f"session scope close failed: {exc}")
-        try:
-            self.relay.subscribers.flush()
-        except Exception as exc:
-            failures.append(f"subscriber flush failed: {exc}")
+        # Subscriber flushing is process-wide and may wait for publications
+        # owned by other sessions. Final plugin teardown flushes once after all
+        # tracked operations drain; doing it here can deadlock an asyncio loop.
         with self._sessions_lock:
             if self._sessions.get(session_id) is session:
                 self._sessions.pop(session_id, None)
@@ -343,17 +602,58 @@ class RelayRuntime:
             )
 
     def shutdown(self) -> None:
-        """Close all core-owned Relay session scopes."""
+        """Close core scopes and release process plugin configuration."""
         with self._sessions_lock:
-            session_ids = list(self._sessions)
-        for session_id in session_ids:
-            self._safe(self.close_session, {"session_id": session_id})
-        if self._shutdown_registered:
+            if self._shutdown_started:
+                return
+            self._shutdown_started = True
+            self._closing = True
+            has_active_operations = self._active_operations > 0
+        if has_active_operations:
+            thread = threading.Thread(
+                target=self._finish_shutdown_after_operations,
+                name=f"hermes-nemo-relay-shutdown-{self.runtime_id[:8]}",
+                daemon=True,
+            )
             try:
-                atexit.unregister(self.shutdown)
+                thread.start()
             except Exception:
-                pass
-            self._shutdown_registered = False
+                with self._sessions_lock:
+                    self._shutdown_started = False
+                logger.warning(
+                    "Hermes Relay deferred shutdown could not start",
+                    exc_info=True,
+                )
+            return
+        self._finish_shutdown()
+
+    def _finish_shutdown_after_operations(self) -> None:
+        self._operations_idle.wait()
+        self._finish_shutdown()
+
+    def _finish_shutdown(self) -> None:
+        try:
+            with self._sessions_lock:
+                session_ids = list(self._sessions)
+            for session_id in session_ids:
+                self._safe(self._close_session, {"session_id": session_id})
+            if self._plugin_configuration_registered:
+                self.release_managed_execution(RELAY_PLUGINS_EXECUTION_CONSUMER)
+                _PLUGIN_CONFIGURATION.release(self)
+                self._plugin_configuration_registered = False
+            if self._shutdown_registered:
+                try:
+                    atexit.unregister(self.shutdown)
+                except Exception:
+                    pass
+                self._shutdown_registered = False
+        except Exception:
+            with self._sessions_lock:
+                self._shutdown_started = False
+            logger.warning("Hermes Relay shutdown failed", exc_info=True)
+            return
+        with self._sessions_lock:
+            self._shutdown_complete.set()
 
     @staticmethod
     def _safe(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -1025,6 +1325,175 @@ def _load_nemo_relay() -> Any:
     return importlib.import_module("nemo_relay")
 
 
+def _configured_plugin_inputs(
+    relay: Any,
+) -> tuple[dict[str, Any], list[Any]] | None:
+    """Load environment-selected plugin inputs, or leave plugins disabled."""
+    configured = os.environ.get(RELAY_PLUGINS_CONFIG_ENV, "").strip()
+    if not configured:
+        return None
+
+    config_path = Path(configured).expanduser()
+    try:
+        with config_path.open("rb") as config_file:
+            config = tomllib.load(config_file)
+        legacy_dynamic_plugins = _dynamic_plugin_specs(config, config_path)
+        plugins_section = config.get("plugins")
+        if plugins_section is not None and legacy_dynamic_plugins:
+            raise ValueError(
+                "configure either Relay [[plugins.dynamic]] records or Hermes "
+                "[[dynamic_plugins]] activation specs, not both"
+            )
+
+        dynamic_plugins = legacy_dynamic_plugins
+        if plugins_section:
+            plugin_mod = getattr(relay, "plugin", None)
+            load_dynamic_plugins = getattr(
+                plugin_mod,
+                "load_dynamic_plugin_activation_specs",
+                None,
+            )
+            if not callable(load_dynamic_plugins):
+                raise RuntimeError(
+                    "installed NeMo Relay binding does not expose "
+                    "plugin.load_dynamic_plugin_activation_specs"
+                )
+            dynamic_plugins = load_dynamic_plugins(config_path)
+        plugin_config = dict(config)
+        plugin_config.pop("dynamic_plugins", None)
+        plugin_config.pop("plugins", None)
+        return plugin_config, dynamic_plugins
+    except Exception:
+        logger.warning(
+            "Hermes Relay plugin configuration could not be loaded from %s; "
+            "continuing without Relay plugins",
+            config_path,
+            exc_info=True,
+        )
+        return None
+
+
+def _dynamic_plugin_specs(
+    config: dict[str, Any],
+    config_path: Path,
+) -> list[dict[str, Any]]:
+    """Validate Hermes worker activation specs pending Relay lifecycle loading."""
+    plugins_section = config.get("plugins")
+    if plugins_section is not None and not isinstance(plugins_section, dict):
+        raise ValueError("[plugins] must be a table")
+
+    raw_specs = config.get("dynamic_plugins")
+    if raw_specs is None:
+        return []
+    if not isinstance(raw_specs, list):
+        raise ValueError("dynamic_plugins must be an array of tables")
+
+    specs: list[dict[str, Any]] = []
+    for index, raw_spec in enumerate(raw_specs):
+        if not isinstance(raw_spec, dict):
+            raise ValueError(f"dynamic_plugins[{index}] must be a table")
+        plugin_id = raw_spec.get("plugin_id")
+        kind = raw_spec.get("kind")
+        manifest_ref = raw_spec.get("manifest_ref")
+        environment_ref = raw_spec.get("environment_ref")
+        plugin_config = raw_spec.get("config", {})
+        if not isinstance(plugin_id, str) or not plugin_id.strip():
+            raise ValueError(f"dynamic_plugins[{index}].plugin_id is required")
+        if kind not in {"rust_dynamic", "worker"}:
+            raise ValueError(
+                f"dynamic_plugins[{index}].kind must be rust_dynamic or worker"
+            )
+        if not isinstance(manifest_ref, str) or not manifest_ref.strip():
+            raise ValueError(f"dynamic_plugins[{index}].manifest_ref is required")
+        if not isinstance(plugin_config, dict):
+            raise ValueError(f"dynamic_plugins[{index}].config must be a table")
+        if environment_ref is not None and (
+            not isinstance(environment_ref, str) or not environment_ref.strip()
+        ):
+            raise ValueError(
+                f"dynamic_plugins[{index}].environment_ref must be a non-empty string"
+            )
+
+        spec: dict[str, Any] = {
+            "plugin_id": plugin_id.strip(),
+            "kind": kind,
+            "manifest_ref": _config_relative_path(
+                manifest_ref.strip(),
+                config_path,
+            ),
+            "config": plugin_config,
+        }
+        if environment_ref is not None:
+            spec["environment_ref"] = _config_relative_path(
+                environment_ref.strip(),
+                config_path,
+            )
+        specs.append(spec)
+    return specs
+
+
+def _config_relative_path(value: str, config_path: Path) -> str:
+    """Resolve one activation path relative to its physical TOML file."""
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return str(path)
+    return str((config_path.resolve().parent / path).resolve())
+
+
+def _flush_relay_subscribers(relay: Any) -> None:
+    """Flush Relay without blocking a 0.7 asyncio event-loop thread."""
+    subscribers = getattr(relay, "subscribers", None)
+    flush_async = getattr(subscribers, "flush_async", None)
+    if callable(flush_async):
+        _resolve_plugin_awaitable(flush_async())
+        return
+    flush = getattr(subscribers, "flush", None)
+    if callable(flush):
+        _resolve_plugin_awaitable(flush())
+
+
+def _clear_relay_plugins(relay: Any) -> None:
+    """Clear Relay plugins through the newest available binding API."""
+    plugin_mod = getattr(relay, "plugin", None)
+    clear_async = getattr(plugin_mod, "clear_async", None)
+    if callable(clear_async):
+        _resolve_plugin_awaitable(clear_async())
+        return
+    clear = getattr(plugin_mod, "clear", None)
+    if callable(clear):
+        _resolve_plugin_awaitable(clear())
+
+
+def _resolve_plugin_awaitable(value: Any) -> Any:
+    """Resolve Relay's async plugin API from synchronous host construction."""
+    if not inspect.isawaitable(value):
+        return value
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(value)
+
+    result: dict[str, Any] = {}
+    error: dict[str, BaseException] = {}
+
+    def _runner() -> None:
+        try:
+            result["value"] = asyncio.run(value)
+        except BaseException as exc:  # pragma: no cover - re-raised below
+            error["exc"] = exc
+
+    thread = threading.Thread(
+        target=_runner,
+        name="hermes-nemo-relay-plugin-lifecycle",
+        daemon=True,
+    )
+    thread.start()
+    thread.join()
+    if "exc" in error:
+        raise error["exc"]
+    return result.get("value")
+
+
 def _session_id(event: dict[str, Any]) -> str:
     return str(event.get("session_id") or "")
 
@@ -1033,4 +1502,5 @@ def _reset_for_tests() -> None:
     """Reset all profile-scoped Relay hosts for isolated tests."""
     SESSION_COORDINATOR._reset_active_turns_for_tests()
     HOST_REGISTRY.shutdown_all()
+    _PLUGIN_CONFIGURATION.reset_for_tests()
     _PROFILE_KEY_CACHE.clear()

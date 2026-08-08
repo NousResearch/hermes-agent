@@ -98,6 +98,48 @@ class TestStreamingAccumulator:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_sparse_delta_allows_missing_optional_fields(self, mock_close, mock_create):
+        """Managed stream deltas may omit both content and tool_calls."""
+        from run_agent import AIAgent
+
+        sparse_delta = SimpleNamespace(reasoning_content=None, reasoning=None)
+        chunks = [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        index=0,
+                        delta=sparse_delta,
+                        finish_reason=None,
+                    )
+                ],
+                model="test-model",
+                usage=None,
+            ),
+            _make_stream_chunk(
+                content="done", finish_reason="stop", model="test-model"
+            ),
+        ]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "done"
+        assert response.choices[0].message.tool_calls is None
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_chat_stream_closes_original_provider_resource(
         self,
         mock_close,
@@ -1634,4 +1676,3 @@ class TestBedrockReasoningStaleFloor:
         from agent.chat_completion_helpers import _bedrock_reasoning_stale_floor
 
         assert _bedrock_reasoning_stale_floor(model_id) == expected
-

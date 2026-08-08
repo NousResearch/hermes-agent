@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+import hermes_cli.npm_engine as npm_engine
 from hermes_cli.npm_engine import (
     actual_npm_version,
     is_ebadengine,
@@ -123,6 +124,56 @@ class TestManagedDetection:
     def test_no_npm_is_not_managed(self, managed_tree):
         assert managed_npm_prefix(None) is None
         assert managed_npm_prefix("") is None
+
+
+class TestInUseDeferral:
+    """The managed tree cannot be written while a running app executes from
+    it (WinError 5 on npm.cmd, #80926) — the npm upgrade defers instead."""
+
+    @pytest.fixture
+    def managed_npm(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        bin_dir = home / "node" / "bin"
+        bin_dir.mkdir(parents=True)
+        npm = bin_dir / "npm"
+        npm.write_text("#!/bin/sh\n", encoding="utf-8")
+        npm.chmod(0o755)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        return npm
+
+    def test_in_use_managed_tree_defers_upgrade_without_running_npm(
+        self, managed_npm, monkeypatch
+    ):
+        monkeypatch.setattr(npm_engine, "managed_node_tree_in_use", lambda: True)
+
+        def forbidden_run(cmd, **kwargs):
+            raise AssertionError(f"npm must not run while the tree is in use: {cmd}")
+
+        monkeypatch.setattr(subprocess, "run", forbidden_run)
+
+        result = npm_engine.upgrade_managed_npm(
+            str(managed_npm),
+            ">=11.0.0",
+            prefix=managed_npm.parent,
+            quiet=True,
+        )
+        assert result is False
+
+    def test_in_use_deferral_blocks_repair_retry(self, managed_npm, monkeypatch):
+        """End-to-end: an in-use tree means no npm subprocess runs and no
+        retry is offered — the original EBADENGINE failure stands with the
+        deferral notice."""
+        monkeypatch.setattr(npm_engine, "managed_node_tree_in_use", lambda: True)
+
+        def forbidden_run(cmd, **kwargs):
+            raise AssertionError(f"npm must not run while the tree is in use: {cmd}")
+
+        monkeypatch.setattr(subprocess, "run", forbidden_run)
+
+        assert (
+            maybe_repair_npm_engine(str(managed_npm), EBADENGINE_OUTPUT, quiet=True)
+            is None
+        )
 
 
 class TestRepairDecision:

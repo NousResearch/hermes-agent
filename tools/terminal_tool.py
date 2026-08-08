@@ -1813,6 +1813,14 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
         for task_id in list(_last_activity.keys()):
             if process_registry.has_active_processes(task_id):
                 _last_activity[task_id] = current_time  # Keep sandbox alive
+                continue
+            # Background processes spawned with a collapsed container id
+            # (e.g. "default") are invisible to a probe keyed on the raw
+            # task id — check both so a sandbox shared across sessions
+            # is not torn down while a background command still runs.
+            alt = _resolve_container_task_id(task_id)
+            if alt != task_id and process_registry.has_active_processes(alt):
+                _last_activity[task_id] = current_time
     except ImportError:
         pass
 

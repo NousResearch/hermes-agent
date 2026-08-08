@@ -148,9 +148,11 @@ def _format_sessions(sessions: Sequence[dict]) -> str:
 
 
 def _format_job(job: dict, action: str) -> str:
+    from cron.jobs import effective_job_state
+
     job_id = job.get("id") or job.get("job_id") or "?"
     name = job.get("name") or "(unnamed)"
-    state = job.get("state") or ("scheduled" if job.get("enabled", True) else "paused")
+    state = effective_job_state(job)
     return f"{action} job: {name} ({job_id}) [{state}]"
 
 

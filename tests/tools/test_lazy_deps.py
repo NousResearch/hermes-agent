@@ -158,6 +158,43 @@ class TestEnsure:
 
 
 # ---------------------------------------------------------------------------
+# Failed-install negative cache (#80468)
+# ---------------------------------------------------------------------------
+#
+# A failed lazy install (e.g. STT backend offline, PyPI 404/quarantine) must
+# not be re-attempted on every call - each STT message previously re-ran the
+# whole slow uv -> pip fallback. ensure() records the failure for the session
+# and short-circuits later calls to the recorded error, while the first call
+# still surfaces the real pip error to the caller.
+# ---------------------------------------------------------------------------
+
+
+class TestFailedInstallNegativeCache:
+    def test_failed_install_is_not_retried_within_session(self, monkeypatch):
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.stt_retry", ("zzzfake>=1",))
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        # Fresh per-test cache - the module-level dict is process-global.
+        monkeypatch.setattr(ld, "_failed_installs", {})
+        attempts = []
+
+        def failing_install(specs, **kw):
+            attempts.append(specs)
+            return ld._InstallResult(False, "", "network unreachable")
+
+        monkeypatch.setattr(ld, "_venv_pip_install", failing_install)
+
+        # First call surfaces the real install error...
+        with pytest.raises(ld.FeatureUnavailable, match="network unreachable"):
+            ld.ensure("test.stt_retry", prompt=False)
+        # ...but the second call short-circuits without re-running pip.
+        with pytest.raises(ld.FeatureUnavailable, match="network unreachable"):
+            ld.ensure("test.stt_retry", prompt=False)
+
+        assert attempts == [("zzzfake>=1",)]
+
+
+# ---------------------------------------------------------------------------
 # is_available
 # ---------------------------------------------------------------------------
 

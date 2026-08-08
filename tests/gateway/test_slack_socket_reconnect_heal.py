@@ -272,7 +272,91 @@ class TestSocketModeTeardown:
 
 
 class TestSocketModeRestart:
+    @pytest.mark.asyncio
+    async def test_parent_cancellation_cancels_inflight_sdk_close(self, adapter):
+        """Gateway shutdown must not orphan a close task spawned by teardown."""
+        old = _FakeHandler()
+        _attach(adapter, old)
+        await asyncio.sleep(0.01)
 
+        close_started = asyncio.Event()
+        close_cancelled = asyncio.Event()
+        release_close = asyncio.Event()
+
+        async def _wait_for_release() -> None:
+            close_started.set()
+            try:
+                await release_close.wait()
+            except asyncio.CancelledError:
+                close_cancelled.set()
+                raise
+
+        old.close_async = _wait_for_release
+        stop_task = asyncio.create_task(adapter._stop_socket_mode_handler())
+        await close_started.wait()
+        stop_task.cancel()
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await stop_task
+            await asyncio.sleep(0)
+            assert close_cancelled.is_set(), "SDK close task was orphaned"
+        finally:
+            release_close.set()
+
+    @pytest.mark.asyncio
+    async def test_restart_does_not_stall_when_sdk_close_hangs(self, adapter):
+        """A wedged SDK close must not prevent the replacement handler starting."""
+        old = _FakeHandler()
+        old_task = _attach(adapter, old)
+        await asyncio.sleep(0.01)
+
+        close_started = asyncio.Event()
+        release_close = asyncio.Event()
+        release_session_close = asyncio.Event()
+
+        async def _suppress_cancellation_until_released() -> None:
+            close_started.set()
+            while not release_close.is_set():
+                try:
+                    await release_close.wait()
+                except asyncio.CancelledError:
+                    continue
+
+        old.close_async = _suppress_cancellation_until_released
+
+        async def _session_close_suppresses_cancellation() -> None:
+            old.client.aiohttp_client_session.closed = True
+            while not release_session_close.is_set():
+                try:
+                    await release_session_close.wait()
+                except asyncio.CancelledError:
+                    continue
+
+        old.client.aiohttp_client_session.close = _session_close_suppresses_cancellation
+        started: list[str] = []
+
+        def _fake_start() -> None:
+            started.append("started")
+
+        with (
+            patch.object(_slack_mod, "_SOCKET_HANDLER_CLOSE_TIMEOUT_S", 0.01),
+            patch.object(adapter, "_start_socket_mode_handler", _fake_start),
+        ):
+            restart_task = asyncio.create_task(
+                adapter._restart_socket_mode("transport disconnected")
+            )
+            await asyncio.sleep(0.05)
+            try:
+                assert restart_task.done(), "reconnect remained stuck in SDK close"
+            finally:
+                release_close.set()
+                release_session_close.set()
+                await asyncio.wait_for(restart_task, timeout=0.1)
+
+        assert close_started.is_set()
+        assert old_task.done()
+        assert old.client.aiohttp_client_session.closed
+        assert started == ["started"]
 
     @pytest.mark.asyncio
     async def test_watchdog_restarts_when_transport_disconnected(self, adapter):

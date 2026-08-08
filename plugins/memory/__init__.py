@@ -202,7 +202,7 @@ def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
     """
     provider_dir = find_provider_dir(name)
     if not provider_dir:
-        logger.debug("Memory provider '%s' not found in bundled or user plugins", name)
+        logger.warning("Memory provider '%s' not found in bundled or user plugins", name)
         return None
 
     try:

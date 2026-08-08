@@ -98,7 +98,12 @@ def test_failed_automatic_backup_preserves_previous_archive(tmp_path, monkeypatc
     archive = tmp_path / "automatic.zip"
     archive.write_bytes(b"previous-valid-backup")
 
-    monkeypatch.setattr("hermes_cli.backup._safe_copy_db", lambda _src, _dst: False)
+    # _safe_copy_db returns (ok, reason) so callers can persist WHY a present
+    # file could not be captured (#68907); stub the failing shape accordingly.
+    monkeypatch.setattr(
+        "hermes_cli.backup._safe_copy_db",
+        lambda _src, _dst: (False, "stubbed failure"),
+    )
 
     assert _write_full_zip_backup(archive, home) is None
     assert archive.read_bytes() == b"previous-valid-backup"

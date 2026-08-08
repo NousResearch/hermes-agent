@@ -249,6 +249,20 @@ def wake_phrase(cfg: Optional[Dict[str, Any]] = None) -> str:
     return str(_get(cfg, "phrase")) or "hey hermes"
 
 
+def start_new_session_enabled(cfg: Optional[Dict[str, Any]] = None) -> bool:
+    """Whether a wake-word trigger should start a new session.
+
+    Parsed through the shared truthy-string set so a hand-edited YAML
+    ``start_new_session: "false"`` (quoted) actually disables the behaviour.
+    ``bool("false")`` is ``True`` and silently enabled a new session for
+    every wake-word fire — the wake status line also lied about the setting.
+    """
+    from utils import is_truthy_value
+
+    cfg = cfg if cfg is not None else load_wake_word_config()
+    return is_truthy_value(_get(cfg, "start_new_session"), default=True)
+
+
 def resolve_capture_mode(
     cfg: Optional[Dict[str, Any]] = None,
     *,

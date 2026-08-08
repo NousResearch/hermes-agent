@@ -39,6 +39,19 @@ def test_config_defaults_and_clamping():
     assert ww.wake_phrase({}) == "hey hermes"
 
 
+def test_start_new_session_quoted_false_disables():
+    """Quoted YAML ``"false"`` must disable, not enable (bool() trap)."""
+    assert ww.start_new_session_enabled({}) is True  # default
+    assert ww.start_new_session_enabled({"start_new_session": True}) is True
+    assert ww.start_new_session_enabled({"start_new_session": "true"}) is True
+    assert ww.start_new_session_enabled({"start_new_session": "yes"}) is True
+    assert ww.start_new_session_enabled({"start_new_session": "on"}) is True
+    assert ww.start_new_session_enabled({"start_new_session": False}) is False
+    assert ww.start_new_session_enabled({"start_new_session": "false"}) is False
+    assert ww.start_new_session_enabled({"start_new_session": "no"}) is False
+    assert ww.start_new_session_enabled({"start_new_session": "0"}) is False
+
+
 def test_wake_surface_enabled_gate():
     # Disabled → never, regardless of surface.
     assert ww.wake_surface_enabled("cli", {"enabled": False, "surface": "cli"}) is False

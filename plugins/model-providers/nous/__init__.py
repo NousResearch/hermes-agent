@@ -44,8 +44,11 @@ class NousProfile(ProviderProfile):
         sticky_key = _cache_scope_from_session_id(get_conversation_context() or session_id)
         if sticky_key:
             body["session_id"] = sticky_key
+        # ``provider`` is an OpenAI-wire routing object. On the Anthropic
+        # Messages wire it would be an unknown body field, so emit it only for
+        # chat_completions callers (GH-75445).
         provider_preferences = context.get("provider_preferences")
-        if provider_preferences:
+        if provider_preferences and context.get("api_mode") != "anthropic_messages":
             body["provider"] = provider_preferences
         return body
 
@@ -56,7 +59,16 @@ class NousProfile(ProviderProfile):
         supports_reasoning: bool = False,
         **context,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Nous: passes full reasoning_config, but OMITS when disabled."""
+        """Nous: passes full reasoning_config, but OMITS when disabled.
+
+        On the Anthropic Messages wire the ``extra_body.reasoning`` dict is an
+        OpenAI-shaped control the native adapter translates into ``thinking`` /
+        ``output_config``; emitting it would duplicate reasoning controls. The
+        transport passes ``api_mode="anthropic_messages"``, under which this
+        hook contributes nothing and lets the adapter own reasoning (GH-75445).
+        """
+        if context.get("api_mode") == "anthropic_messages":
+            return {}, {}
         extra_body = {}
         if supports_reasoning:
             if reasoning_config is not None:

@@ -88,6 +88,9 @@ class ZaiProfile(ProviderProfile):
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
+        if context.get("api_mode") == "anthropic_messages":
+            return {}, {}
+
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}
 

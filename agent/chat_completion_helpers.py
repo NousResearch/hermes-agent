@@ -199,10 +199,12 @@ def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
 def _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs: dict) -> dict:
     """Merge Portal ``tags`` / ``session_id`` onto an Anthropic Messages kwargs dict.
 
-    The Nous provider profile is only consulted by the OpenAI-wire transport;
-    anthropic_messages callers must merge it themselves. Passes ``session_id``
-    only — not ``provider_preferences`` (those become a top-level ``provider``
-    routing object on the OpenAI wire). Never blocks a turn on tagging.
+    Used by callers that construct Anthropic kwargs outside the transport's
+    ProviderProfile pipeline (iteration-limit summary and retry). The main
+    request path applies the same fields through the transport hooks
+    (GH-75445). Passes ``session_id`` only — not ``provider_preferences``
+    (those become a top-level ``provider`` routing object on the OpenAI wire).
+    Never blocks a turn on tagging.
     """
     if getattr(agent, "provider", None) not in {"nous", "nous-portal", "nousresearch"}:
         return anthropic_kwargs
@@ -1340,7 +1342,20 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         ephemeral_out = getattr(agent, "_ephemeral_max_output_tokens", None)
         if ephemeral_out is not None:
             agent._ephemeral_max_output_tokens = None  # consume immediately
-        anthropic_kwargs = _transport.build_kwargs(
+        # ProviderProfile path — the same hooks as the chat_completions
+        # transport. ``prepare_messages``, ``build_api_kwargs_extras`` and
+        # ``build_extra_body`` run inside the transport with
+        # ``api_mode="anthropic_messages"``. This replaces the Nous-only
+        # special case: registered provider profiles now contribute their
+        # portal fields (e.g. Nous ``tags`` / ``session_id``) through the
+        # generic pipeline instead of a per-provider merge (GH-75445).
+        try:
+            from providers import get_provider_profile
+
+            _profile = get_provider_profile(agent.provider)
+        except Exception:
+            _profile = None
+        return _transport.build_kwargs(
             model=agent.model,
             messages=anthropic_messages,
             tools=tools_for_api,
@@ -1352,13 +1367,10 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             base_url=getattr(agent, "_anthropic_base_url", None),
             fast_mode=(agent.request_overrides or {}).get("speed") == "fast",
             drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
+            provider_profile=_profile,
+            session_id=getattr(agent, "session_id", None),
+            supports_reasoning=agent._supports_reasoning_extra_body(),
         )
-        # Nous Portal reads ``tags`` and ``session_id`` as top-level body fields
-        # on its Messages route the same way it does on /chat/completions, but
-        # the profile hook that produces them is only consulted by the
-        # OpenAI-wire transport. Merge them here so Messages traffic keeps
-        # product attribution and sticky routing.
-        return _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs)
 
     # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
     # The adapter handles message/tool conversion and boto3 calls directly.

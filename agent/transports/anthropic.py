@@ -9,6 +9,35 @@ from typing import Any, Dict, List, Optional
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse
 
+# Top-level Python keyword arguments accepted by the Anthropic Messages SDK
+# 0.87.0 ``messages.create()`` and ``messages.stream()`` (the intersection of
+# both signatures). Any other key a ProviderProfile hook returns at top level
+# is an extension field: it is projected onto ``extra_body`` so it reaches the
+# JSON wire without raising ``TypeError`` at dispatch time. See GH-75445.
+_ANTHROPIC_MESSAGES_TOP_LEVEL_KWARGS = frozenset({
+    "model",
+    "messages",
+    "max_tokens",
+    "cache_control",
+    "container",
+    "inference_geo",
+    "metadata",
+    "output_config",
+    "service_tier",
+    "stop_sequences",
+    "system",
+    "temperature",
+    "thinking",
+    "tool_choice",
+    "tools",
+    "top_k",
+    "top_p",
+    "extra_headers",
+    "extra_query",
+    "extra_body",
+    "timeout",
+})
+
 
 class AnthropicTransport(ProviderTransport):
     """Transport for api_mode='anthropic_messages'.
@@ -59,10 +88,27 @@ class AnthropicTransport(ProviderTransport):
             base_url: str | None
             fast_mode: bool
             drop_context_1m_beta: bool
+            provider_profile: ProviderProfile | None
+            session_id: str | None
+            supports_reasoning: bool
+
+        When ``provider_profile`` is present the ProviderProfile request hooks
+        run with the same semantics as the chat_completions transport:
+        ``prepare_messages()`` before Anthropic message conversion, then
+        ``build_api_kwargs_extras()`` and ``build_extra_body()`` applied after
+        the adapter defaults. Hooks receive ``api_mode="anthropic_messages"``
+        so dual-wire profiles can emit protocol-appropriate fields (GH-75445).
         """
         from agent.anthropic_adapter import build_anthropic_kwargs
 
-        return build_anthropic_kwargs(
+        provider_profile = params.get("provider_profile")
+
+        # Message preprocessing hook — must run before the adapter converts
+        # OpenAI-format messages to Anthropic-format messages.
+        if provider_profile is not None:
+            messages = provider_profile.prepare_messages(messages)
+
+        api_kwargs = build_anthropic_kwargs(
             model=model,
             messages=messages,
             tools=tools,
@@ -76,6 +122,81 @@ class AnthropicTransport(ProviderTransport):
             fast_mode=params.get("fast_mode", False),
             drop_context_1m_beta=params.get("drop_context_1m_beta", False),
         )
+
+        if provider_profile is None:
+            return api_kwargs
+
+        return self._apply_provider_profile(
+            api_kwargs,
+            model=model,
+            tools=tools,
+            provider_profile=provider_profile,
+            reasoning_config=params.get("reasoning_config"),
+            session_id=params.get("session_id"),
+            supports_reasoning=params.get("supports_reasoning", False),
+            base_url=params.get("base_url"),
+        )
+
+    def _apply_provider_profile(
+        self,
+        api_kwargs: Dict[str, Any],
+        *,
+        model: str,
+        tools: Optional[List[Dict[str, Any]]],
+        provider_profile: Any,
+        reasoning_config: Optional[Dict[str, Any]],
+        session_id: Optional[str],
+        supports_reasoning: bool,
+        base_url: Optional[str],
+    ) -> Dict[str, Any]:
+        """Merge ProviderProfile hook output onto Anthropic SDK kwargs.
+
+        Merge order inside ``extra_body``:
+          adapter extras < build_extra_body < build_api_kwargs_extras body
+          < extension fields projected from the top-level result.
+
+        For ordinary SDK top-level fields, profile output replaces the adapter
+        value. ``extra_headers`` dictionaries merge shallowly so the adapter's
+        beta headers are retained and profile headers win on key conflicts.
+        """
+        extra_body_from_profile, top_level_from_profile = (
+            provider_profile.build_api_kwargs_extras(
+                reasoning_config=reasoning_config,
+                supports_reasoning=supports_reasoning,
+                session_id=session_id,
+                model=model,
+                base_url=base_url,
+                api_mode=self.api_mode,
+            )
+        )
+        profile_body = provider_profile.build_extra_body(
+            session_id=session_id,
+            model=model,
+            base_url=base_url,
+            reasoning_config=reasoning_config,
+            api_mode=self.api_mode,
+        )
+
+        extra_body = dict(api_kwargs.get("extra_body") or {})
+        if profile_body:
+            extra_body.update(profile_body)
+        if extra_body_from_profile:
+            extra_body.update(extra_body_from_profile)
+
+        for key, value in (top_level_from_profile or {}).items():
+            if key == "extra_headers" and isinstance(value, dict):
+                merged_headers = dict(api_kwargs.get("extra_headers") or {})
+                merged_headers.update(value)
+                api_kwargs["extra_headers"] = merged_headers
+            elif key in _ANTHROPIC_MESSAGES_TOP_LEVEL_KWARGS:
+                api_kwargs[key] = value
+            else:
+                extra_body[key] = value
+
+        if extra_body:
+            api_kwargs["extra_body"] = extra_body
+
+        return api_kwargs
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
         """Normalize Anthropic response to NormalizedResponse.

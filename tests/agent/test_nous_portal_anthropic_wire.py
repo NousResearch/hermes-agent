@@ -285,6 +285,7 @@ class TestPortalBodyFields:
             _get_transport=lambda: transport,
             _prepare_anthropic_messages_for_api=lambda msgs: msgs,
             _anthropic_preserve_dots=lambda: False,
+            _supports_reasoning_extra_body=lambda: False,
         )
         return build_api_kwargs(agent, [{"role": "user", "content": "hi"}])
 
@@ -522,3 +523,91 @@ class TestAuxiliaryDualWire:
             )
 
         assert captured["model"] == "anthropic/claude-opus-4.8"
+
+
+# ── 7. Generic ProviderProfile wiring on the main Anthropic path ─────────────
+
+
+class TestGenericProfileWiring:
+    """The main ``anthropic_messages`` request path applies ProviderProfile
+    hooks generically instead of the Nous-only special case (GH-75445)."""
+
+    def _agent(self, **over):
+        from agent.transports.anthropic import AnthropicTransport
+
+        transport = AnthropicTransport()
+        base = dict(
+            api_mode="anthropic_messages",
+            provider="nous",
+            model="anthropic/claude-opus-4.8",
+            session_id="sess-abc123",
+            tools=None,
+            max_tokens=1024,
+            reasoning_config=None,
+            request_overrides={},
+            context_compressor=None,
+            _ephemeral_max_output_tokens=None,
+            _is_anthropic_oauth=False,
+            _anthropic_base_url=PORTAL_URL,
+            _oauth_1m_beta_disabled=False,
+            _get_transport=lambda: transport,
+            _prepare_anthropic_messages_for_api=lambda msgs: msgs,
+            _anthropic_preserve_dots=lambda: False,
+            _supports_reasoning_extra_body=lambda: False,
+        )
+        base.update(over)
+        return SimpleNamespace(**base)
+
+    def test_nous_profile_fields_flow_through_generic_pipeline(self):
+        from agent.chat_completion_helpers import build_api_kwargs
+
+        kw = build_api_kwargs(self._agent(), [{"role": "user", "content": "hi"}])
+        assert kw["extra_body"]["session_id"] == "sess-abc123"
+        assert "tags" in kw["extra_body"]
+
+    def test_nous_reasoning_stays_with_the_adapter(self):
+        from agent.chat_completion_helpers import build_api_kwargs
+
+        agent = self._agent(reasoning_config={"enabled": True, "effort": "high"})
+        kw = build_api_kwargs(agent, [{"role": "user", "content": "hi"}])
+        assert "reasoning" not in kw.get("extra_body", {})
+        assert "provider" not in kw.get("extra_body", {})
+        assert kw.get("thinking") is not None
+
+    def test_synthetic_profile_reaches_the_request(self, monkeypatch):
+        from agent.chat_completion_helpers import build_api_kwargs
+        from providers.base import ProviderProfile
+
+        class _PluginProfile(ProviderProfile):
+            def prepare_messages(self, messages):
+                return [{"role": "user", "content": "plugin-prep"}]
+
+            def build_extra_body(self, *, session_id=None, **context):
+                return {"plugin": "body"}
+
+            def build_api_kwargs_extras(
+                self, *, reasoning_config=None, **context
+            ):
+                return {"plugin_extra": "x"}, {"service_tier": "standard_only"}
+
+        monkeypatch.setattr(
+            "providers.get_provider_profile",
+            lambda provider: _PluginProfile(name="plugin"),
+        )
+        kw = build_api_kwargs(
+            self._agent(provider="plugin"), [{"role": "user", "content": "hi"}]
+        )
+        assert kw["messages"][0]["content"] == "plugin-prep"
+        assert kw["extra_body"]["plugin"] == "body"
+        assert kw["extra_body"]["plugin_extra"] == "x"
+        assert kw["service_tier"] == "standard_only"
+
+    def test_no_profile_preserves_adapter_shape(self, monkeypatch):
+        from agent.chat_completion_helpers import build_api_kwargs
+
+        monkeypatch.setattr("providers.get_provider_profile", lambda provider: None)
+        kw = build_api_kwargs(
+            self._agent(provider="anthropic"), [{"role": "user", "content": "hi"}]
+        )
+        assert "extra_body" not in kw
+        assert {"model", "messages", "max_tokens"} <= set(kw)

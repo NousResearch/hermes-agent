@@ -51,6 +51,14 @@ class CustomProfile(ProviderProfile):
         # Ollama-only flag and thinking is already server-default-on for these
         # backends, so forcing it risks a 400 on GLM/vLLM endpoints that don't
         # recognize it. Mirrors the DeepSeek/Zai profile precedent.
+        #
+        # On the Anthropic Messages wire the adapter owns reasoning
+        # (``thinking`` / ``output_config``); ``reasoning_effort``,
+        # ``think`` and ``options.num_ctx`` are OpenAI/Ollama-shaped and would
+        # be unknown fields. The transport passes ``api_mode="anthropic_messages"``,
+        # under which this hook contributes nothing (GH-75445).
+        if ctx.get("api_mode") == "anthropic_messages":
+            return {}, {}
         if reasoning_config and isinstance(reasoning_config, dict):
             _effort = (reasoning_config.get("effort") or "").strip().lower()
             _enabled = reasoning_config.get("enabled", True)

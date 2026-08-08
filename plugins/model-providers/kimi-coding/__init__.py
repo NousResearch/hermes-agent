@@ -68,7 +68,16 @@ class KimiProfile(ProviderProfile):
         'reasoning_effort'" (HTTP 400). This mirrors the kimi-k2 handling on the
         opencode-go relay: send effort when one is requested, otherwise fall
         back to ``extra_body.thinking`` — never both.
+
+        On the Anthropic Messages wire (``api.kimi.com/coding``) the adapter
+        translates Hermes reasoning into native ``thinking.type="adaptive"``
+        plus ``output_config.effort``. This hook's OpenAI-shaped output would
+        either be an unknown body field or an unsupported top-level kwarg, so
+        it contributes nothing when the transport passes
+        ``api_mode="anthropic_messages"`` (GH-75445).
         """
+        if context.get("api_mode") == "anthropic_messages":
+            return {}, {}
         extra_body = {}
         top_level = {}
 

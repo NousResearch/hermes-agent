@@ -351,6 +351,43 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     delivery_claimed_at REAL
 );
 
+-- Durable external background-task lifecycle store (agent/background_tasks.py).
+-- Profile-local state for plugin-registered external tasks. Completion
+-- DELIVERY reuses the async_delegations rail above (a terminal row is written
+-- there); this table owns registration, plugin ownership, idempotency, and
+-- terminal intent. Created here so a fresh state.db has it from the start;
+-- agent/background_tasks._connect also creates it lazily on existing DBs.
+CREATE TABLE IF NOT EXISTS external_background_tasks (
+    task_id TEXT PRIMARY KEY,
+    plugin_id TEXT NOT NULL,
+    parent_session_id TEXT NOT NULL,
+    session_key TEXT NOT NULL DEFAULT '',
+    origin_ui_session_id TEXT NOT NULL DEFAULT '',
+    origin_session_id TEXT NOT NULL DEFAULT '',
+    external_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    payload_hash TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    state TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    cancel_requested_at REAL,
+    completed_at REAL,
+    terminal_event_id TEXT,
+    terminal_payload_hash TEXT,
+    summary TEXT,
+    error TEXT,
+    result_json TEXT,
+    delivery_delegation_id TEXT,
+    delivery_state TEXT NOT NULL DEFAULT 'pending'
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ext_tasks_dedup
+    ON external_background_tasks(plugin_id, parent_session_id, idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_ext_tasks_plugin_state
+    ON external_background_tasks(plugin_id, state);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);

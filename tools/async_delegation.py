@@ -282,6 +282,73 @@ def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
         )
 
 
+def insert_external_completion_row(
+    conn: sqlite3.Connection, event: Dict[str, Any], result: Dict[str, Any]
+) -> None:
+    """Insert a terminal async-delegation delivery row into an OPEN connection.
+
+    Used by external background-task consumers that must persist the delivery
+    row atomically with their own task-state transition (same transaction, so
+    a crash can never leave a terminal task without a durable completion, or a
+    delivery row for a task that is still non-terminal).
+
+    The row is written TERMINAL (never ``running``/``finalizing``), so
+    ``recover_abandoned_delegations`` — which only classifies rows owned by a
+    live in-process runner — never misclassifies an external completion whose
+    registering process has since restarted. From here the row flows through
+    the exact claim / ack / release / restart-restore rail used by
+    ``delegate_task(background=True)``.
+    """
+    _initialize_schema(conn)
+    now = time.time()
+    conn.execute(
+        """INSERT OR REPLACE INTO async_delegations
+           (delegation_id, origin_session, origin_ui_session_id,
+            parent_session_id, state, dispatched_at, completed_at,
+            updated_at, event_json, result_json, delivery_state,
+            delivery_attempts, origin_session_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?)""",
+        (
+            event["delegation_id"],
+            event.get("session_key", ""),
+            event.get("origin_ui_session_id", ""),
+            event.get("parent_session_id"),
+            event.get("status", "completed"),
+            event.get("dispatched_at", now),
+            event.get("completed_at", now),
+            now,
+            json.dumps(event),
+            json.dumps(result or {}),
+            event.get("origin_session_id", ""),
+        ),
+    )
+
+
+def enqueue_completion_event(event: Dict[str, Any]) -> None:
+    """Best-effort publish of a completion event onto the shared queue.
+
+    A failure here must not crash the caller, but it WOULD mean a silently
+    lost result (recoverable across a restart for durable rows), so we log
+    loudly.
+    """
+    try:
+        from tools.process_registry import process_registry
+    except Exception as exc:  # pragma: no cover
+        logger.error(
+            "Completion for %s: process_registry import failed; result lost: %s",
+            event.get("delegation_id") or event.get("session_id"), exc,
+        )
+        return
+    try:
+        process_registry.completion_queue.put(event)
+    except Exception as exc:  # pragma: no cover
+        logger.error(
+            "Completion for %s: failed to enqueue completion event; result "
+            "lost: %s",
+            event.get("delegation_id") or event.get("session_id"), exc,
+        )
+
+
 def _note_delivery_attempt(delegation_id: str) -> None:
     with _DB_LOCK, _transaction() as conn:
         conn.execute(
@@ -674,6 +741,46 @@ def _current_origin_session_id() -> str:
         return ""
 
 
+def capture_parent_session_routing(parent_agent) -> Dict[str, str]:
+    """Capture the routing fields a durable completion needs from the parent.
+
+    Mirrors the capture ``delegate_tool`` performs at background-dispatch time
+    so an EXTERNAL completion routes to the SAME target: the gateway platform
+    conversation key (or the durable parent session id for CLI/TUI), the
+    originating UI session id, and the raw api_server wake session id.
+
+    This is the small stable seam that lets durable consumers outside
+    ``delegate_task`` reuse the completion rail without re-deriving the
+    routing rules in parallel code.
+    """
+    from tools.approval import get_current_session_key
+
+    session_key = get_current_session_key(default="")
+    try:
+        from gateway.session_context import get_session_env
+
+        source = get_session_env("HERMES_SESSION_SOURCE", "")
+        origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "")
+    except Exception:
+        source = ""
+        origin_ui_session_id = ""
+    agent_session_id = str(getattr(parent_agent, "session_id", "") or "")
+    # In desktop/TUI, the routable session key is the durable agent session id
+    # (compression can rotate it mid-turn; the drain side resolves lineage).
+    if source == "tui" and agent_session_id:
+        session_key = agent_session_id
+    if not session_key and agent_session_id:
+        # CLI (single-process) path: the approval contextvar is unbound and the
+        # CLI drain owns completions by matching this durable session id.
+        session_key = agent_session_id
+    return {
+        "session_key": session_key,
+        "parent_session_id": agent_session_id,
+        "origin_ui_session_id": origin_ui_session_id,
+        "origin_session_id": _current_origin_session_id(),
+    }
+
+
 def dispatch_async_delegation(
     *,
     goal: str,
@@ -868,16 +975,6 @@ def _push_completion_event(
     Best-effort: a failure here must not crash the worker, but it WOULD mean a
     silently-lost result, so we log loudly.
     """
-    try:
-        from tools.process_registry import process_registry
-    except Exception as exc:  # pragma: no cover
-        logger.error(
-            "Async delegation %s finished but process_registry import failed; "
-            "result lost: %s",
-            record.get("delegation_id"), exc,
-        )
-        return
-
     summary = result.get("summary")
     error = result.get("error")
     dispatched_at = record.get("dispatched_at") or time.time()
@@ -919,14 +1016,7 @@ def _push_completion_event(
         if _k in result:
             evt[_k] = result[_k]
     _persist_completion(evt, result)
-    try:
-        process_registry.completion_queue.put(evt)
-    except Exception as exc:  # pragma: no cover
-        logger.error(
-            "Async delegation %s: failed to enqueue completion event; "
-            "result lost: %s",
-            record.get("delegation_id"), exc,
-        )
+    enqueue_completion_event(evt)
 
 
 def dispatch_async_delegation_batch(
@@ -1078,16 +1168,6 @@ def _push_batch_completion_event(
     event_record: Dict[str, Any], combined: Dict[str, Any], status: str
 ) -> None:
     """Push a combined async-delegation batch completion event."""
-    try:
-        from tools.process_registry import process_registry
-    except Exception as exc:  # pragma: no cover
-        logger.error(
-            "Async delegation batch %s finished but process_registry import "
-            "failed; result lost: %s",
-            event_record.get("delegation_id"), exc,
-        )
-        return
-
     dispatched_at = event_record.get("dispatched_at") or time.time()
     completed_at = event_record.get("completed_at") or time.time()
     evt = {
@@ -1128,14 +1208,7 @@ def _push_batch_completion_event(
         if _k in combined:
             evt[_k] = combined[_k]
     _persist_completion(evt, combined)
-    try:
-        process_registry.completion_queue.put(evt)
-    except Exception as exc:  # pragma: no cover
-        logger.error(
-            "Async delegation batch %s: failed to enqueue completion event; "
-            "result lost: %s",
-            event_record.get("delegation_id"), exc,
-        )
+    enqueue_completion_event(evt)
 
 
 def _ensure_stale_monitor() -> None:

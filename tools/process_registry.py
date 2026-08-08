@@ -2709,11 +2709,26 @@ def _format_async_delegation(evt: dict) -> str:
     if isinstance(dispatched_at, (int, float)):
         age = f" ({_format_age(completed_at - dispatched_at)} ago)"
 
+    if evt.get("external_background_task"):
+        header = f"[BACKGROUND TASK COMPLETE — {deleg_id}]"
+        intro = (
+            "A background task you registered earlier has finished. You may "
+            "have moved on since registering it; the original request is "
+            "below so you can act on the result or re-register it if things "
+            "have changed."
+        )
+    else:
+        header = f"[ASYNC DELEGATION COMPLETE — {deleg_id}]"
+        intro = (
+            "A background subagent you dispatched earlier has finished. You "
+            "may have moved on since dispatching it; the full task source is "
+            "below so you can act on the result or re-dispatch if things have "
+            "changed."
+        )
+
     lines = [
-        f"[ASYNC DELEGATION COMPLETE — {deleg_id}]",
-        "A background subagent you dispatched earlier has finished. You may "
-        "have moved on since dispatching it; the full task source is below so "
-        "you can act on the result or re-dispatch if things have changed.",
+        header,
+        intro,
         "",
     ]
     if isinstance(dispatched_at, (int, float)):
@@ -2727,11 +2742,12 @@ def _format_async_delegation(evt: dict) -> str:
     lines.append(f"Role: {role}   Model: {model}")
     lines.append(f"Status: {status}   API calls: {api_calls}   Duration: {duration}s")
     lines.append("--- RESULT ---")
+    task_subject = "background task" if evt.get("external_background_task") else "subagent"
     if status in ("completed", "success") and summary:
         lines.append(summary)
     elif status == "interrupted":
         lines.append(
-            "The subagent was interrupted before completing"
+            f"The {task_subject} was interrupted before completing"
             + (f": {error}" if error else ".")
         )
         if summary:
@@ -2740,7 +2756,7 @@ def _format_async_delegation(evt: dict) -> str:
     else:
         # error / timeout / failed
         lines.append(
-            f"The subagent did not complete successfully (status={status})."
+            f"The {task_subject} did not complete successfully (status={status})."
             + (f"\n{error}" if error else "")
         )
         if summary:

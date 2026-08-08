@@ -7,7 +7,6 @@ sessions; plugins must obtain it from ``PluginContext.subagent_lifecycle``.
 
 from __future__ import annotations
 
-import contextvars
 import dataclasses
 import enum
 import hashlib
@@ -164,24 +163,28 @@ from tools.daemon_pool import DaemonThreadPoolExecutor as _DaemonExecutor
 
 _EXECUTOR = _DaemonExecutor(max_workers=8, thread_name_prefix="hermes-lifecycle")
 _SECRET = secrets.token_bytes(32)
-_ACTIVE_PARENT_AGENT: contextvars.ContextVar[Any] = contextvars.ContextVar(
-    "hermes_subagent_lifecycle_parent", default=None
-)
 
 
 @contextmanager
 def bind_subagent_parent(parent_agent: Any):
-    """Bind the host-owned parent for the current agent turn."""
-    token = _ACTIVE_PARENT_AGENT.set(parent_agent)
-    try:
+    """Bind the host-owned parent for the current agent turn.
+
+    Backward-compatible wrapper around the shared host-parent binding
+    (``agent.host_context``). The subagent lifecycle API and the external
+    background-task API share the same turn-scoped parent so a plugin can
+    register durable work from the same active turn.
+    """
+    from agent.host_context import bind_host_parent
+
+    with bind_host_parent(parent_agent):
         yield
-    finally:
-        _ACTIVE_PARENT_AGENT.reset(token)
 
 
 def get_active_subagent_parent() -> Any:
     """Return the parent bound to this execution context, if any."""
-    return _ACTIVE_PARENT_AGENT.get()
+    from agent.host_context import get_active_host_parent
+
+    return get_active_host_parent()
 
 
 class SubagentLifecycleService:

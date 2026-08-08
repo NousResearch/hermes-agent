@@ -722,3 +722,47 @@ class TestHermesInternalDynamicSecrets:
         assert "GATEWAY_RELAY_SECRET" in _HERMES_PROVIDER_ENV_BLOCKLIST
         assert "GATEWAY_RELAY_DELIVERY_KEY" in _HERMES_PROVIDER_ENV_BLOCKLIST
         assert "GATEWAY_RELAY_ID" in _HERMES_PROVIDER_ENV_BLOCKLIST
+
+
+    def test_package_registry_tokens_stripped(self):
+        """npm/PyPI/Cargo publish tokens must not leak into agent subprocesses."""
+        tokens = {
+            "NPM_TOKEN": "npm-secret",
+            "NPM_AUTH_TOKEN": "npm-auth",
+            "NODE_AUTH_TOKEN": "node-auth",
+            "PYPI_TOKEN": "pypi-secret",
+            "TWINE_PASSWORD": "twine-secret",
+            "CARGO_REGISTRY_TOKEN": "cargo-secret",
+        }
+        result_env = _run_with_env(extra_os_env=tokens)
+        for var in tokens:
+            assert var not in result_env, f"{var} leaked into subprocess env"
+        for var in tokens:
+            assert var in _HERMES_PROVIDER_ENV_BLOCKLIST
+
+    def test_git_terminal_prompt_disabled(self):
+        """Subprocess env must set GIT_TERMINAL_PROMPT=0 (non-interactive git)."""
+        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
+        result = _sanitize_subprocess_env({"PATH": "/usr/bin"})
+        assert result.get("GIT_TERMINAL_PROMPT") == "0"
+        with patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=True):
+            run_env = _make_run_env({})
+        assert run_env.get("GIT_TERMINAL_PROMPT") == "0"
+
+    def test_git_terminal_prompt_inherited_enabled_is_overridden(self):
+        """An inherited GIT_TERMINAL_PROMPT=1 must be forced back to 0."""
+        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
+
+        # _sanitize_subprocess_env path: enabled value supplied via base_env.
+        result = _sanitize_subprocess_env(
+            {"PATH": "/usr/bin", "GIT_TERMINAL_PROMPT": "1"}
+        )
+        assert result.get("GIT_TERMINAL_PROMPT") == "0"
+
+        # Foreground run path (_make_run_env) with inherited enabled prompt
+        # via os.environ (merged as os.environ | env).
+        with patch.dict(
+            os.environ, {"PATH": "/usr/bin", "GIT_TERMINAL_PROMPT": "1"}, clear=True
+        ):
+            run_env = _make_run_env({})
+        assert run_env.get("GIT_TERMINAL_PROMPT") == "0"

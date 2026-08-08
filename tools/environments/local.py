@@ -320,6 +320,14 @@ def _build_provider_env_blocklist() -> frozenset:
         "VERCEL_TOKEN",
         "VERCEL_PROJECT_ID",
         "VERCEL_TEAM_ID",
+        # Package-registry / publish tokens — high value if a tool subprocess
+        # exfiltrates env; not part of the user shell AWS posture exception.
+        "NPM_TOKEN",
+        "NPM_AUTH_TOKEN",
+        "NODE_AUTH_TOKEN",
+        "PYPI_TOKEN",
+        "TWINE_PASSWORD",
+        "CARGO_REGISTRY_TOKEN",
     })
     # CLAUDE_CODE_OAUTH_TOKEN is deliberately NOT stripped.  It is set and
     # owned by the user's Claude Code install (subscription OAuth), not a
@@ -509,6 +517,13 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     _apply_windows_msys_bash_env_defaults(sanitized)
 
     sanitized = _scrub_delegated_child_kanban_env(sanitized)
+
+    # Non-interactive git: never hang a tool subprocess on credential prompts
+    # (clone/fetch/push over https). Users can still set credentials via
+    # git credential helpers or URL-embedded tokens; GIT_TERMINAL_PROMPT=0 only
+    # disables interactive stdin prompts. Assign unconditionally so an
+    # inherited GIT_TERMINAL_PROMPT=1 cannot re-enable prompts.
+    sanitized["GIT_TERMINAL_PROMPT"] = "0"
 
     return sanitized
 
@@ -1324,6 +1339,11 @@ def _make_run_env(env: dict) -> dict:
     _apply_windows_msys_bash_env_defaults(run_env)
 
     run_env = _scrub_delegated_child_kanban_env(run_env)
+
+    # See _sanitize_subprocess_env — same non-interactive git policy for the
+    # primary terminal run path. Assign unconditionally so an inherited
+    # GIT_TERMINAL_PROMPT=1 cannot re-enable prompts.
+    run_env["GIT_TERMINAL_PROMPT"] = "0"
 
     return run_env
 

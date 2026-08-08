@@ -976,6 +976,40 @@ TELEGRAM_RICH_MESSAGES_HINT = (
 )
 
 # ---------------------------------------------------------------------------
+# Gateway messaging guidance — operational constraints shared by every
+# messaging-platform session (Slack, Telegram, Discord, …). Appended once
+# after the platform hint, only for gateway messaging sessions; cli/tui/
+# cron/desktop surfaces never see it. Static text → byte-stable prompt.
+# ---------------------------------------------------------------------------
+
+# Platform keys that have a PLATFORM_HINTS entry but are NOT messaging-gateway
+# conversations (local/one-shot surfaces). Used to scope
+# GATEWAY_MESSAGING_GUIDANCE to real messaging sessions.
+NON_MESSAGING_PLATFORM_KEYS = frozenset(
+    {"cli", "tui", "cron", "desktop", "api_server", "webui"}
+)
+
+GATEWAY_MESSAGING_GUIDANCE = (
+    "Operational constraints of running inside the Hermes messaging gateway: "
+    "(1) You cannot restart or stop the gateway from this session — "
+    "`hermes gateway restart`/`stop` and launchctl/systemctl equivalents are "
+    "hard-blocked here because the gateway would SIGTERM the command mid-run. "
+    "Do not attempt or promise a self-restart; ask the user to run "
+    "`hermes gateway restart` from a shell outside the running gateway. "
+    "(2) Reply gating is config-enforced, not behavior-enforced. Which "
+    "messages reach you — mention requirements, wake words, per-channel "
+    "rules — is decided by gateway platform config keys (e.g. "
+    "require_mention, mention_patterns, require_mention_channels, "
+    "native_mention_only_channels; per-platform *_chats variants exist), "
+    "read once at gateway startup. Writing response rules into SOUL.md, "
+    "memory, or skills does NOT enforce them: you would still be woken, and "
+    "any reply — even a 'staying silent' notice — is a visible message. "
+    "When the user asks to change where or when you respond, update the "
+    "platform's config keys and tell them the change applies after they run "
+    "`hermes gateway restart` from a shell outside the gateway."
+)
+
+# ---------------------------------------------------------------------------
 # Environment hints — execution-environment awareness for the agent.
 # Unlike PLATFORM_HINTS (which describe the messaging channel), these describe
 # the machine/OS the agent's tools actually run on.

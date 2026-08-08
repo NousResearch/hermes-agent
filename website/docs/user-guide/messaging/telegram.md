@@ -625,6 +625,7 @@ Messages in Telegram topics `31` and `42` are always ignored before the mention 
 - Patterns are checked against both text messages and media captions
 - Invalid regex patterns are ignored with a warning in the gateway logs rather than crashing the bot
 - If you want a pattern to match only at the start of a message, anchor it with `^`
+- To turn wake words OFF in specific group chats, list those chat IDs in `telegram.native_mention_only_chats` (comma-separated string or a YAML list; env `TELEGRAM_NATIVE_MENTION_ONLY_CHATS`). In listed chats only a real `@botusername` mention (or a reply to the bot) counts as a mention — `mention_patterns` matches are ignored there, both for triggering replies and for the group-observe skip logic. Useful when a wake word appears conversationally in a busy group. Empty (the default) keeps wake words active everywhere.
 
 ## Private Chat Topics (Bot API 9.4)
 

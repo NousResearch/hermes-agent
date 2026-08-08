@@ -788,6 +788,39 @@ class TestLoadGatewayConfig:
             "bridged into PlatformConfig.extra by the shared-key loop"
         )
 
+    def test_shared_key_loop_bridges_native_mention_only_keys(self, tmp_path, monkeypatch):
+        """Regression: both native_mention_only_* vocabularies must bridge
+        from ``platforms.<plat>`` blocks into PlatformConfig.extra. For
+        Telegram/WhatsApp/DingTalk this shared-key loop is the ONLY route
+        from config.yaml into the adapter's ``native_mention_only_chats``
+        reader (Slack additionally has its own _apply_yaml_config env
+        bridge) — dropping these lines silently disables the key while every
+        adapter-level test stays green."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  slack:\n"
+            "    native_mention_only_channels: \"C0B0F0AS084\"\n"
+            "  telegram:\n"
+            "    native_mention_only_chats:\n"
+            "      - \"-1001234\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.SLACK].extra.get("native_mention_only_channels")
+            == "C0B0F0AS084"
+        )
+        assert config.platforms[Platform.TELEGRAM].extra.get(
+            "native_mention_only_chats"
+        ) == ["-1001234"]
+
 
     def test_bridges_unauthorized_dm_behavior_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

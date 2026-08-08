@@ -1562,6 +1562,14 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
+                # Per-chat scope-off switch for mention_patterns: listed
+                # chats/channels accept only the platform's native @mention.
+                # Both vocabularies bridge so each platform keeps its own
+                # (slack: *_channels; telegram/whatsapp/dingtalk: *_chats).
+                if "native_mention_only_channels" in platform_cfg:
+                    bridged["native_mention_only_channels"] = platform_cfg["native_mention_only_channels"]
+                if "native_mention_only_chats" in platform_cfg:
+                    bridged["native_mention_only_chats"] = platform_cfg["native_mention_only_chats"]
                 if "exclusive_bot_mentions" in platform_cfg:
                     bridged["exclusive_bot_mentions"] = platform_cfg["exclusive_bot_mentions"]
                 if plat == Platform.TELEGRAM and "observe_unmentioned_group_messages" in platform_cfg:

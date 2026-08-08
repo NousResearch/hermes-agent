@@ -1044,6 +1044,13 @@ platform_toolsets:
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
 
+# Slack-specific settings (config.yaml top-level, not under platforms:):
+#
+# slack:
+#   native_mention_only_channels: "" # Channel IDs where only a native <@bot> mention counts —
+#                                    # mention_patterns wake words are ignored there
+#                                    # (env: SLACK_NATIVE_MENTION_ONLY_CHANNELS)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)
 #

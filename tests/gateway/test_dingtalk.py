@@ -454,6 +454,7 @@ def _make_gating_adapter(monkeypatch, *, extra=None, env=None):
         "DINGTALK_MENTION_PATTERNS",
         "DINGTALK_FREE_RESPONSE_CHATS",
         "DINGTALK_ALLOWED_USERS",
+        "DINGTALK_NATIVE_MENTION_ONLY_CHATS",
     ):
         monkeypatch.delenv(key, raising=False)
     for key, value in (env or {}).items():
@@ -515,6 +516,107 @@ class TestShouldProcessMessage:
         assert adapter._should_process_message(msg, "hi", is_group=True, chat_id="grp1") is True
         # Different group still blocked
         assert adapter._should_process_message(msg, "hi", is_group=True, chat_id="grp2") is False
+
+
+class TestNativeMentionOnlyChats:
+    """native_mention_only_chats — wake-word patterns don't count in listed chats."""
+
+
+    def test_wake_word_rejected_in_listed_chat_accepted_elsewhere(self, monkeypatch):
+        adapter = _make_gating_adapter(
+            monkeypatch,
+            extra={
+                "require_mention": True,
+                "mention_patterns": ["^hermes"],
+                "native_mention_only_chats": ["grp-native"],
+            },
+        )
+        msg = MagicMock(is_in_at_list=False)
+        # Wake word no longer counts in the listed chat
+        assert adapter._should_process_message(
+            msg, "hermes ping", is_group=True, chat_id="grp-native"
+        ) is False
+        # Same message in an unlisted chat still triggers via the wake word
+        assert adapter._should_process_message(
+            msg, "hermes ping", is_group=True, chat_id="grp-other"
+        ) is True
+
+
+    def test_native_at_list_mention_still_accepted_in_listed_chat(self, monkeypatch):
+        adapter = _make_gating_adapter(
+            monkeypatch,
+            extra={
+                "require_mention": True,
+                "mention_patterns": ["^hermes"],
+                "native_mention_only_chats": ["grp-native"],
+            },
+        )
+        msg = MagicMock(is_in_at_list=True)
+        assert adapter._should_process_message(
+            msg, "no wake word here", is_group=True, chat_id="grp-native"
+        ) is True
+
+
+    def test_non_matching_text_rejected_in_unlisted_chat_too(self, monkeypatch):
+        adapter = _make_gating_adapter(
+            monkeypatch,
+            extra={
+                "require_mention": True,
+                "mention_patterns": ["^hermes"],
+                "native_mention_only_chats": ["grp-native"],
+            },
+        )
+        msg = MagicMock(is_in_at_list=False)
+        assert adapter._should_process_message(
+            msg, "just chatting", is_group=True, chat_id="grp-other"
+        ) is False
+
+
+    def test_parses_yaml_list(self, monkeypatch):
+        adapter = _make_gating_adapter(
+            monkeypatch,
+            extra={"native_mention_only_chats": ["grp1", " grp2 ", ""]},
+        )
+        assert adapter._dingtalk_native_mention_only_chats() == {"grp1", "grp2"}
+
+
+    def test_parses_csv_string(self, monkeypatch):
+        adapter = _make_gating_adapter(
+            monkeypatch,
+            extra={"native_mention_only_chats": "grp1, grp2 ,,grp3"},
+        )
+        assert adapter._dingtalk_native_mention_only_chats() == {"grp1", "grp2", "grp3"}
+
+
+    def test_empty_config_means_no_restriction(self, monkeypatch):
+        adapter = _make_gating_adapter(monkeypatch)
+        assert adapter._dingtalk_native_mention_only_chats() == set()
+        # Wake words keep working everywhere
+        adapter = _make_gating_adapter(
+            monkeypatch,
+            extra={"require_mention": True, "mention_patterns": ["^hermes"]},
+        )
+        msg = MagicMock(is_in_at_list=False)
+        assert adapter._should_process_message(
+            msg, "hermes ping", is_group=True, chat_id="grp-any"
+        ) is True
+
+
+    def test_env_var_fallback(self, monkeypatch):
+        adapter = _make_gating_adapter(
+            monkeypatch,
+            env={"DINGTALK_NATIVE_MENTION_ONLY_CHATS": "grpA,grpB"},
+        )
+        assert adapter._dingtalk_native_mention_only_chats() == {"grpA", "grpB"}
+
+
+    def test_extra_config_wins_over_env(self, monkeypatch):
+        adapter = _make_gating_adapter(
+            monkeypatch,
+            extra={"native_mention_only_chats": ["grp-cfg"]},
+            env={"DINGTALK_NATIVE_MENTION_ONLY_CHATS": "grp-env"},
+        )
+        assert adapter._dingtalk_native_mention_only_chats() == {"grp-cfg"}
 
 
 # ---------------------------------------------------------------------------

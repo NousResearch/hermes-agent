@@ -570,6 +570,14 @@ slack:
   # Env: SLACK_REQUIRE_MENTION_CHANNELS.
   require_mention_channels: ""
 
+  # Channels where ONLY a native @mention counts as a mention —
+  # mention_patterns wake words are ignored there. Complements
+  # require_mention_channels: that key forces a mention to be required,
+  # this key narrows what qualifies as one. Ongoing conversations still
+  # auto-follow. Comma-separated IDs or a list.
+  # Env: SLACK_NATIVE_MENTION_ONLY_CHANNELS.
+  native_mention_only_channels: ""
+
   # Custom mention patterns that trigger the bot
   # (in addition to the default @mention detection)
   mention_patterns:
@@ -608,8 +616,13 @@ The gating options compose — each answers a different question:
 | `thread_require_mention` | Do **thread replies** need an @mention, even when top-level messages don't? Mentioned threads are not remembered. | `false` | Threads only |
 | `strict_mention` | Does **every** channel message (top-level and thread) need a fresh @mention? Disables all auto-follow: mentioned-thread memory, bot-reply follow-ups, active-session resume. | `false` | All channels + threads |
 | `ignore_other_user_mentions` | Should a message that **opens by @mentioning someone else** (`@rasha can you take this?`) be skipped? Overrides free-response and thread auto-follow; mid-sentence references still reach the bot. | `false` | Channels + group DMs |
+| `native_mention_only_channels` | In which channels should **only a native `@mention` count** as a mention? `mention_patterns` wake words are ignored there. | none | Listed channels |
 
-Rules of thumb: `strict_mention` is the broadest hammer; `thread_require_mention` quiets busy threads without touching top-level gating; `require_mention_channels` re-tightens individual channels on an otherwise free-response bot; `ignore_other_user_mentions` only skips messages explicitly addressed to another person. 1:1 DMs always respond and are unaffected by all of these.
+Rules of thumb: `strict_mention` is the broadest hammer; `thread_require_mention` quiets busy threads without touching top-level gating; `require_mention_channels` re-tightens individual channels on an otherwise free-response bot; `ignore_other_user_mentions` only skips messages explicitly addressed to another person; `native_mention_only_channels` keeps wake words from firing in channels where people say them conversationally — pair it with `require_mention_channels` when `require_mention` is globally off. 1:1 DMs always respond and are unaffected by all of these.
+
+:::caution Reply gating is config-only
+These config keys are the **only** mechanism that decides whether the bot replies. Instructions in `SOUL.md`, memory, or a chat message ("stay silent in this channel") cannot enforce silence — the agent only runs *after* the gate has already decided to respond. After changing any of these keys, run `hermes gateway restart` from a terminal outside the gateway for the change to take effect.
+:::
 
 ### Accepting messages from other bots (`allow_bots`)
 

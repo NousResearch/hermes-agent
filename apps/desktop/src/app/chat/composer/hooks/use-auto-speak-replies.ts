@@ -16,6 +16,9 @@ interface AutoSpeakReply {
 }
 
 interface UseAutoSpeakReplies {
+  /** Whether the agent is mid-turn (the Stop-button seam). A turn that has
+   *  started is the only thing that makes a completed reply speakable. */
+  busy: boolean
   conversationActive: boolean
   failureLabel: string
   /** Mark the current last reply spoken — shared dedupe with the conversation consumer. */
@@ -34,6 +37,7 @@ interface UseAutoSpeakReplies {
  * the latest reply, so a backlog collapses to the newest.
  */
 export function useAutoSpeakReplies({
+  busy,
   conversationActive,
   failureLabel,
   markSpoken,
@@ -45,8 +49,26 @@ export function useAutoSpeakReplies({
   // would never fire on its own replies (and would fire on someone else's).
   const { $messages } = useComposerScope()
   const latest = useRef({ conversationActive, failureLabel, markSpoken, pendingReply })
+  const busyRef = useRef(busy)
+  // Latched true for the duration of a turn: a completed reply is only
+  // speakable if this session started a turn since the gate armed. Reset when
+  // the effect re-arms (session switch, toggle, mount).
+  const freshReplyStartedRef = useRef(false)
   latest.current = { conversationActive, failureLabel, markSpoken, pendingReply }
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    busyRef.current = busy
+  }, [busy])
+
+  // eslint-disable-next-line no-restricted-syntax -- idempotent latch, not a mirror; read back only inside the re-arm effect below
+  useEffect(() => {
+    if (busy) {
+      freshReplyStartedRef.current = true
+    }
+  }, [busy])
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!enabled) {
       return undefined
@@ -55,15 +77,35 @@ export function useAutoSpeakReplies({
     // Don't read whatever reply already sits at the bottom when the toggle flips
     // on (or a chat opens) — consume it so only later replies are spoken.
     latest.current.markSpoken()
+    freshReplyStartedRef.current = busyRef.current
+    let waitingForFreshReply = true
 
     const speakLatest = () => {
       const { conversationActive, failureLabel, markSpoken, pendingReply } = latest.current
+      const reply = pendingReply()
+
+      if (waitingForFreshReply && freshReplyStartedRef.current) {
+        waitingForFreshReply = false
+      }
+
+      // Session history hydrates asynchronously after `sessionId` changes. The
+      // effect's eager mark above can therefore still see the previous session.
+      // Ignore completed replies until this session starts a new turn (or a
+      // pending assistant reply appears), consuming late-arriving history
+      // instead of replaying it aloud.
+      if (waitingForFreshReply && reply) {
+        if (reply.pending) {
+          waitingForFreshReply = false
+        } else {
+          markSpoken()
+
+          return
+        }
+      }
 
       if (conversationActive || $voicePlayback.get().status !== 'idle') {
         return
       }
-
-      const reply = pendingReply()
 
       if (!reply || reply.pending) {
         return

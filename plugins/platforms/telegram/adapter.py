@@ -1639,6 +1639,7 @@ class TelegramAdapter(BasePlatformAdapter):
         "\U00020000-\U000323af"  # CJK extensions and compatibility supplement
         "]"
     )
+    _RICH_CODE_FENCE_RE = re.compile(r"(?m)^[ \t]*(?:`{3,}|~{3,})")
 
     def _has_telegram_desktop_details_math_crash_shape(self, content: str) -> bool:
         """Return True for rich-message details+math content that crashes TDesktop.
@@ -1665,6 +1666,19 @@ class TelegramAdapter(BasePlatformAdapter):
         delivery up front until affected clients age out.
         """
         return bool(content and self._RICH_CJK_RE.search(content))
+
+    def _has_telegram_rich_code_copy_gap_shape(self, content: str) -> bool:
+        """Return True for fenced code blocks that lose the client copy button.
+
+        Telegram clients currently omit the standard code-block copy
+        affordance for Bot API 10.1 rich-message preformatted blocks rendered
+        from markdown fences, while the legacy MarkdownV2 path keeps it
+        (#79331). The rich endpoint is a strict downgrade for code, so skip
+        rich delivery up front and let the legacy path carry the message.
+        Matches backtick and tilde fences (3+ chars, per CommonMark) at line
+        start so prose mentions of triple backticks don't force the fallback.
+        """
+        return bool(content and self._RICH_CODE_FENCE_RE.search(content))
 
     def _needs_rich_rendering(self, content: str) -> bool:
         """Return True for markdown constructs that the legacy path degrades.
@@ -1709,6 +1723,7 @@ class TelegramAdapter(BasePlatformAdapter):
             and self._needs_rich_rendering(content)
             and not self._has_telegram_desktop_details_math_crash_shape(content)
             and not self._has_telegram_desktop_cjk_rich_garble_shape(content)
+            and not self._has_telegram_rich_code_copy_gap_shape(content)
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich()
         )
@@ -2057,6 +2072,7 @@ class TelegramAdapter(BasePlatformAdapter):
             and content.strip()
             and not self._has_telegram_desktop_details_math_crash_shape(content)
             and not self._has_telegram_desktop_cjk_rich_garble_shape(content)
+            and not self._has_telegram_rich_code_copy_gap_shape(content)
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich()
         )

@@ -434,9 +434,9 @@ Database size: 12.4 MB
 
 ## Session 搜索工具
 
-Agent 内置了 `session_search` 工具，使用 SQLite 的 FTS5 引擎对所有历史对话进行全文搜索，并允许 agent 滚动浏览找到的任何 session。无需 LLM 调用、无需摘要、无截断。每种调用形式都从数据库返回实际消息。
+Agent 内置了 `session_search` 工具，使用 SQLite 的 FTS5 引擎对所有历史对话进行全文搜索，并允许 agent 滚动浏览找到的任何 session。无需 LLM 调用或摘要：每种调用形式都从数据库返回实际消息。较小的 session 会完整读取；较大的 session 则限制为前 20 条和后 10 条消息。
 
-### 三种调用形式
+### 四种调用形式
 
 工具根据你设置的参数推断意图，没有 `mode` 参数。
 
@@ -472,7 +472,17 @@ session_search(session_id="20260510_174648_805cc2", around_message_id=590803, wi
 
 每次滚动调用的典型耗时：1–2ms。
 
-**3. 浏览——无参数：**
+**3. 读取——仅传入 `session_id`：**
+
+```python
+session_search(session_id="20260510_174648_805cc2")
+```
+
+无需 FTS5 查询或锚点即可读取一个 session。较小的 session 会完整返回；较大的
+session 则限制为前 20 条和后 10 条消息。此调用形式也用于解析发现结果返回的
+`@session:<profile>/<id>` 链接。
+
+**4. 浏览——无参数：**
 
 ```python
 session_search()

@@ -2,7 +2,7 @@
 """
 Session Search Tool - Long-Term Conversation Recall
 
-Single-shape tool with three calling modes (inferred from args, no explicit
+Single-shape tool with four calling modes (inferred from args, no explicit
 mode parameter):
 
   1. DISCOVERY — pass ``query``. Runs FTS5, dedupes hits by session lineage,
@@ -15,10 +15,14 @@ mode parameter):
      scroll forward / backward, re-anchor on the last / first message id of
      the returned window.
 
-  3. BROWSE — no args. Returns recent sessions chronologically (titles,
+  3. READ — pass ``session_id`` only. Returns the full session when small;
+     large sessions are bounded to the first 20 and last 10 messages. This
+     also resolves ``@session:<profile>/<id>`` links from discovery results.
+
+  4. BROWSE — no args. Returns recent sessions chronologically (titles,
      previews, timestamps).
 
-All three modes operate on the SQLite session DB via the FTS5 index and
+All four modes operate on the SQLite session DB via the FTS5 index and
 the get_anchored_view / get_messages_around primitives in hermes_state.
 No LLM calls anywhere — every shape returns actual messages from the DB.
 

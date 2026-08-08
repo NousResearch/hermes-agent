@@ -147,7 +147,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|
-| `session_search` | 搜索存储在本地会话数据库中的历史会话，或在某个会话内滚动浏览。基于 FTS5 检索；返回数据库中的实际消息（无 LLM 调用）。三种形态：发现（传入 `query`）、滚动（传入 `session_id` + `around_message_id`）、浏览（无参数）。 | — |
+| `session_search` | 搜索存储在本地会话数据库中的历史会话，或在某个会话内滚动浏览。基于 FTS5 检索；返回数据库中的实际消息（无 LLM 调用）。四种形态：发现（传入 `query`）、滚动（传入 `session_id` + `around_message_id`）、读取（仅传入 `session_id`）、浏览（无参数）。 | — |
 
 ## `skills` 工具集
 

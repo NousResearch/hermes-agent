@@ -1137,6 +1137,20 @@ class HonchoSessionManager:
             logger.warning("No Honcho session cached for '%s', skipping memory migration", session_key)
             return False
 
+        # Only migrate the owner-describing memory files (MEMORY.md / USER.md)
+        # when the session's user peer IS the configured owner peer. Otherwise a
+        # non-owner triggering a new session (e.g. any other human in a shared
+        # Slack/Discord channel) gets the owner's full profile files uploaded
+        # under the NON-OWNER's peer, and Honcho's deriver attributes the
+        # owner's facts to that person. SOUL.md describes the agent, not a
+        # human, but skipping it here too keeps the migration owner-scoped.
+        if session.user_peer_id != self._sanitize_id(self._config.peer_name):
+            logger.info(
+                "Skipping memory-file migration for non-owner session (user=%s)",
+                session.user_peer_id,
+            )
+            return False
+
         uploaded = False
         files = [
             (

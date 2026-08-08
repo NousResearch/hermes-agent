@@ -90,8 +90,76 @@ _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 # on timeout the latch stays clear and the next tick retries).
 _STALL_NOTIFY_SEND_TIMEOUT_SECONDS = 15.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
+_GATEWAY_CALLBACK_QUEUE_MAXSIZE = 512
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 _GATEWAY_HYGIENE_PLATFORM = "gateway_hygiene"
+
+
+class _BoundedCallbackQueue:
+    """Bound best-effort callback telemetry without blocking producers.
+
+    Ordinary progress and tool-log events are rejected when the consumer falls
+    behind. Control markers may evict the oldest stale event so content
+    ordering remains correct even when the queue is saturated.
+    """
+
+    def __init__(self, *, maxsize: int = _GATEWAY_CALLBACK_QUEUE_MAXSIZE):
+        self._queue: queue.Queue[Any] = queue.Queue(maxsize=maxsize)
+        self._offer_lock = threading.Lock()
+        self._dropped = 0
+        self._dropped_lock = threading.Lock()
+
+    def offer(self, item: Any) -> bool:
+        """Enqueue an ordinary event immediately, or reject it when full."""
+        with self._offer_lock:
+            try:
+                self._queue.put_nowait(item)
+            except queue.Full:
+                self._record_drop()
+                return False
+        return True
+
+    def offer_latest(self, item: Any) -> bool:
+        """Admit a control event, evicting one stale event when necessary."""
+        with self._offer_lock:
+            try:
+                self._queue.put_nowait(item)
+                return True
+            except queue.Full:
+                pass
+
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            else:
+                self._record_drop()
+
+            try:
+                self._queue.put_nowait(item)
+            except queue.Full:
+                self._record_drop()
+                return False
+            return True
+
+    def _record_drop(self) -> None:
+        with self._dropped_lock:
+            self._dropped += 1
+
+    @property
+    def dropped(self) -> int:
+        with self._dropped_lock:
+            return self._dropped
+
+    def empty(self) -> bool:
+        return self._queue.empty()
+
+    def get_nowait(self) -> Any:
+        return self._queue.get_nowait()
+
+    def qsize(self) -> int:
+        return self._queue.qsize()
+
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not gateway chats
@@ -3767,7 +3835,7 @@ class TurnRunner:
             if event_type == "tool.started" and tool_name and tool_name != "_thinking":
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 preview_str = f' "{preview}"' if preview else ""
-                ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
+                ctx.log_queue.offer(f"{ts}  {tool_name}:{preview_str}".rstrip())
             if not ctx.progress_queue:
                 return
         if not ctx.progress_queue or not ctx._run_still_current():
@@ -3795,9 +3863,9 @@ class TurnRunner:
                         default=False,
                     )
                     if gate_on and not is_seen(_cfg, TOOL_PROGRESS_FLAG):
-                        ctx.long_tool_hint_fired[0] = True
-                        ctx.progress_queue.put(tool_progress_hint_gateway())
-                        mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
+                        if ctx.progress_queue.offer(tool_progress_hint_gateway()):
+                            ctx.long_tool_hint_fired[0] = True
+                            mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
             except Exception as _hint_err:
                 logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
             return
@@ -3813,7 +3881,7 @@ class TurnRunner:
             thinking_text = preview if tool_name == "_thinking" else tool_name
             msg = f"💬 {thinking_text}" if thinking_text else None
             if msg:
-                ctx.progress_queue.put(msg)
+                ctx.progress_queue.offer(msg)
             return
 
         # If tool_progress is off, only _thinking passes through (above).
@@ -3855,7 +3923,6 @@ class TurnRunner:
         # "new" mode: only report when tool changes
         if ctx.progress_mode == "new" and tool_name == ctx.last_tool[0]:
             return
-        ctx.last_tool[0] = tool_name
 
         # Build progress message with primary argument preview
         from agent.display import get_tool_emoji
@@ -3911,10 +3978,10 @@ class TurnRunner:
         # Verbose mode: show detailed arguments, respects tool_preview_length
         if ctx.progress_mode == "verbose":
             if _code_block_full is not None:
-                ctx.last_was_terminal_block[0] = True
-                ctx.progress_queue.put(_code_block_full)
+                if ctx.progress_queue.offer(_code_block_full):
+                    ctx.last_tool[0] = tool_name
+                    ctx.last_was_terminal_block[0] = True
                 return
-            ctx.last_was_terminal_block[0] = False
             if args:
                 from agent.display import get_tool_preview_max_len
                 _pl = get_tool_preview_max_len()
@@ -3929,7 +3996,9 @@ class TurnRunner:
                 msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."
-            ctx.progress_queue.put(msg)
+            if ctx.progress_queue.offer(msg):
+                ctx.last_tool[0] = tool_name
+                ctx.last_was_terminal_block[0] = False
             return
 
         # "all" / "new" modes: short preview, respects tool_preview_length
@@ -3939,7 +4008,7 @@ class TurnRunner:
         # fenced block (built above) instead of the truncated preview.
         if _code_block_short is not None:
             msg = _code_block_short
-            ctx.last_was_terminal_block[0] = True
+            next_was_terminal_block = True
         elif preview:
             from agent.display import (
                 get_tool_preview_max_len,
@@ -3973,24 +4042,27 @@ class TurnRunner:
                     msg = f"{emoji} {_verb}{tool_verb_connector(tool_name)}{preview}"
             else:
                 msg = f"{emoji} {tool_name}: \"{preview}\""
-            ctx.last_was_terminal_block[0] = False
+            next_was_terminal_block = False
         else:
             msg = f"{emoji} {tool_name}..."
-            ctx.last_was_terminal_block[0] = False
+            next_was_terminal_block = False
 
         # Dedup: collapse consecutive identical progress messages.
         # Common with execute_code where models iterate with the same
         # code (same boilerplate imports → identical previews).
         if msg == ctx.last_progress_msg[0]:
-            ctx.repeat_count[0] += 1
+            next_repeat_count = ctx.repeat_count[0] + 1
             # Update the last line in progress_lines with a counter
             # via a special "dedup" queue message.
-            ctx.progress_queue.put(("__dedup__", msg, ctx.repeat_count[0]))
+            if ctx.progress_queue.offer(("__dedup__", msg, next_repeat_count)):
+                ctx.repeat_count[0] = next_repeat_count
             return
-        ctx.last_progress_msg[0] = msg
-        ctx.repeat_count[0] = 0
 
-        ctx.progress_queue.put(msg)
+        if ctx.progress_queue.offer(msg):
+            ctx.last_tool[0] = tool_name
+            ctx.last_progress_msg[0] = msg
+            ctx.repeat_count[0] = 0
+            ctx.last_was_terminal_block[0] = next_was_terminal_block
 
     async def send_progress_messages(self):
         ctx = self._ctx
@@ -4562,7 +4634,7 @@ class TurnRunner:
                         config=_consumer_cfg,
                         metadata=ctx._status_thread_metadata,
                         on_new_message=(
-                            (lambda: ctx.progress_queue.put(("__reset__",)))
+                            (lambda: ctx.progress_queue.offer_latest(("__reset__",)))
                             if ctx.progress_queue is not None
                             else None
                         ),
@@ -25060,7 +25132,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # "log" mode: tool calls are written to ~/.hermes/logs/tool_calls.log
         # instead of the chat (#3459 / #3458). Gateway-only by design.
         log_mode_enabled = progress_mode == "log" and source.platform != Platform.WEBHOOK
-        log_queue: "queue.Queue | None" = queue.Queue() if log_mode_enabled else None
+        log_queue: "_BoundedCallbackQueue | None" = (
+            _BoundedCallbackQueue() if log_mode_enabled else None
+        )
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
@@ -25087,7 +25161,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
         # Queue for progress messages (thread-safe)
-        progress_queue = queue.Queue() if needs_progress_queue else None
+        progress_queue = _BoundedCallbackQueue() if needs_progress_queue else None
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
@@ -26472,6 +26546,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await task
                     except asyncio.CancelledError:
                         pass
+            if progress_queue is not None and progress_queue.dropped:
+                logger.warning(
+                    "Dropped %d gateway progress events after the callback queue saturated",
+                    progress_queue.dropped,
+                )
+            if log_queue is not None and log_queue.dropped:
+                logger.warning(
+                    "Dropped %d gateway tool-log events after the callback queue saturated",
+                    log_queue.dropped,
+                )
 
         # If streaming already delivered the response, mark it so the
         # caller's send() is skipped (avoiding duplicate messages).

@@ -30,6 +30,7 @@ describe('applyDisplay', () => {
             show_reasoning: true,
             streaming: false,
             tui_compact: true,
+            tui_confirm_idle_exit: true,
             tui_statusbar: false
           }
         }
@@ -40,6 +41,7 @@ describe('applyDisplay', () => {
     const s = $uiState.get()
     expect(setBell).toHaveBeenCalledWith(true)
     expect(s.compact).toBe(true)
+    expect(s.confirmIdleExit).toBe(true)
     expect(s.detailsMode).toBe('expanded')
     expect(s.inlineDiffs).toBe(false)
     expect(s.showReasoning).toBe(true)
@@ -64,6 +66,7 @@ describe('applyDisplay', () => {
 
     const s = $uiState.get()
     expect(setBell).toHaveBeenCalledWith(false)
+    expect(s.confirmIdleExit).toBe(false)
     expect(s.inlineDiffs).toBe(true)
     expect(s.showReasoning).toBe(false)
     expect(s.statusBar).toBe('top')

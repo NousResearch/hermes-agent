@@ -4,6 +4,7 @@ import { persistentAtom } from '@/lib/persisted'
 import { normalize } from '@/lib/text'
 
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
+import { $previewStatusBySession, dismissPreviewArtifactFromAllSessions } from './preview-status'
 
 /**
  * PREVIEW RAIL — one list of tabs, one way in.
@@ -234,6 +235,7 @@ export function closeRightRailTab(tabId: string) {
     return
   }
 
+  const tabToClose = current[index]
   const next = current.filter(tab => tab.id !== tabId)
 
   $previewTabs.set(next)
@@ -245,10 +247,20 @@ export function closeRightRailTab(tabId: string) {
   if (next.length === 0) {
     selectRightRailTab(null)
   }
+
+  if (tabToClose?.target) {
+    const targets = [tabToClose.target.source, tabToClose.target.url, tabToClose.target.path].filter(Boolean) as string[]
+
+    for (const target of targets) {
+      dismissPreviewArtifactFromAllSessions(target)
+    }
+  }
 }
 
 /** Close the tab showing `source`, if one is open. Returns whether it closed. */
 export function closePreviewForSource(source: string): boolean {
+  dismissPreviewArtifactFromAllSessions(source)
+
   const tab = $previewTabs.get().find(item => item.target.source === source)
 
   if (!tab) {
@@ -273,6 +285,7 @@ export function closeArtifactPreviewTabs() {
 /** Close every tab so the rail's panes leave the tree. */
 export function closeRightRail() {
   $previewTabs.set([])
+  $previewStatusBySession.set({})
   selectRightRailTab(null)
 }
 

@@ -4,6 +4,7 @@ import {
   $previewStatusBySession,
   clearPreviewArtifacts,
   dismissPreviewArtifact,
+  dismissPreviewArtifactFromAllSessions,
   recordPreviewArtifact
 } from './preview-status'
 
@@ -38,4 +39,16 @@ describe('recordPreviewArtifact', () => {
     clearPreviewArtifacts('s1')
     expect($previewStatusBySession.get().s1).toBeUndefined()
   })
+
+  it('dismissPreviewArtifactFromAllSessions removes matching targets from all sessions', () => {
+    recordPreviewArtifact('s1', '/a/index.html', '/work')
+    recordPreviewArtifact('s2', '/a/index.html', '/work')
+    recordPreviewArtifact('s2', '/a/other.html', '/work')
+
+    dismissPreviewArtifactFromAllSessions('/a/index.html')
+
+    expect($previewStatusBySession.get().s1).toBeUndefined()
+    expect($previewStatusBySession.get().s2.map(i => i.id)).toEqual(['/a/other.html'])
+  })
 })
+

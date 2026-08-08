@@ -69,11 +69,38 @@ export function dismissPreviewArtifact(sid: string, id: string) {
   if (list) {
     writePreviews(
       sid,
-      list.filter(item => item.id !== id)
+      list.filter(item => item.id !== id && item.target !== id)
     )
+  }
+}
+
+export function dismissPreviewArtifactFromAllSessions(targetOrId: string) {
+  if (!targetOrId) {
+    return
+  }
+
+  const current = $previewStatusBySession.get()
+  const next: Record<string, PreviewArtifact[]> = {}
+  let changed = false
+
+  for (const [sid, items] of Object.entries(current)) {
+    const filtered = items.filter(item => item.id !== targetOrId && item.target !== targetOrId)
+
+    if (filtered.length !== items.length) {
+      changed = true
+    }
+
+    if (filtered.length > 0) {
+      next[sid] = filtered
+    }
+  }
+
+  if (changed) {
+    $previewStatusBySession.set(next)
   }
 }
 
 export function clearPreviewArtifacts(sid: string) {
   writePreviews(sid, [])
 }
+

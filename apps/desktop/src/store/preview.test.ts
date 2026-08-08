@@ -119,12 +119,26 @@ describe('preview store', () => {
     expect($previewTabs.get()).toHaveLength(0)
   })
 
-  it('closes by the raw source the composer rows were handed', () => {
+  it('closes by the raw source the composer rows were handed and clears status artifact', () => {
+    const { $previewStatusBySession, recordPreviewArtifact } = require('./preview-status')
+    recordPreviewArtifact('s1', 'http://localhost:5174', '/work')
     openPreview(urlTarget('http://localhost:5174'), 'tool-result')
 
     expect(closePreviewForSource('http://localhost:5174')).toBe(true)
     expect($previewTabs.get()).toHaveLength(0)
+    expect($previewStatusBySession.get().s1).toBeUndefined()
     expect(closePreviewForSource('http://localhost:5174')).toBe(false)
+  })
+
+  it('dismisses status artifacts across sessions when closeRightRailTab is called directly', () => {
+    const { $previewStatusBySession, recordPreviewArtifact } = require('./preview-status')
+    recordPreviewArtifact('s1', '/work/demo.html', '/work')
+    openPreview(fileTarget('/work/demo.html'), 'tool-result')
+
+    closeRightRailTab(previewTabId(fileTarget('/work/demo.html')))
+
+    expect($previewTabs.get()).toHaveLength(0)
+    expect($previewStatusBySession.get().s1).toBeUndefined()
   })
 
   it('persists file and url tabs but never artifacts, whose content is memory-only', () => {

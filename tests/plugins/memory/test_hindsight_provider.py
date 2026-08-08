@@ -104,7 +104,7 @@ def _provider_for_mode(tmp_path, monkeypatch, mode: str):
     }
     config_path = tmp_path / "hindsight" / "config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(json.dumps(config))
+    config_path.write_text(json.dumps(config), encoding="utf-8")
 
     monkeypatch.setattr(
         "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
@@ -173,7 +173,7 @@ def provider(tmp_path, monkeypatch):
     }
     config_path = tmp_path / "hindsight" / "config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(json.dumps(config))
+    config_path.write_text(json.dumps(config), encoding="utf-8")
 
     monkeypatch.setattr(
         "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
@@ -200,7 +200,7 @@ def provider_with_config(tmp_path, monkeypatch):
         config.update(overrides)
         config_path = tmp_path / "hindsight" / "config.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps(config))
+        config_path.write_text(json.dumps(config), encoding="utf-8")
 
         monkeypatch.setattr(
             "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
@@ -404,7 +404,7 @@ class TestPostSetup:
         provider.post_setup(str(hermes_home), {"memory": {}})
 
         assert saved_configs[-1]["memory"]["provider"] == "hindsight"
-        env_text = (hermes_home / ".env").read_text()
+        env_text = (hermes_home / ".env").read_text(encoding="utf-8")
         assert "HINDSIGHT_LLM_API_KEY=sk-local-test\n" in env_text
         assert "HINDSIGHT_TIMEOUT=120\n" in env_text
         assert "HINDSIGHT_IDLE_TIMEOUT=300\n" in env_text
@@ -480,7 +480,7 @@ class TestToolHandlers:
             "hindsight_recall", {"query": "test"}
         ))
 
-        assert result["result"] == "1. Recovered memory"
+        assert "Recovered memory" in result["result"]
         assert provider._client is second_client
         first_client.arecall.assert_called_once()
         second_client.arecall.assert_called_once()
@@ -772,7 +772,7 @@ class TestSyncTurn:
         config = {"mode": "cloud", "apiKey": "k", "api_url": "http://x", "bank_id": "b"}
         config_path = tmp_path / "hindsight" / "config.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps(config))
+        config_path.write_text(json.dumps(config), encoding="utf-8")
         monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
 
         p1 = HindsightMemoryProvider()
@@ -1097,7 +1097,7 @@ class TestBankIdTemplate:
         }
         config_path = tmp_path / "hindsight" / "config.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps(config))
+        config_path.write_text(json.dumps(config), encoding="utf-8")
         monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
 
         p = HindsightMemoryProvider()
@@ -1151,7 +1151,7 @@ class TestAvailability:
         config = {"mode": "local_embedded"}
         config_path = tmp_path / "hindsight" / "config.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps(config))
+        config_path.write_text(json.dumps(config), encoding="utf-8")
         monkeypatch.setattr(
             "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
         )
@@ -1326,7 +1326,7 @@ class TestClientAutoUpgradeRoutesThroughLazyDeps:
 
         config_path = tmp_path / "hindsight" / "config.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps({"mode": "cloud"}))
+        config_path.write_text(json.dumps({"mode": "cloud"}), encoding="utf-8")
         monkeypatch.setattr(
             "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
         )

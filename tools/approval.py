@@ -1173,6 +1173,7 @@ _PARAM_REPLACEMENT_RE = re.compile(r"\$\{[^}/\s]+/[^}/]*/(?P<replacement>[^}]*)\
 _PARAM_DEFAULT_RE = re.compile(r"\$\{[^}:}\s]+:-(?P<default>[^}]*)\}")
 _SIMPLE_SHELL_LITERAL_RE = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")
 _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
+_EXECUTABLE_LAUNCHER_SUFFIXES = (".exe", ".bat", ".cmd", ".com")
 _COMMAND_WRAPPER_WORDS = {
     "sudo",
     "env",
@@ -1189,6 +1190,11 @@ _SUDO_OPTIONS_WITH_ARG = {
     "-h", "--host",
     "-p", "--prompt",
     "-u", "--user",
+}
+_ENV_OPTIONS_WITH_ARG = {
+    "-C", "--chdir",
+    "-S", "--split-string",
+    "-u", "--unset",
 }
 
 _INTERPRETER_EXEC_FLAGS = {
@@ -1898,11 +1904,111 @@ def _deobfuscate_shell_word_for_detection(word: str) -> str:
     return deobfuscated
 
 
+def _read_heredoc_redirect(
+    command: str, start: int
+) -> tuple[int, str, bool] | None:
+    """Read a simple ``<<``/``<<-`` redirect and its quote-removed terminator."""
+    if (
+        not command.startswith("<<", start)
+        or command.startswith("<<<", start)
+        or (start > 0 and command[start - 1] == "<")
+    ):
+        return None
+
+    pos = start + 2
+    strip_tabs = pos < len(command) and command[pos] == "-"
+    if strip_tabs:
+        pos += 1
+    while pos < len(command) and command[pos] in " \t":
+        pos += 1
+    if pos >= len(command) or command[pos] in "\r\n":
+        return None
+
+    terminator_parts: list[str] = []
+    saw_segment = False
+    while (
+        pos < len(command)
+        and not command[pos].isspace()
+        and command[pos] not in ";&|<>"
+    ):
+        saw_segment = True
+        if command[pos] in ("'", '"'):
+            quote = command[pos]
+            pos += 1
+            segment: list[str] = []
+            while pos < len(command) and command[pos] not in "\r\n":
+                ch = command[pos]
+                if ch == quote:
+                    break
+                if (
+                    quote == '"'
+                    and ch == "\\"
+                    and pos + 1 < len(command)
+                    and command[pos + 1] in '$`"\\'
+                ):
+                    segment.append(command[pos + 1])
+                    pos += 2
+                    continue
+                segment.append(ch)
+                pos += 1
+            if pos >= len(command) or command[pos] != quote:
+                return None
+            terminator_parts.append("".join(segment))
+            pos += 1
+            continue
+
+        segment = []
+        while (
+            pos < len(command)
+            and not command[pos].isspace()
+            and command[pos] not in ";&|<>"
+            and command[pos] not in ("'", '"')
+        ):
+            if command[pos] == "\\":
+                if pos + 1 >= len(command) or command[pos + 1] in "\r\n":
+                    return None
+                segment.append(command[pos + 1])
+                pos += 2
+                continue
+            segment.append(command[pos])
+            pos += 1
+        terminator_parts.append("".join(segment))
+
+    if not saw_segment:
+        return None
+    terminator = "".join(terminator_parts)
+    return pos, terminator, strip_tabs
+
+
 def _iter_shell_command_starts(command: str):
     starts = [0]
+    pending_heredocs: list[tuple[str, bool]] = []
+    heredoc_index = 0
+    in_heredoc_body = False
+    paren_depth = 0
     quote: str | None = None
     i = 0
     while i < len(command):
+        if in_heredoc_body:
+            line_end = command.find("\n", i)
+            if line_end == -1:
+                line_end = len(command)
+            line = command[i:line_end]
+            if line.endswith("\r"):
+                line = line[:-1]
+            terminator, strip_tabs = pending_heredocs[heredoc_index]
+            candidate = line.lstrip("\t") if strip_tabs else line
+            if candidate == terminator:
+                heredoc_index += 1
+                if heredoc_index == len(pending_heredocs):
+                    pending_heredocs.clear()
+                    heredoc_index = 0
+                    in_heredoc_body = False
+                    if line_end < len(command):
+                        starts.append(line_end + 1)
+            i = line_end + 1
+            continue
+
         ch = command[i]
         if quote == "'":
             if ch == "'":
@@ -1918,9 +2024,21 @@ def _iter_shell_command_starts(command: str):
                 i += 1
                 continue
             if command.startswith("$(", i):
+                paren_depth += 1
                 starts.append(i + 2)
                 i += 2
                 continue
+            if ch == "(" and paren_depth > 0:
+                paren_depth += 1
+                starts.append(i + 1)
+                i += 1
+                continue
+            if ch == ")":
+                paren_depth = max(0, paren_depth - 1)
+                i += 1
+                continue
+            if ch == "\n" and paren_depth > 0:
+                starts.append(i + 1)
             i += 1
             continue
         if ch in ("'", '"'):
@@ -1930,7 +2048,22 @@ def _iter_shell_command_starts(command: str):
         if ch == "\\" and i + 1 < len(command):
             i += 2
             continue
+        if ch == "#" and (
+            i == 0 or command[i - 1].isspace() or command[i - 1] in ";&|({"
+        ):
+            line_end = command.find("\n", i)
+            if line_end == -1:
+                break
+            i = line_end
+            continue
+        if paren_depth == 0:
+            heredoc = _read_heredoc_redirect(command, i)
+            if heredoc is not None:
+                i, terminator, strip_tabs = heredoc
+                pending_heredocs.append((terminator, strip_tabs))
+                continue
         if command.startswith("$(", i):
+            paren_depth += 1
             starts.append(i + 2)
             i += 2
             continue
@@ -1941,8 +2074,17 @@ def _iter_shell_command_starts(command: str):
         # `echo "{ reboot; }"` — never registers a command start. That is the
         # whole reason this lives in the quote-aware tokenizer instead of the
         # flat `_CMDPOS` regex, which cannot tell quoted text from real syntax.
-        if ch in ("(", "{"):
+        if ch == "(":
+            paren_depth += 1
             starts.append(i + 1)
+            i += 1
+            continue
+        if ch == "{":
+            starts.append(i + 1)
+            i += 1
+            continue
+        if ch == ")":
+            paren_depth = max(0, paren_depth - 1)
             i += 1
             continue
         if ch == ";":
@@ -1966,7 +2108,12 @@ def _iter_shell_command_starts(command: str):
                 i += 1
             continue
         if ch == "\n":
-            starts.append(i + 1)
+            if paren_depth > 0:
+                starts.append(i + 1)
+            elif pending_heredocs:
+                in_heredoc_body = True
+            else:
+                starts.append(i + 1)
         i += 1
 
     seen: set[int] = set()
@@ -2058,24 +2205,26 @@ def _iter_shell_command_word_spans(command: str):
     for command_start in _iter_shell_command_starts(command):
         pos = command_start
         prefix_words = 0
-        skip_wrapper_options = False
+        wrapper_options_with_arg: set[str] | None = None
         skip_next_wrapper_arg = False
         while prefix_words < 12:
             word_start, word_end, word = _read_shell_word(command, pos)
             if word_start == word_end:
                 break
             deobfuscated = _deobfuscate_shell_word_for_detection(word)
-            lower_word = deobfuscated.lower()
             if skip_next_wrapper_arg:
                 skip_next_wrapper_arg = False
                 pos = word_end
                 prefix_words += 1
                 continue
-            if skip_wrapper_options and lower_word.startswith("-"):
-                option_name = lower_word.split("=", 1)[0]
+            if (
+                wrapper_options_with_arg is not None
+                and deobfuscated.startswith("-")
+            ):
+                option_name = deobfuscated.split("=", 1)[0]
                 skip_next_wrapper_arg = (
-                    "=" not in lower_word
-                    and option_name in _SUDO_OPTIONS_WITH_ARG
+                    "=" not in deobfuscated
+                    and option_name in wrapper_options_with_arg
                 )
                 pos = word_end
                 prefix_words += 1
@@ -2084,15 +2233,88 @@ def _iter_shell_command_word_spans(command: str):
             yield (word_start, word_end, word)
             prefix_words += 1
 
-            if lower_word in _COMMAND_WRAPPER_WORDS:
-                skip_wrapper_options = lower_word in {"sudo", "env"}
+            wrapper_word = word.replace("\\", "/").rsplit("/", 1)[-1]
+            wrapper_word = _deobfuscate_shell_word_for_detection(wrapper_word).lower()
+            for suffix in _EXECUTABLE_LAUNCHER_SUFFIXES:
+                if wrapper_word.endswith(suffix):
+                    wrapper_word = wrapper_word[: -len(suffix)]
+                    break
+            if wrapper_word in _COMMAND_WRAPPER_WORDS:
+                if wrapper_word == "sudo":
+                    wrapper_options_with_arg = _SUDO_OPTIONS_WITH_ARG
+                elif wrapper_word == "env":
+                    wrapper_options_with_arg = _ENV_OPTIONS_WITH_ARG
+                else:
+                    wrapper_options_with_arg = None
                 pos = word_end
                 continue
             if _ENV_ASSIGNMENT_RE.fullmatch(deobfuscated):
-                skip_wrapper_options = False
+                wrapper_options_with_arg = None
                 pos = word_end
                 continue
             break
+
+
+_RM_RECURSIVE_SHORT_OPTION_RE = re.compile(r"-[a-z]*r[a-z]*", re.IGNORECASE)
+# Measured at 8_192 chars: shape-A N=100/200/400 took 0.054/0.109/0.220s,
+# versus 0.037/0.130/0.486s at 98fe6d0a8.
+_MAX_RM_OPERAND_WALK_CHARS = 8_192
+
+
+def _is_rm_command_word(word: str) -> bool:
+    """Whether a command word names ``rm``, however it is spelled.
+
+    The regex rules anchor on a bare ``\brm``, which also fires inside
+    ``/bin/rm`` and ``rm.exe``; the walk keeps that reach so those spellings
+    are covered the same way."""
+    name = _strip_optional_shell_quotes(
+        _deobfuscate_shell_word_for_detection(word) or word
+    )
+    name = name.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    for suffix in _EXECUTABLE_LAUNCHER_SUFFIXES:
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    return name == "rm"
+
+
+def _has_recursive_rm_flag(command: str) -> bool:
+    """Return whether a command-position rm has a recursive option."""
+    operand_walk_chars_remaining = _MAX_RM_OPERAND_WALK_CHARS
+    # Reuse the existing candidate walker, including its assignment-prefix and
+    # recognized-wrapper handling; do not parse a separate wrapper chain here.
+    for _, command_word_end, command_word in _iter_shell_command_word_spans(command):
+        if not _is_rm_command_word(command_word):
+            continue
+
+        pos = command_word_end
+        while True:
+            word_start, word_end, word = _read_shell_word(command, pos)
+            operand_walk_chars_remaining -= word_end - pos
+            if operand_walk_chars_remaining <= 0:
+                # Parser work limits fail closed rather than hiding a later flag.
+                return True
+            if word_start == word_end or "\n" in command[pos:word_start]:
+                break
+            command_ended = False
+            while word and word[-1] in ")`":
+                command_ended = True
+                word = word[:-1]
+            deobfuscated = _deobfuscate_shell_word_for_detection(word)
+            if deobfuscated == "--":
+                break
+            if (
+                _RM_RECURSIVE_SHORT_OPTION_RE.fullmatch(deobfuscated)
+                or (
+                    len(deobfuscated) >= len("--r")
+                    and "--recursive".startswith(deobfuscated.lower())
+                )
+            ):
+                return True
+            if command_ended:
+                break
+            pos = word_end
+    return False
 
 
 def _command_detection_variants(command: str):
@@ -2193,6 +2415,12 @@ def detect_dangerous_command(command: str) -> tuple:
             if pattern_re.search(command_lower):
                 pattern_key = description
                 return (True, pattern_key, description)
+        if _has_recursive_rm_flag(command_variant):
+            description = "recursive delete (flags after operands)"
+            return (True, description, description)
+    if _has_recursive_rm_flag(command):
+        description = "recursive delete (flags after operands)"
+        return (True, description, description)
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
         return (True, description, description)

@@ -138,6 +138,25 @@ class TestChildSystemPrompt(unittest.TestCase):
         self.assertIn("YOUR TASK", prompt)
         self.assertNotIn("CONTEXT", prompt)
 
+    def test_completion_contract_present(self):
+        """The kickoff must forbid ending the turn on a progress narration.
+
+        Subagents have no user to hand back to; models (observed with
+        GPT-5.x) otherwise end turns on "I'm now running the tests" /
+        "validation is underway" style updates after real tool work,
+        reporting status=completed with no deliverable.
+        """
+        prompt = _build_child_system_prompt("Fix the tests")
+        self.assertIn("COMPLETION CONTRACT", prompt)
+        self.assertIn("no user to hand", prompt)
+        self.assertIn("not a final", prompt)
+        # The contract must appear before the summary-style guidance so it
+        # isn't read as formatting advice.
+        self.assertLess(
+            prompt.index("COMPLETION CONTRACT"),
+            prompt.index("Keep your final summary tight"),
+        )
+
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):
         result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution"])

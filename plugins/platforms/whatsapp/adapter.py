@@ -611,8 +611,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     print(f"[{self.name}] Failed to install dependencies: {e}")
                     return False
 
-            # Ensure session directory exists
+            # Ensure session directory exists with restrictive
+            # permissions — it will hold WhatsApp credentials
+            # (creds.json, signal keys) that grant full account access.
             self._session_path.mkdir(parents=True, exist_ok=True)
+            try:
+                self._session_path.chmod(0o700)
+            except OSError:
+                pass  # Windows or read-only filesystem
             
             # Check if bridge is already running and connected
             import aiohttp
@@ -674,6 +680,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._bridge_log = self._session_path.parent / "bridge.log"
             bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")
             self._bridge_log_fh = bridge_log_fh
+            # Restrict bridge.log permissions — it may contain QR
+            # pairing payloads and session tokens.  (#80090)
+            try:
+                import os
+                os.chmod(self._bridge_log, 0o600)
+            except OSError:
+                pass  # Windows or read-only filesystem
 
             # Build bridge subprocess environment.
             # Pass WHATSAPP_REPLY_PREFIX from config.yaml so the Node bridge

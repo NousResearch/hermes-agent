@@ -2910,6 +2910,12 @@ def cmd_whatsapp(args):
     # ── Step 5: Check for existing session ───────────────────────────────
     session_dir = get_hermes_home() / "whatsapp" / "session"
     session_dir.mkdir(parents=True, exist_ok=True)
+    # Restrict session dir — holds credentials granting full account
+    # access.  (#80090)
+    try:
+        session_dir.chmod(0o700)
+    except OSError:
+        pass  # Windows or read-only filesystem
 
     if (session_dir / "creds.json").exists():
         print("✓ Existing WhatsApp session found")
@@ -2922,6 +2928,10 @@ def cmd_whatsapp(args):
         if response.lower() in {"y", "yes"}:
             shutil.rmtree(session_dir, ignore_errors=True)
             session_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                session_dir.chmod(0o700)
+            except OSError:
+                pass
             print("  ✓ Session cleared")
         else:
             # Existing pairing — ensure WHATSAPP_ENABLED reflects that.

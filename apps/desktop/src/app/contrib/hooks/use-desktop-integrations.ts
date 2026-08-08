@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { openSession } from '@/app/open-session'
+import { desktopDeepLinkAction } from '@/lib/deep-links'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { respondToApprovalAction } from '@/store/native-notifications'
 import { openFolderAsProject } from '@/store/projects'
@@ -187,30 +188,30 @@ export function useDesktopIntegrations({
     return () => unsubscribe?.()
   }, [])
 
-  // hermes:// deep links -> a reviewable /blueprint command in the composer.
+  // hermes:// deep links either open an existing stored session without
+  // replacing occupied work, or stage a reviewable /blueprint command.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onDeepLink?.(payload => {
-      if (!payload || payload.kind !== 'blueprint' || !payload.name) {
+      const action = desktopDeepLinkAction(payload)
+
+      if (!action) {
         return
       }
 
-      const slots = Object.entries(payload.params || {})
-        .map(([k, v]) => {
-          const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v
+      if (action.kind === 'session') {
+        openSession(action.sessionId, navigate, 'stack')
 
-          return `${k}=${sval}`
-        })
-        .join(' ')
+        return
+      }
 
-      const command = `/blueprint ${payload.name}${slots ? ' ' + slots : ''}`
-      requestComposerInsert(command, { mode: 'block', target: 'main' })
+      requestComposerInsert(action.command, { mode: 'block', target: 'main' })
       requestComposerFocus('main')
     })
 
     void window.hermesDesktop?.signalDeepLinkReady?.()
 
     return () => unsubscribe?.()
-  }, [])
+  }, [navigate])
 
   // ⌘W via the macOS menu accelerator → close the focused tab; if nothing is
   // closeable, fall back to closing the window (so ⌘W still works as the

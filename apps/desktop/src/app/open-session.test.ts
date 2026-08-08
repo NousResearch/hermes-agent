@@ -132,6 +132,7 @@ describe('openSession', () => {
     focusOpenSession.mockReturnValue(null)
     openSession('s1', navigate, 'tab')
     expect(openSessionTile).toHaveBeenCalledWith('s1', 'center')
+    expect(focusOpenSession).toHaveBeenCalledTimes(1)
     expect(navigate).not.toHaveBeenCalled()
   })
 
@@ -148,6 +149,17 @@ describe('openSession', () => {
     focusOpenSession.mockReturnValue(null)
     openSession('s1', navigate, 'stack')
     expect(openSessionTile).toHaveBeenCalledWith('s1', 'center')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('stack fronts a newly opened tab so an external link reaches its conversation', () => {
+    $selectedStoredSessionId.set('s0')
+    focusOpenSession.mockReturnValueOnce(null).mockReturnValueOnce('tile')
+
+    openSession('s1', navigate, 'stack')
+
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center')
+    expect(focusOpenSession).toHaveBeenNthCalledWith(2, 's1')
     expect(navigate).not.toHaveBeenCalled()
   })
 

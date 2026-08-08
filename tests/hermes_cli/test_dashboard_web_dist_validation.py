@@ -9,6 +9,7 @@ the dist has no index.html, and proceed when it does.
 Design credit: PR #17845 (@Caelier).
 """
 
+import os
 import sys
 import types
 
@@ -138,6 +139,70 @@ def test_skip_build_missing_dist_attempts_one_recovery_build(
 # ---------------------------------------------------------------------------
 # Desktop-inherited env isolation (issue #52945 / supersedes #52948, #67402)
 # ---------------------------------------------------------------------------
+
+
+class TestDesktopInheritedEnvIsolation:
+    """Browser `hermes dashboard` must not serve the Desktop renderer."""
+
+    def test_browser_dashboard_strips_inherited_desktop_flag_and_asar_dist(
+        self, main_mod, monkeypatch, tmp_path
+    ):
+        asar_dist = tmp_path / "app.asar" / "dist"
+        asar_dist.mkdir(parents=True)
+        (asar_dist / "index.html").write_text("<html></html>", encoding="utf-8")
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.setenv("HERMES_WEB_DIST", str(asar_dist))
+        monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
+
+        captured = {}
+
+        def fake_start_server(**kwargs):
+            captured["env_desktop"] = os.environ.get("HERMES_DESKTOP")
+            captured["env_web_dist"] = os.environ.get("HERMES_WEB_DIST")
+            captured["env_headless"] = os.environ.get("HERMES_SERVE_HEADLESS")
+            raise SystemExit(0)
+
+        _wire_common(main_mod, monkeypatch)
+        monkeypatch.setattr(main_mod, "_build_web_ui", lambda *a, **k: True)
+        monkeypatch.setitem(
+            sys.modules,
+            "hermes_cli.web_server",
+            types.SimpleNamespace(start_server=fake_start_server),
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            main_mod.cmd_dashboard(_args(no_open=True, headless_backend=False, skip_build=True))
+        assert exc.value.code == 0
+        assert captured.get("env_desktop") is None
+        assert captured.get("env_web_dist") is None
+        assert captured.get("env_headless") is None
+
+    def test_headless_desktop_serve_keeps_desktop_flag(self, main_mod, monkeypatch, tmp_path):
+        asar_dist = tmp_path / "app.asar" / "dist"
+        asar_dist.mkdir(parents=True)
+        (asar_dist / "index.html").write_text("<html></html>", encoding="utf-8")
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.setenv("HERMES_WEB_DIST", str(asar_dist))
+
+        captured = {}
+
+        def fake_start_server(**kwargs):
+            captured["env_desktop"] = os.environ.get("HERMES_DESKTOP")
+            captured["env_web_dist"] = os.environ.get("HERMES_WEB_DIST")
+            raise SystemExit(0)
+
+        _wire_common(main_mod, monkeypatch)
+        monkeypatch.setattr(main_mod, "_build_web_ui", lambda *a, **k: True)
+        monkeypatch.setitem(
+            sys.modules,
+            "hermes_cli.web_server",
+            types.SimpleNamespace(start_server=fake_start_server),
+        )
+
+        with pytest.raises(SystemExit):
+            main_mod.cmd_dashboard(_args(no_open=True, headless_backend=True, skip_build=True))
+        assert captured.get("env_desktop") == "1"
+        assert captured.get("env_web_dist") == str(asar_dist)
 
 
 

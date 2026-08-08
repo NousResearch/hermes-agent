@@ -73,13 +73,12 @@ class TestDashboardStatus:
 
 
 class TestDashboardStop:
-
     def test_stop_kills_and_exits_zero_when_all_killed(self, capsys):
         """After the kill, if the second scan returns empty we exit 0."""
         # First scan: finds two processes.  Second (verification) scan: empty.
         scans = iter([[12345, 12346], []])
         with patch("hermes_cli.main._find_stale_dashboard_pids",
-                   side_effect=lambda: next(scans)), \
+                   side_effect=lambda **_kw: next(scans)), \
              patch("hermes_cli.main._kill_stale_dashboard_processes") as mock_kill, \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(stop=True))
@@ -90,6 +89,8 @@ class TestDashboardStop:
         kwargs = mock_kill.call_args.kwargs
         assert "reason" in kwargs
         assert "stop" in kwargs["reason"].lower()
+        # Browser stop must not reap Desktop headless serve backends.
+        assert kwargs.get("include_serve") is False
         assert exc.value.code == 0
 
     def test_stop_exits_nonzero_if_kill_leaves_survivors(self):
@@ -97,7 +98,7 @@ class TestDashboardStop:
         detect that the stop didn't succeed (e.g. permission denied)."""
         scans = iter([[12345], [12345]])  # both scans find the same PID
         with patch("hermes_cli.main._find_stale_dashboard_pids",
-                   side_effect=lambda: next(scans)), \
+                   side_effect=lambda **_kw: next(scans)), \
              patch("hermes_cli.main._kill_stale_dashboard_processes"), \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(stop=True))
@@ -118,6 +119,20 @@ class TestDashboardStop:
             cmd_dashboard(_ns(stop=True))
         assert exc.value.code == 0
 
+    def test_scan_stop_mode_excludes_serve_cmdlines(self):
+        """include_serve=False must not match Desktop hermes serve backends."""
+        from hermes_cli.dashboard_procs import _scan_dashboard_processes
+
+        ps_out = (
+            " 11111 /venv/bin/python -m hermes_cli.main dashboard --no-open\n"
+            " 22222 /venv/bin/python -m hermes_cli.main serve --host 127.0.0.1 --port 0\n"
+        )
+        fake = MagicMock(returncode=0, stdout=ps_out)
+        with patch("subprocess.run", return_value=fake):
+            dash_only = _scan_dashboard_processes(include_serve=False)
+            both = _scan_dashboard_processes(include_serve=True)
+        assert [pid for pid, _ in dash_only] == [11111]
+        assert sorted(pid for pid, _ in both) == [11111, 22222]
 
 class TestLifecycleFlagsTakePrecedence:
     """If both --stop and --status are set, --status wins (it's listed

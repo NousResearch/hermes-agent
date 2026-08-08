@@ -28,6 +28,7 @@ def _m():
 def _scan_dashboard_processes(
     *,
     exclude_pids: set[int] | None = None,
+    include_serve: bool = True,
 ) -> list[tuple[int, str]]:
     """Return matching ``dashboard``/``serve`` processes with their cmdlines.
 
@@ -51,19 +52,29 @@ def _scan_dashboard_processes(
     backend process; ``_kill_stale_dashboard_processes`` reads it and
     passes it here.  (#37532)
 
+    *include_serve* defaults True so ``hermes update`` still reaps Desktop's
+    headless ``hermes serve`` backends (same mismatch class).  ``hermes
+    dashboard --stop`` sets it False so a browser-dashboard stop does not
+    tear down a live Desktop session's backend.
+
     Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
     """
     patterns = [
         "hermes dashboard",
         "hermes_cli.main dashboard",
         "hermes_cli/main.py dashboard",
+    ]
+    if include_serve:
         # The headless backend (`hermes serve`) is the same long-lived server
         # under a different command name — the desktop app spawns it. Reap it
         # on update for the same frontend/backend-mismatch reason.
-        "hermes serve",
-        "hermes_cli.main serve",
-        "hermes_cli/main.py serve",
-    ]
+        patterns.extend(
+            [
+                "hermes serve",
+                "hermes_cli.main serve",
+                "hermes_cli/main.py serve",
+            ]
+        )
     self_pid = os.getpid()
     dashboard_processes: list[tuple[int, str]] = []
 
@@ -148,16 +159,17 @@ def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend",
     *,
     restart_managed: bool = False,
+    include_serve: bool = True,
 ) -> dict[str, list]:
-    """Kill running ``hermes dashboard`` / ``hermes serve`` processes.
+    """Kill running ``hermes dashboard`` / optionally ``hermes serve`` processes.
 
     Called at the end of ``hermes update`` (default ``reason``) and also
-    from ``hermes dashboard --stop`` (which overrides ``reason``).  The
-    dashboard has no service manager, so after a code update the running
-    process is guaranteed to be serving stale Python against a
-    freshly-updated JS bundle.  Leaving it alive produces silent
-    frontend/backend mismatches (new auth headers the old backend doesn't
-    recognise → every API call 401s).
+    from ``hermes dashboard --stop`` (which overrides ``reason`` and sets
+    ``include_serve=False``).  The dashboard has no service manager, so
+    after a code update the running process is guaranteed to be serving
+    stale Python against a freshly-updated JS bundle.  Leaving it alive
+    produces silent frontend/backend mismatches (new auth headers the old
+    backend doesn't recognise → every API call 401s).
 
     POSIX: SIGTERM, wait up to ~3s for graceful exit, SIGKILL any survivors.
     Windows: ``taskkill /PID <pid> /F`` since there's no clean SIGTERM
@@ -195,12 +207,16 @@ def _kill_stale_dashboard_processes(
         if parsed:
             exclude = parsed
 
-    pids = _m()._find_stale_dashboard_pids(exclude_pids=exclude)
+    pids = _m()._find_stale_dashboard_pids(
+        exclude_pids=exclude,
+        include_serve=include_serve,
+    )
     if not pids:
         return {"matched": [], "killed": [], "failed": []}
 
     print()
-    print(f"⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
+    label = "dashboard/serve" if include_serve else "dashboard"
+    print(f"⟲ Stopping {len(pids)} {label} process(es) ({reason})")
 
     # Before killing, snapshot systemd cgroup info for each PID so we can
     # restart supervised services after the kill (the cgroup disappears

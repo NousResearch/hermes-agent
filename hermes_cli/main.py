@@ -7306,9 +7306,16 @@ from hermes_cli.dashboard_procs import (  # noqa: F401
 def _find_stale_dashboard_pids(
     *,
     exclude_pids: set[int] | None = None,
+    include_serve: bool = True,
 ) -> list[int]:
-    """Return PIDs of stale ``dashboard``/``serve`` processes for update cleanup."""
-    return [pid for pid, _cmd in _scan_dashboard_processes(exclude_pids=exclude_pids)]
+    """Return PIDs of stale ``dashboard``/optionally ``serve`` processes."""
+    return [
+        pid
+        for pid, _cmd in _scan_dashboard_processes(
+            exclude_pids=exclude_pids,
+            include_serve=include_serve,
+        )
+    ]
 
 
 def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
@@ -10258,17 +10265,20 @@ def cmd_dashboard(args):
         count = _report_dashboard_status()
         sys.exit(0 if count == 0 else 0)  # status is informational, always 0
 
-    # --stop: kill any running dashboards and exit, no deps needed.
+    # --stop: browser dashboard processes only — never tear down Desktop serve.
     if getattr(args, "stop", False):
-        pids = _find_stale_dashboard_pids()
+        pids = _find_stale_dashboard_pids(include_serve=False)
         if not pids:
             print("No hermes dashboard processes running.")
             sys.exit(0)
         # Reuse the same SIGTERM-grace-SIGKILL path used after `hermes update`.
-        _kill_stale_dashboard_processes(reason="requested via --stop")
+        _kill_stale_dashboard_processes(
+            reason="requested via --stop",
+            include_serve=False,
+        )
         # _kill_stale_dashboard_processes prints outcomes itself.  Exit 0 if
         # we killed at least one, 1 if they were all unkillable.
-        remaining = _find_stale_dashboard_pids()
+        remaining = _find_stale_dashboard_pids(include_serve=False)
         sys.exit(1 if remaining else 0)
 
     # `serve` is the headless backend: no UI build, no SPA mount, neutral
@@ -10285,21 +10295,27 @@ def cmd_dashboard(args):
     # ── Sanitize Desktop-inherited env that hijacks a standalone launch ─
     # Desktop Electron spawns its backend with HERMES_DESKTOP=1 plus
     # HERMES_WEB_DIST=<packaged app.asar[/unpacked]/dist> (and often
-    # HERMES_SERVE_HEADLESS=1 on the serve path). A shell that inherits
+    # HERMES_SERVE_HEADLESS=1 on the serve path). A shell/tool that inherits
     # those vars then runs `hermes dashboard` would otherwise:
     #   - serve the desktop renderer → "Desktop IPC bridge is unavailable"
     #     (issue #52945), or
     #   - disable the SPA via inherited HERMES_SERVE_HEADLESS.
-    # Only strip Electron-packaged WEB_DIST contamination — caller-managed
-    # HERMES_WEB_DIST overrides (dev / custom builds) must still work.
-    # The desktop-spawned backend itself (HERMES_DESKTOP=1) keeps its dist.
+    #
+    # Browser `hermes dashboard` (not headless) must always strip Desktop
+    # contamination — including when HERMES_DESKTOP=1 was inherited from a
+    # Desktop-agent terminal. Desktop's own backend is headless and keeps
+    # HERMES_DESKTOP + its dist. Only strip Electron-packaged WEB_DIST —
+    # caller-managed HERMES_WEB_DIST overrides must still work.
     # Intentionally headless `serve` re-sets HERMES_SERVE_HEADLESS below.
-    if os.environ.get("HERMES_DESKTOP") != "1":
-        _inherited_web_dist = os.environ.get("HERMES_WEB_DIST", "")
+    _inherited_web_dist = os.environ.get("HERMES_WEB_DIST", "")
+    if not _headless_backend:
         if _is_electron_packaged_web_dist(_inherited_web_dist):
             os.environ.pop("HERMES_WEB_DIST", None)
-    if not _headless_backend:
+        os.environ.pop("HERMES_DESKTOP", None)
         os.environ.pop("HERMES_SERVE_HEADLESS", None)
+    elif os.environ.get("HERMES_DESKTOP") != "1":
+        if _is_electron_packaged_web_dist(_inherited_web_dist):
+            os.environ.pop("HERMES_WEB_DIST", None)
 
     # ── Unified profile launch routing ────────────────────────────────
     # The dashboard is a MACHINE management surface: it can read/write any

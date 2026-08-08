@@ -11,6 +11,7 @@ import {
   ensureGitRepo,
   listBaseBranches,
   listBranches,
+  listWorktrees,
   parseWorktrees,
   sanitizeBranch,
   switchBranch
@@ -89,6 +90,58 @@ test('switchBranch: switches a normal checkout branch', async () => {
     await switchBranch(dir, 'feature', 'git')
 
     assert.equal(git('branch', '--show-current'), 'feature')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('switchBranch: no-ops on a project folder that is not a repo', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-switch-plain-'))
+
+  try {
+    // The sidebar switches before starting a session; a plain folder has no
+    // branch to leave, so this must not fail the session creation behind it.
+    assert.deepEqual(await switchBranch(dir, 'main', 'git'), { branch: 'main' })
+    assert.equal(fs.existsSync(path.join(dir, '.git')), false)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('switchBranch: a failed probe still fails instead of passing as a plain folder', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-switch-nogit-'))
+
+  try {
+    await ensureGitRepo('git', dir)
+
+    // git itself is unusable here. Silently "succeeding" would strand the
+    // session on whatever branch the checkout happens to sit on.
+    await assert.rejects(() => switchBranch(dir, 'main', path.join(dir, 'no-such-git')))
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('listWorktrees: empty means "not a repository", never a broken probe', async () => {
+  const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-wt-plain-'))
+
+  try {
+    // The sidebar reads an empty list as confirmed evidence the folder is not a
+    // repo, so a probe that never ran must not answer with one.
+    assert.deepEqual(await listWorktrees(plain, 'git'), [])
+    await assert.rejects(() => listWorktrees(plain, path.join(plain, 'no-such-git')))
+  } finally {
+    fs.rmSync(plain, { recursive: true, force: true })
+  }
+})
+
+test('switchBranch: a real repo still reports a failed switch', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-switch-missing-'))
+
+  try {
+    await ensureGitRepo('git', dir)
+
+    await assert.rejects(() => switchBranch(dir, 'no-such-branch', 'git'))
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

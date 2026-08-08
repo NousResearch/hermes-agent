@@ -22,6 +22,11 @@ export interface SidebarSessionGroup {
   // collapses all main-checkout sessions, labeled by the worktree's LIVE branch
   // (defaulting to `main`). Renders a home glyph and pins to the top.
   isHome?: boolean
+  // True when the lane is a plain DIRECTORY, not a git branch — the project
+  // folder isn't a repo, so there is no branch to switch to and no branch name
+  // to label it with. Set only when the local git probe actually ran and came
+  // back empty; a lane the probe never saw (remote backend) stays unflagged.
+  isFolder?: boolean
   // True for the synthetic lane that collapses all of a repo's kanban task
   // worktrees (`<repo>/.worktrees/t_*`) into one row, so a heavy board doesn't
   // spray hundreds of throwaway branch lanes across the sidebar.
@@ -130,6 +135,9 @@ export const isDetachedSession = (session: SessionInfo): boolean =>
 /** The one definition of a main-checkout lane id (must match the backend tree). */
 export const branchLaneId = (repoRoot: string, branch?: string): string =>
   `${repoRoot}::branch::${(branch ?? '').trim()}`
+
+/** Id of the single lane a NON-repo project folder collapses to. */
+export const folderLaneId = (repoRoot: string): string => `${repoRoot}::folder`
 
 /** A session's recency stamp (last activity, falling back to creation). */
 export const sessionRecency = (session: SessionInfo): number => session.last_active || session.started_at || 0
@@ -255,6 +263,12 @@ export function mergeRepoWorktreeGroups(
   // backends (no probe → no homeBranch) keep their main lanes untouched.
   const mainGroups = repo.groups.filter(group => group.isMain)
   const reconciled = repo.groups.filter(group => !group.isMain).map(reconcile)
+  // The probe RAN and git reported no worktree at all → the folder is not a
+  // repo. Its "main" lanes are fabrications — a session with a null branch
+  // renders as `main`, the backend's path fallback as the dir name — so the
+  // same fold applies, just labeled by the folder instead of a branch. An
+  // UNDEFINED probe (remote backend, still loading) is not evidence of that.
+  const folderRoot = discoveredWorktrees?.length === 0 ? repo.path : null
 
   if (homeBranch) {
     reconciled.push({
@@ -263,6 +277,16 @@ export function mergeRepoWorktreeGroups(
       path: repo.path,
       isMain: true,
       isHome: true,
+      sessions: dedupeById(mainGroups.flatMap(group => group.sessions))
+    })
+  } else if (folderRoot && mainGroups.length) {
+    reconciled.push({
+      id: folderLaneId(repo.id),
+      label: baseName(folderRoot) ?? folderRoot,
+      path: repo.path,
+      isMain: true,
+      isHome: true,
+      isFolder: true,
       sessions: dedupeById(mainGroups.flatMap(group => group.sessions))
     })
   } else {
@@ -475,9 +499,20 @@ function liveLaneForRepo(repoRoot: string, session: SessionInfo): null | Sidebar
       : { id: worktreeRoot, isMain: false, label: slug, path: worktreeRoot, sessions: [] }
   }
 
-  const branch = (session.git_branch || '').trim() || DEFAULT_BRANCH_LABEL
+  const branch = (session.git_branch || '').trim()
 
-  return { id: branchLaneId(repoRoot, branch), isMain: true, label: branch, path: repoRoot, sessions: [] }
+  // No recorded branch: the row may be in a plain folder, or just predate the
+  // backend's probe. `isFolder` marks the label as a GUESS so the placer can
+  // join an existing root lane (a real branch lane, or the folded folder lane)
+  // instead of minting a second "main" beside it.
+  return {
+    id: branchLaneId(repoRoot, branch || DEFAULT_BRANCH_LABEL),
+    isFolder: !branch,
+    isMain: true,
+    label: branch || DEFAULT_BRANCH_LABEL,
+    path: repoRoot,
+    sessions: []
+  }
 }
 
 const NO_REMOVED: ReadonlySet<string> = new Set()
@@ -560,6 +595,9 @@ export function overlayRepoLanes(
 
       lane =
         lanes.find(g => g.id === placed.id) ??
+        // A branchless row belongs to whatever single lane already holds the
+        // repo root — its `main` label is a placeholder, not a match key.
+        (placed.isFolder ? lanes.find(g => g.isMain && pathKey(g.path) === repoRootKey) : undefined) ??
         (placed.isMain
           ? lanes.find(g => g.isMain && g.label.toLowerCase() === placed.label.toLowerCase())
           : undefined) ??

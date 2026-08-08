@@ -1,7 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import { renderHook, waitFor } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 
-import { orderProjectsByIds, sortProjectsForOverview } from './model'
+import { desktopGit } from '@/lib/desktop-git'
+
+import { orderProjectsByIds, sortProjectsForOverview, useRepoWorktreeMap } from './model'
 import { NO_PROJECT_ID, type SidebarProjectTree } from './workspace-groups'
+
+vi.mock('@/lib/desktop-git', () => ({ desktopGit: vi.fn() }))
 
 function makeProject(id: string, sessionCount: number): SidebarProjectTree {
   return {
@@ -74,5 +79,32 @@ describe('sortProjectsForOverview', () => {
     const projects = [makeProject('scanned', 0), active, home()]
 
     expect(ids(sortProjectsForOverview(projects, 'active'))).toEqual([NO_PROJECT_ID, 'active', 'scanned'])
+  })
+})
+
+const withProbe = (worktreeList: (repoPath: string) => Promise<unknown>) =>
+  vi.mocked(desktopGit).mockReturnValue({ worktreeList } as unknown as ReturnType<typeof desktopGit>)
+
+// The lane layer treats an EMPTY worktree list as git's own "this folder is not
+// a repository" verdict. A probe that never got an answer must therefore stay
+// distinguishable from it, or a transient git failure silently restructures a
+// real repo's lanes.
+describe('useRepoWorktreeMap', () => {
+  it('records a failed probe as unknown, not as an empty repo', async () => {
+    withProbe(() => Promise.reject(new Error('git invocation failed')))
+
+    const { result } = renderHook(() => useRepoWorktreeMap(['/repo'], true))
+
+    await waitFor(() => expect(result.current[1]).toBe(false))
+    expect(result.current[0]['/repo']).toBeNull()
+  })
+
+  it("keeps git's empty answer as an empty list", async () => {
+    withProbe(() => Promise.resolve([]))
+
+    const { result } = renderHook(() => useRepoWorktreeMap(['/plain'], true))
+
+    await waitFor(() => expect(result.current[1]).toBe(false))
+    expect(result.current[0]['/plain']).toEqual([])
   })
 })

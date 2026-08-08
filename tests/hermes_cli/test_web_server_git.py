@@ -98,6 +98,55 @@ def test_worktree_add_initializes_plain_folder(client, tmp_path):
 
 
 
+def test_branch_switch_no_ops_on_a_plain_folder(client, tmp_path):
+    folder = tmp_path / "plain-project"
+    folder.mkdir()
+
+    # The sidebar switches to a lane's branch before starting a session there. A
+    # folder that is not a repo has no branch to leave, so this must succeed
+    # quietly instead of failing the session behind it — and must not init a repo.
+    assert client.post(
+        "/api/git/branch/switch", json={"path": str(folder), "branch": "main"}
+    ).json() == {"branch": "main"}
+    assert not (folder / ".git").exists()
+
+
+def test_branch_switch_surfaces_a_failed_probe(client, repo, monkeypatch):
+    from hermes_cli import web_git
+
+    # git is unusable, not absent-of-repo. Reporting success here would strand
+    # the session on whatever branch the checkout happens to sit on.
+    monkeypatch.setattr(web_git, "_git", lambda *a, **k: (1, "", "git invocation failed"))
+
+    response = client.post(
+        "/api/git/branch/switch", json={"path": str(repo), "branch": "main"}
+    )
+    assert response.status_code == 400
+
+
+def test_worktrees_empty_only_means_not_a_repository(client, tmp_path, monkeypatch):
+    from hermes_cli import web_git
+
+    plain = tmp_path / "plain-project"
+    plain.mkdir()
+
+    # The sidebar reads an empty list as confirmed evidence the folder is not a
+    # repo, so a probe that never ran must not answer with one.
+    assert client.get("/api/git/worktrees", params={"path": str(plain)}).json()["worktrees"] == []
+
+    monkeypatch.setattr(web_git, "_git", lambda *a, **k: (1, "", "git invocation failed"))
+    assert client.get("/api/git/worktrees", params={"path": str(plain)}).status_code == 400
+
+
+def test_branch_switch_still_switches_a_real_repo(client, repo):
+    _git(repo, "branch", "feature")
+
+    assert client.post(
+        "/api/git/branch/switch", json={"path": str(repo), "branch": "feature"}
+    ).json() == {"branch": "feature"}
+    assert client.get("/api/git/status", params={"path": str(repo)}).json()["branch"] == "feature"
+
+
 def test_git_endpoints_require_auth(repo):
     unauth = TestClient(web_server.app)
 

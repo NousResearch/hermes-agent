@@ -48,7 +48,7 @@ export function EnteredProjectContent({
   project: SidebarProjectTree
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
-  repoWorktrees?: Record<string, HermesGitWorktree[]>
+  repoWorktrees?: Record<string, HermesGitWorktree[] | null>
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
 }) {
@@ -68,7 +68,9 @@ export function EnteredProjectContent({
     <>
       {project.repos.map(repo => (
         <RepoFlatSection
-          discoveredWorktrees={repo.path ? repoWorktrees?.[repo.path] : undefined}
+          // `null` (the probe failed) collapses to "not probed" — only a real
+          // answer from git is allowed to reshape the lanes.
+          discoveredWorktrees={(repo.path ? repoWorktrees?.[repo.path] : undefined) ?? undefined}
           key={repo.id}
           liveSessions={liveSessions}
           onNewSession={onNewSession}

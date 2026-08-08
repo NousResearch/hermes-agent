@@ -1597,6 +1597,20 @@ agent:
   tool_use_enforcement: ["gpt", "codex", "gemini", "grok", "my-custom-model"]
 ```
 
+### Mixed-batch tool execution
+
+When a model emits a batch of tool calls where some names are valid and some are invalid (common with degraded models at long context), the agent has two behaviors:
+
+```yaml
+agent:
+  tool_use_enforcement_permissive_batches: true   # true (default) | false
+```
+
+| Value | Behavior |
+|-------|----------|
+| `true` (default) | Execute the valid calls and emit error results only for the invalid ones. Prevents long-context model degradation from voiding entire turns. |
+| `false` | Void the whole batch when any name is invalid (pre-`#348e9912f` behavior). Provides negative-reinforcement that constrains enforcement-gated models (deepseek, qwen) from over-emitting tool calls in early turns. |
+
 ## Tool-Loop Guardrails
 
 Hermes detects when the agent is stuck in an unproductive tool-calling loop — the same tool call failing repeatedly, the same tool failing over and over, or an idempotent call returning the same result with no progress. By default it injects a **warning** into the tool result so the model self-corrects; it does not hard-stop, since a person watching the CLI/TUI can intervene.

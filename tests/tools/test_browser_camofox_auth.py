@@ -36,11 +36,13 @@ class TestAuthHeaders:
 
     def test_empty_when_no_key(self, monkeypatch):
         monkeypatch.delenv("CAMOFOX_API_KEY", raising=False)
+        monkeypatch.delenv("CAMOFOX_ACCESS_KEY", raising=False)
         assert _auth_headers() == {}
 
 
     def test_empty_when_key_blank(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_API_KEY", "   ")
+        monkeypatch.setenv("CAMOFOX_ACCESS_KEY", "   ")
         assert _auth_headers() == {}
 
     def test_multiplex_scope_key_wins_over_process_environment(self, monkeypatch):
@@ -51,6 +53,38 @@ class TestAuthHeaders:
         token = secret_scope.set_secret_scope({"CAMOFOX_API_KEY": "secondary-profile-key"})
         try:
             assert _auth_headers() == {"Authorization": "Bearer secondary-profile-key"}
+        finally:
+            secret_scope.reset_secret_scope(token)
+            secret_scope.set_multiplex_active(False)
+
+    def test_access_key_preferred_over_api_key(self, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_ACCESS_KEY", "global-access-key")
+        monkeypatch.setenv("CAMOFOX_API_KEY", "legacy-api-key")
+        assert _auth_headers() == {"Authorization": "Bearer global-access-key"}
+
+    def test_access_key_alone(self, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_ACCESS_KEY", "global-access-key")
+        monkeypatch.delenv("CAMOFOX_API_KEY", raising=False)
+        assert _auth_headers() == {"Authorization": "Bearer global-access-key"}
+
+    def test_access_key_blank_falls_back_to_api_key(self, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_ACCESS_KEY", "   ")
+        monkeypatch.setenv("CAMOFOX_API_KEY", "legacy-api-key")
+        assert _auth_headers() == {"Authorization": "Bearer legacy-api-key"}
+
+    def test_no_keys_sends_empty(self, monkeypatch):
+        monkeypatch.delenv("CAMOFOX_ACCESS_KEY", raising=False)
+        monkeypatch.delenv("CAMOFOX_API_KEY", raising=False)
+        assert _auth_headers() == {}
+
+    def test_multiplex_scope_access_key_wins_over_process_environment(self, monkeypatch):
+        from agent import secret_scope
+
+        monkeypatch.setenv("CAMOFOX_ACCESS_KEY", "default-access-key")
+        secret_scope.set_multiplex_active(True)
+        token = secret_scope.set_secret_scope({"CAMOFOX_ACCESS_KEY": "secondary-access-key"})
+        try:
+            assert _auth_headers() == {"Authorization": "Bearer secondary-access-key"}
         finally:
             secret_scope.reset_secret_scope(token)
             secret_scope.set_multiplex_active(False)

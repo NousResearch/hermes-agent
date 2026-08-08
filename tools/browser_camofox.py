@@ -82,8 +82,23 @@ def _get_command_timeout() -> int:
 
 
 def _auth_headers() -> Dict[str, str]:
-    """Return Authorization header when CAMOFOX_API_KEY is set."""
-    key = (get_secret("CAMOFOX_API_KEY", "") or "").strip()
+    """Return Authorization header for a gated Camofox server.
+
+    The camofox-browser server distinguishes two keys with different scopes:
+
+    - ``CAMOFOX_ACCESS_KEY`` — global "superkey": when set, every route except
+      ``/health``, cookie import, and ``/stop`` requires
+      ``Authorization: Bearer <ACCESS_KEY>``.
+    - ``CAMOFOX_API_KEY`` — gates **only** the cookie-import route
+      (``POST /sessions/:userId/cookies``).
+
+    Hermes never calls the cookie-import route, so the access key is the
+    correct token for all of its requests. Prefer it, and fall back to the
+    API key so deployments that only configured the legacy key keep working.
+    """
+    access = (get_secret("CAMOFOX_ACCESS_KEY", "") or "").strip()
+    api = (get_secret("CAMOFOX_API_KEY", "") or "").strip()
+    key = access or api
     if key:
         return {"Authorization": f"Bearer {key}"}
     return {}

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -69,13 +70,13 @@ def test_bot_state_dedupes_captions_and_flushes_status(tmp_path):
     state.record_caption("Alice", "Hey everyone")  # dup — ignored
     state.record_caption("Bob", "Let's start")
 
-    transcript = (out / "transcript.txt").read_text()
+    transcript = (out / "transcript.txt").read_text(encoding="utf-8")
     assert "Alice: Hey everyone" in transcript
     assert "Bob: Let's start" in transcript
     # dedup — Alice line appears exactly once
     assert transcript.count("Alice: Hey everyone") == 1
 
-    status = json.loads((out / "status.json").read_text())
+    status = json.loads((out / "status.json").read_text(encoding="utf-8"))
     assert status["meetingId"] == "abc-defg-hij"
     assert status["transcriptLines"] == 2
     assert status["transcriptPath"].endswith("transcript.txt")
@@ -296,5 +297,100 @@ def test_cmd_install_refuses_windows(capsys):
     assert rc == 1
     out = capsys.readouterr().out
     assert "Windows" in out
+
+
+# ---------------------------------------------------------------------------
+# Sidecar env hygiene: meet_bot Chromium env + meet_bot spawn env must not
+# carry gateway credentials (BWS vault token, provider keys, *_PASSWORD)
+# into the child, while the plugin's own keys survive.
+# ---------------------------------------------------------------------------
+
+
+def test_build_chrome_env_scrubs_credentials_keeps_bot_vars(monkeypatch):
+    from plugins.google_meet.meet_bot import _build_chrome_env
+
+    monkeypatch.setenv("GATEWAY_RELAY_SECRET", "relay-secret")
+    monkeypatch.setenv("EMAIL_PASSWORD", "mail-pass")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("DISPLAY", ":99")
+    monkeypatch.setenv("HERMES_MEET_LOBBY_TIMEOUT", "42")
+
+    env = _build_chrome_env(
+        {"enabled": True, "bridge_info": {"platform": "linux", "device_name": "virtsrc"}}
+    )
+
+    # Gateway credentials scrubbed from the Chromium child env.
+    assert "GATEWAY_RELAY_SECRET" not in env
+    assert "EMAIL_PASSWORD" not in env
+    assert "OPENAI_API_KEY" not in env
+    # Non-secret meeting/display vars survive; the bot's own PULSE_SOURCE
+    # override is applied on top of the sanitized base.
+    assert env["DISPLAY"] == ":99"
+    assert env["HERMES_MEET_LOBBY_TIMEOUT"] == "42"
+    assert env["PULSE_SOURCE"] == "virtsrc"
+
+
+def test_apply_chrome_env_replaces_process_env_cleanly(monkeypatch):
+    from plugins.google_meet.meet_bot import _apply_chrome_env
+
+    monkeypatch.setenv("GATEWAY_RELAY_SECRET", "relay-secret")
+    monkeypatch.setenv("EMAIL_PASSWORD", "mail-pass")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("DISPLAY", ":99")
+
+    snapshot = os.environ.copy()
+    try:
+        _apply_chrome_env(
+            {"PULSE_SOURCE": "virtsrc", "DISPLAY": ":99", "PATH": snapshot["PATH"]}
+        )
+        # The merge replaces os.environ wholesale — scrubbed credentials
+        # cannot linger in the env Playwright's Chromium inherits.
+        assert "GATEWAY_RELAY_SECRET" not in os.environ
+        assert "EMAIL_PASSWORD" not in os.environ
+        assert "OPENAI_API_KEY" not in os.environ
+        assert os.environ["PULSE_SOURCE"] == "virtsrc"
+        assert os.environ["DISPLAY"] == ":99"
+    finally:
+        os.environ.clear()
+        os.environ.update(snapshot)
+
+
+def test_start_spawns_meet_bot_with_scrubbed_env(tmp_path, monkeypatch):
+    from plugins.google_meet import process_manager as pm
+
+    monkeypatch.setenv("GATEWAY_RELAY_SECRET", "relay-secret")
+    monkeypatch.setenv("EMAIL_PASSWORD", "mail-pass")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(pm, "_read_active", lambda: None)
+
+    captured = {}
+
+    class _Proc:
+        pid = 4242
+
+    def _fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs["env"]
+        return _Proc()
+
+    monkeypatch.setattr(pm.subprocess, "Popen", _fake_popen)
+
+    res = pm.start(
+        "https://meet.google.com/abc-defg-hij",
+        out_dir=tmp_path / "abc-defg-hij",
+        realtime_api_key="rt-key",
+    )
+    assert res["ok"] is True
+
+    env = captured["env"]
+    # Gateway credentials must not reach the meet_bot child…
+    assert "GATEWAY_RELAY_SECRET" not in env
+    assert "EMAIL_PASSWORD" not in env
+    assert "OPENAI_API_KEY" not in env
+    # …while the meeting config (incl. the explicitly-passed realtime key)
+    # still travels.
+    assert env["HERMES_MEET_URL"] == "https://meet.google.com/abc-defg-hij"
+    assert env["HERMES_MEET_REALTIME_KEY"] == "rt-key"
+    assert captured["cmd"] == [sys.executable, "-m", "plugins.google_meet.meet_bot"]
 
 

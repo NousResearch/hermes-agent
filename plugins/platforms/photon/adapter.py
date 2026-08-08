@@ -69,6 +69,7 @@ from .auth import load_project_credentials
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
+from tools.environments.local import build_subprocess_env
 
 
 def _get_scoped_secret(name, default=None):
@@ -1595,7 +1596,9 @@ class PhotonAdapter(BasePlatformAdapter):
             await asyncio.to_thread(_reinstall_sidecar_deps)
         await self._reap_stale_sidecar()
 
-        env = os.environ.copy()
+        # Sidecar child env: sanitized factory (scrubs gateway credentials),
+        # then the photon-specific values the sidecar is entitled to.
+        env = build_subprocess_env()
         env["PHOTON_PROJECT_ID"] = self._project_id
         env["PHOTON_PROJECT_SECRET"] = self._project_secret
         env["PHOTON_SIDECAR_PORT"] = str(self._sidecar_port)

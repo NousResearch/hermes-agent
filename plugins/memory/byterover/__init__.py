@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+from tools.environments.local import build_subprocess_env
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -134,7 +135,9 @@ def _run_brv(args: List[str], timeout: int = _QUERY_TIMEOUT,
     effective_cwd = cwd or str(_get_brv_cwd())
     Path(effective_cwd).mkdir(parents=True, exist_ok=True)
 
-    env = os.environ.copy()
+    # Sanitized child env (scrubs gateway credentials), then put the brv CLI's
+    # own bin dir first on PATH so the resolved CLI wins over any other copy.
+    env = build_subprocess_env()
     brv_bin_dir = str(Path(brv_path).parent)
     env["PATH"] = brv_bin_dir + os.pathsep + env.get("PATH", "")
 

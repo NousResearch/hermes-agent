@@ -51,6 +51,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
+from tools.environments.local import build_subprocess_env
 
 
 def _get_scoped_secret(name, default=None):
@@ -290,7 +291,9 @@ async def _exec_buzz(
     The private key travels via the subprocess environment only — it never
     appears in argv, so process listings and error logs stay clean.
     """
-    env = os.environ.copy()
+    # Build the CLI child env from the sanitized subprocess env factory
+    # (scrubs gateway credentials), then add the relay + key the CLI needs.
+    env = build_subprocess_env()
     env["BUZZ_RELAY_URL"] = relay_url
     env["BUZZ_PRIVATE_KEY"] = private_key
     proc = await asyncio.create_subprocess_exec(

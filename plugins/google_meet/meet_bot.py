@@ -38,6 +38,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from tools.environments.local import build_subprocess_env
+
 # Match ``https://meet.google.com/abc-defg-hij`` or ``.../lookup/...`` — the
 # short three-segment code or a lookup URL. Anything else is rejected.
 MEET_URL_RE = re.compile(
@@ -444,6 +446,34 @@ def _mac_audio_device_index(device_name: str) -> str:
     return "0"
 
 
+def _build_chrome_env(rt: dict) -> dict:
+    """Build the Chromium child environment for the bot's Chrome launch.
+
+    Starts from the sanitized subprocess env factory (which scrubs gateway
+    credentials such as provider keys, the vault token and ``*_PASSWORD``
+    vars) instead of copying ``os.environ`` raw, then adds the bot's own
+    non-secret ``PULSE_SOURCE`` override when realtime audio is live on
+    Linux so Chrome's fake mic reads the audio we generate.
+    """
+    chrome_env = build_subprocess_env()
+    if rt.get("enabled") and rt.get("bridge_info") and rt["bridge_info"].get("platform") == "linux":
+        chrome_env["PULSE_SOURCE"] = rt["bridge_info"].get("device_name", "")
+    return chrome_env
+
+
+def _apply_chrome_env(chrome_env: dict) -> None:
+    """Install the sanitized Chrome env as the process env.
+
+    Playwright's ``launch()`` doesn't take an env dict, so the child
+    Chromium inherits whatever the bot's process env holds at launch time.
+    Replace ``os.environ`` wholesale (rather than merging key-by-key) so
+    credentials that ``_build_chrome_env`` scrubbed cannot linger in the
+    merged result.
+    """
+    os.environ.clear()
+    os.environ.update(chrome_env)
+
+
 def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
     url = os.environ.get("HERMES_MEET_URL", "").strip()
     out_dir_env = os.environ.get("HERMES_MEET_OUT_DIR", "").strip()
@@ -528,7 +558,7 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
 
     # Chrome env: if realtime is live on Linux, point PULSE_SOURCE at the
     # virtual source so Chrome's fake mic reads the audio we generate.
-    chrome_env = os.environ.copy()
+    chrome_env = _build_chrome_env(rt)
     chrome_args = [
         "--use-fake-ui-for-media-stream",
         "--disable-blink-features=AutomationControlled",
@@ -544,8 +574,7 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
         with sync_playwright() as pw:
             # Playwright's launch() doesn't take env; we set PULSE_SOURCE
             # via the process env before launch so the child Chrome inherits it.
-            for k, v in chrome_env.items():
-                os.environ[k] = v
+            _apply_chrome_env(chrome_env)
             browser = pw.chromium.launch(
                 headless=not headed,
                 args=chrome_args,

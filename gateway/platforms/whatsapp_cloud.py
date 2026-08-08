@@ -432,6 +432,33 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return self._is_dm_allowed(principal)
 
     # ------------------------------------------------------------------ lifecycle
+    async def _try_reuse_running_webhook(self) -> bool:
+        """Return True when the existing webhook server is still healthy.
+
+        Cloud reconnects happen in the same gateway process, so an already
+        bound ``AppRunner`` and Graph client can be reused without attempting
+        to bind the webhook port a second time. The health probe keeps this
+        fail-closed: a stale runner is discarded by ``connect()`` and the
+        normal startup path creates a fresh server.
+        """
+        if self._runner is None or self._http_client is None:
+            return False
+
+        host = self._webhook_host
+        if host in {None, "", "0.0.0.0", "::"}:
+            host = "127.0.0.1"
+        url = f"http://{host}:{self._webhook_port}{self._health_path}"
+        try:
+            response = await self._http_client.get(url, timeout=2.0)
+        except Exception:
+            return False
+        if response.status_code != 200:
+            return False
+
+        self._mark_connected()
+        logger.info("[whatsapp_cloud] Reusing existing webhook server on %s", url)
+        return True
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not check_whatsapp_cloud_requirements():
             self._set_fatal_error(
@@ -449,6 +476,14 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 retryable=False,
             )
             return False
+
+        if is_reconnect:
+            if await self._try_reuse_running_webhook():
+                return True
+            # A stale runner/client would otherwise leak the old HTTP client
+            # and make the subsequent TCPSite bind fail with EADDRINUSE.
+            if self._runner is not None or self._http_client is not None:
+                await self.disconnect()
 
         # Outbound HTTP client. Tighter keepalive matches other platform
         # adapters so idle CLOSE_WAIT drains promptly (#18451).

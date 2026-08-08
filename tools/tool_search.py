@@ -1033,7 +1033,15 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
         return None, {}, f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
     raw_args = args.get("arguments")
     if raw_args is None:
-        raw_args = {}
+        # Gemini-family models can flatten nested function arguments into
+        # dotted path keys (for example ``arguments.url``). Recover the
+        # bridge's first nesting level before required-field validation.
+        prefix = "arguments."
+        raw_args = {
+            key[len(prefix):]: value
+            for key, value in args.items()
+            if isinstance(key, str) and key.startswith(prefix) and len(key) > len(prefix)
+        }
     if isinstance(raw_args, str):
         try:
             raw_args = json.loads(raw_args)

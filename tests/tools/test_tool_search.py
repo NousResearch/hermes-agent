@@ -616,3 +616,18 @@ class TestDeferredCallSchemaProbe:
         ))
         assert result.get("ok") is True
         assert result.get("doc") == "abc"
+
+    def test_flattened_bridge_arguments_dispatch(self):
+        import model_tools
+
+        self._register("mcp_probe_flattened_op", "mcp-probe-flattened")
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={
+                "name": "mcp_probe_flattened_op",
+                "arguments.document_id": "abc",
+            },
+            enabled_toolsets=["mcp-probe-flattened"],
+        ))
+        assert result.get("ok") is True
+        assert result.get("doc") == "abc"

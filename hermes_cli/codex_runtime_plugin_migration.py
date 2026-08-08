@@ -68,6 +68,7 @@ class MigrationReport:
     errors: list[str] = field(default_factory=list)
     written: bool = False
     dry_run: bool = False
+    preserved_permissions: Optional[dict[str, str]] = None
 
     def summary(self) -> str:
         lines = []
@@ -97,6 +98,11 @@ class MigrationReport:
             lines.append(
                 f"Wrote default_permissions = "
                 f"{self.wrote_permissions_default!r}"
+            )
+        if self.preserved_permissions:
+            lines.append(
+                f"Preserved existing full-access permissions: "
+                f"{self.preserved_permissions}"
             )
         for err in self.errors:
             lines.append(f"⚠ {err}")
@@ -447,6 +453,36 @@ def _strip_existing_managed_block(toml_text: str) -> str:
     return "".join(out)
 
 
+def _extract_existing_permissions(toml_text: str) -> dict[str, str]:
+    """Extract top-level permission keys from existing Codex config.
+
+    Scans for ``default_permissions``, ``sandbox_mode``, and
+    ``approval_policy`` keys that appear at the top level (before any
+    ``[table]`` header). Returns a dict of found keys and their values
+    (strings, with surrounding quotes stripped).
+
+    This is used by :func:`migrate_codex_runtime` to preserve a user's
+    full-access settings across re-migration instead of overwriting them
+    with the default ``:workspace`` profile.  See #27616.
+    """
+    result: dict[str, str] = {}
+    permission_keys = {"default_permissions", "sandbox_mode", "approval_policy"}
+    for line in toml_text.splitlines():
+        stripped = line.lstrip()
+        # Stop at first table header — keys after that belong to a table.
+        if _looks_like_table_header(stripped):
+            break
+        if "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        key = key.strip()
+        if key in permission_keys:
+            # Strip surrounding quotes and whitespace.
+            value = value.strip().strip('"').strip("'")
+            result[key] = value
+    return result
+
+
 def _query_codex_plugins(
     codex_home: Optional[Path] = None,
     timeout: float = 8.0,
@@ -682,11 +718,6 @@ def migrate(
         for p in plugins:
             report.migrated_plugins.append(f"{p['name']}@{p['marketplace']}")
 
-    # Track whether we wrote a default permission profile so the report
-    # surfaces it to the user.
-    if default_permission_profile:
-        report.wrote_permissions_default = default_permission_profile
-
     # Inject Hermes' own tool surface as an MCP server so the spawned
     # codex subprocess can call back into Hermes for the tools codex
     # doesn't ship with — web_search, browser_*, delegate_task, vision,
@@ -698,7 +729,41 @@ def migrate(
         if "hermes-tools" not in report.migrated:
             report.migrated.append("hermes-tools")
 
-    # Build the new managed block
+    # Build the new managed block.
+    #
+    # Before generating it, check whether the user has already set
+    # full-access permissions in their existing Codex config.  If so,
+    # preserve those instead of overwriting with the default
+    # ``:workspace`` profile.  This prevents the footgun described in
+    # #27616 where a re-migration silently downgrades Codex from
+    # full-access to workspace-write.
+    existing_text: Optional[str] = None
+    if target.exists():
+        try:
+            existing_text = target.read_text(encoding="utf-8")
+        except Exception as exc:
+            report.errors.append(f"could not read {target}: {exc}")
+            return report
+
+    if existing_text is not None:
+        existing_perms = _extract_existing_permissions(existing_text)
+        # Preserve an explicit full-access or no-sandbox setting.
+        _full_access_values = {
+            ":danger-no-sandbox",
+            "danger-full-access",
+            ":full-access",
+        }
+        dp = existing_perms.get("default_permissions", "")
+        if dp in _full_access_values:
+            default_permission_profile = dp
+            report.preserved_permissions = existing_perms
+
+    # Track whether we wrote a default permission profile so the report
+    # surfaces it to the user.  Must come after the preservation check
+    # above so the value reflects the actual (possibly preserved) profile.
+    if default_permission_profile:
+        report.wrote_permissions_default = default_permission_profile
+
     managed_block = render_codex_toml_section(
         translated, plugins=plugins,
         default_permission_profile=default_permission_profile,
@@ -706,13 +771,8 @@ def migrate(
 
     # Read existing codex config if any, strip the prior managed block,
     # append the new one.
-    if target.exists():
-        try:
-            existing = target.read_text(encoding="utf-8")
-        except Exception as exc:
-            report.errors.append(f"could not read {target}: {exc}")
-            return report
-        without_managed = _strip_existing_managed_block(existing)
+    if existing_text is not None:
+        without_managed = _strip_existing_managed_block(existing_text)
         # Bug B: when plugin/list ran authoritatively, codex's own
         # [plugins."<name>@<marketplace>"] tables outside our managed block
         # would survive _strip_existing_managed_block and then collide with

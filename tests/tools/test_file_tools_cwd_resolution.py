@@ -36,8 +36,14 @@ def _isolated_cwd(tmp_path, monkeypatch):
     # Process cwd = decoy, analogous to "main repo" while the terminal is in
     # the worktree.
     monkeypatch.chdir(decoy)
-    # No session cwd recorded yet (fresh-session condition).
+    # Every test gets a genuinely fresh terminal/file session.  In particular,
+    # a LocalEnvironment from the previous test may point at a TemporaryDirectory
+    # that has already been removed.
     monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(ft, "_file_ops_cache", {})
     return workspace, decoy
 
 

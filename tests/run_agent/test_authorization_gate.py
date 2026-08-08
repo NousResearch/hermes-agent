@@ -50,6 +50,18 @@ class TestHumanWaitTracker:
     def test_no_wait_reports_zero(self):
         assert approval_mod.human_wait_seconds(SESSION) == 0.0
 
+    def test_disabled_timeout_uses_platform_safe_ceiling(self, monkeypatch):
+        monkeypatch.setattr(approval_mod, "_get_approval_timeout", lambda: None)
+        assert approval_mod.human_wait_ceiling() == threading.TIMEOUT_MAX
+
+    def test_large_timeout_is_clamped_to_platform_safe_ceiling(self, monkeypatch):
+        monkeypatch.setattr(
+            approval_mod,
+            "_get_approval_timeout",
+            lambda: threading.TIMEOUT_MAX,
+        )
+        assert approval_mod.human_wait_ceiling() == threading.TIMEOUT_MAX
+
     def test_open_window_counts(self):
         opened = threading.Event()
         release = threading.Event()

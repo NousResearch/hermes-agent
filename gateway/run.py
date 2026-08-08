@@ -11256,8 +11256,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _multiplex_skipped_platforms.append(platform)
                 continue
             enabled_platform_count += 1
-            
-            adapter = self._create_adapter(platform, platform_config)
+
+            adapter = self._create_default_profile_adapter(platform, platform_config)
             if not adapter:
                 # Distinguish between missing builtin deps and missing plugin
                 _pval = platform.value
@@ -12650,7 +12650,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 adapter = None
                 try:
-                    adapter = self._create_adapter(platform, platform_config)
+                    adapter = self._create_default_profile_adapter(platform, platform_config)
                     if not adapter:
                         logger.warning(
                             "Reconnect %s: adapter creation returned None, removing from retry queue",
@@ -13933,9 +13933,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         import hashlib
         return hashlib.sha256(("hermes-mux:" + token).encode("utf-8")).hexdigest()[:16]
 
+    def _create_default_profile_adapter(
+        self,
+        platform: Platform,
+        config: Any,
+    ) -> Optional[BasePlatformAdapter]:
+        """Create a default/primary-profile adapter under its secret scope.
+
+        Secondary profiles build their adapters inside ``_profile_runtime_scope``
+        so any ``get_secret(...)`` an adapter constructor issues resolves against
+        that profile's ``.env`` instead of raising ``UnscopedSecretError`` (once
+        ``gateway.multiplex_profiles`` is on, ``get_secret`` fails closed on an
+        unscoped read — see ``agent/secret_scope.py``). The default profile's own
+        adapters were created via a bare ``_create_adapter`` call with no scope,
+        so any adapter resolving an optional secret in ``__init__`` (e.g. Weixin's
+        ``WEIXIN_CDN_BASE_URL``) aborted gateway startup (#70652). Enter the
+        default profile's runtime scope here to mirror the secondary path.
+
+        When multiplexing is off, call through directly: the legacy unscoped
+        ``os.environ`` resolution in ``get_secret`` is intentionally unchanged.
+        """
+        if not getattr(self.config, "multiplex_profiles", False):
+            return self._create_adapter(platform, config)
+        with _profile_runtime_scope(Path(get_hermes_home())):
+            return self._create_adapter(platform, config)
+
     def _create_adapter(
-        self, 
-        platform: Platform, 
+        self,
+        platform: Platform,
         config: Any
     ) -> Optional[BasePlatformAdapter]:
         """Create the appropriate adapter for a platform.

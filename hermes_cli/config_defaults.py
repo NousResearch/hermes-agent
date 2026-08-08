@@ -3204,7 +3204,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 33,
+    "_config_version": 34,
 }
 
 # Optional environment variables that enhance functionality
@@ -3368,14 +3368,22 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "STEPFUN_API_KEY": {
-        "description": "StepFun Step Plan API key",
-        "prompt": "StepFun Step Plan API key",
+        "description": "StepFun API key (standard + Step Plan)",
+        "prompt": "StepFun API key",
         "url": "https://platform.stepfun.com/",
         "password": True,
         "category": "provider",
         "advanced": True,
     },
     "STEPFUN_BASE_URL": {
+        "description": "StepFun standard chat base URL override",
+        "prompt": "StepFun base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "STEPFUN_STEP_PLAN_BASE_URL": {
         "description": "StepFun Step Plan base URL override",
         "prompt": "StepFun Step Plan base URL (leave empty for default)",
         "url": None,

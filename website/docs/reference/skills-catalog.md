@@ -56,6 +56,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
+| [`email-inbox-triage`](/docs/user-guide/skills/bundled/email/email-email-inbox-triage) | Triage an inbox: prioritize threads, draft replies safely. | `email/email-inbox-triage` |
 | [`himalaya`](/docs/user-guide/skills/bundled/email/email-himalaya) | Himalaya CLI: IMAP/SMTP email from terminal. | `email/himalaya` |
 
 ## github

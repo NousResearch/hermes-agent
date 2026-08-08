@@ -1,15 +1,33 @@
 ---
-name: email-inbox-triage
-description: "Triage an inbox: prioritize threads, draft replies safely."
-version: 0.1.0
-author: Ben Barclay (benbarclay), Hermes Agent
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  hermes:
-    tags: [Email, Inbox, Triage, Replies, Productivity]
-    related_skills: [himalaya, google-workspace]
+title: "Email Inbox Triage — Triage an inbox: prioritize threads, draft replies safely"
+sidebar_label: "Email Inbox Triage"
+description: "Triage an inbox: prioritize threads, draft replies safely"
 ---
+
+{/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
+
+# Email Inbox Triage
+
+Triage an inbox: prioritize threads, draft replies safely.
+
+## Skill metadata
+
+| | |
+|---|---|
+| Source | Bundled (installed by default) |
+| Path | `skills/email/email-inbox-triage` |
+| Version | `0.1.0` |
+| Author | Ben Barclay (benbarclay), Hermes Agent |
+| License | MIT |
+| Platforms | linux, macos, windows |
+| Tags | `Email`, `Inbox`, `Triage`, `Replies`, `Productivity` |
+| Related skills | [`himalaya`](/docs/user-guide/skills/bundled/email/email-himalaya), [`google-workspace`](/docs/user-guide/skills/bundled/productivity/productivity-google-workspace) |
+
+## Reference: full SKILL.md
+
+:::info
+The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+:::
 
 # Email Inbox Triage
 

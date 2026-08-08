@@ -5,7 +5,12 @@ import { __resetElapsedTimerRegistryForTests } from '@/components/chat/activity-
 import { I18nProvider } from '@/i18n'
 import { $activeSessionId, $turnStartedAt } from '@/store/session'
 
-import { ResponseLoadingIndicator } from './status'
+import { ResponseLoadingIndicator, StreamStallIndicator } from './status'
+
+vi.mock('@assistant-ui/react', () => ({
+  useAuiState: (selector: (state: { message: { content: unknown[] } }) => unknown) =>
+    selector({ message: { content: [] } })
+}))
 
 function renderIndicator() {
   return render(
@@ -30,6 +35,16 @@ describe('ResponseLoadingIndicator timer', () => {
     vi.useRealTimers()
   })
 
+  it('keeps the ticking timer visible but hidden from the live region accessibility tree', () => {
+    const { container } = renderIndicator()
+    const status = screen.getByRole('status')
+
+    expect(status.textContent).toContain('0s')
+    expect([...container.querySelectorAll('[aria-hidden="true"]')].some(element => element.textContent === '0s')).toBe(
+      true
+    )
+  })
+
   it('preserves each running session timer while switching between sessions', () => {
     $activeSessionId.set('session-a')
     $turnStartedAt.set(Date.now())
@@ -52,6 +67,25 @@ describe('ResponseLoadingIndicator timer', () => {
     renderIndicator()
 
     expect(screen.getAllByText((_, node) => node?.textContent === '8s').length).toBeGreaterThan(0)
+  })
+
+  it('keeps the stream-stall timer out of the live region accessibility tree', () => {
+    const { container } = render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <StreamStallIndicator />
+      </I18nProvider>
+    )
+
+    act(() => vi.advanceTimersByTime(2_000))
+
+    const status = screen.getByRole('status')
+
+    const hiddenTimer = [...container.querySelectorAll('[aria-hidden="true"]')].find(element =>
+      element.textContent?.endsWith('s')
+    )
+
+    expect(status.getAttribute('aria-label')).toBe('Hermes is thinking')
+    expect(hiddenTimer).toBeDefined()
   })
 })
 

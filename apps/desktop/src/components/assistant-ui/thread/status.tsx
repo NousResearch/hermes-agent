@@ -137,7 +137,7 @@ export const ResponseLoadingIndicator: FC = () => {
         kind="opacity"
       />
       {hint && <HintText>{hint}</HintText>}
-      <ActivityTimerText seconds={elapsed} />
+      <ActivityTimerText aria-hidden={true} seconds={elapsed} />
     </StatusRow>
   )
 }
@@ -247,7 +247,7 @@ export const StreamStallIndicator: FC = () => {
         kind="opacity"
       />
       {hint && <HintText>{hint}</HintText>}
-      <ActivityTimerText seconds={elapsed} />
+      <ActivityTimerText aria-hidden={true} seconds={elapsed} />
     </StatusRow>
   )
 }

@@ -708,6 +708,33 @@ class TestAnthropicOAuthFlag:
 
 
 class TestBuildCodexClient:
+    def test_live_runtime_credentials_override_persisted_codex_auth(self):
+        """An active fallback route must keep its exact Codex credential."""
+        with (
+            patch(
+                "agent.auxiliary_client._select_pool_entry",
+                side_effect=AssertionError("credential pool should not be read"),
+            ),
+            patch(
+                "agent.auxiliary_client._read_codex_access_token",
+                side_effect=AssertionError("auth store should not be read"),
+            ),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import _build_codex_client
+
+            client, model = _build_codex_client(
+                "gpt-5.6-sol",
+                explicit_api_key="live-runtime-token",
+                explicit_base_url="https://runtime.example/codex",
+            )
+
+        assert client is not None
+        assert model == "gpt-5.6-sol"
+        assert mock_openai.call_args.kwargs["api_key"] == "live-runtime-token"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://runtime.example/codex"
+
     def test_pool_without_selected_entry_falls_back_to_auth_store(self):
         with (
             patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
@@ -1580,6 +1607,142 @@ class TestCallLlmPaymentFallback:
         # Fallback client should have been used
         assert fallback_client.chat.completions.create.called
 
+    def test_explicit_compression_fallback_uses_live_main_runtime(self):
+        """A failed pinned compressor falls back to the active main route.
+
+        The main conversation may already have failed over from its configured
+        Anthropic model to Codex.  The auxiliary safety net must follow that
+        live route instead of re-reading the stale configured main model.
+        """
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = (
+            self._make_429_rate_limit_error()
+        )
+
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = _DummyResponse(
+            "runtime codex response"
+        )
+        live_runtime = {
+            "provider": "openai-codex",
+            "model": "gpt-5.6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "runtime-test-token",
+            "api_mode": "codex_responses",
+        }
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(primary_client, "claude-haiku-4-5-20251001"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=(
+                "anthropic",
+                "claude-haiku-4-5-20251001",
+                None,
+                None,
+                None,
+            ),
+        ), patch(
+            "agent.auxiliary_client._try_configured_fallback_chain",
+            return_value=(None, None, ""),
+        ), patch(
+            "agent.auxiliary_client._recover_provider_pool", return_value=False
+        ), patch(
+            "agent.auxiliary_client._read_main_provider", return_value="anthropic"
+        ), patch(
+            "agent.auxiliary_client._read_main_model",
+            return_value="claude-opus-4-6",
+        ), patch(
+            "agent.auxiliary_client._is_provider_unhealthy", return_value=False
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(fallback_client, "gpt-5.6-sol"),
+        ) as mock_resolve:
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+                main_runtime=live_runtime,
+            )
+
+        assert result.choices[0].message.content == "runtime codex response"
+        mock_resolve.assert_called_once_with(
+            provider="openai-codex",
+            model="gpt-5.6-sol",
+            explicit_base_url="https://chatgpt.com/backend-api/codex",
+            explicit_api_key="runtime-test-token",
+            api_mode="codex_responses",
+            main_runtime=live_runtime,
+        )
+
+    @pytest.mark.asyncio
+    async def test_async_explicit_compression_fallback_uses_live_main_runtime(self):
+        """The async auxiliary path preserves the same live-route contract."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create = AsyncMock(
+            side_effect=self._make_429_rate_limit_error()
+        )
+
+        sync_fallback_client = MagicMock()
+        async_fallback_client = MagicMock()
+        async_fallback_client.chat.completions.create = AsyncMock(
+            return_value=_DummyResponse("async runtime codex response")
+        )
+        live_runtime = {
+            "provider": "openai-codex",
+            "model": "gpt-5.6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "runtime-test-token",
+            "api_mode": "codex_responses",
+        }
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(primary_client, "claude-haiku-4-5-20251001"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=(
+                "anthropic",
+                "claude-haiku-4-5-20251001",
+                None,
+                None,
+                None,
+            ),
+        ), patch(
+            "agent.auxiliary_client._try_configured_fallback_chain",
+            return_value=(None, None, ""),
+        ), patch(
+            "agent.auxiliary_client._recover_provider_pool", return_value=False
+        ), patch(
+            "agent.auxiliary_client._read_main_provider", return_value="anthropic"
+        ), patch(
+            "agent.auxiliary_client._read_main_model",
+            return_value="claude-opus-4-6",
+        ), patch(
+            "agent.auxiliary_client._is_provider_unhealthy", return_value=False
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(sync_fallback_client, "gpt-5.6-sol"),
+        ) as mock_resolve, patch(
+            "agent.auxiliary_client._to_async_client",
+            return_value=(async_fallback_client, "gpt-5.6-sol"),
+        ):
+            result = await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+                main_runtime=live_runtime,
+            )
+
+        assert result.choices[0].message.content == "async runtime codex response"
+        mock_resolve.assert_called_once_with(
+            provider="openai-codex",
+            model="gpt-5.6-sol",
+            explicit_base_url="https://chatgpt.com/backend-api/codex",
+            explicit_api_key="runtime-test-token",
+            api_mode="codex_responses",
+            main_runtime=live_runtime,
+        )
+
     def test_401_auth_error_triggers_fallback_in_auto_mode(self, monkeypatch):
         """401 auth errors should trigger fallback in auto mode (#21165).
 
@@ -1890,6 +2053,88 @@ class TestTryMainAgentModelFallback:
             client, model, label = _try_main_agent_model_fallback("glm", task="vision")
         assert client is None and model is None and label == ""
 
+
+    def test_ignores_legacy_runtime_mirror_without_context_binding(self):
+        """A stale process-global mirror must not cross session boundaries."""
+        from agent.auxiliary_client import (
+            _try_main_agent_model_fallback,
+            clear_runtime_main,
+            reset_runtime_main,
+            set_runtime_main,
+        )
+
+        token = set_runtime_main(
+            "openai-codex",
+            "stale-runtime-model",
+            api_key="stale-runtime-token",
+        )
+        reset_runtime_main(token)  # Clears ContextVar, intentionally leaves mirror.
+        fake_client = MagicMock()
+        try:
+            with patch(
+                "agent.auxiliary_client._read_main_provider", return_value="openrouter"
+            ), patch(
+                "agent.auxiliary_client._read_main_model", return_value="configured-model"
+            ), patch(
+                "agent.auxiliary_client._is_provider_unhealthy", return_value=False
+            ), patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(fake_client, "configured-model"),
+            ) as mock_resolve:
+                client, model, label = _try_main_agent_model_fallback(
+                    "anthropic", task="compression", failed_model="haiku"
+                )
+        finally:
+            clear_runtime_main()
+
+        assert client is fake_client
+        assert model == "configured-model"
+        assert label == "main-agent(openrouter)"
+        mock_resolve.assert_called_once_with(
+            provider="openrouter", model="configured-model"
+        )
+
+    def test_live_configless_named_custom_runtime_uses_its_endpoint(self):
+        """A config-less custom runtime must not be re-resolved from config."""
+        from agent.auxiliary_client import (
+            _try_main_agent_model_fallback,
+            scoped_runtime_main,
+        )
+
+        fake_client = MagicMock()
+        live_runtime = {
+            "provider": "custom:ephemeral",
+            "model": "runtime-model",
+            "base_url": "https://live.example/v1",
+            "api_key": "live-runtime-key",
+            "api_mode": "chat_completions",
+        }
+        with scoped_runtime_main(live_runtime), patch(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            return_value=None,
+        ), patch(
+            "agent.auxiliary_client._is_provider_unhealthy", return_value=False
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(fake_client, "runtime-model"),
+        ) as mock_resolve:
+            client, model, label = _try_main_agent_model_fallback(
+                "anthropic",
+                task="compression",
+                failed_model="claude-haiku-4-5-20251001",
+            )
+
+        assert client is fake_client
+        assert model == "runtime-model"
+        assert label == "main-agent(custom)"
+        mock_resolve.assert_called_once_with(
+            provider="custom",
+            model="runtime-model",
+            explicit_base_url="https://live.example/v1",
+            explicit_api_key="live-runtime-key",
+            api_mode="chat_completions",
+            main_runtime=live_runtime,
+        )
 
     def test_resolves_main_provider_client(self):
         from agent.auxiliary_client import _try_main_agent_model_fallback

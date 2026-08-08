@@ -229,3 +229,163 @@ class TestResolveAutoCustomEndToEnd:
             assert mock_resolve.call_args.kwargs["explicit_base_url"] is None
         finally:
             mod.clear_runtime_main()
+
+
+class TestConfiguredNamedCustomHonorsActiveRuntime:
+    """A ``custom:<name>`` provider that DOES have a config entry, but whose
+    live runtime endpoint/credential differ from that entry.
+
+    The named-custom arm of ``resolve_provider_client`` reads base_url/api_key
+    from the config entry, so the auxiliary safety net used to resolve against
+    the stale configured endpoint even when the main conversation had already
+    moved to a different host or key (rotated credential, failover endpoint,
+    session-scoped token).  The active runtime must win for endpoint + key,
+    while the entry keeps owning api_mode handling.
+    """
+
+    @staticmethod
+    def _client_base_url(client):
+        for chain in (("base_url",), ("_client", "base_url")):
+            obj = client
+            try:
+                for attr in chain:
+                    obj = getattr(obj, attr)
+                return str(obj)
+            except AttributeError:
+                continue
+        return None
+
+    @staticmethod
+    def _write_home(tmp_path, monkeypatch, extra_entry_lines=""):
+        for var in ("OPENROUTER_API_KEY", "NOUS_API_KEY", "OPENAI_API_KEY",
+                    "OPENAI_BASE_URL", "ANTHROPIC_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "model:\n"
+            "  default: glm-5.1\n"
+            "  provider: 'custom:rotator'\n"
+            "  base_url: ''\n"
+            "custom_providers:\n"
+            "  - name: rotator\n"
+            "    base_url: 'https://stale-config.example/v1'\n"
+            "    model: glm-5.1\n"
+            "    api_key: stale-config-key\n"
+            + extra_entry_lines
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        return hermes_home
+
+    def test_safety_net_uses_runtime_endpoint_over_config_entry(
+            self, tmp_path, monkeypatch):
+        """_try_main_agent_model_fallback on a configured named-custom main
+        provider builds a client at the ACTIVE endpoint/key, not the entry's."""
+        import agent.auxiliary_client as mod
+
+        self._write_home(tmp_path, monkeypatch)
+
+        mod.clear_runtime_main()
+        try:
+            live_runtime = {
+                "provider": "custom:rotator",
+                "model": "glm-5.1-live",
+                "base_url": "https://live-failover.example/v1",
+                "api_key": "sk-live-rotated",
+            }
+            with patch.object(mod, "_is_provider_unhealthy", return_value=False):
+                client, model, label = mod._try_main_agent_model_fallback(
+                    "anthropic",
+                    task="compression",
+                    failed_model="claude-haiku-4-5",
+                    main_runtime=live_runtime,
+                )
+
+            assert client is not None, (
+                "configured named-custom main provider produced no safety-net "
+                "client"
+            )
+            assert model == "glm-5.1-live"
+            assert label == "main-agent(custom:rotator)"
+            base = self._client_base_url(client)
+            assert base and base.rstrip("/") == "https://live-failover.example/v1", (
+                f"safety net resolved to {base!r} — the stale config entry won "
+                "over the active runtime endpoint"
+            )
+            assert getattr(client, "api_key", None) == "sk-live-rotated", (
+                "safety net used the config entry's credential instead of the "
+                "live one already serving the conversation"
+            )
+        finally:
+            mod.clear_runtime_main()
+
+    def test_runtime_override_preserves_entry_api_mode(
+            self, tmp_path, monkeypatch):
+        """Honouring the runtime endpoint must not lose the entry's api_mode.
+
+        ``api_mode: anthropic_messages`` still has to build an
+        AnthropicAuxiliaryClient against the un-rewritten URL — only the host
+        and credential come from the live runtime.
+        """
+        import agent.auxiliary_client as mod
+
+        self._write_home(
+            tmp_path, monkeypatch,
+            extra_entry_lines="    api_mode: anthropic_messages\n",
+        )
+
+        mod.clear_runtime_main()
+        try:
+            live_proxy = "https://live-failover.example/api/v2/llm/proxy/anthropic"
+            with patch.object(mod, "_is_provider_unhealthy", return_value=False):
+                client, model, label = mod._try_main_agent_model_fallback(
+                    "openrouter",
+                    task="vision",
+                    main_runtime={
+                        "provider": "custom:rotator",
+                        "model": "claude-4-6-opus",
+                        "base_url": live_proxy,
+                        "api_key": "sk-live-rotated",
+                        "api_mode": "anthropic_messages",
+                    },
+                )
+
+            assert client is not None
+            assert model == "claude-4-6-opus"
+            assert client.__class__.__name__ == "AnthropicAuxiliaryClient", (
+                f"expected AnthropicAuxiliaryClient, got "
+                f"{client.__class__.__name__} — the entry's api_mode was lost "
+                "while adopting the runtime endpoint"
+            )
+            # No /anthropic → /v1 rewrite, and the live host (not the config
+            # host) is what the client talks to.
+            assert getattr(client, "base_url", "").rstrip("/") == live_proxy
+        finally:
+            mod.clear_runtime_main()
+
+    def test_config_entry_still_used_when_runtime_carries_no_endpoint(
+            self, tmp_path, monkeypatch):
+        """Guard the other direction: a runtime snapshot without base_url/key
+        must leave the configured entry's own endpoint and credential intact."""
+        import agent.auxiliary_client as mod
+
+        self._write_home(tmp_path, monkeypatch)
+
+        mod.clear_runtime_main()
+        try:
+            with patch.object(mod, "_is_provider_unhealthy", return_value=False):
+                client, model, label = mod._try_main_agent_model_fallback(
+                    "anthropic",
+                    task="compression",
+                    main_runtime={
+                        "provider": "custom:rotator",
+                        "model": "glm-5.1",
+                    },
+                )
+
+            assert client is not None
+            base = self._client_base_url(client)
+            assert base and base.rstrip("/") == "https://stale-config.example/v1"
+            assert getattr(client, "api_key", None) == "stale-config-key"
+        finally:
+            mod.clear_runtime_main()

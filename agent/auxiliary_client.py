@@ -3327,7 +3327,11 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     return CodexAuxiliaryClient(real_client, model), model
 
 
-def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
+def _build_codex_client(
+    model: str,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+) -> Tuple[Optional[Any], Optional[str]]:
     """Build a CodexAuxiliaryClient for an explicitly-requested model.
 
     There is no auto-selection of the Codex model: the ChatGPT-account
@@ -3336,7 +3340,9 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     is responsible for passing the model (e.g. from the user's own
     ``model.model`` or ``auxiliary.<task>.model`` config).
 
-    Returns (None, None) when no Codex OAuth token is available.
+    Returns (None, None) when no Codex OAuth token is available.  A live
+    runtime credential takes precedence over the pool/auth store so auxiliary
+    fallback stays on the exact account already serving the conversation.
     """
     if not model:
         logger.warning(
@@ -3344,21 +3350,25 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    pool_present, entry = _select_pool_entry("openai-codex")
-    if pool_present:
-        codex_token = _pool_runtime_api_key(entry)
-        if codex_token:
-            base_url = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
+    if explicit_api_key:
+        codex_token = explicit_api_key
+        base_url = explicit_base_url or _CODEX_AUX_BASE_URL
+    else:
+        pool_present, entry = _select_pool_entry("openai-codex")
+        if pool_present:
+            codex_token = _pool_runtime_api_key(entry)
+            if codex_token:
+                base_url = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
+            else:
+                codex_token = _read_codex_access_token()
+                if not codex_token:
+                    return None, None
+                base_url = _CODEX_AUX_BASE_URL
         else:
             codex_token = _read_codex_access_token()
             if not codex_token:
                 return None, None
             base_url = _CODEX_AUX_BASE_URL
-    else:
-        codex_token = _read_codex_access_token()
-        if not codex_token:
-            return None, None
-        base_url = _CODEX_AUX_BASE_URL
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
     real_client = _create_openai_client(
         api_key=codex_token,
@@ -4950,13 +4960,19 @@ def _try_main_agent_model_fallback(
     task: str = None,
     reason: str = "error",
     failed_model: Optional[str] = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
-    """Last-resort fallback to the user's main agent provider + model.
+    """Last-resort fallback to the active main agent provider + model.
 
     Used after the configured fallback_chain is exhausted (or empty) for
     users with an explicit auxiliary provider.  This is the "safety net"
     layer: if nothing the user asked for can serve the request, try the
     main chat model before giving up.
+
+    Prefer the live ``main_runtime`` snapshot over config.yaml.  The main
+    conversation may already have failed over to a different provider/model;
+    re-reading the configured primary here would retry the stale route instead
+    of following the model that is actually serving the conversation.
 
     ``failed_model`` narrows the same-provider skip to the exact
     (provider, model) pair that just failed, mirroring
@@ -4979,8 +4995,45 @@ def _try_main_agent_model_fallback(
     Returns:
         (client, model, provider_label) or (None, None, "") if no fallback.
     """
-    main_provider = (_read_main_provider() or "").strip()
-    main_model = (_read_main_model() or "").strip()
+    if main_runtime is None:
+        # Direct safety-net callers may rely on the session-local binding, but
+        # must not inherit another session through the process-global legacy
+        # mirror. call_llm passes its normalized snapshot explicitly.
+        scoped_runtime = _RUNTIME_MAIN_CONTEXT.get()
+        runtime = _normalize_main_runtime(scoped_runtime) if scoped_runtime else {}
+    else:
+        runtime = _normalize_main_runtime(main_runtime)
+    runtime_provider = str(runtime.get("provider") or "").strip()
+    runtime_model = str(runtime.get("model") or "").strip()
+    using_runtime = bool(runtime_provider and runtime_model)
+    if using_runtime:
+        main_provider, main_model = runtime_provider, runtime_model
+    else:
+        main_provider = (_read_main_provider() or "").strip()
+        main_model = (_read_main_model() or "").strip()
+
+    resolution_kwargs: Dict[str, Any] = {}
+    if using_runtime:
+        resolution_kwargs = {
+            "explicit_base_url": runtime.get("base_url") or None,
+            "explicit_api_key": runtime.get("api_key") or None,
+            "api_mode": runtime.get("api_mode") or None,
+            "main_runtime": runtime,
+        }
+
+    if using_runtime and main_provider.startswith("custom:") and runtime.get("base_url"):
+        # A config-less named custom provider exists only in the live runtime.
+        # Mirror _resolve_auto(): collapse it to the anonymous custom arm so
+        # the runtime endpoint and credential are actually used.
+        try:
+            from hermes_cli.runtime_provider import _get_named_custom_provider
+
+            has_named_entry = _get_named_custom_provider(main_provider) is not None
+        except ImportError:
+            has_named_entry = False
+        if not has_named_entry:
+            main_provider = "custom"
+
     if main_provider.lower() == "moa":
         # MoA virtual provider: fall back to the preset's aggregator — the
         # acting model — instead of the unreachable "moa"/<preset-name> pair.
@@ -4988,6 +5041,9 @@ def _try_main_agent_model_fallback(
         if not _agg_provider or not _agg_model:
             return None, None, ""
         main_provider, main_model = _agg_provider, _agg_model
+        # Runtime endpoint/auth fields belong to the moa:// facade, not the
+        # aggregator's real provider.
+        resolution_kwargs = {}
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
         return None, None, ""
 
@@ -5015,7 +5071,9 @@ def _try_main_agent_model_fallback(
 
     try:
         client, resolved_model = resolve_provider_client(
-            provider=main_provider, model=main_model,
+            provider=main_provider,
+            model=main_model,
+            **resolution_kwargs,
         )
     except Exception:
         client, resolved_model = None, None
@@ -5973,7 +6031,11 @@ def resolve_provider_client(
             )
             return (raw_client, final_model)
         # Standard path: wrap in CodexAuxiliaryClient adapter
-        client, default = _build_codex_client(model)
+        client, default = _build_codex_client(
+            model,
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+        )
         if client is None:
             logger.warning("resolve_provider_client: openai-codex requested "
                            "but no Codex OAuth token found (run: hermes model)")
@@ -6107,6 +6169,22 @@ def resolve_provider_client(
             custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
             if not custom_key and custom_key_env:
                 custom_key = _scoped_key_env(custom_key_env)
+            # Live runtime beats the persisted entry.  The main conversation may
+            # already be serving this named provider from a different endpoint or
+            # credential (rotated key, failover host, session-scoped token); the
+            # auxiliary safety net has to follow the route that actually works.
+            # Only the endpoint/credential are overridden — the entry keeps
+            # owning api_mode, model default, and header handling below.
+            if explicit_base_url:
+                _explicit_base = str(explicit_base_url).strip().rstrip("/")
+                if _explicit_base:
+                    custom_base = _explicit_base
+            if explicit_api_key:
+                if callable(explicit_api_key):
+                    # Azure Entra-style bearer provider — pass the callable through.
+                    custom_key = explicit_api_key
+                else:
+                    custom_key = str(explicit_api_key).strip() or custom_key
             custom_key = custom_key or "no-key-required"
             if custom_key == "no-key-required":
                 logger.warning(
@@ -9343,7 +9421,8 @@ def _call_llm_impl(
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason,
-                        failed_model=_chain_failed_model)
+                        failed_model=_chain_failed_model,
+                        main_runtime=main_runtime)
 
             if fb_client is not None:
                 fb_resp = _call_fallback_candidate_sync(
@@ -9994,7 +10073,8 @@ async def _async_call_llm_impl(
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason,
-                        failed_model=_chain_failed_model)
+                        failed_model=_chain_failed_model,
+                        main_runtime=main_runtime)
 
             if fb_client is not None:
                 # Convert sync fallback client to async

@@ -119,6 +119,29 @@ _SLACK_SPECIAL_MENTION_RE = re.compile(
 _THREAD_ROOT_IMAGE_MAX = 4
 
 
+def _parse_channel_list(raw: str) -> set:
+    """Parse a channel list from a string value.
+
+    Handles both JSON-array strings (``'["C123", "C456"]'``) and plain
+    CSV strings (``"C123,C456"``).  JSON arrays are decoded first so
+    bracket/quote artifacts never leak into channel IDs (#73831).
+    """
+    s = raw.strip()
+    if not s:
+        return set()
+    # JSON array string: try to decode first.
+    if s.startswith("["):
+        try:
+            import json as _json
+            parsed = _json.loads(s)
+            if isinstance(parsed, list):
+                return {str(v).strip() for v in parsed if str(v).strip()}
+        except (ValueError, TypeError):
+            pass
+    # Fall back to CSV split.
+    return {part.strip() for part in s.split(",") if part.strip()}
+
+
 def _slack_file_marker(file_obj: Dict[str, Any]) -> str:
     """Render a compact text marker for a Slack file attachment.
 
@@ -2431,7 +2454,7 @@ class SlackAdapter(BasePlatformAdapter):
             return set()
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
-        return {part.strip() for part in str(raw).split(",") if part.strip()}
+        return _parse_channel_list(raw)
 
     def _is_ignored_channel(self, channel_id: str) -> bool:
         """Return True when generic Slack gateway must stay silent here.
@@ -8359,15 +8382,9 @@ class SlackAdapter(BasePlatformAdapter):
             raw = os.getenv("SLACK_FREE_RESPONSE_CHANNELS", "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
-        # Coerce non-list scalars (str/int/float) to str before splitting.
-        # A bare numeric YAML value (`free_response_channels: 1234567890`) is
-        # loaded as int and was previously falling through the isinstance(str)
-        # branch to return an empty set.  str() here accepts whatever scalar
-        # the YAML loader hands us without changing existing string/CSV
-        # semantics.
         s = str(raw).strip() if raw is not None else ""
         if s:
-            return {part.strip() for part in s.split(",") if part.strip()}
+            return _parse_channel_list(s)
         return set()
 
     def _slack_disable_dms(self) -> bool:
@@ -8398,7 +8415,7 @@ class SlackAdapter(BasePlatformAdapter):
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         if isinstance(raw, str) and raw.strip():
-            return {part.strip() for part in raw.split(",") if part.strip()}
+            return _parse_channel_list(raw)
         return set()
 
     def _slack_require_mention_channels(self) -> set:
@@ -8417,7 +8434,7 @@ class SlackAdapter(BasePlatformAdapter):
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         if isinstance(raw, str) and raw.strip():
-            return {part.strip() for part in raw.split(",") if part.strip()}
+            return _parse_channel_list(raw)
         return set()
 
     def _slack_mention_patterns(self) -> List["re.Pattern"]:

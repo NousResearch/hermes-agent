@@ -127,12 +127,38 @@ def make_tool_progress_cb(
 
     Emits ``ToolCallStart`` for ``tool.started`` events and tracks IDs in a FIFO
     queue per tool name so duplicate/parallel same-name calls still complete
-    against the correct ACP tool call.  Other event types (``tool.completed``,
-    ``reasoning.available``) are silently ignored.
+    against the correct ACP tool call.  Also handles ``tool.completed`` to
+    emit immediate completion updates so ACP clients do not show stale
+    "running" state.  The step callback's ``prev_tools`` completion path
+    remains as a safety net — it skips tools already completed here because
+    their queue entry was already popped.
     """
 
     def _tool_progress(event_type: str, name: str = None, preview: str = None, args: Any = None, **kwargs) -> None:
-        # Only emit ACP ToolCallStart for tool.started; ignore other event types
+        if event_type == "tool.completed":
+            queue = tool_call_ids.get(name)
+            if isinstance(queue, str):
+                queue = deque([queue])
+                tool_call_ids[name] = queue
+            if not queue:
+                return
+            tc_id = queue.popleft()
+            if not queue:
+                tool_call_ids.pop(name, None)
+            meta = tool_call_meta.pop(tc_id, {})
+            update = build_tool_complete(
+                tc_id,
+                name,
+                result=str(kwargs.get("result")) if kwargs.get("result") is not None else None,
+                function_args=meta.get("args"),
+                snapshot=meta.get("snapshot"),
+            )
+            _send_update(conn, session_id, loop, update)
+            if name == "todo":
+                plan_update = _build_plan_update_from_todo_result(kwargs.get("result"))
+                if plan_update is not None:
+                    _send_update(conn, session_id, loop, plan_update)
+            return
         if event_type != "tool.started":
             return
         if isinstance(args, str):

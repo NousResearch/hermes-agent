@@ -562,6 +562,13 @@ slack:
   # Opt-in; default off. Env: SLACK_THREAD_REQUIRE_MENTION.
   thread_require_mention: false
 
+  # Per-channel natural-thread exception. Listed channels still require an
+  # @mention to start a top-level conversation, but plain replies continue
+  # in that engaged thread even when strict_mention and
+  # thread_require_mention are true globally. This top-level gate also wins
+  # over free-response settings. Comma-separated IDs or a list.
+  natural_thread_channels: ""
+
   # Per-channel force-mention override — the opposite direction of
   # free_response_channels. Channels listed here ALWAYS require an
   # explicit @mention, even when require_mention is false globally.
@@ -607,9 +614,10 @@ The gating options compose — each answers a different question:
 | `require_mention_channels` | Which channels ALWAYS need an @mention, even when `require_mention` is `false` or the channel is free-response? Wins over both. | none | Listed channels |
 | `thread_require_mention` | Do **thread replies** need an @mention, even when top-level messages don't? Mentioned threads are not remembered. | `false` | Threads only |
 | `strict_mention` | Does **every** channel message (top-level and thread) need a fresh @mention? Disables all auto-follow: mentioned-thread memory, bot-reply follow-ups, active-session resume. | `false` | All channels + threads |
+| `natural_thread_channels` | Which channels should still require a top-level mention but allow plain replies after the bot is engaged in that thread? Overrides `strict_mention` and `thread_require_mention` only for listed channels. | none | Listed channels |
 | `ignore_other_user_mentions` | Should a message that **opens by @mentioning someone else** (`@rasha can you take this?`) be skipped? Overrides free-response and thread auto-follow; mid-sentence references still reach the bot. | `false` | Channels + group DMs |
 
-Rules of thumb: `strict_mention` is the broadest hammer; `thread_require_mention` quiets busy threads without touching top-level gating; `require_mention_channels` re-tightens individual channels on an otherwise free-response bot; `ignore_other_user_mentions` only skips messages explicitly addressed to another person. 1:1 DMs always respond and are unaffected by all of these.
+Rules of thumb: `strict_mention` is the broadest hammer; `thread_require_mention` quiets busy threads without touching top-level gating; `natural_thread_channels` makes narrow collaboration-room exceptions without opening unmentioned top-level messages; `require_mention_channels` re-tightens individual channels on an otherwise free-response bot; `ignore_other_user_mentions` only skips messages explicitly addressed to another person. 1:1 DMs always respond and are unaffected by all of these.
 
 ### Accepting messages from other bots (`allow_bots`)
 

@@ -5231,7 +5231,10 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 if parent_text and f"<@{bot_uid}>" in parent_text:
                     # Remember the thread so later replies skip the fetch.
-                    if not self._slack_strict_mention():
+                    if (
+                        not self._slack_channel_strict_mention(channel_id)
+                        and not self._slack_channel_thread_require_mention(channel_id)
+                    ):
                         self._register_mentioned_thread(event_thread_ts)
                     return True
         return False
@@ -5680,6 +5683,15 @@ class SlackAdapter(BasePlatformAdapter):
             if force_process:
                 pass  # Explicit internal routing path (reaction trigger).
             elif (
+                channel_id in self._slack_natural_thread_channels()
+                and not is_thread_reply
+                and not is_mentioned
+            ):
+                # Natural-thread channels are mention-gated at the top level
+                # even when the profile is otherwise free-response. Their
+                # exception begins only after the bot is engaged in a thread.
+                return
+            elif (
                 channel_id not in self._slack_require_mention_channels()
                 and (
                     channel_id in self._slack_free_response_channels()
@@ -5693,7 +5705,7 @@ class SlackAdapter(BasePlatformAdapter):
                 # replies: top-level messages stay free-response, but a bot
                 # must be re-mentioned to join thread follow-ups.
                 if (
-                    self._slack_thread_require_mention()
+                    self._slack_channel_thread_require_mention(channel_id)
                     and is_thread_reply
                     and not is_mentioned
                 ):
@@ -5704,10 +5716,10 @@ class SlackAdapter(BasePlatformAdapter):
                         event_thread_ts,
                     )
                     return
-            elif self._slack_strict_mention() and not is_mentioned:
+            elif self._slack_channel_strict_mention(channel_id) and not is_mentioned:
                 return  # Strict mode: ignore until @-mentioned again
             elif (
-                self._slack_thread_require_mention()
+                self._slack_channel_thread_require_mention(channel_id)
                 and is_thread_reply
                 and not is_mentioned
             ):
@@ -5762,8 +5774,8 @@ class SlackAdapter(BasePlatformAdapter):
             # it must auto-trigger the bot too (#24848).
             if (
                 thread_ts
-                and not self._slack_strict_mention()
-                and not self._slack_thread_require_mention()
+                and not self._slack_channel_strict_mention(channel_id)
+                and not self._slack_channel_thread_require_mention(channel_id)
             ):
                 self._register_mentioned_thread(thread_ts, team_id=team_id)
 
@@ -8321,6 +8333,38 @@ class SlackAdapter(BasePlatformAdapter):
             "on",
         }
 
+    def _slack_natural_thread_channels(self) -> set:
+        """Return channels that permit unmentioned replies in engaged threads.
+
+        This is a narrow exception to profile-wide ``strict_mention`` and
+        ``thread_require_mention``. It does not relax the top-level
+        ``require_mention`` gate, so an explicit bot mention is still needed to
+        start the conversation in each listed channel.
+        """
+        raw = self.config.extra.get("natural_thread_channels")
+        if raw is None:
+            raw = os.getenv("SLACK_NATURAL_THREAD_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        value = str(raw).strip() if raw is not None else ""
+        if value:
+            return {part.strip() for part in value.split(",") if part.strip()}
+        return set()
+
+    def _slack_channel_strict_mention(self, channel_id: str) -> bool:
+        """Return the effective strict-mention policy for one channel."""
+        return (
+            self._slack_strict_mention()
+            and channel_id not in self._slack_natural_thread_channels()
+        )
+
+    def _slack_channel_thread_require_mention(self, channel_id: str) -> bool:
+        """Return the effective thread mention policy for one channel."""
+        return (
+            self._slack_thread_require_mention()
+            and channel_id not in self._slack_natural_thread_channels()
+        )
+
     def _slack_message_addressed_to_other_user(self, text: str, self_uids: set) -> bool:
         """Return True when ``text`` opens by @-mentioning a non-bot user.
 
@@ -9003,6 +9047,11 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
         os.environ["SLACK_THREAD_REQUIRE_MENTION"] = str(
             slack_cfg["thread_require_mention"]
         ).lower()
+    ntc = slack_cfg.get("natural_thread_channels")
+    if ntc is not None and not os.getenv("SLACK_NATURAL_THREAD_CHANNELS"):
+        if isinstance(ntc, list):
+            ntc = ",".join(str(v) for v in ntc)
+        os.environ["SLACK_NATURAL_THREAD_CHANNELS"] = str(ntc)
     if "allow_bots" in slack_cfg and not os.getenv("SLACK_ALLOW_BOTS"):
         os.environ["SLACK_ALLOW_BOTS"] = str(slack_cfg["allow_bots"]).lower()
     frc = slack_cfg.get("free_response_channels")
@@ -9076,7 +9125,8 @@ def register(ctx) -> None:
         setup_fn=interactive_setup,
         # YAML→env config bridge — owns the translation of config.yaml slack:
         # keys (require_mention, strict_mention, ignore_other_user_mentions,
-        # thread_require_mention, allow_bots, free_response_channels,
+        # thread_require_mention, natural_thread_channels, allow_bots,
+        # free_response_channels,
         # reactions, disable_dms, allowed_channels, ignored_channels) into
         # SLACK_* env vars that
         # the adapter reads via os.getenv(). Replaces the

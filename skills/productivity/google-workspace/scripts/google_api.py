@@ -51,6 +51,10 @@ SCOPES = [
     "https://www.googleapis.com/auth/contacts.readonly",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/tasks",
+    "https://www.googleapis.com/auth/presentations",
+    "https://www.googleapis.com/auth/forms.body",
+    "https://www.googleapis.com/auth/contacts",
 ]
 
 
@@ -1047,6 +1051,277 @@ def _docs_insert_text(doc_id: str, text: str, index: int) -> None:
 
 
 # =========================================================================
+# Tasks
+# =========================================================================
+
+
+def _tasks_default_list(service) -> str:
+    """Return the id of the user's default task list (@default)."""
+    return "@default"
+
+
+def tasks_lists(args):
+    """List the user's task lists (each has an id used by other commands)."""
+    service = build_service("tasks", "v1")
+    result = service.tasklists().list(maxResults=100).execute()
+    lists = [{"id": tl["id"], "title": tl.get("title", "")} for tl in result.get("items", [])]
+    print(json.dumps(lists, indent=2, ensure_ascii=False))
+
+
+def tasks_list(args):
+    """List tasks in a task list (defaults to the primary list)."""
+    service = build_service("tasks", "v1")
+    tasklist = args.tasklist or _tasks_default_list(service)
+    result = service.tasks().list(
+        tasklist=tasklist,
+        maxResults=args.max,
+        showCompleted=args.show_completed,
+        showHidden=args.show_completed,
+    ).execute()
+    tasks = [{
+        "id": t["id"],
+        "title": t.get("title", ""),
+        "status": t.get("status", ""),
+        "due": t.get("due", ""),
+        "notes": t.get("notes", ""),
+    } for t in result.get("items", [])]
+    print(json.dumps(tasks, indent=2, ensure_ascii=False))
+
+
+def tasks_add(args):
+    """Create a task. --due must be an RFC 3339 timestamp (date portion is used)."""
+    service = build_service("tasks", "v1")
+    tasklist = args.tasklist or _tasks_default_list(service)
+    body = {"title": args.title}
+    if args.notes:
+        body["notes"] = args.notes
+    if args.due:
+        # Tasks API only honors the date; time-of-day is ignored. Accept a
+        # bare date (YYYY-MM-DD) or a full RFC 3339 string.
+        due = args.due if "T" in args.due else f"{args.due}T00:00:00.000Z"
+        body["due"] = due
+    result = service.tasks().insert(tasklist=tasklist, body=body).execute()
+    print(json.dumps({
+        "status": "created",
+        "id": result["id"],
+        "title": result.get("title", ""),
+        "due": result.get("due", ""),
+    }, indent=2, ensure_ascii=False))
+
+
+def tasks_done(args):
+    """Mark a task completed."""
+    service = build_service("tasks", "v1")
+    tasklist = args.tasklist or _tasks_default_list(service)
+    result = service.tasks().patch(
+        tasklist=tasklist, task=args.task_id, body={"status": "completed"},
+    ).execute()
+    print(json.dumps({
+        "status": "completed", "id": result["id"], "title": result.get("title", ""),
+    }, indent=2, ensure_ascii=False))
+
+
+def tasks_delete(args):
+    """Permanently delete a task (no trash for Tasks)."""
+    service = build_service("tasks", "v1")
+    tasklist = args.tasklist or _tasks_default_list(service)
+    service.tasks().delete(tasklist=tasklist, task=args.task_id).execute()
+    print(json.dumps({"status": "deleted", "id": args.task_id}, indent=2, ensure_ascii=False))
+
+
+# =========================================================================
+# Slides
+# =========================================================================
+
+
+def slides_create(args):
+    """Create a new presentation (optionally with a title slide heading)."""
+    service = build_service("slides", "v1")
+    pres = service.presentations().create(body={"title": args.title}).execute()
+    pres_id = pres.get("presentationId", "")
+    print(json.dumps({
+        "status": "created",
+        "presentationId": pres_id,
+        "title": pres.get("title", ""),
+        "url": f"https://docs.google.com/presentation/d/{pres_id}/edit" if pres_id else "",
+        "slides": len(pres.get("slides", [])),
+    }, indent=2, ensure_ascii=False))
+
+
+def slides_get(args):
+    """Summarize a presentation: slide count and text found on each slide."""
+    service = build_service("slides", "v1")
+    pres = service.presentations().get(presentationId=args.presentation_id).execute()
+    out = {
+        "presentationId": pres.get("presentationId", ""),
+        "title": pres.get("title", ""),
+        "slideCount": len(pres.get("slides", [])),
+        "slides": [],
+    }
+    for i, slide in enumerate(pres.get("slides", [])):
+        texts = []
+        for el in slide.get("pageElements", []):
+            shape = el.get("shape", {})
+            for te in shape.get("text", {}).get("textElements", []):
+                content = te.get("textRun", {}).get("content", "")
+                if content.strip():
+                    texts.append(content.strip())
+        out["slides"].append({"index": i, "objectId": slide.get("objectId", ""), "text": texts})
+    print(json.dumps(out, indent=2, ensure_ascii=False))
+
+
+def slides_add(args):
+    """Append a new blank slide, then place a text box with the given text on it."""
+    service = build_service("slides", "v1")
+    import uuid
+    slide_id = "slide_" + uuid.uuid4().hex[:12]
+    box_id = "box_" + uuid.uuid4().hex[:12]
+    requests = [{
+        "createSlide": {
+            "objectId": slide_id,
+            "slideLayoutReference": {"predefinedLayout": "BLANK"},
+        }
+    }, {
+        "createShape": {
+            "objectId": box_id,
+            "shapeType": "TEXT_BOX",
+            "elementProperties": {
+                "pageObjectId": slide_id,
+                "size": {
+                    "width": {"magnitude": 6000000, "unit": "EMU"},
+                    "height": {"magnitude": 3000000, "unit": "EMU"},
+                },
+                "transform": {
+                    "scaleX": 1, "scaleY": 1,
+                    "translateX": 1000000, "translateY": 1000000, "unit": "EMU",
+                },
+            },
+        }
+    }, {
+        "insertText": {"objectId": box_id, "text": args.text, "insertionIndex": 0}
+    }]
+    service.presentations().batchUpdate(
+        presentationId=args.presentation_id, body={"requests": requests},
+    ).execute()
+    print(json.dumps({
+        "status": "slide_added",
+        "presentationId": args.presentation_id,
+        "slideObjectId": slide_id,
+        "characters": len(args.text),
+    }, indent=2, ensure_ascii=False))
+
+
+# =========================================================================
+# Forms
+# =========================================================================
+
+
+def forms_create(args):
+    """Create a new Form. Only the title can be set at creation time (API rule);
+    the document title defaults to the form title."""
+    service = build_service("forms", "v1")
+    form = service.forms().create(body={"info": {"title": args.title}}).execute()
+    form_id = form.get("formId", "")
+    print(json.dumps({
+        "status": "created",
+        "formId": form_id,
+        "title": form.get("info", {}).get("title", ""),
+        "responderUri": form.get("responderUri", ""),
+        "editUrl": f"https://docs.google.com/forms/d/{form_id}/edit" if form_id else "",
+    }, indent=2, ensure_ascii=False))
+
+
+def forms_get(args):
+    """Fetch a form's metadata and its list of questions."""
+    service = build_service("forms", "v1")
+    form = service.forms().get(formId=args.form_id).execute()
+    items = []
+    for it in form.get("items", []):
+        q = it.get("questionItem", {}).get("question", {})
+        qtype = "text"
+        if "choiceQuestion" in q:
+            qtype = q["choiceQuestion"].get("type", "RADIO")
+        elif "scaleQuestion" in q:
+            qtype = "scale"
+        items.append({
+            "itemId": it.get("itemId", ""),
+            "title": it.get("title", ""),
+            "type": qtype,
+            "required": q.get("required", False),
+        })
+    print(json.dumps({
+        "formId": form.get("formId", ""),
+        "title": form.get("info", {}).get("title", ""),
+        "responderUri": form.get("responderUri", ""),
+        "items": items,
+    }, indent=2, ensure_ascii=False))
+
+
+def forms_add_question(args):
+    """Append a question. --type one of: text, paragraph, radio, checkbox, dropdown.
+    For choice types, pass --options as a comma-separated list."""
+    service = build_service("forms", "v1")
+    question = {"required": args.required}
+    qtype = args.type.lower()
+    if qtype in ("text", "paragraph"):
+        question["textQuestion"] = {"paragraph": qtype == "paragraph"}
+    elif qtype in ("radio", "checkbox", "dropdown"):
+        choice_map = {"radio": "RADIO", "checkbox": "CHECKBOX", "dropdown": "DROP_DOWN"}
+        opts = [{"value": o.strip()} for o in (args.options or "").split(",") if o.strip()]
+        if not opts:
+            print(json.dumps({"error": "choice question requires --options"}))
+            return
+        question["choiceQuestion"] = {"type": choice_map[qtype], "options": opts}
+    else:
+        print(json.dumps({"error": f"unknown --type '{args.type}'"}))
+        return
+
+    request = {
+        "createItem": {
+            "item": {
+                "title": args.title,
+                "questionItem": {"question": question},
+            },
+            "location": {"index": args.index},
+        }
+    }
+    service.forms().batchUpdate(
+        formId=args.form_id, body={"requests": [request]},
+    ).execute()
+    print(json.dumps({
+        "status": "question_added",
+        "formId": args.form_id,
+        "title": args.title,
+        "type": qtype,
+    }, indent=2, ensure_ascii=False))
+
+
+# =========================================================================
+# Contacts (write)
+# =========================================================================
+
+
+def contacts_create(args):
+    """Create a new contact in the user's account."""
+    service = build_service("people", "v1")
+    body = {}
+    if args.name:
+        body["names"] = [{"givenName": args.name}]
+    if args.email:
+        body["emailAddresses"] = [{"value": args.email}]
+    if args.phone:
+        body["phoneNumbers"] = [{"value": args.phone}]
+    result = service.people().createContact(body=body).execute()
+    print(json.dumps({
+        "status": "created",
+        "resourceName": result.get("resourceName", ""),
+        "name": args.name,
+        "email": args.email or "",
+        "phone": args.phone or "",
+    }, indent=2, ensure_ascii=False))
+
+
+# =========================================================================
 # CLI parser
 # =========================================================================
 
@@ -1216,6 +1491,81 @@ def main():
     p.add_argument("doc_id")
     p.add_argument("--text", required=True, help="Text to append to the end of the document")
     p.set_defaults(func=docs_append)
+
+    # --- Tasks ---
+    tasks = sub.add_parser("tasks")
+    tasks_sub = tasks.add_subparsers(dest="action", required=True)
+
+    p = tasks_sub.add_parser("lists", help="List task lists")
+    p.set_defaults(func=tasks_lists)
+
+    p = tasks_sub.add_parser("list", help="List tasks in a list")
+    p.add_argument("--tasklist", default="", help="Task list id (defaults to @default)")
+    p.add_argument("--max", type=int, default=100)
+    p.add_argument("--show-completed", action="store_true", help="Include completed tasks")
+    p.set_defaults(func=tasks_list)
+
+    p = tasks_sub.add_parser("add", help="Create a task")
+    p.add_argument("title")
+    p.add_argument("--notes", default="", help="Task notes/description")
+    p.add_argument("--due", default="", help="Due date (YYYY-MM-DD or RFC 3339)")
+    p.add_argument("--tasklist", default="", help="Task list id (defaults to @default)")
+    p.set_defaults(func=tasks_add)
+
+    p = tasks_sub.add_parser("done", help="Mark a task completed")
+    p.add_argument("task_id")
+    p.add_argument("--tasklist", default="", help="Task list id (defaults to @default)")
+    p.set_defaults(func=tasks_done)
+
+    p = tasks_sub.add_parser("delete", help="Delete a task")
+    p.add_argument("task_id")
+    p.add_argument("--tasklist", default="", help="Task list id (defaults to @default)")
+    p.set_defaults(func=tasks_delete)
+
+    # --- Slides ---
+    slides = sub.add_parser("slides")
+    slides_sub = slides.add_subparsers(dest="action", required=True)
+
+    p = slides_sub.add_parser("create", help="Create a presentation")
+    p.add_argument("--title", required=True, help="Presentation title")
+    p.set_defaults(func=slides_create)
+
+    p = slides_sub.add_parser("get", help="Summarize a presentation's slides/text")
+    p.add_argument("presentation_id")
+    p.set_defaults(func=slides_get)
+
+    p = slides_sub.add_parser("add", help="Append a slide with a text box")
+    p.add_argument("presentation_id")
+    p.add_argument("--text", required=True, help="Text to place on the new slide")
+    p.set_defaults(func=slides_add)
+
+    # --- Forms ---
+    forms = sub.add_parser("forms")
+    forms_sub = forms.add_subparsers(dest="action", required=True)
+
+    p = forms_sub.add_parser("create", help="Create a form")
+    p.add_argument("--title", required=True, help="Form title")
+    p.set_defaults(func=forms_create)
+
+    p = forms_sub.add_parser("get", help="Show a form's questions")
+    p.add_argument("form_id")
+    p.set_defaults(func=forms_get)
+
+    p = forms_sub.add_parser("add-question", help="Append a question to a form")
+    p.add_argument("form_id")
+    p.add_argument("--title", required=True, help="Question text")
+    p.add_argument("--type", default="text", help="text, paragraph, radio, checkbox, or dropdown")
+    p.add_argument("--options", default="", help="Comma-separated options (choice types)")
+    p.add_argument("--required", action="store_true", help="Mark the question required")
+    p.add_argument("--index", type=int, default=0, help="Insertion index (0 = first)")
+    p.set_defaults(func=forms_add_question)
+
+    # --- Contacts: write (create) appended to existing contacts parser ---
+    p = con_sub.add_parser("create", help="Create a new contact")
+    p.add_argument("--name", required=True, help="Contact given name")
+    p.add_argument("--email", default="", help="Email address")
+    p.add_argument("--phone", default="", help="Phone number")
+    p.set_defaults(func=contacts_create)
 
     args = parser.parse_args()
     args.func(args)

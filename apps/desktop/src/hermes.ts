@@ -1244,6 +1244,7 @@ export function grantComputerUsePermissions(): Promise<ActionResponse> {
 
 export function getMessagingPlatforms(): Promise<MessagingPlatformsResponse> {
   return window.hermesDesktop.api<MessagingPlatformsResponse>({
+    ...profileScoped(),
     path: '/api/messaging/platforms'
   })
 }
@@ -1253,6 +1254,7 @@ export function updateMessagingPlatform(
   body: MessagingPlatformUpdate
 ): Promise<{ ok: boolean; platform: string }> {
   return window.hermesDesktop.api<{ ok: boolean; platform: string }>({
+    ...profileScoped(),
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}`,
     method: 'PUT',
     body
@@ -1261,6 +1263,7 @@ export function updateMessagingPlatform(
 
 export function testMessagingPlatform(platformId: string): Promise<MessagingPlatformTestResponse> {
   return window.hermesDesktop.api<MessagingPlatformTestResponse>({
+    ...profileScoped(),
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}/test`,
     method: 'POST'
   })

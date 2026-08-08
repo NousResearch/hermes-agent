@@ -59,6 +59,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cache_image_from_bytes,
     cache_video_from_bytes,
+    mark_source_identity_ambiguous,
 )
 from gateway.platforms import helpers as _mdchunk
 from gateway.platforms.helpers import MessageDeduplicator
@@ -654,6 +655,7 @@ class InboundContext:
     # Populated by DecodeMiddleware
     push: Optional[dict] = None
     decoded_via: str = ""  # "json" | "protobuf"
+    source_identity_ambiguous: bool = False
 
     # Extracted from push by FieldExtractMiddleware
     from_account: str = ""
@@ -961,6 +963,7 @@ class DecodeMiddleware(InboundMiddleware):
                 # Subsequent pushes: merge msg_body into the base with a
                 extra_body = push.get("msg_body", [])
                 if extra_body:
+                    ctx.source_identity_ambiguous = True
                     _sep = {"msg_type": "TIMTextElem", "msg_content": {"text": "\n"}}
                     merged_push["msg_body"] = merged_push.get("msg_body", []) + [_sep] + extra_body
                     logger.info(
@@ -2979,6 +2982,8 @@ class DispatchMiddleware(InboundMiddleware):
                 reply_to_text=ctx.reply_to_text,
                 channel_prompt=ctx.channel_prompt,
             )
+            if ctx.source_identity_ambiguous:
+                mark_source_identity_ambiguous(event)
             if _sk and ctx.msg_id:
                 adapter._processing_msg_ids[_sk] = ctx.msg_id
                 adapter._processing_msg_texts[_sk] = ctx.raw_text or ""

@@ -125,6 +125,7 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
+    mark_source_identity_ambiguous,
     SUPPORTED_DOCUMENT_TYPES,
     cache_document_from_bytes,
     cache_image_from_url,
@@ -3452,6 +3453,7 @@ class FeishuAdapter(BasePlatformAdapter):
             self._pending_media_batches[key] = event
             self._schedule_media_batch_flush(key)
             return
+        mark_source_identity_ambiguous(existing)
         existing.media_urls.extend(event.media_urls)
         existing.media_types.extend(event.media_types)
         if event.text:
@@ -3778,6 +3780,7 @@ class FeishuAdapter(BasePlatformAdapter):
             self._schedule_text_batch_flush(key)
             return
 
+        mark_source_identity_ambiguous(existing)
         existing.text = next_text
         existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
         existing.timestamp = event.timestamp

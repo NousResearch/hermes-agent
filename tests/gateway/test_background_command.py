@@ -82,6 +82,23 @@ class TestHandleBackgroundCommand:
         assert "Usage:" in result
 
 
+    @pytest.mark.asyncio
+    async def test_background_forwards_raw_source_identity_separately_from_reply_anchor(self):
+        runner = _make_runner()
+        runner._run_background_task = AsyncMock()
+        runner._reply_anchor_for_event = MagicMock(return_value="reply-anchor")
+        event = _make_event(text="/background inspect this")
+        event.message_id = "adapter-event-42"
+
+        await runner._handle_background_command(event)
+        await asyncio.sleep(0)
+
+        runner._run_background_task.assert_awaited_once()
+        kwargs = runner._run_background_task.await_args.kwargs
+        assert kwargs["event_message_id"] == "reply-anchor"
+        assert kwargs["source_message_id"] == "adapter-event-42"
+
+
 # ---------------------------------------------------------------------------
 # _run_background_task
 # ---------------------------------------------------------------------------
@@ -165,6 +182,48 @@ class TestRunBackgroundTask:
         assert agent_kwargs["checkpoint_max_file_size_mb"] == 3
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_background_task_binds_trusted_source_identity_to_invocation(self):
+        runner = _make_runner()
+        observed_source_identities = []
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "done"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "done"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("gateway.run._load_gateway_config", return_value={}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+
+            def capture_source_identity(*_args, **_kwargs):
+                from agent.turn_context import current_turn_source_identity
+
+                observed_source_identities.append(current_turn_source_identity())
+                return {
+                    "final_response": "done",
+                    "messages": [],
+                }
+
+            mock_agent_instance.run_conversation.side_effect = capture_source_identity
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task(
+                "do work",
+                source,
+                "bg_source_test",
+                source_message_id="adapter-event-42",
+            )
+
+        assert observed_source_identities == [("adapter-event-42", True)]
 
 
 # ---------------------------------------------------------------------------

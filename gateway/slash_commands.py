@@ -33,7 +33,12 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from agent.turn_context import extract_api_content_sidecar
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
-from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
+from gateway.platforms.base import (
+    EphemeralReply,
+    MessageEvent,
+    MessageType,
+    trusted_source_message_id,
+)
 from gateway.session import (
     AsyncSessionStore,
     SessionSource,
@@ -2772,6 +2777,7 @@ class GatewaySlashCommandsMixin:
                     source=event.source,
                     message_id=event.message_id,
                     channel_prompt=event.channel_prompt,
+                    metadata=dict(event.metadata or {}),
                 )
                 self._enqueue_fifo(_quick_key, kickoff_event, adapter)
             except Exception as exc:
@@ -3340,6 +3346,7 @@ class GatewaySlashCommandsMixin:
                 event_message_id=event_message_id,
                 media_urls=media_urls,
                 media_types=media_types,
+                source_message_id=trusted_source_message_id(event),
             )
         )
         self._background_tasks.add(_task)

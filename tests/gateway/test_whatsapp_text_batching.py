@@ -10,6 +10,8 @@ Batch delays are read from ``config.extra`` (config.yaml), not env vars.
 
 import asyncio
 
+import pytest
+
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
 from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
@@ -49,5 +51,22 @@ def test_invalid_config_value_falls_back_to_default():
     )
     assert adapter._text_batch_delay_seconds == 5.0
     assert adapter._text_batch_split_delay_seconds == 10.0
+
+
+@pytest.mark.asyncio
+async def test_merged_whatsapp_batch_is_source_identity_ambiguous():
+    adapter = _make_adapter(text_batch_delay_seconds=60)
+
+    adapter._enqueue_text_event(_event("first"))
+    adapter._enqueue_text_event(_event("second"))
+
+    pending = next(iter(adapter._pending_text_batches.values()))
+    assert pending.text == "first\nsecond"
+    assert pending.metadata["source_identity_ambiguous"] is True
+
+    tasks = list(adapter._pending_text_batch_tasks.values())
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 

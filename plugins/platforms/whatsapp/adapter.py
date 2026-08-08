@@ -291,6 +291,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    mark_source_identity_ambiguous,
     SUPPORTED_DOCUMENT_TYPES,
     cache_image_from_url,
     cache_audio_from_url,
@@ -1406,6 +1407,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             self._pending_text_batches[key] = event
         else:
+            mark_source_identity_ambiguous(existing)
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]

@@ -133,6 +133,7 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
+    mark_source_identity_ambiguous,
     resolve_proxy_url,
     proxy_kwargs_for_aiohttp,
     _ssrf_redirect_guard,
@@ -4249,6 +4250,7 @@ class MatrixAdapter(BasePlatformAdapter):
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             self._pending_text_batches[key] = event
         else:
+            mark_source_identity_ambiguous(existing)
             if event.text:
                 existing.text = (
                     f"{existing.text}\n{event.text}" if existing.text else event.text

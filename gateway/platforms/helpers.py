@@ -141,6 +141,9 @@ class TextBatchAggregator:
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             self._pending[key] = event
         else:
+            from gateway.platforms.base import mark_source_identity_ambiguous
+
+            mark_source_identity_ambiguous(existing)
             existing.text = f"{existing.text}\n{event.text}"
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
 

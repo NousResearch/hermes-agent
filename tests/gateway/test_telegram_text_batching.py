@@ -95,6 +95,7 @@ class TestTextBatching:
         dispatched = adapter.handle_message.call_args[0][0]
         assert "part one" in dispatched.text
         assert "split by Telegram" in dispatched.text
+        assert dispatched.metadata["source_identity_ambiguous"] is True
 
     @pytest.mark.asyncio
     async def test_three_way_split_aggregated(self):

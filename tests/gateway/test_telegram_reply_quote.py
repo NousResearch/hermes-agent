@@ -10,7 +10,9 @@ actionable-looking text the user did not quote (#22619).
 
 import sys
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from gateway.config import PlatformConfig
 
@@ -92,5 +94,46 @@ def test_native_partial_quote_used_as_reply_to_text():
 
     assert event.reply_to_text == "Item B: rotate keys"
     assert event.reply_to_message_id == "42"
+
+
+@pytest.mark.asyncio
+async def test_replied_media_downgrades_current_source_identity(monkeypatch):
+    from gateway.platforms import base as base_module
+    from gateway.platforms.base import MessageEvent, trusted_source_message_id
+
+    media_source = SimpleNamespace(
+        file_size=4,
+        get_file=AsyncMock(
+            return_value=SimpleNamespace(
+                file_path="reply.png",
+                download_as_bytearray=AsyncMock(return_value=bytearray(b"data")),
+            )
+        ),
+    )
+    cached = SimpleNamespace(
+        path="/tmp/reply.png",
+        media_type="image/png",
+        kind="image",
+        display_name="reply.png",
+    )
+    monkeypatch.setattr(base_module, "cache_media_bytes", lambda *args, **kwargs: cached)
+
+    adapter = SimpleNamespace(
+        _max_doc_bytes=1024,
+        _observed_media_source=lambda _msg: (
+            media_source,
+            "reply.png",
+            "image/png",
+            "image",
+        ),
+        _append_observed_note=lambda text, note: f"{text}\n{note}",
+    )
+    event = MessageEvent(text="current", message_id="current-id")
+    msg = SimpleNamespace(reply_to_message=SimpleNamespace())
+
+    await TelegramAdapter._cache_replied_media(adapter, msg, event)
+
+    assert event.media_urls == ["/tmp/reply.png"]
+    assert trusted_source_message_id(event) is None
 
 

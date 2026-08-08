@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.turn_context import current_turn_source_identity
 import gateway.platforms.base as base_platform
 from gateway.config import Platform, PlatformConfig, StreamingConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
@@ -188,6 +189,8 @@ class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
 
 
 class FakeAgent:
+    source_identities = []
+
     def __init__(self, **kwargs):
         # Capture anything passed via kwargs (older code path) but don't
         # freeze it — production now assigns tool_progress_callback after
@@ -196,7 +199,8 @@ class FakeAgent:
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        type(self).source_identities.append(current_turn_source_identity())
         cb = self.tool_progress_callback
         if cb is not None:
             cb("tool.started", "terminal", "pwd", {})
@@ -385,6 +389,7 @@ def _make_runner(adapter):
 @pytest.mark.asyncio
 async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch, tmp_path):
     """Slack DM progress should keep event ts fallback threading."""
+    FakeAgent.source_identities = []
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
     # Since PR #8006, Slack's built-in display tier sets tool_progress="off"
     # by default. Override via config so this test still exercises the
@@ -424,6 +429,7 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
         session_id="sess-3",
         session_key="agent:main:slack:dm:D123",
         event_message_id="1234567890.000001",
+        source_message_id="slack-event-current",
     )
 
     assert result["final_response"] == "done"
@@ -434,6 +440,52 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
     }
     assert adapter.sent[0]["metadata"] == expected_metadata
     assert all(call["metadata"] == expected_metadata for call in adapter.typing)
+    assert FakeAgent.source_identities == [("slack-event-current", True)]
+
+
+@pytest.mark.asyncio
+async def test_observed_group_context_downgrades_source_identity(monkeypatch, tmp_path):
+    FakeAgent.source_identities = []
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="group-123",
+        chat_type="group",
+    )
+
+    result = await runner._run_agent(
+        message="current addressed message",
+        context_prompt="",
+        history=[
+            {
+                "role": "user",
+                "content": "earlier unaddressed message",
+                "observed": True,
+            }
+        ],
+        source=source,
+        session_id="sess-observed-context",
+        session_key="agent:main:telegram:group:group-123",
+        source_message_id="current-message-id",
+        channel_prompt="observed Telegram group context",
+    )
+
+    assert result["final_response"] == "done"
+    assert FakeAgent.source_identities == [("", False)]
 
 
 @pytest.mark.asyncio

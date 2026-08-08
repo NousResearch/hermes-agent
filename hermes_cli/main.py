@@ -431,12 +431,13 @@ import shutil
 import stat
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import NoReturn, Optional
 
 
 import functools as _functools
 
 from hermes_cli.sessions_cmd import cmd_sessions  # noqa: F401
+from hermes_cli.tui_launch import TuiLaunchError
 from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_hooks_flag
 from hermes_cli.subcommands.cron import build_cron_parser
 from hermes_cli.subcommands.sync import build_sync_parser
@@ -1905,7 +1906,24 @@ def _restore_tui_workspace(tui_dir: Path) -> bool:
     return tui_dir.is_dir()
 
 
-def _ensure_tui_workspace(tui_dir: Path) -> None:
+def _fail_tui_launch(
+    message: str,
+    *,
+    raise_launch_errors: bool,
+    stderr: bool = True,
+) -> NoReturn:
+    """Raise for embedded callers, or preserve the CLI's exit-1 contract."""
+    if raise_launch_errors:
+        raise TuiLaunchError(message)
+    print(message, file=sys.stderr if stderr else sys.stdout)
+    raise SystemExit(1)
+
+
+def _ensure_tui_workspace(
+    tui_dir: Path,
+    *,
+    raise_launch_errors: bool = False,
+) -> None:
     """Ensure ``ui-tui/`` exists before any npm/node subprocess uses it as cwd.
 
     Without this, a missing workspace falls through to ``subprocess.run(...,
@@ -1922,7 +1940,7 @@ def _ensure_tui_workspace(tui_dir: Path) -> None:
             print(f"Restored missing TUI workspace: {tui_dir}")
         return
 
-    print(
+    _fail_tui_launch(
         "Error: the TUI workspace is missing from this Hermes checkout.\n"
         f"Expected directory: {tui_dir}\n"
         "This usually means `hermes update` left tracked ui-tui files deleted.\n"
@@ -1931,13 +1949,28 @@ def _ensure_tui_workspace(tui_dir: Path) -> None:
         "  2. Run `npm install --silent --no-fund --no-audit --progress=false`\n"
         "  3. Retry `hermes --tui`\n"
         "If the checkout is still inconsistent, run `hermes update --force`.",
-        file=sys.stderr,
+        raise_launch_errors=raise_launch_errors,
     )
-    sys.exit(1)
 
 
-def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
-    """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR prebuilt or esbuild)."""
+def _make_tui_argv(
+    tui_dir: Path,
+    tui_dev: bool,
+    *,
+    prefer_existing_bundle: bool = False,
+    raise_launch_errors: bool = False,
+) -> tuple[list[str], Path]:
+    """Build or select the TUI command for CLI and embedded runtime callers.
+
+    ``prefer_existing_bundle`` is for long-lived runtime surfaces such as the
+    dashboard PTY. They should execute an already-fresh ``dist/entry.js``
+    instead of requiring npm and rebuilding on every browser connection.
+    Ordinary CLI launches retain the historical always-build behavior.
+
+    ``raise_launch_errors`` preserves actionable preparation failures for an
+    embedding caller. The default CLI contract still prints the message and
+    exits with status 1.
+    """
     _ensure_tui_node()
 
     def _node_bin(bin: str) -> str:
@@ -1960,20 +1993,22 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             except Exception:
                 pass
         if not path:
-            print(f"{bin} not found — install Node.js to use the TUI.")
-            sys.exit(1)
+            _fail_tui_launch(
+                f"{bin} not found — install Node.js to use the TUI.",
+                raise_launch_errors=raise_launch_errors,
+            )
         return path
 
     # Footgun: --dev against a prebuilt bundle that has no source/node_modules.
     ext_dir = os.environ.get("HERMES_TUI_DIR")
     if tui_dev and ext_dir:
-        print(
+        _fail_tui_launch(
             f"Error: --dev is incompatible with HERMES_TUI_DIR={ext_dir}\n"
-            f"The prebuilt TUI has no source code to hot-reload.\n"
-            f"Unset HERMES_TUI_DIR (e.g. `unset HERMES_TUI_DIR`) to use --dev from a checkout.",
-            file=sys.stderr,
+            "The prebuilt TUI has no source code to hot-reload.\n"
+            "Unset HERMES_TUI_DIR (e.g. `unset HERMES_TUI_DIR`) to use "
+            "--dev from a checkout.",
+            raise_launch_errors=raise_launch_errors,
         )
-        sys.exit(1)
 
     # 1. Prebuilt bundle (nix / packaged release / Docker image): just run it.
     #
@@ -2000,7 +2035,10 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     # No prebuilt bundle available (or --dev, which never uses one) — we're
     # about to npm install/build from source, so the workspace must exist.
     if not ext_dir:
-        _ensure_tui_workspace(tui_dir)
+        _ensure_tui_workspace(
+            tui_dir,
+            raise_launch_errors=raise_launch_errors,
+        )
 
     # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
     #    --dev flow: npm install if needed, then tsx src/entry.tsx.
@@ -2009,17 +2047,20 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     #    dependencies into the hot path.
     did_install = False
     termux_startup = _is_termux_startup_environment()
-    termux_need_rebuild = False
-    if termux_startup and not tui_dev:
-        termux_need_rebuild = _tui_need_rebuild(tui_dir)
-
-    skip_install_for_fresh_termux_bundle = (
-        termux_startup and not tui_dev and not termux_need_rebuild
+    runtime_bundle_mode = (
+        not tui_dev and (termux_startup or prefer_existing_bundle)
     )
-    if (
-        not skip_install_for_fresh_termux_bundle
-        and _tui_need_npm_install(tui_dir)
-    ):
+    runtime_need_rebuild = (
+        _tui_need_rebuild(tui_dir) if runtime_bundle_mode else True
+    )
+
+    # Termux and the dashboard are runtime surfaces. A fresh bundle is
+    # sufficient to start; missing node_modules/npm are build-time concerns
+    # and must not make a working browser chat fail during connection setup.
+    skip_install_for_fresh_bundle = (
+        runtime_bundle_mode and not runtime_need_rebuild
+    )
+    if not skip_install_for_fresh_bundle and _tui_need_npm_install(tui_dir):
         npm = _node_bin("npm")
         if not os.environ.get("HERMES_QUIET"):
             print("Installing TUI dependencies…")
@@ -2086,10 +2127,14 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if result.returncode != 0:
             combined = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
             preview = "\n".join(combined.splitlines()[-30:])
-            print("npm install failed.")
+            message = "npm install failed."
             if preview:
-                print(preview)
-            sys.exit(1)
+                message = f"{message}\n{preview}"
+            _fail_tui_launch(
+                message,
+                raise_launch_errors=raise_launch_errors,
+                stderr=False,
+            )
         did_install = True
 
     if tui_dev:
@@ -2111,22 +2156,26 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if result.returncode != 0:
             combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
             preview = "\n".join(combined.splitlines()[-30:])
-            print("TUI dev prebuild failed.")
+            message = "TUI dev prebuild failed."
             if preview:
-                print(preview)
-            sys.exit(1)
+                message = f"{message}\n{preview}"
+            _fail_tui_launch(
+                message,
+                raise_launch_errors=raise_launch_errors,
+                stderr=False,
+            )
 
         tsx = tui_dir / "node_modules" / ".bin" / "tsx"
         if tsx.exists():
             return [str(tsx), "src/entry.tsx"], tui_dir
         return [npm, "start"], tui_dir
 
-    # Desktop/dev launches retain the historical "always rebuild" behaviour.
-    # Termux cold starts use the freshness check because esbuild startup is
-    # expensive on old mobile CPUs.
+    # Ordinary CLI launches retain the historical always-build behavior.
+    # Runtime surfaces reuse a fresh bundle and rebuild only when source or
+    # build inputs are newer (or an install just changed dependencies).
     should_build = True
-    if termux_startup:
-        should_build = did_install or termux_need_rebuild
+    if runtime_bundle_mode:
+        should_build = did_install or runtime_need_rebuild
 
     if should_build:
         npm = _node_bin("npm")
@@ -2141,10 +2190,14 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if result.returncode != 0:
             combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
             preview = "\n".join(combined.splitlines()[-30:])
-            print("TUI build failed.")
+            message = "TUI build failed."
             if preview:
-                print(preview)
-            sys.exit(1)
+                message = f"{message}\n{preview}"
+            _fail_tui_launch(
+                message,
+                raise_launch_errors=raise_launch_errors,
+                stderr=False,
+            )
 
     node = _node_bin("node")
     return [node, "--expose-gc", str(tui_dir / "dist" / "entry.js")], tui_dir

@@ -32,6 +32,79 @@ def _assert_utf8_replace_capture(kwargs: dict) -> None:
     assert kwargs["errors"] == "replace"
 
 
+def test_make_tui_argv_dashboard_reuses_fresh_workspace_bundle_without_npm(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    """Dashboard PTY startup reuses a fresh source-workspace bundle."""
+    _touch_tui_entry(tmp_path)
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
+    monkeypatch.setattr(main_mod, "_find_bundled_tui", lambda: None)
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
+
+    def which(name: str) -> str | None:
+        if name == "node":
+            return "/usr/bin/node"
+        raise AssertionError(f"fresh dashboard bundle must not require {name}")
+
+    monkeypatch.setattr(main_mod.shutil, "which", which)
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "run",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            AssertionError("fresh dashboard bundle must not run npm")
+        ),
+    )
+
+    argv, cwd = main_mod._make_tui_argv(
+        tmp_path,
+        tui_dev=False,
+        prefer_existing_bundle=True,
+        raise_launch_errors=True,
+    )
+
+    assert argv == [
+        "/usr/bin/node",
+        "--expose-gc",
+        str(tmp_path / "dist" / "entry.js"),
+    ]
+    assert cwd == tmp_path
+
+
+def test_make_tui_argv_dashboard_build_failure_preserves_actionable_detail(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    """Dashboard callers receive the actual build failure."""
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
+    monkeypatch.setattr(main_mod, "_find_bundled_tui", lambda: None)
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
+    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: True)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "run",
+        lambda *_a, **_kw: types.SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sh: esbuild: command not found\n",
+        ),
+    )
+
+    from hermes_cli.tui_launch import TuiLaunchError
+
+    with pytest.raises(
+        TuiLaunchError,
+        match=r"(?s)TUI build failed.*esbuild: command not found",
+    ):
+        main_mod._make_tui_argv(
+            tmp_path,
+            tui_dev=False,
+            prefer_existing_bundle=True,
+            raise_launch_errors=True,
+        )
 
 
 
@@ -42,6 +115,36 @@ def _assert_utf8_replace_capture(kwargs: dict) -> None:
 
 
 
+
+
+
+
+def test_make_tui_argv_cli_build_failure_preserves_exit_contract(
+    tmp_path: Path, main_mod, monkeypatch, capsys
+) -> None:
+    """Ordinary CLI launches still print the build error and exit with code 1."""
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
+    monkeypatch.setattr(main_mod, "_find_bundled_tui", lambda: None)
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "run",
+        lambda *_a, **_kw: types.SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sh: esbuild: command not found\n",
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._make_tui_argv(tmp_path, tui_dev=False)
+
+    assert exc.value.code == 1
+    output = capsys.readouterr().out
+    assert "TUI build failed" in output
+    assert "esbuild: command not found" in output
 
 
 def test_make_tui_argv_uses_bundled_tui_when_workspace_missing(

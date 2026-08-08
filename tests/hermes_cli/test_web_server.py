@@ -3818,6 +3818,29 @@ class TestPtyWebSocket:
             assert expect_detail in notice
 
 
+    def test_pty_ws_surfaces_actionable_tui_launch_error(self, monkeypatch):
+        """A failed TUI launch must not collapse to ``Chat unavailable: 1``."""
+        from hermes_cli.tui_launch import TuiLaunchError
+        from starlette.websockets import WebSocketDisconnect
+
+        def boom(resume=None, sidecar_url=None, profile=None):
+            raise TuiLaunchError(
+                "TUI build failed.\nsh: esbuild: command not found"
+            )
+
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", boom)
+
+        with self.client.websocket_connect(self._url()) as conn:
+            notice = conn.receive_text()
+            with pytest.raises(WebSocketDisconnect) as exc:
+                conn.receive_text()
+
+        assert "TUI build failed" in notice
+        assert "esbuild: command not found" in notice
+        assert exc.value.code == 1011
+        assert "TUI build failed" in exc.value.reason
+
+
 
 
 
@@ -3921,6 +3944,29 @@ def test_resolve_chat_argv_injects_gateway_ws_url(monkeypatch):
     gateway_url = env.get("HERMES_TUI_GATEWAY_URL", "")
     assert gateway_url.startswith("ws://127.0.0.1:9119/api/ws?")
     assert "token=" in gateway_url
+
+
+def test_resolve_chat_argv_uses_runtime_bundle_and_actionable_errors(monkeypatch):
+    """The browser PTY must not rebuild a fresh TUI on every connection."""
+    import hermes_cli.main as main_mod
+    import hermes_cli.web_server as ws
+
+    captured: dict = {}
+
+    def fake_make_tui_argv(project_root, tui_dev=False, **kwargs):
+        captured["project_root"] = project_root
+        captured["tui_dev"] = tui_dev
+        captured["kwargs"] = kwargs
+        return (["node", "dist/entry.js"], "/tmp/ui-tui")
+
+    monkeypatch.setattr(main_mod, "_make_tui_argv", fake_make_tui_argv)
+
+    ws._resolve_chat_argv()
+
+    assert captured["kwargs"] == {
+        "prefer_existing_bundle": True,
+        "raise_launch_errors": True,
+    }
 
 
 class TestDashboardPluginStaticAssetAllowlist:

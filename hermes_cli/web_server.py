@@ -57,6 +57,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli import __version__, __release_date__
+from hermes_cli.tui_launch import TuiLaunchError
 from hermes_cli.config import (
     cfg_get,
     DEFAULT_CONFIG,
@@ -15009,7 +15010,12 @@ def _resolve_chat_argv(
     if requested and requested.lower() != "current":
         profile_dir = _resolve_profile_dir(requested)
 
-    argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
+    argv, cwd = _make_tui_argv(
+        PROJECT_ROOT / "ui-tui",
+        tui_dev=False,
+        prefer_existing_bundle=True,
+        raise_launch_errors=True,
+    )
     # Hermes TUI child: build via the single spawn-env factory (profile-home
     # contract applied; secrets kept — the spawned agent needs provider creds).
     # An explicit profile scope below still overrides HERMES_HOME afterwards.
@@ -15934,10 +15940,37 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc.detail}\x1b[0m\r\n")
         await ws.close(code=1011)
         return
+    except TuiLaunchError as exc:
+        # Embedded callers request an exception instead of the CLI's
+        # print+SystemExit contract so the real node/npm/build failure reaches
+        # both server logs and the browser. This is the #71349 path that used
+        # to collapse every failure into the opaque "Chat unavailable: 1".
+        detail = str(exc).strip() or "TUI launch failed"
+        _log.error(
+            "pty TUI launch failed peer=%s profile=%s: %s",
+            peer,
+            profile or "current",
+            detail,
+        )
+        await ws.send_text(
+            f"\r\n\x1b[31mChat unavailable: {detail}\x1b[0m\r\n"
+        )
+        await ws.close(code=1011, reason=_ws_close_reason(detail))
+        return
     except SystemExit as exc:
-        # _make_tui_argv calls sys.exit(1) when node/npm is missing.
-        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
-        await ws.close(code=1011)
+        # Compatibility guard for external/monkeypatched resolvers that still
+        # use the historical CLI exit contract.
+        detail = str(exc).strip() or "TUI launch exited"
+        _log.error(
+            "pty TUI launch exited peer=%s profile=%s: %s",
+            peer,
+            profile or "current",
+            detail,
+        )
+        await ws.send_text(
+            f"\r\n\x1b[31mChat unavailable: {detail}\x1b[0m\r\n"
+        )
+        await ws.close(code=1011, reason=_ws_close_reason(detail))
         return
 
 

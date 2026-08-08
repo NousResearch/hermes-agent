@@ -60,18 +60,42 @@ def icon_path(project_root: Path) -> Path:
 def resolve_exec_command() -> str:
     """Build the absolute ``Exec=`` command line for ``hermes desktop``.
 
-    Prefer the real ``hermes`` executable (argv[0] or PATH). When Hermes
-    runs as a module with no launcher installed, use the current
-    interpreter, also absolute.
+    Mirror how the running process was launched: prefer the ``hermes``
+    entry point resolved from argv[0]/PATH. When that is a bare Python
+    script (a ``#!/usr/bin/env python`` launcher that cannot put the
+    ``hermes_cli`` package on ``sys.path`` in the desktop's stripped
+    environment) or is missing, fall back to the current interpreter as
+    ``python -m hermes_cli.main`` — which provably imports ``hermes_cli``
+    because this process is running inside it.
     """
     from hermes_cli.relaunch import resolve_hermes_bin
 
     bin_path = resolve_hermes_bin()
-    if bin_path:
+    if bin_path and _bin_puts_hermes_cli_on_syspath(bin_path):
         argv = [str(Path(bin_path).resolve()), "desktop"]
     else:
         argv = [str(Path(sys.executable).resolve()), "-m", "hermes_cli.main", "desktop"]
     return " ".join(_quote_exec_arg(a) for a in argv)
+
+
+def _bin_puts_hermes_cli_on_syspath(bin_path: str) -> bool:
+    """Whether running ``bin_path`` guarantees ``hermes_cli`` is importable.
+
+    The desktop launcher runs with a stripped environment (no ``PATH`` or
+    ``PYTHONPATH``), so a portable launcher whose shebang routes through
+    ``/usr/bin/env`` cannot resolve its interpreter or its imports. A venv
+    console-script wrapper names its interpreter in an absolute shebang, so
+    that interpreter's site-packages — which contains ``hermes_cli``, since
+    the running process imported it — is on ``sys.path``. Missing or
+    unreadable paths fall through to the caller's resolution; only a
+    provably bare script is rejected.
+    """
+    try:
+        with open(bin_path, encoding="utf-8") as fh:
+            shebang = fh.readline().strip()
+    except (OSError, UnicodeDecodeError):
+        return True
+    return not shebang.startswith("#!/usr/bin/env")
 
 
 def _quote_exec_arg(arg: str) -> str:

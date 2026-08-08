@@ -88,6 +88,34 @@ def test_exec_falls_back_to_interpreter_module(tmp_path, xdg_home, monkeypatch):
     assert Path(exec_line.split(" ")[0]).is_absolute()
 
 
+def test_exec_rejects_bare_env_script_for_module_launch(
+    tmp_path, xdg_home, monkeypatch
+):
+    # A bare launcher such as the repo-root ``hermes`` script shebangs
+    # through /usr/bin/env, so it cannot put ``hermes_cli`` on sys.path in
+    # the desktop's stripped environment. The Exec line must launch via the
+    # current interpreter instead, mirroring how the running process was
+    # launched.
+    root = _make_project(tmp_path)
+    bare_script = tmp_path / "bin" / "hermes"
+    bare_script.parent.mkdir()
+    bare_script.write_text(
+        "#!/usr/bin/env python3\nfrom hermes_cli.main import main\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "hermes_cli.relaunch.resolve_hermes_bin", lambda: str(bare_script)
+    )
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
+
+    # The bare env-shebang launcher must not be the Exec target; the entry
+    # launches hermes_cli as a module, which provably imports the package.
+    assert exec_line.endswith("-m hermes_cli.main desktop")
+    assert str(bare_script) not in exec_line
+
+
 def test_install_is_idempotent_and_skips_cache_refresh(tmp_path, xdg_home, monkeypatch):
     root = _make_project(tmp_path)
     monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: "/usr/bin/hermes")

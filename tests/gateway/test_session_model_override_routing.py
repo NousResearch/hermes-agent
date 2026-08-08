@@ -54,6 +54,7 @@ def _make_runner():
     runner._background_tasks = set()
     runner._session_db = None
     runner._session_model_overrides = {}
+    runner._pending_one_turn_model_restores = {}
     runner._session_reasoning_overrides = {}
     runner._pending_model_notes = {}
     runner._pending_approvals = {}
@@ -135,5 +136,35 @@ fallback_providers:
     assert model == "minimax/minimax-m2.7"
     assert runtime_kwargs["provider"] == "openrouter"
     assert runtime_kwargs["api_key"] == "sk-openrouter"
+
+
+def test_contextual_runtime_uses_pre_once_model_without_consuming_restore():
+    runner = _make_runner()
+    session_key = "telegram:u:c"
+    prior = {
+        "model": "stable-model",
+        "provider": "stable-provider",
+        "api_key": "stable-key",
+        "base_url": "https://stable.invalid",
+        "api_mode": "chat_completions",
+    }
+    runner._session_model_overrides[session_key] = {
+        **prior,
+        "model": "human-once-model",
+        "provider": "human-once-provider",
+    }
+    snapshot = {"had_override": True, "override": dict(prior)}
+    runner._pending_one_turn_model_restores[session_key] = snapshot
+
+    model, runtime = runner._resolve_session_agent_runtime(
+        session_key=session_key,
+        user_config={"model": {"default": "global-model"}},
+        ignore_one_turn_override=True,
+    )
+
+    assert model == "stable-model"
+    assert runtime["provider"] == "stable-provider"
+    assert runner._session_model_overrides[session_key]["model"] == "human-once-model"
+    assert runner._pending_one_turn_model_restores[session_key] == snapshot
 
 

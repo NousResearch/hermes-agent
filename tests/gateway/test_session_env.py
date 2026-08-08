@@ -240,6 +240,54 @@ async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
 
 
 
+def test_contextual_session_env_binds_cron_and_disables_async_delivery():
+    from types import SimpleNamespace
+
+    from gateway.session_context import (
+        _bind_contextual_turn_authority,
+        async_delivery_supported,
+    )
+
+    runner = object.__new__(GatewayRunner)
+    runner.__dict__["adapters"] = {
+        Platform.TELEGRAM: SimpleNamespace(supports_async_delivery=True)
+    }
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="42",
+        chat_type="dm",
+        user_id="42",
+    )
+    context = SessionContext(
+        source=source,
+        connected_platforms=[],
+        home_channels={},
+        session_key="telegram:dm:42:42",
+        session_id="session-1",
+        routing_revision=3,
+    )
+
+    with _bind_contextual_turn_authority(
+        execution_id="execution-1",
+        session_key=context.session_key,
+        admitted_session_id=context.session_id,
+        admitted_routing_revision=context.routing_revision,
+    ):
+        tokens = runner._set_session_env(context)
+        try:
+            assert async_delivery_supported() is False
+            assert get_session_env("HERMES_CRON_SESSION") == "1"
+        finally:
+            runner._clear_session_env(tokens)
+
+    ordinary_tokens = runner._set_session_env(context)
+    try:
+        assert async_delivery_supported() is True
+        assert get_session_env("HERMES_CRON_SESSION") == ""
+    finally:
+        runner._clear_session_env(ordinary_tokens)
+
+
 def test_cron_session_contextvar_preserves_legacy_env_fallback(monkeypatch):
     """Unset cron ContextVar keeps old env-only cron callers working."""
     monkeypatch.setenv("HERMES_CRON_SESSION", "1")

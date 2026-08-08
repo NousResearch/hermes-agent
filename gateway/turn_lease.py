@@ -263,6 +263,36 @@ class SessionTurnLeaseRegistry:
         lease.last_used = lease.acquired_at
         return token
 
+    def is_current_holder(
+        self,
+        token: object,
+        *,
+        session_id: str,
+        owner_key: str,
+        generation: int,
+    ) -> bool:
+        """Return whether ``token`` is the exact live holder for this authority.
+
+        This is a read-only capability check for callers adopting a lease that
+        was acquired by another layer.  Matching token fields alone is never
+        sufficient: the registry slot must still hold this exact object and its
+        lock must remain acquired.
+        """
+        if not isinstance(token, TurnLeaseToken) or token.released:
+            return False
+        if (
+            token.session_id != session_id
+            or token.owner_key != owner_key
+            or token.generation != int(generation)
+        ):
+            return False
+        lease = self._leases.get(session_id)
+        return bool(
+            lease is not None
+            and lease.lock.locked()
+            and lease.holder is token
+        )
+
     def rebind(self, token: Optional[TurnLeaseToken], new_session_id: str) -> bool:
         """Alias a HELD lease onto ``new_session_id`` after mid-turn rotation.
 

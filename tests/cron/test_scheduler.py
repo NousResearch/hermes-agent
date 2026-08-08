@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
+from cron.scheduler import ContextualDeliveryUnknown, _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -593,6 +593,44 @@ class TestRunJobSessionPersistence:
             assert tick(verbose=False, sync=True, can_dispatch=lambda: False) == 0
 
         advance.assert_not_called()
+        run_one.assert_not_called()
+
+    def test_tick_does_not_dispatch_contextual_recurring_job_when_schedule_claim_fails(
+        self, tmp_path
+    ):
+        from cron.scheduler import tick
+
+        job = {
+            "id": "unclaimed-recurring-job",
+            "name": "unclaimed recurring job",
+            "schedule": {"kind": "interval", "seconds": 60},
+            "next_run_at": "2020-01-01T00:00:00+00:00",
+            "enabled": True,
+            "session_target": "current",
+        }
+        lock_dir = tmp_path / "locks"
+        with patch("cron.scheduler._get_lock_paths", return_value=(lock_dir, lock_dir / "tick.lock")), patch(
+            "cron.scheduler.get_due_jobs", return_value=[job]
+        ), patch(
+            "cron.scheduler.create_execution", return_value={"id": "execution-1"}
+        ), patch(
+            "cron.scheduler.seal_contextual_delivery_target", return_value=True
+        ), patch(
+            "cron.scheduler.claim_contextual_occurrence", return_value=False
+        ) as claim, patch(
+            "cron.scheduler.finish_contextual_execution", return_value={}
+        ), patch(
+            "cron.scheduler.claim_contextual_job_accounting", return_value=True
+        ), patch(
+            "cron.scheduler.run_one_job"
+        ) as run_one:
+            assert tick(verbose=False, sync=True) == 0
+
+        claim.assert_called_once_with(
+            job["id"],
+            execution_id="execution-1",
+            expected_next_run_at=job["next_run_at"],
+        )
         run_one.assert_not_called()
 
 
@@ -1414,6 +1452,46 @@ class TestDeliverResultTimeoutCancelsFuture:
         #    an in-flight confirmation timeout is assume-delivered, not a resend.
         standalone_send.assert_not_awaited()
 
+    def test_contextual_timeout_is_unknown_and_never_falls_back(self):
+        from gateway.config import Platform
+
+        adapter = AsyncMock()
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        loop = MagicMock()
+        loop.is_running.return_value = True
+        captured_future = MagicMock()
+        captured_future.cancel.return_value = True
+        captured_future.result.side_effect = TimeoutError("timed out")
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return captured_future
+
+        job = {
+            "id": "contextual-timeout",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+        standalone_send = AsyncMock(return_value={"success": True})
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            with pytest.raises(ContextualDeliveryUnknown, match="acknowledgement is unknown"):
+                _deliver_result(
+                    job,
+                    "Hello world",
+                    adapters={Platform.TELEGRAM: adapter},
+                    loop=loop,
+                    at_most_once=True,
+                )
+
+        captured_future.cancel.assert_called_once()
+        standalone_send.assert_not_awaited()
+
 
 class TestDeliverResultLiveAdapterUnconfirmed:
     """Regression for #47056.
@@ -1475,6 +1553,79 @@ class TestDeliverResultLiveAdapterUnconfirmed:
         silent "delivered" log."""
         result, standalone_send = self._run(None)
         assert result is None, f"standalone should have delivered, got: {result!r}"
+        standalone_send.assert_awaited_once()
+
+    def test_contextual_confirmed_send_with_malformed_metadata_never_resends(self):
+        from concurrent.futures import Future
+        from gateway.config import Platform
+
+        confirmed = MagicMock(success=True)
+        confirmed.raw_response = "malformed-success-response"
+        completed_future = Future()
+        completed_future.set_result(confirmed)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return completed_future
+
+        standalone_send = AsyncMock(return_value={"success": True})
+        job = {
+            "id": "confirmed-malformed-metadata",
+            "deliver": "origin",
+            "origin": {
+                "platform": "telegram",
+                "chat_id": "123",
+                "thread_id": "7",
+            },
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: AsyncMock()},
+                loop=loop,
+                at_most_once=True,
+            )
+
+        assert result is None
+        standalone_send.assert_not_awaited()
+
+    def test_contextual_standalone_requires_explicit_positive_ack(self):
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        standalone_send = AsyncMock(return_value=None)
+        job = {
+            "id": "standalone-unacknowledged",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            with pytest.raises(ContextualDeliveryUnknown, match="unconfirmed result"):
+                _deliver_result(
+                    job,
+                    "Hello world",
+                    adapters={},
+                    at_most_once=True,
+                )
+
         standalone_send.assert_awaited_once()
 
 

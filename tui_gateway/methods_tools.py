@@ -885,7 +885,11 @@ def _(rid, params: dict) -> dict:
         # lands on a durable user;user pair would otherwise re-fire the
         # pre-request repair on every request from here on.
         try:
-            active = db.get_messages_as_conversation(session_key, repair_alternation=True)
+            active = db.get_messages_as_conversation(
+                session_key,
+                repair_alternation=True,
+                include_hidden=True,
+            )
         except Exception:
             active = []
         with session["history_lock"]:

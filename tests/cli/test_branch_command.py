@@ -85,7 +85,37 @@ class TestBranchCommandCLI:
         messages = session_db.get_messages_as_conversation(cli_instance.session_id)
         assert len(messages) == 4  # All 4 messages copied
 
+    def test_branch_preserves_hidden_rows_without_public_declassification(
+        self, cli_instance, session_db
+    ):
+        """A branch must preserve hidden labels for privileged replay only."""
+        from cli import HermesCLI
 
+        canary = "CONTEXTUAL-BRANCH-SECRET"
+        metadata = {"execution_id": "exec-branch-private"}
+        cli_instance.conversation_history.insert(
+            1,
+            {
+                "role": "user",
+                "content": canary,
+                "display_kind": "hidden",
+                "display_metadata": metadata,
+                "api_content": f"{canary}-WIRE",
+            },
+        )
+
+        HermesCLI._handle_branch_command(cli_instance, "/branch")
+
+        public = session_db.get_messages(cli_instance.session_id)
+        privileged = session_db.get_messages(
+            cli_instance.session_id, include_hidden=True
+        )
+        hidden = next(row for row in privileged if row["content"] == canary)
+
+        assert canary not in repr(public)
+        assert hidden["display_kind"] == "hidden"
+        assert hidden["display_metadata"] == metadata
+        assert hidden["api_content"] == f"{canary}-WIRE"
 
     def test_branch_with_custom_name(self, cli_instance, session_db):
         """Custom branch name should be used as the title."""

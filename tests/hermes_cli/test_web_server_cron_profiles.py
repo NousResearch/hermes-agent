@@ -82,6 +82,93 @@ def test_fire_cron_job_scopes_store_and_runtime_home_together(
         reset_hermes_home_override(outer_token)
 
 
+@pytest.mark.parametrize(
+    ("func_name", "returns_list"),
+    [
+        ("list_jobs", True),
+        ("get_job", False),
+        ("create_job", False),
+        ("update_job", False),
+        ("pause_job", False),
+        ("resume_job", False),
+        ("trigger_job", False),
+    ],
+)
+def test_profile_call_redacts_contextual_authority_before_dashboard_annotation(
+    isolated_profiles,
+    monkeypatch,
+    func_name,
+    returns_list,
+):
+    """Every dashboard job result uses one private-authority-safe projection."""
+    from cron import jobs as cron_jobs
+    from cron import scheduler
+    from hermes_cli import web_server
+
+    canary = "DASHBOARD-PRIVATE-SESSION-CANARY"
+    raw_job = {
+        "id": "contextual-private-job",
+        "name": "private contextual job",
+        "prompt": "safe public prompt",
+        "schedule": {"kind": "interval", "minutes": 60},
+        "session_target": "current",
+        "session_key": canary,
+        "context_binding": {
+            "session_key": canary,
+            "session_id": "physical-private-session",
+            "routing_revision": 7,
+        },
+        "origin": {"chat_id": canary},
+        "_contextual_binding_version": 1,
+        "latest_execution": {
+            "id": "exec-public-id",
+            "status": "completed",
+            "transcript_json": canary,
+            "delivery_target": canary,
+        },
+    }
+    raw_result = [raw_job] if returns_list else raw_job
+
+    if func_name == "create_job":
+        monkeypatch.setattr(
+            scheduler,
+            "create_job_with_scheduler_registration",
+            lambda *args, **kwargs: raw_result,
+        )
+    else:
+        monkeypatch.setattr(
+            cron_jobs,
+            func_name,
+            lambda *args, **kwargs: raw_result,
+        )
+
+    result = web_server._call_cron_for_profile("worker_alpha", func_name)
+    if returns_list:
+        assert isinstance(result, list)
+        projected = result[0]
+    else:
+        assert isinstance(result, dict)
+        projected = result
+    assert isinstance(projected, dict)
+
+    assert projected["id"] == "contextual-private-job"
+    assert projected["session_target"] == "current"
+    assert projected["profile"] == "worker_alpha"
+    assert projected["profile_name"] == "worker_alpha"
+    assert projected["latest_execution"] == {
+        "id": "exec-public-id",
+        "status": "completed",
+    }
+    assert canary not in repr(result)
+    for private_key in (
+        "session_key",
+        "context_binding",
+        "origin",
+        "_contextual_binding_version",
+    ):
+        assert private_key not in projected
+
+
 def test_create_registers_scheduler_inside_target_profile(
     isolated_profiles,
     monkeypatch,

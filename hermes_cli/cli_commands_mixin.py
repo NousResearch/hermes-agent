@@ -28,7 +28,7 @@ from rich.markup import escape as _escape
 from rich.panel import Panel
 
 from hermes_constants import display_hermes_home, is_termux as _is_termux_environment
-from agent.turn_context import extract_api_content_sidecar
+from agent.turn_context import clone_transcript_message_for_branch
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL,
     discover_local_cdp_url,
@@ -1256,19 +1256,7 @@ class CLICommandsMixin:
             self._session_db.append_messages_batch(
                 new_session_id,
                 [
-                    {
-                        "role": msg.get("role", "user"),
-                        "content": msg.get("content"),
-                        "tool_name": msg.get("tool_name") or msg.get("name"),
-                        "tool_calls": msg.get("tool_calls"),
-                        "tool_call_id": msg.get("tool_call_id"),
-                        "reasoning": msg.get("reasoning"),
-                        # Keep the api_content sidecar so the branch's first turn
-                        # replays the parent's exact wire bytes (warm provider
-                        # prompt cache) instead of a full cold prefill.
-                        "api_content": extract_api_content_sidecar(msg),
-                        "timestamp": msg.get("timestamp"),
-                    }
+                    clone_transcript_message_for_branch(msg)
                     for msg in self.conversation_history
                 ],
                 chunk_rows=500,

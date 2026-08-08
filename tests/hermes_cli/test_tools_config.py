@@ -72,6 +72,39 @@ def test_partially_valid_platform_toolsets_no_runtime_warning(caplog):
     assert not any("#38798" in r.getMessage() for r in caplog.records)
 
 
+def test_prefixed_mcp_toolset_is_normalized_as_an_allowlist(caplog, monkeypatch):
+    import cli as cli_mod
+    import hermes_cli.tools_config as _tc
+
+    config = {
+        "platform_toolsets": {"cli": ["mcp-codegraph"]},
+        "mcp_servers": {
+            "codegraph": {"command": "codegraph"},
+            "other": {"command": "other"},
+        },
+    }
+    _tc._warned_invalid_platform_toolsets.discard("cli")
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        enabled = _get_platform_tools(config, "cli")
+
+    assert "codegraph" in enabled
+    assert "mcp-codegraph" not in enabled
+    assert "other" not in enabled
+    assert not any("#38798" in r.getMessage() for r in caplog.records)
+
+    messages = []
+    monkeypatch.setitem(cli_mod.CLI_CONFIG, "mcp_servers", config["mcp_servers"])
+    monkeypatch.setattr(
+        cli_mod.HermesCLI,
+        "_console_print",
+        lambda _self, message, *args, **kwargs: messages.append(message),
+    )
+    cli_mod.HermesCLI(toolsets=sorted(enabled), compact=True)
+
+    assert not any("Unknown toolsets" in message for message in messages)
+
+
 
 
 

@@ -2465,13 +2465,22 @@ def _get_platform_tools(
     # as an allowlist. Otherwise include every globally enabled MCP server.
     # Special sentinel: "no_mcp" in the toolset list disables all MCP servers.
     enabled_mcp_servers = enabled_mcp_server_names(config)
+    prefixed_mcp_servers = {
+        f"mcp-{name}": name for name in enabled_mcp_servers
+    }
+    mcp_server_entries = enabled_mcp_servers | set(prefixed_mcp_servers)
     # Allow "no_mcp" sentinel to opt out of all MCP servers for this platform
     if "no_mcp" in toolset_names:
         explicit_mcp_servers = set()
-        enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers - {"no_mcp"})
+        enabled_toolsets.update(
+            explicit_passthrough - mcp_server_entries - {"no_mcp"}
+        )
     else:
-        explicit_mcp_servers = explicit_passthrough & enabled_mcp_servers
-        enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers)
+        explicit_mcp_servers = {
+            prefixed_mcp_servers.get(name, name)
+            for name in explicit_passthrough & mcp_server_entries
+        }
+        enabled_toolsets.update(explicit_passthrough - mcp_server_entries)
     if include_default_mcp_servers:
         if explicit_mcp_servers or "no_mcp" in toolset_names:
             enabled_toolsets.update(explicit_mcp_servers)
@@ -2487,7 +2496,10 @@ def _get_platform_tools(
     agent_cfg = config.get("agent") or {}
     disabled_toolsets = agent_cfg.get("disabled_toolsets") or []
     if disabled_toolsets:
-        disabled_set = {str(ts) for ts in disabled_toolsets}
+        disabled_set = {
+            prefixed_mcp_servers.get(str(ts), str(ts))
+            for ts in disabled_toolsets
+        }
         enabled_toolsets -= disabled_set
 
     # #38798: if this platform was explicitly configured but every toolset name
@@ -2503,7 +2515,10 @@ def _get_platform_tools(
         _named = [str(t) for t in _explicit if isinstance(t, str) and t]
         if (
             _named
-            and not any(validate_toolset(t) for t in _named)
+            and not any(
+                validate_toolset(t) or t in mcp_server_entries
+                for t in _named
+            )
             and platform not in _warned_invalid_platform_toolsets
         ):
             _warned_invalid_platform_toolsets.add(platform)

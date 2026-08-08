@@ -9594,6 +9594,11 @@ async def _standalone_send(
         last_data = None
         warnings = []
 
+        if message:
+            message = convert_table_to_bullets(message)
+        if caption:
+            caption = convert_table_to_bullets(caption)
+
         # Thread endpoint: Discord threads are channels; send directly to the thread ID.
         if thread_id:
             url = f"https://discord.com/api/v10/channels/{thread_id}/messages"
@@ -10111,6 +10116,24 @@ def _build_adapter(config):
     return DiscordAdapter(config)
 
 
+# Injected into the system prompt via ``ctx.register_platform(platform_hint=…)``.
+# Discord replies are delivered by the platform adapter (``send`` / streaming
+# edits), not the optional ``discord`` / ``discord_admin`` introspection tools.
+DISCORD_PLATFORM_HINT = (
+    "You are in a Discord server or group chat communicating with your user. "
+    "Discord renders standard markdown natively in your replies — use **bold**, "
+    "*italic*, __underline__, ~~strikethrough~~, `inline code`, ```code blocks```, "
+    "> blockquotes, ||spoilers||, and [labeled links](url). Prefer bullet lists "
+    "('- item') for structured data; pipe tables are auto-converted to bullet groups. "
+    "You do not need the `discord` tool to send messages; your normal response text "
+    "is posted to the channel automatically. "
+    "You can send media files natively: include MEDIA:/absolute/path/to/file "
+    "in your response. Images (.png, .jpg, .webp) are sent as photo "
+    "attachments, audio as file attachments. You can also include image URLs "
+    "in markdown format ![alt](url) and they will be sent as attachments."
+)
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
     ctx.register_platform(
@@ -10147,4 +10170,5 @@ def register(ctx) -> None:
         # Display
         emoji="🎮",
         allow_update_command=True,
+        platform_hint=DISCORD_PLATFORM_HINT,
     )

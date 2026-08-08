@@ -642,11 +642,22 @@ class TestPromptBuilderConstants:
         strikethrough, headers, bullets). Their hints previously told the
         agent "do not use markdown", which made it strip bullets/bold the
         adapter would have rendered. The hint must affirm markdown, not
-        forbid it."""
+        forbid it. Discord renders markdown natively via the platform plugin hint."""
         for key in ("whatsapp", "signal"):
             hint = PLATFORM_HINTS[key]
             assert "do not use markdown" not in hint.lower()
             assert "markdown" in hint.lower()
+
+        from hermes_cli.plugins import discover_plugins
+        from gateway.platform_registry import platform_registry
+
+        discover_plugins()
+        discord_entry = platform_registry.get("discord")
+        assert discord_entry is not None
+        discord_hint = discord_entry.platform_hint or ""
+        assert "do not use markdown" not in discord_hint.lower()
+        assert "markdown" in discord_hint.lower()
+        assert "do not need" in discord_hint.lower()
 
     def test_cli_hint_does_not_suggest_media_tags(self):
         # Regression: MEDIA:/path tags are intercepted only by messaging

@@ -657,10 +657,14 @@ def build_session_context_prompt(
             lines.append("")
             lines.append(
                 "**Platform notes:** You are running inside Discord. "
-                "You do NOT have access to Discord-specific APIs — you cannot search "
-                "channel history, pin messages, manage roles, or list server members. "
-                "Do not promise to perform these actions. If the user asks, explain "
-                "that you can only read messages sent directly to you and respond."
+                "Your replies are posted automatically with Discord markdown "
+                "(**bold**, *italic*, `code`, [links](url), etc.) — you do not "
+                "need a `send_message` action or the `discord` tool to format text. "
+                "The `discord` / `discord_admin` tools are optional server APIs "
+                "(fetch history, pins, roles) when enabled in `hermes tools`; "
+                "without them you cannot search channel history, pin messages, "
+                "manage roles, or list server members. Do not promise those "
+                "actions unless the tools are available."
             )
         # Static (never per-turn): live voice-channel state used to be
         # appended here and changed bytes every turn the bot sat in a voice

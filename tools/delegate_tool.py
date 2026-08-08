@@ -3242,7 +3242,11 @@ def delegate_task(
             return tool_error(
                 f"Task {i} must be an object, got {type(task).__name__}."
             )
-        if not task.get("goal", "").strip():
+        # Present-but-null ``goal`` makes dict.get("goal", "") return None, so a
+        # bare ``.strip()`` AttributeErrors mid-tool. Require a non-empty string
+        # — same contract as the top-level ``goal`` path above.
+        goal_val = task.get("goal")
+        if not isinstance(goal_val, str) or not goal_val.strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
 
     # Batch-only quality gate: catch malformed fan-outs (placeholder goals,

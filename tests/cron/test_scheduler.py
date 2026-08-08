@@ -1976,3 +1976,36 @@ class TestSetCronSessionTitle:
         db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
 
 
+
+
+class TestMediaExtensionSetsAreShared:
+    """cron must route a delivered file exactly as a live turn would.
+
+    These sets decide which adapter method a file goes to (send_video /
+    send_image_file / send_document). cron redeclared its own copies, so the
+    same file could be delivered differently depending on whether it came
+    from a live turn or a scheduled job once either list changed. The repo
+    had drifted to three separate declarations.
+
+    Asserting identity rather than equality is deliberate: equal-but-separate
+    literals are exactly the state this change removes, and an equality
+    assertion would keep passing through a future re-duplication.
+    """
+
+    def test_cron_uses_the_base_adapter_sets_not_copies(self):
+        import cron.scheduler as scheduler
+        from gateway.platforms import base
+
+        assert scheduler._VIDEO_EXTS is base._VIDEO_EXTS
+        assert scheduler._IMAGE_EXTS is base._IMAGE_EXTS
+
+    def test_the_base_adapter_declares_them_once(self):
+        """No function-local shadow may re-introduce a private copy."""
+        import gateway.platforms.base as base
+
+        assert isinstance(base._VIDEO_EXTS, frozenset)
+        assert isinstance(base._IMAGE_EXTS, frozenset)
+        assert ".mp4" in base._VIDEO_EXTS and ".png" in base._IMAGE_EXTS
+        assert not (base._VIDEO_EXTS & base._IMAGE_EXTS), (
+            "an extension routed as both video and image is ambiguous"
+        )

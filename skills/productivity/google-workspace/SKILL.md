@@ -1,7 +1,7 @@
 ---
 name: google-workspace
 description: "Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python."
-version: 1.1.0
+version: 1.2.0
 author: Nous Research
 license: MIT
 platforms: [linux, macos, windows]
@@ -196,7 +196,18 @@ $GAPI gmail reply MESSAGE_ID --from '"Support Bot" <user@example.com>' --body "T
 $GAPI gmail labels
 $GAPI gmail modify MESSAGE_ID --add-labels LABEL_ID
 $GAPI gmail modify MESSAGE_ID --remove-labels UNREAD
+
+# Trash / delete
+$GAPI gmail trash MESSAGE_ID                 # move to Trash (reversible, auto-purged after 30 days)
+$GAPI gmail delete MESSAGE_ID                # safe default — also just trashes
+$GAPI gmail delete MESSAGE_ID --permanent    # bypass Trash, irreversible (requires mail.google.com scope)
 ```
+
+> **Permanent delete needs the full `https://mail.google.com/` scope.** The
+> default `gmail.modify` scope can only move messages to Trash. If
+> `gmail delete --permanent` returns `HttpError 403: Insufficient Permission`,
+> re-run setup Steps 3-5 to grant the upgraded scope (`$GSETUP --revoke` first
+> if the consent screen doesn't re-prompt).
 
 ### Calendar
 
@@ -293,6 +304,7 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 - **Gmail search**: `[{id, threadId, from, to, subject, date, snippet, labels}]`
 - **Gmail get**: `{id, threadId, from, to, subject, date, labels, body}`
 - **Gmail send/reply**: `{status: "sent", id, threadId}`
+- **Gmail trash/delete**: `{status: "trashed" | "deleted", id, permanent}`
 - **Calendar list**: `[{id, summary, start, end, location, description, htmlLink}]`
 - **Calendar create**: `{status: "created", id, summary, htmlLink}`
 - **Drive search**: `[{id, name, mimeType, modifiedTime, webViewLink}]`
@@ -310,7 +322,7 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 
 ## Rules
 
-1. **Never send email, create/delete calendar events, delete Drive files, share files, or modify Docs/Sheets without confirming with the user first.** Show what will be done (recipients, file IDs, content, share role) and ask for approval. For `drive delete`, prefer the default trash (reversible) over `--permanent`.
+1. **Never send email, permanently delete email, create/delete calendar events, delete Drive files, share files, or modify Docs/Sheets without confirming with the user first.** Show what will be done (recipients, file IDs, content, share role) and ask for approval. For `gmail delete` and `drive delete`, prefer the default trash (reversible) over `--permanent`.
 2. **Check auth before first use** — run `setup.py --check`. If it fails, guide the user through setup.
 3. **Use the Gmail search syntax reference** for complex queries — load it with `skill_view("google-workspace", file_path="references/gmail-search-syntax.md")`.
 4. **Calendar times must include timezone** — always use ISO 8601 with offset (e.g., `2026-03-01T10:00:00-06:00`) or UTC (`Z`).

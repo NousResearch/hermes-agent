@@ -450,6 +450,10 @@ export function TreeGroup({
               const closeable = closeableTab(paneId)
               const title = paneFor(paneId)?.title ?? paneId
               const isSelected = tabSelection?.groupId === node.id && tabSelection.ids.has(paneId)
+              // The synthesized double-tap must stay on one tab. Two quick
+              // clicks on different tabs are navigation, not a request to
+              // hide the whole strip before the second tab activates.
+              const tabDoubleTap = { ...hideHeaderDoubleTap, key: `${hideHeaderDoubleTap.key}-${paneId}` }
 
               const tab = (
                 <PaneTab
@@ -517,7 +521,7 @@ export function TreeGroup({
                         e,
                         onTap,
                         stripRef.current ? { groupId: node.id, strip: stripRef.current } : undefined,
-                        hideHeaderDoubleTap,
+                        tabDoubleTap,
                         t.zones.tabCount(dragSelection.length),
                         dragSelection
                       )
@@ -529,13 +533,13 @@ export function TreeGroup({
                     // session drop language — link/stack/split); `false` defers
                     // to the generic pane move (the workspace tab on a fresh
                     // draft has no session to link).
-                    if (!chrome.tabDrag?.(e, onTap, hideHeaderDoubleTap)) {
+                    if (!chrome.tabDrag?.(e, onTap, tabDoubleTap)) {
                       startPaneDrag(
                         paneId,
                         e,
                         onTap,
                         stripRef.current ? { groupId: node.id, strip: stripRef.current } : undefined,
-                        hideHeaderDoubleTap,
+                        tabDoubleTap,
                         title
                       )
                     }

@@ -8115,6 +8115,7 @@ def _validate_llm_response(
     task: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> Any:
     """Validate that an LLM response has the expected .choices[0].message shape.
 
@@ -8131,13 +8132,21 @@ def _validate_llm_response(
     best-effort and never affects validation. *provider*/*base_url* are
     optional accounting hints — fallback-path calls omit them and the row
     keeps the model (read from the response itself) with an empty route.
+
+    Issue #75479: *api_key* is forwarded from the resolved auxiliary-client
+    route so the ``/models`` metadata probe used for pricing can authenticate
+    against providers that gate ``/models`` behind auth (LiteLLM proxy and
+    similar). Without it, the probe returns 401 and the cost falls back to
+    the no-pricing path even though inference works.
     """
     if response is None:
         raise RuntimeError(
             f"Auxiliary {task or 'call'}: LLM returned None response"
         )
     from agent.aux_accounting import record_aux_usage
-    record_aux_usage(response, task, provider=provider, base_url=base_url)
+    record_aux_usage(
+        response, task, provider=provider, base_url=base_url, api_key=api_key,
+    )
     # Allow SimpleNamespace responses from adapters (CodexAuxiliaryClient,
     # AnthropicAuxiliaryClient) — they have .choices[0].message.
     try:
@@ -9646,7 +9655,8 @@ async def _async_call_llm_impl(
                     create=_acreate,
                 ),
                 task,
-                provider=request_provider, base_url=_client_base)
+                provider=request_provider, base_url=_client_base,
+                api_key=resolved_api_key)
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise

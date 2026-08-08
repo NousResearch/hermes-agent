@@ -74,6 +74,7 @@ def record_aux_usage(
     *,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> None:
     """Record an auxiliary response's token usage against the ambient session.
 
@@ -88,6 +89,13 @@ def record_aux_usage(
     The model is read from ``response.model`` (accurate even after the aux
     client's provider-fallback chains); *provider*/*base_url* reflect the
     originally-resolved route and are best-effort.
+
+    Issue #75479: *api_key* must be propagated through to
+    ``estimate_usage_cost`` so the ``/models`` metadata probe on auth-gated
+    providers (LiteLLM proxy and similar) succeeds. Without it, the probe
+    returns 401 and the cost falls back to the no-pricing path even though
+    inference works. The caller — ``_validate_llm_response`` — has access
+    to the resolved ``api_key`` from the auxiliary-client route resolver.
     """
     try:
         if not task or task in _EXCLUDED_TASKS:
@@ -114,7 +122,7 @@ def record_aux_usage(
         estimated_cost = None
         try:
             cost = estimate_usage_cost(
-                model, usage, provider=provider, base_url=base_url
+                model, usage, provider=provider, base_url=base_url, api_key=api_key,
             )
             if cost.amount_usd is not None:
                 estimated_cost = float(cost.amount_usd)

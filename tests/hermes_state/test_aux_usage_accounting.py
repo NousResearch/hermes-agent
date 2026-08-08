@@ -155,6 +155,190 @@ class TestSchemaMigrationV22:
         db2.close()
 
 
+class TestAuxApiKeyForwarding:
+    """Issue #75479: api_key must reach estimate_usage_cost() so the /models
+    metadata probe on auth-gated providers (LiteLLM proxy and similar) succeeds.
+    Before the fix, ``record_aux_usage`` accepted ``provider``/``base_url`` but
+    not ``api_key`` — so the resolved auxiliary-client api_key never reached
+    the pricing path, and the probe returned 401, silently downgrading the
+    cost to ``status="unknown"``.
+    """
+
+    def test_record_aux_usage_forwards_api_key(self, monkeypatch, db):
+        """The api_key kwarg on record_aux_usage must reach
+        estimate_usage_cost verbatim — no silent None, no empty-string default
+        (empty string was the previous behavior on the hot path because the
+        caller didn't pass any key at all).
+        """
+        captured = {}
+        # estimate_usage_cost is imported lazily inside record_aux_usage, so
+        # patch the source module rather than aux_accounting's namespace.
+        from agent import usage_pricing as up
+
+        def _spy_estimate(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = dict(kwargs)
+            return up.CostResult(
+                amount_usd=None, status="unknown", source="none", label="n/a",
+            )
+
+        monkeypatch.setattr(up, "estimate_usage_cost", _spy_estimate)
+
+        db.create_session("s1", source="cli")
+        from agent.aux_accounting import (
+            record_aux_usage,
+            reset_accounting_context,
+            set_accounting_context,
+        )
+        token = set_accounting_context(db, "s1")
+        try:
+            record_aux_usage(
+                _mk_response(model="aux-m"),
+                "vision",
+                provider="litellm-proxy",
+                base_url="https://litellm.example/v1",
+                api_key="sk-litellm-test-key",
+            )
+        finally:
+            reset_accounting_context(token)
+
+        assert captured["kwargs"]["api_key"] == "sk-litellm-test-key"
+        assert captured["kwargs"]["provider"] == "litellm-proxy"
+        assert captured["kwargs"]["base_url"] == "https://litellm.example/v1"
+
+    def test_record_aux_usage_omitted_api_key_stays_none(self, monkeypatch, db):
+        """Backward-compat: callers that don't pass api_key (the aux fallback
+        path) must still work — api_key=None propagates as None.
+        """
+        captured = {}
+        from agent import usage_pricing as up
+
+        def _spy_estimate(*args, **kwargs):
+            captured["kwargs"] = dict(kwargs)
+            return up.CostResult(
+                amount_usd=None, status="unknown", source="none", label="n/a",
+            )
+
+        monkeypatch.setattr(up, "estimate_usage_cost", _spy_estimate)
+
+        db.create_session("s1", source="cli")
+        from agent.aux_accounting import (
+            record_aux_usage,
+            reset_accounting_context,
+            set_accounting_context,
+        )
+        token = set_accounting_context(db, "s1")
+        try:
+            record_aux_usage(_mk_response(model="aux-m"), "vision", provider="gemini")
+        finally:
+            reset_accounting_context(token)
+
+        # api_key default is None — must NOT be silently coerced to ""
+        assert captured["kwargs"].get("api_key") is None
+
+    def test_validate_llm_response_accepts_and_forwards_api_key(self, monkeypatch):
+        """_validate_llm_response must accept the api_key kwarg and forward it
+        through record_aux_usage. This is the gate that fixes the leak: the
+        caller (auxiliary_client) has resolved_api_key in scope but the
+        previous signature dropped it on the floor.
+        """
+        from agent.auxiliary_client import _validate_llm_response
+
+        captured_args = []
+        captured_kwargs = {}
+
+        def _spy_record(*args, **kwargs):
+            captured_args.append(args)
+            captured_kwargs.update(kwargs)
+            return None
+
+        monkeypatch.setattr("agent.aux_accounting.record_aux_usage", _spy_record)
+
+        resp = _mk_response(model="aux-m", prompt=10, completion=5)
+        result = _validate_llm_response(
+            resp, "vision",
+            provider="litellm-proxy",
+            base_url="https://litellm.example/v1",
+            api_key="sk-litellm-test-key",
+        )
+
+        assert captured_kwargs["api_key"] == "sk-litellm-test-key"
+        assert captured_kwargs["provider"] == "litellm-proxy"
+        assert captured_kwargs["base_url"] == "https://litellm.example/v1"
+        assert captured_args[0][1] == "vision"  # task is the 2nd positional arg
+        # The original response must still be returned for downstream validation
+        assert result is resp
+
+    def test_validate_llm_response_signature_includes_api_key(self):
+        """Static check: _validate_llm_response must expose api_key as a
+        keyword parameter so the resolved route's credentials can be passed.
+        """
+        import inspect
+        from agent.auxiliary_client import _validate_llm_response
+        sig = inspect.signature(_validate_llm_response)
+        assert "api_key" in sig.parameters, (
+            f"_validate_llm_response missing api_key param; signature is {sig}"
+        )
+        assert sig.parameters["api_key"].default is None
+
+    def test_record_aux_usage_signature_includes_api_key(self):
+        """Static check: record_aux_usage must expose api_key as a keyword
+        parameter so _validate_llm_response can forward it.
+        """
+        import inspect
+        from agent.aux_accounting import record_aux_usage
+        sig = inspect.signature(record_aux_usage)
+        assert "api_key" in sig.parameters, (
+            f"record_aux_usage missing api_key param; signature is {sig}"
+        )
+        assert sig.parameters["api_key"].default is None
+
+
+class TestInsightsApiKeyForwarding:
+    """Issue #75479 (sibling): agent/insights.py _estimate_cost must also
+    accept and forward api_key. The insights path operates over persisted
+    session rows (no live credentials), so the caller may not always have a
+    key — but the parameter must exist so future callers that DO have one
+    (e.g. an authenticated insights query) can pass it.
+    """
+
+    def test_estimate_cost_forwards_api_key(self, monkeypatch):
+        captured = {}
+        from agent import insights as ins
+
+        def _spy_estimate(*args, **kwargs):
+            captured["kwargs"] = dict(kwargs)
+            from agent.usage_pricing import CostResult
+            return CostResult(amount_usd=0.0, status="included", source="none", label="included")
+
+        monkeypatch.setattr(ins, "estimate_usage_cost", _spy_estimate)
+
+        cost, status = ins._estimate_cost(
+            "gpt-4o", 100, 50,
+            provider="openai",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-openai-test-key",
+        )
+
+        assert captured["kwargs"]["api_key"] == "sk-openai-test-key"
+        assert captured["kwargs"]["provider"] == "openai"
+
+    def test_estimate_cost_omitted_api_key_stays_none(self, monkeypatch):
+        captured = {}
+        from agent import insights as ins
+
+        def _spy_estimate(*args, **kwargs):
+            captured["kwargs"] = dict(kwargs)
+            from agent.usage_pricing import CostResult
+            return CostResult(amount_usd=0.0, status="included", source="none", label="included")
+
+        monkeypatch.setattr(ins, "estimate_usage_cost", _spy_estimate)
+
+        ins._estimate_cost("gpt-4o", 100, 50, provider="openai")
+
+        assert captured["kwargs"].get("api_key") is None
+
+
 class TestAmbientAccountingContext:
     def test_record_aux_usage_writes_through_context(self, db):
         from agent.aux_accounting import (

@@ -42,6 +42,7 @@ def _estimate_cost(
     cache_write_tokens: int = 0,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> tuple[float, str]:
     """Estimate the USD cost for a session row or a model/token tuple."""
     if isinstance(session_or_model, dict):
@@ -68,6 +69,7 @@ def _estimate_cost(
         usage,
         provider=provider,
         base_url=base_url,
+        api_key=api_key,
     )
     return float(result.amount_usd or 0.0), result.status
 

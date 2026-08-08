@@ -220,6 +220,35 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
     return result
 
 
+def _resolve_cron_credential_pool_key(runtime: dict) -> Optional[str]:
+    """Return the credential-pool key for a resolved cron runtime.
+
+    Named custom endpoints share the live provider label ``custom`` but are
+    stored under ``custom:<name>``. Loading the bare ``custom`` key would merge
+    every custom_providers entry into one rotation set and let a pinned job
+    hop endpoints on 429 (#78427).
+    """
+    runtime_provider = str((runtime or {}).get("provider") or "").strip().lower()
+    if not runtime_provider:
+        return None
+    if runtime_provider != "custom":
+        return runtime_provider
+
+    from agent.credential_pool import CUSTOM_POOL_PREFIX, get_custom_provider_pool_key
+
+    requested = str((runtime or {}).get("requested_provider") or "").strip()
+    provider_name = None
+    requested_l = requested.lower()
+    if requested_l.startswith(CUSTOM_POOL_PREFIX):
+        provider_name = requested[len(CUSTOM_POOL_PREFIX):]
+    elif requested_l and requested_l not in {"custom", "auto"}:
+        provider_name = requested
+    return get_custom_provider_pool_key(
+        (runtime or {}).get("base_url"),
+        provider_name=provider_name,
+    )
+
+
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """Resolve the toolset list for a cron job.
 
@@ -4009,15 +4038,26 @@ def run_job(
         if runtime_provider:
             try:
                 from agent.credential_pool import load_pool
-                pool = load_pool(runtime_provider)
-                if pool.has_credentials():
-                    credential_pool = pool
-                    logger.info(
-                        "Job '%s': loaded credential pool for provider %s with %d entries",
+
+                pool_key = _resolve_cron_credential_pool_key(runtime)
+                if runtime_provider == "custom" and not pool_key:
+                    logger.debug(
+                        "Job '%s': no scoped custom pool for base_url=%r "
+                        "requested_provider=%r — not loading bare 'custom' pool",
                         job_id,
-                        runtime_provider,
-                        len(pool.entries()),
+                        runtime.get("base_url"),
+                        runtime.get("requested_provider"),
                     )
+                elif pool_key:
+                    pool = load_pool(pool_key)
+                    if pool.has_credentials():
+                        credential_pool = pool
+                        logger.info(
+                            "Job '%s': loaded credential pool for provider %s with %d entries",
+                            job_id,
+                            pool_key,
+                            len(pool.entries()),
+                        )
             except Exception as e:
                 logger.debug("Job '%s': failed to load credential pool for %s: %s", job_id, runtime_provider, e)
 

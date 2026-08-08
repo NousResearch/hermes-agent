@@ -313,6 +313,7 @@ class PluginManifest:
     description: str = ""
     author: str = ""
     requires_env: List[Union[str, Dict[str, Any]]] = field(default_factory=list)
+    pip_dependencies: List[str] = field(default_factory=list)
     provides_tools: List[str] = field(default_factory=list)
     provides_hooks: List[str] = field(default_factory=list)
     source: str = ""        # "user", "project", or "entrypoint"
@@ -1019,6 +1020,7 @@ class PluginContext:
         from gateway.platform_registry import platform_registry, PlatformEntry
 
         entry_kwargs.setdefault("plugin_name", self.manifest.name)
+        entry_kwargs.setdefault("pip_dependencies", self.manifest.pip_dependencies)
         entry = PlatformEntry(
             name=name,
             label=label,
@@ -1793,6 +1795,7 @@ class PluginManager:
                 description=data.get("description", ""),
                 author=_display_author(data.get("author", "")),
                 requires_env=data.get("requires_env", []),
+                pip_dependencies=data.get("pip_dependencies", []),
                 provides_tools=data.get("provides_tools", []),
                 provides_hooks=data.get("provides_hooks", []),
                 source=source,

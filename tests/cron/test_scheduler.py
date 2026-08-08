@@ -1500,6 +1500,39 @@ class TestDeliverOriginUnresolvableIsLocal:
         assert self._deliver(job, monkeypatch) is None
 
 
+def test_twitter_reply_delivery_target_preserves_route_and_interaction_id():
+    from cron.scheduler import _resolve_single_delivery_target
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from plugins.platforms.twitter import register
+
+    previous = platform_registry.get("twitter")
+
+    class Context:
+        @staticmethod
+        def register_platform(**kwargs):
+            platform_registry.register(PlatformEntry(source="plugin", **kwargs))
+
+        @staticmethod
+        def register_tool(**_kwargs):
+            return None
+
+    try:
+        register(Context())
+        assert _resolve_single_delivery_target(
+            {"id": "twitter-reply"},
+            "twitter:tweet:100:101:102",
+        ) == {
+            "platform": "twitter",
+            "chat_id": "tweet:100:101",
+            "thread_id": "102",
+        }
+    finally:
+        if previous is None:
+            platform_registry.unregister("twitter")
+        else:
+            platform_registry.register(previous)
+
+
 class TestSendMediaTimeoutCancelsFuture:
     """Same orphan-coroutine guarantee for _send_media_via_adapter's
     future.result(timeout=30) call. If this times out mid-batch, the

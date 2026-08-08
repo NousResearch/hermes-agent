@@ -591,6 +591,15 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         # through to the _PHONE_PLATFORMS handler below.
         if _WHATSAPP_JID_RE.fullmatch(target_ref):
             return target_ref.strip(), None, True
+    try:
+        from gateway.platform_registry import platform_registry
+
+        entry = platform_registry.get(platform_name)
+        parsed = entry.target_parser_fn(target_ref) if entry and entry.target_parser_fn else None
+        if parsed:
+            return parsed[0], parsed[1], True
+    except Exception:
+        logger.debug("Plugin target parser failed for %s", platform_name, exc_info=True)
     stripped_target = target_ref.strip()
     if platform_name == "signal" and stripped_target.startswith("group:"):
         group_id = stripped_target[len("group:"):].strip()
@@ -724,6 +733,8 @@ async def _send_via_adapter(
                 metadata = {}
                 if thread_id:
                     metadata["thread_id"] = thread_id
+                if media_files:
+                    metadata["media_files"] = media_files
                 if platform_name == "ntfy" and chat_id:
                     metadata["publish_topic"] = chat_id
                 if not metadata:
@@ -824,7 +835,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
     }
 
-    # Check plugin registry for max_message_length
+    # Check plugin registry for max_message_length and media-aware routing.
+    entry = None
     if platform not in _MAX_LENGTHS:
         try:
             from gateway.platform_registry import platform_registry
@@ -1104,7 +1116,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         return last_result
 
     # --- Non-media platforms ---
-    if media_files and not message.strip():
+    supports_media = bool(entry and entry.supports_media_delivery)
+    if media_files and not supports_media and not message.strip():
         return {
             "error": (
                 f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack; "
@@ -1112,7 +1125,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             )
         }
     warning = None
-    if media_files:
+    if media_files and not supports_media:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
             "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack"

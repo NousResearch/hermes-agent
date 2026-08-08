@@ -101,6 +101,7 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|configured\s+compression\s+model\s+.+\s+failed"
     r"|no\s+auxiliary\s+llm\s+provider\s+configured"
     r"|auto-lowered\s+compression\s+threshold"
+    r"|auto-compaction\s+was\s+raised"
     # #69332 reworded the auto-lower notice to "Auto-lowered this session's
     # threshold to N tokens" — keep both generations covered.
     r"|auto-lowered\s+(?:this\s+)?session'?s?\s+threshold"

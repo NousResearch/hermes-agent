@@ -87,6 +87,56 @@ def _import_platform_module(name: str) -> ModuleType:
 
 
 @pytest.mark.parametrize("platform_name", _PLATFORM_NAMES)
+def test_plugin_exposes_register_function(platform_name: str):
+    """Every platform plugin must expose a callable register function."""
+    module = _import_platform_module(platform_name)
+    assert hasattr(module, "register"), f"{platform_name} missing register()"
+    assert callable(module.register), f"{platform_name}.register not callable"
+
+
+def test_platform_registration_carries_manifest_dependencies(clean_registry):
+    """Platform setup gets the dependencies declared by its owning plugin."""
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    ctx = PluginContext(
+        PluginManifest(
+            name="fixture-platform",
+            kind="platform",
+            pip_dependencies=["fixture-platform-sdk==1.2.3"],
+        ),
+        PluginManager(),
+    )
+    ctx.register_platform(
+        name="fixture",
+        label="Fixture",
+        adapter_factory=lambda _config: None,
+        check_fn=lambda: True,
+    )
+
+    from gateway.platform_registry import platform_registry
+
+    assert platform_registry.get("fixture").pip_dependencies == [
+        "fixture-platform-sdk==1.2.3"
+    ]
+
+
+def test_platform_manifest_discovery_reads_pip_dependencies(tmp_path):
+    """The manifest field survives generic plugin discovery."""
+    from hermes_cli.plugins import PluginManager
+
+    plugin = tmp_path / "fixture"
+    plugin.mkdir()
+    (plugin / "plugin.yaml").write_text(
+        "name: fixture-platform\nkind: platform\npip_dependencies:\n  - fixture-platform-sdk==1.2.3\n",
+        encoding="utf-8",
+    )
+
+    manifests = PluginManager()._scan_directory(tmp_path, source="bundled")
+
+    assert manifests[0].pip_dependencies == ["fixture-platform-sdk==1.2.3"]
+
+
+@pytest.mark.parametrize("platform_name", _PLATFORM_NAMES)
 def test_plugin_registers_valid_platform_entry(platform_name: str, clean_registry):
     """Calling register() must create a valid PlatformEntry."""
     module = _import_platform_module(platform_name)
@@ -128,5 +178,4 @@ def test_platform_entry_has_required_fields(platform_name: str, clean_registry):
         assert callable(entry.is_connected)
     if entry.setup_fn is not None:
         assert callable(entry.setup_fn)
-
 

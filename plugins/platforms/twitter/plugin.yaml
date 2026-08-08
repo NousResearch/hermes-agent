@@ -1,0 +1,15 @@
+name: twitter-platform
+label: Twitter / X
+kind: platform
+version: 1.0.0
+description: OAuth 2.0 Twitter/X gateway adapter for public mentions and direct messages.
+author: NousResearch
+pip_dependencies:
+  - twitter-text-parser==3.0.0
+# OAuth access and refresh tokens are profile-scoped files created by the
+# interactive setup flow. They are intentionally not environment variables.
+optional_env:
+  - name: TWITTER_CLIENT_SECRET
+    description: OAuth client secret for a confidential X application
+    prompt: OAuth client secret
+    password: true

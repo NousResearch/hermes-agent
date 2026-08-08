@@ -6,7 +6,9 @@ interactive setup menus.
 """
 
 import os
+from types import SimpleNamespace
 
+from gateway.config import Platform, PlatformConfig
 from gateway.platform_registry import PlatformEntry, platform_registry
 
 
@@ -94,6 +96,41 @@ class TestIRCFreshInstallDiscovery:
         finally:
             _unregister_irc_platform()
 
+    def test_irc_status_partial_when_only_server_set(self, monkeypatch):
+        """If only IRC_SERVER is set, the platform is still not configured."""
+        import hermes_cli.gateway as gateway_mod
+
+        plat = _register_irc_platform()
+        try:
+            monkeypatch.delenv("IRC_CHANNEL", raising=False)
+            monkeypatch.delenv("IRC_NICKNAME", raising=False)
+            monkeypatch.setenv("IRC_SERVER", "irc.libera.chat")
+
+            status = gateway_mod._platform_status(plat)
+            assert status == "not configured"
+        finally:
+            _unregister_irc_platform()
+
+    def test_plugin_status_uses_saved_platform_config(self, monkeypatch):
+        """Setup status passes plugins their config loaded from config.yaml."""
+        import hermes_cli.gateway as gateway_mod
+
+        saved = PlatformConfig(enabled=True, extra={"server": "saved.example"})
+        seen = []
+        plat = _register_irc_platform(
+            is_connected=lambda config: seen.append(config) or bool(config.extra)
+        )
+        monkeypatch.setattr(
+            gateway_mod,
+            "load_gateway_config",
+            lambda: SimpleNamespace(platforms={Platform("irc"): saved}),
+        )
+        try:
+            assert gateway_mod._platform_status(plat) == "configured"
+            assert seen == [saved]
+        finally:
+            _unregister_irc_platform()
+
 
 # ── Interactive setup dispatch ──────────────────────────────────────────────
 
@@ -135,6 +172,32 @@ class TestIRCInteractiveSetup:
         out = capsys.readouterr().out
         assert "IRC" in out
         assert "IRC_SERVER" in out
+
+    def test_configure_platform_installs_declared_plugin_dependencies_before_setup(
+        self, monkeypatch
+    ):
+        """Plugin manifest dependencies are installed by the generic setup path."""
+        import hermes_cli.gateway as gateway_mod
+
+        calls = []
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._pip_install",
+            lambda args, **kwargs: calls.append((args, kwargs))
+            or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        configured = []
+        plat = _register_irc_platform(
+            pip_dependencies=["fixture-platform-sdk==1.2.3"],
+            setup_fn=lambda: configured.append(True),
+        )
+        try:
+            gateway_mod._configure_platform(plat)
+        finally:
+            _unregister_irc_platform()
+
+        assert calls == [(["--quiet", "fixture-platform-sdk==1.2.3"], {"timeout": 120})]
+        assert configured == [True]
 
 
 # ── End-to-end fresh-install gateway setup ──────────────────────────────────

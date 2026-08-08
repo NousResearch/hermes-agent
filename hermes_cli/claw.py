@@ -610,7 +610,7 @@ def _cmd_cleanup(args):
         )
         print_info("Stop OpenClaw first: systemctl --user stop openclaw-gateway.service")
         print()
-        if not auto_yes:
+        if not auto_yes and not dry_run:
             if not sys.stdin.isatty():
                 print_info("Non-interactive session — aborting. Stop OpenClaw and re-run.")
                 return

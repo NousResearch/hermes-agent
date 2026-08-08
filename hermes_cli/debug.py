@@ -1026,6 +1026,10 @@ def run_debug(args):
         run_debug_share(args)
     elif subcmd == "delete":
         run_debug_delete(args)
+    elif subcmd == "reproduce":
+        from hermes_cli.repro_bundle import run_debug_reproduce
+
+        run_debug_reproduce(args)
     else:
         # Default: show help
         print("Usage: hermes debug <command>")

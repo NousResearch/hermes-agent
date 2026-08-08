@@ -31,3 +31,27 @@ describe('theme typography emoji fallback (#40364)', () => {
     expect(EMOJI_FALLBACK).toContain('Noto Color Emoji')
   })
 })
+
+describe('DesktopThemeTypography optional sizing fields (#41766)', () => {
+  it('DEFAULT_TYPOGRAPHY does not set baseSize/lineHeight/letterSpacing (uses CSS defaults)', () => {
+    expect(DEFAULT_TYPOGRAPHY).not.toHaveProperty('baseSize')
+    expect(DEFAULT_TYPOGRAPHY).not.toHaveProperty('lineHeight')
+    expect(DEFAULT_TYPOGRAPHY).not.toHaveProperty('letterSpacing')
+  })
+
+  it('theme presets with typography overrides may include sizing fields', () => {
+    // All built-in themes should still be valid even if they don't set these fields.
+    for (const theme of BUILTIN_THEME_LIST) {
+      const typo = theme.typography
+      if (typo?.baseSize !== undefined) {
+        expect(typeof typo.baseSize).toBe('string')
+      }
+      if (typo?.lineHeight !== undefined) {
+        expect(typeof typo.lineHeight).toBe('string')
+      }
+      if (typo?.letterSpacing !== undefined) {
+        expect(typeof typo.letterSpacing).toBe('string')
+      }
+    }
+  })
+})

@@ -769,6 +769,54 @@ def _group_document_message(*, chat_id=-100, caption="Este arquivo", document=No
     )
 
 
+def test_unmentioned_photo_observed_entry_records_media_for_replay(monkeypatch, tmp_path):
+    """The cached image path is persisted structurally, not just in the note.
+
+    Without this the gateway can only replay the text note, so a later
+    addressed turn has no image to attach and the model asks for a re-send
+    (#47415).
+    """
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True, allowed_chats=["-100"],
+            group_allowed_chats=["-100"], observe_unmentioned_group_messages=True,
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        cached_path = tmp_path / "img_abc_observed.png"
+        monkeypatch.setattr(
+            "gateway.platforms.base.cache_image_from_bytes",
+            lambda _data, ext=".jpg": str(cached_path),
+        )
+        update = SimpleNamespace(update_id=3005, message=_group_photo_message(), effective_message=None)
+
+        await adapter._handle_media_message(update, SimpleNamespace())
+
+        _, message, _ = store.messages[0]
+        assert message["media_urls"] == [str(cached_path)]
+        assert message["media_types"] and message["media_types"][0].startswith("image/")
+
+    asyncio.run(_run())
+
+
+def test_unmentioned_text_observed_entry_has_no_media_keys(monkeypatch, tmp_path):
+    """Plain observed chatter stays exactly as it was — no empty media keys."""
+    adapter = _make_adapter(
+        require_mention=True, allowed_chats=["-100"],
+        group_allowed_chats=["-100"], observe_unmentioned_group_messages=True,
+    )
+    store = _FakeSessionStore()
+    adapter._session_store = store
+
+    adapter._observe_unmentioned_group_message(
+        _group_message("just chatting"), MessageType.TEXT, update_id=3006,
+    )
+
+    _, message, _ = store.messages[0]
+    assert "media_urls" not in message
+    assert "media_types" not in message
+
+
 # ── Bot identity: renames and non-"bot"-suffixed handles ────────────────────
 # Two failure modes fixed together (both break the mention gate):
 #   1. PTB caches getMe() in Bot._bot_user and only rewrites it inside

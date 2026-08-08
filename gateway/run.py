@@ -1446,6 +1446,62 @@ def _select_cached_agent_history(
     return persisted_history
 
 
+# Cap on cached observed-group images re-attached to a later addressed turn.
+# Observed context accumulates for the whole session, so without a bound a busy
+# group would re-upload every photo it has ever seen on every single reply.
+_MAX_OBSERVED_IMAGE_ATTACHMENTS = 4
+
+
+def _collect_observed_image_paths(
+    history: Optional[List[Dict[str, Any]]],
+    limit: int = _MAX_OBSERVED_IMAGE_ATTACHMENTS,
+) -> List[str]:
+    """Cached image paths from the *trailing* observed rows, oldest first.
+
+    Scoped to observed chatter that arrived since the last real exchange, so a
+    photo is attached on the turn that follows it and not re-uploaded on every
+    later reply — the text note continues to carry it in context after that.
+
+    Only rows written by the observe path carry ``media_urls``; transcripts
+    written before that field existed yield nothing and keep their text note,
+    so this is a no-op on existing sessions.
+    """
+    from agent.image_routing import _IMAGE_EXTS
+
+    trailing: List[Dict[str, Any]] = []
+    for msg in reversed(history or []):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role in {"session_meta", "system"}:
+            continue
+        if not msg.get("observed"):
+            break
+        trailing.append(msg)
+    trailing.reverse()
+
+    paths: List[str] = []
+    for msg in trailing:
+        if msg.get("role") != "user":
+            continue
+        urls = msg.get("media_urls") or []
+        types = msg.get("media_types") or []
+        for i, path in enumerate(urls):
+            if not path:
+                continue
+            # Trust the recorded MIME; fall back to the extension only when the
+            # observe path could not determine one, mirroring
+            # ``_event_media_is_image`` for live events.
+            mime = str(types[i]) if i < len(types) else ""
+            if mime:
+                if not mime.startswith("image/"):
+                    continue
+            elif not str(path).lower().endswith(_IMAGE_EXTS):
+                continue
+            paths.append(str(path))
+    return paths[-limit:] if limit and len(paths) > limit else paths
+
+
 def _wrap_current_message_with_observed_context(message: Any, observed_context: Optional[str]) -> Any:
     """Prepend observed Telegram context to the API-only current user turn."""
 
@@ -16202,10 +16258,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         audio_file_paths: list[str] = []
         video_paths: list[str] = []
 
-        if event.media_urls:
-            image_paths = []
+        # Photos sent to a group without an @mention are cached at observe
+        # time but persisted as a text note only, so a later addressed turn
+        # ("what was in that image?") had nothing to look at while the same
+        # photo re-sent *with* a mention worked (#47415).  Re-attach the most
+        # recent cached observed images so both paths reach the model alike.
+        observed_image_paths = _collect_observed_image_paths(history)
+
+        if event.media_urls or observed_image_paths:
+            image_paths = list(observed_image_paths)
             audio_paths = []
-            for i, path in enumerate(event.media_urls):
+            for i, path in enumerate(event.media_urls or []):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 # Classify images per-attachment: trust this attachment's own
                 # MIME, and only honour the message-level PHOTO type when the
@@ -16572,6 +16635,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             for transcript in successful_transcripts
             if transcript.strip()
         )
+
+    async def _history_with_observed_tail(
+        self, history: List[Dict[str, Any]], source
+    ) -> List[Dict[str, Any]]:
+        """Append the persisted trailing observed rows to an agent message list.
+
+        ``_build_gateway_agent_history`` lifts observed group rows out of the
+        replayed history into the text-only context prefix, so the agent's
+        returned ``messages`` never contain them.  The queued-follow-up path
+        reuses that list as history, which means a photo observed *while the
+        previous turn was running* would be invisible when the follow-up is
+        prepared — the idle path handles it, the queued path did not (#47415).
+
+        Re-read the persisted tail so both paths see the same observed rows.
+        Best-effort: any store failure returns the history unchanged rather
+        than dropping a queued turn.
+        """
+        if source is None:
+            return history
+        try:
+            store = self.async_session_store
+            session_entry = await store.get_or_create_session(source)
+            persisted = await store.load_transcript(session_entry.session_id)
+        except Exception:
+            logger.debug(
+                "Observed-tail reload failed for queued follow-up; using agent history",
+                exc_info=True,
+            )
+            return history
+
+        tail: List[Dict[str, Any]] = []
+        for msg in reversed(persisted or []):
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") in {"session_meta", "system"}:
+                continue
+            if not msg.get("observed"):
+                break
+            tail.append(msg)
+        if not tail:
+            return history
+        tail.reverse()
+        return list(history) + tail
 
     def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:
         state = self._peek_session_state(session_key)
@@ -26356,7 +26462,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     next_message = await self._prepare_profile_scoped_inbound_message_text(
                         event=pending_event,
                         source=next_source,
-                        history=updated_history,
+                        history=await self._history_with_observed_tail(
+                            updated_history, next_source
+                        ),
                         session_key=next_session_key,
                     )
                     if next_message is None:

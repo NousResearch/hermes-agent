@@ -448,15 +448,30 @@ describe('repository discovery policy', () => {
     })
   })
 
-  it('does not scan the local filesystem for remote connections', async () => {
+  it('does not scan the local filesystem for remote connections but still refreshes the project tree', async () => {
     isDesktopFsRemoteMode.mockReturnValue(true)
     const scanRepos = vi.fn()
     desktopGit.mockReturnValue({ scanRepos } as never)
+    const request = vi.fn(async (method: string) =>
+      method === 'projects.tree'
+        ? { active_id: null, projects: [], scoped_session_ids: [] }
+        : { accepted: false, repos: [] }
+    )
+    gatewayWith(request)
 
     await scanAndRecordRepos(true)
 
     expect(scanRepos).not.toHaveBeenCalled()
     expect(getHermesConfig).not.toHaveBeenCalled()
+    // The desktop can't crawl the remote host's filesystem, but the
+    // sidebar still has to learn about repos that exist on the host
+    // (`projects.tree` derives them from session cwds server-side).
+    // Regression for #81723: the sidebar used to go silent in remote
+    // mode and never refresh again.
+    expect(request).toHaveBeenCalledWith(
+      'projects.tree',
+      expect.objectContaining({ preview_limit: expect.any(Number) })
+    )
   })
 })
 

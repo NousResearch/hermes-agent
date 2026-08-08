@@ -611,6 +611,19 @@ $gateway.subscribe(syncReposScanning)
 
 export async function scanAndRecordRepos(force = false): Promise<void> {
   if (isDesktopFsRemoteMode()) {
+    // On a remote backend the desktop can't crawl the host filesystem — the
+    // server already derives repos from session cwds (`projects.tree` with
+    // `include_discovered=True`) and from any earlier `projects.record_repos`
+    // pings, so just trigger a refresh and let it surface whatever the
+    // backend knows about (#81723). The sidebar list also listens to the
+    // gateway's own repo-discovery events, so a fresh refresh here catches
+    // any repo the host's session history already knew about.
+    try {
+      const context = await activeProjectsContext()
+      await refreshProjectTreeOn(context.gateway)
+    } catch {
+      // best-effort — refresh is a UI update, not a critical write
+    }
     return
   }
 

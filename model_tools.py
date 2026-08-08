@@ -289,10 +289,10 @@ _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
 # Hard cap on memoized get_tool_definitions() results. A long-lived Gateway
 # process sees many distinct toolset/config fingerprints over its lifetime
 # (per-session toolset sets, config edits, kanban-task toggles); without a
-# bound the cache grows unboundedly. 8 comfortably covers the warm working
-# set (the handful of distinct platform/toolset combos a gateway actually
-# serves) while keeping the cap small. (#19251)
-_TOOL_DEFS_CACHE_MAX = 8
+# bound the cache grows unboundedly. (#19251) Raised from 8 to 16 with the
+# session-context key dimension (#69071): interactive vs non-interactive now
+# doubles the key space, so a gateway serving both keeps its warm set cached.
+_TOOL_DEFS_CACHE_MAX = 16
 
 
 def _clear_tool_defs_cache() -> None:
@@ -343,6 +343,17 @@ def get_tool_definitions(
             cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
         except (FileNotFoundError, OSError, ImportError):
             cfg_fp = None
+        # Session-context dimension: a context-sensitive check_fn (the browser
+        # gate) exposes different tools in an interactive vs a gateway/cron
+        # session. Without this, a long-lived process caches one session's tool
+        # list and serves it to the other (#69071). Orthogonal to profile_scope,
+        # which isolates multiplex profiles rather than session kind, so both
+        # dimensions belong in the key.
+        try:
+            from tools.browser_tool import _is_non_interactive_session
+            _session_ctx = _is_non_interactive_session()
+        except Exception:
+            _session_ctx = None
         profile_scope = check_fn_cache_scope()
         if profile_scope != CHECK_FN_CACHE_BYPASS:
             cache_key = (
@@ -355,6 +366,7 @@ def get_tool_definitions(
                 _is_delegated_child_context(),
                 _is_dispatcher_owned_worker(),
                 profile_scope,
+                _session_ctx,                # interactive vs gateway/cron (#69071)
             )
         cached = _tool_defs_cache.get(cache_key) if cache_key is not None else None
         if cached is not None:

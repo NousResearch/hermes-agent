@@ -276,7 +276,25 @@ def _check_fn_cached(fn: Callable) -> bool:
     last-good True is returned and the failure is NOT cached, so the next call
     re-probes) to keep flaky external checks (Docker daemon busy, socket
     contention, probe timeout) from silently stripping tools mid-session.
+
+    A ``check_fn`` marked ``_hermes_context_sensitive`` (e.g. the browser gate,
+    whose verdict depends on per-session interactivity via contextvars) is never
+    cached: the process-global cache is keyed by callable, so a verdict computed
+    in one session (interactive CLI) would otherwise leak into another (gateway /
+    cron) on the same worker. These predicates are cheap by contract, so re-probe
+    every call instead.
     """
+    if getattr(fn, "_hermes_context_sensitive", False):
+        try:
+            return bool(fn())
+        except Exception:
+            logger.warning(
+                "context-sensitive check_fn %s raised; dependent tools "
+                "unavailable this turn",
+                getattr(fn, "__qualname__", fn),
+            )
+            return False
+
     now = time.monotonic()
     scope = check_fn_cache_scope()
     if scope == CHECK_FN_CACHE_BYPASS:

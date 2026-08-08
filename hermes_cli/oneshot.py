@@ -221,6 +221,18 @@ def run_oneshot(
     os.environ["HERMES_YOLO_MODE"] = "1"
     os.environ["HERMES_ACCEPT_HOOKS"] = "1"
 
+    # One-shot (`hermes -z/--oneshot`) has no human to answer a browser
+    # first-use/install prompt, and its stdin may still be an attached TTY, so
+    # sys.stdin.isatty() alone would wrongly report interactive. Mark the context
+    # non-interactive so check_browser_requirements() gates the bare-npx browser
+    # tool out of the toolset (#66393).
+    try:
+        from tools.browser_tool import set_browser_session_interactive
+
+        set_browser_session_interactive(False)
+    except Exception:
+        pass
+
     # One-shot prints a single final response and exits: there is no later turn
     # for a detached subagent's completion to re-enter, and nothing here drains
     # process_registry.completion_queue (only cli.py's interactive process_loop

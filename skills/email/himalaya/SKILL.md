@@ -1,7 +1,7 @@
 ---
 name: himalaya
 description: "Himalaya CLI: IMAP/SMTP email from terminal."
-version: 1.1.0
+version: 2.0.0
 author: community
 license: MIT
 platforms: [linux, macos, windows]
@@ -48,13 +48,20 @@ cargo install himalaya --locked
 
 ## Configuration Setup
 
-Run the interactive wizard to set up an account:
+Run the interactive wizard (bare `himalaya` — no subcommand) to set up an account:
 
 ```bash
-himalaya account configure
+himalaya
 ```
 
-Or create `~/.config/himalaya/config.toml` manually:
+The wizard tests IMAP and SMTP connectivity, then prints a ready-to-save
+TOML config to stdout. Redirect it directly:
+
+```bash
+himalaya > ~/.config/himalaya/config.toml
+```
+
+Or create `~/.config/himalaya/config.toml` manually using per-backend tables:
 
 ```toml
 [accounts.personal]
@@ -62,56 +69,41 @@ email = "you@example.com"
 display-name = "Your Name"
 default = true
 
-backend.type = "imap"
-backend.host = "imap.example.com"
-backend.port = 993
-backend.encryption.type = "tls"
-backend.login = "you@example.com"
-backend.auth.type = "password"
-backend.auth.cmd = "pass show email/imap"  # or use keyring
+imap.server = "imap.example.com:993"
+imap.sasl.plain.username = "you@example.com"
+imap.sasl.plain.password.raw = "your-password"
 
-message.send.backend.type = "smtp"
-message.send.backend.host = "smtp.example.com"
-message.send.backend.port = 587
-message.send.backend.encryption.type = "start-tls"
-message.send.backend.login = "you@example.com"
-message.send.backend.auth.type = "password"
-message.send.backend.auth.cmd = "pass show email/smtp"
+smtp.server = "smtp.example.com:587"
+smtp.starttls = true
+smtp.sasl.plain.username = "you@example.com"
+smtp.sasl.plain.password.raw = "your-password"
 
-# Folder aliases (himalaya v1.2.0+ syntax). Required whenever the
-# server's folder names don't match himalaya's canonical names
-# (inbox/sent/drafts/trash). Gmail is the common case — see
-# `references/configuration.md` for the `[Gmail]/Sent Mail` mapping.
-folder.aliases.inbox = "INBOX"
-folder.aliases.sent = "Sent"
-folder.aliases.drafts = "Drafts"
-folder.aliases.trash = "Trash"
+mailbox.alias.inbox = "INBOX"
+mailbox.alias.sent = "Sent"
+mailbox.alias.drafts = "Drafts"
+mailbox.alias.trash = "Trash"
 ```
 
-> **Heads up on the alias syntax.** Pre-v1.2.0 docs used a
-> `[accounts.NAME.folder.alias]` sub-section (singular `alias`).
-> v1.2.0 silently ignores that form — TOML parses fine, but the
-> alias resolver never reads it, so every lookup falls through to
-> the canonical name. On Gmail this means save-to-Sent fails *after*
-> SMTP delivery succeeds, and `himalaya message send` exits non-zero.
-> Any caller (agent, script, user) that retries on that exit code
-> will re-run the entire send — including SMTP — producing duplicate
-> emails to recipients. Always use `folder.aliases.X` (plural, dotted
-> keys, directly under `[accounts.NAME]`).
+> **Heads up on the alias syntax.** Himalaya v2.0.0 renamed
+> `folder.aliases.*` to `mailbox.alias.*`. The old dotted keys are
+> silently ignored — TOML parses fine, but the alias resolver never reads
+> them. On Gmail this means save-to-Sent fails *after* SMTP delivery
+> succeeds, and `himalaya message send` exits non-zero. Always use
+> `mailbox.alias.X` in v2.0.0+.
 
 ## Hermes Integration Notes
 
 - **Reading, listing, searching, moving, deleting** all work directly through the terminal tool
 - **Composing/replying/forwarding** — piped input (`cat << EOF | himalaya template send`) is recommended for reliability. Interactive `$EDITOR` mode works with `pty=true` + background + process tool, but requires knowing the editor and its commands
-- Use `--output json` for structured output that's easier to parse programmatically
-- The `himalaya account configure` wizard requires interactive input — use PTY mode: `terminal(command="himalaya account configure", pty=true)`
+- Use `--json` before the subcommand for structured output that's easier to parse programmatically (e.g. `himalaya --json envelope list`)
+- The bare `himalaya` wizard requires interactive input — use PTY mode: `terminal(command="himalaya", pty=true)`
 
 ## Common Operations
 
-### List Folders
+### List Mailboxes
 
 ```bash
-himalaya folder list
+himalaya mailbox list
 ```
 
 ### List Emails
@@ -275,11 +267,10 @@ himalaya attachment download 42 --downloads-dir ~/Downloads
 
 ## Output Formats
 
-Most commands support `--output` for structured output:
+Most commands support `--json` (before the subcommand) for structured output:
 
 ```bash
-himalaya envelope list --output json
-himalaya envelope list --output plain
+himalaya --json envelope list
 ```
 
 ## Debugging

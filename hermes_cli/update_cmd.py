@@ -2494,6 +2494,42 @@ def _ensure_acp_launcher() -> None:
             continue
         print(f"  ✓ Installed hermes-acp launcher → {acp_cmd}")
 
+def _ensure_hermes_launcher() -> None:
+    """Self-heal: check/repair the primary ``hermes`` launcher on ``hermes update``.
+
+    Shared with ``hermes doctor --fix`` via ``hermes_cli.launcher_repair``
+    (issue #76421).  Repairs the launcher in the ONE command dir the
+    installer would use (``select_command_dir``: Termux ``$PREFIX/bin``,
+    root-on-Linux FHS ``/usr/local/bin``, else ``~/.local/bin``): missing
+    launchers, dangling/wrong legacy symlinks, and recognized stale
+    Hermes-managed wrappers.  The rewritten shim is the exact installer
+    form — venv interpreter + checked-in ``hermes`` entrypoint, NOT the
+    uv console script (which needs ``realpath``, absent on stock macOS).
+    User-managed wrappers are preserved with a warning; unwritable
+    directories are skipped silently.  No-op on Windows.  Idempotent.
+    """
+    if _m().sys.platform == "win32":
+        return
+    # Lazy import: keeps hermes_cli.main importable even if this module
+    # breaks (sabotage probes need base failures, not collection errors).
+    from hermes_cli.launcher_repair import ensure_hermes_launcher
+
+    root = _m().PROJECT_ROOT
+    entrypoint = root / "hermes"
+    if not entrypoint.exists():
+        return
+    # The current venv's interpreter — same venv-name probe doctor uses.
+    venv_python = None
+    for venv_name in ("venv", ".venv"):
+        candidate = root / venv_name / "bin" / "python"
+        if candidate.exists():
+            venv_python = candidate
+            break
+    if venv_python is None:
+        return
+    for action in ensure_hermes_launcher(venv_python, entrypoint, root):
+        print(f"  {action}")
+
 _PRE_UPDATE_SNAPSHOT_KEEP = 1
 
 # Per-file size cap for the pre-update quick snapshot. Anything larger is
@@ -3939,6 +3975,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "long-lived processes still use the previous runtime."
                 )
                 print("  Restart each of them to pick up the repaired runtime.")
+            # Self-heal the primary hermes launcher (issue #76421): missing
+            # launchers, dangling/wrong legacy symlinks, and recognized stale
+            # Hermes-managed wrappers — even on a current checkout.
+            try:
+                _ensure_hermes_launcher()
+            except Exception as e:
+                logger.debug("hermes launcher self-heal failed: %s", e)
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             return
 
@@ -4645,6 +4688,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _ensure_acp_launcher()
         except Exception as e:
             logger.debug("hermes-acp launcher self-heal failed: %s", e)
+
+        # Self-heal the primary hermes launcher (issue #76421): missing
+        # launchers, dangling/wrong legacy symlinks, and recognized stale
+        # Hermes-managed wrappers.  No-op on Windows; user-managed wrappers
+        # are preserved with a warning.
+        try:
+            _ensure_hermes_launcher()
+        except Exception as e:
+            logger.debug("hermes launcher self-heal failed: %s", e)
 
         # Refresh the cua-driver binary used by the Computer Use toolset.
         # The upstream installer is gated on supported platforms and on the

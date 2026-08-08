@@ -1855,15 +1855,20 @@ def run_doctor(args):
                 _venv_bin = _candidate
                 break
 
-        # Determine the expected command link directory (mirrors install.sh logic)
-        _prefix = os.environ.get("PREFIX", "")
-        _is_termux_env = bool(os.environ.get("TERMUX_VERSION")) or "com.termux/files/usr" in _prefix
-        if _is_termux_env and _prefix:
-            _cmd_link_dir = Path(_prefix) / "bin"
-            _cmd_link_display = "$PREFIX/bin"
-        else:
-            _cmd_link_dir = Path.home() / ".local" / "bin"
-            _cmd_link_display = "~/.local/bin"
+        # The ONE command link dir — the same selector `hermes update`'s
+        # launcher self-heal uses, mirroring install.sh's
+        # get_command_link_dir (issue #76421). Lazy import: keeps doctor
+        # importable even if the helper module breaks.
+        from hermes_cli.launcher_repair import (
+            STALE_MANAGED as _LR_STALE_MANAGED,
+            USER_WRAPPER as _LR_USER_WRAPPER,
+            command_dir_display as _command_dir_display,
+            managed_launcher_status as _launcher_status,
+            repair_launcher as _repair_launcher,
+            select_command_dir as _select_command_dir,
+        )
+        _cmd_link_dir = _select_command_dir()
+        _cmd_link_display = _command_dir_display()
         _cmd_link = _cmd_link_dir / "hermes"
 
         if _venv_bin is None:
@@ -1896,8 +1901,34 @@ def run_doctor(args):
                     else:
                         issues.append(f"Broken symlink at {_cmd_link_display}/hermes — run 'hermes doctor --fix'")
             elif _cmd_link.exists():
-                # It's a regular file, not a symlink — possibly a wrapper script
-                check_ok(f"{_cmd_link_display}/hermes exists (non-symlink)")
+                # It's a regular file, not a symlink — possibly a wrapper
+                # script. Validate recognized Hermes-managed wrappers' exec
+                # targets (issue #76421); preserve user-managed wrappers.
+                _lr_status = _launcher_status(_cmd_link, PROJECT_ROOT)
+                if _lr_status == _LR_STALE_MANAGED:
+                    check_warn(
+                        f"{_cmd_link_display}/hermes is a stale Hermes-managed wrapper",
+                        "(exec target missing or no longer the current project)"
+                    )
+                    if should_fix:
+                        _venv_python = _venv_bin.parent / "python"
+                        _entrypoint = PROJECT_ROOT / "hermes"
+                        for _action in _repair_launcher(
+                            _cmd_link, _venv_python, _entrypoint, PROJECT_ROOT
+                        ):
+                            check_ok(_action)
+                        fixed_count += 1
+                    else:
+                        issues.append(
+                            f"Stale Hermes-managed wrapper at {_cmd_link_display}/hermes — run 'hermes doctor --fix'"
+                        )
+                elif _lr_status == _LR_USER_WRAPPER:
+                    check_warn(
+                        f"{_cmd_link_display}/hermes exists but is not a recognized Hermes-managed wrapper",
+                        "(user-managed — leaving it untouched)"
+                    )
+                else:
+                    check_ok(f"{_cmd_link_display}/hermes exists (managed wrapper, current)")
             else:
                 check_fail(
                     f"{_cmd_link_display}/hermes not found",

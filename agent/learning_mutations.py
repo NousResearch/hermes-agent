@@ -36,8 +36,17 @@ def _memories_dir() -> Path:
 def _parse_memory_id(node_id: str) -> tuple[str, int]:
     """``memory:<source>:<index>`` → (source, global_index)."""
     parts = node_id.split(":", 2)
-    if len(parts) != 3 or parts[0] != "memory" or parts[1] not in _MEMORY_FILES:
+    if len(parts) != 3 or parts[0] != "memory":
         raise ValueError(f"bad memory node id: {node_id!r}")
+    if parts[1] not in _MEMORY_FILES:
+        # Nodes contributed by an external memory provider (journey_cards)
+        # carry the provider name as their source. They are read-only here:
+        # their storage lives in the provider's backend, not in a §-file this
+        # module can rewrite.
+        raise ValueError(
+            f"this memory belongs to the '{parts[1]}' memory provider and is "
+            f"read-only in the journey — manage it with the provider's own tools"
+        )
     try:
         return parts[1], int(parts[2])
     except ValueError as exc:

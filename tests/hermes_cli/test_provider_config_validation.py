@@ -67,4 +67,43 @@ class TestNormalizeCustomProviderEntry:
         assert result is not None
         assert result["base_url"] == "${PROVIDER_A_BASE_URL}"
 
+    def test_models_json_string_list_decoded(self):
+        """A JSON-encoded string for ``models`` (e.g. '["model-a","model-b"]')
+        must be decoded into a list so the normalizer doesn't drop it."""
+        import json
+        entry = {
+            "base_url": "https://api.example.com/v1",
+            "api_key": "***",
+            "models": json.dumps(["model-a", "model-b"]),
+        }
+        result = _normalize_custom_provider_entry(entry, provider_key="test")
+        assert result is not None
+        assert "models" in result
+        assert set(result["models"].keys()) == {"model-a", "model-b"}
+
+    def test_models_json_string_dict_decoded(self):
+        """A JSON-encoded string for ``models`` as a dict is also decoded."""
+        import json
+        entry = {
+            "base_url": "https://api.example.com/v1",
+            "api_key": "***",
+            "models": json.dumps({"model-a": {}, "model-b": {}}),
+        }
+        result = _normalize_custom_provider_entry(entry, provider_key="test")
+        assert result is not None
+        assert "models" in result
+        assert set(result["models"].keys()) == {"model-a", "model-b"}
+
+    def test_models_non_json_string_falls_through(self):
+        """A plain string that isn't valid JSON must not crash — it's left
+        as-is and silently dropped by the downstream dict/list checks."""
+        entry = {
+            "base_url": "https://api.example.com/v1",
+            "api_key": "***",
+            "models": "not-json",
+        }
+        result = _normalize_custom_provider_entry(entry, provider_key="test")
+        assert result is not None
+        assert "models" not in result
+
 

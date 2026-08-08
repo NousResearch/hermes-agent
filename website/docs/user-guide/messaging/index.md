@@ -186,6 +186,34 @@ process when they stop. The default `0` keeps the existing `Type=simple`
 behavior. This setting is Linux/systemd-only and does not treat an ordinary
 platform network disconnect as an event-loop failure.
 
+### Optional Linux memory ceiling
+
+A systemd-managed gateway can cap its own memory so a runaway process is
+contained by the kernel instead of dragging the whole machine into swap:
+
+```yaml title="~/.hermes/config.yaml"
+gateway:
+  systemd_memory_high: 6G   # throttle and reclaim past this point
+  systemd_memory_max: 8G    # hard limit; the kernel OOM-kills past this
+```
+
+Regenerate the service unit after changing this setting:
+
+```bash
+hermes gateway install --force
+```
+
+Both accept any size systemd understands (`8G`, `6144M`, a plain byte count, a
+percentage, or `infinity`); an unrecognized value is ignored and leaves the
+unit unlimited. Setting these in config rather than editing the unit by hand
+matters because Hermes rewrites its own unit file whenever the install drifts,
+which would otherwise wipe a hand-added `MemoryMax=`.
+
+The same cgroup limit is what `agent_cache.memory_high_mb: auto` reads to size
+its own budget, so capping the unit also makes the gateway shed cached
+transcripts before it reaches the limit. See
+[Gateway Agent Cache](/user-guide/configuration#gateway-agent-cache).
+
 ## Chat Commands (Inside Messaging)
 
 | Command | Description |

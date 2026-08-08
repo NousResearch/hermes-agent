@@ -41,6 +41,15 @@ _AUTO_BUDGET_FRACTION = 0.65
 # Below this a "budget" is noise — small containers would evict on every pass
 # and never keep a warm prefix.
 _AUTO_BUDGET_FLOOR_MB = 512
+# Ceiling for the budget derived on a host with *no* cgroup limit.  There the
+# fraction has nothing meaningful to divide: 65% of a 62 GB desktop is a 40 GB
+# "budget" the sweep only reaches once the machine is already swap-thrashing
+# and every other process is starving with it (#81625).  An absolute ceiling
+# is the only safe reading of "auto" on an uncapped host — generous next to
+# the ~150 MB an idle gateway needs, low enough that the pass runs while the
+# host still has room.  Operators with heavier workloads set an explicit
+# ``memory_high_mb``.
+_AUTO_UNCAPPED_CEILING_MB = 4096
 
 _DEFAULT_MAX_EVICTIONS_PER_PASS = 16
 # Never let a pressure pass touch the hottest sessions: they are the ones
@@ -156,10 +165,12 @@ def _total_memory_bytes() -> Optional[int]:
 def resolve_memory_high_mb(setting: Any) -> Optional[int]:
     """Resolve the ``memory_high_mb`` setting into an absolute MB budget.
 
-    ``"auto"`` derives a budget from the cgroup limit the gateway runs under
-    (or total RAM when uncapped), which is what makes this fix work out of the
-    box on the containerised/systemd deployments where the leak bites.  A
-    positive number is taken literally; anything falsy disables the pass.
+    ``"auto"`` derives a budget from the cgroup limit the gateway runs under,
+    which is what makes this fix work out of the box on the
+    containerised/systemd deployments where the leak bites.  With no limit to
+    divide it falls back to an absolute ceiling rather than a fraction of
+    total RAM — see ``_AUTO_UNCAPPED_CEILING_MB``.  A positive number is taken
+    literally; anything falsy disables the pass.
     """
     if isinstance(setting, str):
         normalized = setting.strip().lower()
@@ -175,10 +186,16 @@ def resolve_memory_high_mb(setting: Any) -> Optional[int]:
     else:
         return _positive_int(setting)
 
-    limit = _cgroup_limit_bytes() or _total_memory_bytes()
+    limit = _cgroup_limit_bytes()
+    ceiling_mb: Optional[int] = None
+    if not limit:
+        limit = _total_memory_bytes()
+        ceiling_mb = _AUTO_UNCAPPED_CEILING_MB
     if not limit:
         return None
     budget = int(limit * _AUTO_BUDGET_FRACTION / _BYTES_PER_MB)
+    if ceiling_mb is not None:
+        budget = min(budget, ceiling_mb)
     return budget if budget >= _AUTO_BUDGET_FLOOR_MB else None
 
 

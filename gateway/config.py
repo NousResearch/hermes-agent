@@ -11,6 +11,7 @@ Handles loading and validating configuration for:
 import logging
 import os
 import json
+import re
 from pathlib import Path
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Dict, List, Optional, Any, Callable
@@ -188,6 +189,50 @@ def coerce_systemd_watchdog_seconds(
         )
         return 0
     return parsed
+
+
+# systemd accepts a plain byte count, a K/M/G/T/P/E suffixed size, a
+# percentage of physical memory, or the literal ``infinity``.
+_SYSTEMD_MEMORY_LIMIT_RE = re.compile(r"(?:[1-9]\d*[KMGTPE]?|100%|[1-9]\d?%|infinity)\Z")
+
+
+def coerce_systemd_memory_limit(
+    value: Any, key: str = "gateway.systemd_memory_limit"
+) -> str:
+    """Return a systemd-ready memory limit, or ``""`` when unset or unusable.
+
+    The result is interpolated straight into the generated unit file, so
+    refusing everything that is not a recognized systemd size is also what
+    keeps a stray newline in ``config.yaml`` from becoming an extra directive.
+    A rejected value leaves the unit unlimited rather than half-configured.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        logger.warning("Ignoring invalid %s (expected a systemd memory size)", key)
+        return ""
+    if isinstance(value, int):
+        if value <= 0:
+            logger.warning(
+                "Ignoring invalid %s (expected a positive byte count)", key
+            )
+            return ""
+        return str(value)
+    if not isinstance(value, str):
+        logger.warning("Ignoring invalid %s (expected a systemd memory size)", key)
+        return ""
+    raw = value.strip()
+    if not raw:
+        return ""
+    if not raw.isascii() or not _SYSTEMD_MEMORY_LIMIT_RE.match(raw):
+        logger.warning(
+            "Ignoring invalid %s=%r (expected a systemd memory size such as "
+            "8G, 6144M, a byte count, a percentage, or infinity)",
+            key,
+            value,
+        )
+        return ""
+    return raw
 
 
 def _coerce_dict(value: Any) -> Dict[str, Any]:
@@ -930,6 +975,14 @@ class GatewayConfig:
     # disables sd_notify at runtime.
     systemd_watchdog_seconds: int = 0
 
+    # Opt-in cgroup memory ceiling for the generated unit. The gateway
+    # rewrites its own unit file whenever the install drifts, which wipes any
+    # MemoryHigh=/MemoryMax= an operator added by hand (#81625), so the
+    # ceiling has to come from config for the generator to keep emitting it.
+    # Empty means "no directive" — exactly today's behavior.
+    systemd_memory_high: str = ""
+    systemd_memory_max: str = ""
+
     # In-process event-loop liveness watchdog (#69089). A daemon OS thread
     # probes the gateway loop with call_soon_threadsafe; after consecutive
     # missed probes it dumps all-thread stacks and hard-exits with the
@@ -958,6 +1011,12 @@ class GatewayConfig:
     def __post_init__(self) -> None:
         self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
             self.systemd_watchdog_seconds
+        )
+        self.systemd_memory_high = coerce_systemd_memory_limit(
+            self.systemd_memory_high, "gateway.systemd_memory_high"
+        )
+        self.systemd_memory_max = coerce_systemd_memory_limit(
+            self.systemd_memory_max, "gateway.systemd_memory_max"
         )
 
     def get_connected_platforms(self) -> List[Platform]:
@@ -1071,6 +1130,8 @@ class GatewayConfig:
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "multiplex_profiles": self.multiplex_profiles,
             "systemd_watchdog_seconds": self.systemd_watchdog_seconds,
+            "systemd_memory_high": self.systemd_memory_high,
+            "systemd_memory_max": self.systemd_memory_max,
             "loop_watchdog": self.loop_watchdog,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
@@ -1143,6 +1204,18 @@ class GatewayConfig:
         systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
             systemd_watchdog_raw, systemd_watchdog_key
         )
+        # __post_init__ coerces these, so only the flat-vs-nested lookup
+        # happens here.
+        systemd_memory_high = (
+            data["systemd_memory_high"]
+            if "systemd_memory_high" in data
+            else nested_gateway.get("systemd_memory_high")
+        )
+        systemd_memory_max = (
+            data["systemd_memory_max"]
+            if "systemd_memory_max" in data
+            else nested_gateway.get("systemd_memory_max")
+        )
         if "loop_watchdog" in data:
             loop_watchdog_raw = data.get("loop_watchdog")
         else:
@@ -1208,6 +1281,8 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
             systemd_watchdog_seconds=systemd_watchdog_seconds,
+            systemd_memory_high=systemd_memory_high,
+            systemd_memory_max=systemd_memory_max,
             loop_watchdog=loop_watchdog,
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
@@ -1369,6 +1444,9 @@ def load_gateway_config() -> GatewayConfig:
                     gw_data["systemd_watchdog_seconds"] = gateway_section[
                         "systemd_watchdog_seconds"
                     ]
+                for _memory_key in ("systemd_memory_high", "systemd_memory_max"):
+                    if _memory_key in gateway_section:
+                        gw_data[_memory_key] = gateway_section[_memory_key]
 
             if "max_concurrent_sessions" in yaml_cfg:
                 gw_data["max_concurrent_sessions"] = yaml_cfg["max_concurrent_sessions"]

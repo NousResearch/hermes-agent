@@ -29,7 +29,11 @@ if os.name == "posix":
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config
+from gateway.config import (
+    coerce_systemd_memory_limit,
+    coerce_systemd_watchdog_seconds,
+    load_gateway_config,
+)
 from gateway.status import terminate_pid
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT,
@@ -2800,6 +2804,55 @@ def _systemd_watchdog_service_fields(
     return "notify", f"NotifyAccess=main\nWatchdogSec={seconds}s\n"
 
 
+def _systemd_memory_directives(hermes_home: str | Path | None = None) -> str:
+    """Return the ``MemoryHigh=``/``MemoryMax=`` block for the effective config.
+
+    The unit is regenerated whenever the install drifts, so a ceiling an
+    operator added by hand does not survive (#81625). Emitting it from config
+    is what makes a cgroup limit stick across restarts — and that limit is
+    also what ``gateway/agent_cache_pressure.py`` reads to size the budget for
+    its pressure eviction pass.
+    """
+    override_token = None
+    reset_home_override = None
+    if hermes_home is not None:
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        override_token = set_hermes_home_override(hermes_home)
+        reset_home_override = reset_hermes_home_override
+    try:
+        config = load_gateway_config()
+        limits = (
+            (
+                "MemoryHigh",
+                coerce_systemd_memory_limit(
+                    getattr(config, "systemd_memory_high", ""),
+                    "gateway.systemd_memory_high",
+                ),
+            ),
+            (
+                "MemoryMax",
+                coerce_systemd_memory_limit(
+                    getattr(config, "systemd_memory_max", ""),
+                    "gateway.systemd_memory_max",
+                ),
+            ),
+        )
+        return "".join(f"{directive}={value}\n" for directive, value in limits if value)
+    except Exception:
+        logger.debug(
+            "Could not resolve effective systemd memory configuration",
+            exc_info=True,
+        )
+        return ""
+    finally:
+        if override_token is not None and reset_home_override is not None:
+            reset_home_override(override_token)
+
+
 def _append_node_dir_for_service(
     path_entries: list[str], hermes_root: Path | None = None
 ) -> None:
@@ -2884,6 +2937,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         systemd_type, systemd_watchdog_directives = _systemd_watchdog_service_fields(
             hermes_home
         )
+        systemd_memory_directives = _systemd_memory_directives(hermes_home)
         profile_arg = _profile_arg_for_target_user(hermes_home, home_dir)
         # Remap all paths that may resolve under the calling user's home
         # (e.g. /root/) to the target user's home so the service can
@@ -2918,7 +2972,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type={systemd_type}
-{systemd_watchdog_directives}User={username}
+{systemd_watchdog_directives}{systemd_memory_directives}User={username}
 Group={group_name}
 ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
 WorkingDirectory={working_dir}
@@ -2948,6 +3002,7 @@ WantedBy=multi-user.target
     systemd_type, systemd_watchdog_directives = _systemd_watchdog_service_fields(
         hermes_home
     )
+    systemd_memory_directives = _systemd_memory_directives(hermes_home)
     profile_arg = _profile_arg(hermes_home)
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))
@@ -2961,7 +3016,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type={systemd_type}
-{systemd_watchdog_directives}ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
+{systemd_watchdog_directives}{systemd_memory_directives}ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"

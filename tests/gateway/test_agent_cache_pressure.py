@@ -97,6 +97,48 @@ class TestMemoryBudgetResolution:
 
         assert resolve_memory_high_mb("auto") is None
 
+    def test_auto_on_an_uncapped_host_stays_well_under_total_ram(self, monkeypatch):
+        """A fraction of *total RAM* is not a budget on a desktop (#81625).
+
+        The reported machine had 62 GB of RAM, no cgroup limit and 2 GB of
+        swap: a 0.65-of-total budget only fires at ~40 GB, long after the
+        desktop has frozen and taken every other process with it. With no
+        limit to divide, the only safe budget is an absolute one.
+        """
+        import gateway.agent_cache_pressure as acp
+
+        total_mb = 62 * 1024
+        monkeypatch.setattr(acp, "_cgroup_limit_bytes", lambda: None)
+        monkeypatch.setattr(acp, "_total_memory_bytes", lambda: total_mb * 1024 * 1024)
+
+        budget = resolve_memory_high_mb("auto")
+
+        assert budget is not None
+        assert budget <= acp._AUTO_UNCAPPED_CEILING_MB
+        assert budget < total_mb // 8
+
+    def test_auto_prefers_the_cgroup_limit_over_the_uncapped_ceiling(self, monkeypatch):
+        """A container smaller than the ceiling still gets the tighter budget."""
+        import gateway.agent_cache_pressure as acp
+
+        limit_mb = 2 * 1024
+        monkeypatch.setattr(acp, "_cgroup_limit_bytes", lambda: limit_mb * 1024 * 1024)
+        monkeypatch.setattr(acp, "_total_memory_bytes", lambda: 62 * 1024 * 1024 * 1024)
+
+        budget = resolve_memory_high_mb("auto")
+
+        assert budget is not None
+        assert 0 < budget < limit_mb
+
+    def test_an_explicit_budget_still_overrides_the_uncapped_ceiling(self, monkeypatch):
+        """Operators who know their workload keep the last word."""
+        import gateway.agent_cache_pressure as acp
+
+        monkeypatch.setattr(acp, "_cgroup_limit_bytes", lambda: None)
+        monkeypatch.setattr(acp, "_total_memory_bytes", lambda: 62 * 1024 * 1024 * 1024)
+
+        assert resolve_memory_high_mb(16384) == 16384
+
 
 class TestPersistenceGuard:
     """Soft eviction drops the transcript, so it may only run once the

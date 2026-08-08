@@ -993,6 +993,44 @@ def _oauth_trace(event: str, *, sequence_id: Optional[str] = None, **fields: Any
     logger.info("oauth_trace %s", json.dumps(payload, sort_keys=True, ensure_ascii=False))
 
 
+# Snapshot the user home before a test fixture can mutate ``HOME``.  On POSIX,
+# the passwd database is the preferred env-independent source; the snapshot is
+# the fallback for platforms and runtimes where that lookup is unavailable.
+try:
+    _XAI_IMPORT_TIME_HOME: Optional[Path] = Path(os.path.expanduser("~"))
+except Exception:  # pragma: no cover - expanduser is effectively total
+    _XAI_IMPORT_TIME_HOME = None
+
+
+def _xai_immutable_user_home() -> Optional[Path]:
+    """Return the real user home without consulting mutable test env state."""
+    try:
+        import pwd
+
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except Exception:
+        return _XAI_IMPORT_TIME_HOME
+
+
+def _resolve_auth_path(path: Path) -> Path:
+    """Resolve an auth path without making the test seat belt fragile."""
+    try:
+        return path.resolve(strict=False)
+    except Exception:
+        return path
+
+
+def _protected_auth_file_paths() -> set[Path]:
+    """Auth-store paths that tests must never read from or write to."""
+    homes = (_xai_immutable_user_home(), _XAI_IMPORT_TIME_HOME)
+    candidates = {
+        Path(home) / ".hermes" / "auth.json"
+        for home in homes
+        if home is not None
+    }
+    return {_resolve_auth_path(path) for path in candidates}
+
+
 # =============================================================================
 # Auth Store — persistence layer for ~/.hermes/auth.json
 # =============================================================================
@@ -1005,12 +1043,7 @@ def _auth_file_path() -> Path:
     # hermetic conftest, or sandbox escapes via threads/subprocesses. In
     # production (no PYTEST_CURRENT_TEST) this is a single dict lookup.
     if os.environ.get("PYTEST_CURRENT_TEST"):
-        real_home_auth = (Path.home() / ".hermes" / "auth.json").resolve(strict=False)
-        try:
-            resolved = path.resolve(strict=False)
-        except Exception:
-            resolved = path
-        if resolved == real_home_auth:
+        if _resolve_auth_path(path) in _protected_auth_file_paths():
             raise RuntimeError(
                 f"Refusing to touch real user auth store during test run: {path}. "
                 "Set HERMES_HOME to a tmp_path in your test fixture, or run "
@@ -1061,23 +1094,17 @@ def _load_global_auth_store() -> Dict[str, Any]:
     path. The hermetic conftest does not redirect ``HOME``, so
     ``get_default_hermes_root()`` for a profile-shaped HERMES_HOME can
     still resolve to the real user's home on a dev machine. That would
-    leak real credentials into tests. This guard uses the unmodified
-    ``HOME`` env var (what ``os.path.expanduser('~')`` would resolve to),
-    not ``Path.home()``, because ``Path.home`` is sometimes monkeypatched
-    by fixtures that want to relocate the global root to a tmp path.
+    leak real credentials into tests. The guard uses an env-immutable home
+    source, so patching HOME cannot relocate the protected path.
     """
     global_path = _global_auth_file_path()
-    if global_path is None or not global_path.exists():
+    if global_path is None:
         return {}
     if os.environ.get("PYTEST_CURRENT_TEST"):
-        real_home_env = os.environ.get("HOME", "")
-        if real_home_env:
-            real_root = Path(real_home_env) / ".hermes" / "auth.json"
-            try:
-                if global_path.resolve(strict=False) == real_root.resolve(strict=False):
-                    return {}
-            except Exception:
-                pass
+        if _resolve_auth_path(global_path) in _protected_auth_file_paths():
+            return {}
+    if not global_path.exists():
+        return {}
     try:
         return _load_auth_store(global_path)
     except Exception:
@@ -1471,6 +1498,12 @@ def _persist_provider_state_to_store(
     set_active: bool = False,
 ) -> Path:
     """Merge one provider into a specific auth store under that store's lock."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        if _resolve_auth_path(target_path) in _protected_auth_file_paths():
+            raise RuntimeError(
+                f"Refusing to touch real user auth store during test run: {target_path}. "
+                "Use a temporary auth-store target in your test fixture."
+            )
     with _auth_store_lock(target_path=target_path):
         auth_store = _load_auth_store(target_path)
         _store_provider_state(

@@ -54,6 +54,7 @@ directly via `window.__PERF_DRIVE__`, so no LLM credits are spent.
 | `render-churn` | ci | per-component render attribution + store churn while N tabs stream | (new) |
 | `idle-cost` | report | busy-but-silent tiles: idle commit rate, + fps while resizing / typing | (new) |
 | `right-pane` | report | file tree + persistent xterm tabs under chat/terminal output and split dragging | (new) |
+| `hitch-classify` | report | injects renderer / gateway hitches and ASSERTS the capture bundle's classification (U5) | (new) |
 | `cold-start` | cold | launch → CDP → driver → first paint (fresh spawn/run) | (new) |
 | `first-token` | backend | Enter → first assistant token painted (TTFT) | (new) |
 | `submit` | backend | Enter → cleared → user msg painted, scroll jump | measure-submit, measure-jump |
@@ -65,6 +66,12 @@ directly via `window.__PERF_DRIVE__`, so no LLM credits are spent.
 `baseline.json` (`cold-start` requires `--spawn` since it measures a fresh
 launch, and must be run in its own invocation). `backend` scenarios need a live
 backend (and `--spawn` or a real session/credits) and are report-only.
+
+`hitch-classify` is the odd one out: it asserts instead of measuring, and it
+needs `--spawn` because the gateway's loop-block test hook is mounted only when
+the backend process is started with `HERMES_DIAGNOSTICS_TEST_HOOKS=1`, which the
+runner sets for that scenario's isolated instance and nowhere else. It exits
+nonzero when a case is misclassified.
 
 CPU profiling is a cross-cutting `--cpuprofile` flag on any scenario (it wraps
 the run in `Profiler.start/stop` and prints a top-self-time table), replacing

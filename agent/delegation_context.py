@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from typing import Iterator, Mapping, MutableMapping
+from typing import Iterator, Mapping, MutableMapping, Sequence
 
 _DELEGATED_CHILD_CONTEXT: ContextVar[bool] = ContextVar(
     "hermes_delegated_child_context",
@@ -128,6 +128,65 @@ def is_delegated_child_process_context() -> bool:
     return bool(_DELEGATED_CHILD_CONTEXT.get()) or bool(
         os.environ.get(DELEGATED_CHILD_ENV_MARKER)
     )
+
+
+# Entrypoints that start a long-lived Hermes *server* rather than doing agent
+# work.  ``gateway`` is deliberately absent — only ``gateway run`` qualifies,
+# which :func:`is_server_role_argv` special-cases; ``gateway restart|status``
+# are ordinary short-lived CLI calls.
+SERVER_ROLE_COMMANDS: frozenset[str] = frozenset({
+    "serve",
+    "dashboard",
+    "gui",
+    "desktop",
+})
+
+
+def is_server_role_argv(argv: Sequence[str]) -> bool:
+    """Return True when *argv* starts a long-lived Hermes server process.
+
+    *argv* is the argument list WITHOUT the program name (``sys.argv[1:]``).
+    Only the leading positional words matter, so flags anywhere are ignored.
+    """
+    positionals = [arg for arg in argv if not arg.startswith("-")]
+    if not positionals:
+        return False
+    command = positionals[0]
+    if command == "gateway":
+        return len(positionals) > 1 and positionals[1] == "run"
+    return command in SERVER_ROLE_COMMANDS
+
+
+def clear_delegated_child_marker_for_server_role() -> bool:
+    """Drop an inherited lineage marker in a server-role process. Returns True if one was cleared.
+
+    A long-lived Hermes server is a fresh root of trust, not delegate_task
+    child work — it serves the user's browser and desktop app, not the agent
+    that happened to launch it.  Such a server is routinely started *from* an
+    agent: a delegated child that runs ``hermes serve`` or launches the desktop
+    app through the terminal tool spawns it with
+    :data:`DELEGATED_CHILD_ENV_MARKER` in its environment, because
+    :func:`delegated_child_subprocess_env` stamps the marker into every child
+    env so the lineage survives a fork.  Nothing ever unsets it, so the marker
+    outlives the delegated child by hours and permanently poisons the server's
+    Kanban path: ``kanban_db.connect()`` runs its first-open migration pass
+    through ``write_txn``, so the delegated-child guard fails the whole *read*
+    path, not just mutations, and the dashboard event stream errors on every
+    reconnect.
+
+    ``tests/conftest.py`` drops the marker for exactly this reason (pytest is
+    routinely launched from a delegated worker).  This is the same fix for the
+    other long-lived process that is not agent work.
+
+    Deliberately narrow: only the server entrypoints in
+    :func:`is_server_role_argv` call this.  Everything an agent actually
+    delegates — a ``hermes kanban`` CLI call, a python subprocess importing
+    ``kanban_db``, a grandchild of either — keeps the marker and stays rejected
+    by the guard.
+    """
+    import os
+
+    return os.environ.pop(DELEGATED_CHILD_ENV_MARKER, None) is not None
 
 
 def scrub_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[str, str]:

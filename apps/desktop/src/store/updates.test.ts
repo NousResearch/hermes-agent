@@ -52,6 +52,7 @@ const {
   $updateApply,
   $updateOverlayOpen,
   $updateOverlayTarget,
+  dismissUpdateOverlay,
   requestActiveUpdate,
   resetUpdateApplyState,
   startUpdatePoller,
@@ -104,6 +105,26 @@ describe('maybeNotifyUpdateAvailable', () => {
     // A different commit lands while still within the cooldown window.
     maybeNotifyUpdateAvailable(status({ targetSha: 'sha-b', behind: 9 }))
     expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('stays quiet after the overlay is declined, not just the toast', () => {
+    // "Maybe later" in the overlay is the same intent as closing the toast, so
+    // it starts the same cooldown. Without this the toast returns on the next
+    // check — minutes away in this repo.
+    dismissUpdateOverlay({ snooze: true })
+    expect($updateOverlayOpen.get()).toBe(false)
+
+    maybeNotifyUpdateAvailable(status({ targetSha: 'sha-b', behind: 9 }))
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('keeps reminding when the overlay closes on a finished apply', () => {
+    // Closing a restart/error/manual view is not a decline, so it must not
+    // silence the reminder for a genuinely new update.
+    dismissUpdateOverlay({ snooze: false })
+
+    maybeNotifyUpdateAvailable(status({ targetSha: 'sha-b', behind: 9 }))
+    expect(notifySpy).toHaveBeenCalledTimes(1)
   })
 
   it('re-shows once the cooldown elapses', () => {

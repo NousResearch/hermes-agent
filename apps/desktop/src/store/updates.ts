@@ -58,6 +58,25 @@ export const $updateOverlayTarget = atom<UpdateTarget>('client')
 
 export const setUpdateOverlayOpen = (open: boolean) => $updateOverlayOpen.set(open)
 
+/**
+ * Close the updates overlay. Declining an offered update ("Maybe later", or the
+ * close button on the idle view) is the same "remind me later" intent as
+ * dismissing the toast, so it must (re)start that same cooldown — pass
+ * `snooze: true` for those. Without it the toast returns on the very next
+ * check, which in this repo is minutes away, and the user who just said "later"
+ * is nagged again immediately.
+ *
+ * Closing while an apply is finishing, errored or needs manual steps is not a
+ * decline, so those callers pass `snooze: false`.
+ */
+export const dismissUpdateOverlay = ({ snooze }: { snooze: boolean }) => {
+  $updateOverlayOpen.set(false)
+
+  if (snooze) {
+    snoozeUpdateToast()
+  }
+}
+
 export const openUpdateOverlayFor = (target: UpdateTarget) => {
   $updateOverlayTarget.set(target)
   $updateOverlayOpen.set(true)

@@ -33,6 +33,7 @@ import {
   applyUpdates,
   checkBackendUpdates,
   checkUpdates,
+  dismissUpdateOverlay,
   resetUpdateApplyState,
   setUpdateOverlayOpen,
   type UpdateApplyState
@@ -85,12 +86,18 @@ export function UpdatesOverlay() {
       return
     }
 
-    setUpdateOverlayOpen(next)
+    if (next) {
+      setUpdateOverlayOpen(true)
 
-    if (
-      !next &&
-      (apply.stage === 'error' || apply.stage === 'restart' || apply.stage === 'manual' || apply.stage === 'guiSkew')
-    ) {
+      return
+    }
+
+    // Closing the idle view is a decline ("Maybe later"), so it snoozes the
+    // toast the same way dismissing the toast itself does. The other phases are
+    // outcomes of an apply the user already started, not a decline.
+    dismissUpdateOverlay({ snooze: phase === 'idle' })
+
+    if (apply.stage === 'error' || apply.stage === 'restart' || apply.stage === 'manual' || apply.stage === 'guiSkew') {
       resetUpdateApplyState()
     }
   }

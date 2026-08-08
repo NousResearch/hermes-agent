@@ -873,6 +873,19 @@ def _(rid, params: dict) -> dict:
 
     branch = _git_branch_for_cwd(resolved)
     root = _git_common_repo_root_for_cwd(resolved)
+
+    # Re-check before mutating. The two probes above are git subprocesses and
+    # this method runs on the RPC pool, so a prompt submitted while they run
+    # flips ``running`` after the first check — and ``_set_session_cwd`` below
+    # does not re-check. Without this the move yanks the workspace out from
+    # under a live turn's terminal/file tools, the exact case the first check
+    # exists to refuse.
+    if live is not None:
+        with _sessions_lock:
+            still_running = bool(live.get("running"))
+        if still_running:
+            return _err(rid, 4009, "session busy")
+
     with _profile_db(params) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5007)

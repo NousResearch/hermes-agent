@@ -1562,12 +1562,57 @@ def switch_model(
                     if isinstance(user_providers, dict) and target_provider in user_providers:
                         explicit_provider = target_provider
 
+        # --- Step d2: Configured aggregator fallback (#48731) ---
+        # When config.yaml specifies a different aggregator provider, check
+        # its live catalog before static detection.
+        if (
+            not resolved_in_current_catalog
+            and not resolved_alias
+            and target_provider == current_provider
+        ):
+            try:
+                from hermes_cli.config import load_config as _load_cfg
+                _cfg = _load_cfg()
+                _model_cfg = _cfg.get("model")
+                _configured_prov = (
+                    _model_cfg.get("provider", "")
+                    if isinstance(_model_cfg, dict)
+                    else ""
+                )
+                if (
+                    _configured_prov
+                    and _configured_prov != current_provider
+                    and is_aggregator(_configured_prov)
+                ):
+                    _cat = list_provider_models(_configured_prov)
+                    if _cat:
+                        _nl = new_model.lower()
+                        for _mid in _cat:
+                            if _mid.lower() == _nl:
+                                new_model = _mid
+                                target_provider = _configured_prov
+                                resolved_in_current_catalog = True
+                                break
+                        if not resolved_in_current_catalog:
+                            for _mid in _cat:
+                                if "/" in _mid:
+                                    _, _bare = _mid.split("/", 1)
+                                    if _bare.lower() == _nl:
+                                        new_model = _mid
+                                        target_provider = _configured_prov
+                                        resolved_in_current_catalog = True
+                                        break
+            except Exception:
+                pass
+
         # --- Step e: detect_provider_for_model() as last resort ---
         _base = current_base_url or ""
+        _unknown_proxy = bool(_base) and not list_provider_models(current_provider)
         is_custom = (
             current_provider in {"custom", "local"}
             or current_provider.startswith("custom:")
             or ("localhost" in _base or "127.0.0.1" in _base)
+            or _unknown_proxy  # ponytail: base_url + unknown to models.dev = proxy, don't auto-switch
         )
 
         if (

@@ -57,6 +57,7 @@ _HISTORY_MEDIA_LOOKUP_MAX_WORKERS = 2
 _HISTORY_MEDIA_LOOKUP_ADMISSION = threading.BoundedSemaphore(
     _HISTORY_MEDIA_LOOKUP_MAX_WORKERS
 )
+_PRESENTATION_GATE_PATH = "/volume1/docker/nas-platform-foundation/integrations/presentation"
 
 
 def _platform_name(platform) -> str:
@@ -1505,6 +1506,31 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
 
     if not resolved.is_file():
         return None
+
+    # Foundation PPT runtime hardening (Phase 3F): PPT/PDF presentation
+    # attachments must pass the Delivery Gate before any gateway document
+    # sender receives the path. Ordinary text and non-presentation files are
+    # unaffected; metadata-free presentation-looking PDFs fail closed.
+    suffix = resolved.suffix.lower()
+    name = resolved.name.lower()
+    presentation_like = suffix in {".ppt", ".pptx"} or (
+        suffix == ".pdf"
+        and any(h in name for h in ("ppt", "presentation", "slide", "deck", "verified_final"))
+    )
+    if presentation_like:
+        try:
+            import sys as _ppt_gate_sys
+            _ppt_gate_path = _PRESENTATION_GATE_PATH
+            if _ppt_gate_path not in _ppt_gate_sys.path:
+                _ppt_gate_sys.path.insert(0, _ppt_gate_path)
+            from telegram_core_presentation_gate import allow_media_delivery as _ppt_allow_media_delivery
+            _ppt_allowed, _ppt_reason = _ppt_allow_media_delivery(str(resolved), channel="telegram")
+            if not _ppt_allowed:
+                logger.warning("Presentation media delivery blocked by Foundation gate: reason=%s path=%s", _ppt_reason, _log_safe_path(str(resolved)))
+                return None
+        except Exception as exc:
+            logger.warning("Presentation media delivery blocked because Foundation gate errored: error=%s path=%s", type(exc).__name__, _log_safe_path(str(resolved)))
+            return None
 
     # Cache / operator allowlist is always honored — these are unconditionally
     # trusted regardless of mode.

@@ -11,6 +11,7 @@ This module provides:
 - hermes config get      - Print a resolved configuration value
 - hermes config set      - Set a specific value
 - hermes config unset    - Remove a user configuration value
+- hermes config validate - Validate config.yaml structure
 - hermes config wizard   - Re-run setup wizard
 """
 
@@ -5208,6 +5209,63 @@ def config_command(args):
     
     elif subcmd == "env-path":
         print(get_env_path())
+
+    elif subcmd == "validate":
+        config_path = Path(args.path) if getattr(args, "path", None) else get_config_path()
+        try:
+            with open(config_path, encoding="utf-8-sig") as config_file:
+                loaded_config = fast_safe_load(config_file)
+        except (OSError, UnicodeError, yaml.YAMLError) as exc:
+            print(
+                color(f"✗ Could not load config {config_path}: {exc}", Colors.RED),
+                file=sys.stderr,
+            )
+            return 1
+
+        if loaded_config is None:
+            config = {}
+        elif not isinstance(loaded_config, dict):
+            print(
+                color(
+                    f"✗ Configuration root must be a mapping in {config_path} "
+                    f"(got {type(loaded_config).__name__})",
+                    Colors.RED,
+                ),
+                file=sys.stderr,
+            )
+            return 1
+        else:
+            config = loaded_config
+
+        non_string_keys = [key for key in config if not isinstance(key, str)]
+        if non_string_keys:
+            print(
+                color(
+                    f"✗ Configuration top-level keys must be strings in {config_path} "
+                    f"(got {type(non_string_keys[0]).__name__})",
+                    Colors.RED,
+                ),
+                file=sys.stderr,
+            )
+            return 1
+
+        issues = validate_config_structure(config)
+        if not issues:
+            print(color(f"✓ Configuration structure is valid: {config_path}", Colors.GREEN))
+            return 0
+
+        print(f"Configuration issues in {config_path}:", file=sys.stderr)
+        had_error = False
+        for issue in issues:
+            if issue.severity == "error":
+                marker = color("✗", Colors.RED)
+                had_error = True
+            else:
+                marker = color("⚠", Colors.YELLOW)
+            print(f"  {marker} {issue.message}", file=sys.stderr)
+            for hint_line in issue.hint.splitlines():
+                print(color(f"    {hint_line}", Colors.DIM), file=sys.stderr)
+        return 1 if had_error else 0
     
     elif subcmd == "migrate":
         print()
@@ -5313,6 +5371,7 @@ def config_command(args):
         print("  hermes config set <key> <value>   Set a config value")
         print("  hermes config unset <key>        Remove a config value")
         print("  hermes config check     Check for missing/outdated config")
+        print("  hermes config validate [path]    Validate config.yaml structure")
         print("  hermes config migrate   Update config with new options")
         print("  hermes config path      Show config file path")
         print("  hermes config env-path  Show .env file path")

@@ -62,6 +62,16 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     # config check
     config_subparsers.add_parser("check", help="Check for missing/outdated config")
 
+    # config validate
+    config_validate = config_subparsers.add_parser(
+        "validate", help="Validate config.yaml structure"
+    )
+    config_validate.add_argument(
+        "path",
+        nargs="?",
+        help="Path to config.yaml (defaults to the active profile's config.yaml)",
+    )
+
     # config migrate
     config_subparsers.add_parser("migrate", help="Update config with new options")
 

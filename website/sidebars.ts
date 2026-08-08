@@ -374,6 +374,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/creative/creative-concept-diagrams',
                     'user-guide/skills/optional/creative/creative-creative-ideation',
                     'user-guide/skills/optional/creative/creative-heartmula',
+                    'user-guide/skills/optional/creative/creative-human-writing',
                     'user-guide/skills/optional/creative/creative-hyperframes',
                     'user-guide/skills/optional/creative/creative-kanban-video-orchestrator',
                     'user-guide/skills/optional/creative/creative-meme-generation',

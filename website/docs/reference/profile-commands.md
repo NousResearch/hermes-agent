@@ -89,6 +89,8 @@ Creates a new profile.
 
 Creating a profile does **not** make that profile directory the default project/workspace directory for terminal commands. If you want a profile to start in a specific project, set `terminal.cwd` in that profile's `config.yaml`.
 
+For friend, colleague, team, or client agents, the [Tenant Workspaces for Profiles](../user-guide/tenant-workspaces.md) guide describes a docs-only operator convention for keeping tenant-created artifacts under one workspace and reviewing reusable candidates before promoting them to shared assets. This convention can be used with today's `profile create`; it is not a sandbox and does not add a new CLI flag yet.
+
 **Examples:**
 
 ```bash

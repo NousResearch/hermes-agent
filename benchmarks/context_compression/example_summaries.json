@@ -1,0 +1,5 @@
+{
+  "exact-operational-context": "The active task is: Run the verification now; do not rewrite the grid. Work concerns C:\\Bench\\GlyphLab\\source-grid.txt. Backticks are invisible grid markers, and the prose must use — rather than - in the final output. A credential was present and is [REDACTED].",
+  "correction-supersedes-stale-state": "The current deployment target is production-west; staging-east was only a dry run.",
+  "reverse-signal-cancels-old-task": "The latest instruction supersedes the earlier publication request: Stop. Just verify the draft locally; do not publish it."
+}

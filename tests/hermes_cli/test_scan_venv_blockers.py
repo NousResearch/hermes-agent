@@ -33,6 +33,23 @@ def _psutil_fake() -> dict:
     return {"psutil": types.SimpleNamespace(Process=lambda *a: MagicMock())}
 
 
+def _psutil_fake_with_argv(argv_by_pid: dict) -> dict:
+    """psutil fake whose Process(pid).cmdline() returns a live argv list.
+
+    Simulates the real psutil re-read the scanner performs on the captured
+    (possibly truncated) cmdline before the gateway exemption runs.
+    """
+
+    class _Proc:
+        def __init__(self, pid: int) -> None:
+            self._pid = pid
+
+        def cmdline(self):
+            return argv_by_pid.get(self._pid)
+
+    return {"psutil": types.SimpleNamespace(Process=_Proc)}
+
+
 
 
 
@@ -211,4 +228,76 @@ def test_main_desktop_serve_backend_still_blocks(monkeypatch, capsys):
     assert code == 0
     assert data["blocked"] is True
     assert [p["pid"] for p in data["processes"]] == [78]
+    assert data["pausable_gateways"] == 0
+
+
+def test_main_rereads_truncated_argv_before_gateway_exemption(monkeypatch, capsys):
+    """A uv-side gateway worker whose captured cmdline was truncated at 120
+    chars (the managed-CPython path alone exceeds the budget) must still be
+    exempted: the scanner re-reads the live argv via psutil before running
+    the gateway matcher. Regression for the Desktop ``venv-blocked`` dead-end
+    where the reported holder is a gateway the updater would pause itself.
+    """
+    worker_pid = 3401
+    truncated_worker = (
+        worker_pid,
+        "python.exe",
+        # The 120-char prefix captured by _detect_venv_python_processes;
+        # "gateway run" lies beyond the truncation point.
+        r"E:\hermes\hermes-agent\.hermes-runtime\python\generation-1785786039-27004-e71ff1af\cpython-3.11-windows-x86_64-none\pyth",
+    )
+    full_argv = [
+        r"E:\hermes\hermes-agent\.hermes-runtime\python\generation-1785786039-27004-e71ff1af\cpython-3.11-windows-x86_64-none\python.exe",
+        "-m",
+        "hermes_cli.main",
+        "gateway",
+        "run",
+    ]
+
+    for name, mod in _psutil_fake_with_argv({worker_pid: full_argv}).items():
+        monkeypatch.setitem(sys.modules, name, mod)
+    import hermes_cli.main as cli_main
+
+    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: [truncated_worker])
+
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert excinfo.value.code == 0
+    assert data["ok"] is True
+    assert data["blocked"] is False
+    assert data["processes"] == []
+    assert data["pausable_gateways"] == 1
+
+
+def test_main_truncated_gateway_worker_without_live_argv_falls_back(
+    monkeypatch, capsys
+):
+    """When psutil cannot re-read the live argv (dead PID, access denied),
+    the scanner falls back to the captured cmdline — a truncated gateway
+    worker then still counts as a blocker, preserving pre-fix behavior.
+    """
+    truncated_worker = (
+        3402,
+        "python.exe",
+        r"E:\hermes\hermes-agent\.hermes-runtime\python\generation-1785786039-27004-e71ff1af\cpython-3.11-windows-x86_64-none\pyth",
+    )
+
+    # Default fake: Process(pid).cmdline() returns a MagicMock, so the join
+    # fails and the captured (truncated) cmdline is used.
+    for name, mod in _psutil_fake().items():
+        monkeypatch.setitem(sys.modules, name, mod)
+    import hermes_cli.main as cli_main
+
+    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: [truncated_worker])
+
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert excinfo.value.code == 0
+    assert data["ok"] is True
+    assert data["blocked"] is True
+    assert [p["pid"] for p in data["processes"]] == [3402]
     assert data["pausable_gateways"] == 0

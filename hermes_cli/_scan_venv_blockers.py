@@ -140,16 +140,34 @@ def main() -> None:
     except Exception as exc:
         _emit_probe_fail(f"scan aborted: {exc}")
 
-    processes = [
-        {
-            "pid": pid,
-            "name": name,
-            "cmdline": _redact_sensitive_cmdline(cmdline),
-        }
-        for pid, name, cmdline in matches
-        if not _is_pausable_gateway(cmdline)
-    ]
-    exempted = sum(1 for _pid, _name, cmdline in matches if _is_pausable_gateway(cmdline))
+    processes: list[dict] = []
+    exempted = 0
+    for pid, name, cmdline in matches:
+        # The blocker scan captures only a 120-char cmdline prefix
+        # (``_detect_venv_python_processes``). A uv-managed CPython worker
+        # path (``.hermes-runtime\\python\\generation-*\\...\\python.exe``)
+        # is long enough to push the trailing ``gateway run`` tokens past
+        # the truncation point, so ``_is_pausable_gateway`` misses the
+        # process and the Desktop preflight dead-ends with ``venv-blocked``
+        # even though the CLI updater would pause the gateway itself.
+        # Re-read the live argv where psutil allows — the same fallback
+        # ``update_cmd._leftover_pausable_gateway_pids`` uses for its guard
+        # — so the exemption and the guard cannot drift apart.
+        argv = cmdline
+        try:
+            argv = " ".join(psutil.Process(int(pid)).cmdline()) or cmdline
+        except Exception:
+            pass
+        if _is_pausable_gateway(argv):
+            exempted += 1
+            continue
+        processes.append(
+            {
+                "pid": pid,
+                "name": name,
+                "cmdline": _redact_sensitive_cmdline(argv),
+            }
+        )
     data = {
         "ok": True,
         "blocked": bool(processes),

@@ -303,7 +303,6 @@ export function ChatSidebar({
   const messagingTruncated = useStore($messagingTruncated)
   const sessionsLoading = useStore($sessionsLoading)
   const sessionProfilesTruncated = useStore($sessionProfilesTruncated)
-  const workingSessionIds = useStore($workingSessionIds)
   const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
   // Only surface the profile switcher when more than one profile exists, so
@@ -393,8 +392,6 @@ export function ChatSidebar({
     () => [...visibleSessions].sort((a, b) => sessionTime(b) - sessionTime(a)),
     [visibleSessions]
   )
-
-  const workingSessionIdSet = useMemo(() => new Set(workingSessionIds), [workingSessionIds])
 
   // Index sessions by every id a pin might be stored under — recents, cron,
   // AND messaging, since all three can be pinned (see session-index.ts).
@@ -759,20 +756,30 @@ export function ChatSidebar({
   // session settles (its turn finished) or the window refocuses (an external
   // terminal may have changed things) — only while a project is entered, and
   // only the cheap per-repo `git worktree list`, never the heavy tree scan.
-  const prevWorkingIdsRef = useRef<readonly string[]>(workingSessionIds)
-
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  //
+  // Listened to rather than rendered from: a settling turn is a side effect,
+  // and reading it with `useStore` repainted this whole component — every
+  // section, every row — on each status edge, to run an effect that touches no
+  // markup. The rows subscribe to their own status, so nothing above them needs
+  // to re-render for one of them to change color.
   useEffect(() => {
-    const prev = prevWorkingIdsRef.current
-    prevWorkingIdsRef.current = workingSessionIds
-
-    // A session leaving the working set means its turn just completed.
-    const aTurnSettled = prev.some(id => !workingSessionIds.includes(id))
-
-    if (inEnteredProject && aTurnSettled) {
-      refreshWorktrees()
+    if (!inEnteredProject) {
+      return
     }
-  }, [workingSessionIds, inEnteredProject])
+
+    let previous = $workingSessionIds.get()
+
+    return $workingSessionIds.listen(working => {
+      // A session leaving the working set means its turn just completed.
+      const aTurnSettled = previous.some(id => !working.includes(id))
+
+      previous = working
+
+      if (aTurnSettled) {
+        refreshWorktrees()
+      }
+    })
+  }, [inEnteredProject])
 
   useEffect(() => {
     if (!inEnteredProject) {
@@ -1281,7 +1288,6 @@ export function ChatSidebar({
                 rootClassName="min-h-32 flex-1 overflow-hidden p-0"
                 sessions={searchResults}
                 showProfileTags={showAllProfiles}
-                workingSessionIdSet={workingSessionIdSet}
               />
             )}
 
@@ -1305,7 +1311,6 @@ export function ChatSidebar({
                 sessions={pinnedSessions}
                 showProfileTags={showAllProfiles}
                 sortable={pinnedSessions.length > 1}
-                workingSessionIdSet={workingSessionIdSet}
               />
             )}
 
@@ -1467,7 +1472,6 @@ export function ChatSidebar({
                 )}
                 sessions={displayAgentSessions}
                 sortable={!showAllProfiles && agentSessions.length > 1}
-                workingSessionIdSet={workingSessionIdSet}
               />
             )}
 
@@ -1512,7 +1516,6 @@ export function ChatSidebar({
                     pinned={false}
                     rootClassName="shrink-0 p-0"
                     sessions={shownSessions}
-                    workingSessionIdSet={workingSessionIdSet}
                   />
                 )
               })}

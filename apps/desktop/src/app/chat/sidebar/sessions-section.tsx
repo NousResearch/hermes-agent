@@ -91,7 +91,6 @@ interface SidebarSessionsSectionProps {
   onToggle: () => void
   sessions: SessionInfo[]
   activeSessionId: null | string
-  workingSessionIdSet: Set<string>
   onResumeSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
@@ -163,7 +162,6 @@ export function SidebarSessionsSection({
   onToggle,
   sessions,
   activeSessionId,
-  workingSessionIdSet,
   onResumeSession,
   onDeleteSession,
   onArchiveSession,
@@ -236,7 +234,6 @@ export function SidebarSessionsSection({
         branchStem,
         isPinned: pinned,
         isSelected: session.id === activeSessionId,
-        isWorking: workingSessionIdSet.has(session.id),
         onArchive: () => onArchiveSession(session.id),
         onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
         onDelete: () => onDeleteSession(session.id),
@@ -261,8 +258,7 @@ export function SidebarSessionsSection({
       onResumeSession,
       onTogglePin,
       pinned,
-      showProfileTags,
-      workingSessionIdSet
+      showProfileTags
     ]
   )
 
@@ -423,7 +419,6 @@ export function SidebarSessionsSection({
         rows={flatRows}
         showProfileTags={showProfileTags}
         sortable={sessionsDraggable}
-        workingSessionIdSet={workingSessionIdSet}
       />
     )
 
@@ -474,7 +469,6 @@ interface SortableSessionRowProps {
   session: SessionInfo
   isPinned: boolean
   isSelected: boolean
-  isWorking: boolean
   onArchive: () => void
   onDelete: () => void
   onPin: () => void

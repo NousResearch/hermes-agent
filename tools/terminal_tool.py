@@ -1082,7 +1082,7 @@ Environment state persists: activate a virtualenv or export variables once per s
 Foreground (default): returns INSTANTLY when the command finishes, even with a high timeout — set timeout generously for long builds.
 Background: set background=true (returns a session_id). Pair with notify_on_complete=true for bounded tasks; leave silent only for servers/daemons that never exit. Never use nohup/setsid/trailing '&' — use background=true so Hermes tracks the process. After starting a server, verify readiness with a health check, then act in a separate call; no blind sleep loops. Manage with process(action="poll"/"wait").
 Working directory: use 'workdir' for per-command cwd. When a command changes the session cwd (cd, pushd), the result includes a "cwd" field — trust it instead of prefixing every command with 'cd'.
-PTY: set pty=true for interactive CLIs (they hang without it). Pipe git output to cat if it might page.
+PTY: interactive CLIs and full-screen TUIs need a real terminal, which only background sessions get — launch them with background=true AND pty=true, then drive them with process(action="poll"/"submit"). Local backend only; foreground runs on a plain pipe no matter what pty says. Pipe git output to cat if it might page.
 """
 
 # Global state for environment lifecycle management
@@ -2375,7 +2375,9 @@ def terminal_tool(
         session_id: Conversation/session identifier for durable observability
         force: If True, skip dangerous command check (use after user confirms)
         workdir: Working directory for this command (optional, uses session cwd if not set)
-        pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
+        pty: If True, use pseudo-terminal for interactive CLI tools. Only honoured
+            for background=True on the local backend; elsewhere the command runs
+            on a plain pipe and the result carries a pty_note
         notify_on_complete: If True and background=True, you'll be notified exactly once when the process exits. The right choice for almost every long task. MUTUALLY EXCLUSIVE with watch_patterns.
         watch_patterns: List of strings to watch for in background output. HARD rate limit: 1 notification per 15s per process. After 3 strike windows in a row, watch_patterns is disabled and the session is auto-promoted to notify_on_complete. Use ONLY for rare, one-shot mid-process signals on long-lived processes (server readiness, migration-done markers). NEVER use in loops/batch jobs — error patterns there will hit the strike limit and get disabled. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both.
 
@@ -2795,6 +2797,32 @@ def terminal_tool(
                 "processes, call process(action='close') after writing so it receives "
                 "EOF."
             )
+        # A PTY is only ever attached by process_registry.spawn_local(): the
+        # foreground path goes through env.execute(), which always hands the
+        # child a plain pipe, and spawn_via_env() has no PTY support at all.
+        # Both cases used to drop pty=true without a word, so a REPL or TUI
+        # launched exactly as the schema advises sat on a dead pipe until the
+        # timeout with nothing in the result explaining why. The command still
+        # runs — skills legitimately pass pty=true to one-shot commands like
+        # `codex exec` and rely on the inline output — but the dropped PTY is
+        # now reported so the next attempt is correct instead of a re-diagnosis.
+        elif pty and env_type != "local":
+            effective_pty = False
+            pty_disabled_reason = (
+                f"PTY is not supported on the {env_type} terminal backend, so this "
+                "command ran on a plain pipe. Interactive CLIs and full-screen TUIs "
+                "hang or render nothing here — run them on the local backend."
+            )
+        elif pty and not background:
+            effective_pty = False
+            pty_disabled_reason = (
+                "PTY was NOT applied: foreground commands always run on a plain "
+                "pipe. Fine for a command that prints and exits, but anything that "
+                "needs a real terminal (REPLs, full-screen TUIs, redrawing prompts) "
+                "hangs until the timeout. Re-run it with background=true and "
+                "pty=true, then read it with process(action='poll') and type into "
+                "it with process(action='submit')."
+            )
 
         # The session key is already computed above the gateway guard.
         if background:
@@ -3084,11 +3112,18 @@ def terminal_tool(
                 except Exception as e:
                     error_str = str(e).lower()
                     if "timeout" in error_str:
-                        return json.dumps({
+                        timeout_result = {
                             "output": "",
                             "exit_code": 124,
-                            "error": f"Command timed out after {effective_timeout} seconds"
-                        }, ensure_ascii=False)
+                            "error": f"Command timed out after {effective_timeout} seconds",
+                        }
+                        # The dropped-PTY timeout is the whole point of the note:
+                        # a terminal-hungry command sitting on a pipe is exactly
+                        # what expires here, and the timeout is the only result
+                        # the agent ever sees.
+                        if pty_disabled_reason:
+                            timeout_result["pty_note"] = pty_disabled_reason
+                        return json.dumps(timeout_result, ensure_ascii=False)
                     
                     # Retry on transient errors
                     if retry_count < max_retries:
@@ -3299,6 +3334,8 @@ def terminal_tool(
                     result_dict["approval"] = approval_note
             if exit_note:
                 result_dict["exit_code_meaning"] = exit_note
+            if pty_disabled_reason:
+                result_dict["pty_note"] = pty_disabled_reason
             if failure_hint:
                 result_dict["hint"] = failure_hint
             if sudo_auth_failed:
@@ -3578,7 +3615,7 @@ TERMINAL_SCHEMA = {
             },
             "pty": {
                 "type": "boolean",
-                "description": "Run in pseudo-terminal (PTY) mode for interactive CLI tools like Codex, Claude Code, or Python REPL. Only works with local and SSH backends. Default: false.",
+                "description": "Run in pseudo-terminal (PTY) mode for interactive CLI tools like Codex, Claude Code, or a Python REPL, and for full-screen TUIs. Requires background=true and the local backend — a foreground call, or any non-local backend, runs on a plain pipe and returns a pty_note saying the PTY was dropped. Default: false.",
                 "default": False
             },
             "notify_on_complete": {

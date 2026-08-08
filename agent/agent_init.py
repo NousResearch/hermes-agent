@@ -1248,12 +1248,60 @@ def init_agent(
                     # Look up the actual env var name from the provider
                     # config — some providers use non-standard names
                     # (e.g. alibaba → DASHSCOPE_API_KEY, not ALIBABA_API_KEY).
-                    _env_hint = f"{_explicit.upper()}_API_KEY"
+                    _missing_credentials_description = "no API key was found"
+                    _credential_setup_hint = (
+                        f"Set the {_explicit.upper()}_API_KEY environment variable"
+                    )
                     try:
                         from hermes_cli.auth import PROVIDER_REGISTRY
                         _pcfg = PROVIDER_REGISTRY.get(_explicit)
                         if _pcfg and _pcfg.api_key_env_vars:
-                            _env_hint = _pcfg.api_key_env_vars[0]
+                            _credential_setup_hint = (
+                                f"Set the {_pcfg.api_key_env_vars[0]} environment variable"
+                            )
+                        elif _pcfg and _pcfg.auth_type in {
+                            "oauth_device_code", "oauth_external", "oauth_minimax",
+                        }:
+                            # OAuth providers have no API-key variable; the only
+                            # recovery is to re-run the sign-in flow.
+                            _missing_credentials_description = (
+                                "its authentication credentials could not be resolved"
+                            )
+                            _credential_setup_hint = (
+                                "Re-authenticate with `hermes model` and complete "
+                                "the sign-in flow"
+                            )
+                        elif _pcfg and _pcfg.auth_type == "vertex":
+                            # Vertex resolves credentials through gcloud
+                            # application-default credentials, not a sign-in flow.
+                            _missing_credentials_description = (
+                                "its authentication credentials could not be resolved"
+                            )
+                            _credential_setup_hint = (
+                                "Run `gcloud auth application-default login` "
+                                "to authenticate with Google Cloud"
+                            )
+                        elif _pcfg and _pcfg.auth_type == "aws_sdk":
+                            # Bedrock resolves credentials through the AWS SDK
+                            # default credential chain, not a sign-in flow.
+                            _missing_credentials_description = (
+                                "its authentication credentials could not be resolved"
+                            )
+                            _credential_setup_hint = (
+                                "Configure AWS credentials with `aws configure` "
+                                "or the boto3 default credential chain"
+                            )
+                        elif _pcfg and _pcfg.auth_type == "external_process":
+                            # External-process providers (e.g. copilot-acp) are
+                            # configured by the model setup flow, not by an
+                            # environment variable or sign-in flow.
+                            _missing_credentials_description = (
+                                "its authentication credentials could not be resolved"
+                            )
+                            _credential_setup_hint = (
+                                f"Configure the {_explicit} external process with "
+                                "`hermes model`"
+                            )
                     except Exception:
                         pass
                     # --- Init-time fallback (#17929) ---
@@ -1302,9 +1350,9 @@ def init_agent(
                             break
                     if not _fb_resolved:
                         raise RuntimeError(
-                            f"Provider '{_explicit}' is set in config.yaml but no API key "
-                            f"was found. Set the {_env_hint} environment "
-                            f"variable, or switch to a different provider with `hermes model`."
+                            f"Provider '{_explicit}' is set in config.yaml but "
+                            f"{_missing_credentials_description}. {_credential_setup_hint}, "
+                            "or switch to a different provider with `hermes model`."
                         )
                 if not getattr(agent, "_fallback_activated", False):
                     # No provider configured — reject with a clear message.

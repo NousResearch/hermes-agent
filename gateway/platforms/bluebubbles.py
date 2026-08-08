@@ -165,6 +165,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     SUPPORTS_MESSAGE_EDITING = False
     MAX_MESSAGE_LENGTH = MAX_TEXT_LENGTH
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
+    # BlueBubbles Server itself allows up to 300s for attachment uploads; the
+    # previous 120s client timeout fired on macOS 26 even for successful sends
+    # that take ~2min, producing a bogus "couldn't deliver" notice (#77918).
+    ATTACHMENT_UPLOAD_TIMEOUT = 300
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.BLUEBUBBLES)
@@ -621,7 +625,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     self._api_url("/api/v1/message/attachment"),
                     files=files,
                     data=data,
-                    timeout=120,
+                    timeout=self.ATTACHMENT_UPLOAD_TIMEOUT,
                 )
                 res.raise_for_status()
                 result = res.json()

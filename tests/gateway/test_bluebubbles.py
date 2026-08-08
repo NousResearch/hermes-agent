@@ -274,6 +274,53 @@ class TestBlueBubblesAttachmentDownload:
         assert result == "/tmp/test_image.png"
 
 
+class TestBlueBubblesAttachmentUpload:
+    """Verify _send_attachment uses a timeout that covers slow uploads."""
+
+    def test_send_attachment_uses_300s_upload_timeout(self, monkeypatch, tmp_path):
+        """Attachment upload posts with the raised timeout, not the old 120s."""
+        import asyncio
+
+        from gateway.platforms.bluebubbles import BlueBubblesAdapter
+
+        adapter = _make_adapter(monkeypatch)
+
+        class MockResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"status": 200, "data": {"guid": "msg-123"}}
+
+        captured = {}
+
+        class MockClient:
+            async def post(self, url, files=None, data=None, timeout=None):
+                captured["url"] = url
+                captured["timeout"] = timeout
+                return MockResponse()
+
+        adapter.client = MockClient()
+
+        async def fake_resolve(target):
+            return "iMessage;-;+1234567890"
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+
+        payload = tmp_path / "test.txt"
+        payload.write_text("hello")
+
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter._send_attachment("+1234567890", str(payload), filename="test.txt")
+        )
+
+        assert result.success is True
+        assert result.message_id == "msg-123"
+        assert "/api/v1/message/attachment" in captured["url"]
+        assert captured["timeout"] == BlueBubblesAdapter.ATTACHMENT_UPLOAD_TIMEOUT
+        assert captured["timeout"] == 300
+
+
 # ---------------------------------------------------------------------------
 # Webhook registration
 # ---------------------------------------------------------------------------

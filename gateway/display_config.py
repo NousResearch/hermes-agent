@@ -146,6 +146,11 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
         "long_running_notifications": False,
         "busy_ack_detail": False,
     },
+    # Buzz posts natural interim assistant narration as permanent channel
+    # messages. Keep the native gateway final-answer-first by default so a
+    # normal turn does not look like a double post. Users can opt back in with
+    # display.platforms.buzz.interim_assistant_messages.
+    "buzz":            {"interim_assistant_messages": False},
     "mattermost":      _TIER_MEDIUM,
     "matrix":          _TIER_MEDIUM,
     "feishu":          _TIER_MEDIUM,

@@ -25,6 +25,18 @@ register = _buzz_mod.register
 _env_enablement = _buzz_mod._env_enablement
 _standalone_send = _buzz_mod._standalone_send
 
+import importlib.util
+from pathlib import Path as _Path
+_na_path = _Path(__file__).resolve().parents[2] / "plugins" / "platforms" / "buzz" / "nostr_auth.py"
+_spec = importlib.util.spec_from_file_location("buzz_nostr_auth_under_test", _na_path)
+_buzz_nostr = importlib.util.module_from_spec(_spec)
+assert _spec and _spec.loader
+_spec.loader.exec_module(_buzz_nostr)
+build_typing_event = _buzz_nostr.build_typing_event
+_normalize_buzz_auth_tag = _buzz_mod.normalize_buzz_auth_tag
+_buzz_recommended_setup_steps = _buzz_mod.buzz_recommended_setup_steps
+_format_no_channels_error = _buzz_mod.format_no_channels_error
+
 # Real key pair (Chip's public identity — public information, not a secret)
 SELF_PUBKEY = "9fd5c7ba6d3ef224da78f541e0fcb9c50f72cc63edb19aae76ac6a0474dfa860"
 SELF_NPUB = "npub1nl2u0wnd8mezfknc74q7pl9ec58h9nrrakce4tnk434qgaxl4psqe5twr6"
@@ -45,6 +57,8 @@ _ENV_VARS = (
     "BUZZ_POLL_INTERVAL",
     "BUZZ_CLI_PATH",
     "BUZZ_CREDENTIALS_FILE",
+    "BUZZ_AUTH_TAG",
+    "BUZZ_REQUIRE_MENTION",
 )
 
 
@@ -538,3 +552,199 @@ class TestStandaloneSend:
         assert all("nsec1x" not in str(a) for a in captured["args"])
 
 
+
+
+def test_normalize_buzz_auth_tag_compacts_json():
+    raw = """[\n  \"auth\",\n  \"ownerhex\",\n  \"agenthex\",\n  \"sig\"\n]"""
+    assert _normalize_buzz_auth_tag(raw) == '["auth","ownerhex","agenthex","sig"]'
+    assert _normalize_buzz_auth_tag("   ") == ""
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "not-json",
+        "{}",
+        '["auth","ownerhex","agenthex"]',
+        '["other","ownerhex","agenthex","sig"]',
+        '["auth","ownerhex","agenthex",1]',
+    ],
+)
+def test_normalize_buzz_auth_tag_rejects_values_the_live_auth_path_cannot_use(raw):
+    with pytest.raises(ValueError, match="BUZZ_AUTH_TAG"):
+        _normalize_buzz_auth_tag(raw)
+
+
+def test_interactive_setup_resolves_cli_and_reprompts_invalid_auth_tag(monkeypatch):
+    import hermes_cli.setup as setup_mod
+
+    valid_auth_tag = '["auth","ownerhex","agenthex","sig"]'
+    answers = iter(
+        [
+            "",
+            "https://community.example",
+            "nsec1test",
+            "not-json",
+            valid_auth_tag,
+            "",
+            "",
+            "",
+        ]
+    )
+    yes_no_answers = iter([True, False])
+    saved = {}
+    writes = []
+    warnings = []
+    resolver_calls = []
+
+    def fake_save_env_value(key, value):
+        saved[key] = value
+        writes.append((key, value))
+
+    def fake_resolve_cli_path(configured=""):
+        resolver_calls.append(configured)
+        return ""
+
+    monkeypatch.setattr(setup_mod, "prompt", lambda *_args, **_kwargs: next(answers))
+    monkeypatch.setattr(
+        setup_mod,
+        "prompt_yes_no",
+        lambda *_args, **_kwargs: next(yes_no_answers),
+    )
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: saved.get(key, ""))
+    monkeypatch.setattr(setup_mod, "save_env_value", fake_save_env_value)
+    monkeypatch.setattr(setup_mod, "print_header", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup_mod, "print_info", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup_mod, "print_success", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        setup_mod,
+        "print_warning",
+        lambda message, *_args, **_kwargs: warnings.append(message),
+    )
+    monkeypatch.setattr(_buzz_mod, "_resolve_cli_path", fake_resolve_cli_path)
+    monkeypatch.setattr(_buzz_mod, "_resolve_private_key", lambda *_args, **_kwargs: "nsec1test")
+
+    _buzz_mod.interactive_setup()
+
+    assert resolver_calls == ["", ""]
+    assert saved["BUZZ_RELAY_URL"] == "https://community.example"
+    assert saved["BUZZ_PRIVATE_KEY"] == "nsec1test"
+    assert saved["BUZZ_AUTH_TAG"] == valid_auth_tag
+    assert [value for key, value in writes if key == "BUZZ_AUTH_TAG"] == [valid_auth_tag]
+    assert any("must be valid JSON" in warning for warning in warnings)
+    assert any(
+        "authentication is not channel membership" in warning.lower()
+        for warning in warnings
+    )
+
+
+def test_interactive_setup_live_probe_never_joins_dm_shaped_channels(monkeypatch):
+    import hermes_cli.setup as setup_mod
+    import subprocess
+
+    answers = iter(
+        [
+            "https://community.example",
+            "nsec1test",
+            "",
+            "",
+            "",
+            "",
+            "",
+        ]
+    )
+    yes_no_answers = iter([True, False, True])
+    saved = {}
+    subprocess_calls = []
+
+    def fake_run(args, **_kwargs):
+        subprocess_calls.append(args)
+        if args[1:] == ["channels", "list"]:
+            return MagicMock(
+                returncode=0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "channel_id": DM_CHANNEL,
+                            "name": "DM",
+                            "description": "",
+                        },
+                        {
+                            "channel_id": CHANNEL,
+                            "name": "general",
+                            "description": "General conversation",
+                        },
+                    ]
+                ),
+                stderr="",
+            )
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(setup_mod, "prompt", lambda *_args, **_kwargs: next(answers))
+    monkeypatch.setattr(
+        setup_mod,
+        "prompt_yes_no",
+        lambda *_args, **_kwargs: next(yes_no_answers),
+    )
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: saved.get(key, ""))
+    monkeypatch.setattr(setup_mod, "save_env_value", saved.__setitem__)
+    monkeypatch.setattr(setup_mod, "print_header", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup_mod, "print_info", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup_mod, "print_success", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup_mod, "print_warning", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(_buzz_mod, "_resolve_cli_path", lambda *_args, **_kwargs: "/bin/buzz")
+    monkeypatch.setattr(_buzz_mod, "_resolve_private_key", lambda *_args, **_kwargs: "nsec1test")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    _buzz_mod.interactive_setup()
+
+    join_calls = [
+        args for args in subprocess_calls if args[1:3] == ["channels", "join"]
+    ]
+    assert join_calls == [
+        ["/bin/buzz", "channels", "join", "--channel", CHANNEL]
+    ]
+    assert all(DM_CHANNEL not in args for args in subprocess_calls)
+
+
+def test_buzz_recommended_setup_steps_cover_field_path():
+    steps = "\n".join(_buzz_recommended_setup_steps())
+    assert "Desktop" in steps
+    assert "auth tag" in steps.lower() or "NIP-OA" in steps
+    assert "channel" in steps.lower()
+    assert "ACP" in steps
+
+
+def test_format_no_channels_error_is_actionable():
+    msg = _format_no_channels_error()
+    assert "0 channels" in msg
+    assert "join" in msg.lower()
+    assert "set-profile" in msg or "profile" in msg.lower()
+
+
+def test_build_typing_event_channel_only():
+    sk = "22" * 32
+    channel = "58795faa-d93e-42c0-a070-d87511a89484"
+    event = build_typing_event(private_key=sk, channel_id=channel, created_at=1_700_000_000)
+    assert event["kind"] == 20002
+    assert event["tags"] == [["h", channel]]
+    assert event["content"] == ""
+    assert len(event["id"]) == 64
+    assert len(event["sig"]) == 128
+
+
+def test_build_typing_event_with_thread_refs():
+    sk = "33" * 32
+    channel = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    parent = "a" * 64
+    root = "b" * 64
+    event = build_typing_event(
+        private_key=sk,
+        channel_id=channel,
+        parent_event_id=parent,
+        root_event_id=root,
+        created_at=1_700_000_001,
+    )
+    assert ["h", channel] in event["tags"]
+    assert ["e", root, "", "root"] in event["tags"]
+    assert ["e", parent, "", "reply"] in event["tags"]

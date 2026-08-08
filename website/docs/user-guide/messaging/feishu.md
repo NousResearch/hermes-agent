@@ -245,6 +245,29 @@ FEISHU_REQUIRE_MENTION=false
 
 For per-chat control, set `require_mention` on a `group_rules` entry — see [Per-Group Access Control](#per-group-access-control) below.
 
+### Ignoring @everyone
+
+By default, Feishu's `@所有人` (`@everyone`) counts as a mention of the bot, so the bot responds in groups whenever someone uses `@所有人`. If you want the bot to **only** respond to explicit `@bot` mentions (not `@everyone`), set `ignore_at_all` to `true`:
+
+```yaml
+# config.yaml
+feishu:
+  ignore_at_all: true
+```
+
+Or via environment variable:
+
+```bash
+FEISHU_IGNORE_AT_ALL=true
+```
+
+When `ignore_at_all` is `true`:
+
+- `@所有人` / `@everyone` messages are **not** treated as mentioning the bot.
+- Direct `@bot` mentions still work as expected.
+- DMs are unaffected (they always bypass the mention gate).
+- The group policy (`open` / `allowlist` / `disabled`) is still enforced independently.
+
 ### Bot Identity
 
 Hermes auto-detects the bot's `open_id` and display name on startup. You only need to set these manually when auto-detection cannot reach the Feishu API, or when your app uses tenant-scoped user IDs:

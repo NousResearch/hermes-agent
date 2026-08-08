@@ -601,6 +601,24 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // every other updater until the age ceiling expires.
     _update_marker.complete();
 
+    // Re-stage the updater binary into HERMES_HOME after a successful update.
+    // A user's staged installer is otherwise only written by a full
+    // install/repair — every later `--update` runs the ORIGINAL binary, so an
+    // installer-protocol change (e.g. the HERMES_UPDATE_HANDOFF_PID fix) can
+    // strand the whole installed base on a binary that predates it, deadlocking
+    // in-app updates forever (#77753, #75788, #76517). Re-staging here keeps
+    // the staged binary in lockstep with the checkout that just updated. Best
+    // effort — the update already succeeded; a staging failure must not fail it.
+    if let Err(err) = crate::paths::copy_self_to_hermes_home() {
+        tracing::warn!(?err, "failed to re-stage updater binary into HERMES_HOME (non-fatal)");
+        emit_log(
+            &app,
+            None,
+            LogStream::Stderr,
+            &format!("[update] warning: could not re-stage updater binary: {err}"),
+        );
+    }
+
     if let Some(target_app) = launch_target {
         if let Err(err) = launch_macos_app_and_exit(&app, &target_app).await {
             emit_log(

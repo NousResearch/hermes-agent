@@ -21,6 +21,7 @@ import socket
 import time
 import urllib.error
 import urllib.request
+from unittest.mock import patch
 
 import pytest
 
@@ -685,3 +686,164 @@ class TestSSRFProtection:
     def test_empty_url_blocked(self):
         assert security.is_safe_callback_url("") is False
         assert security.is_safe_callback_url(None) is False
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SSRF: the guard must decide on the RESOLVED address, not the spelling
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def _resolves_to(*ips):
+    """Patch ``socket.getaddrinfo`` so any hostname resolves to *ips*.
+
+    Keeps these tests hermetic: the contract is "whatever this host resolves
+    to decides the verdict", so the resolver is the thing to control.
+    """
+    return patch(
+        "socket.getaddrinfo",
+        return_value=[
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0)) for ip in ips
+        ],
+    )
+
+
+# Spellings the OS resolver accepts but ``ipaddress.ip_address`` rejects, so a
+# guard that classifies the hostname string never sees them as addresses.
+_LOOPBACK_SPELLINGS = [
+    "127.0.0.1",      # canonical (control)
+    "2130706433",     # decimal
+    "0x7f000001",     # hex
+    "0177.0.0.1",     # octal
+    "localhost",      # hostname
+    "localhost.",     # FQDN trailing dot
+]
+
+
+class TestCallbackSSRFResolvesBeforeDeciding:
+    """Contract: a callback is refused when it *resolves* to an internal
+    address, whatever the hostname is spelled like. Asserting the relation
+    rather than a list of blocked prefixes is the point — a new spelling that
+    resolves to loopback must fail these tests without anyone editing a table.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _remote_mode(self, monkeypatch):
+        # Token configured => localhost_only() is False. This is the exposed
+        # posture, the only one where callback SSRF matters.
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "tok")
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+
+    @pytest.mark.parametrize("host", _LOOPBACK_SPELLINGS)
+    def test_every_spelling_that_resolves_to_loopback_is_refused(self, host):
+        with _resolves_to("127.0.0.1"):
+            assert security.is_safe_callback_url(f"http://{host}:8080/hook") is False
+
+    @pytest.mark.parametrize("ip, label", [
+        ("127.0.0.1", "loopback"),
+        ("10.0.0.1", "RFC1918"),
+        ("192.168.1.1", "RFC1918"),
+        ("172.16.0.1", "RFC1918"),
+        ("169.254.169.254", "link-local / cloud metadata"),
+        ("100.64.0.1", "CGNAT RFC6598 — not covered by ipaddress.is_private"),
+        ("0.0.0.0", "unspecified"),
+        ("::1", "IPv6 loopback"),
+        ("fd00::1", "IPv6 unique-local"),
+        ("fe80::1", "IPv6 link-local"),
+    ])
+    def test_public_hostname_resolving_to_internal_is_refused(self, ip, label):
+        """A perfectly ordinary hostname is refused when DNS points it inward."""
+        with _resolves_to(ip):
+            assert security.is_safe_callback_url("https://callbacks.example.com/hook") is False, label
+
+    def test_multi_answer_is_refused_when_any_address_is_internal(self):
+        """One internal answer poisons the set — we cannot choose which the
+        HTTP client will dial."""
+        with _resolves_to("93.184.216.34", "127.0.0.1"):
+            assert security.is_safe_callback_url("https://callbacks.example.com/hook") is False
+
+    def test_unresolvable_host_is_refused(self):
+        """Fail closed: a host we cannot resolve must not be assumed public."""
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("nope")):
+            assert security.is_safe_callback_url("https://nx.invalid/hook") is False
+
+    def test_ordinary_public_callback_still_allowed(self):
+        """False-positive guard: the normal case must keep working."""
+        with _resolves_to("93.184.216.34"):
+            assert security.is_safe_callback_url("https://callbacks.example.com/hook") is True
+            assert security.is_safe_callback_url("http://hooks.example.org/a2a") is True
+
+    def test_public_literal_ip_still_allowed(self):
+        assert security.is_safe_callback_url("https://93.184.216.34/hook") is True
+
+
+class TestCallbackSSRFLocalModeUnchanged:
+    """The no-token posture is a documented local-testing affordance, not a
+    bug. Loopback stays allowed there; genuinely internal ranges do not.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _local_mode(self, monkeypatch):
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+
+    @pytest.mark.parametrize("host", _LOOPBACK_SPELLINGS)
+    def test_loopback_allowed_in_local_mode_for_every_spelling(self, host):
+        with _resolves_to("127.0.0.1"):
+            assert security.is_safe_callback_url(f"http://{host}:8080/hook") is True
+
+    @pytest.mark.parametrize("ip", ["10.0.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1"])
+    def test_non_loopback_internal_still_blocked_in_local_mode(self, ip):
+        """Local mode relaxes loopback only — not the whole private space."""
+        assert security.is_safe_callback_url(f"http://{ip}/hook") is False
+
+
+class TestCallbackSSRFWireLevel:
+    """The predicate is not the security boundary — the POST is. This drives
+    the adapter's real ``_send_push_notification`` against a real listener.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _remote_mode(self, monkeypatch):
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "tok")
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+
+    @pytest.mark.parametrize("host_tmpl", _LOOPBACK_SPELLINGS)
+    def test_no_post_reaches_an_internal_listener(self, host_tmpl):
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        import threading
+
+        from plugins.platforms.a2a.adapter import A2AAdapter
+
+        received: list[str] = []
+
+        class _Victim(BaseHTTPRequestHandler):
+            def do_POST(self):
+                received.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+
+            def log_message(self, *_args):  # silence
+                pass
+
+        srv = HTTPServer(("127.0.0.1", 0), _Victim)
+        port = srv.server_address[1]
+        thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+        try:
+            adapter = A2AAdapter.__new__(A2AAdapter)  # no gateway needed
+            adapter.tasks = protocol.TaskStore()
+            adapter.tasks.create("t1", "ctx", "peer")
+            adapter.tasks.set_push_config("t1", f"http://{host_tmpl}:{port}/hook")
+
+            adapter._send_push_notification("t1", "ctx", "reply", "completed")
+        finally:
+            srv.shutdown()
+            thread.join(timeout=5)
+            srv.server_close()
+
+        assert received == [], (
+            f"SSRF: a push notification POST reached the internal listener via "
+            f"{host_tmpl!r} — the callback guard did not stop it"
+        )

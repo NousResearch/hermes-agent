@@ -155,6 +155,106 @@ _SKILL = (
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Pending store dedup — #81671: stage_write used to mint a fresh entry every
+# call, so re-worded background_review proposals for the SAME target text
+# inflated the pending queue. Now same target+old_text (strip-compared) either
+# returns the existing record (identical content) or updates it in place
+# (re-worded), keeping the queue at exactly one entry.
+# ---------------------------------------------------------------------------
+
+
+def test_stage_exact_duplicate_collapses(hermes_home):
+    from tools import write_approval as wa
+    payload = {"action": "replace", "target": "memory", "old_text": "old line",
+               "content": "new line"}
+    r1 = wa.stage_write("memory", dict(payload), summary="w1", origin="background_review")
+    r2 = wa.stage_write("memory", dict(payload), summary="w2", origin="background_review")
+    assert r1["id"] == r2["id"]  # same id returned, no second entry
+    assert wa.pending_count("memory") == 1
+
+
+def test_stage_strip_variants_collapse(hermes_home):
+    from tools import write_approval as wa
+    # Whitespace/leading-space differences are the same target text.
+    r1 = wa.stage_write(
+        "memory",
+        {"action": "replace", "target": " user ", "old_text": "  old line ",
+         "content": "x"},
+        summary="w1", origin="background_review",
+    )
+    r2 = wa.stage_write(
+        "memory",
+        {"action": "replace", "target": "user", "old_text": "old line",
+         "content": "x"},
+        summary="w2", origin="background_review",
+    )
+    assert r1["id"] == r2["id"]
+    assert wa.pending_count("memory") == 1
+
+
+def test_stage_reworded_updates_not_duplicates(hermes_home):
+    from tools import write_approval as wa
+    payload1 = {"action": "replace", "target": "memory", "old_text": "old line",
+                "content": "first wording"}
+    r1 = wa.stage_write("memory", dict(payload1), summary="w1",
+                        origin="background_review")
+    # Same target text, different wording → the single entry is UPDATED in place
+    # (same id preserved), not appended.
+    payload2 = {"action": "replace", "target": "memory", "old_text": "old line",
+                "content": "reworded second take"}
+    r2 = wa.stage_write("memory", dict(payload2), summary="w2",
+                        origin="background_review")
+    assert r1["id"] == r2["id"]
+    assert wa.pending_count("memory") == 1
+    stored = wa.get_pending("memory", r2["id"])
+    assert stored["payload"]["content"] == "reworded second take"
+
+
+def test_stage_different_old_text_adds(hermes_home):
+    from tools import write_approval as wa
+    base = {"action": "replace", "target": "memory"}
+    wa.stage_write("memory", dict(base, old_text="line one", content="a"),
+                   summary="w1", origin="background_review")
+    wa.stage_write("memory", dict(base, old_text="line two", content="b"),
+                   summary="w2", origin="background_review")
+    assert wa.pending_count("memory") == 2
+
+
+def test_stage_add_and_create_never_dedup(hermes_home):
+    from tools import write_approval as wa
+    # No old-text anchor → both entries are distinct writes.
+    wa.stage_write("memory", {"action": "add", "target": "memory", "content": "a"},
+                   summary="a", origin="background_review")
+    wa.stage_write("memory", {"action": "add", "target": "memory", "content": "a"},
+                   summary="a", origin="background_review")
+    assert wa.pending_count("memory") == 2
+
+
+def test_stage_skill_patch_dedups_by_name_and_file(hermes_home):
+    from tools import write_approval as wa
+    def stage(file_path, old_string, new_string):
+        return wa.stage_write(
+            "skills",
+            {"action": "patch", "name": "demo", "file_path": file_path,
+             "old_string": old_string, "new_string": new_string},
+            summary="patch", origin="background_review",
+        )
+    # Same file + same old_string (default SKILL.md) → collapse.
+    a = stage(None, "old", "new v1")
+    b = stage(None, "old", "new v2")
+    assert a["id"] == b["id"]
+    assert wa.pending_count("skills") == 1
+    # Different file → distinct entry.
+    c = stage("src/util.py", "old", "new")
+    assert c["id"] != a["id"]
+    assert wa.pending_count("skills") == 2
+    # Different old_string → distinct entry.
+    d = stage(None, "another old", "new")
+    assert d["id"] != a["id"]
+    assert wa.pending_count("skills") == 3
+
+
 def test_handle_approve_all(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools.memory_tool import MemoryStore

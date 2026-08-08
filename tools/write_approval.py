@@ -48,7 +48,7 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
 
@@ -111,6 +111,91 @@ def _pending_dir(subsystem: str) -> Path:
     return get_hermes_home() / "pending" / subsystem
 
 
+def _pending_lock(subsystem: str) -> "_FileLock":
+    """Exclusive lock serializing stage_write's read-scan-write on the dir.
+
+    Reuses the repo's cross-platform advisory lock (``_FileLock`` in
+    hermes_cli.active_sessions), so ``stage_write`` can safely check for an
+    existing pending record and write its own under one critical section on
+    both POSIX (fcntl) and Windows (msvcrt).
+    """
+    from hermes_cli.active_sessions import _FileLock
+    return _FileLock(_pending_dir(subsystem) / ".lock")
+
+
+def _dedup_anchor(payload: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """Return a normalized ``(target, old_text)`` anchor for dedup, or None.
+
+    Dedup only applies to writes that overwrite a *specific existing slice of
+    text* — the payload names both where the change lands (``target`` for
+    memory, ``name`` + relative ``file_path`` for skills) and the text it
+    anchors on (``old_text`` / ``old_string``). Actions that add or write whole
+    fresh content (``add``/``create``/``write_file``/``remove_file``/
+    ``delete``/``batch``) have no old-text anchor: two such proposals are two
+    genuinely distinct writes and must stay separate.
+
+    The ``old_text`` is compared ``strip()``-ed so that re-worded proposals
+    targeting the identical text still dedup (the issue's queue-bloat cause).
+    """
+    action = payload.get("action", "")
+    if action in {"replace", "remove"}:
+        old = (payload.get("old_text") or "").strip()
+        if not old:
+            return None
+        target = _normalize_target(payload.get("target") or "")
+        return (target, old)
+    if action == "patch":
+        old = (payload.get("old_string") or "").strip()
+        if not old:
+            return None
+        rel = payload.get("file_path") or "SKILL.md"
+        return (_normalize_target(f"{payload.get('name') or ''}::{rel}"), old)
+    return None
+
+
+def _normalize_target(s: str) -> str:
+    """Collapse whitespace/case so matching 'My Skill', 'my skill' etc."""
+    return " ".join(s.strip().lower().split())
+
+
+def _proposed_new_text(payload: Dict[str, Any]) -> Optional[str]:
+    """Return the NEW text a staged write would produce, or None.
+
+    None means "no new text to compare" — for ``remove`` a deletion with the
+    same anchor is by definition the same write, and for anchors that only
+    match non-text actions it never applies.
+    """
+    action = payload.get("action", "")
+    if action == "replace":
+        return payload.get("content")
+    if action == "patch":
+        return payload.get("new_string")
+    return None
+
+
+def _find_pending_match(
+    d: Path, anchor: Tuple[str, str], new_text: Optional[str]
+) -> Optional[Tuple[Dict[str, Any], bool]]:
+    """Scan ``d`` for a pending record matching ``anchor``.
+
+    Returns ``(record, identical)`` for the first record whose normalized
+    ``(target, old_text)`` equals ``anchor``; ``identical`` is True when the
+    new text is also unchanged (or the action is a delete-ish write). Returns
+    None when no pending record targets that text.
+    """
+    for p in sorted(d.glob("*.json")):
+        try:
+            r = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        other_payload = r.get("payload") or {}
+        if _dedup_anchor(other_payload) != anchor:
+            continue
+        identical = new_text is None or _proposed_new_text(other_payload) == new_text
+        return (r, identical)
+    return None
+
+
 def stage_write(subsystem: str, payload: Dict[str, Any],
                 *, summary: str, origin: str) -> Dict[str, Any]:
     """Persist a pending write and return a short record describing it.
@@ -128,6 +213,14 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
     Returns a dict with ``id`` and metadata. Best-effort: on disk failure it
     logs and still returns a record (the write is simply lost, which is the
     safe failure for an approval gate — nothing is silently committed).
+
+    Dedup (#81671): repeated background_review conclusions about the *same*
+    target text (re-worded proposals sharing an old-text anchor) used to mint a
+    fresh pending entry every time, inflating the pending queue. Now a new call
+    that anchors on the same ``target``+``old_text`` collapses into the existing
+    entry: an identical proposal returns the existing record untouched, and a
+    re-worded one overwrites the existing record's file in place (keeping its
+    id) so the queue never holds two entries for one slice of text.
     """
     pid = uuid.uuid4().hex[:8]
     record = {
@@ -142,6 +235,33 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
     try:
         d = _pending_dir(subsystem)
         d.mkdir(parents=True, exist_ok=True)
+
+        anchor = _dedup_anchor(payload)
+        if anchor is not None:
+            try:
+                with _pending_lock(subsystem):
+                    existing = _find_pending_match(
+                        d, anchor, _proposed_new_text(payload)
+                    )
+                    if existing is not None:
+                        match, identical = existing
+                        if identical:
+                            # Exact duplicate — don't add a second queue entry.
+                            return match
+                        # Re-worded proposal on the same target text: update the
+                        # existing entry in place so the queue keeps one item.
+                        record["id"] = match["id"]
+                        path = d / f"{record['id']}.json"
+                        tmp = path.with_suffix(".json.tmp")
+                        tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2),
+                                       encoding="utf-8")
+                        os.replace(tmp, path)
+                        return record
+            except Exception as e:  # pragma: no cover - lock/scan failure path
+                logger.error("Pending dedup scan failed for %s: %s", subsystem, e,
+                             exc_info=True)
+                # Fall through to the plain write below; never drop the write.
+
         path = d / f"{pid}.json"
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")

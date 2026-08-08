@@ -1143,7 +1143,7 @@ class TestBearerTokenRoutesToConverse:
                 "provider": "bedrock",
             },
         )
-        monkeypatch.setattr(rp, "load_config", lambda: {"bedrock": {}})
+        monkeypatch.setattr(rp, "load_config_readonly", lambda: {"bedrock": {}})
         return rp.resolve_runtime_provider(requested="bedrock")
 
     def test_bearer_token_forces_converse_for_claude(self, monkeypatch):

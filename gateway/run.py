@@ -2531,6 +2531,129 @@ _CONVERSATION_SCOPED_STATE: tuple = (
 _UNSET = object()
 
 
+# ---------------------------------------------------------------------------
+# Per-message runtime-resolution memo.
+#
+# resolve_runtime_provider() walks config.yaml (a full load_config() deepcopy
+# inside the resolve tree) plus the credential pool / auth stores on EVERY
+# call, measured ~2.35 ms warm on this host. The gateway resolver
+# (_resolve_session_agent_runtime) calls it 5-8x per inbound message flow, so
+# per-message provider resolution costs ~12-19 ms of pure CPU before the LLM
+# call. The MoA path already caches resolve_runtime_provider behind a 300s
+# TTL (#66793, agent/moa_loop.py _runtime_cache); the gateway path never got
+# the same treatment.
+#
+# Keyed on the files the resolution actually reads (config.yaml + profile and
+# global auth.json), so a config edit or `hermes auth add` invalidates
+# immediately, with a TTL backstop for env-var-only changes (the resolver also
+# reads ~25 env vars; the merged MoA cache accepts the same 300s staleness for
+# those). Never cache: the vertex OAuth path (token minted per call, 5-min
+# refresh margin) and AuthError/fallback results (a transient failure must not
+# be pinned for the whole TTL — same rule moa_loop documents).
+# ---------------------------------------------------------------------------
+_runtime_resolve_memo_lock = threading.Lock()
+_runtime_resolve_memo: dict[tuple, tuple[float, dict]] = {}
+_RUNTIME_RESOLVE_MEMO_TTL_SECONDS = 300.0  # mirrors agent/moa_loop
+
+_VERTEX_PROVIDER_ALIASES = frozenset(
+    {"vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai"}
+)
+
+
+def _runtime_resolve_memo_signature() -> tuple:
+    """(config sig, profile auth sig, global auth sig) — mtime+size of each.
+
+    A missing file contributes None so an auth.json that appears later
+    (first `hermes auth add`) invalidates the memo.
+    """
+    from hermes_cli.config import get_config_path
+
+    def _sig(path) -> tuple | None:
+        try:
+            st = path.stat()
+            return (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return None
+
+    try:
+        cfg_path = get_config_path()
+    except Exception:
+        cfg_path = None
+    try:
+        from hermes_cli.auth import _auth_file_path, _global_auth_file_path
+
+        auth_path = _auth_file_path()
+        global_path = _global_auth_file_path()
+    except Exception:
+        auth_path = global_path = None
+    return (
+        _sig(cfg_path) if cfg_path is not None else None,
+        _sig(auth_path) if auth_path is not None else None,
+        _sig(global_path) if global_path is not None else None,
+    )
+
+
+def _memoized_resolve_runtime(
+    *,
+    requested: Optional[str] = None,
+    target_model: Optional[str] = None,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+) -> dict:
+    """resolve_runtime_provider() with the per-message memo applied.
+
+    Returns a FRESH top-level dict each call (callers mutate it, e.g.
+    ``runtime_kwargs.pop("model", None)``), so a cached entry can never be
+    corrupted by a caller. The credential_pool object is shared across hits
+    within the TTL — safe because any store change bumps the auth.json mtime
+    and invalidates the memo.
+    """
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    # Preserve the resolver's original call shape: only pass kwargs that are
+    # actually set, so a patched/alternate resolver that accepts the legacy
+    # signature (requested / explicit_*) keeps working unchanged.
+    kwargs: dict = {}
+    if requested is not None:
+        kwargs["requested"] = requested
+    if target_model is not None:
+        kwargs["target_model"] = target_model
+    if explicit_api_key is not None:
+        kwargs["explicit_api_key"] = explicit_api_key
+    if explicit_base_url is not None:
+        kwargs["explicit_base_url"] = explicit_base_url
+
+    if requested in _VERTEX_PROVIDER_ALIASES:
+        # Vertex mints a fresh OAuth token per call (5-min refresh margin);
+        # caching it would serve an expired token.
+        return resolve_runtime_provider(**kwargs)
+
+    key = (
+        requested,
+        target_model,
+        explicit_api_key,
+        explicit_base_url,
+        _runtime_resolve_memo_signature(),
+    )
+    now = time.monotonic()
+    with _runtime_resolve_memo_lock:
+        entry = _runtime_resolve_memo.get(key)
+    if entry is not None:
+        stamped_at, cached = entry
+        if now - stamped_at < _RUNTIME_RESOLVE_MEMO_TTL_SECONDS:
+            return dict(cached)
+
+    runtime = resolve_runtime_provider(**kwargs)
+    # Never cache the vertex-shaped result (resolved through the default
+    # config) — same reason as the requested-alias bypass above.
+    if str(runtime.get("provider") or "").strip().lower() not in _VERTEX_PROVIDER_ALIASES:
+        with _runtime_resolve_memo_lock:
+            # Store a COPY: the caller gets `runtime` and may mutate it (e.g.
+            # pop("model")), and the memo must never share its own reference.
+            _runtime_resolve_memo[key] = (now, dict(runtime))
+    return runtime
+
+
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
@@ -2545,14 +2668,13 @@ def _resolve_runtime_agent_kwargs() -> dict:
     before giving up.
     """
     from hermes_cli.runtime_provider import (
-        resolve_runtime_provider,
         format_runtime_provider_error,
         _get_model_config,
     )
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
 
     try:
-        runtime = resolve_runtime_provider()
+        runtime = _memoized_resolve_runtime()
     except AuthError as auth_exc:
         # Distinguish a transient rate-limit/quota cap (credentials are fine,
         # re-auth cannot help) from a genuine auth failure (expired/revoked
@@ -2604,12 +2726,9 @@ def _resolve_runtime_agent_kwargs() -> dict:
 
 def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
     """Resolve runtime credentials for a specific provider (e.g. from channel override)."""
-    from hermes_cli.runtime_provider import (
-        resolve_runtime_provider,
-        format_runtime_provider_error,
-    )
+    from hermes_cli.runtime_provider import format_runtime_provider_error
     try:
-        runtime = resolve_runtime_provider(requested=provider)
+        runtime = _memoized_resolve_runtime(requested=provider)
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
     return {

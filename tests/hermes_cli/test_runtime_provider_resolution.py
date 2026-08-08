@@ -556,7 +556,7 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setattr(
         rp,
-        "load_config",
+        "load_config_readonly",
         lambda: {
             "custom_providers": [
                 {
@@ -597,7 +597,7 @@ def test_bare_custom_resolves_providers_dict_entry_named_custom(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setattr(
         rp,
-        "load_config",
+        "load_config_readonly",
         lambda: {
             "providers": {
                 "custom": {
@@ -639,7 +639,7 @@ def test_named_custom_provider_same_url_uses_matching_key_env_and_api_mode(monke
     monkeypatch.setenv("CLAUDE_KEY", "claude-secret")
     monkeypatch.setattr(
         rp,
-        "load_config",
+        "load_config_readonly",
         lambda: {
             "custom_providers": [
                 {
@@ -684,7 +684,7 @@ def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setattr(
         rp,
-        "load_config",
+        "load_config_readonly",
         lambda: {
             "custom_providers": [
                 {
@@ -725,7 +725,7 @@ def test_named_custom_provider_wins_over_builtin_alias(monkeypatch):
     """
     monkeypatch.setattr(
         rp,
-        "load_config",
+        "load_config_readonly",
         lambda: {
             "custom_providers": [
                 {
@@ -837,7 +837,7 @@ def test_auto_detected_nous_auth_failure_falls_through_to_openrouter(monkeypatch
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
-    monkeypatch.setattr(rp, "load_config", lambda: {})
+    monkeypatch.setattr(rp, "load_config_readonly", lambda: {})
 
     # resolve_provider returns "nous" (stale active_provider in auth.json)
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
@@ -1379,7 +1379,7 @@ def _patch_bedrock(monkeypatch, config_default=""):
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "bedrock")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"default": config_default})
-    monkeypatch.setattr(rp, "load_config", lambda: {"bedrock": {}})
+    monkeypatch.setattr(rp, "load_config_readonly", lambda: {"bedrock": {}})
     monkeypatch.setattr(ba, "has_aws_credentials", lambda: True)
     monkeypatch.setattr(ba, "resolve_aws_auth_env_var", lambda: "AWS_PROFILE")
     monkeypatch.setattr(ba, "resolve_bedrock_region", lambda: "eu-north-1")

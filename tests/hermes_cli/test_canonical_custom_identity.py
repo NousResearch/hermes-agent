@@ -41,7 +41,7 @@ def keyed_provider_config(monkeypatch):
             }
         }
     }
-    monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+    monkeypatch.setattr(rp, "load_config_readonly", lambda *a, **k: config)
     monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     return config
@@ -93,7 +93,7 @@ def test_legacy_unkeyed_entry_keeps_its_name_identity(monkeypatch):
             }
         ]
     }
-    monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+    monkeypatch.setattr(rp, "load_config_readonly", lambda *a, **k: config)
     monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
 

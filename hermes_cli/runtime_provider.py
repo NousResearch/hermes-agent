@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import re
@@ -42,7 +43,7 @@ from hermes_cli.auth import (
 )
 from hermes_cli.config import (
     get_compatible_custom_providers,
-    load_config,
+    load_config_readonly,
     normalize_extra_headers,
 )
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
@@ -315,10 +316,16 @@ def _auto_detect_local_model(base_url: str) -> str:
 
 
 def _get_model_config() -> Dict[str, Any]:
-    config = load_config()
+    config = load_config_readonly()
     model_cfg = config.get("model")
     if isinstance(model_cfg, dict):
-        cfg = dict(model_cfg)
+        # Shallow dict() of the model section would leave nested values
+        # (fallback_providers, overrides, …) shared with the cached config;
+        # a caller mutating one would corrupt the read-only cache for every
+        # other caller. The model section is a handful of keys, so deepcopy
+        # the section (µs) instead of the whole config (the ~265µs deepcopy
+        # load_config() applies).
+        cfg = copy.deepcopy(model_cfg)
         # Accept "model" as alias for "default" (users intuitively write model.model)
         if not cfg.get("default") and cfg.get("model"):
             cfg["default"] = cfg["model"]
@@ -705,7 +712,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             if (canonical or "").strip().lower() == requested_norm:
                 return None
 
-    config = load_config()
+    config = load_config_readonly()
     
     # First check providers: dict (new-style user-defined providers)
     providers = config.get("providers")
@@ -842,7 +849,7 @@ def find_custom_provider_identity(base_url: str) -> Optional[str]:
     if not target:
         return None
     try:
-        config = load_config()
+        config = load_config_readonly()
     except Exception:
         return None
 
@@ -895,7 +902,7 @@ def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
     if not target:
         return None
     try:
-        config = load_config()
+        config = load_config_readonly()
     except Exception:
         return None
 
@@ -1691,8 +1698,8 @@ def resolve_runtime_provider(
     #
     # Fail fast with a typed error so the fallback chain can advance to
     # the next provider instead of using a disabled one.
-    from hermes_cli.config import is_provider_enabled, load_config
-    _full_cfg = load_config()
+    from hermes_cli.config import is_provider_enabled
+    _full_cfg = load_config_readonly()
     _provs_cfg = _full_cfg.get("providers") if isinstance(_full_cfg, dict) else None
     if isinstance(_provs_cfg, dict):
         _block = _provs_cfg.get(requested_provider)
@@ -2130,7 +2137,7 @@ def resolve_runtime_provider(
                 code="no_aws_credentials",
             )
         # Read bedrock-specific config from config.yaml
-        _bedrock_cfg = load_config().get("bedrock", {})
+        _bedrock_cfg = load_config_readonly().get("bedrock", {})
         # Region priority: config.yaml bedrock.region → env var → us-east-1
         region = (_bedrock_cfg.get("region") or "").strip() or resolve_bedrock_region()
         auth_source = resolve_aws_auth_env_var() or "aws-sdk-default-chain"

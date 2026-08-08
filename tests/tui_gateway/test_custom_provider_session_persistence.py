@@ -66,7 +66,7 @@ def _custom_agent(base_url=MIMO_URL):
 
 class TestRuntimeModelConfigPersistsEntryIdentity:
     def test_persists_menu_key_instead_of_resolved_custom(self, monkeypatch):
-        monkeypatch.setattr(rp, "load_config", lambda: LEGACY_LIST_CONFIG)
+        monkeypatch.setattr(rp, "load_config_readonly", lambda: LEGACY_LIST_CONFIG)
 
         from tui_gateway.server import _runtime_model_config
 
@@ -80,7 +80,7 @@ class TestRuntimeModelConfigPersistsEntryIdentity:
 
 
     def test_keeps_bare_custom_when_no_entry_matches(self, monkeypatch):
-        monkeypatch.setattr(rp, "load_config", lambda: {})
+        monkeypatch.setattr(rp, "load_config_readonly", lambda: {})
 
         from tui_gateway.server import _runtime_model_config
 
@@ -92,7 +92,7 @@ class TestRuntimeModelConfigPersistsEntryIdentity:
         def _boom():
             raise AssertionError("identity lookup must not run for built-ins")
 
-        monkeypatch.setattr(rp, "load_config", _boom)
+        monkeypatch.setattr(rp, "load_config_readonly", _boom)
 
         from tui_gateway.server import _runtime_model_config
 
@@ -106,7 +106,7 @@ class TestRuntimeModelConfigPersistsEntryIdentity:
 def _make_agent_with_override(override, monkeypatch, config, model_cfg=None):
     """Run _make_agent through the REAL resolve_runtime_provider against a
     patched config, returning the kwargs AIAgent was constructed with."""
-    monkeypatch.setattr(rp, "load_config", lambda: config)
+    monkeypatch.setattr(rp, "load_config_readonly", lambda: config)
     monkeypatch.setattr(rp, "_get_model_config", lambda: model_cfg or {})
     # Keep credential-pool resolution off the developer's real HERMES home.
     monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
@@ -132,7 +132,7 @@ class TestResumeRoundTrip:
         """persist → stored-overrides → _make_agent resolves the entry's
         api_key again (the exact path that raised "No LLM provider
         configured" before the fix)."""
-        monkeypatch.setattr(rp, "load_config", lambda: LEGACY_LIST_CONFIG)
+        monkeypatch.setattr(rp, "load_config_readonly", lambda: LEGACY_LIST_CONFIG)
 
         from tui_gateway.server import (
             _runtime_model_config,
@@ -202,7 +202,7 @@ class TestBareCustomNoBaseUrlHealsFromConfig:
     def test_canonical_identity_recovers_from_config_when_no_base_url(
         self, monkeypatch
     ):
-        monkeypatch.setattr(rp, "load_config", lambda: NAMED_CONFIG)
+        monkeypatch.setattr(rp, "load_config_readonly", lambda: NAMED_CONFIG)
         monkeypatch.setattr(rp, "_get_model_config", lambda: NAMED_CONFIG["model"])
 
         # No base_url to reverse-lookup → must fall back to config.model.provider.
@@ -213,7 +213,7 @@ class TestBareCustomNoBaseUrlHealsFromConfig:
 
 
     def test_persist_recovers_entry_when_agent_has_no_base_url(self, monkeypatch):
-        monkeypatch.setattr(rp, "load_config", lambda: NAMED_CONFIG)
+        monkeypatch.setattr(rp, "load_config_readonly", lambda: NAMED_CONFIG)
         monkeypatch.setattr(rp, "_get_model_config", lambda: NAMED_CONFIG["model"])
 
         from tui_gateway.server import _runtime_model_config
@@ -225,7 +225,7 @@ class TestBareCustomNoBaseUrlHealsFromConfig:
         assert config["provider"] == "custom:mimo-v2.5-pro"
 
     def test_restore_heals_bare_custom_row_without_base_url(self, monkeypatch):
-        monkeypatch.setattr(rp, "load_config", lambda: NAMED_CONFIG)
+        monkeypatch.setattr(rp, "load_config_readonly", lambda: NAMED_CONFIG)
         monkeypatch.setattr(rp, "_get_model_config", lambda: NAMED_CONFIG["model"])
 
         from tui_gateway.server import _stored_session_runtime_overrides
@@ -269,7 +269,7 @@ class TestBareCustomNoBaseUrlHealsFromConfig:
         composer override's RESOLVED provider. A named custom provider's
         resolved value is bare "custom" — persisting that verbatim seeds the
         unresumable row. It must be healed to ``custom:<name>`` here."""
-        monkeypatch.setattr(rp, "load_config", lambda: NAMED_CONFIG)
+        monkeypatch.setattr(rp, "load_config_readonly", lambda: NAMED_CONFIG)
         monkeypatch.setattr(rp, "_get_model_config", lambda: NAMED_CONFIG["model"])
 
         captured = {}
@@ -335,7 +335,7 @@ ULTRA_LEGACY_CONFIG = {
 
 class TestModelNameRecoversEntryIdentity:
     def test_identity_by_model_from_providers_dict_models_list(self, monkeypatch):
-        monkeypatch.setattr(rp, "load_config", lambda: ULTRA_CONFIG)
+        monkeypatch.setattr(rp, "load_config_readonly", lambda: ULTRA_CONFIG)
 
         assert (
             rp.find_custom_provider_identity_by_model("hermes-ultra-sft")

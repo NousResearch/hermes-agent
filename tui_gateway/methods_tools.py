@@ -1811,6 +1811,7 @@ def _(rid, params: dict) -> dict:
     action = params.get("action", "list")
     try:
         from hermes_cli.plugins_cmd import (
+            _bundled_default_on,
             _discover_all_plugins,
             _get_disabled_set,
             _get_enabled_set,
@@ -1825,6 +1826,17 @@ def _(rid, params: dict) -> dict:
             for name, version, desc, source, _dir, key in sorted(
                 _discover_all_plugins()
             ):
+                status = _plugin_status(name, enabled, disabled, key=key)
+                # Bundled backends/platforms/providers are active without an
+                # explicit enable (they "just work" — plugins.py). Reporting
+                # them "not enabled" reads as OFF in clients when they are in
+                # fact running; surface the truthful default instead.
+                if (
+                    status == "not enabled"
+                    and source == "bundled"
+                    and _bundled_default_on(_dir)
+                ):
+                    status = "enabled"
                 out.append(
                     {
                         "name": name,
@@ -1835,7 +1847,7 @@ def _(rid, params: dict) -> dict:
                         "version": str(version or ""),
                         "description": desc or "",
                         "source": source,
-                        "status": _plugin_status(name, enabled, disabled, key=key),
+                        "status": status,
                         # Agent Plugins v1 package (plugin.json — the portable
                         # skills/MCP format) vs a native Hermes plugin.
                         "portable": _is_portable_plugin_dir(_dir),

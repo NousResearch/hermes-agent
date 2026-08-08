@@ -26,6 +26,7 @@ from hermes_cli.config import (
     save_env_value_secure,
     sanitize_env_file,
     set_config_value,
+    unset_config_value,
     write_platform_config_field,
     _sanitize_env_lines,
 )
@@ -240,10 +241,191 @@ class TestSaveAndLoadRoundtrip:
 
         assert config_path.read_text(encoding="utf-8") == original
 
+    def test_config_set_refuses_to_overwrite_unreadable_existing_config(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        original = "model:\n  provider: openrouter\n"
+        config_path.write_text(original, encoding="utf-8")
 
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with patch("builtins.open", side_effect=self._deny_config_reads(config_path)):
+                with pytest.raises(RuntimeError, match="Refusing to overwrite"):
+                    set_config_value("model.provider", "openai")
 
+        assert config_path.read_text(encoding="utf-8") == original
 
+    def test_atomic_config_write_refuses_unreadable_existing_config(self, tmp_path):
+        """The shared chokepoint every sibling write site routes through must
+        fail closed on an unreadable existing config.yaml — this locks in the
+        whole bug class (gateway slash commands, doctor --fix, yuanbao/telegram
+        auto-sethome, tui_gateway _save_cfg), not just the three named paths."""
+        from hermes_cli.config import atomic_config_write
 
+        config_path = tmp_path / "config.yaml"
+        original = "model:\n  provider: openrouter\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch("builtins.open", side_effect=self._deny_config_reads(config_path)):
+            with pytest.raises(RuntimeError, match="Refusing to overwrite"):
+                atomic_config_write(config_path, {"model": {"provider": "openai"}})
+
+        assert config_path.read_text(encoding="utf-8") == original
+
+    def test_config_set_refuses_to_overwrite_unparseable_existing_config(self, tmp_path):
+        """Unparseable YAML must not be replaced with a single-key document."""
+        config_path = tmp_path / "config.yaml"
+        original = (
+            "model:\n"
+            "  default: claude-opus\n"
+            "  provider: anthropic\n"
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      enabled: true\n"
+            "broken: [unterminated\n"
+        )
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(SystemExit):
+                set_config_value("model.default", "gpt-4o")
+
+        assert config_path.read_text(encoding="utf-8") == original
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak")), (
+            "parse-failure path should snapshot a corrupt backup before refusing"
+        )
+
+    def test_config_unset_refuses_to_overwrite_unparseable_existing_config(self, tmp_path):
+        """Unset must refuse the same way - env-sync paths used to write {}."""
+        config_path = tmp_path / "config.yaml"
+        original = "model:\n  default: keep-me\nbroken: [unterminated\n"
+        config_path.write_text(original, encoding="utf-8")
+        (tmp_path / ".env").write_text("TERMINAL_TIMEOUT=30\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(SystemExit):
+                unset_config_value("terminal.timeout")
+
+        assert config_path.read_text(encoding="utf-8") == original
+        assert (tmp_path / ".env").read_text(encoding="utf-8") == "TERMINAL_TIMEOUT=30\n"
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak")), (
+            "unset parse-failure path should snapshot a corrupt backup before refusing"
+        )
+
+    def test_config_set_refuses_non_mapping_root(self, tmp_path):
+        """A list/scalar root parses without raising but would still wipe."""
+        config_path = tmp_path / "config.yaml"
+        original = "- just\n- a\n- list\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(SystemExit):
+                set_config_value("model.default", "gpt-4o")
+
+        assert config_path.read_text(encoding="utf-8") == original
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak")), (
+            "non-mapping root should snapshot a corrupt backup before refusing"
+        )
+
+    def test_config_unset_refuses_non_mapping_root(self, tmp_path):
+        """Unset shares the same non-mapping refuse path as set."""
+        config_path = tmp_path / "config.yaml"
+        original = "- just\n- a\n- list\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(SystemExit):
+                unset_config_value("model.default")
+
+        assert config_path.read_text(encoding="utf-8") == original
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak"))
+
+    def test_config_set_allows_valid_empty_mapping(self, tmp_path):
+        """A genuine empty {} config must still be writable (not a false refuse)."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("{}\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            set_config_value("model.default", "gpt-4o")
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert saved == {"model": {"default": "gpt-4o"}}
+
+    def test_atomic_config_write_refuses_unparseable_existing_config(self, tmp_path):
+        """Shared chokepoint must refuse unparseable YAML, not only unreadable."""
+        from hermes_cli.config import atomic_config_write
+
+        config_path = tmp_path / "config.yaml"
+        original = "broken: [unterminated\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="not valid YAML"):
+            atomic_config_write(config_path, {"model": {"provider": "openai"}})
+
+        assert config_path.read_text(encoding="utf-8") == original
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak"))
+
+    def test_save_config_refuses_to_overwrite_unparseable_existing_config(self, tmp_path):
+        """save_config (tools.configure path) must share the refuse gate."""
+        config_path = tmp_path / "config.yaml"
+        original = (
+            "model:\n"
+            "  default: precious/model\n"
+            "broken: [unterminated\n"
+        )
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(RuntimeError, match="not valid YAML"):
+                save_config({"model": {"default": "wiped"}})
+
+        assert config_path.read_text(encoding="utf-8") == original
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak"))
+
+    def test_atomic_config_write_creates_new_file(self, tmp_path):
+        """A genuinely absent config.yaml must still be created — the guard
+        only refuses to clobber an existing-but-unreadable file."""
+        from hermes_cli.config import atomic_config_write
+
+        config_path = tmp_path / "config.yaml"
+        assert not config_path.exists()
+        atomic_config_write(config_path, {"model": {"provider": "openrouter"}})
+        assert config_path.exists()
+        assert "openrouter" in config_path.read_text(encoding="utf-8")
+
+    def test_save_config_normalizes_legacy_root_level_max_turns(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_config({"model": "test/custom-model", "max_turns": 37})
+
+            saved = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert saved["agent"]["max_turns"] == 37
+            assert "max_turns" not in saved
+
+    def test_nested_values_preserved(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            config["terminal"]["timeout"] = 999
+            save_config(config)
+
+            reloaded = load_config()
+            assert reloaded["terminal"]["timeout"] == 999
+
+    def test_write_platform_config_field_coerces_nested_platform_maps(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text(
+                "model: test/custom-model\nplatforms: not-a-map\n",
+                encoding="utf-8",
+            )
+
+            write_platform_config_field(
+                "email",
+                "unauthorized_dm_behavior",
+                "pair",
+                raw=True,
+            )
+
+            saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+            assert saved["model"] == "test/custom-model"
+            assert saved["platforms"]["email"]["unauthorized_dm_behavior"] == "pair"
 
 
 class TestSaveEnvValueSecure:

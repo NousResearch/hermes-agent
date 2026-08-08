@@ -3105,14 +3105,33 @@ def read_raw_config_readonly() -> Dict[str, Any]:
         return cached_copy
 
 
-def require_readable_config_before_write(config_path: Optional[Path] = None) -> None:
-    """Refuse to replace an existing config.yaml that cannot be read."""
+def require_readable_config_before_write(
+    config_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Refuse to replace an existing config.yaml that cannot be read or parsed.
+
+    Guards two collapse-to-empty failure modes that would otherwise let a
+    read-then-write caller silently wipe user overrides:
+
+    1. **Unreadable** (permissions / broken mount) - byte open fails.
+    2. **Unparseable or non-mapping** - YAML load raises, or the root is a
+       list/scalar. ``read_raw_config()`` / bare ``except`` loaders treat both
+       as ``{}``, so a subsequent write would replace the recoverable file
+       with only the caller's partial dict.
+
+    Returns the loaded mapping (or ``{}`` for a missing / empty / null
+    document) so mutation callers can skip a second parse. A valid empty
+    mapping (``{}``) is allowed through so first-time installs and
+    intentional empty configs still work. On parse failure this also
+    snapshots a ``.corrupt.*.bak`` via :func:`_warn_config_parse_failure`
+    before raising.
+    """
     if config_path is None:
         config_path = get_config_path()
     try:
         config_path.stat()
     except FileNotFoundError:
-        return
+        return {}
     except OSError as exc:
         raise RuntimeError(
             f"Refusing to overwrite {config_path}: existing config.yaml cannot be accessed "
@@ -3127,6 +3146,73 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
             f"Refusing to overwrite {config_path}: existing config.yaml cannot be read "
             f"({exc}). Fix the file permissions or move it aside first."
         ) from exc
+
+    return _load_user_config_for_mutation(config_path)
+
+
+def _load_user_config_for_mutation(config_path: Path) -> Dict[str, Any]:
+    """Load raw user config for a fail-closed mutation path.
+
+    Fail closed on parse / non-mapping (no bare-except -> ``{}`` collapse).
+    Used by :func:`require_readable_config_before_write` and any caller that
+    must re-validate after other work.
+    """
+    if not config_path.exists():
+        return {}
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            loaded = fast_safe_load(f)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Refusing to overwrite {config_path}: existing config.yaml cannot be read "
+            f"({exc}). Fix the file permissions or move it aside first."
+        ) from exc
+    except Exception as exc:
+        _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
+        raise RuntimeError(
+            f"Refusing to overwrite {config_path}: existing config.yaml is not valid YAML "
+            f"({exc}). Fix the file or restore from a .corrupt.*.bak backup first."
+        ) from exc
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        exc = TypeError(
+            f"top-level YAML must be a mapping, got {type(loaded).__name__}"
+        )
+        _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
+        raise RuntimeError(
+            f"Refusing to overwrite {config_path}: top-level YAML must be a mapping, "
+            f"got {type(loaded).__name__}. Fix the file or restore from a "
+            f".corrupt.*.bak backup first."
+        ) from exc
+    return loaded
+
+
+def _load_user_config_for_cli_mutation(config_path: Path) -> Dict[str, Any]:
+    """CLI ``config set`` / ``unset`` entry: map parse refuses to SystemExit.
+
+    Library callers (``save_config``, ``atomic_config_write``, TUI gateway)
+    keep the raw :class:`RuntimeError` from
+    :func:`require_readable_config_before_write`. Interactive CLI mutations
+    instead exit with the established ``Cannot parse`` guidance (#75431)
+    so users get a clean error instead of a traceback. Unreadable-file
+    refuses (permission / I/O) still propagate as RuntimeError.
+    """
+    try:
+        return require_readable_config_before_write(config_path)
+    except RuntimeError as exc:
+        cause = exc.__cause__
+        if isinstance(cause, OSError):
+            raise
+        detail = cause if cause is not None else exc
+        print(
+            f"✗ Cannot parse {config_path}: {detail}\n"
+            f"  The file contains a YAML syntax error. Fix the error\n"
+            f"  in your config file first, then retry.\n"
+            f"  (hermes config edit will open it in your editor.)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
@@ -4943,22 +5029,8 @@ def set_config_value(key: str, value: str, force: bool = False):
     # Read the raw user config (not merged with defaults) to avoid
     # dumping all default values back to the file
     config_path = get_config_path()
-    require_readable_config_before_write(config_path)
-    user_config = {}
-    if config_path.exists():
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                user_config = fast_safe_load(f) or {}
-        except Exception as exc:
-            print(
-                f"✗ Cannot parse {config_path}: {exc}\n"
-                f"  The file contains a YAML syntax error. Fix the error\n"
-                f"  in your config file first, then retry.\n"
-                f"  (hermes config edit will open it in your editor.)",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-    
+    user_config = _load_user_config_for_cli_mutation(config_path)
+
     # Handle nested keys (e.g., "tts.provider") including numeric list
     # indices (e.g., "custom_providers.0.api_key").  Delegates to
     # _set_nested which preserves list-typed nodes; before #17876 the
@@ -5158,21 +5230,7 @@ def unset_config_value(key: str):
         return
 
     config_path = get_config_path()
-    require_readable_config_before_write(config_path)
-    user_config = {}
-    if config_path.exists():
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                user_config = fast_safe_load(f) or {}
-        except Exception as exc:
-            print(
-                f"✗ Cannot parse {config_path}: {exc}\n"
-                f"  The file contains a YAML syntax error. Fix the error\n"
-                f"  in your config file first, then retry.\n"
-                f"  (hermes config edit will open it in your editor.)",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+    user_config = _load_user_config_for_cli_mutation(config_path)
 
     removed = _unset_nested(user_config, key)
 

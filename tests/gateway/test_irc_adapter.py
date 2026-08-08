@@ -406,3 +406,90 @@ class TestIRCStandaloneSend:
         assert "registration" in result["error"].lower() or "timeout" in result["error"].lower()
 
 
+# ── Scoped lock regression ────────────────────────────────────────────────
+
+
+class TestIRCScopedLockRegression:
+    """Regression: ``acquire_scoped_lock`` returns ``tuple[bool, Optional[dict]]``.
+    The connect() guard must unpack the tuple, not test it for truthiness —
+    a non-empty 2-tuple is always truthy, so ``not ret`` is always False and
+    the lock_conflict refuse-branch was unreachable dead code.
+    """
+
+    @pytest.mark.asyncio
+    async def test_connect_fails_when_identity_lock_held(self, monkeypatch):
+        """A second profile using the same server+nick must fail fast."""
+        import gateway.status as gateway_status
+
+        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+            monkeypatch.delenv(key, raising=False)
+
+        monkeypatch.setattr(
+            gateway_status,
+            "acquire_scoped_lock",
+            lambda scope, identity, metadata=None: (False, {"pid": 999}),
+        )
+
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "server": "irc.test.net",
+                "port": 6667,
+                "nickname": "hermes",
+                "channel": "#test",
+                "use_tls": False,
+            },
+        )
+        adapter = IRCAdapter(cfg)
+
+        result = await adapter.connect()
+        assert result is False
+        assert getattr(adapter, "_lock_key", None) is None
+
+    @pytest.mark.asyncio
+    async def test_connect_proceeds_when_lock_acquired(self, monkeypatch):
+        """When the lock is acquired the adapter must NOT fail with lock_conflict.
+
+        We don't need full connect() success — just proof that the lock guard
+        lets execution through. We stub open_connection to raise immediately so
+        connect() returns False, but the fatal error must be ``connect_failed``,
+        NOT ``lock_conflict`` — that distinction is the regression.
+        """
+        import gateway.status as gateway_status
+
+        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+            monkeypatch.delenv(key, raising=False)
+
+        monkeypatch.setattr(
+            gateway_status,
+            "acquire_scoped_lock",
+            lambda scope, identity, metadata=None: (True, None),
+        )
+
+        async def _refuse_open(*a, **kw):
+            raise ConnectionRefusedError("stubbed")
+
+        monkeypatch.setattr(_irc_mod.asyncio, "open_connection", _refuse_open)
+
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "server": "irc.test.net",
+                "port": 6667,
+                "nickname": "hermes",
+                "channel": "#test",
+                "use_tls": False,
+            },
+        )
+        adapter = IRCAdapter(cfg)
+
+        result = await adapter.connect()
+        # Fails at the socket, not at the lock guard.
+        assert result is False
+        assert getattr(adapter, "_fatal_error_code", None) != "lock_conflict"
+        # Lock was set before the socket attempt.
+        assert getattr(adapter, "_lock_key", None) is not None
+
+

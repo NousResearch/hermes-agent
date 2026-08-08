@@ -496,11 +496,14 @@ class BuzzAdapter(BasePlatformAdapter):
             from gateway.status import acquire_scoped_lock
 
             lock_key = f"{self.relay_url}:{self._self_pubkey}"
-            if not acquire_scoped_lock("buzz", lock_key):
+            acquired, existing = acquire_scoped_lock("buzz", lock_key)
+            if not acquired:
+                owner_pid = existing.get("pid") if isinstance(existing, dict) else None
                 logger.error(
-                    "Buzz: identity %s… on %s already in use by another profile",
+                    "Buzz: identity %s… on %s already in use by another profile%s",
                     self._self_pubkey[:8],
                     self.relay_url,
+                    f" (PID {owner_pid})" if owner_pid else "",
                 )
                 self._set_fatal_error(
                     "lock_conflict", "Buzz identity in use by another profile", retryable=False

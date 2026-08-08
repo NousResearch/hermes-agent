@@ -811,7 +811,14 @@ class LineAdapter(BasePlatformAdapter):
             from gateway.status import acquire_scoped_lock
             # Use a hash of the token so we don't write the secret to disk.
             tok_hash = hashlib.sha256(self.channel_access_token.encode()).hexdigest()[:16]
-            if not acquire_scoped_lock("line", tok_hash):
+            acquired, existing = acquire_scoped_lock("line", tok_hash)
+            if not acquired:
+                owner_pid = existing.get("pid") if isinstance(existing, dict) else None
+                logger.error(
+                    "LINE: channel token hash %s already in use by another profile%s",
+                    tok_hash,
+                    f" (PID {owner_pid})" if owner_pid else "",
+                )
                 self._set_fatal_error(
                     "lock_conflict",
                     "LINE channel already in use by another profile",

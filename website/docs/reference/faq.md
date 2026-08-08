@@ -239,6 +239,33 @@ After adding a new provider via `hermes model`, start a new chat session — `/m
 | Switch to different configured provider | `/model provider:model` (inside session) |
 :::
 
+#### Different default models per platform
+
+You can assign different default models to different messaging platforms (WeChat, DingTalk, Telegram, etc.) via `platform_models` in `~/.hermes/config.yaml`:
+
+```yaml
+model:
+  default: gpt-5.4
+  provider: openai-codex
+
+platform_models:
+  weixin:
+    provider: bailian
+    model: qwen3.6-plus
+  dingtalk:
+    provider: deepseek-pro
+    model: deepseek-v4-pro
+```
+
+Each platform entry accepts a `provider` (must match a name from `custom_providers`) and a `model`. The gateway resolves the provider's credentials (API key, base URL, API mode) automatically from your existing configuration.
+
+**Precedence (highest to lowest):**
+1. Session `/model` override — always wins
+2. `platform_models.<platform>` — per-platform default
+3. Global `model.default` / `model.provider` — fallback
+
+If a platform isn't listed or the `platform_models` section is absent, the global default applies. Failures (missing provider, invalid key) are caught silently and fall back to the global default — they never break the gateway.
+
 #### API key not working
 
 **Cause:** Key is missing, expired, incorrectly set, or for the wrong provider.

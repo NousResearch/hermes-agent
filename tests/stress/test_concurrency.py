@@ -31,6 +31,10 @@ NUM_WORKERS = 5
 NUM_TASKS = 100
 WORKER_TIMEOUT_S = 60
 WT = str(Path(__file__).resolve().parents[2])
+sys.path.insert(0, WT)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _isolation import adopt_stress_home, isolate_stress_home  # noqa: E402
 
 
 def worker_loop(worker_id: int, hermes_home: str, result_file: str) -> None:
@@ -40,9 +44,10 @@ def worker_loop(worker_id: int, hermes_home: str, result_file: str) -> None:
     repeats until the ready pool is empty. Records every claim + complete
     into its own JSON result file for later aggregation.
     """
-    os.environ["HERMES_HOME"] = hermes_home
-    os.environ["HOME"] = hermes_home
-    sys.path.insert(0, WT)
+    # Re-assert the sandbox before touching the DB. This worker completes
+    # tasks; on the wrong board that is data loss, so it proves where it is
+    # rather than trusting the environment it was handed.
+    adopt_stress_home(hermes_home)
 
     from hermes_cli import kanban_db as kb
 
@@ -117,13 +122,12 @@ def worker_loop(worker_id: int, hermes_home: str, result_file: str) -> None:
 
 
 def main():
-    home = tempfile.mkdtemp(prefix="hermes_concurrency_")
+    sandbox = isolate_stress_home("hermes_concurrency_")
+    home = str(sandbox.home)
     print(f"HERMES_HOME = {home}")
+    print(f"kanban DB   = {sandbox.db}")
 
     # Seed.
-    os.environ["HERMES_HOME"] = home
-    os.environ["HOME"] = home
-    sys.path.insert(0, WT)
     from hermes_cli import kanban_db as kb
 
     kb.init_db()

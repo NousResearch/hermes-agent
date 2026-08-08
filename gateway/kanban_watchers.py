@@ -481,12 +481,13 @@ class GatewayKanbanWatchersMixin:
                             msg = f"🔄 {board_tag}{tag}Kanban {sub['task_id']} → {new_status}"
                         elif kind == "block_loop_detected":
                             # A task re-blocked for the same cause past the
-                            # recurrence limit and was routed to `triage` for a
-                            # human decision. This is the ONE transition that
-                            # exists to force human attention, yet it emits no
-                            # `blocked`/`status` event — so before adding it to
-                            # TERMINAL_KINDS it produced zero notification and
-                            # the task stalled in triage silently. Ping loudly.
+                            # recurrence limit; the block is now sticky and only
+                            # an explicit unblock resumes it. This is the ONE
+                            # transition that exists to force human attention,
+                            # yet it emits no `blocked`/`status` event — so
+                            # before adding it to TERMINAL_KINDS it produced zero
+                            # notification and the task stalled silently. Ping
+                            # loudly.
                             reason = ""
                             recurrences = None
                             if ev.payload:
@@ -495,8 +496,8 @@ class GatewayKanbanWatchersMixin:
                                 recurrences = ev.payload.get("recurrences")
                             rc = f" (blocked {recurrences}x for the same cause)" if recurrences else ""
                             msg = (
-                                f"🛑 {board_tag}{tag}Kanban {sub['task_id']} routed to TRIAGE"
-                                f" — needs a human decision{rc}{reason}"
+                                f"🛑 {board_tag}{tag}Kanban {sub['task_id']} STUCK BLOCKED"
+                                f" — needs a human decision, unblock to resume{rc}{reason}"
                             )
                         else:
                             # archived / unblocked are claimed by TERMINAL_KINDS

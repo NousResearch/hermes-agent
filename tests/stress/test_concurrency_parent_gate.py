@@ -28,15 +28,23 @@ from pathlib import Path
 
 WT = str(Path(__file__).resolve().parents[2])
 sys.path.insert(0, WT)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _isolation import isolate_stress_home  # noqa: E402
 
 NUM_CREATE_ROUNDS = 200
 WORKERS_RUN_DURATION_S = 8
 
 
 def run() -> int:
-    home = tempfile.mkdtemp(prefix="hermes_parent_gate_stress_")
-    os.environ["HERMES_HOME"] = home
-    os.environ["HOME"] = home
+    # Workers here are threads, so they share this process's environment —
+    # the one sandbox pinned here covers all of them. There is no
+    # ``adopt_stress_home`` counterpart because there is no child process to
+    # re-assert in.
+    sandbox = isolate_stress_home("hermes_parent_gate_stress_")
+    home = str(sandbox.home)
+    print(f"HERMES_HOME = {home}")
+    print(f"kanban DB   = {sandbox.db}")
 
     from hermes_cli import kanban_db as kb
 

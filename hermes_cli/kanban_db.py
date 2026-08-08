@@ -119,16 +119,21 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 #
 # ``needs_input`` and ``capability`` are "truly blocked": they go to ``blocked``
 # for a human, and the unblock-loop breaker (see ``block_task`` /
-# ``BLOCK_RECURRENCE_LIMIT``) escalates them to ``triage`` if a cron keeps
+# ``BLOCK_RECURRENCE_LIMIT``) escalates them to a *sticky* block if a cron keeps
 # unblocking them only to have the worker re-block for the same reason.
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
-# unblocker (usually a cron) and routes the task to ``triage`` instead of back
-# to ``blocked`` — breaking the infinite unblock↔re-block loop and forcing a
-# human-in-the-loop decision. Mirrors the dispatcher's ``DEFAULT_FAILURE_LIMIT``
+# unblocker (usually a cron): the task stays ``blocked`` and the emitted
+# ``block_loop_detected`` event makes that block *sticky* (see
+# ``_has_sticky_block``), so nothing short of an explicit operator ``unblock``
+# advances it — breaking the infinite unblock↔re-block loop and forcing a
+# human-in-the-loop decision. It is deliberately NOT parked in ``triage``: that
+# column is the auto-decomposer's input queue, which promoted escalated cards
+# straight back into the work pool.
+# Mirrors the dispatcher's ``DEFAULT_FAILURE_LIMIT``
 # spirit (default 2) but counts a different signal: manual unblock recurrences,
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
@@ -237,6 +242,22 @@ DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
 # stops the duplication; once no duplicate is spawned the pressure eases, the
 # signal lands, and the following tick reclaims cleanly.
 RECLAIM_DEFER_GRACE_SECONDS = 120
+
+# Wall-clock budget for confirming a SIGKILLed worker process group is gone.
+# Signal delivery is asynchronous, so a single post-SIGKILL probe would
+# report a group that dies milliseconds later as a survivor and defer the
+# requeue for a whole tick. Bounded so a genuinely unkillable group (D state)
+# still falls through to the deferral path instead of blocking the tick.
+WORKER_TERMINATION_VERIFY_SECONDS = 2.0
+WORKER_TERMINATION_VERIFY_PROBES = 40
+
+# Upper bound on how long a worker fence may hold a task nonclaimable when
+# the only thing keeping it alive is the process GROUP (the leader itself is
+# gone, so we cannot prove the group is still the worker's rather than a
+# recycled pgid). A fence whose leader is verifiably alive never expires —
+# that one is a real duplicate-writer risk. This bound exists so an
+# unverifiable hold degrades into a retry instead of stranding the task.
+WORKER_FENCE_MAX_SECONDS = 60 * 60
 
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
@@ -932,7 +953,17 @@ class Task:
     # ``_record_task_failure`` for the circuit-breaker trip rule.
     # (Pre-rename column: ``spawn_failures``.)
     consecutive_failures: int = 0
+    # Effective limit the circuit breaker decided against on its last trip.
+    # See the column comment in SCHEMA_SQL: this is what makes the trip
+    # binding for every later promotion caller.
+    breaker_limit: Optional[int] = None
     worker_pid: Optional[int] = None
+    # Process-group id of the live worker (== worker_pid for workers we
+    # spawned, which get their own session). None on legacy rows.
+    worker_pgid: Optional[int] = None
+    # Identity token (start time) of the worker leader, captured at spawn.
+    # None on legacy rows / platforms without a probe.
+    worker_identity: Optional[str] = None
     # Short excerpt of the last failure's error text (any outcome, not
     # just spawn). Pre-rename column: ``last_spawn_error``.
     last_failure_error: Optional[str] = None
@@ -1034,7 +1065,12 @@ class Task:
                 # belt-and-suspenders safety; in practice it is dead code post-migration.
                 else (row["spawn_failures"] if "spawn_failures" in keys else 0)
             ),
+            breaker_limit=row["breaker_limit"] if "breaker_limit" in keys else None,
             worker_pid=row["worker_pid"] if "worker_pid" in keys else None,
+            worker_pgid=row["worker_pgid"] if "worker_pgid" in keys else None,
+            worker_identity=(
+                row["worker_identity"] if "worker_identity" in keys else None
+            ),
             last_failure_error=(
                 row["last_failure_error"] if "last_failure_error" in keys
                 # Same belt-and-suspenders fallback as consecutive_failures above.
@@ -1210,7 +1246,30 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- The circuit breaker in _record_task_failure trips when this
     -- exceeds DEFAULT_FAILURE_LIMIT consecutive non-successes.
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    -- The effective limit the circuit breaker actually decided against when
+    -- it last tripped (mirrors the ``gave_up`` event's ``effective_limit``).
+    -- Set on trip, cleared on every deliberate fresh start (unblock, manual
+    -- promote, operator reclaim, successful completion). ``recompute_ready``
+    -- honours THIS value rather than re-resolving a limit from its own
+    -- caller, so a restart / config change / caller mismatch can no longer
+    -- re-promote a task the breaker already gave up on.
+    breaker_limit        INTEGER,
     worker_pid           INTEGER,
+    -- Process-group id of the live worker (workers are spawned with
+    -- ``start_new_session=True``, so this is the whole tree: the worker plus
+    -- every tool subprocess it forked). Termination targets the group; the
+    -- PID alone leaves reparented children writing to the workspace.
+    worker_pgid          INTEGER,
+    -- Identity token (process start time) of the live worker leader, taken
+    -- at spawn. PIDs and PGIDs are recycled numbers; this is what lets a
+    -- later tick tell "still our worker" from "the OS reused the number",
+    -- before signalling a process group or holding a task nonclaimable.
+    worker_identity      TEXT,
+    -- JSON fence describing a previous worker that may still be running when
+    -- the task left ``running``. While the fenced process group is alive the
+    -- task is NOT claimable, so no second writer is spawned beside it. NULL
+    -- in the common case (termination confirmed / clean completion).
+    worker_fence         TEXT,
     -- Short excerpt of the most recent failure's error text.
     last_failure_error   TEXT,
     max_runtime_seconds  INTEGER,
@@ -1270,8 +1329,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     block_kind           TEXT,
     -- Unblock-loop counter. Incremented each time a task is re-blocked for the
     -- same truly-blocked reason after having been unblocked. When it reaches
-    -- BLOCK_RECURRENCE_LIMIT the task is routed to ``triage`` instead of
-    -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
+    -- BLOCK_RECURRENCE_LIMIT the block becomes sticky (``block_loop_detected``)
+    -- so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
     block_recurrences    INTEGER NOT NULL DEFAULT 0
@@ -2323,6 +2382,45 @@ def init_db(
     return path
 
 
+# Events that end a breaker decision. Each one corresponds exactly to a code
+# path that clears ``tasks.breaker_limit``: ``unblock_task`` ("unblocked"),
+# ``promote_task`` ("promoted_manual") and ``complete_task`` ("completed", via
+# ``_clear_failure_counter``). The legacy event-log fallback reads this list,
+# so the two representations of "the trip was reset" cannot drift apart.
+#
+# A plain ``claimed`` is NOT a reset — claiming is not an operator decision
+# about the retry budget. Neither is ``"reclaimed"``: a reclaim recovers a
+# *worker*, and ``reclaim_task`` keeps the recorded limit for a task that is
+# staying blocked. Listing it here would undo that one tick later on exactly
+# the boards this fallback exists for — a trip recorded only in the event log
+# would be cleared by the reclaim's own event, and the next
+# ``recompute_ready`` would promote the task.
+_BREAKER_RESET_KINDS = (
+    "unblocked", "promoted_manual", "completed",
+)
+
+
+def _backfill_breaker_limit(conn: sqlite3.Connection) -> None:
+    """Lift the breaker decision from the event log onto ``tasks``.
+
+    Boards written before the column existed recorded the trip only in the
+    ``gave_up`` event payload, which is why a later ``recompute_ready`` with
+    a different caller limit could re-promote them (the ``t_27263082``
+    incident). Copy the recorded ``effective_limit`` onto every still-blocked
+    task whose most recent lifecycle event is that ``gave_up``.
+    """
+    rows = conn.execute(
+        "SELECT id FROM tasks WHERE status = 'blocked' AND breaker_limit IS NULL"
+    ).fetchall()
+    for row in rows:
+        limit = _breaker_limit_from_events(conn, row["id"])
+        if limit is not None:
+            conn.execute(
+                "UPDATE tasks SET breaker_limit = ? WHERE id = ?",
+                (limit, row["id"]),
+            )
+
+
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns that were introduced after v1 release to legacy DBs.
 
@@ -2377,6 +2475,26 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             )
     if "worker_pid" not in cols:
         _add_column_if_missing(conn, "tasks", "worker_pid", "worker_pid INTEGER")
+    if "worker_pgid" not in cols:
+        # Process-group id of the live worker. NULL on legacy rows and on
+        # any worker spawned before this column existed — termination then
+        # falls back to the PID, which is exactly the old behaviour.
+        _add_column_if_missing(conn, "tasks", "worker_pgid", "worker_pgid INTEGER")
+    if "worker_identity" not in cols:
+        # Identity token for the live worker leader. NULL on legacy rows and
+        # on any platform without a cheap probe (Windows) — callers fail
+        # closed on NULL: pid-only signalling, no fence held.
+        _add_column_if_missing(
+            conn, "tasks", "worker_identity", "worker_identity TEXT",
+        )
+    if "worker_fence" not in cols:
+        # Nonclaimable fence for a worker that may still be running after the
+        # task left ``running``. NULL = no fence (legacy rows included).
+        _add_column_if_missing(conn, "tasks", "worker_fence", "worker_fence TEXT")
+    if "breaker_limit" not in cols:
+        _add_column_if_missing(conn, "tasks", "breaker_limit", "breaker_limit INTEGER")
+        if "status" in cols:
+            _backfill_breaker_limit(conn)
     if "last_failure_error" not in cols:
         added = _add_column_if_missing(
             conn, "tasks", "last_failure_error", "last_failure_error TEXT"
@@ -2593,7 +2711,66 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             (new, old),
         )
 
+    # Order matters: the escalation migration decides which rows are still
+    # escalated by reading the NEWEST block-lifecycle event (``ORDER BY id
+    # DESC``). On a pre-#35096 board ``task_events.id`` is still TEXT, so that
+    # ordering is lexicographic — ``ev-9`` outranks ``ev-10`` — and a history
+    # ending ``block_loop_detected (ev-9), unblocked (ev-10)`` reads backwards.
+    # ``_rebuild_drifted_tables`` renumbers those ids to chronological
+    # INTEGERs, so it has to run FIRST or the migration converts an
+    # already-unblocked triage card to ``blocked``, the rebuild then makes it
+    # nonsticky again, and the next ``recompute_ready`` promotes it to
+    # ``ready`` for a worker to claim.
     _rebuild_drifted_tables(conn)
+
+    _migrate_block_loop_escalations_out_of_triage(conn)
+
+
+def _migrate_block_loop_escalations_out_of_triage(
+    conn: sqlite3.Connection,
+) -> None:
+    """Move pre-fix unblock-loop escalations from ``triage`` to ``blocked``.
+
+    Until this fix ``block_task`` routed a loop escalation to ``triage``. With
+    ``kanban.auto_decompose`` on (the default) the dispatcher then treated that
+    card as a decompose candidate and walked it ``triage -> todo -> ready``
+    without a lifecycle event, handing a task that needs a human straight back
+    to a worker. Boards written before the fix still have those rows, so
+    activation must lift them into the sticky ``blocked`` state the escalation
+    always meant — otherwise the first tick after upgrading resurrects them.
+
+    Deliberately narrow: only rows sitting in ``triage`` that carry a
+    ``block_kind`` *and* whose most recent block-lifecycle event is
+    ``block_loop_detected``. An ordinary triage card (no block history) and an
+    escalation an operator already unblocked (latest event ``unblocked``) are
+    both left exactly where they are.
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    if "block_kind" not in cols or "status" not in cols:
+        return
+    candidates = [
+        row["id"] for row in conn.execute(
+            "SELECT id FROM tasks WHERE status = 'triage' AND block_kind IS NOT NULL"
+        )
+    ]
+    stuck = [tid for tid in candidates if has_block_loop_escalation(conn, tid)]
+    if not stuck:
+        return
+    with write_txn(conn):
+        for tid in stuck:
+            # Re-check status inside the txn: a racing operator may have moved
+            # the card out of triage between the scan and here.
+            conn.execute(
+                "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, worker_pgid = NULL, "
+                "worker_identity = NULL "
+                "WHERE id = ? AND status = 'triage'",
+                (tid,),
+            )
+    _log.info(
+        "kanban: moved %d block-loop escalation(s) out of triage into the "
+        "sticky blocked state", len(stuck),
+    )
 
 
 # Legacy DBs defined these tables with a ``TEXT PRIMARY KEY`` id (or, for
@@ -4122,14 +4299,197 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     was set to ``status='blocked'`` by the circuit breaker or by direct
     DB manipulation) — preserves the pre-#28712 auto-recover semantics
     for that path.
+
+    ``block_loop_detected`` counts as sticky too: it is the unblock-loop
+    breaker's escalation, i.e. the *strongest* possible "stop automating
+    this, a human must decide" signal. It used to park the task in
+    ``triage`` where the auto-decomposer promoted it straight back into
+    the work pool; now it stays ``blocked`` and this predicate is what
+    keeps it there.
+
+    Two events end it, both deliberate operator acts: ``unblock_task``
+    (``"unblocked"``) and ``promote_task`` (``"promoted_manual"``). A
+    ``reclaim`` is NOT one of them — reclaim recovers a *worker*, and
+    reading it as a release is what let an operator poke at a stuck row and
+    silently resurrect a task nobody had decided to resume.
+    """
+    return _latest_block_event_kind(conn, task_id) in (
+        "blocked", "block_loop_detected",
+    )
+
+
+_BLOCK_LIFECYCLE_KINDS = (
+    "blocked", "unblocked", "block_loop_detected", "promoted_manual",
+)
+
+
+def _latest_block_event_kind(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[str]:
+    """Return the most recent block-lifecycle event kind for ``task_id``.
+
+    One of :data:`_BLOCK_LIFECYCLE_KINDS`, or ``None`` when the task has
+    never been blocked, unblocked or manually promoted.
+    """
+    placeholders = ", ".join("?" for _ in _BLOCK_LIFECYCLE_KINDS)
+    row = conn.execute(
+        f"SELECT kind FROM task_events "
+        f"WHERE task_id = ? AND kind IN ({placeholders}) "
+        f"ORDER BY id DESC LIMIT 1",
+        (task_id, *_BLOCK_LIFECYCLE_KINDS),
+    ).fetchone()
+    return str(row["kind"]) if row else None
+
+
+def has_block_loop_escalation(
+    conn: sqlite3.Connection, task_id: str,
+) -> bool:
+    """Return True when ``task_id`` currently carries an unescaped
+    unblock-loop escalation.
+
+    Defense in depth for the orchestration paths: a row whose latest
+    block-lifecycle event is ``block_loop_detected`` is waiting on a human,
+    no matter which column it happens to sit in — including a legacy row
+    still parked in ``triage`` by the pre-fix routing, or one an operator
+    dragged there by hand. Auto-decompose / specify must never advance it.
+    An explicit ``unblock_task`` or ``promote_task`` clears this.
+
+    Most callers want the broader :func:`terminal_hold_reason`, which covers
+    the plain sticky block and the breaker trip as well. This one stays for
+    code that needs to distinguish the escalation specifically.
+    """
+    return _latest_block_event_kind(conn, task_id) == "block_loop_detected"
+
+
+def _breaker_limit_from_events(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[int]:
+    """Recover the recorded breaker decision from the event log.
+
+    Fallback for rows written before ``tasks.breaker_limit`` existed (the
+    migration backfills them, but a board can also be restored from an old
+    dump). Only the most recent lifecycle event counts: a ``gave_up``
+    followed by an ``unblocked`` / manual promote / completion has already
+    been cleared by an operator and must NOT bind. A ``reclaimed`` is not on
+    that list — see :data:`_BREAKER_RESET_KINDS`.
+    """
+    kinds = ("gave_up",) + _BREAKER_RESET_KINDS
+    placeholders = ", ".join("?" for _ in kinds)
+    row = conn.execute(
+        f"SELECT kind, payload FROM task_events "
+        f"WHERE task_id = ? AND kind IN ({placeholders}) "
+        f"ORDER BY id DESC LIMIT 1",
+        (task_id, *kinds),
+    ).fetchone()
+    if not row or row["kind"] != "gave_up" or not row["payload"]:
+        return None
+    try:
+        limit = json.loads(row["payload"]).get("effective_limit")
+    except (ValueError, TypeError):
+        return None
+    return int(limit) if isinstance(limit, int) else None
+
+
+def recorded_breaker_limit(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[int]:
+    """Return the effective limit the breaker last tripped against, or None.
+
+    ``None`` means "no binding decision on record" — either the task never
+    tripped, or an operator cleared it (unblock / manual promote) or it
+    completed successfully. A reclaim is NOT one of those: it recovers a
+    worker, not the task. Callers that promote tasks must honour a
+    non-None value instead of resolving a limit of their own: the limit that
+    tripped the breaker is the one the task actually exhausted, and a
+    gateway restart, a changed ``kanban.failure_limit``, or a caller that
+    forgets to thread the config through must not quietly hand the task
+    another retry (incident ``t_27263082``).
     """
     row = conn.execute(
-        "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
-        "ORDER BY id DESC LIMIT 1",
-        (task_id,),
+        "SELECT breaker_limit FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    if row is None:
+        return None
+    if row["breaker_limit"] is not None:
+        return int(row["breaker_limit"])
+    return _breaker_limit_from_events(conn, task_id)
+
+
+def _clear_breaker_limit(conn: sqlite3.Connection, task_id: str) -> None:
+    """Drop the recorded breaker decision (deliberate fresh start)."""
+    conn.execute(
+        "UPDATE tasks SET breaker_limit = NULL WHERE id = ?", (task_id,),
+    )
+
+
+def _breaker_trip_is_active(
+    conn: sqlite3.Connection,
+    task_id: str,
+    column_value: Any = None,
+) -> bool:
+    """True when a recorded give-up decision still binds this task.
+
+    Presence is the whole test. The counter is deliberately NOT compared
+    against the recorded limit: ``force_trip`` callers record ``gave_up``
+    with fewer failures than the limit (a systemic error fingerprint, or the
+    protocol-violation streak reaching its own bound), and comparing would
+    read those as "still under budget" and promote them.
+
+    ``column_value`` lets callers that already selected ``breaker_limit``
+    pass it in rather than re-reading the row.
+    """
+    if column_value is not None:
+        return True
+    return _breaker_limit_from_events(conn, task_id) is not None
+
+
+_UNREAD = object()
+
+
+def terminal_hold_reason(
+    conn: sqlite3.Connection,
+    task_id: str,
+    breaker_limit: Any = _UNREAD,
+) -> Optional[str]:
+    """Why ``task_id`` may not be advanced by automation, or ``None``.
+
+    A terminal hold is a decision *about the task*, not a property of the
+    column it happens to sit in. Two produce one:
+
+    * ``"sticky_block"`` / ``"block_loop_escalation"`` — a worker or
+      operator called ``kanban_block``, or the unblock-loop breaker
+      escalated (see :func:`_has_sticky_block`).
+    * ``"breaker_trip"`` — the circuit breaker recorded ``gave_up`` and
+      persisted the limit it tripped against (see
+      :func:`recorded_breaker_limit`).
+
+    Both were already understood — but only by ``recompute_ready``, and
+    only for rows it found in ``blocked``. Every other door into the work
+    pool re-derived a narrower rule of its own, so a held row that reached
+    another column by any route was advanced anyway: ``claim_task`` had no
+    check at all, the triage promoters gated on the escalation alone, and
+    ``reclaim_task`` flipped ``blocked -> ready`` outright. This is the one
+    predicate all of them share, so a new promotion path cannot quietly
+    disagree with the others about what "blocked" means.
+
+    ``breaker_limit`` lets a caller that already selected the column pass
+    it in; omit it and the row is read (falling back to the event log for
+    boards written before the column existed).
+
+    Released only by the explicit operator escapes — ``unblock_task`` and
+    ``promote_task`` — or by a successful completion, which clears the
+    breaker decision outright.
+    """
+    kind = _latest_block_event_kind(conn, task_id)
+    if kind == "block_loop_detected":
+        return "block_loop_escalation"
+    if kind == "blocked":
+        return "sticky_block"
+    if breaker_limit is _UNREAD:
+        tripped = recorded_breaker_limit(conn, task_id) is not None
+    else:
+        tripped = _breaker_trip_is_active(conn, task_id, breaker_limit)
+    return "breaker_trip" if tripped else None
 
 
 def recompute_ready(
@@ -4144,9 +4504,12 @@ def recompute_ready(
     blocked purely by a parent dependency unblocks itself when the
     parent completes), *except* in two cases:
 
-    1. The most recent block event was a worker-initiated
-       ``kanban_block`` — those stay blocked until an explicit
-       ``kanban_unblock`` (#28712).
+    1. The row is on a terminal hold — a worker-initiated
+       ``kanban_block`` (#28712), the unblock-loop escalation, or a
+       recorded breaker trip. :func:`terminal_hold_reason` is the single
+       predicate, and it is checked for ``todo`` candidates too: the hold
+       is a decision about the task, so it cannot be something a row
+       escapes by being in a different column.
 
     2. The task's ``consecutive_failures`` has reached the effective
        failure limit.  This prevents infinite retry loops when a task
@@ -4158,27 +4521,45 @@ def recompute_ready(
     circuit breaker in ``_record_task_failure`` so the two never
     disagree about when a task is permanently blocked:
 
+      0. the limit the breaker ACTUALLY tripped against, when it has
+         already tripped (``tasks.breaker_limit``) — nothing a caller
+         passes can widen a decision the task already exhausted
       1. per-task ``max_retries`` if set
       2. caller-supplied ``failure_limit`` (the dispatcher passes the
          ``kanban.failure_limit`` config value through ``dispatch_once``)
       3. ``DEFAULT_FAILURE_LIMIT``
+
+    Step 0 is what closes the ``t_27263082`` hole: the breaker gave up at
+    ``effective_limit=2`` and a later recompute — run from a restarted
+    gateway, a caller that didn't thread the config through, or after
+    ``kanban.failure_limit`` was raised — resolved a laxer limit, decided
+    the task was still under budget, and handed it back to the dispatcher.
+    Steps 1-3 still apply to tasks that never tripped (a task blocked on a
+    dependency, or parked at ``blocked`` by hand), preserving #35072's
+    lenient-config recovery.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, consecutive_failures, max_retries, breaker_limit "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
-            if cur_status == "blocked" and _has_sticky_block(conn, task_id):
-                # Worker / operator asked for human review — do not
-                # silently auto-recover.  ``unblock_task`` is the only
-                # legitimate exit (it emits ``"unblocked"`` which flips
-                # this predicate back).
+            # A terminal hold binds in EVERY column, not just ``blocked``.
+            # Checking it only on the blocked branch meant anything that
+            # moved a held row to ``todo`` — a re-specify, an operator drag,
+            # a restored dump — got it promoted on the very next tick. A
+            # ``dependency`` block routes to ``todo`` deliberately and emits
+            # ``dependency_wait`` (not ``blocked``), so it is untouched by
+            # this and still frees itself when its parents finish.
+            if terminal_hold_reason(conn, task_id, row["breaker_limit"]):
+                # Worker / operator asked for human review, or the breaker
+                # gave up — do not silently auto-recover. ``unblock_task``
+                # and ``promote_task`` are the legitimate exits.
                 continue
             parents = conn.execute(
                 "SELECT t.status FROM tasks t "
@@ -4196,6 +4577,12 @@ def recompute_ready(
                     # exhausted → block → …  The counter must also
                     # be preserved so the breaker can accumulate
                     # across recovery cycles.
+                    # A recorded trip binds on its OWN, not on a counter
+                    # comparison — that is ``terminal_hold_reason``'s job
+                    # above, and it has already run for this row. What is
+                    # left here is #35072's lenient path: a task that never
+                    # tripped (blocked by hand, or on a dependency) whose
+                    # counter has nonetheless reached the limit.
                     failures = int(row["consecutive_failures"] or 0)
                     task_limit = row["max_retries"]
                     effective_limit = (
@@ -4238,7 +4625,45 @@ def claim_task(
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
+    # Process fence (outside the txn — it probes the OS and may write its own
+    # clear). A task whose previous worker process group can still write is
+    # not claimable at any price: claiming would put two writers on the same
+    # task + workspace, which is the duplicate-run incident ``t_80a3542a``.
+    fence = _fence_blocks_claim(conn, task_id)
+    if fence is not None:
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "claim_rejected",
+                {
+                    "reason": "prior_worker_alive",
+                    "fence_pid": fence.get("pid"),
+                    "fence_pgid": fence.get("pgid"),
+                    "fence_run_id": fence.get("run_id"),
+                    "fence_reason": fence.get("reason"),
+                },
+            )
+        return None
     with write_txn(conn):
+        # Structural invariant, same shape as the parent gate below: a
+        # terminal hold binds no matter which writer put this row in
+        # 'ready'. ``recompute_ready`` refuses to promote a held task, but
+        # it is not the only writer of status='ready' — a racy promote, a
+        # stale-claim release, a restored dump or an operator's manual SQL
+        # all reach here, and this is the only door into 'running'. Demote
+        # to 'blocked' (where a held task belongs) so the next tick doesn't
+        # re-litigate the same decision.
+        hold = terminal_hold_reason(conn, task_id)
+        if hold:
+            conn.execute(
+                "UPDATE tasks SET status = 'blocked' "
+                "WHERE id = ? AND status = 'ready'",
+                (task_id,),
+            )
+            _append_event(
+                conn, task_id, "claim_rejected",
+                {"reason": "terminal_hold", "hold": hold},
+            )
+            return None
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -4284,6 +4709,12 @@ def claim_task(
                 """,
                 (now, int(stale["current_run_id"])),
             )
+        # ``worker_fence IS NULL`` belongs INSIDE the CAS, not just in the
+        # gate above. The gate probes the OS, so it cannot run under the
+        # write lock — which leaves a window where a reaper tick commits
+        # ``ready`` + a fresh fence while this claimer is between gate and
+        # CAS. Guarding only status/claim_lock, the stale claimer still wins
+        # and lands a second writer next to the live orphan group.
         cur = conn.execute(
             """
             UPDATE tasks
@@ -4294,6 +4725,7 @@ def claim_task(
              WHERE id = ?
                AND status = 'ready'
                AND claim_lock IS NULL
+               AND worker_fence IS NULL
             """,
             (lock, expires, now, task_id),
         )
@@ -4367,7 +4799,48 @@ def claim_review_task(
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
+    # ``review -> running`` spawns a worker just like ``ready -> running``,
+    # so it takes the same process fence and the same atomic guard. A review
+    # task is not fenced today (fences are recorded on requeue paths that
+    # land in ``ready``), but the gate is cheap and the invariant — no claim
+    # while a previous process group can still write — should hold at every
+    # entrance, not just the one that happens to be reachable.
+    fence = _fence_blocks_claim(conn, task_id)
+    if fence is not None:
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "claim_rejected",
+                {
+                    "reason": "prior_worker_alive",
+                    "gate": "review",
+                    "fence_pid": fence.get("pid"),
+                    "fence_pgid": fence.get("pgid"),
+                    "fence_run_id": fence.get("run_id"),
+                    "fence_reason": fence.get("reason"),
+                },
+            )
+        return None
     with write_txn(conn):
+        # Same terminal-hold gate as ``claim_task``: the review column is a
+        # second door into 'running', and a held card must not walk through
+        # it either.
+        #
+        # Refuse WITHOUT demoting, unlike the ``ready`` gate. ``ready`` is the
+        # active work pool that ``recompute_ready`` keeps re-examining, so
+        # parking a held row at 'blocked' settles it; ``review`` is neither —
+        # recompute only ever promotes out of 'todo'/'blocked', so refusing
+        # the claim already binds the hold. Demoting would be a one-way door:
+        # ``unblock_task`` restores 'ready' (or 'todo' behind open parents)
+        # and never 'review', so the card would come back as ordinary
+        # implementation work with its PR already open — the very failure
+        # ``_claim_source_status`` exists to prevent.
+        hold = terminal_hold_reason(conn, task_id)
+        if hold:
+            _append_event(
+                conn, task_id, "claim_rejected",
+                {"reason": "terminal_hold", "hold": hold, "gate": "review"},
+            )
+            return None
         cur = conn.execute(
             """
             UPDATE tasks
@@ -4378,6 +4851,7 @@ def claim_review_task(
              WHERE id = ?
                AND status = 'review'
                AND claim_lock IS NULL
+               AND worker_fence IS NULL
             """,
             (lock, expires, now, task_id),
         )
@@ -4485,7 +4959,8 @@ def release_stale_claims(
     reclaimed = 0
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at "
+        "SELECT id, claim_lock, worker_pid, worker_pgid, worker_identity, "
+        "       claim_expires, last_heartbeat_at, current_run_id "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?",
@@ -4506,7 +4981,7 @@ def release_stale_claims(
         if (
             host_local
             and row["worker_pid"]
-            and _pid_alive(row["worker_pid"])
+            and _worker_leader_alive(row["worker_pid"], row["worker_identity"])
             and not heartbeat_stale
         ):
             new_expires = now + _resolve_claim_ttl_seconds()
@@ -4547,6 +5022,7 @@ def release_stale_claims(
 
         termination = _terminate_reclaimed_worker(
             row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
+            pgid=row["worker_pgid"], identity=row["worker_identity"],
         )
         # Never release a claim while our own worker is still alive: that would
         # spawn a duplicate beside it. Hold the claim and retry next tick.
@@ -4556,10 +5032,26 @@ def release_stale_claims(
                 reason="ttl_expired_worker_alive",
             )
             continue
+        if termination.get("still_alive"):
+            # Requeuing a worker we could not confirm dead — its children
+            # still hold the process group. Fence the task so the claim gate
+            # keeps it out of a second worker's hands until the group exits.
+            # ``still_alive`` is only ever set for host-local claims, so this
+            # never fences on another host's pid numbers.
+            record_worker_fence(
+                conn, row["id"],
+                pid=row["worker_pid"],
+                pgid=row["worker_pgid"],
+                run_id=row["current_run_id"],
+                claim_lock=row["claim_lock"],
+                reason="stale_claim_unconfirmed_termination",
+                identity=row["worker_identity"],
+            )
         with write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
+                "claim_expires = NULL, worker_pid = NULL, worker_pgid = NULL, "
+                "worker_identity = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
                 "AND claim_expires IS NOT NULL AND claim_expires < ?",
                 (row["id"], row["claim_lock"], now),
@@ -4616,28 +5108,139 @@ def reclaim_task(
     reclaimable state (not running, or doesn't exist).
     """
     row = conn.execute(
-        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
+        "SELECT status, claim_lock, worker_pid, worker_pgid, worker_identity, "
+        "       current_run_id FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if not row:
         return False
-    if row["status"] != "running" and row["claim_lock"] is None:
-        # Nothing to reclaim — already ready / blocked / done.
+    fence_raw, fence = _read_worker_fence(conn, task_id)
+    if (
+        row["status"] != "running"
+        and row["claim_lock"] is None
+        and fence is None
+    ):
+        # Nothing to reclaim — already ready / blocked / done, and nothing
+        # holding it back. A task that is merely FENCED is still reclaimable
+        # so the operator can re-drive the release check, but note that a
+        # reclaim does NOT override a valid fence: it releases one only on
+        # the same evidence the claim gate would accept. ``promote`` and
+        # ``unblock`` are the documented overrides.
         return False
     prev_lock = row["claim_lock"]
+    # A reclaim recovers a *worker*; it is not a decision to resume the
+    # *task*. A held row can still reach here — a blocked task that kept a
+    # fence from an unconfirmed termination passes the gate above — and
+    # unconditionally writing 'ready' resurrected it, breaker decision
+    # cleared and all. Release the claim, kill the group, resolve the fence,
+    # and leave it blocked: ``promote`` / ``unblock`` remain the overrides.
+    hold = terminal_hold_reason(conn, task_id)
+    new_status = "blocked" if hold else "ready"
+
+    # Which process do we probe? A task that still owns a worker has it on
+    # the row. A task that was already requeued behind a fence does NOT: the
+    # requeue NULLs worker_pid / worker_pgid / worker_identity, so the fence
+    # payload is the only surviving record of the group that can still write.
+    # Probing the empty columns would ask "is nothing alive?", get "no", and
+    # release the task straight into the duplicate-writer state the fence
+    # exists to prevent.
+    if row["worker_pid"]:
+        probe_pid = row["worker_pid"]
+        probe_pgid = row["worker_pgid"]
+        probe_identity = row["worker_identity"]
+        probe_lock = prev_lock
+        probe_run_id = row["current_run_id"]
+    else:
+        probe_pid = fence.get("pid") if fence else None
+        probe_pgid = fence.get("pgid") if fence else None
+        probe_identity = fence.get("identity") if fence else None
+        probe_lock = (fence.get("claim_lock") if fence else None) or prev_lock
+        probe_run_id = (
+            (fence.get("run_id") if fence else None) or row["current_run_id"]
+        )
+
+    # Probe and terminate BEFORE writing anything. Every decision below is
+    # then committed in one transaction, so there is no instant where the
+    # row is unfenced-but-undecided for a concurrent dispatcher tick to
+    # claim through.
     termination = _terminate_reclaimed_worker(
-        row["worker_pid"], prev_lock, signal_fn=signal_fn,
+        probe_pid, probe_lock, signal_fn=signal_fn,
+        pgid=probe_pgid, identity=probe_identity,
     )
+    now = int(time.time())
+    if fence is not None:
+        # The fence's own release rules are the authority for a fence: same
+        # predicate the claim gate uses, so an operator reclaim can never be
+        # more permissive than an ordinary claim would have been. It clears
+        # for a group that is gone, a recycled identity, another host's
+        # fence, or one that outlived its bound — and holds otherwise.
+        release_reason = _fence_release_reason(fence, now)
+        keep_fence = release_reason is None
+        new_fence = None
+    else:
+        keep_fence = bool(termination.get("still_alive"))
+        release_reason = None
+        # The operator wants the task back now, but the old group can still
+        # write. Release the claim (their call) yet record a fence so the
+        # recovery doesn't create the duplicate-writer state it was meant
+        # to fix.
+        new_fence = _build_worker_fence(
+            pid=probe_pid,
+            pgid=probe_pgid,
+            run_id=probe_run_id,
+            claim_lock=probe_lock,
+            # An unidentified row whose leader survived the kill is the one
+            # case that would otherwise be fenced on a bare number, and the
+            # bound on that weak evidence would expire under a worker that
+            # never stopped writing. The termination probe saw the live
+            # process; pin what it saw. The automatic reclaims never reach
+            # here with a live leader — they hold the claim instead — so
+            # this is the only site where the fallback can be non-None.
+            identity=probe_identity or termination.get("observed_identity"),
+            reason="manual_reclaim_unconfirmed_termination",
+        ) if keep_fence else None
+
+    # One CAS for the whole decision. ``worker_fence IS ?`` binds the exact
+    # fence this call read BEFORE probing the OS, so a fence recorded in the
+    # meantime (a live worker we never looked at) makes the statement match
+    # nothing — and because the fence write rides the same UPDATE, a refusal
+    # cannot leave the task half-reclaimed: released but with no ``reclaimed``
+    # event, no finalized run, and ``current_run_id`` pointing at a run row
+    # that stays open forever.
+    if new_fence is not None:
+        fence_set_sql = ", worker_fence = ?"
+        fence_param: tuple = (json.dumps(new_fence, ensure_ascii=False),)
+    elif fence is not None and not keep_fence:
+        fence_set_sql = ", worker_fence = NULL"
+        fence_param = ()
+    else:
+        fence_set_sql = ""
+        fence_param = ()
+
     with write_txn(conn):
         cur = conn.execute(
-            "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-            "claim_expires = NULL, worker_pid = NULL "
+            "UPDATE tasks SET status = ?, claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, worker_pgid = NULL, "
+            "worker_identity = NULL" + fence_set_sql + " "
             "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
-            "AND claim_lock IS ?",
-            (task_id, prev_lock),
+            "AND claim_lock IS ? AND worker_fence IS ?",
+            (new_status, *fence_param, task_id, prev_lock, fence_raw),
         )
         if cur.rowcount != 1:
+            # Nothing was written: the task moved on, or a newer fence
+            # appeared. Both mean "not this reclaim's call to make".
             return False
+        if new_fence is not None:
+            _append_event(conn, task_id, "worker_fenced", new_fence)
+        elif fence is not None and not keep_fence:
+            _append_event(
+                conn, task_id, "worker_fence_cleared",
+                {
+                    **fence,
+                    "cleared_reason": release_reason,
+                    "on": "operator_reclaim",
+                },
+            )
         run_id = _end_run(
             conn, task_id,
             outcome="reclaimed", status="reclaimed",
@@ -4651,6 +5254,8 @@ def reclaim_task(
             "manual": True,
             "reason": reason,
             "prev_lock": prev_lock,
+            "fence_held": keep_fence,
+            "terminal_hold": hold,
         }
         payload.update(termination)
         _append_event(
@@ -4661,8 +5266,11 @@ def reclaim_task(
     # Operator intervention — they've looked at the task, so the
     # consecutive-failures counter is now stale. Give the next retry
     # a fresh budget. (_clear_failure_counter opens its own write_txn,
-    # so it runs after the enclosing one commits.)
-    _clear_failure_counter(conn, task_id)
+    # so it runs after the enclosing one commits.) The breaker's give-up
+    # decision survives when it is what is holding the task: clearing it
+    # here would leave the row blocked but freely promotable by the next
+    # ``recompute_ready``, which is the same resurrection by a slower route.
+    _clear_failure_counter(conn, task_id, keep_breaker_limit=hold is not None)
     return True
 
 
@@ -4909,11 +5517,14 @@ def complete_task(
                 """
                 UPDATE tasks
                    SET status       = 'done',
+                       worker_fence = NULL,
                        result       = ?,
                        completed_at = ?,
                        claim_lock   = NULL,
                        claim_expires= NULL,
                        worker_pid   = NULL,
+                       worker_pgid  = NULL,
+                       worker_identity = NULL,
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
@@ -4926,11 +5537,14 @@ def complete_task(
                 """
                 UPDATE tasks
                    SET status       = 'done',
+                       worker_fence = NULL,
                        result       = ?,
                        completed_at = ?,
                        claim_lock   = NULL,
                        claim_expires= NULL,
                        worker_pid   = NULL,
+                       worker_pgid  = NULL,
+                       worker_identity = NULL,
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
@@ -5639,16 +6253,19 @@ def block_task(
       "Type 1"). Lands in ``blocked`` for a human. BUT: each time such a task
       is re-blocked for the SAME kind after having been unblocked, the
       unblock-loop counter (``block_recurrences``) increments. When it reaches
-      :data:`BLOCK_RECURRENCE_LIMIT`, the task is routed to ``triage`` instead
-      of ``blocked`` — breaking the cron-unblock ↔ worker-re-block loop and
-      forcing a human-in-the-loop triage decision.
+      :data:`BLOCK_RECURRENCE_LIMIT`, the block is escalated: the task stays in
+      ``blocked`` but a ``block_loop_detected`` event makes it *sticky*, so
+      ``recompute_ready`` / claim / auto-decompose / a dispatcher tick can no
+      longer advance it and only an explicit ``unblock_task`` resumes it —
+      breaking the cron-unblock ↔ worker-re-block loop and forcing a
+      human-in-the-loop decision.
 
     * ``transient`` — treated like a generic block for routing, but a worker
       can use it to signal "this might clear on its own"; it still participates
       in the loop breaker so a forever-flaky task eventually escalates.
 
-    Returns True on any successful transition (to ``blocked``, ``todo``, or
-    ``triage``), False when the task wasn't in a blockable state.
+    Returns True on any successful transition (to ``blocked`` — plain or
+    sticky — or ``todo``), False when the task wasn't in a blockable state.
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(
@@ -5682,6 +6299,8 @@ def block_task(
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
+                       worker_pgid   = NULL,
+                       worker_identity = NULL,
                        block_kind    = ?
                  WHERE id = ?
                    AND status IN ('running', 'ready')
@@ -5725,15 +6344,28 @@ def block_task(
         recurrences = prev_recurrences + 1 if same_cause else 1
 
         if recurrences >= BLOCK_RECURRENCE_LIMIT:
-            # Loop detected — stop letting the unblocker spin this task. Route
-            # to triage for a human-in-the-loop decision instead of blocked.
+            # Loop detected — stop letting the unblocker spin this task. It
+            # stays in ``blocked``, but the ``block_loop_detected`` event makes
+            # that block *sticky* (see ``_has_sticky_block``): recompute_ready,
+            # claim, restart/migration and the dispatcher tick all refuse to
+            # advance it, and only an explicit ``unblock_task`` resumes it.
+            #
+            # This deliberately does NOT route to ``triage`` any more. Triage
+            # is an automation queue, not a human hold: with the default
+            # ``kanban.auto_decompose: true`` the dispatcher treats every
+            # triage row as a decompose/specify candidate and silently walked
+            # escalated cards triage -> todo -> ready on the next tick
+            # (observed live on ``t_bdf1001a`` and ``t_80a3542a``), which is
+            # exactly the blocked-task resurrection the breaker exists to stop.
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status        = 'triage',
+                   SET status        = 'blocked',
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
+                       worker_pgid   = NULL,
+                       worker_identity = NULL,
                        block_kind    = ?,
                        block_recurrences = ?
                  WHERE id = ?
@@ -5772,6 +6404,8 @@ def block_task(
                            claim_lock    = NULL,
                            claim_expires = NULL,
                            worker_pid    = NULL,
+                           worker_pgid   = NULL,
+                           worker_identity = NULL,
                            block_kind    = ?,
                            block_recurrences = ?
                      WHERE id = ?
@@ -5787,6 +6421,8 @@ def block_task(
                            claim_lock    = NULL,
                            claim_expires = NULL,
                            worker_pid    = NULL,
+                           worker_pgid   = NULL,
+                           worker_identity = NULL,
                            block_kind    = ?,
                            block_recurrences = ?
                      WHERE id = ?
@@ -5888,6 +6524,13 @@ def promote_task(
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
+        # A deliberate operator promote overrides a recorded breaker trip —
+        # otherwise the task would land in ``ready`` but be re-blocked (and
+        # never re-promoted) by the next automatic recompute. It is also one
+        # of the explicit escapes from a worker fence: the operator has
+        # looked at the task and wants it dispatched.
+        _clear_breaker_limit(conn, task_id)
+        clear_worker_fence(conn, task_id)
         _append_event(
             conn,
             task_id,
@@ -5943,15 +6586,20 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # ``block_kind``. Resetting the recurrence counter on unblock is exactly
         # the amnesia that let a cron unblock → worker re-block loop run
         # unbounded (Dale's report). The counter survives the unblock so that a
-        # subsequent same-cause ``block_task`` can detect the loop and route to
-        # triage at ``BLOCK_RECURRENCE_LIMIT``. It is reset to 0 only on a
+        # subsequent same-cause ``block_task`` can detect the loop and escalate
+        # to a sticky block at ``BLOCK_RECURRENCE_LIMIT``. It is reset to 0 only on a
         # successful completion (see ``complete_task``). ``consecutive_failures``
         # (the *dispatcher* spawn/crash/timeout counter — a different signal) is
         # still reset here, which is correct: a deliberate unblock is a fresh
         # start for the dispatcher's retry budget.
+        # ``breaker_limit`` is cleared alongside ``consecutive_failures`` for
+        # the same reason: an explicit unblock is the operator saying "try
+        # again", so the recorded trip must stop binding ``recompute_ready``.
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
+            "consecutive_failures = 0, last_failure_error = NULL, "
+            "breaker_limit = NULL, worker_fence = NULL, worker_pgid = NULL, "
+            "worker_identity = NULL "
             "WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (new_status, task_id),
         )
@@ -5998,6 +6646,13 @@ def specify_triage_task(
             (task_id,),
         ).fetchone()
         if existing is None:
+            return False
+        if terminal_hold_reason(conn, task_id):
+            # A row on a terminal hold is a human hold, even if something
+            # parked it in ``triage``. Promoting it here is the resurrection
+            # path the breaker exists to prevent. The escalation was already
+            # caught; a plain sticky block and a recorded give-up are the
+            # same class of decision and were not.
             return False
         sets: list[str] = ["status = 'todo'"]
         params: list[Any] = []
@@ -6156,6 +6811,10 @@ def decompose_triage_task(
             return None
         if root_row["status"] != "triage":
             return None
+        if terminal_hold_reason(conn, task_id):
+            # Same human-hold guard as ``specify_triage_task``: never fan out
+            # a card that a worker blocked or the breaker gave up on.
+            return None
         tenant = root_row["tenant"]
         # Children inherit the root's workspace by default so a fan-out
         # of a code-gen task lands in the parent's project dir/worktree
@@ -6292,7 +6951,9 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
-            "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+            "    worker_pgid = NULL, worker_identity = NULL, "
+            "    worker_fence = NULL "
             "WHERE id = ? AND status != 'archived'",
             (task_id,),
         )
@@ -6707,7 +7368,9 @@ def schedule_task(
                SET status       = 'scheduled',
                    claim_lock   = NULL,
                    claim_expires= NULL,
-                   worker_pid   = NULL
+                   worker_pid   = NULL,
+                   worker_pgid  = NULL,
+                   worker_identity = NULL
              WHERE id = ?
                AND status IN ('todo', 'ready', 'running', 'blocked')
         """
@@ -7018,80 +7681,421 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
+def _identity_probe_supported() -> bool:
+    """True when this platform can identify a process beyond its PID number.
+
+    Linux (``/proc/<pid>/stat`` starttime) and macOS (``ps -o lstart=``) can.
+    Where it is supported, a recorded PID with NO identity token is a legacy
+    row we must treat as unverifiable — never signal it, because the number
+    may since have been recycled. Where it is not supported (Windows), the
+    PID is all we ever had, so the pre-existing behaviour stands: that is the
+    documented boundary of the fail-closed rule.
+    """
+    return sys.platform in ("linux", "darwin")
+
+
+def _process_identity(pid: Optional[int]) -> Optional[str]:
+    """Return a stable identity token for ``pid``, or None if unknowable.
+
+    A PID is a recycled number: on its own it cannot tell "our worker" from
+    "whatever the OS handed the number to next". Pairing it with the
+    process's start time makes it identifying for as long as we need it. We
+    record the token at spawn and re-derive it before doing anything
+    destructive (group signals) or binding (fences).
+
+    Returns None when the process is gone or the platform gives us no cheap
+    probe (Windows). Callers must fail CLOSED on None: no group signal, no
+    fence held on an unverifiable process.
+    """
+    if not pid or int(pid) <= 0:
+        return None
+    if sys.platform == "linux":
+        try:
+            with open(f"/proc/{int(pid)}/stat", "r", encoding="utf-8") as f:
+                fields = f.read().rsplit(") ", 1)[-1].split()
+            # Post-comm field 20 is starttime (clock ticks since boot).
+            return f"starttime:{fields[19]}"
+        except (OSError, ValueError, IndexError):
+            return None
+    if sys.platform == "darwin":
+        try:
+            proc = subprocess.run(
+                ["ps", "-o", "lstart=", "-p", str(int(pid))],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=5,
+                check=False,
+            )
+            if proc.returncode != 0:
+                return None
+            started = (proc.stdout or "").strip()
+            return f"lstart:{started}" if started else None
+        except (OSError, subprocess.SubprocessError, TimeoutError):
+            return None
+    return None
+
+
+def _identity_matches(pid: Optional[int], identity: Optional[str]) -> bool:
+    """True when ``pid`` is still the process ``identity`` was taken from.
+
+    False when the identity was never recorded (legacy rows, Windows) or the
+    number has been recycled — both mean "we cannot claim this process is
+    ours", which every caller treats as fail-closed.
+    """
+    if not identity:
+        return False
+    return _process_identity(pid) == identity
+
+
+def _group_has_live_member(pgid: int) -> bool:
+    """True when the process group has at least one NON-zombie member.
+
+    ``killpg(pgid, 0)`` succeeds against a group whose only remaining member
+    is an unreaped zombie, which would make a dead worker look like a live
+    writer forever. Same zombie caveat (and the same per-platform probes) as
+    :func:`_pid_alive`, applied group-wide. Probe failures answer "alive":
+    deferring a requeue for one tick is recoverable, spawning a second
+    writer beside a live worker is not.
+    """
+    if sys.platform == "linux":
+        try:
+            for entry in os.listdir("/proc"):
+                if not entry.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{entry}/stat", "r", encoding="utf-8") as f:
+                        fields = f.read().rsplit(") ", 1)[-1].split()
+                    # Post-comm fields: state, ppid, pgrp, ...
+                    if int(fields[2]) == pgid and fields[0] not in ("Z", "X"):
+                        return True
+                except (OSError, ValueError, IndexError):
+                    continue
+        except OSError:
+            return True
+        return False
+    try:
+        proc = subprocess.run(
+            ["ps", "-A", "-o", "pgid=,stat="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=5,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return True
+    except (OSError, subprocess.SubprocessError, TimeoutError):
+        return True
+    for line in (proc.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            if int(parts[0]) != pgid:
+                continue
+        except ValueError:
+            continue
+        if "Z" not in parts[1]:
+            return True
+    return False
+
+
+def _process_group_alive(pgid: Optional[int]) -> bool:
+    """True when any process in ``pgid`` can still run on this host.
+
+    ``killpg(pgid, 0)`` is the only cheap probe that sees the *children* a
+    worker forked: those reparent to PID 1 when the worker dies but keep the
+    process group (and keep writing to the task's workspace), so a PID-only
+    liveness check reports "gone" while real writers are still live.
+    """
+    if not pgid or int(pgid) <= 0:
+        return False
+    killpg = getattr(os, "killpg", None)
+    if killpg is None:  # Windows: no process groups to probe.
+        return False
+    try:
+        killpg(int(pgid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # The group exists but we may not signal it. That is also what a
+        # group whose only member is an unreaped zombie looks like on
+        # macOS, so this must NOT short-circuit to "alive" — fall through
+        # to the member scan, which distinguishes the two.
+        pass
+    except OSError:
+        return False
+    return _group_has_live_member(int(pgid))
+
+
+def _worker_leader_alive(
+    pid: Optional[int], identity: Optional[str] = None,
+) -> bool:
+    """True while the worker process ITSELF is running (not just its group).
+
+    Identity-gated: a live pid whose recorded identity no longer matches is
+    a recycled number, not our worker. A *missing* identity is not a pass
+    either where the platform could have produced one — an unverifiable pid
+    is treated as "not our worker", which routes the task onto the bounded
+    fence path instead of an unbounded hold on a number.
+
+    That is the right answer for a decision made ABOUT a process we are only
+    observing. It is not the right answer for the process we are actively
+    killing: :func:`_terminate_reclaimed_worker` signals an identity-less
+    pid and therefore judges its survival on the bare pid, because a live
+    worker that fell through to a bounded fence would age out of it.
+    """
+    if not _pid_alive(pid):
+        return False
+    if identity is not None:
+        return _identity_matches(pid, identity)
+    return not _identity_probe_supported()
+
+
+def _worker_tree_alive(
+    pid: Optional[int],
+    pgid: Optional[int],
+    identity: Optional[str] = None,
+) -> bool:
+    """True while the worker OR anything it forked can still write.
+
+    When ``identity`` is recorded it gates the PID half: a live number whose
+    identity no longer matches is a recycled pid, not our worker. The group
+    half stays number-based (individual members carry no recorded identity),
+    which is why fences that rest on it alone are bounded in time.
+    """
+    if _worker_leader_alive(pid, identity):
+        return True
+    return _process_group_alive(pgid)
+
+
 def _terminate_reclaimed_worker(
     pid: Optional[int],
     claim_lock: Optional[str],
     *,
     signal_fn=None,
+    pgid: Optional[int] = None,
+    killpg_fn=None,
+    identity: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths."""
+    """Best-effort host-local worker termination for reclaim paths.
+
+    Signals the worker's whole **process group** — workers are spawned with
+    ``start_new_session=True``, so the group is the worker plus every tool
+    subprocess it forked — but ONLY while the leader's recorded ``identity``
+    still matches the live process. PIDs and PGIDs are recycled numbers, and
+    a group signal is the widest blast radius we have.
+
+    Without that proof the blast radius narrows to the bare PID, which is
+    the pre-existing behaviour and the only one that keeps the duplicate-
+    writer invariant. The two unproven cases are NOT the same:
+
+    * **No recorded identity** (legacy row, or a row written before the
+      token landed): the PID is all we have, so we signal it. Declining
+      would leave a live worker to be carried by a fence — and a fence with
+      no identity token is bounded by ``WORKER_FENCE_MAX_SECONDS``, so the
+      worker would age out of its own fence and a second writer would claim
+      beside it. ``observed_identity`` reports the token of whatever is
+      still alive afterwards, so a caller that must fence rather than hold
+      (operator reclaim) can pin it instead of resting on the number.
+    * **Recorded identity that no longer matches** a live PID: the OS
+      recycled the number. Our worker is already gone, so we signal nothing
+      — killing here would kill a stranger.
+
+    ``terminated`` is only True once nothing we are allowed to attribute to
+    this worker answers a liveness probe; ``still_alive`` is its complement
+    for callers deciding whether to fence, and ``leader_alive`` narrows that
+    to the worker process itself (the signal to HOLD the claim rather than
+    fence). All are host-local judgements: for a claim held by another host
+    we return without probing anything, since a local PID number says
+    nothing about a remote process.
+    """
     import signal
 
+    pgid = int(pgid) if pgid else None
     info: dict[str, Any] = {
         "prev_pid": int(pid) if pid else None,
+        "prev_pgid": pgid,
+        "prev_identity": identity,
         "host_local": False,
+        "identity_verified": False,
         "termination_attempted": False,
+        "group_signaled": False,
         "terminated": False,
         "sigkill": False,
+        "still_alive": False,
+        "leader_alive": False,
+        "observed_identity": None,
     }
     if not pid or pid <= 0 or not claim_lock:
         return info
 
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     if not str(claim_lock).startswith(host_prefix):
+        # Another host's claim. Its pid/pgid are numbers in a namespace we
+        # cannot see; probing them locally would read some unrelated local
+        # process as "the worker" and fence the task on a collision that can
+        # never resolve. Report nothing and let the caller requeue.
         return info
     info["host_local"] = True
+
+    identity_ok = _identity_matches(pid, identity)
+    info["identity_verified"] = identity_ok
+    # A recorded identity that does NOT match is proof the number was
+    # recycled, and the only case where signalling is forbidden outright:
+    # blind-signalling it is how a stranger's process gets killed. With no
+    # identity recorded at all there is nothing to contradict — the PID is
+    # the only handle we have ever had, and the pre-existing behaviour of
+    # signalling it is what keeps a live worker from aging out of a bounded
+    # fence into a duplicate-writer state.
+    may_signal = (
+        identity_ok or identity is None or not _identity_probe_supported()
+    )
+    info["may_signal"] = may_signal
+    if identity and _pid_alive(pid) and not identity_ok:
+        # The number is live but it is NOT our worker any more — the OS
+        # recycled it. Our worker is therefore gone: nothing to signal,
+        # nothing to fence, and certainly nothing to kill.
+        info["terminated"] = True
+        return info
 
     kill = signal_fn if signal_fn is not None else (
         os.kill if hasattr(os, "kill") else None
     )
-    if kill is None:
+    if killpg_fn is not None:
+        killpg = killpg_fn
+    elif signal_fn is not None:
+        # An injected ``signal_fn`` replaces OS signalling entirely (callers
+        # pass one precisely so nothing real gets killed). Sending the group
+        # a real signal behind that hook would be a nasty surprise, so the
+        # group channel is off and the pid is the unit of both signalling
+        # and liveness for this call.
+        killpg = None
+    else:
+        killpg = getattr(os, "killpg", None)
+    # Fail closed: no verified identity (legacy row, Windows, leader already
+    # exited) means no group signal. The fence still keeps the task
+    # nonclaimable while the group has live members, so children we decline
+    # to kill cannot produce a second writer.
+    group_enabled = bool(pgid) and killpg is not None and identity_ok
+    info["group_enabled"] = group_enabled
+    if kill is None or not may_signal:
+        info["still_alive"] = (
+            _worker_tree_alive(pid, pgid) if pgid else _pid_alive(pid)
+        )
         return info
 
+    def _leader_alive() -> bool:
+        """The worker process itself — not the group it left behind.
+
+        With no recorded identity the bare PID is the answer: we just
+        signalled that number, so reporting it dead while it is visibly
+        alive would send the caller down the bounded-fence path and let the
+        survivor age out. ``_worker_leader_alive`` deliberately answers
+        "not ours" for an unverifiable pid — right for a fence decision it
+        did not signal, wrong for the process we are killing right here.
+        """
+        if identity is None:
+            return _pid_alive(pid)
+        return _worker_leader_alive(pid, identity)
+
+    def _alive() -> bool:
+        if _leader_alive():
+            return True
+        return _process_group_alive(pgid) if pgid else False
+
+    def _signal(sig) -> bool:
+        """Send ``sig`` to the group (when proven ours) and the pid."""
+        delivered = False
+        if group_enabled:
+            try:
+                killpg(pgid, sig)
+                info["group_signaled"] = True
+                delivered = True
+            except ProcessLookupError:
+                pass
+            except OSError:
+                pass
+        try:
+            kill(int(pid), sig)
+            delivered = True
+        except ProcessLookupError:
+            pass
+        except OSError:
+            return delivered
+        return delivered
+
     info["termination_attempted"] = True
-    try:
-        kill(int(pid), signal.SIGTERM)
-    except ProcessLookupError:
-        # Process is already gone — that's a successful termination, not a
-        # survival. Leaving terminated=False here would make the reclaim guard
-        # misread a dead worker as still-alive and defer forever.
+    if not _signal(signal.SIGTERM) and not _alive():
+        # Nothing left to signal — already gone. That's a successful
+        # termination, not a survival: leaving terminated=False here would
+        # make the reclaim guard misread a dead worker as still-alive and
+        # defer forever.
         info["terminated"] = True
-        return info
-    except OSError:
         return info
 
     for _ in range(10):
-        if not _pid_alive(pid):
+        if not _alive():
             info["terminated"] = True
             return info
         time.sleep(0.5)
 
-    if _pid_alive(pid):
-        try:
-            # signal.SIGKILL doesn't exist on Windows; fall back to SIGTERM
-            # (which maps to TerminateProcess via the stdlib shim).
-            _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-            kill(int(pid), _sigkill)
-            info["sigkill"] = True
-        except (ProcessLookupError, OSError):
-            return info
+    if _alive():
+        # signal.SIGKILL doesn't exist on Windows; fall back to SIGTERM
+        # (which maps to TerminateProcess via the stdlib shim).
+        _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+        _signal(_sigkill)
+        info["sigkill"] = True
+        # SIGKILL is delivered asynchronously: verify on a wall-clock
+        # deadline rather than a single probe, so a group that dies a few
+        # milliseconds later isn't misreported as a survivor (which would
+        # defer the requeue for a whole tick).
+        deadline = time.monotonic() + WORKER_TERMINATION_VERIFY_SECONDS
+        # Bounded on BOTH wall-clock and probe count: each probe may shell
+        # out to ``ps``, and a caller that stubs ``time.sleep`` (tests) would
+        # otherwise spin the deadline out in hundreds of process scans.
+        for _ in range(WORKER_TERMINATION_VERIFY_PROBES):
+            if not _alive() or time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
 
-    info["terminated"] = not _pid_alive(pid)
+    info["leader_alive"] = _leader_alive()
+    info["still_alive"] = _alive()
+    info["terminated"] = not info["still_alive"]
+    if identity is None and info["leader_alive"]:
+        # Nothing was recorded at spawn, but the leader is alive NOW, so a
+        # token can be derived now. A caller that must fence instead of
+        # holding the claim (operator reclaim) pins this, turning a hold on
+        # a recyclable number into a provable one: unbounded while it
+        # matches, self-releasing the moment the pid is recycled.
+        info["observed_identity"] = _process_identity(pid)
     return info
 
 
 def _worker_survived_termination(termination: dict) -> bool:
-    """True when we tried to kill our own host-local worker and it is still alive.
+    """True when the worker PROCESS itself shrugged off our termination.
 
     Reclaiming in this state would release the claim and let the dispatcher
     spawn a second worker while the first is still running — the duplication
-    loop. Only host-local workers we actually signalled count: a non-local
-    claim lock or a no-op attempt (no ``os.kill`` available) must fall through
-    to the normal release path, since we cannot manage that worker anyway.
+    loop. Holding the claim is right here because the situation is expected
+    to resolve: the worker is throttled or wedged in a syscall, and the next
+    tick retries the kill.
+
+    Deliberately NOT true when only the worker's *children* survive: the
+    leader is gone, so no later tick will ever kill anything, and holding a
+    claim for a worker that no longer exists just parks the task in
+    ``running`` forever. Those callers requeue and record a bounded fence
+    instead, which keeps the task nonclaimable while being honest about the
+    state. Only host-local workers we actually signalled count: a non-local
+    claim lock or a no-op attempt (no ``os.kill`` available) must fall
+    through to the normal release path, since we cannot manage that worker
+    anyway.
     """
     return bool(
         termination.get("termination_attempted")
         and termination.get("host_local")
+        and termination.get("leader_alive")
         and not termination.get("terminated")
     )
 
@@ -7135,6 +8139,231 @@ def _defer_reclaim_for_live_worker(
         }
         payload.update(termination)
         _append_event(conn, task_id, "reclaim_deferred", payload, run_id=run_id)
+
+
+# ---------------------------------------------------------------------------
+# Worker fence — a task is not claimable while its previous process group
+# can still write.
+# ---------------------------------------------------------------------------
+
+def _read_worker_fence(
+    conn: sqlite3.Connection, task_id: str,
+) -> tuple[Optional[str], Optional[dict]]:
+    """Return ``(raw, parsed)`` for the recorded fence — raw is the CAS key.
+
+    Anything that decides a fence is releasable does so against a snapshot.
+    The stored JSON text is that snapshot's version stamp: clearing keys off
+    it so a decision about one fence can never delete a different one.
+    """
+    row = conn.execute(
+        "SELECT worker_fence FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None or not row["worker_fence"]:
+        return None, None
+    raw = row["worker_fence"]
+    try:
+        fence = json.loads(raw)
+    except (ValueError, TypeError):
+        return raw, None
+    return raw, (fence if isinstance(fence, dict) else None)
+
+
+def worker_fence(conn: sqlite3.Connection, task_id: str) -> Optional[dict]:
+    """Return the recorded fence for ``task_id``, or None when unfenced."""
+    return _read_worker_fence(conn, task_id)[1]
+
+
+def record_worker_fence(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    pid: Optional[int],
+    pgid: Optional[int],
+    run_id: Optional[int],
+    claim_lock: Optional[str],
+    reason: str,
+    identity: Optional[str] = None,
+) -> None:
+    """Mark ``task_id`` nonclaimable until the given worker group is gone.
+
+    Recorded on the task row (not in memory) so the fence survives a gateway
+    restart: the incident that motivated it (``t_80a3542a``) had the
+    dispatcher claim a fresh run against a task whose previous worker — PID
+    98725, reparented to PID 1 with live children — was still writing to the
+    same workspace. Carries the PID, the process group, the leader identity
+    token, and the run that owned them so the rejection is auditable and so
+    a recycled PID cannot impersonate the fenced worker.
+
+    A fence is only ever meaningful on the host that recorded it, so the
+    fence pins ``host`` too and callers only record one for host-local
+    claims (see :func:`_fence_blocks_claim`).
+    """
+    with write_txn(conn):
+        _write_worker_fence(
+            conn, task_id, pid=pid, pgid=pgid, run_id=run_id,
+            claim_lock=claim_lock, reason=reason, identity=identity,
+        )
+
+
+def _build_worker_fence(
+    *,
+    pid: Optional[int],
+    pgid: Optional[int],
+    run_id: Optional[int],
+    claim_lock: Optional[str],
+    reason: str,
+    identity: Optional[str] = None,
+) -> dict:
+    """The fence payload. Split out so a caller that folds the write into
+    another statement (see ``reclaim_task``) builds the identical value."""
+    return {
+        "pid": int(pid) if pid else None,
+        "pgid": int(pgid) if pgid else None,
+        "identity": identity,
+        "host": _claimer_id().split(":", 1)[0],
+        "run_id": int(run_id) if run_id else None,
+        "claim_lock": claim_lock,
+        "reason": reason,
+        "since": int(time.time()),
+    }
+
+
+def _write_worker_fence(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    pid: Optional[int],
+    pgid: Optional[int],
+    run_id: Optional[int],
+    claim_lock: Optional[str],
+    reason: str,
+    identity: Optional[str] = None,
+) -> None:
+    """``record_worker_fence`` body for callers already inside a write txn."""
+    fence = _build_worker_fence(
+        pid=pid, pgid=pgid, run_id=run_id, claim_lock=claim_lock,
+        reason=reason, identity=identity,
+    )
+    conn.execute(
+        "UPDATE tasks SET worker_fence = ? WHERE id = ?",
+        (json.dumps(fence, ensure_ascii=False), task_id),
+    )
+    _append_event(conn, task_id, "worker_fenced", fence)
+
+
+def clear_worker_fence(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected: Optional[str] = None,
+) -> bool:
+    """Drop the fence (worker confirmed gone, or a new worker took over).
+
+    ``expected`` is the exact serialized fence the caller evaluated. Pass it
+    from any path that decided "this fence may go" against a snapshot: if a
+    reaper recorded a DIFFERENT fence in the meantime — a live worker this
+    caller never looked at — the CAS matches nothing and the newer fence
+    survives. Omit it only where the intent is unconditional ("whatever is
+    fencing this task, an operator/new worker has superseded it").
+
+    Returns True when a fence was actually cleared.
+    """
+    if expected is None:
+        cur = conn.execute(
+            "UPDATE tasks SET worker_fence = NULL "
+            "WHERE id = ? AND worker_fence IS NOT NULL",
+            (task_id,),
+        )
+    else:
+        cur = conn.execute(
+            "UPDATE tasks SET worker_fence = NULL "
+            "WHERE id = ? AND worker_fence = ?",
+            (task_id, expected),
+        )
+    return cur.rowcount == 1
+
+
+def _fence_release_reason(fence: dict, now: int) -> Optional[str]:
+    """Why this fence no longer blocks a claim, or None while it still does.
+
+    A fence must fail open in every case where it can no longer be trusted
+    to describe a live writer, because a fence that can never resolve is a
+    task stranded with no automatic exit:
+
+    * ``foreign_host`` — recorded by (or for) another host. Local PID/PGID
+      numbers say nothing about a remote process, and we would never observe
+      the remote worker exiting, so we must not hold on one.
+    * ``worker_identity_changed`` — the PID is live but is no longer the
+      process we fenced. The OS recycled the number; our worker is gone.
+    * ``worker_group_gone`` — nothing answers: the normal happy exit.
+    * ``fence_expired`` — the leader is unverifiable and only the process
+      GROUP is holding the fence. That is the one case we cannot prove
+      (members carry no identity token and a pgid can be recycled too), so
+      it is bounded by ``WORKER_FENCE_MAX_SECONDS``. A fence whose leader is
+      verifiably alive never expires.
+    """
+    if fence.get("host") and fence["host"] != _claimer_id().split(":", 1)[0]:
+        return "foreign_host"
+    pid, pgid = fence.get("pid"), fence.get("pgid")
+    identity = fence.get("identity")
+    if identity is not None:
+        if _pid_alive(pid):
+            if _identity_matches(pid, identity):
+                # Provably the worker we fenced, still running. This is the
+                # only evidence strong enough for an unbounded hold.
+                return None
+            return "worker_identity_changed"
+    elif _pid_alive(pid):
+        # No identity token: a live PID is *evidence*, not proof — it may be
+        # our worker or whatever inherited its number. Hold on it, but let
+        # the bound below apply, or a recycled pid strands the task forever.
+        return _fence_expiry_reason(fence, now)
+    if not _process_group_alive(pgid):
+        return "worker_group_gone"
+    # The group is alive but the leader is not verifiable (gone, or never
+    # identified). Members carry no identity of their own and a pgid can be
+    # recycled too, so this evidence is bounded in time.
+    return _fence_expiry_reason(fence, now)
+
+
+def _fence_expiry_reason(fence: dict, now: int) -> Optional[str]:
+    """``"fence_expired"`` once a weakly-evidenced hold outlives its bound."""
+    since = fence.get("since")
+    if isinstance(since, int) and now - since > WORKER_FENCE_MAX_SECONDS:
+        return "fence_expired"
+    return None
+
+
+def _fence_blocks_claim(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[dict]:
+    """Return the fence when it still blocks a claim, else clear it.
+
+    Called at the claim gate — the single choke point every spawn path goes
+    through — so no requeue path can hand a task to a second worker while the
+    first process group is alive, regardless of which code path (or which
+    gateway process) requeued it.
+    """
+    raw, fence = _read_worker_fence(conn, task_id)
+    if fence is None:
+        return None
+    release = _fence_release_reason(fence, int(time.time()))
+    if release is None:
+        return fence
+    kind = (
+        "worker_fence_expired" if release == "fence_expired"
+        else "worker_fence_cleared"
+    )
+    with write_txn(conn):
+        # CAS on the fence we evaluated: a reaper may have replaced it while
+        # we were probing the OS, and that newer fence describes a worker we
+        # know nothing about.
+        if not clear_worker_fence(conn, task_id, expected=raw):
+            return worker_fence(conn, task_id)
+        _append_event(
+            conn, task_id, kind, {**fence, "cleared_reason": release},
+        )
+    return None
 
 
 def heartbeat_worker(
@@ -7192,28 +8421,42 @@ def enforce_max_runtime(
     conn: sqlite3.Connection,
     *,
     signal_fn=None,
+    killpg_fn=None,
 ) -> list[str]:
     """Terminate workers whose per-task ``max_runtime_seconds`` has elapsed.
 
-    Sends SIGTERM, waits a short grace window, then SIGKILL. Emits a
-    ``timed_out`` event and drops the task back to ``ready`` so the next
-    dispatcher tick re-spawns it — unless the spawn-failure circuit
-    breaker has already given up, in which case the task stays blocked
-    where ``_record_spawn_failure`` parked it.
+    Signals the worker's whole process group (SIGTERM, grace window, then
+    SIGKILL), and only once nothing in that group answers a liveness probe
+    does it emit ``timed_out`` and drop the task back to ``ready`` for the
+    next dispatcher tick — unless the circuit breaker has already given up,
+    in which case the task stays blocked where ``_record_task_failure``
+    parked it.
+
+    **A blown budget is not permission to requeue.** In incident
+    ``t_80a3542a`` the runtime cap fired on run 141, the worker (PID 98725,
+    reparented to PID 1, with live Claude children) ignored the signal, and
+    the task was flipped to ``ready`` anyway: the dispatcher claimed run 152
+    and spawned PID 57286 against the same task and workspace. Two writers.
+    When the group survives termination the task stays ``running`` with its
+    run open, the claim is held via ``reclaim_deferred``, and the next tick
+    retries the kill — the same self-correcting hold ``release_stale_claims``
+    already uses. When we requeue a worker we could *not* confirm dead (a
+    non-host-local claim, no signalling primitive), a durable
+    ``worker_fence`` keeps the task nonclaimable until the group is gone.
 
     Runs host-local: only tasks claimed by this host are candidates
-    (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a
-    test hook; defaults to ``os.kill`` on POSIX.
+    (same reasoning as ``detect_crashed_workers``). ``signal_fn`` /
+    ``killpg_fn`` are test hooks; they default to ``os.kill`` /
+    ``os.killpg`` on POSIX.
     """
-    import signal
     timed_out: list[str] = []
     now = int(time.time())
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, "
+        "SELECT t.id, t.worker_pid, t.worker_pgid, t.worker_identity, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
-        "       t.max_runtime_seconds, t.claim_lock "
+        "       t.max_runtime_seconds, t.claim_lock, t.current_run_id "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
         "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
@@ -7232,38 +8475,46 @@ def enforce_max_runtime(
             continue
 
         pid = int(row["worker_pid"])
+        pgid = row["worker_pgid"]
         tid = row["id"]
-        # SIGTERM then SIGKILL. Keep it simple: 5 s grace. Workers that
-        # want a cleaner shutdown can install their own SIGTERM handler
-        # before the grace expires.
-        killed = False
-        kill = signal_fn if signal_fn is not None else (
-            os.kill if hasattr(os, "kill") else None
+        termination = _terminate_reclaimed_worker(
+            pid, row["claim_lock"],
+            signal_fn=signal_fn,
+            pgid=pgid,
+            killpg_fn=killpg_fn,
+            identity=row["worker_identity"],
         )
-        if kill is not None:
-            try:
-                kill(pid, signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                pass
-            # Short polling wait — no time.sleep on the write txn.
-            for _ in range(10):
-                if not _pid_alive(pid):
-                    break
-                time.sleep(0.5)
-            if _pid_alive(pid):
-                try:
-                    # signal.SIGKILL doesn't exist on Windows.
-                    _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-                    kill(pid, _sigkill)
-                    killed = True
-                except (ProcessLookupError, OSError):
-                    pass
+        if _worker_survived_termination(termination):
+            # Still writable → hold the claim. No requeue, no run
+            # finalization, no failure counted: the attempt is not over.
+            _defer_reclaim_for_live_worker(
+                conn, tid, row["claim_lock"], now, termination,
+                reason="max_runtime_worker_alive",
+            )
+            continue
+        killed = bool(termination.get("sigkill"))
+        if termination.get("still_alive"):
+            # We are requeuing a worker we could not confirm dead: its
+            # children still hold the process group, or we had no signalling
+            # primitive at all. Never the leader itself — a live leader is
+            # held by the branch above, not fenced.
+            # ``still_alive`` is only ever set for host-local claims. Fence
+            # the task so no replacement claim lands until the group is gone.
+            record_worker_fence(
+                conn, tid,
+                pid=pid,
+                pgid=pgid,
+                run_id=row["current_run_id"],
+                claim_lock=row["claim_lock"],
+                reason="max_runtime_unconfirmed_termination",
+                identity=row["worker_identity"],
+            )
 
         with write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
-                "last_heartbeat_at = NULL "
+                "claim_expires = NULL, worker_pid = NULL, worker_pgid = NULL, "
+                "worker_identity = NULL, last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
                 (tid, pid, row["claim_lock"]),
@@ -7271,6 +8522,7 @@ def enforce_max_runtime(
             if cur.rowcount == 1:
                 payload = {
                     "pid": pid,
+                    "pgid": int(pgid) if pgid else None,
                     "elapsed_seconds": int(elapsed),
                     "limit_seconds": int(row["max_runtime_seconds"]),
                     "sigkill": killed,
@@ -7345,7 +8597,8 @@ def detect_stale_running(
     reclaimed: list[str] = []
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.claim_lock, "
+        "SELECT t.id, t.worker_pid, t.worker_pgid, t.worker_identity, "
+        "       t.last_heartbeat_at, t.claim_lock, t.current_run_id, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -7370,9 +8623,10 @@ def detect_stale_running(
         tid = row["id"]
         lock = row["claim_lock"] or ""
 
-        # Terminate the worker if it's still host-local.
+        # Terminate the worker (whole process group) if it's still host-local.
         termination = _terminate_reclaimed_worker(
             pid, lock, signal_fn=signal_fn,
+            pgid=row["worker_pgid"], identity=row["worker_identity"],
         )
 
         # Never release a claim while our own worker is still alive: that would
@@ -7383,12 +8637,27 @@ def detect_stale_running(
                 reason="heartbeat_stale_worker_alive",
             )
             continue
+        if termination.get("still_alive"):
+            # Same contract as the TTL and runtime-cap reclaims: a silent
+            # heartbeat does not mean the worker's children stopped writing.
+            # They keep the process group after the leader exits, so fence
+            # the task until that group is empty rather than letting the
+            # next tick spawn a second writer into the same workspace.
+            record_worker_fence(
+                conn, tid,
+                pid=pid,
+                pgid=row["worker_pgid"],
+                run_id=row["current_run_id"],
+                claim_lock=lock,
+                reason="heartbeat_stale_unconfirmed_termination",
+                identity=row["worker_identity"],
+            )
 
         with write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
-                "last_heartbeat_at = NULL "
+                "claim_expires = NULL, worker_pid = NULL, worker_pgid = NULL, "
+                "worker_identity = NULL, last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND claim_lock IS ?",
                 (tid, row["claim_lock"]),
@@ -7647,26 +8916,54 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # counter (see the post-txn loop below).
     crash_details: list[tuple[str, int, str, bool, str]] = []
     # (task_id, pid, claimer, protocol_violation, error_text)
-    with write_txn(conn):
-        rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
-            "WHERE status = 'running' AND worker_pid IS NOT NULL"
-        ).fetchall()
-        host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
-        for row in rows:
-            # Only check liveness for claims owned by this host.
-            lock = row["claim_lock"] or ""
-            if not lock.startswith(host_prefix):
+    # Probe the OS BEFORE taking the board's write lock. ``_pid_alive`` and
+    # ``_process_group_alive`` read /proc or shell out to ``ps``; doing that
+    # inside BEGIN IMMEDIATE stalls every other writer on the board — workers
+    # completing, heartbeats, sibling dispatch ticks — for the length of a
+    # subprocess call. Everything decided here is re-checked against the row
+    # under the lock below, so a worker that dies (or is replaced) in between
+    # cannot be acted on with stale evidence.
+    candidates: list[tuple[sqlite3.Row, bool]] = []
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+    for row in conn.execute(
+        "SELECT id, worker_pid, worker_pgid, worker_identity, claim_lock, "
+        "       started_at, current_run_id FROM tasks "
+        "WHERE status = 'running' AND worker_pid IS NOT NULL"
+    ).fetchall():
+        # Only check liveness for claims owned by this host.
+        lock = row["claim_lock"] or ""
+        if not lock.startswith(host_prefix):
+            continue
+        # Skip liveness check inside the launch-window grace period
+        # so a freshly-spawned worker isn't reclaimed before its PID
+        # is visible on /proc.
+        started_at = row["started_at"] if "started_at" in row.keys() else None
+        if started_at is not None:
+            grace = _resolve_crash_grace_seconds()
+            if time.time() - started_at < grace:
                 continue
-            # Skip liveness check inside the launch-window grace period
-            # so a freshly-spawned worker isn't reclaimed before its PID
-            # is visible on /proc.
-            started_at = row["started_at"] if "started_at" in row.keys() else None
-            if started_at is not None:
-                grace = _resolve_crash_grace_seconds()
-                if time.time() - started_at < grace:
-                    continue
-            if _pid_alive(row["worker_pid"]):
+        # Identity-aware: a live PID that is no longer OUR worker (the number
+        # was recycled) must not suppress crash detection, or the task sits
+        # in ``running`` forever with nothing behind it.
+        if _worker_leader_alive(row["worker_pid"], row["worker_identity"]):
+            continue
+        candidates.append((row, _process_group_alive(row["worker_pgid"])))
+
+    with write_txn(conn):
+        for row, group_alive in candidates:
+            # Re-read under the lock: the row may have moved on while we were
+            # probing (worker completed, task was reclaimed, a new worker was
+            # spawned). Only act when it is still the same claim and worker.
+            fresh = conn.execute(
+                "SELECT status, worker_pid, claim_lock FROM tasks WHERE id = ?",
+                (row["id"],),
+            ).fetchone()
+            if (
+                fresh is None
+                or fresh["status"] != "running"
+                or fresh["worker_pid"] != row["worker_pid"]
+                or fresh["claim_lock"] != row["claim_lock"]
+            ):
                 continue
 
             pid = int(row["worker_pid"])
@@ -7733,9 +9030,25 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
 
+            # The worker process is gone, but the children it forked are
+            # not: they reparent to PID 1 and keep the worker's process
+            # group — and keep writing to the task's workspace. Requeuing
+            # in that state is how a "crashed" task ends up with two live
+            # writers, so fence the task until the group is empty.
+            if group_alive:
+                _write_worker_fence(
+                    conn, row["id"],
+                    pid=pid,
+                    pgid=row["worker_pgid"],
+                    run_id=row["current_run_id"],
+                    claim_lock=row["claim_lock"],
+                    reason="crashed_worker_children_alive",
+                    identity=row["worker_identity"],
+                )
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
+                "claim_expires = NULL, worker_pid = NULL, worker_pgid = NULL, "
+                "worker_identity = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
                 (row["id"], pid, row["claim_lock"]),
@@ -7879,6 +9192,29 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     return crashed
 
 
+def _claim_source_status(conn: sqlite3.Connection, task_id: str) -> str:
+    """Which column the task's current run was claimed out of.
+
+    ``"review"`` when ``claim_review_task`` made the claim (it stamps
+    ``source_status`` on the ``claimed`` event), ``"ready"`` otherwise —
+    including for every pre-existing event that predates the stamp. Read
+    from the event rather than threaded through the callers so a requeue
+    lands in the right column no matter which failure path reached it.
+    """
+    row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'claimed' ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not row or not row["payload"]:
+        return "ready"
+    try:
+        source = json.loads(row["payload"]).get("source_status")
+    except (ValueError, TypeError):
+        return "ready"
+    return "review" if source == "review" else "ready"
+
+
 def _record_task_failure(
     conn: sqlite3.Connection,
     task_id: str,
@@ -7906,8 +9242,10 @@ def _record_task_failure(
 
     * ``release_claim=True, end_run=True`` — spawn-failure path.
       Caller has a running task with an open run; this transitions
-      it back to ``ready`` (or ``blocked`` when the breaker trips),
-      releases the claim, and closes the run with ``outcome=<outcome>``.
+      it back to the column the claim came from — ``ready``, or
+      ``review`` for a claim made by :func:`claim_review_task` (or
+      ``blocked`` when the breaker trips) — releases the claim, and
+      closes the run with ``outcome=<outcome>``.
 
     * ``release_claim=False, end_run=False`` — timeout/crash path.
       Caller has ALREADY flipped the task to ``ready`` and closed the
@@ -7959,26 +9297,41 @@ def _record_task_failure(
             limit_source = "dispatcher"
 
         if force_trip or failures >= effective_limit:
-            # Trip the breaker.
+            # Trip the breaker. The limit we decided against is persisted so
+            # no later promotion caller can resolve a laxer one and hand the
+            # task back to the dispatcher (incident ``t_27263082``) — but the
+            # stamp rides the SAME status-guarded UPDATE as the transition.
+            # If the worker completed the task while we were accounting this
+            # failure, that UPDATE matches nothing and the finished task must
+            # not be left carrying a binding give-up decision either.
             if release_claim:
                 # Spawn path: still running, also clear claim state.
-                conn.execute(
+                tripped_rows = conn.execute(
                     "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
-                    "consecutive_failures = ?, last_failure_error = ? "
+                    "worker_pgid = NULL, worker_identity = NULL, "
+                    "consecutive_failures = ?, last_failure_error = ?, "
+                    "breaker_limit = ? "
                     "WHERE id = ? AND status IN ('running', 'ready')",
-                    (failures, error[:500], task_id),
-                )
+                    (failures, error[:500], int(effective_limit), task_id),
+                ).rowcount
             else:
                 # Timeout/crash path: task is already at ``ready``
                 # with claim cleared; just flip to blocked + update
                 # counter fields.
-                conn.execute(
+                tripped_rows = conn.execute(
                     "UPDATE tasks SET status = 'blocked', "
-                    "consecutive_failures = ?, last_failure_error = ? "
+                    "consecutive_failures = ?, last_failure_error = ?, "
+                    "breaker_limit = ? "
                     "WHERE id = ? AND status IN ('ready', 'running')",
-                    (failures, error[:500], task_id),
-                )
+                    (failures, error[:500], int(effective_limit), task_id),
+                ).rowcount
+            if tripped_rows != 1:
+                # The task reached a terminal state under us (completed,
+                # archived, deleted). Nothing was transitioned and nothing
+                # was stamped; do not emit a give-up for a task that isn't
+                # blocked.
+                return False
             run_id = None
             if end_run:
                 # Only the spawn path has an open run to close.
@@ -8009,22 +9362,39 @@ def _record_task_failure(
         else:
             # Below threshold.
             if release_claim:
-                # Spawn path: transition running → ready + clear claim.
-                conn.execute(
-                    "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                # Spawn path: transition running → back to the column this
+                # run was claimed out of, and clear the claim. A review claim
+                # must land in ``review``, not ``ready``: the dispatcher
+                # force-loads the ``sdlc-review`` skill for review claims, so
+                # requeueing to ``ready`` hands the card to the next tick as
+                # ordinary work and spawns a plain implementation worker
+                # against a task whose PR is already open.
+                counted_rows = conn.execute(
+                    "UPDATE tasks SET status = ?, claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
+                    "worker_pgid = NULL, worker_identity = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status = 'running'",
-                    (failures, error[:500], task_id),
-                )
+                    (
+                        _claim_source_status(conn, task_id),
+                        failures, error[:500], task_id,
+                    ),
+                ).rowcount
             else:
-                # Timeout/crash path: task is already at ``ready`` via
-                # its own UPDATE. Just bookkeep the counter + last error.
-                conn.execute(
+                # Timeout/crash path: task is already at ``ready`` via its
+                # own UPDATE. Bookkeep the counter + last error — but under
+                # the same status guard as the trip branch above, or a task
+                # the worker completed while we were accounting this failure
+                # comes out of it ``done`` with a failure counted against it.
+                counted_rows = conn.execute(
                     "UPDATE tasks SET consecutive_failures = ?, "
-                    "last_failure_error = ? WHERE id = ?",
+                    "last_failure_error = ? "
+                    "WHERE id = ? AND status IN ('ready', 'running')",
                     (failures, error[:500], task_id),
-                )
+                ).rowcount
+            if counted_rows != 1:
+                # Terminal race: nothing to account against.
+                return False
             if end_run:
                 # Spawn path: close the open run with outcome.
                 run_id = _end_run(
@@ -8060,28 +9430,85 @@ def _record_spawn_failure(
     )
 
 
-def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
-    """Record the spawned child's pid + emit a ``spawned`` event.
+def _set_worker_pid(
+    conn: sqlite3.Connection,
+    task_id: str,
+    pid: int,
+    *,
+    pgid: Optional[int] = None,
+) -> None:
+    """Record the spawned child's pid + process group, emit ``spawned``.
 
     The event's payload carries the pid so a human reading ``hermes kanban
     tail`` can correlate log lines with OS-level traces without opening
     the drawer.
+
+    ``pgid`` defaults to the child's own process group. Workers are spawned
+    with ``start_new_session=True``, so that group is the whole worker tree
+    (agent + every tool subprocess). Termination and liveness checks target
+    the group, because the children outlive the worker and keep writing.
     """
+    if pgid is None:
+        getpgid = getattr(os, "getpgid", None)
+        if getpgid is not None:
+            try:
+                pgid = getpgid(int(pid))
+            except (ProcessLookupError, OSError):
+                # The process is already gone, or the platform will not tell
+                # us. Record nothing: synthesizing ``pgid = pid`` would sail
+                # through the leadership check below on no evidence at all,
+                # which is precisely what that check exists to prevent.
+                pgid = None
+    # Only persist a group id the worker LEADS. ``_default_spawn`` uses
+    # start_new_session=True, so a real worker is its own group leader and
+    # pgid == pid. Any other value is a group the worker merely joined —
+    # in practice the gateway's own — and signalling that would take down
+    # the dispatcher and every sibling worker with it. Store nothing and
+    # degrade to pid-only safety instead.
+    if pgid is not None and int(pgid) != int(pid):
+        _log.warning(
+            "kanban: worker pid %s is not its own process-group leader "
+            "(pgid=%s); not recording a group id for it",
+            pid, pgid,
+        )
+        pgid = None
+    # Identity token for the leader, captured as close to the spawn as we
+    # can get it. Everything destructive (group signals) and everything
+    # binding (fences) is gated on this still matching later, so a recycled
+    # PID can neither be killed by us nor hold a task hostage.
+    identity = _process_identity(pid)
     with write_txn(conn):
         conn.execute(
-            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
-            (int(pid), task_id),
+            "UPDATE tasks SET worker_pid = ?, worker_pgid = ?, "
+            "worker_identity = ? WHERE id = ?",
+            (int(pid), int(pgid) if pgid else None, identity, task_id),
         )
+        # A live worker of our own supersedes any fence recorded for a
+        # previous one — we just proved the task was claimable.
+        clear_worker_fence(conn, task_id)
         run_id = _current_run_id(conn, task_id)
         if run_id is not None:
             conn.execute(
                 "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
                 (int(pid), run_id),
             )
-        _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
+        _append_event(
+            conn, task_id, "spawned",
+            {
+                "pid": int(pid),
+                "pgid": int(pgid) if pgid else None,
+                "identity": identity,
+            },
+            run_id=run_id,
+        )
 
 
-def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
+def _clear_failure_counter(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    keep_breaker_limit: bool = False,
+) -> None:
     """Reset the unified consecutive-failures counter.
 
     Called from ``complete_task`` on successful completion — a fresh
@@ -8090,11 +9517,16 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
     a successful spawn proves the worker could start but says nothing
     about whether the run will succeed, so we need to let timeouts and
     crashes accumulate across spawn boundaries.
+
+    ``keep_breaker_limit`` preserves the recorded give-up decision while
+    still zeroing the counter. ``reclaim_task`` uses it for a task that is
+    staying blocked: the operator freed the worker, not the task.
     """
+    breaker_sql = "" if keep_breaker_limit else ", breaker_limit = NULL"
     with write_txn(conn):
         conn.execute(
             "UPDATE tasks SET consecutive_failures = 0, "
-            "last_failure_error = NULL WHERE id = ?",
+            "last_failure_error = NULL" + breaker_sql + " WHERE id = ?",
             (task_id,),
         )
 

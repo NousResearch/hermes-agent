@@ -36,12 +36,15 @@ NUM_TASKS = 50
 TTL = 1
 WORK_DURATION_S = 2.0  # longer than TTL => reclaimer wins
 WT = str(Path(__file__).resolve().parents[2])
+sys.path.insert(0, WT)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _isolation import adopt_stress_home, isolate_stress_home  # noqa: E402
 
 
 def worker_loop(worker_id: int, hermes_home: str, result_file: str) -> None:
-    os.environ["HERMES_HOME"] = hermes_home
-    os.environ["HOME"] = hermes_home
-    sys.path.insert(0, WT)
+    # Re-assert the sandbox before touching the DB (see _isolation).
+    adopt_stress_home(hermes_home)
     from hermes_cli import kanban_db as kb
 
     events = []
@@ -96,9 +99,9 @@ def worker_loop(worker_id: int, hermes_home: str, result_file: str) -> None:
 
 
 def reclaimer_loop(hermes_home: str, result_file: str) -> None:
-    os.environ["HERMES_HOME"] = hermes_home
-    os.environ["HOME"] = hermes_home
-    sys.path.insert(0, WT)
+    # Re-assert the sandbox: this loop reclaims *every* stale claim it
+    # finds, so on a live board it would tear down real workers.
+    adopt_stress_home(hermes_home)
     from hermes_cli import kanban_db as kb
 
     events = []
@@ -121,10 +124,10 @@ def reclaimer_loop(hermes_home: str, result_file: str) -> None:
 
 
 def main():
-    home = tempfile.mkdtemp(prefix="hermes_reclaim_race_")
-    os.environ["HERMES_HOME"] = home
-    os.environ["HOME"] = home
-    sys.path.insert(0, WT)
+    sandbox = isolate_stress_home("hermes_reclaim_race_")
+    home = str(sandbox.home)
+    print(f"HERMES_HOME = {home}")
+    print(f"kanban DB   = {sandbox.db}")
     from hermes_cli import kanban_db as kb
 
     kb.init_db()

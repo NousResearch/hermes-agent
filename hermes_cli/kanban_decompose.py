@@ -283,11 +283,21 @@ def decompose_task(
     """
     with kb.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
+        hold = (
+            kb.terminal_hold_reason(conn, task_id) if task is not None else None
+        )
     if task is None:
         return DecomposeOutcome(task_id, False, "unknown task id")
     if task.status != "triage":
         return DecomposeOutcome(
             task_id, False, f"task is not in triage (status={task.status!r})"
+        )
+    if hold:
+        # A worker blocked this, or the breaker gave up on it; it needs an
+        # operator decision, not another LLM fan-out. ``hermes kanban
+        # unblock`` (or ``promote``) resumes it.
+        return DecomposeOutcome(
+            task_id, False, f"task is on a terminal hold ({hold}) — unblock it first",
         )
 
     cfg = _load_config()
@@ -457,7 +467,15 @@ def decompose_task(
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Return task ids currently in the triage column."""
+    """Return task ids currently in the triage column that are safe to
+    auto-decompose.
+
+    Rows on a terminal hold are excluded — an unblock-loop escalation, a
+    worker's ``kanban_block``, or a recorded breaker trip. All three are a
+    human hold that only ``kanban unblock`` / ``promote`` clears. Before
+    this filter the gateway's auto-decompose tick picked such a card up and
+    silently promoted it back into the work pool.
+    """
     with kb.connect_closing() as conn:
         rows = kb.list_tasks(
             conn,
@@ -465,4 +483,7 @@ def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
             tenant=tenant,
             limit=1000,
         )
-    return [row.id for row in rows]
+        return [
+            row.id for row in rows
+            if not kb.terminal_hold_reason(conn, row.id)
+        ]

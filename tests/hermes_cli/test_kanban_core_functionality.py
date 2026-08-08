@@ -266,7 +266,13 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
         killed.append((pid, sig))
 
     # We bypass _pid_alive by stubbing it so the grace-poll exits fast.
-    import hermes_cli.kanban_db as _kb
+    # Stub the module object this test actually calls into (``kb``): an
+    # earlier test in the same session may have evicted hermes_cli from
+    # sys.modules, in which case a fresh ``import hermes_cli.kanban_db``
+    # here would patch a *different* module and leave the real liveness
+    # probe running against pytest's own pid — which now (correctly)
+    # refuses to requeue a task whose worker is still alive.
+    _kb = kb
     original_alive = _kb._pid_alive
     _kb._pid_alive = lambda pid: False  # pretend SIGTERM worked immediately
 
@@ -1204,7 +1210,11 @@ def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
     import signal
     import time
     import secrets
-    import hermes_cli.kanban_db as _kb
+    # Patch the module object this test actually calls into. A fresh
+    # ``import hermes_cli.kanban_db`` can hand back a DIFFERENT module when an
+    # earlier test in the session evicted hermes_cli from sys.modules, and the
+    # stubs below would then silently miss.
+    _kb = kb
     conn = kb.connect()
     try:
         t = kb.create_task(conn, title="stuck", assignee="broken")
@@ -1220,9 +1230,15 @@ def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
                 state["alive"] = False
 
         monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: state["alive"])
+        # A worker row carries an identity token alongside its pid: signalling
+        # is only allowed while that token still verifies, so a fabricated row
+        # has to carry one too (a pid with no identity is a legacy row, which
+        # is deliberately never signalled — see
+        # test_kanban_process_retry_safety.py).
+        monkeypatch.setattr(_kb, "_process_identity", lambda _pid: "test-identity")
         conn.execute(
             "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
-            "worker_pid=? WHERE id=?",
+            "worker_pid=?, worker_identity='test-identity' WHERE id=?",
             (lock, future, 12345, t),
         )
         conn.execute(

@@ -158,6 +158,13 @@ def test_codex_turn_persists_each_message_exactly_once():
     finally:
         import shutil
 
+        # SessionDB holds an open sqlite3 connection (WAL mode: state.db +
+        # state.db-wal/-shm sidecar files). Unlike POSIX, Windows refuses to
+        # unlink a file with an open handle, so shutil.rmtree(tmp) below fails
+        # with PermissionError (WinError 32) unless the connection is closed
+        # first. db.close() also issues a WAL checkpoint(TRUNCATE), folding
+        # the sidecar files back into state.db before deletion.
+        db.close()
         shutil.rmtree(tmp)
 
 

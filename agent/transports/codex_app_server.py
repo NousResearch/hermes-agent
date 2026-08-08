@@ -17,8 +17,10 @@ runtime is not selected.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
+import shutil
 import subprocess
 import threading
 import time
@@ -26,6 +28,8 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from tools.environments.local import hermes_subprocess_env
+
+logger = logging.getLogger(__name__)
 
 # Default minimum codex version we test against. The PR sets this from the
 # `codex --version` parsed at install time; bumping is a one-line change here.
@@ -382,6 +386,71 @@ def parse_codex_version(output: str) -> Optional[tuple[int, int, int]]:
     if not match:
         return None
     return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+
+def resolve_codex_binary(explicit_path: Optional[str] = None) -> str:
+    """Resolve which codex executable to spawn.
+
+    On a machine with more than one Codex CLI install, the bare string
+    "codex" resolves via OS PATH search and can land on an incomplete
+    install that is missing the Windows sandbox helper
+    (codex-windows-sandbox-setup.exe) even when a known-good install is
+    named elsewhere. Priority order, first existing candidate wins:
+
+    1. ``explicit_path`` passed by the caller
+    2. the ``CODEX_CLI_PATH`` environment variable
+    3. the OpenAI native installer's default location
+       (``%LOCALAPPDATA%\\Programs\\OpenAI\\Codex\\bin\\codex.exe``)
+    4. the npm global install location
+    5. whatever ``codex`` resolves to on PATH
+
+    Logs the resolved path (and which tier it came from). Raises
+    RuntimeError if none of the candidates can be found.
+    """
+    candidates: list[tuple[str, Optional[str]]] = []
+
+    if explicit_path:
+        candidates.append(("explicit path", explicit_path))
+
+    candidates.append(("CODEX_CLI_PATH", os.environ.get("CODEX_CLI_PATH")))
+
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        candidates.append((
+            "OpenAI local install",
+            os.path.join(
+                local_app_data, "Programs", "OpenAI", "Codex", "bin", "codex.exe"
+            ),
+        ))
+
+    app_data = os.environ.get("APPDATA")
+    if app_data:
+        candidates.append((
+            "npm global install",
+            os.path.join(
+                app_data, "npm", "node_modules", "@openai", "codex",
+                "node_modules", "@openai", "codex-win32-x64", "vendor",
+                "x86_64-pc-windows-msvc", "bin", "codex.exe",
+            ),
+        ))
+
+    for label, path in candidates:
+        if path and os.path.isfile(path):
+            logger.info("codex binary resolved via %s: %s", label, path)
+            return path
+        if path:
+            logger.debug("codex binary candidate (%s) not found: %s", label, path)
+
+    which_path = shutil.which("codex")
+    if which_path:
+        logger.info("codex binary resolved via PATH: %s", which_path)
+        return which_path
+
+    raise RuntimeError(
+        "codex CLI not found. Checked an explicit path (if given), "
+        "CODEX_CLI_PATH, the OpenAI local install path, the npm global "
+        "install path, and PATH. Install with: npm i -g @openai/codex"
+    )
 
 
 def check_codex_binary(

@@ -631,6 +631,7 @@ def run_codex_app_server_turn(
     Called from run_conversation() when agent.api_mode == "codex_app_server".
     Returns the same dict shape as the chat_completions path.
     """
+    from agent.transports.codex_app_server import resolve_codex_binary
     from agent.transports.codex_app_server_session import (
         CodexAppServerSession,
         _ServerRequestRouting,
@@ -680,8 +681,16 @@ def run_codex_app_server_turn(
         # users see no live tool-progress or interim commentary while
         # codex_app_server is running — only the final answer (#33200).
         # Supersedes the narrower item/started-only bridge from #38835.
+        #
+        # codex_bin must be resolved explicitly rather than left to the
+        # CodexAppServerSession/CodexAppServerClient default of the bare
+        # string "codex" — on a machine with more than one Codex CLI install,
+        # OS PATH resolution can pick an incomplete install missing the
+        # Windows sandbox helper (codex-windows-sandbox-setup.exe) even when
+        # CODEX_CLI_PATH already names a known-good one.
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
+            codex_bin=resolve_codex_binary(),
             approval_callback=approval_callback,
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,

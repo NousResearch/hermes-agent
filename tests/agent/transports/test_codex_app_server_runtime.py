@@ -111,6 +111,157 @@ class TestCodexAppServerModule:
         assert "-32600" in str(err)
 
 
+class TestResolveCodexBinary:
+    """Priority order for picking which codex executable to spawn.
+
+    Regression for the PATH-shadowing bug: on a machine with multiple Codex
+    CLI installs, the bare string "codex" resolves via OS PATH search and can
+    land on an incomplete install missing the Windows sandbox helper
+    (codex-windows-sandbox-setup.exe), even when CODEX_CLI_PATH already names
+    a known-good install. Order: explicit call-time path > CODEX_CLI_PATH env
+    var > OpenAI local install > npm global install > bare "codex" on PATH.
+    """
+
+    def test_module_exports_resolver(self) -> None:
+        from agent.transports import codex_app_server
+
+        assert callable(codex_app_server.resolve_codex_binary)
+
+    def test_explicit_path_wins_over_everything(self, tmp_path, monkeypatch) -> None:
+        from agent.transports.codex_app_server import resolve_codex_binary
+
+        explicit = tmp_path / "explicit-codex.exe"
+        explicit.write_text("")
+        env_path = tmp_path / "env-codex.exe"
+        env_path.write_text("")
+        monkeypatch.setenv("CODEX_CLI_PATH", str(env_path))
+
+        assert resolve_codex_binary(str(explicit)) == str(explicit)
+
+    def test_explicit_path_ignored_when_missing_falls_through_to_env(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from agent.transports.codex_app_server import resolve_codex_binary
+
+        env_path = tmp_path / "env-codex.exe"
+        env_path.write_text("")
+        monkeypatch.setenv("CODEX_CLI_PATH", str(env_path))
+
+        missing = str(tmp_path / "does-not-exist.exe")
+        assert resolve_codex_binary(missing) == str(env_path)
+
+    def test_codex_cli_path_wins_over_local_install_and_path(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from agent.transports.codex_app_server import resolve_codex_binary
+
+        env_path = tmp_path / "hermes-managed-codex.exe"
+        env_path.write_text("")
+        monkeypatch.setenv("CODEX_CLI_PATH", str(env_path))
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "no-local-install"))
+        monkeypatch.setenv("APPDATA", str(tmp_path / "no-npm-install"))
+        monkeypatch.setattr("shutil.which", lambda name: "/somewhere/on/path/codex")
+
+        assert resolve_codex_binary() == str(env_path)
+
+    def test_env_var_ignored_when_file_missing_falls_through(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from agent.transports.codex_app_server import resolve_codex_binary
+
+        monkeypatch.setenv("CODEX_CLI_PATH", str(tmp_path / "stale-path.exe"))
+        local_dir = tmp_path / "Programs" / "OpenAI" / "Codex" / "bin"
+        local_dir.mkdir(parents=True)
+        local_codex = local_dir / "codex.exe"
+        local_codex.write_text("")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+        assert resolve_codex_binary() == str(local_codex)
+
+    def test_falls_back_to_local_install_when_no_explicit_or_env(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from agent.transports.codex_app_server import resolve_codex_binary
+
+        monkeypatch.delenv("CODEX_CLI_PATH", raising=False)
+        local_dir = tmp_path / "Programs" / "OpenAI" / "Codex" / "bin"
+        local_dir.mkdir(parents=True)
+        local_codex = local_dir / "codex.exe"
+        local_codex.write_text("")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setenv("APPDATA", str(tmp_path / "no-npm-install"))
+
+        assert resolve_codex_binary() == str(local_codex)
+
+    def test_falls_back_to_npm_install_when_local_install_missing(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from agent.transports.codex_app_server import resolve_codex_binary
+
+        monkeypatch.delenv("CODEX_CLI_PATH", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "no-local-install"))
+        npm_dir = (
+            tmp_path
+            / "npm"
+            / "node_modules"
+            / "@openai"
+            / "codex"
+            / "node_modules"
+            / "@openai"
+            / "codex-win32-x64"
+            / "vendor"
+            / "x86_64-pc-windows-msvc"
+            / "bin"
+        )
+        npm_dir.mkdir(parents=True)
+        npm_codex = npm_dir / "codex.exe"
+        npm_codex.write_text("")
+        monkeypatch.setenv("APPDATA", str(tmp_path))
+
+        assert resolve_codex_binary() == str(npm_codex)
+
+    def test_falls_back_to_path_when_nothing_else_found(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from agent.transports.codex_app_server import resolve_codex_binary
+
+        monkeypatch.delenv("CODEX_CLI_PATH", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "no-local-install"))
+        monkeypatch.setenv("APPDATA", str(tmp_path / "no-npm-install"))
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/codex")
+
+        assert resolve_codex_binary() == "/usr/local/bin/codex"
+
+    def test_raises_clear_error_when_no_candidate_found(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from agent.transports.codex_app_server import resolve_codex_binary
+
+        monkeypatch.delenv("CODEX_CLI_PATH", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "no-local-install"))
+        monkeypatch.setenv("APPDATA", str(tmp_path / "no-npm-install"))
+        monkeypatch.setattr("shutil.which", lambda name: None)
+
+        import pytest
+
+        with pytest.raises(RuntimeError, match="codex CLI not found"):
+            resolve_codex_binary()
+
+    def test_logs_the_resolved_path(self, tmp_path, monkeypatch, caplog) -> None:
+        import logging
+
+        from agent.transports.codex_app_server import resolve_codex_binary
+
+        env_path = tmp_path / "env-codex.exe"
+        env_path.write_text("")
+        monkeypatch.setenv("CODEX_CLI_PATH", str(env_path))
+
+        with caplog.at_level(logging.INFO):
+            resolve_codex_binary()
+
+        assert str(env_path) in caplog.text
+
+
 class TestSpawnEnvIsolation:
     """The codex spawn must NOT rewrite HOME — codex's shell tool spawns
     subprocesses (gh, git, npm, aws, gcloud, ...) that need to find their

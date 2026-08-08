@@ -25,11 +25,12 @@ Configuration in config.yaml::
             cli_path: ""               # path to the buzz binary (default: PATH, then ~/bin/buzz)
             credentials_file: ""       # JSON file holding the nsec (fallback for BUZZ_PRIVATE_KEY)
             allowed_users: []          # empty = allow all; entries are hex pubkeys or npubs
+            reply_in_thread: true      # reply with --reply-to (default); false = post flat
 
 Or via environment variables (overrides config.yaml):
     BUZZ_RELAY_URL, BUZZ_CHANNELS, BUZZ_HOME_CHANNEL, BUZZ_POLL_INTERVAL,
     BUZZ_CLI_PATH, BUZZ_CREDENTIALS_FILE, BUZZ_ALLOWED_USERS,
-    BUZZ_ALLOW_ALL_USERS
+    BUZZ_ALLOW_ALL_USERS, BUZZ_REPLY_IN_THREAD
 
 The only secret is BUZZ_PRIVATE_KEY (nsec or hex) — it belongs in
 ``~/.hermes/.env``.  It is passed to the CLI via the subprocess
@@ -375,6 +376,17 @@ class BuzzAdapter(BasePlatformAdapter):
 
         self.home_channel = (os.getenv("BUZZ_HOME_CHANNEL") or str(extra.get("home_channel", "") or "")).strip()
 
+        # Whether outbound replies should chain into the triggering message's
+        # thread (Buzz ``--reply-to``). Default True preserves historical
+        # behaviour; set False to post flat (top-level) replies instead.
+        # Env (BUZZ_REPLY_IN_THREAD) overrides config.yaml.
+        _rit_raw = os.getenv("BUZZ_REPLY_IN_THREAD")
+        if _rit_raw is None:
+            _rit_cfg = extra.get("reply_in_thread", True)
+        else:
+            _rit_cfg = _rit_raw
+        self.reply_in_thread = str(_rit_cfg).strip().lower() not in ("false", "0", "no", "off")
+
         try:
             interval = float(os.getenv("BUZZ_POLL_INTERVAL") or extra.get("poll_interval", _DEFAULT_POLL_INTERVAL))
         except (TypeError, ValueError):
@@ -610,7 +622,7 @@ class BuzzAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
         reply_target = reply_to or (metadata or {}).get("thread_id")
-        if reply_target:
+        if reply_target and self.reply_in_thread:
             args += ["--reply-to", str(reply_target)]
         code, out, err = await self._run_cli(args, input_text=content)
         if code != 0:
@@ -681,7 +693,7 @@ class BuzzAdapter(BasePlatformAdapter):
                 "--file", str(local),
                 "--content", "-",
             ]
-            if reply_to:
+            if reply_to and self.reply_in_thread:
                 args += ["--reply-to", str(reply_to)]
             code, out, err = await self._run_cli(args, input_text=caption or "")
             if code != 0:
@@ -1386,7 +1398,15 @@ async def _standalone_send(
         return {"error": "Buzz standalone send: no target channel (set BUZZ_HOME_CHANNEL)"}
 
     args = ["messages", "send", "--channel", target, "--content", "-"]
-    if thread_id:
+    # Honour reply_in_thread the same way the adapter does: default True,
+    # but allow standalone cron delivery to post flat when configured.
+    _rit_raw = os.getenv("BUZZ_REPLY_IN_THREAD")
+    if _rit_raw is None:
+        _rit_cfg = extra.get("reply_in_thread", True)
+    else:
+        _rit_cfg = _rit_raw
+    _reply_in_thread = str(_rit_cfg).strip().lower() not in ("false", "0", "no", "off")
+    if thread_id and _reply_in_thread:
         args += ["--reply-to", str(thread_id)]
     for path in media_files or []:
         args += ["--file", str(path)]

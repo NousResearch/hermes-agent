@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import threading
 from datetime import datetime, timedelta, timezone
@@ -31,6 +30,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
 from hermes_constants import get_hermes_home
+from agent.thread_scoped_output import thread_scoped_silence
 from tools import skill_usage
 from utils import atomic_json_write
 
@@ -1837,7 +1837,6 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
 
     Never raises; callers get a structured failure instead.
     """
-    import contextlib
     result_meta: Dict[str, Any] = {
         "final": "",
         "summary": "",
@@ -1947,14 +1946,25 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # start (see agent/turn_context.py).
         review_agent._memory_write_origin = "background_review"
 
-        # Redirect the forked agent's stdout/stderr to /dev/null while it
-        # runs so its tool-call chatter doesn't pollute the foreground
-        # terminal. The background-thread runner also hides it; this
-        # belt-and-suspenders path matters when a caller invokes
-        # run_curator_review(synchronous=True) from the CLI.
-        with open(os.devnull, "w", encoding="utf-8") as _devnull, \
-             contextlib.redirect_stdout(_devnull), \
-             contextlib.redirect_stderr(_devnull):
+        # Silence the forked agent's stdout/stderr for THIS thread only so its
+        # tool-call chatter doesn't pollute the foreground terminal.
+        #
+        # A process-global ``contextlib.redirect_stdout(open(devnull))`` here is
+        # unsafe: the default path runs _llm_pass() on a daemon thread
+        # ("curator-review"), so the redirect rebinds sys.stdout/sys.stderr for
+        # EVERY thread in the process. Two overlapping redirects (a second
+        # curator pass, a background review, any other capture) then restore in
+        # the wrong order and leave sys.stdout pointing at the ALREADY-CLOSED
+        # devnull handle. Every subsequent bare ``print`` in the process — cron
+        # scheduler job runs, gateway turns, conversation_loop's tool-name
+        # repair print — dies with "ValueError: I/O operation on closed file."
+        # until the process is restarted. Observed 2026-07-27: 9 cron jobs
+        # failed in the same tick from a single poisoned sys.stdout.
+        #
+        # ``thread_scoped_silence`` routes only this thread's writes to a sink
+        # and leaves every other thread on the real streams (same fix already
+        # applied in agent/background_review.py for #55769 / #55925).
+        with thread_scoped_silence():
             conv_result = review_agent.run_conversation(user_message=prompt)
 
         final = ""

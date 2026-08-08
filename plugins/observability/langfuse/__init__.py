@@ -1125,6 +1125,33 @@ def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = No
     )
 
 
+def on_session_finalize(**_: Any) -> None:
+    # Explicitly shut down the Langfuse client at the true session boundary
+    # (CLI exit, /new, /reset) while the interpreter is still alive.  The
+    # Langfuse SDK registers its own atexit shutdown handler, but that runs
+    # during interpreter finalization — by then module globals (notably
+    # opentelemetry.trace.Span) may already be torn down to None, and the
+    # SDK's span-finalization path (use_span → isinstance(span, Span))
+    # raises "TypeError: isinstance() arg 2 must be a type" which surfaces
+    # as a noisy "Exception ignored in: <generator>" traceback on quit.
+    # Calling shutdown() here flushes pending spans and joins the background
+    # export threads while all modules are intact; the SDK's atexit handler
+    # then becomes a no-op (it checks _shutdown and unregisters itself).
+    client = _get_langfuse()
+    if client is None:
+        return
+    # Finish any in-flight traces first so their spans are flushed by
+    # _finish_trace's own client.flush() before we tear down the client.
+    with _STATE_LOCK:
+        keys = list(_TRACE_STATE.keys())
+    for key in keys:
+        _finish_trace(key)
+    try:
+        client.shutdown()
+    except Exception as exc:  # pragma: no cover - fail-open
+        _debug(f"langfuse shutdown failed: {exc}")
+
+
 def register(ctx) -> None:
     # Register for both hook name variants so the plugin works across
     # Hermes versions.  pre_api_request / post_api_request fire per API
@@ -1135,3 +1162,4 @@ def register(ctx) -> None:
     ctx.register_hook("post_llm_call", on_post_llm_call)
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("post_tool_call", on_post_tool_call)
+    ctx.register_hook("on_session_finalize", on_session_finalize)

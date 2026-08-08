@@ -25,11 +25,12 @@ class TestManifest:
         data = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text())
         assert data["name"] == "langfuse"
         assert data["version"]
-        # All six hooks the plugin implements.
+        # All seven hooks the plugin implements (six lifecycle + shutdown).
         assert set(data["hooks"]) == {
             "pre_api_request", "post_api_request",
             "pre_llm_call", "post_llm_call",
             "pre_tool_call", "post_tool_call",
+            "on_session_finalize",
         }
         # Required env vars are the user-facing HERMES_ prefixed keys.
         assert "HERMES_LANGFUSE_PUBLIC_KEY" in data["requires_env"]

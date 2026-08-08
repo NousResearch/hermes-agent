@@ -1,6 +1,7 @@
 """Tests for model_tools.py — function call dispatch, agent-loop interception, legacy toolsets."""
 
 import json
+from types import SimpleNamespace
 from unittest.mock import ANY, call, patch
 
 
@@ -30,7 +31,173 @@ class TestHandleFunctionCall:
         assert "error" in result
         assert "totally_fake_tool_xyz" in result["error"]
 
+    def test_schema_owned_result_token_limit_reaches_external_handler(self):
+        seen = {}
+        owned_schema = {
+            "name": "mcp__external__collision",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "result_token_limit": {"type": "string"},
+                },
+                "required": ["result_token_limit"],
+            },
+        }
 
+        def dispatch(name, args, **kwargs):
+            seen["name"] = name
+            seen["args"] = dict(args)
+            return '{"ok":true}'
+
+        with (
+            patch("model_tools.registry.get_schema", return_value=owned_schema),
+            patch("model_tools.registry.dispatch", side_effect=dispatch),
+            patch("hermes_cli.plugins.has_hook", return_value=False),
+        ):
+            result = handle_function_call(
+                "mcp__external__collision",
+                {"result_token_limit": "server-owned-value"},
+            )
+
+        assert result == '{"ok":true}'
+        assert seen == {
+            "name": "mcp__external__collision",
+            "args": {"result_token_limit": "server-owned-value"},
+        }
+
+    def test_result_budget_does_not_expand_model_tool_schemas(self):
+        from model_tools import get_tool_definitions
+
+        definitions = get_tool_definitions(
+            enabled_toolsets=["file_tools"],
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        read_file = next(
+            tool for tool in definitions
+            if tool.get("function", {}).get("name") == "read_file"
+        )
+
+        properties = read_file["function"]["parameters"]["properties"]
+        assert "result_token_limit" not in properties
+
+    def test_mcp_schemas_survive_full_model_assembly(self, monkeypatch):
+        import model_tools
+        from tools.mcp_tool import _convert_mcp_schema
+
+        owned_parameters = {
+            "type": "object",
+            "properties": {
+                "result_token_limit": {"type": "string", "minLength": 1},
+            },
+            "required": ["result_token_limit"],
+            "additionalProperties": False,
+        }
+        ordinary_parameters = {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+            "additionalProperties": False,
+        }
+        schemas = [
+            _convert_mcp_schema(
+                "external",
+                SimpleNamespace(
+                    name="collision",
+                    description="Owns the colliding business argument.",
+                    inputSchema=owned_parameters,
+                ),
+            ),
+            _convert_mcp_schema(
+                "external",
+                SimpleNamespace(
+                    name="ordinary",
+                    description="Has no result-budget argument.",
+                    inputSchema=ordinary_parameters,
+                ),
+            ),
+        ]
+        monkeypatch.setattr(
+            model_tools.registry,
+            "get_definitions",
+            lambda *_args, **_kwargs: [
+                {"type": "function", "function": schema}
+                for schema in schemas
+            ],
+        )
+
+        definitions = model_tools._compute_tool_definitions(
+            enabled_toolsets=[],
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        by_name = {
+            tool["function"]["name"]: tool["function"]["parameters"]
+            for tool in definitions
+        }
+
+        assert by_name["mcp__external__collision"] == owned_parameters
+        assert by_name["mcp__external__ordinary"] == ordinary_parameters
+
+    def test_tool_hooks_receive_session_and_tool_call_ids(self):
+        with (
+            patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            result = handle_function_call(
+                "web_search",
+                {"q": "test"},
+                task_id="task-1",
+                tool_call_id="call-1",
+                session_id="session-1",
+            )
+
+        assert result == '{"ok":true}'
+        assert mock_invoke_hook.call_args_list == [
+            call(
+                "pre_tool_call",
+                tool_name="web_search",
+                args={"q": "test"},
+                task_id="task-1",
+                session_id="session-1",
+                tool_call_id="call-1",
+                turn_id="",
+                api_request_id="",
+                middleware_trace=[],
+            ),
+            call(
+                "post_tool_call",
+                tool_name="web_search",
+                args={"q": "test"},
+                result='{"ok":true}',
+                task_id="task-1",
+                session_id="session-1",
+                tool_call_id="call-1",
+                turn_id="",
+                api_request_id="",
+                duration_ms=ANY,
+                status="ok",
+                error_type=None,
+                error_message=None,
+                middleware_trace=[],
+            ),
+            call(
+                "transform_tool_result",
+                tool_name="web_search",
+                args={"q": "test"},
+                result='{"ok":true}',
+                task_id="task-1",
+                session_id="session-1",
+                tool_call_id="call-1",
+                turn_id="",
+                api_request_id="",
+                duration_ms=ANY,
+                status="ok",
+                error_type=None,
+                error_message=None,
+            ),
+        ]
 
     def test_post_tool_call_receives_non_negative_integer_duration_ms(self):
         """Regression: post_tool_call and transform_tool_result hooks must

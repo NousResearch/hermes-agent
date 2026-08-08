@@ -909,6 +909,10 @@ class TestMemoryToolToolsetGate:
         tools, names = self._run_memory_injection(None, mgr)
         assert "fact_store" in names
         assert any(t["function"]["name"] == "fact_store" for t in tools)
+        assert (
+            "result_token_limit"
+            not in tools[0]["function"]["parameters"].get("properties", {})
+        )
 
     def test_memory_in_toolsets_injects(self):
         """enabled_toolsets including 'memory' injects memory tools."""
@@ -1119,6 +1123,7 @@ class TestMemoryInjectionRejectsMalformedSchema:
         assert len(agent.tools) == 1
         fn = agent.tools[0]["function"]
         assert fn["name"] == "x_grep"
+        assert "result_token_limit" not in fn["parameters"].get("properties", {})
         # No nested double-wrap leaked through.
         assert fn.get("type") != "function"
         assert "x_grep" in agent.valid_tool_names

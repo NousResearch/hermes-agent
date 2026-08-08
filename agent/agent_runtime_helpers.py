@@ -650,24 +650,65 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                 prev["tool_calls"] = prev_calls + new_calls
             elif prev_calls:
                 prev["tool_calls"] = prev_calls
+            else:
+                # Neither side carries a real tool_calls list — drop the key
+                # instead of leaving a stale ``[]``/``None`` on the surviving
+                # turn. A pre-existing empty array on ``prev`` (e.g. an
+                # assistant turn that ended its response with no tool calls)
+                # would otherwise survive this merge verbatim and reach the
+                # provider as ``tool_calls: []`` on the merged turn — DeepSeek
+                # v4 and other strict OpenAI-compatible providers reject that
+                # with HTTP 400 "empty array. Expected an array with minimum
+                # length 1" (#58755, #77921). ``sanitize_api_messages`` strips
+                # this on the per-call wire copy too, but this repair mutates
+                # (and persists) ``messages`` directly, so the stored
+                # trajectory should not keep carrying a value that is
+                # semantically identical to "no tool calls" and that every
+                # other write path already normalizes away (a falsy
+                # ``tool_calls`` is never persisted as JSON — see
+                # ``_insert_message_rows``). Popping here is a no-op on what
+                # eventually reaches state.db either way.
+                prev.pop("tool_calls", None)
             # Concatenate plain-text content; leave multimodal (list)
             # content on either side alone to avoid mangling attachment
             # blocks — fall back to keeping the existing content.
             prev_content = prev.get("content")
             new_content = msg.get("content")
+            content_rewritten = False
             if isinstance(prev_content, str) and isinstance(new_content, str):
                 joined = "\n".join(
                     p for p in (prev_content.strip(), new_content.strip()) if p
                 )
                 prev["content"] = joined
+                content_rewritten = True
             elif not prev_content and new_content is not None:
                 prev["content"] = new_content
+                content_rewritten = True
             # Carry reasoning_content from the later turn only if the
             # earlier turn lacks it (strict thinking providers require a
             # reasoning_content on the merged tool-call turn; the first
             # non-empty one suffices).
             if not prev.get("reasoning_content") and msg.get("reasoning_content"):
                 prev["reasoning_content"] = msg["reasoning_content"]
+            # ``prev`` may carry an ``api_content`` sidecar (the exact bytes
+            # previously sent to the API, e.g. a sanitize-divergence stamp —
+            # see ``_flush_messages_to_session_db``) from BEFORE this merge.
+            # The sidecar takes priority over ``content`` at API-build time
+            # (``conversation_loop``'s ``api_messages`` build substitutes it
+            # back in for role ``assistant``), so leaving it in place while
+            # ``prev["content"]`` changes would silently replay the pre-merge
+            # bytes and discard everything this merge just concatenated on —
+            # the same stale-field-survives-the-merge shape as the
+            # ``tool_calls`` gap above, just for a different field. Only drop
+            # it when a branch above actually rewrote ``content`` (e.g. the
+            # later turn's content is ``None``, or either side is
+            # multimodal/list — both branches skip the reassignment and
+            # ``prev["content"]`` is untouched): in that case the sidecar is
+            # still the exact bytes previously sent for the UNCHANGED
+            # content, and dropping it would break the prompt-cache replay
+            # invariant for no reason (#78063 review).
+            if content_rewritten:
+                drop_stale_api_content(prev)
             repairs += 1
             continue
         collapsed.append(msg)
@@ -3374,6 +3415,31 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
                     pass
             elif isinstance(tc, dict):
                 tc["function"] = {"name": _EMPTY_NAME_SENTINEL, "arguments": "{}"}
+
+    # --- Drop tool results with a missing/empty tool_call_id ---
+    # The orphan-sweep below only ever adds a TRUTHY ``tool_call_id`` to
+    # ``result_call_ids``, so a message with a missing/empty id is never
+    # added to that set and can therefore never land in ``orphaned_results``
+    # (a set-difference against ``surviving_call_ids``) either — it silently
+    # passes through this chokepoint untouched and can reach the provider
+    # with no ``tool_call_id`` at all, which strict OpenAI-compatible
+    # providers reject as a schema violation. ``repair_message_sequence``'s
+    # Pass 1 already drops this shape (`if tc_id and tc_id in
+    # known_tool_ids`) when it runs first on the same list, but any caller
+    # that reaches this function without going through
+    # ``repair_message_sequence`` first has no such guard. Drop explicitly
+    # here so this "final chokepoint" claim (see module docstring) actually
+    # holds regardless of caller (#78071).
+    _pre_id_filter_count = len(messages)
+    messages = [
+        m for m in messages
+        if not (m.get("role") == "tool" and not (m.get("tool_call_id") or "").strip())
+    ]
+    if len(messages) != _pre_id_filter_count:
+        _ra().logger.debug(
+            "Pre-call sanitizer: dropped %d tool result(s) with missing/empty tool_call_id",
+            _pre_id_filter_count - len(messages),
+        )
 
     surviving_call_ids: set = set()
     for msg in messages:

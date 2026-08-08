@@ -205,21 +205,18 @@ def _skill_lookup_path_error(name: str) -> Optional[str]:
 
 
 def load_env() -> Dict[str, str]:
-    """Load profile-scoped environment variables from HERMES_HOME/.env."""
-    env_path = get_hermes_home() / ".env"
-    env_vars: Dict[str, str] = {}
-    if not env_path.exists():
-        return env_vars
+    """Load profile-scoped environment variables from HERMES_HOME/.env.
 
-    with env_path.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                if line.startswith("export "):
-                    line = line[7:]
-                key, _, value = line.partition("=")
-                env_vars[key.strip()] = value.strip().strip("\"'")
-    return env_vars
+    Delegates to :func:`hermes_cli.config.load_env` — the canonical loader
+    (same ``HERMES_HOME/.env`` path, mtime cache, python-dotenv-backed
+    parser) — so the skill env loader can never diverge from the config
+    loader on quoting, inline ``#`` comments, ``export `` prefixes or
+    malformed lines (#76544). A hand-rolled copy here had diverged
+    (``value.strip().strip("\\"'")`` kept no comment handling at all).
+    """
+    from hermes_cli.config import load_env as _load_config_env
+
+    return _load_config_env()
 
 
 class SkillReadinessStatus(str, Enum):

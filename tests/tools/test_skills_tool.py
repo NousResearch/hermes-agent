@@ -946,3 +946,29 @@ class TestSkillViewCollisionDetection:
         assert result["success"] is False
         assert "Ambiguous" in result["error"]
         assert len(result["matches"]) == 2
+
+
+def test_load_env_parses_like_hermes_config(tmp_path, monkeypatch):
+    """skills_tool.load_env must agree with hermes_cli.config.load_env.
+
+    The two loaders parse the same HERMES_HOME/.env; a divergence here was
+    part of #76544 (config.load_env stripped inline ``#`` comments but
+    skills_tool.load_env did not). It now reuses the same value parser, so
+    quoting, comments, and dropped unparseable lines behave identically.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text(
+        "SKILL_ENDPOINT=https://x.test/api  # note\n"
+        'SKILL_QUOTED="a # b"  # note\n'
+        'SKILL_BROKEN="unclosed\n'
+        "export SKILL_EXPORT=value  # comment\n",
+        encoding="utf-8",
+    )
+    with patch.object(skills_tool_module, "get_hermes_home", return_value=tmp_path):
+        env = skills_tool_module.load_env()
+
+    assert env["SKILL_ENDPOINT"] == "https://x.test/api"
+    assert env["SKILL_QUOTED"] == "a # b"
+    assert "SKILL_BROKEN" not in env
+    assert env["SKILL_EXPORT"] == "value"
+    assert "export SKILL_EXPORT" not in env

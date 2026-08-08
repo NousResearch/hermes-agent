@@ -64,6 +64,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+from utils import env_var_enabled
 
 from .auth import load_project_credentials
 
@@ -571,12 +572,10 @@ def _markdown_enabled() -> bool:
 
     iMessage renders it natively; other Spectrum platforms degrade to
     readable plain text. On-device rendering can't be unit-tested, so
-    ``PHOTON_MARKDOWN=false`` is the kill-switch back to stripped plain
-    text without a release.
+    ``PHOTON_MARKDOWN=false`` (or ``off`` / ``0`` / ``no``) is the kill-switch
+    back to stripped plain text without a release.
     """
-    return os.getenv("PHOTON_MARKDOWN", "true").strip().lower() not in {
-        "false", "0", "no",
-    }
+    return env_var_enabled("PHOTON_MARKDOWN", default="true")
 
 
 def _url_only_candidate(text: str) -> Optional[str]:
@@ -733,9 +732,9 @@ class PhotonAdapter(BasePlatformAdapter):
         self._sidecar_token = (
             _get_scoped_secret("PHOTON_SIDECAR_TOKEN") or secrets.token_hex(16)
         )
-        self._autostart_sidecar = str(
-            os.getenv("PHOTON_SIDECAR_AUTOSTART", "true")
-        ).lower() not in ("0", "false", "no")
+        self._autostart_sidecar = env_var_enabled(
+            "PHOTON_SIDECAR_AUTOSTART", default="true"
+        )
         self._node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node") or "node"
 
         # Presence watchdog. spectrum-ts only reconnects when its inbound

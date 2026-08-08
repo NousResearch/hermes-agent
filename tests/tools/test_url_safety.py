@@ -157,6 +157,55 @@ class TestProxyEnvironmentDnsDelegation:
         with _resolves_to("198.18.0.23"):
             assert is_safe_url(url) is expected
 
+    # ---- myqcloud.com suffix trust (deny-list: loopback/multicast/unspecified/link-local) ----
+
+    @pytest.mark.parametrize("ip", [
+        "198.18.0.11",   # Clash Fake IP pool (benchmark space)
+        "10.0.0.1",      # RFC1918 (corporate DNS / VPN)
+        "100.64.0.1",    # CGNAT (carrier NAT / Tailscale)
+    ])
+    def test_myqcloud_suffix_trusted_cdn_ips_allowed(self, ip):
+        with _resolves_to(ip):
+            assert is_safe_url(
+                "https://ww-aibot-img-1.cos.ap-guangzhou.myqcloud.com/file"
+            ) is True
+
+    @pytest.mark.parametrize("ip", [
+        "127.0.0.1",     # loopback — never a CDN
+        "224.0.0.1",     # multicast — never a CDN
+        "0.0.0.0",       # unspecified — never a CDN
+        "169.254.42.1",  # IPv4 link-local — never a CDN
+    ])
+    def test_myqcloud_suffix_invalid_ips_still_blocked(self, ip):
+        with _resolves_to(ip):
+            assert is_safe_url(
+                "https://ww-aibot-img.cos.ap-guangzhou.myqcloud.com/x"
+            ) is False
+
+    def test_myqcloud_ipv6_link_local_blocked(self):
+        with _resolves_to("fe80::1"):
+            assert is_safe_url(
+                "https://ww-aibot-img.cos.ap-guangzhou.myqcloud.com/x"
+            ) is False
+
+    def test_myqcloud_requires_https(self):
+        with _resolves_to("198.18.0.11"):
+            assert is_safe_url(
+                "http://ww-aibot-img.cos.ap-guangzhou.myqcloud.com/file"
+            ) is False
+
+    def test_myqcloud_subdomain_not_trusted(self):
+        # "notmyqcloud.com" must NOT match the ".myqcloud.com" suffix
+        # (the leading dot prevents suffix spoofing)
+        with _resolves_to("198.18.0.11"):
+            assert is_safe_url("https://evil.notmyqcloud.com/x") is False
+
+    def test_myqcloud_dns_failure_still_blocked(self):
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("Name resolution failed")):
+            assert is_safe_url(
+                "https://ww-aibot-img.cos.ap-guangzhou.myqcloud.com/file"
+            ) is False
+
 
 class TestAsyncIsSafeUrl:
     """async_is_safe_url must match is_safe_url (runs DNS in a thread pool)."""

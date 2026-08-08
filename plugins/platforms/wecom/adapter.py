@@ -67,6 +67,7 @@ from gateway.platforms.base import (
     SendResult,
     cache_document_from_bytes,
     cache_image_from_bytes,
+    safe_url_for_log,
 )
 from utils import env_float
 
@@ -402,6 +403,8 @@ class WeComAdapter(BasePlatformAdapter):
                     await self._dispatch_payload(payload)
             elif msg.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSING}:
                 raise RuntimeError("WeCom websocket closed")
+            else:
+                logger.debug("[%s] Ignored non-TEXT websocket frame: type=%s", self.name, msg.type)
 
     async def _heartbeat_loop(self) -> None:
         """Send lightweight application-level pings."""
@@ -567,7 +570,11 @@ class WeComAdapter(BasePlatformAdapter):
             text = reply_text
 
         if not text and not media_urls:
-            logger.debug("[%s] Empty WeCom message skipped", self.name)
+            msgtype = str(body.get("msgtype") or "").lower()
+            logger.info(
+                "[%s] Empty WeCom message skipped (msgtype=%s, body_keys=%s)",
+                self.name, msgtype, list(body.keys())[:10],
+            )
             return
 
         source = self.build_source(
@@ -805,7 +812,7 @@ class WeComAdapter(BasePlatformAdapter):
         try:
             raw, headers = await self._download_remote_bytes(url, max_bytes=ABSOLUTE_MAX_BYTES)
         except Exception as exc:
-            logger.debug("[%s] Failed to download %s from %s: %s", self.name, kind, url, exc)
+            logger.warning("[%s] Failed to download %s from %s: %s", self.name, kind, safe_url_for_log(url), exc)
             return None
 
         aes_key = str(media.get("aeskey") or "").strip()
@@ -813,7 +820,7 @@ class WeComAdapter(BasePlatformAdapter):
             try:
                 raw = self._decrypt_file_bytes(raw, aes_key)
             except Exception as exc:
-                logger.debug("[%s] Failed to decrypt %s from %s: %s", self.name, kind, url, exc)
+                logger.warning("[%s] Failed to decrypt %s from %s: %s", self.name, kind, safe_url_for_log(url), exc)
                 return None
 
         content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip() or "application/octet-stream"
@@ -1129,7 +1136,7 @@ class WeComAdapter(BasePlatformAdapter):
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
 
         if not is_safe_url(url):
-            raise ValueError(f"Blocked unsafe URL (SSRF protection): {url[:80]}")
+            raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
         if not HTTPX_AVAILABLE:
             raise RuntimeError("httpx is required for WeCom media download")

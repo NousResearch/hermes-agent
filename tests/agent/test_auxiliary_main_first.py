@@ -347,9 +347,10 @@ class TestResolveVisionMainFirst:
 
         captured = {}
 
-        def fake_headers(*, is_agent_turn=False, is_vision=False):
+        def fake_headers(*, is_agent_turn=False, is_vision=False, model=None):
             captured["is_agent_turn"] = is_agent_turn
             captured["is_vision"] = is_vision
+            captured["model"] = model
             return {"Copilot-Vision-Request": "true"} if is_vision else {}
 
         with patch(
@@ -365,7 +366,7 @@ class TestResolveVisionMainFirst:
             "hermes_cli.auth.resolve_api_key_provider_credentials",
             return_value={
                 "provider": "copilot",
-                "api_key": "copilot-api-token",
+                "api_key": "***",
                 "base_url": "https://api.githubcopilot.com",
             },
         ), patch(
@@ -382,7 +383,7 @@ class TestResolveVisionMainFirst:
         assert provider == "copilot"
         assert client is mock_client
         assert model == "configured-copilot-model"
-        assert captured == {"is_agent_turn": True, "is_vision": True}
+        assert captured == {"is_agent_turn": True, "is_vision": True, "model": "configured-copilot-model"}
         assert mock_openai.call_args.kwargs["default_headers"]["Copilot-Vision-Request"] == "true"
 
     def test_text_copilot_does_not_set_vision_header(self, monkeypatch):
@@ -391,9 +392,10 @@ class TestResolveVisionMainFirst:
 
         captured = {}
 
-        def fake_headers(*, is_agent_turn=False, is_vision=False):
+        def fake_headers(*, is_agent_turn=False, is_vision=False, model=None):
             captured["is_agent_turn"] = is_agent_turn
             captured["is_vision"] = is_vision
+            captured["model"] = model
             return {"Copilot-Vision-Request": "true"} if is_vision else {}
 
         with patch(
@@ -402,7 +404,7 @@ class TestResolveVisionMainFirst:
             "hermes_cli.auth.resolve_api_key_provider_credentials",
             return_value={
                 "provider": "copilot",
-                "api_key": "copilot-api-token",
+                "api_key": "***",
                 "base_url": "https://api.githubcopilot.com",
             },
         ), patch(
@@ -418,7 +420,7 @@ class TestResolveVisionMainFirst:
 
         assert client is mock_client
         assert model == "gpt-5-mini"
-        assert captured == {"is_agent_turn": True, "is_vision": False}
+        assert captured == {"is_agent_turn": True, "is_vision": False, "model": "gpt-5-mini"}
         assert "default_headers" not in mock_openai.call_args.kwargs
 
 

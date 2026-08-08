@@ -125,6 +125,52 @@ class TestCommandBypassActiveSession:
         assert any("handled:reset" in r for r in adapter.sent_responses)
 
     @pytest.mark.asyncio
+    async def test_clear_bypasses_guard(self):
+        """Gateway /clear aliases /new and must dispatch directly."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/clear"))
+
+        assert sk not in adapter._pending_messages
+        assert any("handled:clear" in response for response in adapter.sent_responses)
+
+    @pytest.mark.asyncio
+    async def test_clear_takes_same_cancel_handoff_as_new(self):
+        """Gateway /clear must route through the dedicated cancel+serialize
+        handoff (_dispatch_active_session_command) exactly like /new and
+        /reset — the weaker direct-dispatch branch would skip the in-flight
+        task cancellation. Discriminates the boundary that plain
+        bypass-vs-queue tests miss; /status is the non-reset control."""
+        from unittest.mock import AsyncMock
+
+        for word in ("/new", "/reset", "/clear"):
+            adapter = _make_adapter()
+            sk = _session_key()
+            adapter._active_sessions[sk] = asyncio.Event()
+            adapter._dispatch_active_session_command = AsyncMock()
+
+            await adapter.handle_message(_make_event(word))
+
+            adapter._dispatch_active_session_command.assert_awaited_once()
+            dispatched_cmd = adapter._dispatch_active_session_command.await_args.args[2]
+            assert dispatched_cmd == word.lstrip("/"), (
+                f"{word} must route through the cancel handoff like /new"
+            )
+
+        # A non-reset bypass command must NOT take the cancel handoff — guards
+        # the canonical {"stop", "new"} set against over-matching aliases.
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+        adapter._dispatch_active_session_command = AsyncMock()
+
+        await adapter.handle_message(_make_event("/status"))
+
+        adapter._dispatch_active_session_command.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_approve_bypasses_guard(self):
         """/approve must bypass (deadlock prevention)."""
         adapter = _make_adapter()

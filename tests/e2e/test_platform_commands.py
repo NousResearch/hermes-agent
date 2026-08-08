@@ -48,6 +48,13 @@ class TestSlashCommands:
         runner.session_store.reset_session.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_clear_resets_session_on_gateway(self, adapter, runner, platform):
+        send = await send_and_capture(adapter, "/clear", platform)
+
+        send.assert_called_once()
+        runner.session_store.reset_session.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_stop_when_no_agent_running(self, adapter, platform):
         send = await send_and_capture(adapter, "/stop", platform)
 

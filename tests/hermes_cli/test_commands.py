@@ -22,6 +22,7 @@ from hermes_cli.commands import (
     discord_skill_commands,
     gateway_help_lines,
     resolve_command,
+    resolve_gateway_command,
     slack_app_manifest,
     slack_native_slashes,
     slack_subcommand_map,
@@ -74,6 +75,11 @@ class TestCommandRegistry:
 class TestResolveCommand:
 
 
+    def test_clear_keeps_cli_meaning_but_resets_in_gateway(self):
+        assert resolve_command("clear").name == "clear"
+        assert resolve_gateway_command("clear").name == "new"
+        assert resolve_gateway_command("/clear").name == "new"
+
     def test_topic_is_gateway_command(self):
         topic = resolve_command("topic")
         assert topic is not None
@@ -118,6 +124,13 @@ class TestDerivedDicts:
 # ---------------------------------------------------------------------------
 
 class TestGatewayKnownCommands:
+    def test_excludes_cli_only_without_config_gate(self):
+        for cmd in COMMAND_REGISTRY:
+            if cmd.cli_only and not cmd.gateway_config_gate:
+                if resolve_gateway_command(cmd.name) is not None:
+                    continue
+                assert cmd.name not in GATEWAY_KNOWN_COMMANDS, \
+                    f"cli_only command '{cmd.name}' should not be in GATEWAY_KNOWN_COMMANDS"
 
     def test_includes_config_gated_cli_only(self):
         """Commands with gateway_config_gate are always in GATEWAY_KNOWN_COMMANDS."""
@@ -139,6 +152,8 @@ class TestGatewayHelpLines:
         joined = "\n".join(lines)
         for cmd in COMMAND_REGISTRY:
             if cmd.cli_only and not cmd.gateway_config_gate:
+                if resolve_gateway_command(cmd.name) is not None:
+                    continue
                 # Word-boundary match so `/reload` doesn't match `/reload-mcp`
                 pattern = rf'`/{re.escape(cmd.name)}(?![-_\w])'
                 assert not re.search(pattern, joined), \
@@ -149,6 +164,13 @@ class TestGatewayHelpLines:
         bg_line = [l for l in lines if "/background" in l]
         assert len(bg_line) == 1
         assert "/bg" in bg_line[0]
+
+
+    def test_includes_gateway_alias_note_for_clear(self):
+        lines = gateway_help_lines()
+        new_line = [line for line in lines if "`/new" in line]
+        assert len(new_line) == 1
+        assert "`/clear`" in new_line[0]
 
 
 class TestTelegramBotCommands:
@@ -186,10 +208,17 @@ class TestSlackSubcommandMap:
             assert val.startswith("/"), f"Slack mapping for '{key}' should start with /"
 
 
+    def test_clear_gateway_alias_maps_to_reset_command(self):
+        mapping = slack_subcommand_map()
+        assert mapping["clear"] == "/clear"
+        assert resolve_gateway_command("clear").name == "new"
+
     def test_excludes_cli_only_without_config_gate(self):
         mapping = slack_subcommand_map()
         for cmd in COMMAND_REGISTRY:
             if cmd.cli_only and not cmd.gateway_config_gate:
+                if resolve_gateway_command(cmd.name) is not None:
+                    continue
                 assert cmd.name not in mapping
 
 

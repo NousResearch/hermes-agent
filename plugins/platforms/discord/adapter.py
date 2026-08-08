@@ -5661,25 +5661,39 @@ class DiscordAdapter(BasePlatformAdapter):
             for cmd_def in COMMAND_REGISTRY:
                 if not _is_gateway_available(cmd_def, config_overrides):
                     continue
-                # Discord command names: lowercase, hyphens OK, max 32 chars.
-                discord_name = cmd_def.name.lower()[:32]
-                if discord_name in already_registered:
-                    continue
-                if len(already_registered) >= slot_cap:
-                    dropped_over_cap += 1
-                    continue
-                auto_cmd = _build_auto_slash_command(
-                    cmd_def.name,
-                    cmd_def.description,
-                    cmd_def.args_hint,
+                # Register the canonical name plus any gateway-only aliases
+                # (e.g. /clear for /new). Regular aliases stay typed-only,
+                # matching the canonical-only native menus on Telegram/Slack
+                # and the internal-alias hiding in gateway_help_lines().
+                entries = [(cmd_def.name, cmd_def.description, cmd_def.args_hint)]
+                entries.extend(
+                    (
+                        alias,
+                        f"Alias for /{cmd_def.name} — {cmd_def.description}",
+                        cmd_def.args_hint,
+                    )
+                    for alias in cmd_def.gateway_aliases
                 )
-                try:
-                    tree.add_command(auto_cmd)
-                    already_registered.add(discord_name)
-                except Exception:
-                    # Silently skip commands that fail registration (e.g.
-                    # name conflict with a subcommand group).
-                    pass
+                for command_name, description, args_hint in entries:
+                    # Discord command names: lowercase, hyphens OK, max 32 chars.
+                    discord_name = command_name.lower()[:32]
+                    if discord_name in already_registered:
+                        continue
+                    if len(already_registered) >= slot_cap:
+                        dropped_over_cap += 1
+                        continue
+                    auto_cmd = _build_auto_slash_command(
+                        command_name,
+                        description,
+                        args_hint,
+                    )
+                    try:
+                        tree.add_command(auto_cmd)
+                        already_registered.add(discord_name)
+                    except Exception:
+                        # Silently skip commands that fail registration (e.g.
+                        # name conflict with a subcommand group).
+                        pass
 
             logger.debug(
                 "Discord auto-registered %d commands from COMMAND_REGISTRY",

@@ -377,6 +377,8 @@ class TestHttpSessionLifecycle:
     @pytest.mark.asyncio
     async def test_disconnect_uses_taskkill_tree_on_windows(self):
         """Windows disconnect should target the bridge process tree, not just the parent PID."""
+        from plugins.platforms.whatsapp.adapter import windows_hide_flags
+
         adapter = _make_adapter()
         mock_proc = MagicMock()
         mock_proc.pid = 12345
@@ -399,6 +401,7 @@ class TestHttpSessionLifecycle:
             encoding="utf-8",
             errors="replace",
             timeout=10,
+            creationflags=windows_hide_flags(),
         )
         mock_proc.terminate.assert_not_called()
         mock_proc.kill.assert_not_called()

@@ -27,7 +27,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+from hermes_cli._subprocess_compat import windows_detach_popen_kwargs, windows_hide_flags
 from hermes_constants import (
     find_node_executable,
     get_hermes_dir,
@@ -62,6 +62,23 @@ logger = logging.getLogger(__name__)
 _OWNER_REPLY_PREFIX = "[owner reply] "
 
 
+def _run_hidden(cmd, **kwargs):
+    """``subprocess.run`` with the Windows console window hidden.
+
+    Every synchronous helper spawn in this adapter is a short-lived console
+    app (node, npm, taskkill, netstat, lsof, ss).  When the gateway runs
+    under ``pythonw.exe`` (console-less), any of them flashes a visible
+    console window unless spawned with ``CREATE_NO_WINDOW``.  Use this for
+    all ``subprocess.run`` calls in this module so new call sites inherit
+    the fix by default instead of by reviewer vigilance — this bug class
+    has recurred repeatedly (#53282, #56747, #63698, #68457).
+
+    ``windows_hide_flags()`` returns 0 on POSIX, so this is a no-op there.
+    """
+    kwargs.setdefault("creationflags", windows_hide_flags())
+    return subprocess.run(cmd, **kwargs)
+
+
 def _listener_pids_on_port(port: int) -> list:
     """PIDs of processes *listening* on ``port`` (POSIX) — never clients.
 
@@ -74,7 +91,7 @@ def _listener_pids_on_port(port: int) -> list:
     """
     pids: list = []
     try:
-        result = subprocess.run(
+        result = _run_hidden(
             ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
         )
@@ -89,7 +106,7 @@ def _listener_pids_on_port(port: int) -> list:
         pass  # lsof not installed — fall through to ss
     # Fallback: ss (iproute2, present on virtually every modern Linux).
     try:
-        result = subprocess.run(
+        result = _run_hidden(
             ["ss", "-ltnHp", f"sport = :{port}"],
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
         )
@@ -104,13 +121,10 @@ def _kill_port_process(port: int) -> None:
     """Kill any process *listening* on the given TCP port (a stale bridge)."""
     try:
         if _IS_WINDOWS:
-            from hermes_cli._subprocess_compat import windows_hide_flags
-
             # Use netstat to find the PID bound to this port, then taskkill
-            result = subprocess.run(
+            result = _run_hidden(
                 ["netstat", "-ano", "-p", "TCP"],
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
-                creationflags=windows_hide_flags(),
             )
             for line in result.stdout.splitlines():
                 parts = line.split()
@@ -118,10 +132,9 @@ def _kill_port_process(port: int) -> None:
                     local_addr = parts[1]
                     if local_addr.endswith(f":{port}"):
                         try:
-                            subprocess.run(
+                            _run_hidden(
                                 ["taskkill", "/PID", parts[4], "/F"],
                                 capture_output=True, timeout=5,
-                                creationflags=windows_hide_flags(),
                             )
                         except subprocess.SubprocessError:
                             pass
@@ -241,7 +254,7 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
         if force:
             cmd.append("/F")
         try:
-            result = subprocess.run(
+            result = _run_hidden(
                 cmd,
                 capture_output=True,
                 text=True, encoding='utf-8', errors='replace',
@@ -367,11 +380,11 @@ def check_whatsapp_requirements() -> bool:
     if not _node:
         return False
     try:
-        result = subprocess.run(
+        result = _run_hidden(
             [_node, "--version"],
             capture_output=True,
             text=True, encoding='utf-8', errors='replace',
-            timeout=5
+            timeout=5,
         )
         return result.returncode == 0
     except Exception:
@@ -590,7 +603,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     # Read timeout from environment variable, default to 300 seconds (5 minutes)
                     # to accommodate slower systems like Unraid NAS
                     npm_install_timeout = env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300)
-                    install_result = subprocess.run(
+                    install_result = _run_hidden(
                         [_npm_bin, "install", "--silent"],
                         cwd=str(bridge_dir),
                         capture_output=True,

@@ -3099,9 +3099,17 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not channel:
                     return SendResult(success=False, error=f"Channel {chat_id} not found")
 
+            # Format and split message if needed. Embed-marker extraction
+            # happens BEFORE routing so the forum path gets the parsed embed
+            # too (forum starters are created from this content).
+            formatted = self.format_message(content)
+            embed = None
+            if isinstance(formatted, str) and "[EMBED]" in formatted:
+                formatted, embed = self._extract_embed(formatted)
+
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
-                result = await self._send_to_forum(channel, content)
+                result = await self._send_to_forum(channel, formatted, embed=embed)
                 await asyncio.to_thread(
                     self._record_discord_response,
                     reply_to=reply_to,
@@ -3111,8 +3119,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 return result
 
-            # Format and split message if needed
-            formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
             message_ids = []
@@ -3127,6 +3133,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 try:
                     msg = await channel.send(
                         content=chunk,
+                        embed=(embed if i == 0 else None),
                         reference=chunk_reference,
                     )
                 except Exception as e:
@@ -3149,6 +3156,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         reference = None
                         msg = await channel.send(
                             content=chunk,
+                            embed=(embed if i == 0 else None),
                             reference=None,
                         )
                     else:
@@ -3190,14 +3198,15 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return result
 
-    async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
+    async def _send_to_forum(self, forum_channel: Any, content: str, embed=None) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
 
         Forum channels (type 15) don't support direct messages.  Instead we
         POST to /channels/{forum_id}/threads with a thread name derived from
         the first line of the message.  Any follow-up chunk failures are
         reported in ``raw_response['warnings']`` so the caller can surface
-        partial-send issues.
+        partial-send issues.  ``embed`` (parsed from an [EMBED] marker before
+        routing) rides on the starter message.
         """
         # _derive_forum_thread_name is defined further down in this same
         # module — no cross-module import needed.
@@ -3213,6 +3222,7 @@ class DiscordAdapter(BasePlatformAdapter):
             thread = await forum_channel.create_thread(
                 name=thread_name,
                 content=starter_content,
+                embed=embed,
             )
         except Exception as e:
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
@@ -3361,6 +3371,21 @@ class DiscordAdapter(BasePlatformAdapter):
             msg = channel.get_partial_message(int(message_id))
             formatted = self.format_message(content)
 
+            # Parse the embed marker BEFORE overflow handling so a finalized
+            # oversized embed only size-checks the remaining text, and the
+            # marker is never exposed in split chunks.
+            embed = None
+            edit_content = formatted
+            if "[EMBED]" in formatted:
+                if finalize:
+                    # Final edit: replace the marker with the real embed.
+                    edit_content, embed = self._extract_embed(formatted)
+                else:
+                    # Mid-stream: hide the raw JSON so the user doesn't
+                    # watch it type out — the finalize edit swaps it for
+                    # the finished embed.
+                    edit_content = "⏳ *rendering embed…*"
+
             _preview_key = (str(chat_id), str(message_id))
             _saturated_preview = False
             if finalize:
@@ -3370,14 +3395,15 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Pre-flight: oversized payload.  Final edits split-and-deliver;
             # streaming edits truncate a one-message preview in place.
-            if len(formatted) > self.MAX_MESSAGE_LENGTH:
+            if len(edit_content) > self.MAX_MESSAGE_LENGTH:
                 if finalize:
                     return await self._edit_overflow_split(
-                        channel, msg, message_id, content,
+                        channel, msg, message_id, edit_content, embed=embed,
                     )
-                formatted = self.truncate_message(
-                    formatted, self.MAX_MESSAGE_LENGTH,
+                edit_content = self.truncate_message(
+                    edit_content, self.MAX_MESSAGE_LENGTH,
                 )[0]
+                formatted = edit_content
                 _saturated_preview = True
                 # Saturated-preview dedup: past the cap, every progressive
                 # edit truncates to the same text. Re-sending it is a visual
@@ -3393,7 +3419,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 self._last_overflow_preview.pop(_preview_key, None)
 
             try:
-                await msg.edit(content=formatted)
+                await msg.edit(content=edit_content, embed=embed)
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = formatted
             except Exception as edit_err:
@@ -3451,6 +3477,7 @@ class DiscordAdapter(BasePlatformAdapter):
         msg: Any,
         message_id: str,
         content: str,
+        embed=None,
     ) -> SendResult:
         """Deliver an oversized final edit across message + continuations.
 
@@ -3474,12 +3501,13 @@ class DiscordAdapter(BasePlatformAdapter):
         if len(chunks) <= 1:
             # Defensive: caller's pre-flight should guarantee >1 chunk, but if
             # not, just edit normally.
-            await msg.edit(content=chunks[0] if chunks else formatted)
+            await msg.edit(content=chunks[0] if chunks else formatted, embed=embed)
             return SendResult(success=True, message_id=message_id)
 
-        # Step 1 — edit the existing message with the first chunk.
+        # Step 1 — edit the existing message with the first chunk (the embed
+        # rides on it, mirroring send()).
         try:
-            await msg.edit(content=chunks[0])
+            await msg.edit(content=chunks[0], embed=embed)
         except Exception as e:
             logger.error(
                 "[%s] Overflow split: first-chunk edit failed: %s",
@@ -5374,6 +5402,90 @@ class DiscordAdapter(BasePlatformAdapter):
         if not content:
             return content
         return convert_table_to_bullets(content)
+
+    @staticmethod
+    def _clean_embed_json(block: str) -> str:
+        """Strip common LLM-generation artifacts from an embed JSON block:
+        (1/2)-style segment markers and trailing commas (both outside
+        strings). Returns the cleaned JSON text."""
+        out = []
+        in_str = False
+        esc = False
+        i = 0
+        n = len(block)
+        while i < n:
+            ch = block[i]
+            if in_str:
+                out.append(ch)
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                i += 1
+                continue
+            if ch == '"':
+                in_str = True
+                out.append(ch)
+                i += 1
+                continue
+            if ch == "(":
+                m = re.match(r"\(\d+/\d+\)", block[i:])
+                if m:
+                    i += len(m.group(0))
+                    continue
+            if ch == ",":
+                j = i + 1
+                while j < n and block[j] in " \t\n\r":
+                    j += 1
+                if j < n and block[j] in "}]":
+                    i += 1  # drop trailing comma
+                    continue
+            out.append(ch)
+            i += 1
+        return "".join(out)
+
+    def _extract_embed(self, content: str):
+        """If content contains [EMBED]...[/EMBED] (JSON), build a discord.Embed.
+
+        Supported JSON keys: title, description, url, color (int or #hex),
+        footer, thumbnail, fields [{name, value, inline}].
+        Text before/after the marker is kept as the plain-message content.
+        Returns (remaining_content, embed_or_None).
+        """
+        try:
+            start = content.index("[EMBED]")
+            end = content.index("[/EMBED]", start)
+            block = content[start + 7:end].strip()
+            data = json.loads(self._clean_embed_json(block), strict=False)  # tolerate LLM artifacts + literal newlines
+            emb = discord.Embed() if discord is not None else None
+            if emb is None:
+                return content, None
+            if data.get("title"):
+                emb.title = data["title"]
+            if data.get("description"):
+                emb.description = data["description"]
+            if data.get("url"):
+                emb.url = data["url"]
+            if data.get("color"):
+                c = data["color"]
+                emb.color = c if isinstance(c, int) else int(str(c).lstrip("#"), 16)
+            if data.get("footer"):
+                f = data["footer"]
+                emb.set_footer(text=f if isinstance(f, str) else f.get("text", ""))
+            if data.get("thumbnail"):
+                emb.set_thumbnail(url=data["thumbnail"])
+            for f in data.get("fields", [])[:25]:
+                emb.add_field(
+                    name=f.get("name", "\u200B"),
+                    value=f.get("value", "\u200B"),
+                    inline=bool(f.get("inline", False)),
+                )
+            rest = (content[:start] + content[end + len("[/EMBED]"):]).strip()
+            return rest, emb
+        except Exception:
+            return content, None
 
     async def _run_simple_slash(
         self,
@@ -9541,6 +9653,61 @@ async def _standalone_read_json_limited(resp: Any, limit_bytes: int) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _embed_payload_from_block(block: str) -> Optional[Dict[str, Any]]:
+    """Parse an [EMBED] JSON block into a Discord REST embed payload dict.
+
+    Standalone (non-gateway) sends use the HTTP API directly, so this
+    mirrors ``DiscordAdapter._extract_embed`` without needing discord.py.
+    Returns None when the block isn't valid embed JSON.
+    """
+    try:
+        data = json.loads(DiscordAdapter._clean_embed_json(block), strict=False)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    emb: Dict[str, Any] = {}
+    for key in ("title", "description", "url"):
+        if data.get(key):
+            emb[key] = data[key]
+    if data.get("color"):
+        c = data["color"]
+        emb["color"] = c if isinstance(c, int) else int(str(c).lstrip("#"), 16)
+    if data.get("footer"):
+        f = data["footer"]
+        emb["footer"] = {"text": f} if isinstance(f, str) else {"text": f.get("text", "")}
+    if data.get("thumbnail"):
+        emb["thumbnail"] = {"url": data["thumbnail"]}
+    fields = []
+    for f in data.get("fields", [])[:25]:
+        fields.append({
+            "name": f.get("name", "\u200B"),
+            "value": f.get("value", "\u200B"),
+            "inline": bool(f.get("inline", False)),
+        })
+    if fields:
+        emb["fields"] = fields
+    return emb
+
+
+def _split_embed_from_message(message: str):
+    """Split ``message`` into (text, embed_payload) — the [EMBED] marker is
+    removed and rendered as a native embed; None when no marker present."""
+    if "[EMBED]" not in message:
+        return message, None
+    try:
+        start = message.index("[EMBED]")
+        end = message.index("[/EMBED]", start)
+        block = message[start + 7:end].strip()
+        payload = _embed_payload_from_block(block)
+        if payload is None:
+            return message, None
+        text = (message[:start] + message[end + len("[/EMBED]"):]).strip()
+        return text, payload
+    except Exception:
+        return message, None
+
+
 async def _standalone_send(
     pconfig,
     chat_id: str,
@@ -9593,6 +9760,12 @@ async def _standalone_send(
         media_files = media_files or []
         last_data = None
         warnings = []
+
+        # [EMBED] marker -> native embed payload (standalone path: cron and
+        # send_message tool deliveries never pass through adapter.send()).
+        send_text, embed_payload = _split_embed_from_message(message)
+        if embed_payload is not None:
+            message = send_text
 
         # Thread endpoint: Discord threads are channels; send directly to the thread ID.
         if thread_id:
@@ -9692,7 +9865,7 @@ async def _standalone_send(
                             headers=json_headers,
                             json={
                                 "name": thread_name,
-                                "message": {"content": message},
+                                "message": {"content": message, **({"embeds": [embed_payload]} if embed_payload else {})},
                             },
                             **_req_kw,
                         ) as resp:
@@ -9725,7 +9898,7 @@ async def _standalone_send(
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             # Send text message (skip if empty and media is present)
             if message.strip() or not media_files:
-                async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:
+                async with session.post(url, headers=json_headers, json={"content": message, **({"embeds": [embed_payload]} if embed_payload else {})}, **_req_kw) as resp:
                     if resp.status not in {200, 201}:
                         body = await _standalone_read_text_limited(
                             resp,

@@ -13,6 +13,7 @@ import time
 import pytest
 
 from hermes_state import SessionDB
+from tools.registry import registry
 from tools.session_search_tool import (
     SESSION_SEARCH_SCHEMA,
     _format_timestamp,
@@ -80,6 +81,9 @@ class TestSchema:
         assert "role_filter" in params
         # Mode is inferred from which args are set — no explicit mode param
         assert "mode" not in params
+
+    def test_registry_caps_large_discovery_payloads(self):
+        assert registry.get_max_result_size("session_search") == 12_000
 
 
 class TestFormatTimestamp:

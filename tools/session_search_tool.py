@@ -1158,4 +1158,8 @@ registry.register(
     ),
     check_fn=check_session_search_requirements,
     emoji="🔍",
+    # Discovery can include bookends plus a hit window from several huge
+    # sessions. Keep it inline-sized; callers can scroll/read the precise
+    # session slice instead of flooding the next model request.
+    max_result_size_chars=12_000,
 )

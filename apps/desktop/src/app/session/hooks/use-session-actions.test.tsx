@@ -1129,7 +1129,7 @@ describe('branchStoredSession desktop source tagging', () => {
     })
   })
 
-  it('branches an open live chat via session.branch with a trimmed message count (bug #1/#3 fix)', async () => {
+  it('branches an open live chat via session.branch with no merged-count truncation (branch context-loss bug)', async () => {
     let branchParams: Record<string, unknown> | undefined
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
@@ -1140,7 +1140,7 @@ describe('branchStoredSession desktop source tagging', () => {
           session_id: 'branch-runtime',
           stored_session_id: 'branch-stored',
           title: 'Branch',
-          message_count: 2,
+          message_count: 4,
           messages: [],
           info: {}
         } as never
@@ -1167,16 +1167,61 @@ describe('branchStoredSession desktop source tagging', () => {
     )
     await waitFor(() => expect(branchCurrentSession).not.toBeNull())
 
-    // Branch from the FIRST assistant reply ("a1"), not the last message �
-    // this is exactly the scenario that used to drop the question (bug #1):
-    // only the clicked message survived instead of everything up to it.
-    await expect(branchCurrentSession!('a1')).resolves.toBe(true)
+    // Branching the whole open chat sends NO truncation: the backend copies
+    // the full raw history. A merged-message count used to be sent here and
+    // silently dropped the conversation tail (the branch context-loss bug).
+    await expect(branchCurrentSession!()).resolves.toBe(true)
 
     expect(requestGateway).toHaveBeenCalledWith('session.branch', {
-      session_id: 'live-parent',
-      count: 2
+      session_id: 'live-parent'
     })
-    expect(branchParams).toEqual({ session_id: 'live-parent', count: 2 })
+    expect(branchParams).toEqual({ session_id: 'live-parent' })
+  })
+
+  it('branches from a specific message by durable row id', async () => {
+    let branchParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.branch') {
+        branchParams = params
+
+        return {
+          session_id: 'branch-runtime',
+          stored_session_id: 'branch-stored',
+          title: 'Branch',
+          message_count: 3,
+          messages: [],
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    setMessages([
+      { id: 'q1', role: 'user', parts: [{ type: 'text', text: 'question one' }], rowId: 101 },
+      { id: 'a1', role: 'assistant', parts: [{ type: 'text', text: 'answer one' }], rowId: 102 },
+      { id: 'q2', role: 'user', parts: [{ type: 'text', text: 'question two' }], rowId: 103 },
+      { id: 'a2', role: 'assistant', parts: [{ type: 'text', text: 'answer two' }], rowId: 104 }
+    ])
+
+    let branchCurrentSession: ((messageId?: string) => Promise<boolean>) | null = null
+    render(
+      <BranchHarness
+        activeSessionId="live-parent"
+        onCurrentReady={branch => (branchCurrentSession = branch)}
+        onReady={() => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(branchCurrentSession).not.toBeNull())
+
+    // Branch from the first assistant reply ("a1"): the request names its
+    // durable DB row id so the backend truncates the RAW history at exactly
+    // that row instead of a merged-message count.
+    await expect(branchCurrentSession!('a1')).resolves.toBe(true)
+
+    expect(branchParams).toEqual({ session_id: 'live-parent', up_to_row_id: 102 })
   })
 
   // #67603: right-clicking a session outside the paginated sidebar window is a

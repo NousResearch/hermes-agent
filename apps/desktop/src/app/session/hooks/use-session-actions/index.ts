@@ -1173,13 +1173,18 @@ export function useSessionActions({
   // Shared fork: create a child session seeded with `branchMessages`, linked to
   // `parentStoredId` so it nests under its parent, then open it as its own tab
   // and switch to it — the parent chat stays put (mirrors openNewSessionTile).
+  // `upToRowId` (optional) is the durable DB row id of the message the branch
+  // was cut at. session.branch truncates the parent's raw history by row id —
+  // NOT by a merged-message count, which has no stable mapping onto the raw
+  // rows and silently dropped the conversation tail (branch context-loss bug).
   const forkBranch = useCallback(
     async (
       branchMessages: BranchMessage[],
       sourceSessionId: null | string,
       parentStoredId: null | string,
       cwd?: string,
-      profile?: null | string
+      profile?: null | string,
+      upToRowId?: number
     ): Promise<boolean> => {
       creatingSessionRef.current = true
 
@@ -1194,10 +1199,13 @@ export function useSessionActions({
         await ensureGatewayProfile(profile)
 
         // No title: the backend auto-names the branch from its parent's lineage.
+        // Full-history fork (no row id) omits any truncation; a specific-message
+        // fork names the durable row id so the backend cuts the RAW history at
+        // exactly that row (a merged-message count would land in the wrong place).
         const branched = sourceSessionId
           ? await requestGateway<SessionCreateResponse>('session.branch', {
               session_id: sourceSessionId,
-              count: branchMessages.length
+              ...(upToRowId ? { up_to_row_id: upToRowId } : {})
             })
           : await requestGateway<SessionCreateResponse>('session.create', {
               cols: 96,
@@ -1316,7 +1324,13 @@ export function useSessionActions({
         activeSessionIdRef.current,
         selectedStoredSessionIdRef.current,
         $currentCwd.get().trim(),
-        profile
+        profile,
+        // Forking from a specific message: name its durable DB row id so the
+        // backend truncates the RAW history at exactly that row. Without an id
+        // (branch the whole chat) no truncation is sent — a merged-message
+        // count has no stable mapping onto the backend's raw rows and used to
+        // silently drop the conversation tail (branch context-loss bug).
+        messageId && at >= 0 ? messages[at]?.rowId : undefined
       )
     },
     [activeSessionIdRef, busyRef, copy, forkBranch, selectedStoredSessionIdRef]

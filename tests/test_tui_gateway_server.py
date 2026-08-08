@@ -11646,6 +11646,106 @@ def test_teardown_ends_session_in_profile_db(monkeypatch, tmp_path):
     assert str(seen.get("db_path")).endswith("state.db")
 
 
+def test_session_branch_full_history_by_default_truncates_by_row_id(monkeypatch, tmp_path):
+    """session.branch copies the WHOLE raw history by default; a legacy
+    merged-message ``count`` is ignored (it has no mapping onto raw rows and
+    used to silently drop the conversation tail); ``up_to_row_id`` truncates
+    at exactly that durable DB row."""
+    captured = {}
+
+    class ProfileDB:
+        def __init__(self, db_path=None):
+            pass
+
+        def get_session_title(self, _key):
+            return "parent"
+
+        def get_next_title_in_lineage(self, current):
+            return f"{current} (branch)"
+
+        def create_session(self, new_key, **kwargs):
+            captured["created"] = new_key
+
+        def append_messages_batch(self, session_id, messages, **kwargs):
+            captured["msgs"] = [dict(m, session_id=session_id) for m in messages]
+            return list(range(1, len(messages) + 1))
+
+        def set_session_title(self, key, title):
+            return True
+
+        def get_session(self, key):
+            return {"id": key, "cwd": str(tmp_path)}
+
+        def update_session_cwd(self, *a, **k):
+            return None
+
+        def close(self):
+            pass
+
+    class FakeAgent:
+        def __init__(self):
+            self.model = "test-model"
+            self.session_id = None
+
+    def _run_branch(history, params=None):
+        parent = {
+            "session_key": "parent-key",
+            "history": history,
+            "history_lock": __import__("threading").Lock(),
+            "running": False,
+            "cols": 80,
+            "profile_home": None,
+            "source": "tui",
+            "agent": FakeAgent(),
+            "created_at": 1.0,
+            "last_active": 1.0,
+            "cwd": str(tmp_path),
+        }
+        server._sessions["parent"] = parent
+        monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
+        monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
+        monkeypatch.setattr(server, "_make_agent", lambda *a, **k: FakeAgent())
+        monkeypatch.setattr(server, "_set_session_context", lambda *a, **k: {})
+        monkeypatch.setattr(server, "_clear_session_context", lambda *a, **k: None)
+        monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+        monkeypatch.setattr(server, "_session_cwd", lambda s: str(tmp_path))
+        monkeypatch.setattr(server, "_register_session_cwd", lambda *a, **k: None)
+        monkeypatch.setattr(server, "_attach_worker", lambda *a, **k: None)
+        req = {"id": "1", "method": "session.branch", "params": {"session_id": "parent", "name": "forked"}}
+        req["params"].update(params or {})
+        resp = server.handle_request(req)
+        assert "result" in resp, resp
+        return captured["msgs"]
+
+    try:
+        history = [
+            {"role": "user", "content": "q1", "_row_id": 1},
+            {"role": "assistant", "content": "a1", "_row_id": 2},
+            {"role": "tool", "content": "t1-result", "_row_id": 3},
+            {"role": "user", "content": "q2", "_row_id": 4},
+            {"role": "assistant", "content": "a2", "_row_id": 5},
+            {"role": "tool", "content": "t2-result", "_row_id": 6},
+        ]
+        # No truncation params → the whole raw history is copied, tool rows
+        # included. (The desktop used to send a merged-message count here,
+        # which sliced history[:4] and lost a2 + t2 — the branch bug.)
+        msgs = _run_branch(history, {"count": 4})
+        assert [m["content"] for m in msgs] == ["q1", "a1", "t1-result", "q2", "a2", "t2-result"]
+
+        # Branch from the first assistant reply: up_to_row_id=2 keeps exactly
+        # the rows up to and including that durable row.
+        msgs = _run_branch(history, {"up_to_row_id": 2})
+        assert [m["content"] for m in msgs] == ["q1", "a1", "t1-result"]
+
+        # A row id that is not in the live history (unflushed turn) falls back
+        # to the full history instead of mis-slicing.
+        msgs = _run_branch(history, {"up_to_row_id": 999})
+        assert len(msgs) == 6
+    finally:
+        for k in list(server._sessions):
+            server._sessions.pop(k, None)
+
+
 def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
     """session.branch must copy history into the parent's profile state.db."""
     profile_home = tmp_path / "profiles" / "mlperf"

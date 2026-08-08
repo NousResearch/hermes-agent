@@ -81,6 +81,92 @@ def test_parse_features_extracts_fields():
     assert feats[1]["one_line"] == "Beta too."
 
 
+def test_parse_features_multiline_how_code_block():
+    """Regression: multi-line `How:` code blocks (the real v0.21.0.md format)
+    must be captured, not dropped (review #81580 issue 1)."""
+    body = """## 1. Alpha
+
+- **One-line:** New alpha thing.
+- **Use when:** Doing alpha work.
+- **How:**
+  ```
+  /whats-new
+  /whats-new 0.20.0
+  ```
+- **Related:** #123
+"""
+    feats = _parse_features(body)
+    assert len(feats) == 1
+    assert "whats-new" in feats[0]["how"]
+    assert "/whats-new 0.20.0" in feats[0]["how"]
+    # Fence markers are not part of the content.
+    assert "```" not in feats[0]["how"]
+
+
+def test_parse_features_skips_placeholder_entries():
+    """Regression: template placeholders (name only, no fields) must not
+    render as real features (review #81580 issue 5)."""
+    body = """## 1. Real Feature
+
+- **One-line:** Actual thing.
+
+## 2. (Template — add future features here)
+
+- **One-line:**
+- **Use when:**
+- **How:**
+- **Related:**
+"""
+    feats = _parse_features(body)
+    assert len(feats) == 1
+    assert feats[0]["name"].startswith("1.")
+
+
+def test_parse_features_real_brief_file():
+    """Parse the shipped v0.21.0.md and confirm `How:` survives."""
+    brief = get_whats_new(REPO_ROOT, "0.21.0")
+    assert brief is not None
+    # The Feature Onboarding entry's How: block is multi-line in the file.
+    feat = next(f for f in brief.features if "Feature Onboarding" in f["name"])
+    assert feat["how"]
+    assert "/whats-new" in feat["how"]
+
+
+def test_mark_seen_unique_tmp_names(tmp_path, monkeypatch):
+    """Regression: concurrent writers must not collide on one .tmp name
+    (review #81580 issue 4)."""
+    # Two sequential writes must leave only the final file — no leftover
+    # shared .tmp. The atomic replace means the seen file is the only artifact.
+    mark_seen(tmp_path, "0.21.0")
+    mark_seen(tmp_path, "0.22.0")
+    files = list(tmp_path.iterdir())
+    names = [p.name for p in files]
+    assert "whats_new_seen.json" in names
+    # No stale temp files remain after successful writes.
+    assert not [n for n in names if n.endswith(".tmp")]
+    data = load_seen(tmp_path)
+    assert set(data["seen"].keys()) == {"0.21.0", "0.22.0"}
+
+
+def test_mark_seen_tmp_name_contains_pid_and_counter(tmp_path, monkeypatch):
+    """The temp name embeds pid + monotonic counter for concurrency safety."""
+    from hermes_cli import whats_new as wn
+
+    real_write = wn.Path.write_text
+    seen_names = []
+
+    def spy(self, *a, **k):
+        seen_names.append(self.name)
+        return real_write(self, *a, **k)
+
+    monkeypatch.setattr(wn.Path, "write_text", spy)
+    mark_seen(tmp_path, "0.21.0")
+    mark_seen(tmp_path, "0.22.0")
+    assert len(seen_names) == 2
+    assert seen_names[0] != seen_names[1]
+    assert all(n.endswith(".tmp") for n in seen_names)
+
+
 def test_render_truncates_at_max_features():
     feats = [{"name": f"F{i}"} for i in range(12)]
     brief = WhatsNewBrief("0.99.0", "body", feats)

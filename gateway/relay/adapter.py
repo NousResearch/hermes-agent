@@ -444,7 +444,7 @@ class RelayAdapter(BasePlatformAdapter):
             logger.debug("slack session-thread stamp failed", exc_info=True)
 
     async def _localize_inbound_media(self, event) -> None:
-        """Download connector re-hosted attachments to local temp paths.
+        """Download connector re-hosted attachments to managed cache paths.
 
         The wire's ``media_urls`` name connector re-hosts
         (``{connector}/relay/media/{id}``, per-gateway-bearer-authenticated) or
@@ -452,7 +452,7 @@ class RelayAdapter(BasePlatformAdapter):
         presents inbound media to the agent as LOCAL FILE PATHS (the vision /
         file tools consume paths, and an authenticated URL would be useless in
         the agent's context anyway) — so mirror that here: fetch each URL and
-        swap the list entries for temp paths. Best-effort per entry: a failed
+        swap the list entries for managed-cache paths. Best-effort per entry: a failed
         download drops that entry (never the message); no client ⇒ only
         re-host URLs are dropped (they'd 401 for every consumer downstream),
         public URLs stay.

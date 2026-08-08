@@ -189,11 +189,18 @@ class OSSBackend(Mem0Backend):
             from ._oss_providers import KNOWN_DIMS
             model = embedder_config.get("model", "")
             dims = KNOWN_DIMS.get(model)
+
+        provider = vector_store.get("provider", "qdrant") or "qdrant"
+
         if dims:
             vs_config["embedding_model_dims"] = dims
-            self._recreate_collection_if_dims_changed(
-                vector_store.get("provider", "qdrant"), vs_config, dims,
-            )
+            # pgvector (and other non-qdrant stores) are safe to check before
+            # Memory is built — they hold no local file lock. Qdrant is handled
+            # after construction via Memory's own client, so we never open a
+            # second QdrantClient against the same on-disk path (which
+            # deadlocks on Windows file locks).
+            if provider != "qdrant":
+                self._recreate_collection_if_dims_changed(provider, vs_config, dims)
 
         vector_store["config"] = vs_config
 
@@ -205,39 +212,152 @@ class OSSBackend(Mem0Backend):
         }
         self._memory = Memory.from_config(config)
 
+        if dims and provider == "qdrant":
+            self._recreate_qdrant_if_dims_changed(dims)
+
+    def _recreate_qdrant_if_dims_changed(self, expected_dims: int) -> None:
+        """Recreate the Qdrant collection when its stored embedding dims differ.
+
+        The problem this replaces: the recreate used to run *before*
+        ``Memory.from_config``, from a standalone ``QdrantClient`` opened
+        against the same local path.  Two clients on one embedded Qdrant
+        directory deadlock on Windows file locks.  So this runs after
+        ``Memory.from_config`` and reuses the Memory's own ``vector_store``
+        client — no second client is ever opened.
+
+        ``Memory.from_config`` already created the collection (or left an
+        existing one untouched, since ``create_col`` skips when it exists). If
+        that existing collection has the wrong dims we delete it and rebuild it
+        through the vector store's ``create_col``, which restores the dense
+        vectors, the ``bm25`` sparse slot and the payload filter indexes.  We
+        never delete unless we know we can rebuild that full contract: if
+        ``create_col`` is missing we skip entirely, and if it raises the
+        fallback reproduces the same contract by hand (a dense-only collection
+        would later reject writes, since mem0's insert path targets the
+        ``bm25`` slot).
+        """
+        import logging
+        log = logging.getLogger(__name__)
+        try:
+            vs = getattr(self._memory, "vector_store", None)
+            if vs is None:
+                return
+            client = getattr(vs, "client", None)
+            if client is None:
+                return
+            collection_name = self._memory.collection_name
+            if not client.collection_exists(collection_name):
+                return
+            info = client.get_collection(collection_name)
+            vectors = info.config.params.vectors
+            # Named-vector collections expose a dict; unnamed expose an object with .size.
+            if isinstance(vectors, dict):
+                first = next(iter(vectors.values()), None)
+                current_dims = first.size if first else None
+            else:
+                current_dims = getattr(vectors, "size", None)
+            if current_dims is None or current_dims == expected_dims:
+                return
+
+            # Only proceed if the vector store exposes a proper create_col.
+            # A bare client.create_collection cannot restore BM25 sparse vectors,
+            # filter indexes, on_disk, or named-vector config — the resulting
+            # degraded collection is worse than the original dim mismatch.
+            if not hasattr(vs, "create_col"):
+                log.warning(
+                    "Qdrant collection %r has dims %d != expected %d, but "
+                    "vector store has no create_col — skipping recreate.",
+                    collection_name, current_dims, expected_dims,
+                )
+                return
+
+            on_disk = getattr(vs, "on_disk", False)
+            client.delete_collection(collection_name)
+
+            # Primary path: full-featured recreate via vector store (BM25 sparse,
+            # filter indexes, on_disk, named-vector config).
+            try:
+                vs.create_col(expected_dims, on_disk)
+                return
+            except Exception:
+                log.warning(
+                    "create_col for %r failed after dim mismatch (dims %d -> %d), "
+                    "attempting fallback rebuild of the full collection contract",
+                    collection_name, current_dims, expected_dims,
+                )
+
+            # Fallback: rebuild the collection directly, reproducing the full
+            # Mem0 Qdrant contract rather than a bare dense-only collection.
+            # A dense-only collection would have no ``bm25`` sparse slot, and
+            # mem0's insert path writes to that slot whenever the vector store
+            # believes it exists — so a degraded collection later *rejects
+            # writes*.  Mirror create_col exactly: dense VectorParams (cosine,
+            # on_disk), the ``bm25`` sparse slot with the IDF modifier, and the
+            # payload filter indexes.
+            try:
+                from qdrant_client.models import (
+                    Distance,
+                    Modifier,
+                    SparseVectorParams,
+                    VectorParams,
+                )
+
+                client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config=VectorParams(
+                        size=expected_dims, distance=Distance.COSINE, on_disk=on_disk
+                    ),
+                    sparse_vectors_config={
+                        "bm25": SparseVectorParams(modifier=Modifier.IDF),
+                    },
+                )
+                # Keep the vector store's own view of the bm25 slot coherent:
+                # create_col sets this, and insert() consults it.
+                if hasattr(vs, "_has_bm25_slot"):
+                    vs._has_bm25_slot = True
+                # Payload indexes, as in Qdrant._create_filter_indexes.  Local
+                # (embedded/on-disk) Qdrant does not support them, and mem0
+                # skips them there, so do the same and stay best-effort.
+                if not getattr(vs, "is_local", False):
+                    for field in ("user_id", "agent_id", "run_id", "actor_id"):
+                        try:
+                            client.create_payload_index(
+                                collection_name=collection_name,
+                                field_name=field,
+                                field_schema="keyword",
+                            )
+                        except Exception:
+                            log.debug(
+                                "Payload index for %r on %r not created",
+                                field, collection_name,
+                            )
+                log.info(
+                    "Fallback collection %r created with dims %d "
+                    "(bm25 sparse slot + filter indexes)",
+                    collection_name, expected_dims,
+                )
+            except Exception:
+                log.exception(
+                    "Fallback creation also failed for collection %r — "
+                    "collection is missing, memory operations will fail.",
+                    collection_name,
+                )
+        except Exception:
+            log.exception(
+                "Failed to recreate Qdrant collection %r with dims %d",
+                getattr(self._memory, "collection_name", "mem0"),
+                expected_dims,
+            )
+
     @staticmethod
     def _recreate_collection_if_dims_changed(provider: str, vs_config: dict, expected_dims: int) -> None:
-        """Delete stale vector collection when embedding dimensions change."""
+        """Delete a stale pgvector table when embedding dimensions change.
+
+        Qdrant is handled separately by ``_recreate_qdrant_if_dims_changed`` on
+        the already-constructed Memory, to avoid a second QdrantClient.
+        """
         collection_name = vs_config.get("collection_name", "mem0")
-        if provider == "qdrant":
-            try:
-                from qdrant_client import QdrantClient
-                path = vs_config.get("path")
-                url = vs_config.get("url")
-                if path:
-                    client = QdrantClient(path=path)
-                elif url:
-                    client = QdrantClient(url=url, api_key=vs_config.get("api_key"))
-                else:
-                    return
-                try:
-                    if not client.collection_exists(collection_name):
-                        return
-                    info = client.get_collection(collection_name)
-                    vectors = info.config.params.vectors
-                    # Named-vector collections expose a dict; unnamed expose an object with .size.
-                    if isinstance(vectors, dict):
-                        first = next(iter(vectors.values()), None)
-                        current_dims = first.size if first else None
-                    else:
-                        current_dims = getattr(vectors, "size", None)
-                    if current_dims is not None and current_dims != expected_dims:
-                        client.delete_collection(collection_name)
-                finally:
-                    client.close()
-            except Exception:
-                pass
-        elif provider == "pgvector":
+        if provider == "pgvector":
             try:
                 import psycopg2
                 from psycopg2 import sql as pgsql

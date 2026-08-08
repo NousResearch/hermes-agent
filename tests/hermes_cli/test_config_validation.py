@@ -120,3 +120,75 @@ class TestUnknownTopLevelKeys:
         assert any("base_url" in i.message for i in misplaced)
         assert any("api_key" in i.message for i in misplaced)
 
+
+class TestFallbackProvidersValidation:
+    """fallback_providers entries must be checked like fallback_model entries.
+
+    Both keys are read through ``_iter_fallback_entries``, which drops any
+    entry that is not a dict or is missing provider/model without logging.
+    The legacy ``fallback_model`` key warned about that; the primary
+    ``fallback_providers`` key did not, so a half-filled chain silently
+    became an empty chain and failover never ran.
+    """
+
+    def _messages(self, config, severity=None):
+        issues = validate_config_structure(config)
+        return [i.message for i in issues if severity is None or i.severity == severity]
+
+    def test_entry_missing_provider_warns(self):
+        msgs = self._messages({"fallback_providers": [{"model": "some/model"}]}, "warning")
+        assert any("fallback_providers[0]" in m and "provider" in m for m in msgs)
+
+    def test_entry_missing_model_warns(self):
+        msgs = self._messages({"fallback_providers": [{"provider": "openrouter"}]}, "warning")
+        assert any("fallback_providers[0]" in m and "model" in m for m in msgs)
+
+    def test_second_entry_is_indexed(self):
+        """The index must point at the offending entry, not the first one."""
+        msgs = self._messages({
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+                {"provider": "kimi-coding"},
+            ],
+        }, "warning")
+        assert any("fallback_providers[1]" in m and "model" in m for m in msgs)
+        assert not any("fallback_providers[0]" in m for m in msgs)
+
+    def test_non_dict_entry_errors(self):
+        msgs = self._messages({"fallback_providers": ["openrouter/some-model"]}, "error")
+        assert any("fallback_providers[0]" in m and "dict" in m for m in msgs)
+
+    def test_bare_dict_is_a_valid_single_entry_chain(self):
+        """_iter_fallback_entries wraps a dict, so a complete dict must not warn."""
+        assert self._messages(
+            {"fallback_providers": {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}}
+        ) == []
+
+    def test_bare_dict_missing_model_warns_without_an_index(self):
+        msgs = self._messages(
+            {"fallback_providers": {"provider": "openrouter"}}, "warning")
+        assert any("fallback_providers is missing 'model'" in m for m in msgs)
+
+    def test_complete_chain_is_silent(self):
+        assert self._messages({
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+                {"provider": "deepseek", "model": "deepseek-chat"},
+            ],
+        }) == []
+
+    def test_empty_and_absent_chains_are_silent(self):
+        """DEFAULT_CONFIG ships fallback_providers: [] — it must never warn."""
+        assert self._messages({"fallback_providers": []}) == []
+        assert self._messages({}) == []
+
+    def test_string_chain_is_left_to_the_json_string_fix(self):
+        """A JSON-encoded chain is a separate bug (#51560); do not double-report it."""
+        assert self._messages(
+            {"fallback_providers": '[{"provider": "openrouter", "model": "x"}]'}
+        ) == []
+
+    def test_wrong_scalar_type_errors(self):
+        msgs = self._messages({"fallback_providers": 42}, "error")
+        assert any("fallback_providers should be a list" in m for m in msgs)
+

@@ -2012,6 +2012,58 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                     "Add: model: anthropic/claude-sonnet-4 (or another model)",
                 ))
 
+    # ── fallback_providers: dict OR list of dicts (the modern chain) ──────
+    # ``fallback_model`` above is the legacy key; ``fallback_providers`` is the
+    # primary source of truth (see ``hermes_cli.fallback_config``) and had no
+    # validation at all. Both keys flow through ``_iter_fallback_entries``,
+    # which drops any entry that is not a dict or is missing provider/model —
+    # with no log line. So a chain whose entries are misspelled or half-filled
+    # produced an *empty* chain, failover never engaged, and the only symptom
+    # was a terminal error with no mention of fallback. The legacy key warned
+    # about exactly this; the key everyone actually uses did not.
+    #
+    # A ``str`` value is deliberately not flagged here: JSON-encoded chains
+    # written by older ``hermes config set`` are a separate bug with its own
+    # fix in flight (#51560).
+    fbp = config.get("fallback_providers")
+    if isinstance(fbp, (dict, list)):
+        # A bare dict is a valid single-entry chain (_iter_fallback_entries
+        # wraps it), so normalize before checking entries.
+        fbp_entries = [fbp] if isinstance(fbp, dict) else fbp
+        for i, entry in enumerate(fbp_entries):
+            label = "fallback_providers" if isinstance(fbp, dict) else f"fallback_providers[{i}]"
+            if not isinstance(entry, dict):
+                issues.append(ConfigIssue(
+                    "error",
+                    f"{label} should be a dict, got {type(entry).__name__}",
+                    "Each entry needs provider + model:\n"
+                    "  fallback_providers:\n"
+                    "    - provider: openrouter\n"
+                    "      model: anthropic/claude-sonnet-4",
+                ))
+                continue
+            if not entry.get("provider"):
+                issues.append(ConfigIssue(
+                    "warning",
+                    f"{label} is missing 'provider' field — this entry is dropped from the fallback chain",
+                    "Add: provider: openrouter (or another provider)",
+                ))
+            if not entry.get("model"):
+                issues.append(ConfigIssue(
+                    "warning",
+                    f"{label} is missing 'model' field — this entry is dropped from the fallback chain",
+                    "Add: model: <model-name>",
+                ))
+    elif fbp is not None and not isinstance(fbp, str):
+        issues.append(ConfigIssue(
+            "error",
+            f"fallback_providers should be a list of provider entries, got {type(fbp).__name__}",
+            "Change to:\n"
+            "  fallback_providers:\n"
+            "    - provider: openrouter\n"
+            "      model: anthropic/claude-sonnet-4",
+        ))
+
     # ── Check for fallback_model accidentally nested inside custom_providers ──
     if isinstance(cp, dict) and "fallback_model" not in config and "fallback_model" in (cp or {}):
         issues.append(ConfigIssue(

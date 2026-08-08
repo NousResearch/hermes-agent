@@ -496,10 +496,19 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # (developing Hermes). Every other surface (desktop chat panel,
         # gateway daemons) self-spawns into the install tree, where the
         # fallback would inject this repo's contributor AGENTS.md (#64590).
-        context_files_prompt = _r.build_context_files_prompt(
-            cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
-            context_length=_ctx_len,
-            allow_install_tree_fallback=agent.platform in ("cli", "tui"))
+        #
+        # Chat platforms (telegram, discord, slack, …) are not interactive
+        # coding surfaces — skip loading AGENTS.md/CLAUDE.md/.cursorrules
+        # into chat sessions to avoid leaking project context (#72268).
+        from agent.coding_context import INTERACTIVE_CODING_PLATFORMS
+        _platform = (agent.platform or "").strip().lower()
+        if _platform and _platform not in INTERACTIVE_CODING_PLATFORMS:
+            context_files_prompt = None
+        else:
+            context_files_prompt = _r.build_context_files_prompt(
+                cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
+                context_length=_ctx_len,
+                allow_install_tree_fallback=agent.platform in ("cli", "tui"))
         if context_files_prompt:
             context_parts.append(context_files_prompt)
 

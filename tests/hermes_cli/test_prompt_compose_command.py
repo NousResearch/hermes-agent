@@ -59,3 +59,26 @@ def test_empty_buffer_does_not_seed(monkeypatch):
     s = _Stub()
     s._handle_prompt_compose_command("/prompt")
     assert s._pending_agent_seed is None
+
+
+def test_editor_failure_never_falls_back_to_shell(monkeypatch):
+    """An editor the argv path cannot run must not retry through the shell.
+
+    The old fallback re-invoked `$EDITOR` via `shell=True` with the editor
+    string unquoted, so a malicious or malformed EDITOR value executed as
+    shell code. Now a failed editor simply cancels the compose.
+    """
+    import subprocess as _sp
+
+    calls = []
+
+    def _record(args, **kwargs):
+        calls.append((args, kwargs))
+        raise OSError("editor not runnable")
+
+    monkeypatch.setattr(_sp, "call", _record)
+    monkeypatch.setenv("EDITOR", "nonexistent-editor; touch /tmp/pwned")
+    assert _Stub()._compose_in_editor("") == ""
+    assert calls, "argv invocation should have been attempted"
+    for _, kwargs in calls:
+        assert kwargs.get("shell") is not True

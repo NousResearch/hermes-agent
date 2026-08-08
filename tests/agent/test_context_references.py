@@ -121,18 +121,67 @@ def test_missing_file_becomes_warning(sample_repo: Path):
     assert "not found" in result.message.lower()
 
 
+@pytest.mark.asyncio
+async def test_permissions_deny_blocks_file_reference_before_content_read(
+    tmp_path: Path,
+):
+    from agent.context_references import preprocess_context_references_async
+
+    secret = tmp_path / "secret.txt"
+    secret.write_text("REFERENCE SECRET", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def guarded_read_text(path_obj, *args, **kwargs):
+        if path_obj == secret:
+            raise AssertionError("denied reference content was read")
+        return original_read_text(path_obj, *args, **kwargs)
+
+    with (
+        patch(
+            "agent.deny_policy.permissions_deny_paths",
+            return_value=[str(secret)],
+        ),
+        patch.object(Path, "read_text", guarded_read_text),
+    ):
+        result = await preprocess_context_references_async(
+            "inspect @file:secret.txt",
+            cwd=tmp_path,
+            context_length=100_000,
+        )
+
+    assert "REFERENCE SECRET" not in result.message
+    assert any("permissions.deny.paths" in warning for warning in result.warnings)
 
 
+@pytest.mark.asyncio
+async def test_permissions_deny_blocks_folder_with_denied_descendant_before_listing(
+    tmp_path: Path,
+):
+    from agent.context_references import preprocess_context_references_async
 
+    folder = tmp_path / "project"
+    secret = folder / "private" / "secret.txt"
+    secret.parent.mkdir(parents=True)
+    secret.write_text("FOLDER SECRET", encoding="utf-8")
 
+    with (
+        patch(
+            "agent.deny_policy.permissions_deny_paths",
+            return_value=[str(secret)],
+        ),
+        patch(
+            "agent.context_references._build_folder_listing",
+            side_effect=AssertionError("denied folder was enumerated"),
+        ),
+    ):
+        result = await preprocess_context_references_async(
+            "inspect @folder:project",
+            cwd=tmp_path,
+            context_length=100_000,
+        )
 
-
-
-
-
-
-
-
+    assert "FOLDER SECRET" not in result.message
+    assert any("permissions.deny.paths" in warning for warning in result.warnings)
 
 
 @pytest.mark.asyncio

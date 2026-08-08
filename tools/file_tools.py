@@ -6,9 +6,11 @@ import json
 import logging
 import os
 import posixpath
+import re
 import sys
 import threading
 from pathlib import Path, PurePosixPath
+
 
 from agent.file_safety import get_read_block_error
 from tools.binary_extensions import has_binary_extension
@@ -193,6 +195,8 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
                 return "docker"
             if "singularity" in name:
                 return "singularity"
+            if "vercel" in name and "sandbox" in name:
+                return "vercel_sandbox"
             if "modal" in name:
                 return "modal"
             if "daytona" in name:
@@ -514,14 +518,19 @@ def _rewrite_v4a_patch_paths_for_host(
 
 def _is_blocked_device_path(path: str) -> bool:
     """Return True for concrete device/fd paths that can hang reads."""
-    normalized = os.path.normpath(_expand_tilde(path))
-    if normalized in _BLOCKED_DEVICE_PATHS:
+    expanded = _expand_tilde(path)
+    normalized = os.path.normpath(expanded)
+    normalized_posix = posixpath.normpath(expanded.replace("\\", "/"))
+    candidates = (normalized, normalized_posix)
+    if any(candidate in _BLOCKED_DEVICE_PATHS for candidate in candidates):
         return True
     # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
-    if normalized.startswith("/proc/") and normalized.endswith(
-        ("/fd/0", "/fd/1", "/fd/2")
+    if any(
+        candidate.startswith("/proc/") and candidate.endswith(("/fd/0", "/fd/1", "/fd/2"))
+        for candidate in candidates
     ):
         return True
+
     # /proc/*/environ, /proc/*/cmdline, /proc/*/maps (and the maps variants
     # smaps, smaps_rollup, numa_maps) can leak secrets, command-line args, and
     # memory layout (ASLR bypass) from the host process (issue #4427).
@@ -531,22 +540,24 @@ def _is_blocked_device_path(path: str) -> bool:
     # load addresses — an ASLR oracle on par with maps. /proc/*/pagemap exposes
     # virtual->physical translation. Both are blocked alongside the maps family.
     # endswith matches both /proc/<pid>/X and /proc/<pid>/task/<tid>/X.
-    if normalized.startswith("/proc/") and normalized.endswith(
-        (
-            "/environ",
-            "/cmdline",
-            "/maps",
-            "/smaps",
-            "/smaps_rollup",
-            "/numa_maps",
-            "/mem",
-            "/auxv",
-            "/pagemap",
+    if any(
+        candidate.startswith("/proc/") and candidate.endswith(
+            (
+                "/environ",
+                "/cmdline",
+                "/maps",
+                "/smaps",
+                "/smaps_rollup",
+                "/numa_maps",
+                "/mem",
+                "/auxv",
+                "/pagemap",
+            )
         )
+        for candidate in candidates
     ):
         return True
     return False
-
 
 def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> bool:
     """Return True if the path would hang the process (infinite output or blocking input).
@@ -556,7 +567,7 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
     the final resolved path so aliases to devices cannot bypass the guard.
     """
     expanded = _expand_tilde(filepath)
-    if base_dir is not None and not os.path.isabs(expanded):
+    if base_dir is not None and not os.path.isabs(expanded) and not posixpath.isabs(expanded):
         expanded = os.path.join(os.fspath(base_dir), expanded)
     normalized = os.path.normpath(expanded)
     if _is_blocked_device_path(normalized):
@@ -569,7 +580,7 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
             target = os.readlink(current)
         except OSError:
             break
-        if not os.path.isabs(target):
+        if not os.path.isabs(target) and not posixpath.isabs(target):
             target = os.path.join(os.path.dirname(current), target)
         target = os.path.normpath(target)
         if _is_blocked_device_path(target):
@@ -603,15 +614,192 @@ def _search_result_read_block_error(path: str, task_id: str = "default") -> str 
     return get_read_block_error(str(resolved))
 
 
-def _filter_read_blocked_search_results(result, task_id: str = "default") -> int:
-    """Remove credential/cache/env paths from a SearchResult in-place."""
-    omitted = 0
+def _permissions_deny_patterns_for_task(
+    patterns: list[str],
+    task_id: str = "default",
+) -> list[str]:
+    """Return raw rules plus task-cwd-anchored variants of relative rules.
+
+    Keeping both identities means ``secret/**`` blocks both the raw relative
+    spelling and an equivalent absolute argument under the active workspace.
+    Resolution follows the backend's path dialect and never dereferences a
+    remote path on the host.
+    """
+    variants: list[str] = []
+    for pattern in patterns:
+        if pattern not in variants:
+            variants.append(pattern)
+        expanded = _expand_tilde(pattern)
+        is_absolute = (
+            os.path.isabs(expanded)
+            or posixpath.isabs(expanded)
+            or bool(re.match(r"^[A-Za-z]:[\\/]", expanded))
+            or expanded.startswith("\\\\")
+        )
+        if is_absolute:
+            continue
+        anchored = str(_resolve_path_for_task(expanded, task_id))
+        if anchored not in variants:
+            variants.append(anchored)
+    return variants
+
+
+def _check_permissions_deny_path(filepath: str, task_id: str = "default") -> str | None:
+    """Return an error when ``filepath`` matches ``permissions.deny.paths``."""
+    text = str(filepath)
+    expanded = _expand_tilde(text)
+    # Do not call _resolve_path_for_task for obvious absolute paths: tests often
+    # patch _get_file_ops, and resolution may consult terminal cwd state.  Policy
+    # matching only needs task-cwd anchoring for relative paths.
+    is_absolute = (
+        os.path.isabs(expanded)
+        or posixpath.isabs(expanded)
+        or bool(re.match(r"^[A-Za-z]:[\\/]", expanded))
+        or expanded.startswith("\\\\")
+    )
+    candidates = [expanded]
+    if is_absolute:
+        resolved = None
+    else:
+        try:
+            resolved = str(_resolve_path_for_task(expanded, task_id))
+        except (OSError, ValueError, RuntimeError, TypeError):
+            resolved = None
+    if resolved and resolved not in candidates:
+        candidates.append(resolved)
+    try:
+        from agent.deny_policy import (
+            match_permissions_deny_path,
+            path_deny_error,
+            permissions_deny_paths,
+        )
+
+        patterns = _permissions_deny_patterns_for_task(
+            permissions_deny_paths(),
+            task_id,
+        )
+        local_backend = _terminal_env_type_for_task(task_id) == "local"
+        match = None
+        for candidate in candidates:
+            match = match_permissions_deny_path(
+                candidate,
+                patterns=patterns,
+                canonicalize=local_backend,
+            )
+            if match is not None:
+                break
+    except Exception:
+        logger.warning("permissions.deny.paths check failed closed for %s", filepath, exc_info=True)
+        from agent.deny_policy import path_deny_policy_error
+
+        return path_deny_policy_error(filepath)
+    if match is None:
+        return None
+    return path_deny_error(filepath, match)
+
+
+def _check_permissions_deny_search_root(filepath: str, task_id: str = "default") -> str | None:
+    """Block a search root that is denied or may contain denied descendants."""
+    text = str(filepath)
+    expanded = _expand_tilde(text)
+    candidates = [expanded]
+    try:
+        resolved = str(_resolve_path_for_task(expanded, task_id))
+    except (OSError, ValueError, RuntimeError, TypeError):
+        resolved = None
+    if resolved and resolved not in candidates:
+        candidates.append(resolved)
+    try:
+        from agent.deny_policy import (
+            match_permissions_deny_search_root,
+            path_deny_error,
+            permissions_deny_paths,
+        )
+
+        patterns = _permissions_deny_patterns_for_task(
+            permissions_deny_paths(),
+            task_id,
+        )
+        local_backend = _terminal_env_type_for_task(task_id) == "local"
+        root_probe = resolved
+        if root_probe is None and (
+            os.path.isabs(expanded)
+            or posixpath.isabs(expanded)
+            or bool(re.match(r"^[A-Za-z]:[\\/]", expanded))
+            or expanded.startswith("\\\\")
+        ):
+            root_probe = expanded
+        root_is_file = bool(
+            local_backend
+            and root_probe is not None
+            and os.path.isfile(root_probe)
+        )
+        match = None
+        for candidate in candidates:
+            match = match_permissions_deny_search_root(
+                candidate,
+                patterns=patterns,
+                root_is_file=root_is_file,
+                canonicalize=local_backend,
+            )
+            if match is not None:
+                break
+    except Exception:
+        logger.warning(
+            "permissions.deny.paths search check failed closed for %s",
+            filepath,
+            exc_info=True,
+        )
+        from agent.deny_policy import path_deny_policy_error
+
+        return path_deny_policy_error(filepath)
+    if match is None:
+        return None
+    return path_deny_error(filepath, match)
+
+
+def _search_root_policy_candidates(path: str) -> list[str]:
+    """Mirror the search backend's whitespace/comma multi-root recovery.
+
+    Policy checks run on the original spelling and every possible recovered
+    root before backend acquisition. This is intentionally conservative for a
+    nonexistent single path containing spaces: safety wins over letting a
+    multi-root fallback enumerate a denied second root.
+    """
+    text = str(path)
+    parts = [
+        part.strip()
+        for chunk in text.split(",")
+        for part in chunk.split()
+        if part.strip()
+    ]
+    if len(parts) < 2:
+        return [text]
+    return list(dict.fromkeys([text, *parts]))
+
+
+def _filter_read_blocked_search_results(result, task_id: str = "default") -> tuple[int, int]:
+    """Remove credential/cache/env and permissions-denied paths from a SearchResult."""
+    read_omitted = 0
+    policy_omitted = 0
+
+    def _blocked(path: str) -> str | None:
+        policy_error = _check_permissions_deny_path(path, task_id)
+        if policy_error:
+            return "policy"
+        if _search_result_read_block_error(path, task_id):
+            return "read"
+        return None
 
     if hasattr(result, "matches") and result.matches:
         allowed_matches = []
         for match in result.matches:
-            if _search_result_read_block_error(match.path, task_id):
-                omitted += 1
+            blocked = _blocked(match.path)
+            if blocked == "policy":
+                policy_omitted += 1
+                continue
+            if blocked == "read":
+                read_omitted += 1
                 continue
             allowed_matches.append(match)
         result.matches = allowed_matches
@@ -619,8 +807,12 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
     if hasattr(result, "files") and result.files:
         allowed_files = []
         for file_path in result.files:
-            if _search_result_read_block_error(file_path, task_id):
-                omitted += 1
+            blocked = _blocked(file_path)
+            if blocked == "policy":
+                policy_omitted += 1
+                continue
+            if blocked == "read":
+                read_omitted += 1
                 continue
             allowed_files.append(file_path)
         result.files = allowed_files
@@ -628,13 +820,17 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
     if hasattr(result, "counts") and result.counts:
         allowed_counts = {}
         for file_path, count in result.counts.items():
-            if _search_result_read_block_error(file_path, task_id):
-                omitted += 1
+            blocked = _blocked(file_path)
+            if blocked == "policy":
+                policy_omitted += 1
+                continue
+            if blocked == "read":
+                read_omitted += 1
                 continue
             allowed_counts[file_path] = count
         result.counts = allowed_counts
 
-    return omitted
+    return read_omitted, policy_omitted
 
 
 # Paths that file tools should refuse to write to without going through the
@@ -679,14 +875,27 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     except (OSError, ValueError):
         resolved = filepath
     normalized = os.path.normpath(_expand_tilde(filepath))
+    # Preserve POSIX-style absolute inputs before Windows Path resolution turns
+    # ``/etc/passwd`` into ``C:\\etc\\passwd``. The file tools can receive POSIX
+    # paths from Git Bash, containers, V4A patch headers, and tests even when
+    # the host process is Windows.
+    normalized_posix = posixpath.normpath(_expand_tilde(filepath).replace("\\", "/"))
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
     for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
+        if (
+            resolved.startswith(prefix)
+            or normalized.startswith(prefix)
+            or normalized_posix.startswith(prefix)
+        ):
             return _err
-    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
+    if (
+        resolved in _SENSITIVE_EXACT_PATHS
+        or normalized in _SENSITIVE_EXACT_PATHS
+        or normalized_posix in _SENSITIVE_EXACT_PATHS
+    ):
         return _err
     # Prevent agents from modifying the Hermes config file directly.
     # approvals.mode and other security settings live here; a malicious or
@@ -1530,6 +1739,14 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
 
         _resolved = _resolve_path_for_task(path, task_id)
 
+        # ── User configured deny policy ───────────────────────────────
+        # permissions.deny.paths is a deny-wins floor for file tools. Check it
+        # immediately after path resolution, before structured-document
+        # extraction or any other path that could open the target.
+        block_error = _check_permissions_deny_path(path, task_id)
+        if block_error:
+            return json.dumps({"error": block_error})
+
         # ── Structured-document extraction ────────────────────────────
         # Try before the binary-extension guard so .docx/.xlsx can render as text.
         # Malformed documents fall through to the normal path/binary guard.
@@ -2017,6 +2234,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     Pass ``True`` after explicit user direction — same shape as ``force``
     on the terminal tool.
     """
+    path_deny_err = _check_permissions_deny_path(path, task_id)
+    if path_deny_err:
+        return tool_error(path_deny_err)
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
@@ -2148,6 +2368,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     return _err
                 _paths_to_check.append(v4a_path)
     for _p in _paths_to_check:
+        path_deny_err = _check_permissions_deny_path(_p, task_id)
+        if path_deny_err:
+            return tool_error(path_deny_err)
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
             return tool_error(sensitive_err)
@@ -2343,6 +2566,10 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             resolved_path = _resolve_path_for_task(path, task_id)
         except (OSError, ValueError, RuntimeError):
             resolved_path = None
+        for policy_path in _search_root_policy_candidates(path):
+            policy_error = _check_permissions_deny_search_root(policy_path, task_id)
+            if policy_error:
+                return json.dumps({"error": policy_error}, ensure_ascii=False)
         block_error = get_read_block_error(str(resolved_path) if resolved_path else path)
         if block_error:
             return tool_error(block_error)
@@ -2365,18 +2592,26 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             pattern=pattern, path=path, target=target, file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
-        omitted = _filter_read_blocked_search_results(result, task_id)
+        read_omitted, policy_omitted = _filter_read_blocked_search_results(result, task_id)
         if hasattr(result, 'matches'):
             for m in result.matches:
                 if hasattr(m, 'content') and m.content:
                     m.content = redact_sensitive_text(m.content, file_read=True)
         result_dict = result.to_dict(densify=True)
 
-        if omitted:
-            result_dict["_omitted"] = (
-                f"{omitted} result(s) omitted because they target credential, "
+        omitted_messages = []
+        if read_omitted:
+            omitted_messages.append(
+                f"{read_omitted} result(s) omitted because they target credential, "
                 "token, cache, or secret-bearing environment files."
             )
+        if policy_omitted:
+            omitted_messages.append(
+                f"{policy_omitted} result(s) omitted because they match "
+                "permissions.deny.paths."
+            )
+        if omitted_messages:
+            result_dict["_omitted"] = " ".join(omitted_messages)
 
         # Populate negative cache when search root was missing. No early
         # return — same rationale as the read path: error results keep

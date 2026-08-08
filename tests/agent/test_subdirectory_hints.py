@@ -81,6 +81,64 @@ class TestSubdirectoryHintTracker:
 
 
 
+    def test_denied_subtree_does_not_load_context(self, project):
+        """permissions.deny.paths blocks progressive context discovery."""
+        private = project / "private"
+        private.mkdir()
+        (private / "AGENTS.md").write_text("PRIVATE CONTEXT MUST NOT LEAK")
+        (private / "data.txt").write_text("private data")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        with patch(
+            "agent.deny_policy.permissions_deny_paths",
+            return_value=[str(private / "**")],
+        ):
+            result = tracker.check_tool_call(
+                "read_file", {"path": str(private / "data.txt")}
+            )
+
+        assert result is None
+
+    def test_denied_hint_file_is_skipped(self, project):
+        """A file-specific deny applies before context hint content is read."""
+        mixed = project / "mixed"
+        mixed.mkdir()
+        agents = mixed / "AGENTS.md"
+        agents.write_text("DENIED AGENTS CONTEXT")
+        (mixed / "CLAUDE.md").write_text("Allowed sibling context")
+        (mixed / "data.txt").write_text("ordinary data")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        with patch(
+            "agent.deny_policy.permissions_deny_paths",
+            return_value=[str(agents)],
+        ):
+            result = tracker.check_tool_call(
+                "read_file", {"path": str(mixed / "data.txt")}
+            )
+
+        assert result is not None
+        assert "Allowed sibling context" in result
+        assert "DENIED AGENTS CONTEXT" not in result
+
+    def test_denied_working_dir_context_is_not_read_during_digest_seed(self, project):
+        """Tracker initialization must not read a denied startup context file."""
+        agents = project / "AGENTS.md"
+        original_read_text = Path.read_text
+
+        def guarded_read_text(path_obj, *args, **kwargs):
+            if path_obj == agents:
+                raise AssertionError("denied context was read during digest seeding")
+            return original_read_text(path_obj, *args, **kwargs)
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(agents)],
+            ),
+            patch.object(Path, "read_text", guarded_read_text),
+        ):
+            SubdirectoryHintTracker(working_dir=str(project))
 
     def test_workdir_arg(self, project):
         """The workdir argument from terminal tool is checked."""

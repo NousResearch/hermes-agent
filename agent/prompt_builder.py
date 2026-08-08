@@ -14,7 +14,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
-from typing import Optional
+from typing import Callable, Optional
 
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
@@ -95,7 +95,11 @@ def _find_git_root(start: Path) -> Optional[Path]:
 _HERMES_MD_NAMES = (".hermes.md", "HERMES.md")
 
 
-def _find_hermes_md(cwd: Path) -> Optional[Path]:
+def _find_hermes_md(
+    cwd: Path,
+    *,
+    is_denied: Optional[Callable[[Path], bool]] = None,
+) -> Optional[Path]:
     """Discover the nearest ``.hermes.md`` or ``HERMES.md``.
 
     Search order: *cwd* first, then each parent directory up to (and
@@ -112,6 +116,8 @@ def _find_hermes_md(cwd: Path) -> Optional[Path]:
     for directory in search_dirs:
         for name in _HERMES_MD_NAMES:
             candidate = directory / name
+            if is_denied is not None and is_denied(candidate):
+                continue
             if candidate.is_file():
                 return candidate
         if stop_at and directory == stop_at:
@@ -1962,6 +1968,26 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
 # Context files (SOUL.md, AGENTS.md, .cursorrules)
 # =========================================================================
 
+def _is_denied_project_context_path(path: Path) -> bool:
+    """Apply permissions.deny.paths to implicit project-context reads."""
+    try:
+        from agent.deny_policy import (
+            match_permissions_deny_path,
+            permissions_deny_paths,
+        )
+
+        return match_permissions_deny_path(
+            str(path), patterns=permissions_deny_paths(), canonicalize=True
+        ) is not None
+    except Exception:
+        logger.warning(
+            "permissions.deny.paths project-context check failed closed for %s",
+            path,
+            exc_info=True,
+        )
+        return True
+
+
 def _truncate_content(
     content: str,
     filename: str,
@@ -2035,8 +2061,13 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
 
 def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
     """.hermes.md / HERMES.md — walk to git root."""
-    hermes_md_path = _find_hermes_md(cwd_path)
+    hermes_md_path = _find_hermes_md(
+        cwd_path,
+        is_denied=_is_denied_project_context_path,
+    )
     if not hermes_md_path:
+        return ""
+    if _is_denied_project_context_path(hermes_md_path):
         return ""
     try:
         content = hermes_md_path.read_text(encoding="utf-8").strip()
@@ -2063,6 +2094,8 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     """AGENTS.md — top-level only (no recursive walk)."""
     for name in ["AGENTS.md", "agents.md"]:
         candidate = cwd_path / name
+        if _is_denied_project_context_path(candidate):
+            continue
         if candidate.exists():
             try:
                 content = candidate.read_text(encoding="utf-8").strip()
@@ -2082,6 +2115,8 @@ def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     """CLAUDE.md / claude.md — cwd only."""
     for name in ["CLAUDE.md", "claude.md"]:
         candidate = cwd_path / name
+        if _is_denied_project_context_path(candidate):
+            continue
         if candidate.exists():
             try:
                 content = candidate.read_text(encoding="utf-8").strip()
@@ -2101,7 +2136,7 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
     """.cursorrules + .cursor/rules/*.mdc — cwd only."""
     cursorrules_content = ""
     cursorrules_file = cwd_path / ".cursorrules"
-    if cursorrules_file.exists():
+    if not _is_denied_project_context_path(cursorrules_file) and cursorrules_file.exists():
         try:
             content = cursorrules_file.read_text(encoding="utf-8").strip()
             if content:
@@ -2111,9 +2146,15 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
             logger.debug("Could not read .cursorrules: %s", e)
 
     cursor_rules_dir = cwd_path / ".cursor" / "rules"
-    if cursor_rules_dir.exists() and cursor_rules_dir.is_dir():
+    if (
+        not _is_denied_project_context_path(cursor_rules_dir)
+        and cursor_rules_dir.exists()
+        and cursor_rules_dir.is_dir()
+    ):
         mdc_files = sorted(cursor_rules_dir.glob("*.mdc"))
         for mdc_file in mdc_files:
+            if _is_denied_project_context_path(mdc_file):
+                continue
             try:
                 content = mdc_file.read_text(encoding="utf-8").strip()
                 if content:
@@ -2173,7 +2214,14 @@ def build_context_files_prompt(
     # their launch dir IS the user's shell cwd (developing Hermes in-tree).
     from agent.runtime_cwd import _is_install_tree
 
-    if (
+    if _is_denied_project_context_path(cwd_path):
+        logger.warning(
+            "skipping project-context discovery: working directory is denied "
+            "by permissions.deny.paths (%s)",
+            cwd_path,
+        )
+        project_context = ""
+    elif (
         cwd_is_fallback
         and not allow_install_tree_fallback
         and _is_install_tree(cwd_path)

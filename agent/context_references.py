@@ -306,7 +306,7 @@ def _expand_folder_reference(
     allowed_root: Path | None = None,
 ) -> tuple[str | None, str | None]:
     path = _resolve_path(cwd, ref.target, allowed_root=allowed_root)
-    _ensure_reference_path_allowed(path)
+    _ensure_reference_path_allowed(path, search_root=True)
     if not path.exists():
         return f"{ref.raw}: folder not found", None
     if not path.is_dir():
@@ -381,7 +381,45 @@ def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -
     return resolved
 
 
-def _ensure_reference_path_allowed(path: Path) -> None:
+def _ensure_reference_path_allowed(
+    path: Path,
+    *,
+    search_root: bool = False,
+) -> None:
+    try:
+        from agent.deny_policy import (
+            match_permissions_deny_path,
+            match_permissions_deny_search_root,
+            permissions_deny_paths,
+        )
+
+        patterns = permissions_deny_paths()
+        if search_root:
+            match = match_permissions_deny_search_root(
+                str(path),
+                patterns=patterns,
+                root_is_file=False,
+                canonicalize=True,
+            )
+        else:
+            match = match_permissions_deny_path(
+                str(path),
+                patterns=patterns,
+                canonicalize=True,
+            )
+        if match is not None:
+            raise ValueError(
+                f"path matches permissions.deny.paths rule {match.pattern!r} "
+                "and cannot be attached"
+            )
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(
+            "path could not be verified against permissions.deny.paths and "
+            "cannot be attached"
+        ) from exc
+
     from hermes_constants import get_hermes_home
     home = Path(os.path.expanduser("~")).resolve()
     hermes_home = get_hermes_home().resolve()

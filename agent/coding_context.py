@@ -387,6 +387,29 @@ def _resolve_cwd(cwd: Optional[str | Path]) -> Path:
         return Path(os.getcwd())
 
 
+def _is_denied_workspace_root(path: Path) -> bool:
+    """Fail closed before coding-context discovery can enumerate *path*."""
+    try:
+        from agent.deny_policy import (
+            match_permissions_deny_search_root,
+            permissions_deny_paths,
+        )
+
+        return match_permissions_deny_search_root(
+            str(path),
+            patterns=permissions_deny_paths(),
+            root_is_file=False,
+            canonicalize=True,
+        ) is not None
+    except Exception:
+        logger.warning(
+            "permissions.deny.paths coding-context check failed closed for %s",
+            path,
+            exc_info=True,
+        )
+        return True
+
+
 def _git_root(cwd: Path) -> Optional[Path]:
     current = cwd.resolve()
     for parent in [current, *current.parents]:
@@ -454,6 +477,8 @@ def _detect_profile_name(mode: str, platform: str, cwd_str: str) -> str:
     if platform and platform.strip().lower() not in INTERACTIVE_CODING_PLATFORMS:
         return GENERAL_PROFILE.name
     cwd = Path(cwd_str)
+    if _is_denied_workspace_root(cwd):
+        return GENERAL_PROFILE.name
     # A recognized project root (manifest / AGENTS.md / .cursorrules) is a code
     # workspace on its own — cheap stat checks, no scan.
     if _marker_root(cwd) is not None:
@@ -784,6 +809,9 @@ def detect_project_facts(root: Path) -> ProjectFacts:
     of truth for both the prompt snapshot (:func:`_project_facts`) and the
     gateway's ``project.facts`` — so the UI never re-sniffs verify commands.
     """
+    if _is_denied_workspace_root(root):
+        return ProjectFacts([], [], [], [])
+
     manifests = [m for m in _PROJECT_MARKERS if m not in _CONTEXT_FILES and (root / m).is_file()]
     package_managers = list(
         dict.fromkeys(pm for lock, pm in (*_PY_LOCKFILES, *_JS_LOCKFILES) if (root / lock).is_file())
@@ -848,6 +876,8 @@ def project_facts_for(cwd: Optional[str | Path] = None) -> Optional[dict[str, An
     re-derive "are we coding?" or duplicate the verify-command sniffing.
     """
     resolved = _resolve_cwd(cwd)
+    if _is_denied_workspace_root(resolved):
+        return None
     root = _git_root(resolved) or _marker_root(resolved)
     if root is None:
         return None
@@ -870,6 +900,8 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
     — so marker-only (non-git) projects still get a snapshot.
     """
     resolved = _resolve_cwd(cwd)
+    if _is_denied_workspace_root(resolved):
+        return ""
     git_root = _git_root(resolved)
     root = git_root or _marker_root(resolved)
     if root is None:

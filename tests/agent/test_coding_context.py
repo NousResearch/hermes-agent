@@ -5,6 +5,7 @@ import os
 import subprocess
 import shutil
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -38,6 +39,29 @@ def _git_init(path):
 # ── resolver ──────────────────────────────────────────────────────────────
 
 class TestIsCodingContext:
+
+    def test_permissions_deny_skips_workspace_detection_before_scan(self, tmp_path):
+        private = tmp_path / "private" / "secret.py"
+        private.parent.mkdir()
+        private.write_text("SECRET = True\n")
+        (tmp_path / "package.json").write_text("{}")
+        cfg = {"agent": {"coding_context": "auto"}}
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(private)],
+            ),
+            patch(
+                "agent.coding_context._marker_root",
+                side_effect=AssertionError("denied workspace was probed"),
+            ),
+        ):
+            assert cc.is_coding_context(
+                platform="cli",
+                cwd=tmp_path,
+                config=cfg,
+            ) is False
 
 
 
@@ -95,6 +119,23 @@ class TestCodingSelection:
 class TestWorkspaceBlock:
     def test_empty_outside_repo(self, tmp_path):
         assert cc.build_coding_workspace_block(tmp_path) == ""
+
+    def test_permissions_deny_skips_workspace_snapshot_before_git_probe(self, tmp_path):
+        private = tmp_path / "private" / "secret.py"
+        private.parent.mkdir()
+        private.write_text("SECRET = True\n")
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(private)],
+            ),
+            patch(
+                "agent.coding_context._git_root",
+                side_effect=AssertionError("denied workspace reached git discovery"),
+            ),
+        ):
+            assert cc.build_coding_workspace_block(tmp_path) == ""
 
     def test_reports_branch_and_clean_status(self, tmp_path):
         _git_init(tmp_path)

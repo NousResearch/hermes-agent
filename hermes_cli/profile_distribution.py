@@ -595,8 +595,17 @@ def _copy_dist_payload(
                     else []
                 ),
             )
+            # Distributed payloads can originate from a read-only Nix store;
+            # restore owner-writable mode so the new profile's tooling can
+            # edit the files later (curator, skill_manage, plugin overrides).
+            from tools.skills_sync import _make_tree_owner_writable
+
+            _make_tree_owner_writable(dest)
         else:
             shutil.copy2(entry, dest)
+            from tools.skills_sync import _ensure_owner_writable
+
+            _ensure_owner_writable(dest)
 
     explicit_owned = [p.strip().strip("/") for p in manifest.distribution_owned]
     explicit_owned = [p for p in explicit_owned if p]

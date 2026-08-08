@@ -32,6 +32,15 @@ Configuration in config.yaml::
           redirect_uri: "https://proxy/callback"  # default: loopback callback
           redirect_host: "localhost"            # loopback hostname (WAF-safe)
           client_name: "My Custom Client"       # default: "Hermes Agent"
+          # Pinned endpoints — set ANY of these to pre-populate the RFC 8414
+          # provider metadata and SKIP well-known discovery (#77684):
+          #   authorization_endpoint: "https://auth.example.com/authorize"
+          #   token_endpoint: "https://auth.example.com/token"
+          #   registration_endpoint: "https://auth.example.com/register"
+          #   issuer: "https://auth.example.com"   # default: server origin
+          # authorization_endpoint + token_endpoint are both required when
+          # pinning; discovery is skipped entirely for rate-limited or
+          # broken well-known endpoints (e.g. IBKR's hosted MCP).
 """
 
 import asyncio
@@ -1182,6 +1191,85 @@ def apply_oauth_provider_defaults(
         if not cfg.get("token_endpoint_auth_method"):
             cfg["token_endpoint_auth_method"] = "client_secret_post"
     return cfg
+
+
+# Keys under ``mcp_servers.<name>.oauth`` that pin RFC 8414 metadata.
+# Presence of ANY of them switches the provider to pinned mode (skip
+# well-known discovery). See :func:`build_pinned_oauth_metadata`.
+_PINNED_OAUTH_METADATA_KEYS = (
+    "issuer",
+    "authorization_endpoint",
+    "token_endpoint",
+    "registration_endpoint",
+)
+
+
+def _server_origin(url: str) -> str | None:
+    """Return ``scheme://netloc`` for *url*, or None when unparseable."""
+    from urllib.parse import urlsplit
+
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def build_pinned_oauth_metadata(
+    cfg: dict,
+    *,
+    server_url: str | None = None,
+) -> "OAuthMetadata | None":
+    """Build ``OAuthMetadata`` from pinned ``oauth`` config endpoints.
+
+    When a server's ``oauth`` block pins any of ``issuer`` /
+    ``authorization_endpoint`` / ``token_endpoint`` /
+    ``registration_endpoint``, pre-populate an RFC 8414 metadata object so
+    the MCP SDK skips well-known discovery and uses the pinned URLs for the
+    authorize redirect, token exchange, and refresh. This is the escape
+    hatch for providers whose discovery endpoints are unavailable or
+    rate-limited (e.g. IBKR's hosted MCP 403s the well-known endpoints
+    under load, which previously left ``oauth_metadata=None`` and fell back
+    to wrong ``{origin}/authorize`` / ``{origin}/token`` URLs).
+
+    ``authorization_endpoint`` and ``token_endpoint`` are both required —
+    they drive the authorize URL and the token exchange / refresh URL in
+    the SDK. ``registration_endpoint`` and ``issuer`` are optional;
+    ``issuer`` defaults to the server URL origin when omitted.
+
+    Returns None when no pin keys are present (normal discovery).
+    Raises ValueError when only one of ``authorization_endpoint`` /
+    ``token_endpoint`` is pinned.
+    """
+    pinned = {k: cfg.get(k) for k in _PINNED_OAUTH_METADATA_KEYS if cfg.get(k)}
+    if not pinned:
+        return None
+    if OAuthMetadata is None:
+        _ensure_sdk_loaded()
+    missing = [
+        k for k in ("authorization_endpoint", "token_endpoint") if not pinned.get(k)
+    ]
+    if missing:
+        raise ValueError(
+            "oauth block pins OAuth endpoints but is missing required "
+            f"key(s): {', '.join(missing)}. Pin both authorization_endpoint "
+            "and token_endpoint (registration_endpoint and issuer are "
+            "optional)."
+        )
+    issuer = pinned.get("issuer") or _server_origin(server_url or "")
+    if not issuer:
+        raise ValueError(
+            "oauth.issuer is required when pinning OAuth endpoints without "
+            "a server URL to derive it from."
+        )
+    return OAuthMetadata(
+        issuer=issuer,
+        authorization_endpoint=pinned["authorization_endpoint"],
+        token_endpoint=pinned["token_endpoint"],
+        registration_endpoint=pinned.get("registration_endpoint"),
+    )
 
 
 def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":

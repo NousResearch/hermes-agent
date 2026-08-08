@@ -70,6 +70,22 @@ def _same_endpoint(a: str, b: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _synthetic_metadata_response(outgoing: Any) -> Any:
+    """Build a synthetic 404 for a discovery request that must not go out.
+
+    Used when a server pins its OAuth endpoints: well-known discovery
+    requests are intercepted in :meth:`HermesMCPOAuthProvider.async_auth_flow`
+    and answered locally with a 404 so the SDK's discovery loops exhaust
+    without any network I/O. ``handle_protected_resource_response`` maps a
+    non-200 to None (try next URL) and ``handle_auth_metadata_response``
+    maps a 4XX to ``(True, None)`` (keep going), so a 404 terminates both
+    loops with the pinned ``oauth_metadata`` intact.
+    """
+    import httpx  # local import: httpx is an MCP SDK dependency
+
+    return httpx.Response(404, request=outgoing)
+
+
 @dataclass
 class _ProviderEntry:
     """Per-server OAuth state tracked by the manager.
@@ -129,11 +145,16 @@ def _make_hermes_provider_class() -> Optional[type]:
         (``src/utils/auth.ts:1320``, CC-1096 / GH#24317).
         """
 
+        # Class-level default: instances constructed via ``__new__`` (tests
+        # that bypass ``__init__``) behave as unpinned.
+        _hermes_pinned_metadata: Optional[Any] = None
+
         def __init__(
             self,
             *args: Any,
             server_name: str = "",
             preregistered: bool = False,
+            oauth_metadata: Optional[Any] = None,
             **kwargs: Any,
         ):
             super().__init__(*args, **kwargs)
@@ -145,6 +166,12 @@ def _make_hermes_provider_class() -> Optional[type]:
             # registration can't help. Only auto-heal dynamically-registered
             # clients. See _maybe_flag_poisoned_client.
             self._hermes_preregistered = preregistered
+            # Pinned RFC 8414 metadata (oauth.authorization_endpoint /
+            # token_endpoint / registration_endpoint / issuer). When set,
+            # well-known discovery is skipped and these endpoints are
+            # authoritative for the authorize redirect, token exchange, and
+            # refresh (GH#77684).
+            self._hermes_pinned_metadata = oauth_metadata
 
         async def _initialize(self) -> None:
             """Load stored tokens + client info AND seed token_expiry_time.
@@ -182,6 +209,15 @@ def _make_hermes_provider_class() -> Optional[type]:
             tokens = self.context.current_tokens
             if tokens is not None and tokens.expires_in is not None:
                 self.context.update_token_expiry(tokens)
+
+            # Pinned endpoints from config are authoritative: pre-populate
+            # the SDK's metadata so the authorize redirect, token exchange,
+            # and refresh use the pinned URLs, and RFC 8414 well-known
+            # discovery is skipped entirely. The cold-load disk restore and
+            # pre-flight discovery below are both guarded by
+            # ``oauth_metadata is None``, so they are skipped automatically.
+            if self._hermes_pinned_metadata is not None:
+                self.context.oauth_metadata = self._hermes_pinned_metadata
 
             # Cold-load: restore OAuth server metadata from disk before any
             # refresh attempt. Without this, a restarted process with cached
@@ -304,7 +340,12 @@ def _make_hermes_provider_class() -> Optional[type]:
             Called after the SDK's normal 401-branch auth flow completes so
             metadata discovered via the lazy path (not pre-flight) is also
             saved. No-op when nothing to persist or metadata hasn't changed.
+            Pinned metadata is never persisted — config is the source of
+            truth and must stay authoritative even if the user edits or
+            removes the pin later.
             """
+            if self._hermes_pinned_metadata is not None:
+                return
             meta = self.context.oauth_metadata
             if meta is None:
                 return
@@ -420,7 +461,18 @@ def _make_hermes_provider_class() -> Optional[type]:
             try:
                 outgoing = await inner.__anext__()
                 while True:
-                    incoming = yield outgoing
+                    # Pinned endpoints: never let RFC 8414 / RFC 9728
+                    # well-known discovery requests hit the network — the
+                    # whole point of pinning is skipping discovery for
+                    # providers whose well-known endpoints are rate-limited
+                    # or broken (GH#77684). Feed back a synthetic 404 so the
+                    # SDK's discovery loops exhaust and the pinned metadata
+                    # survives untouched; registration, token exchange, and
+                    # refresh requests pass through normally.
+                    if self._should_skip_discovery(outgoing):
+                        incoming = _synthetic_metadata_response(outgoing)
+                    else:
+                        incoming = yield outgoing
                     # Sniff the response for a dead-client-registration signal
                     # before handing it back to the SDK (best-effort, GH#36767).
                     await self._maybe_flag_poisoned_client(incoming)
@@ -430,6 +482,27 @@ def _make_hermes_provider_class() -> Optional[type]:
                 # 401 branch so a subsequent cold-load skips discovery.
                 self._persist_oauth_metadata_if_changed()
                 return
+
+        def _should_skip_discovery(self, outgoing: Any) -> bool:
+            """True when *outgoing* is a well-known discovery request and the
+            server pins its OAuth endpoints (skip discovery).
+
+            Matches the RFC 8414 / RFC 9728 well-known paths the SDK's URL
+            builders generate:
+            ``/.well-known/oauth-protected-resource`` (PRM) and
+            ``/.well-known/oauth-authorization-server`` (ASM). A
+            ``resource_metadata`` URL from a WWW-Authenticate header is not
+            matched — if a provider serves a valid PRM there, discovery
+            succeeds and the pinned ASM still wins (the ASM loop is
+            intercepted, so ``oauth_metadata`` is never overwritten).
+            """
+            if self._hermes_pinned_metadata is None:
+                return False
+            url = str(getattr(outgoing, "url", ""))
+            return (
+                "/.well-known/oauth-protected-resource" in url
+                or "/.well-known/oauth-authorization-server" in url
+            )
 
     return HermesMCPOAuthProvider
 
@@ -546,10 +619,21 @@ class MCPOAuthManager:
             return None
 
         cfg = dict(entry.oauth_config or {})
-        from tools.mcp_oauth import apply_oauth_provider_defaults
+        from tools.mcp_oauth import (
+            apply_oauth_provider_defaults,
+            build_pinned_oauth_metadata,
+        )
 
         apply_oauth_provider_defaults(
             cfg, server_name=server_name, server_url=entry.server_url
+        )
+        # Pinned endpoints (oauth.authorization_endpoint / token_endpoint /
+        # registration_endpoint / issuer) pre-populate the provider metadata
+        # so the SDK skips well-known discovery (GH#77684). May raise
+        # ValueError for a partial pin (e.g. authorization_endpoint without
+        # token_endpoint) — callers surface it as a clear config error.
+        pinned_metadata = build_pinned_oauth_metadata(
+            cfg, server_url=entry.server_url
         )
         storage = HermesTokenStorage(server_name)
 
@@ -579,6 +663,7 @@ class MCPOAuthManager:
         return _HERMES_PROVIDER_CLS(
             server_name=server_name,
             preregistered=bool(cfg.get("client_id")),
+            oauth_metadata=pinned_metadata,
             server_url=entry.server_url,
             client_metadata=client_metadata,
             storage=storage,

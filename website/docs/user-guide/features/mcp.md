@@ -281,6 +281,22 @@ mcp_servers:
 
 Then run `hermes mcp login googledrive` — with the pre-registered client, Hermes skips registration and runs the normal browser authorization flow.
 
+**Pinning OAuth endpoints (skip discovery).** Some providers' RFC 8414 well-known discovery endpoints are unreliable or rate-limited (e.g. IBKR's hosted MCP 403s them under any load). When discovery fails the SDK is left with no metadata and falls back to wrong `{origin}/authorize` / `{origin}/token` URLs — the browser login builds a broken authorize URL and headless refresh 404s. Pin the endpoints explicitly to pre-populate the provider metadata and skip discovery entirely:
+
+```yaml
+mcp_servers:
+  ibkr:
+    url: "https://mcp.example.com/mcp"
+    auth: oauth
+    oauth:
+      authorization_endpoint: "https://auth.example.com/authorize"
+      token_endpoint: "https://auth.example.com/token"
+      registration_endpoint: "https://auth.example.com/register"  # optional
+      issuer: "https://auth.example.com"                          # optional, defaults to the server origin
+```
+
+`authorization_endpoint` and `token_endpoint` are both required when pinning (they drive the authorize redirect and the token exchange/refresh URLs); `registration_endpoint` and `issuer` are optional. Setting any of these keys switches the server to pinned mode — Hermes skips the well-known discovery requests entirely and uses the pinned endpoints for login, token exchange, and headless refresh.
+
 **Pitfall — config auto-reload race.** When you edit `~/.hermes/config.yaml` from inside a running Hermes session, the CLI auto-reloads MCP connections with a 30s timeout. That's not enough for an interactive OAuth flow. Add the entry, then run `hermes mcp login <server>` from a fresh terminal — it waits the full 5 minutes for you to complete auth.
 
 ## mTLS / client certificates

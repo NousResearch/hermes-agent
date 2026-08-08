@@ -112,6 +112,29 @@ def test_idle_compaction_status_emitted_by_default(tmp_path: Path) -> None:
     ), f"expected idle status line, got: {events}"
 
 
+def test_gateway_cached_turn_uses_stashed_idle_gap(tmp_path: Path) -> None:
+    """Gateway fresh-turn watchdog reset must not suppress idle compaction."""
+    from gateway.run import GatewayRunner
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "IDLE_GATEWAY_STASH"
+    db.create_session(sid, source="gateway")
+    agent = _prep_idle_agent(db, sid, idle_after=60, idle_gap=3600.0)
+    history = _history()
+
+    with patch("gateway.run.time") as mock_time:
+        mock_time.time.return_value = time.time()
+        GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
+
+    assert agent._last_activity_ts is not None
+    assert agent._idle_gap_at_turn_start is not None
+
+    _run_prologue(agent, history)
+
+    agent.context_compressor.compress.assert_called_once()
+    assert agent._idle_gap_at_turn_start is None
+
+
 def test_idle_compaction_defers_to_held_compression_lock(tmp_path: Path) -> None:
     """An idle-triggered compress racing another path must sit the round out.
 
@@ -183,7 +206,6 @@ def test_idle_compaction_respects_anti_thrash_breaker(tmp_path: Path) -> None:
     compressor.compress.assert_not_called()
     assert agent.session_id == sid
     assert len(ctx.messages) == len(_history()) + 1
-
 
 
 

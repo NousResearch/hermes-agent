@@ -23898,7 +23898,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if interrupt_depth == 0:
             from agent.session_activity import ActivityProvenance
 
-            agent._last_activity_ts = time.time()
+            prev_activity_ts = getattr(agent, "_last_activity_ts", None)
+            now = time.time()
+            agent._idle_gap_at_turn_start = (
+                max(0.0, now - float(prev_activity_ts))
+                if prev_activity_ts is not None
+                else None
+            )
+            agent._last_activity_ts = now
             agent._last_activity_desc = "starting new turn (cached)"
             agent._last_activity_provenance = ActivityProvenance.UNKNOWN
             # Reset the SessionDB flush cursor so the new turn's messages are

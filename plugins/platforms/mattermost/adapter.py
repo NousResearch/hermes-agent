@@ -278,6 +278,23 @@ class MattermostAdapter(BasePlatformAdapter):
             logger.error("MM API PUT %s network error: %s", path, exc)
             return {}
 
+    async def _api_delete(self, path: str) -> bool:
+        """DELETE /api/v4/{path}. Returns True on 2xx."""
+        import aiohttp
+        url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
+        try:
+            async with self._session.delete(
+                url, headers=self._headers()
+            ) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.error("MM API DELETE %s → %s: %s", path, resp.status, body[:200])
+                    return False
+                return True
+        except aiohttp.ClientError as exc:
+            logger.error("MM API DELETE %s network error: %s", path, exc)
+            return False
+
     async def _upload_file(
         self, channel_id: str, file_data: bytes, filename: str, content_type: str = "application/octet-stream"
     ) -> Optional[str]:
@@ -1001,6 +1018,61 @@ class MattermostAdapter(BasePlatformAdapter):
 
         await self.handle_message(msg_event)
 
+    # ------------------------------------------------------------------
+    # Message reactions (👀 on receive, ✅/❌ on completion)
+    # ------------------------------------------------------------------
+
+    # Opt into the shared reaction-ack flow (base.on_processing_complete):
+    # swap the 👀 progress reaction for a ✅/❌ result. Mattermost reactions
+    # are additive per user, so the base remove-then-add sequencing applies
+    # unchanged. Values are Mattermost emoji names, not unicode glyphs.
+    _ACK_EMOJI = "eyes"
+    _OK_EMOJI = "white_check_mark"
+    _FAIL_EMOJI = "x"
+
+    def _reactions_enabled(self) -> bool:
+        """Check if message reactions are enabled via env."""
+        return os.getenv("MATTERMOST_REACTIONS", "true").lower() not in {"false", "0", "no"}
+
+    async def _add_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
+        """React to a post with ``emoji``. Soft-fails (False), never raises.
+
+        ``chat_id`` is unused: Mattermost reactions address the post alone.
+        """
+        if not message_id or not self._bot_user_id or self._session is None:
+            return False
+        result = await self._api_post(
+            "reactions",
+            {
+                "user_id": self._bot_user_id,
+                "post_id": message_id,
+                "emoji_name": emoji,
+            },
+        )
+        return bool(result)
+
+    async def _remove_reaction(self, chat_id: str, message_id: str) -> bool:
+        """Remove the bot's 👀 progress reaction from a post. Soft-fails.
+
+        The base reaction-ack flow only ever removes the in-progress marker,
+        and Mattermost's DELETE route is addressed by emoji name, so this
+        targets ``_ACK_EMOJI`` directly.
+        """
+        if not message_id or not self._bot_user_id or self._session is None:
+            return False
+        return await self._api_delete(
+            f"users/{self._bot_user_id}/posts/{message_id}/reactions/{self._ACK_EMOJI}"
+        )
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Add an in-progress 👀 reaction when the bot starts handling a message."""
+        if not self._reactions_enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if chat_id and message_id:
+            await self._add_reaction(chat_id, message_id, self._ACK_EMOJI)
+
 
 
 
@@ -1252,6 +1324,8 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
         os.environ["MATTERMOST_ALLOWED_CHANNELS"] = str(ac)
+    if "reactions" in mattermost_cfg and not os.getenv("MATTERMOST_REACTIONS"):
+        os.environ["MATTERMOST_REACTIONS"] = str(mattermost_cfg["reactions"]).lower()
     return None  # all settings flow through env; nothing to merge into extras
 
 

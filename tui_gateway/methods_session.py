@@ -1056,7 +1056,9 @@ def _(rid, params: dict) -> dict:
                     "session_key": key,
                 },
             )
-        title = (params.get("title", "") or "").strip()
+        # Inline RPC: non-string title (JSON null already falsy; list/int is
+        # truthy) must not AttributeError on .strip() and tear down the reader.
+        title = str(params.get("title") or "").strip()
         if not title:
             return _err(rid, 4021, "title required")
         try:

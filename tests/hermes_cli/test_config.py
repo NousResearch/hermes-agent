@@ -1,6 +1,7 @@
 """Tests for hermes_cli configuration management."""
 
 import os
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -321,6 +322,41 @@ class TestSaveEnvValueSecure:
             assert line.count('TERMINAL_SSH_KEY="') == 1
             # Escaping dialect end-to-end: load sees the raw input, not stripped quotes.
             assert load_env()["TERMINAL_SSH_KEY"] == raw
+
+
+class TestSaveEnvValueConcurrency:
+    def test_concurrent_saves_of_distinct_keys_both_survive(self, tmp_path):
+        """Regression: two threads each read the same on-disk snapshot,
+        append their own key, and atomic-replace — without serialization,
+        the second write silently loses the first (lost update). Both keys
+        must be present after both threads finish.
+        """
+        env_path = tmp_path / ".env"
+        env_path.write_text("BASE=kept\n")
+
+        barrier = threading.Barrier(2)
+        errors = []
+
+        def _save(key, value):
+            try:
+                barrier.wait(timeout=5)
+                with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+                    save_env_value(key, value)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        t1 = threading.Thread(target=_save, args=("RACE_A", "a"))
+        t2 = threading.Thread(target=_save, args=("RACE_B", "b"))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        assert not errors
+        content = env_path.read_text(encoding="utf-8")
+        assert "BASE=kept" in content
+        assert "RACE_A=a" in content
+        assert "RACE_B=b" in content
 
 
 class TestRemoveEnvValue:

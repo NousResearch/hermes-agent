@@ -18,6 +18,7 @@ from tools.environments.base import BaseEnvironment, _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
+_HOST_IS_WINDOWS = os.name == "nt"
 
 logger = logging.getLogger(__name__)
 
@@ -1170,9 +1171,10 @@ def _managed_runtime_path_entries() -> list[str]:
       and nothing has ever put that directory on PATH, so an install whose only
       uv is the managed one looks uv-less to both the agent and the model.
 
-    When ``_IS_WINDOWS`` is patched to simulate Unix on a Windows host (or the
-    reverse), skip entries whose separator/drive spelling does not match the
-    logical platform so they are not spliced into the wrong PATH dialect.
+    When ``_IS_WINDOWS`` is patched to simulate POSIX on a physical Windows
+    host, omit native Windows drive/UNC entries so they are not spliced into a
+    colon-delimited PATH. Native POSIX paths may legitimately contain a
+    backslash, so they must remain intact.
 
     Resolved per call rather than cached in a module constant because
     ``get_hermes_home()`` is profile-scoped and a managed tree can appear
@@ -1185,13 +1187,13 @@ def _managed_runtime_path_entries() -> list[str]:
         entries = [str(d) for d in candidates if d.is_dir()]
         if _IS_WINDOWS:
             return entries
-        # Simulated/native POSIX PATH must not absorb ``C:\…`` drive entries —
-        # ``:`` splitting would turn ``C:\Users\…`` into ``["C", "\\Users\\…"]``.
-        return [
-            entry
-            for entry in entries
-            if "\\" not in entry and not (len(entry) >= 2 and entry[1] == ":")
-        ]
+        # Only a physical Windows host can produce native Windows entries while
+        # a logical POSIX PATH uses ':' as its separator.
+        if not _HOST_IS_WINDOWS:
+            return entries
+        # A logical POSIX PATH on a physical Windows host cannot carry native
+        # drive/UNC paths: ':' splitting would corrupt a drive-qualified entry.
+        return [entry for entry in entries if not ntpath.splitdrive(entry)[0]]
     except Exception:
         return []
 

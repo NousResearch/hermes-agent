@@ -533,9 +533,11 @@ class TestSanePathIncludesHomebrew:
         assert "/opt/homebrew/bin" in _SANE_PATH
 
 
-    def test_make_run_env_appends_homebrew_on_minimal_path(self):
+    def test_make_run_env_appends_homebrew_on_minimal_path(self, monkeypatch):
         """When PATH is minimal, _make_run_env appends missing sane entries."""
+        from tools.environments import local as local_mod
         from tools.environments.local import _SANE_PATH, _make_run_env
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
         minimal_env = {"PATH": "/some/custom/bin"}
         with patch.dict(os.environ, minimal_env, clear=True):
             result = _make_run_env({})
@@ -545,9 +547,11 @@ class TestSanePathIncludesHomebrew:
             assert entry in path_entries
 
 
-    def test_make_run_env_real_launchd_path_gains_homebrew(self):
+    def test_make_run_env_real_launchd_path_gains_homebrew(self, monkeypatch):
         """The literal macOS launchd PATH is the production trigger for #35613."""
+        from tools.environments import local as local_mod
         from tools.environments.local import _make_run_env
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
         launchd_env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
         with patch.dict(os.environ, launchd_env, clear=True):
             result = _make_run_env({})
@@ -610,7 +614,7 @@ class TestHermesBinDirOnPath:
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
         with patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=True):
             result = _make_run_env({})
-        entries = result["PATH"].split(os.pathsep)
+        entries = result["PATH"].split(":")
         assert entries[0] == "/opt/hermes/bin"
         assert "/usr/bin" in entries
 

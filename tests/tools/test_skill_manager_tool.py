@@ -914,6 +914,38 @@ class TestCuratorConsolidationDeleteGuard:
         # Skill must remain active on disk — fail closed, no archive.
         assert (skills_root / "active-skill").exists()
 
+    def test_background_review_patch_requires_skill_view_first(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+        from tools.skill_manager_tool import _reset_background_review_read_marks
+
+        _reset_background_review_read_marks()
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch):
+            _create_curator_skill("reviewed", _skill_content("reviewed"))
+
+            blocked = json.loads(skill_manage(
+                action="patch",
+                name="reviewed",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Do the thing safely.",
+            ))
+            assert blocked["success"] is False
+            assert blocked.get("_read_before_write_required") is True
+            assert "You must load the current SKILL.md content" in blocked["error"]
+            assert "skill_view(name='reviewed')" in blocked["error"]
+            assert "background curator" not in blocked["error"]
+            assert "review turn" not in blocked["error"]
+
+            assert json.loads(skill_view("reviewed"))["success"] is True
+            allowed = json.loads(skill_manage(
+                action="patch",
+                name="reviewed",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Do the thing safely.",
+            ))
+            assert allowed["success"] is True, allowed
+
+        _reset_background_review_read_marks()
+
 
     def test_background_review_support_file_overwrite_requires_that_file_read(self, tmp_path, monkeypatch):
         from tools.skills_tool import skill_view
@@ -936,6 +968,11 @@ class TestCuratorConsolidationDeleteGuard:
             ))
             assert blocked["success"] is False
             assert blocked.get("_read_before_write_required") is True
+            assert "You must load the current references/workflow.md content" in blocked["error"]
+            assert (
+                "skill_view(name='reviewed', file_path='references/workflow.md')"
+                in blocked["error"]
+            )
 
             assert json.loads(skill_view("reviewed", "references/workflow.md"))["success"] is True
             allowed = json.loads(skill_manage(
@@ -945,5 +982,49 @@ class TestCuratorConsolidationDeleteGuard:
                 file_content="new workflow\n",
             ))
             assert allowed["success"] is True, allowed
+
+        _reset_background_review_read_marks()
+
+    @pytest.mark.parametrize(
+        "file_path",
+        [
+            "references/new-learning.md",
+            "templates/starter.txt",
+            "scripts/check.py",
+        ],
+    )
+    def test_background_review_new_support_file_requires_skill_md_read_first(
+        self, tmp_path, monkeypatch, file_path
+    ):
+        from tools.skills_tool import skill_view
+        from tools.skill_manager_tool import _reset_background_review_read_marks
+
+        _reset_background_review_read_marks()
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch):
+            _create_curator_skill("reviewed", _skill_content("reviewed"))
+            target = tmp_path / ".hermes" / "skills" / "reviewed" / file_path
+
+            blocked = json.loads(skill_manage(
+                action="write_file",
+                name="reviewed",
+                file_path=file_path,
+                file_content="new support detail\n",
+            ))
+            assert blocked["success"] is False
+            assert blocked.get("_read_before_write_required") is True
+            assert "You must load the current SKILL.md content" in blocked["error"]
+            assert "skill_view(name='reviewed')" in blocked["error"]
+            assert file_path in blocked["error"]
+            assert not target.exists()
+
+            assert json.loads(skill_view("reviewed"))["success"] is True
+            allowed = json.loads(skill_manage(
+                action="write_file",
+                name="reviewed",
+                file_path=file_path,
+                file_content="new support detail\n",
+            ))
+            assert allowed["success"] is True, allowed
+            assert target.read_text(encoding="utf-8") == "new support detail\n"
 
         _reset_background_review_read_marks()

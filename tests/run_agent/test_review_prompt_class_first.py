@@ -51,6 +51,17 @@ def test_skill_review_prompt_treats_user_corrections_as_skill_signal():
     )
 
 
+def test_skill_review_prompt_requires_full_skill_read_before_support_file():
+    """Support files must require reading the umbrella SKILL.md first (#58475)."""
+    prompt = AIAgent._SKILL_REVIEW_PROMPT
+    lower = prompt.lower()
+    assert "before adding any support file" in lower
+    assert "skill_view(name='<umbrella>')" in prompt
+    assert "full current SKILL.md" in prompt
+    assert "name + description" in lower
+    assert "not enough" in lower
+
+
 
 
 
@@ -74,6 +85,17 @@ def test_combined_review_prompt_has_memory_section():
     prompt = AIAgent._COMBINED_REVIEW_PROMPT
     assert "**Memory**" in prompt
     assert "memory tool" in prompt
+
+
+def test_combined_review_prompt_requires_full_skill_read_before_support_file():
+    """Combined review must carry the same support-file read-first contract."""
+    prompt = AIAgent._COMBINED_REVIEW_PROMPT
+    lower = prompt.lower()
+    assert "before adding any support file" in lower
+    assert "skill_view(name='<umbrella>')" in prompt
+    assert "full current SKILL.md" in prompt
+    assert "name + description" in lower
+    assert "not enough" in lower
 
 
 

@@ -95,6 +95,54 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert "Credits balance: $12.50" in snapshot.details
 
 
+def test_fetch_account_usage_anthropic_skips_non_numeric_utilization(monkeypatch, caplog):
+    monkeypatch.setattr("agent.account_usage.resolve_anthropic_token", lambda: "sk-ant-oat-test")
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "five_hour": {
+                    "utilization": "0.25",
+                    "resets_at": "2030-01-01T00:00:00Z",
+                },
+                "seven_day": {
+                    "utilization": "unavailable",
+                    "resets_at": "2030-01-02T00:00:00Z",
+                },
+                "seven_day_opus": {
+                    "utilization": 1.5,
+                    "resets_at": "2030-01-03T00:00:00Z",
+                },
+                "extra_usage": {
+                    "is_enabled": True,
+                    "used_credits": 12.5,
+                    "monthly_limit": 50.0,
+                    "currency": "USD",
+                },
+            }
+        ),
+    )
+
+    with caplog.at_level("DEBUG", logger="agent.account_usage"):
+        snapshot = fetch_account_usage("anthropic")
+
+    assert snapshot is not None
+    assert snapshot.windows == (
+        AccountUsageWindow(
+            label="Current session",
+            used_percent=25.0,
+            reset_at=datetime(2030, 1, 1, tzinfo=timezone.utc),
+        ),
+        AccountUsageWindow(
+            label="Opus week",
+            used_percent=1.5,
+            reset_at=datetime(2030, 1, 3, tzinfo=timezone.utc),
+        ),
+    )
+    assert "Extra usage: 12.50 / 50.00 USD" in snapshot.details
+    assert "skipping non-numeric utilization value: 'unavailable'" in caplog.text
+
+
 def test_render_account_usage_lines_includes_reset_and_provider():
     snapshot = AccountUsageSnapshot(
         provider="openai-codex",

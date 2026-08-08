@@ -36,13 +36,13 @@ description: "在仓库中编写 SKILL.md"
 SKILL.md 可以存放在两个位置：
 
 1. **用户本地：** `~/.hermes/skills/<maybe-category>/<name>/SKILL.md` — 个人使用，不共享。通过 `skill_manage(action='create')` 创建。
-2. **仓库内（本 skill 讨论此情况）：** `/home/bb/hermes-agent/skills/<category>/<name>/SKILL.md` — 已提交，随包一起发布。使用 `write_file` + `git add`。`skill_manage(action='create')` **不**针对此目录树。
+2. **仓库内（本 skill 讨论此情况）：** `<repo-root>/skills/<category>/<name>/SKILL.md` — 已提交，随包一起发布。使用 `write_file` + `git add`。`skill_manage(action='create')` **不**针对此目录树。
 
 ## 使用时机
 
 - 用户要求你"在此分支 / 仓库 / 提交中"添加一个 skill
 - 你正在提交一个应随 hermes-agent 一起发布的可复用工作流
-- 你正在编辑 `/home/bb/hermes-agent/skills/` 下的现有 skill（小改动用 `patch`，重写用 `write_file`；`skill_manage` 对仓库内 skill 的 `patch` 仍有效，但 `create` 无效）
+- 你正在编辑 `<repo-root>/skills/` 下的现有 skill（小改动用 `patch`，重写用 `write_file`；`skill_manage` 对仓库内 skill 的 `patch` 仍有效，但 `create` 无效）
 
 ## 必需的 Frontmatter
 

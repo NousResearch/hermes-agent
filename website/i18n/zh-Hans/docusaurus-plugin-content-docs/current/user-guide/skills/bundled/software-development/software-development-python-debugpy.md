@@ -167,7 +167,11 @@ sys.excepthook = excepthook
 ### 安装
 
 ```bash
-source /home/bb/hermes-agent/.venv/bin/activate
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  echo "错误：请从 Hermes Agent 检出目录中运行此命令。" >&2
+  exit 1
+}
+source "$repo_root/.venv/bin/activate"
 pip install debugpy
 ```
 
@@ -264,7 +268,7 @@ send({"type": "request", "command": "configurationDone"})
   "connect": { "host": "127.0.0.1", "port": 5678 },
   "justMyCode": false,
   "pathMappings": [
-    { "localRoot": "${workspaceFolder}", "remoteRoot": "/home/bb/hermes-agent" }
+    { "localRoot": "${workspaceFolder}", "remoteRoot": "<remote-hermes-agent-root>" }
   ]
 }
 ```

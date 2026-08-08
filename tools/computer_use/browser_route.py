@@ -60,36 +60,44 @@ def _ref_map(payload: Dict[str, Any]) -> Dict[str, Set[str]]:
     cua-driver has emitted both mapping and list representations while the
     semantic snapshot contract evolved.  Accept both without weakening the
     capability rule: a ref with no declared action remains readable only.
+
+    cua-driver >= 0.17 splits the semantic_v2 payload: action-bearing refs
+    live in the ``refs`` array while ``content_refs`` carries every node
+    with empty action lists.  Merge both sources (plus the legacy
+    snapshot.refs forms) so click/pointer/type refs stay usable.
     """
     normalized: Dict[str, Set[str]] = {}
-    snapshot = payload.get("snapshot")
-    # semantic_v2 carries the authoritative action-bearing entries in
-    # ``content_refs``; some transitional builds also emitted a ``refs`` list
-    # or map. Prefer the richer live shape, then accept both older forms.
-    raw = payload.get("content_refs")
-    if not raw:
-        raw = payload.get("refs")
-    if raw is None and isinstance(snapshot, dict):
-        raw = snapshot.get("refs")
-    if isinstance(raw, dict):
-        entries: Iterable[tuple[Optional[str], Any]] = raw.items()
-    elif isinstance(raw, list):
-        entries = ((None, item) for item in raw)
-    else:
-        entries = ()
 
-    for key, value in entries:
-        if isinstance(value, dict):
-            ref = value.get("ref") or key
-            actions = value.get("actions")
+    def absorb(raw: Any) -> None:
+        if isinstance(raw, dict):
+            entries: Iterable[tuple[Optional[str], Any]] = raw.items()
+        elif isinstance(raw, list):
+            entries = ((None, item) for item in raw)
         else:
-            ref = key
-            actions = None
-        if not isinstance(ref, str) or not ref:
-            continue
-        normalized[ref] = {
-            action for action in (actions or []) if isinstance(action, str)
-        }
+            return
+        for key, value in entries:
+            if isinstance(value, dict):
+                ref = value.get("ref") or key
+                actions = value.get("actions")
+            else:
+                ref = key
+                actions = None
+            if not isinstance(ref, str) or not ref:
+                continue
+            action_set = {
+                action for action in (actions or []) if isinstance(action, str)
+            }
+            # Merge, never drop: content_refs entries carry empty action
+            # lists and must not clobber the same ref declared in ``refs``.
+            normalized[ref] = normalized.get(ref, set()) | action_set
+
+    # 0.17 authoritative action refs; older builds emit only ``refs``; some
+    # transitional builds emit a mapping. Absorb every shape.
+    absorb(payload.get("refs"))
+    absorb(payload.get("content_refs"))
+    snapshot = payload.get("snapshot")
+    if isinstance(snapshot, dict):
+        absorb(snapshot.get("refs"))
     return normalized
 
 

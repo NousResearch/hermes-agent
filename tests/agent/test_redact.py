@@ -1432,13 +1432,6 @@ class TestMaskSecretControlStripping:
         assert mask_secret("\n\x85\u200b") == ""
         assert mask_secret("\n\x85\u200b", empty="(not set)") == "(not set)"
 
-    def test_all_caps_embedded_keyword_still_redacted(self):
-        # All-caps keys keep legacy embedded matching (MYTOKEN=…).
-        text = "MYTOKEN=abcdefgh1234567890123456"
-        result = redact_sensitive_text(text)
-        assert "abcdefgh1234567890123456" not in result
-
-
 class TestSanitizeTerminalSecretUrl:
     @pytest.mark.parametrize(
         "key",

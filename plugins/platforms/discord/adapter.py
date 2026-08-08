@@ -147,7 +147,7 @@ from gateway.platforms.helpers import (
     ThreadParticipationTracker,
     convert_table_to_bullets,
 )
-from utils import atomic_json_write, env_float, env_int
+from utils import atomic_json_write, env_float, env_int, env_var_enabled
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -2973,8 +2973,12 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
 
     def _reactions_enabled(self) -> bool:
-        """Check if message reactions are enabled via config/env."""
-        return os.getenv("DISCORD_REACTIONS", "true").lower() not in {"false", "0", "no"}
+        """Check if message reactions are enabled via config/env.
+
+        Default on. Shared falsy aliases (including ``off``) disable the
+        processing lifecycle reactions.
+        """
+        return env_var_enabled("DISCORD_REACTIONS", default="true")
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction and record durable handling state."""

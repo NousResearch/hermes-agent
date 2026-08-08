@@ -140,3 +140,20 @@ async def test_reactions_disabled_via_env(adapter, monkeypatch):
     adapter.send.assert_awaited_once()
 
 
+@pytest.mark.parametrize("raw", ["false", "0", "no", "off", "OFF"])
+def test_reactions_enabled_falsy_aliases(adapter, monkeypatch, raw):
+    monkeypatch.setenv("DISCORD_REACTIONS", raw)
+    assert adapter._reactions_enabled() is False
+
+
+@pytest.mark.parametrize("raw", ["true", "1", "yes", "on", "TRUE"])
+def test_reactions_enabled_truthy_aliases(adapter, monkeypatch, raw):
+    monkeypatch.setenv("DISCORD_REACTIONS", raw)
+    assert adapter._reactions_enabled() is True
+
+
+def test_reactions_enabled_defaults_on(adapter, monkeypatch):
+    monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
+    assert adapter._reactions_enabled() is True
+
+

@@ -584,6 +584,12 @@ def make_tool_result_message(
 _UNTRUSTED_TOOL_NAMES = frozenset({
     "web_extract",
     "web_search",
+    # x_search returns third-party X/Twitter posts. The text is authored by
+    # whoever wrote the post, so it is attacker-controllable in exactly the
+    # same way a web page is — an attacker publishes a post and waits for it
+    # to be searched. The toolset is auto-enabled whenever xAI credentials
+    # are configured, so this reaches users who never opted in explicitly.
+    "x_search",
 })
 
 _UNTRUSTED_TOOL_PREFIXES = (

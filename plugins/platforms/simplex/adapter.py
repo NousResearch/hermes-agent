@@ -52,6 +52,7 @@ import os
 import random
 import re
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -128,6 +129,13 @@ def _is_image_ext(ext: str) -> bool:
 
 def _is_audio_ext(ext: str) -> bool:
     return ext.lower() in {".mp3", ".wav", ".ogg", ".m4a", ".aac", ".opus"}
+
+
+def _sanitize_filename(name: str) -> str:
+    """Make a peer-supplied file name safe for use in a local path fragment."""
+    name = os.path.basename(name or "").strip()
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+    return cleaned[:120] or "file"
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +423,35 @@ class SimplexAdapter(BasePlatformAdapter):
                     "SimpleX: rcvFileDescrReady for fileId=%s — sending /freceive",
                     file_id,
                 )
-                await self._send_fire_and_forget(f"/freceive {file_id}")
+                # approved_relays=on is REQUIRED: without it the daemon
+                # rejects the download with fileNotApproved/unknownServers
+                # and the file never arrives (rcvFileComplete never fires).
+                # All official clients (Python SDK, iOS, Android) send it.
+                #
+                # A fresh NON-EXISTING path is MANDATORY (live-verified on
+                # v7.0.0.11 AND v6.5.6.1): without a path the daemon parks
+                # the transfer at rcvTransfer/rcvFileComplete never fires and
+                # the file never lands; with an EXISTING path (e.g. its own
+                # 0-byte placeholder or a mkstemp file) it answers
+                # CEFileAlreadyExists. Generate with uuid + sanitized
+                # original filename so the extension classifies correctly
+                # (images → PHOTO, audio → VOICE).
+                # The fileName lives in chatItem.chatItem.file (rcvFileTransfer
+                # often omits it) — without it the path ends in "-file" and
+                # voice transcription fails on the extension.
+                chat_item_wrapper = resp.get("chatItem", {}) or {}
+                chat_item_inner = chat_item_wrapper.get("chatItem", {}) or {}
+                chat_item_file = chat_item_inner.get("file") or {}
+                file_name = (
+                    chat_item_file.get("fileName", "") if isinstance(chat_item_file, dict) else ""
+                ) or rcv_file.get("fileName", "")
+                base_name = _sanitize_filename(file_name)
+                fresh_path = f"/tmp/simplex-rcv-{uuid.uuid4().hex}-{base_name}"
+                while os.path.exists(fresh_path):
+                    fresh_path = f"/tmp/simplex-rcv-{uuid.uuid4().hex}-{base_name}"
+                await self._send_fire_and_forget(
+                    f"/freceive {file_id} approved_relays=on {fresh_path}"
+                )
             return
 
         # New messages — simplex-chat sends "newChatItems" with an array
@@ -454,9 +490,12 @@ class SimplexAdapter(BasePlatformAdapter):
                 )
                 if file_path:
                     pending_item_data = pending.get("chatItem", {}) or {}
-                    pending_item_data.setdefault("file", {})["fileSource"] = {
-                        "filePath": file_path
-                    }
+                    pending_file = pending_item_data.setdefault("file", {})
+                    pending_file["fileSource"] = {"filePath": file_path}
+                    # The parked item's fileStatus still says rcvInvitation —
+                    # mark it complete or _handle_chat_item will re-defer it
+                    # forever (the transfer IS done, file is on disk).
+                    pending_file["fileStatus"] = {"type": "rcvComplete"}
                     pending["chatItem"] = pending_item_data
                     try:
                         await self._handle_chat_item(pending)
@@ -568,30 +607,46 @@ class SimplexAdapter(BasePlatformAdapter):
             )
             file_name = file_info.get("fileName", "")
             file_id = file_info.get("fileId")
+            file_status = file_info.get("fileStatus", {}) or {}
+            file_status_type = (
+                file_status.get("type") if isinstance(file_status, dict) else None
+            )
 
-            ext = ""
-            if file_path:
-                ext = Path(file_path).suffix.lower()
-            if not ext and file_name:
-                ext = Path(file_name).suffix.lower()
-
-            # Voice notes typically arrive before the file finishes
-            # downloading. Defer the message until rcvFileComplete fires.
-            if not file_path and _is_audio_ext(ext) and file_id is not None:
+            # Files typically arrive before the transfer finishes
+            # downloading. Defer the message until rcvFileComplete fires,
+            # otherwise the media-less chat item is dispatched as empty text
+            # and the attachment is lost (images/videos/docs, not just voice).
+            # We must NOT send /freceive here: accepting before the file
+            # description is ready (rcvFileDescrReady) parks the transfer as
+            # rcvAccepted and the subsequent descrReady accept then fails
+            # with CEFileAlreadyReceiving — the download never starts.
+            # Accept exactly once, from the rcvFileDescrReady handler, like
+            # the official clients do.
+            if file_id is not None and file_status_type != "rcvComplete":
                 logger.info(
-                    "SimpleX: voice file %d not yet received, accepting transfer",
+                    "SimpleX: file %d not yet received, waiting for rcvFileDescrReady",
                     file_id,
                 )
                 self._pending_file_transfers[file_id] = chat_item
-                # Fire-and-forget: simplex-chat does not return a corrId reply
-                # for /freceive, so awaiting one would block the event loop.
-                await self._send_fire_and_forget(f"/freceive {file_id}")
                 return
 
             if file_path:
-                ext = Path(file_path).suffix.lower() or (
-                    Path(file_name).suffix.lower() if file_name else ""
+                # The daemon stores incoming files under a temp name
+                # (e.g. simplex-rcv-<uuid>.xftp) for encrypted-at-rest
+                # transfers; classify by the original file name first, then
+                # fall back to sniffing the content when the name doesn't
+                # carry a recognizable extension.
+                ext = (
+                    Path(file_name).suffix.lower()
+                    or Path(file_path).suffix.lower()
+                    or ""
                 )
+                if not _is_image_ext(ext) and not _is_audio_ext(ext):
+                    try:
+                        with open(file_path, "rb") as f:
+                            ext = _guess_extension(f.read(16))
+                    except OSError:
+                        pass
                 if _is_image_ext(ext):
                     media_urls.append(file_path)
                     media_types.append(f"image/{ext.lstrip('.')}")

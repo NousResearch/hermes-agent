@@ -99,6 +99,25 @@ def _base_xai_mocks(monkeypatch, tmp_path):
     return status_mod
 
 
+def test_show_status_redacts_home_channel_identifiers(monkeypatch, capsys, tmp_path):
+    """Shareable status output must not expose message delivery targets."""
+    status_mod = _base_xai_mocks(monkeypatch, tmp_path)
+    telegram_chat_id = "-1001234567890"
+    email_address = "operator@example.test"
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", telegram_chat_id)
+    monkeypatch.setenv("EMAIL_ADDRESS", email_address)
+    monkeypatch.setenv("EMAIL_HOME_ADDRESS", email_address)
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert telegram_chat_id not in output
+    assert email_address not in output
+    assert output.count("home: [redacted]") >= 2
+
+
 class TestShowStatusXaiOAuth:
     """xAI OAuth row in hermes status."""
 

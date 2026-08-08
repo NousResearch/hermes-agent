@@ -407,6 +407,53 @@ The plugin authenticates with `X-API-Key` and uses the server's `/search` / `/me
 | Embedder | openai, ollama |
 | Vector Store | qdrant (local/server), pgvector |
 
+**Pointing OSS mode at an OpenAI-compatible endpoint (e.g. Telnyx):**
+
+The `openai` provider works with any OpenAI-compatible API: set
+`openai_base_url` and (when the service uses its own key) `api_key` in the
+component's `config` block in `mem0.json`. A per-component `api_key`
+overrides `OPENAI_API_KEY` for that component only, so a real OpenAI key
+stays usable elsewhere.
+
+For example, [Telnyx AI inference](https://developers.telnyx.com/docs/inference/getting-started)
+can serve both memory extraction (LLM) and embeddings with a single API key
+(create one in the [Telnyx portal](https://portal.telnyx.com/#/app/api-keys)):
+
+```json
+{
+  "mode": "oss",
+  "oss": {
+    "llm": {
+      "provider": "openai",
+      "config": {
+        "model": "moonshotai/Kimi-K3",
+        "openai_base_url": "https://api.telnyx.com/v2/ai/openai",
+        "api_key": "YOUR_TELNYX_API_KEY"
+      }
+    },
+    "embedder": {
+      "provider": "openai",
+      "config": {
+        "model": "Qwen/Qwen3-Embedding-8B",
+        "openai_base_url": "https://api.telnyx.com/v2/ai/openai",
+        "api_key": "YOUR_TELNYX_API_KEY",
+        "embedding_dims": 4096
+      }
+    },
+    "vector_store": { "provider": "qdrant", "config": { "path": "~/.hermes/mem0_qdrant" } }
+  }
+}
+```
+
+- `embedding_dims` must match the embedding model (4096 for
+  `Qwen/Qwen3-Embedding-8B`) so the vector collection is sized correctly.
+- Prefer `Qwen/Qwen3-Embedding-8B` on Telnyx: when `embedding_dims` is set,
+  mem0 sends OpenAI's `dimensions` request parameter, which Telnyx's other
+  embedding models (`thenlper/gte-large`, `intfloat/multilingual-e5-large`)
+  reject.
+- To use Telnyx as the main agent's inference provider too, see
+  [Providers → Other Compatible Providers](../../integrations/providers.md#other-compatible-providers).
+
 **Switching modes:** Re-run `hermes memory setup mem0 --mode <platform|selfhosted|oss>` or edit `mem0.json` directly.
 
 ---

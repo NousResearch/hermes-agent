@@ -1364,6 +1364,102 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Optional per-board completion governance. These tables are empty on legacy
+-- boards. Presence of ANY policy/activation/binding row opts the database into
+-- fail-closed mode; the kernel guard validates their exact content and hashes.
+CREATE TABLE IF NOT EXISTS completion_governance_policy (
+    policy_version TEXT PRIMARY KEY,
+    policy_json    TEXT NOT NULL,
+    policy_sha256  TEXT NOT NULL,
+    created_at     INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS completion_governance_activation (
+    singleton_id       INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+    activation_json    TEXT NOT NULL,
+    activation_sha256  TEXT NOT NULL,
+    updated_at         INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS completion_governance_bindings (
+    native_task_id  TEXT PRIMARY KEY,
+    binding_json    TEXT NOT NULL,
+    binding_sha256  TEXT NOT NULL,
+    created_at      INTEGER NOT NULL
+);
+
+-- Transaction-local permit consumed by the persistent trigger. The guarded
+-- helper inserts and removes it inside the same BEGIN IMMEDIATE transaction,
+-- so no committed permit survives. This blocks accidental/direct SQL that
+-- skips the kernel helper; same-UID arbitrary code remains an OS boundary.
+CREATE TABLE IF NOT EXISTS completion_governance_permits (
+    native_task_id TEXT PRIMARY KEY,
+    result         TEXT,
+    created_at     INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS completion_governance_receipts (
+    receipt_sha256       TEXT PRIMARY KEY,
+    native_task_id       TEXT NOT NULL UNIQUE,
+    external_task_id     TEXT NOT NULL,
+    native_run_id        INTEGER NOT NULL,
+    result_run_id        TEXT NOT NULL,
+    policy_version       TEXT NOT NULL,
+    policy_sha256        TEXT NOT NULL,
+    activation_sha256    TEXT NOT NULL,
+    binding_sha256       TEXT NOT NULL,
+    task_envelope_sha256 TEXT NOT NULL,
+    result_sha256        TEXT NOT NULL,
+    runtime_profile      TEXT NOT NULL,
+    receipt_json         TEXT NOT NULL,
+    created_at           INTEGER NOT NULL
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_governed_completion_requires_permit
+BEFORE UPDATE OF status ON tasks
+WHEN NEW.status = 'done'
+ AND OLD.status <> 'done'
+ AND (
+      EXISTS (SELECT 1 FROM completion_governance_policy)
+   OR EXISTS (SELECT 1 FROM completion_governance_activation)
+   OR EXISTS (SELECT 1 FROM completion_governance_bindings)
+ )
+ AND NOT EXISTS (
+     SELECT 1 FROM completion_governance_permits
+      WHERE native_task_id = NEW.id
+        AND result IS NEW.result
+ )
+BEGIN
+    SELECT RAISE(ABORT, 'governed completion requires a kernel permit');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_governed_completed_result_immutable
+BEFORE UPDATE OF result ON tasks
+WHEN OLD.status = 'done'
+ AND NEW.status = 'done'
+ AND OLD.result IS NOT NEW.result
+ AND (
+      EXISTS (SELECT 1 FROM completion_governance_policy)
+   OR EXISTS (SELECT 1 FROM completion_governance_activation)
+   OR EXISTS (SELECT 1 FROM completion_governance_bindings)
+ )
+BEGIN
+    SELECT RAISE(ABORT, 'governed completed results are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_governed_completed_task_no_reopen
+BEFORE UPDATE OF status ON tasks
+WHEN OLD.status = 'done'
+ AND NEW.status <> 'done'
+ AND (
+      EXISTS (SELECT 1 FROM completion_governance_policy)
+   OR EXISTS (SELECT 1 FROM completion_governance_activation)
+   OR EXISTS (SELECT 1 FROM completion_governance_bindings)
+ )
+BEGIN
+    SELECT RAISE(ABORT, 'governed completed tasks cannot be reopened');
+END;
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -1374,6 +1470,8 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_completion_receipts_external
+    ON completion_governance_receipts(external_task_id);
 """
 
 
@@ -4842,6 +4940,7 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    completion_context=None,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
 
@@ -4873,12 +4972,16 @@ def complete_task(
     """
     now = int(time.time())
 
+    from hermes_cli.kanban_completion_guard import governance_rows_present
+
+    governed_before_txn = governance_rows_present(conn)
+
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
     # tiny dedicated txn, then raise. The caller is responsible for
     # surfacing HallucinatedCardsError to the worker; this function
     # never mutates task state on a phantom-card rejection.
-    if created_cards:
+    if created_cards and not governed_before_txn:
         verified_cards, phantom_cards = _verify_created_cards(
             conn, task_id, created_cards
         )
@@ -4903,7 +5006,40 @@ def complete_task(
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
+    staged_artifacts_for_rollback: list[Path] = []
     with write_txn(conn):
+        from hermes_cli.kanban_completion_guard import (
+            CompletionGovernanceDenied,
+            authorize_completion,
+            insert_completion_permit,
+            insert_completion_receipt,
+            remove_completion_permit,
+        )
+
+        authorization = authorize_completion(
+            conn,
+            task_id,
+            result=result,
+            expected_run_id=expected_run_id,
+            completion_context=completion_context,
+        )
+        if authorization is not None:
+            # Re-check card provenance under the same BEGIN IMMEDIATE snapshot
+            # as policy evaluation and the final task-state CAS.
+            if created_cards:
+                verified_cards, phantom_cards = _verify_created_cards(
+                    conn, task_id, created_cards
+                )
+                if phantom_cards:
+                    raise CompletionGovernanceDenied(
+                        "governed completion denied: created_cards provenance mismatch"
+                    )
+            insert_completion_permit(
+                conn,
+                authorization,
+                result=result,
+                created_at=now,
+            )
         if expected_run_id is None:
             cur = conn.execute(
                 """
@@ -4940,11 +5076,14 @@ def complete_task(
                 (result, now, task_id, int(expected_run_id)),
             )
         if cur.rowcount != 1:
+            if authorization is not None:
+                remove_completion_permit(conn, task_id)
             return False
         if isinstance(metadata, dict):
             _persist_scratch_completion_artifacts(conn, task_id, metadata)
             for stored_path in metadata.pop("_staged_artifacts", []):
                 path = Path(stored_path)
+                staged_artifacts_for_rollback.append(path)
                 _insert_completion_attachment(
                     conn,
                     task_id,
@@ -4970,6 +5109,32 @@ def complete_task(
                 summary=summary if summary is not None else result,
                 metadata=metadata,
             )
+        governance_receipt: Optional[dict] = None
+        if authorization is not None:
+            if run_id is None:
+                raise CompletionGovernanceDenied(
+                    "governed completion denied: native run was not finalized"
+                )
+            try:
+                governance_receipt = insert_completion_receipt(
+                    conn,
+                    authorization,
+                    native_run_id=run_id,
+                    created_at=now,
+                )
+            except Exception:
+                # SQLite rollback cannot undo files copied from a scratch
+                # workspace. Remove only copies staged by this completion.
+                for staged_path in reversed(staged_artifacts_for_rollback):
+                    try:
+                        staged_path.unlink(missing_ok=True)
+                    except OSError:
+                        _log.warning(
+                            "completion rollback could not remove staged artifact %s",
+                            staged_path,
+                        )
+                raise
+            remove_completion_permit(conn, task_id)
         # Carry the handoff summary in the event payload so gateway
         # notifiers and dashboard WS consumers can render it without a
         # second SQL round-trip. First line only, 400 char cap — the
@@ -4980,6 +5145,10 @@ def complete_task(
             "result_len": len(result) if result else 0,
             "summary": ev_summary or None,
         }
+        if governance_receipt is not None:
+            completed_payload["governance_receipt_sha256"] = (
+                governance_receipt["receipt_sha256"]
+            )
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
         # Carry artifact paths in the event payload so the gateway
@@ -5559,6 +5728,11 @@ def edit_completed_task_result(
     """Backfill the user-visible result for an already completed task."""
     handoff_summary = summary if summary is not None else result
     with write_txn(conn):
+        from hermes_cli.kanban_completion_guard import (
+            assert_completed_result_mutable,
+        )
+
+        assert_completed_result_mutable(conn, task_id)
         row = conn.execute(
             "SELECT status FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
@@ -9038,6 +9212,51 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+def _apply_governed_worker_isolation(
+    env: dict[str, str],
+    isolation: Optional[dict],
+) -> Optional[list[str]]:
+    """Pin a governed worker to a no-network Docker terminal surface.
+
+    The model-facing process keeps only ``terminal`` plus the lifecycle Kanban
+    tools automatically added for ``HERMES_KANBAN_TASK``. The terminal tool
+    itself sees the marker below and ignores profile/env attempts to restore a
+    local backend, arbitrary volumes, credentials, network, or container reuse.
+    """
+
+    if isolation is None:
+        return None
+    if set(isolation) != {
+        "mode",
+        "network",
+        "toolsets",
+        "mount_hermes_resources",
+        "broker_socket",
+    } or any(
+        (
+            isolation.get("mode") != "docker",
+            isolation.get("network") is not False,
+            isolation.get("toolsets") != ["terminal"],
+            isolation.get("mount_hermes_resources") is not False,
+            not isinstance(isolation.get("broker_socket"), str),
+            not os.path.isabs(str(isolation.get("broker_socket", ""))),
+        )
+    ):
+        raise RuntimeError("governed worker isolation contract is invalid")
+    env["HERMES_KANBAN_ISOLATED_WORKER"] = "1"
+    env["TERMINAL_ENV"] = "docker"
+    env["TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE"] = "true"
+    env["TERMINAL_DOCKER_NETWORK"] = "false"
+    env["TERMINAL_CONTAINER_PERSISTENT"] = "false"
+    env["TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES"] = "false"
+    env["TERMINAL_DOCKER_FORWARD_ENV"] = "[]"
+    env["TERMINAL_DOCKER_VOLUMES"] = "[]"
+    env["TERMINAL_DOCKER_ENV"] = "{}"
+    env["TERMINAL_DOCKER_EXTRA_ARGS"] = "[]"
+    env["HERMES_KANBAN_BROKER_SOCKET"] = str(isolation["broker_socket"])
+    return ["terminal"]
+
+
 _retagged_workspace_roots: set[str] = set()
 
 
@@ -9182,6 +9401,11 @@ def _default_spawn(
     # board slug still forces it to the right directory.
     resolved_board = _normalize_board_slug(board) or get_current_board()
     env["HERMES_KANBAN_BOARD"] = resolved_board
+
+    from hermes_cli.kanban_completion_guard import load_worker_isolation
+
+    with connect(board=board) as governance_conn:
+        worker_isolation = load_worker_isolation(governance_conn)
     # HERMES_PROFILE is the author the kanban_comment tool defaults to.
     # `hermes -p <assignee>` activates the profile, but the env var is
     # what the tool reads — set it explicitly here so comments are
@@ -9228,7 +9452,9 @@ def _default_spawn(
     # branch, not a nested one.
     if task.reasoning_effort:
         cmd.extend(["--reasoning", task.reasoning_effort])
-    worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
+    worker_toolsets = _apply_governed_worker_isolation(env, worker_isolation)
+    if worker_toolsets is None:
+        worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
     cmd.extend([

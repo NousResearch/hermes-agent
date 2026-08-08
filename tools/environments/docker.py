@@ -887,6 +887,7 @@ class DockerEnvironment(BaseEnvironment):
         extra_args: list = None,
         persist_across_processes: bool = True,
         shm_size: str = _DEFAULT_SHM_SIZE,
+        mount_hermes_resources: bool = True,
     ):
         if cwd == "~":
             cwd = "/root"
@@ -1005,8 +1006,11 @@ class DockerEnvironment(BaseEnvironment):
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
 
         # Mount credential files (OAuth tokens, etc.) declared by skills.
-        # Read-only so the container can authenticate but not modify host creds.
+        # Governed Kanban workers disable this entire block: the container gets
+        # only its task workspace and no profile credentials, skills, or cache.
         try:
+            if not mount_hermes_resources:
+                raise StopIteration
             from tools.credential_files import (
                 get_credential_file_mounts,
                 get_skills_directory_mount,
@@ -1081,6 +1085,8 @@ class DockerEnvironment(BaseEnvironment):
                     cache_mount["host_path"],
                     cache_mount["container_path"],
                 )
+        except StopIteration:
+            logger.info("Docker: Hermes resource mounts disabled by isolation policy")
         except Exception as e:
             logger.debug("Docker: could not load credential file mounts: %s", e)
 
@@ -1088,9 +1094,12 @@ class DockerEnvironment(BaseEnvironment):
         # mount the CA cert into the sandbox and set HTTPS_PROXY + CA-bundle
         # env vars so outbound traffic routes through the host-side proxy.
         # The sandbox receives PROXY tokens instead of real API keys.
-        egress_volume_args, egress_env_overrides, egress_host_args = (
-            _egress_proxy_args_for_docker()
-        )
+        if mount_hermes_resources:
+            egress_volume_args, egress_env_overrides, egress_host_args = (
+                _egress_proxy_args_for_docker()
+            )
+        else:
+            egress_volume_args, egress_env_overrides, egress_host_args = [], {}, []
         egress_label = _egress_reuse_fingerprint(
             egress_volume_args, egress_env_overrides, egress_host_args,
         )

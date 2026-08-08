@@ -1455,9 +1455,14 @@ def _get_env_config() -> Dict[str, Any]:
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
     _ensure_terminal_env_bridged()
-    env_type = os.getenv("TERMINAL_ENV", "local")
+    isolated_kanban_worker = (
+        os.getenv("HERMES_KANBAN_ISOLATED_WORKER", "").strip() == "1"
+    )
+    env_type = "docker" if isolated_kanban_worker else os.getenv("TERMINAL_ENV", "local")
     
-    mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
+    mount_docker_cwd = isolated_kanban_worker or os.getenv(
+        "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false"
+    ).lower() in {"true", "1", "yes"}
     container_backend = env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
     docker_backend = env_type == "docker"
 
@@ -1486,6 +1491,13 @@ def _get_env_config() -> Dict[str, Any]:
         docker_env = {}
         docker_extra_args = []
         docker_shm_size = "1g"
+
+    if isolated_kanban_worker:
+        # Profile config and inherited env must not reopen host/network access.
+        docker_forward_env = []
+        docker_volumes = []
+        docker_env = {}
+        docker_extra_args = []
 
     # Default cwd: local uses the host's current directory, ssh uses the
     # remote home, Vercel uses its documented workspace root, and everything
@@ -1528,7 +1540,11 @@ def _get_env_config() -> Dict[str, Any]:
     return {
         "env_type": env_type,
         "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
-        "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
+        "docker_image": (
+            default_image
+            if isolated_kanban_worker
+            else os.getenv("TERMINAL_DOCKER_IMAGE", default_image)
+        ),
         "docker_forward_env": docker_forward_env,
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
@@ -1557,11 +1573,27 @@ def _get_env_config() -> Dict[str, Any]:
         "container_cpu": container_cpu,
         "container_memory": container_memory,     # MB (default 5GB)
         "container_disk": container_disk,        # MB (default 50GB)
-        "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
+        "container_persistent": (
+            False
+            if isolated_kanban_worker
+            else os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower()
+            in {"true", "1", "yes"}
+        ),
         "docker_volumes": docker_volumes,
         "docker_env": docker_env,
-        "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
-        "docker_network": os.getenv("TERMINAL_DOCKER_NETWORK", "true").lower() in {"true", "1", "yes"},
+        "docker_run_as_host_user": (
+            False
+            if isolated_kanban_worker
+            else os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower()
+            in {"true", "1", "yes"}
+        ),
+        "docker_network": (
+            False
+            if isolated_kanban_worker
+            else os.getenv("TERMINAL_DOCKER_NETWORK", "true").lower()
+            in {"true", "1", "yes"}
+        ),
+        "docker_mount_hermes_resources": not isolated_kanban_worker,
         "docker_extra_args": docker_extra_args,
         "docker_shm_size": docker_shm_size,
         # Cross-process container reuse (issue #20561).  The docs claim
@@ -1570,16 +1602,23 @@ def _get_env_config() -> Dict[str, Any]:
         # attaching to it instead of always starting a fresh one.  Set to
         # ``false`` for hard per-process isolation (no reuse, container is
         # removed on exit).
-        "docker_persist_across_processes": os.getenv(
-            "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "true"
-        ).lower() in {"true", "1", "yes"},
+        "docker_persist_across_processes": (
+            False
+            if isolated_kanban_worker
+            else os.getenv(
+                "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "true"
+            ).lower() in {"true", "1", "yes"}
+        ),
         # Startup orphan reaper for hermes-tagged containers left behind by
         # crashed / SIGKILL'd previous processes that bypassed atexit.
         # Conservative: only sweeps Exited containers older than 2× the
         # idle-reap window AND scoped to the current profile. Issue #20561.
-        "docker_orphan_reaper": os.getenv(
-            "TERMINAL_DOCKER_ORPHAN_REAPER", "true"
-        ).lower() in {"true", "1", "yes"},
+        "docker_orphan_reaper": (
+            False
+            if isolated_kanban_worker
+            else os.getenv("TERMINAL_DOCKER_ORPHAN_REAPER", "true").lower()
+            in {"true", "1", "yes"}
+        ),
     }
 
 
@@ -1692,6 +1731,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             extra_args=docker_extra_args,
             persist_across_processes=cc.get("docker_persist_across_processes", True),
             shm_size=cc.get("docker_shm_size", "1g"),
+            mount_hermes_resources=cc.get("docker_mount_hermes_resources", True),
         )
     
     elif env_type == "singularity":

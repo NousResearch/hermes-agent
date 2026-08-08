@@ -1,0 +1,43 @@
+[Unit]
+Description=Hermes governed Kanban completion DB broker (candidate)
+Documentation=file:///opt/hermes-agent/docs/security/kanban-completion-governance-candidate.md
+After=local-fs.target
+ConditionPathExists=/etc/hermes-kanban-broker/config.json
+
+[Service]
+Type=simple
+User=hermes-kanban-broker
+Group=hermes-kanban-clients
+UMask=0007
+RuntimeDirectory=hermes-kanban-broker
+RuntimeDirectoryMode=0750
+StateDirectory=hermes-kanban
+StateDirectoryMode=0700
+ExecStart=/opt/hermes-agent/venv/bin/python -m hermes_cli.kanban_completion_broker --config /etc/hermes-kanban-broker/config.json
+Restart=on-failure
+RestartSec=2s
+
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+ReadWritePaths=/run/hermes-kanban-broker /var/lib/hermes-kanban
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

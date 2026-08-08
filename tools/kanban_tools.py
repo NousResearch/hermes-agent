@@ -720,6 +720,44 @@ def _handle_complete(args: dict, **kw) -> str:
             f"metadata must be an object/dict, got {type(metadata).__name__}"
         )
     metadata = _stamp_worker_session_metadata(tid, metadata)
+    broker_socket = os.environ.get("HERMES_KANBAN_BROKER_SOCKET", "").strip()
+    if broker_socket:
+        import secrets
+        from pathlib import Path
+
+        from hermes_cli.kanban_completion_broker import request_completion
+
+        worker_run_id = _worker_run_id(tid)
+        worker_profile = os.environ.get("HERMES_PROFILE", "").strip()
+        if worker_run_id is None or not worker_profile:
+            return tool_error(
+                "kanban_complete: broker mode requires dispatcher-bound profile and run identity"
+            )
+        response = request_completion(
+            Path(broker_socket),
+            {
+                "version": "1.0.0",
+                "operation": "complete",
+                "request_id": f"{tid}:{worker_run_id}:{secrets.token_hex(8)}",
+                "profile": worker_profile,
+                "task_id": tid,
+                "run_id": worker_run_id,
+                "result": result,
+                "summary": summary,
+                "metadata": metadata,
+                "created_cards": created_cards,
+            },
+        )
+        if response.get("ok") is not True or response.get("completed") is not True:
+            return tool_error(
+                f"kanban_complete broker denied completion: "
+                f"{response.get('error') or response.get('code') or 'unknown error'}"
+            )
+        return _ok(
+            task_id=tid,
+            run_id=worker_run_id,
+            governance_receipt_sha256=response.get("receipt_sha256"),
+        )
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -761,11 +799,24 @@ def _handle_complete(args: dict, **kw) -> str:
                     )
 
             try:
+                from hermes_cli.kanban_completion_guard import CompletionContext
+
+                worker_run_id = _worker_run_id(tid)
+                worker_profile = os.environ.get("HERMES_PROFILE", "").strip()
+                completion_context = None
+                if worker_run_id is not None and worker_profile:
+                    completion_context = CompletionContext(
+                        caller_profile=worker_profile,
+                        native_task_id=tid,
+                        native_run_id=worker_run_id,
+                        source="worker-tool",
+                    )
                 ok = kb.complete_task(
                     conn, tid,
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
-                    expected_run_id=_worker_run_id(tid),
+                    expected_run_id=worker_run_id,
+                    completion_context=completion_context,
                 )
             except kb.ArtifactPreservationError as artifact_err:
                 return tool_error(

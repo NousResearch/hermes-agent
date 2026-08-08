@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0.0",
+  "db_path": "/var/lib/hermes-kanban/hghome-aios/kanban.db",
+  "socket_path": "/run/hermes-kanban-broker/completion.sock",
+  "uid_profiles": {
+    "21001": ["hghome-backend"],
+    "21002": ["hghome-frontend"],
+    "21003": ["hghome-qa"]
+  },
+  "socket_mode": "0660",
+  "request_timeout_seconds": 10
+}

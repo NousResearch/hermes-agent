@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Any, Callable, TYPE_CHECKING
 
 from plugins.memory.honcho.client import get_honcho_client
-from plugins.memory.honcho.oauth import _redact_tokens
+from plugins.memory.honcho.oauth import redact_tokens as _redact_tokens
 
 if TYPE_CHECKING:
     from honcho import Honcho
@@ -150,6 +150,10 @@ class HonchoSessionManager:
         self._cache_lock = threading.RLock()
         self._peers_cache: dict[str, Any] = {}
         self._sessions_cache: dict[str, Any] = {}
+        # Bumped (under _cache_lock) whenever _force_reauth rebuilds the client.
+        # In-flight resolvers compare it around their SDK fetch so an object
+        # bound to the discarded client is never stored into the fresh cache.
+        self._client_generation = 0
 
         # Set when a call still fails auth after a forced token refresh; cleared on the next success.
         self._auth_failure: str | None = None
@@ -241,6 +245,12 @@ class HonchoSessionManager:
         """
         try:
             from plugins.memory.honcho import oauth
+
+            # Fast path: no grant in this process is dead — skip config-path
+            # resolution entirely (this runs before every SDK call).
+            if not oauth.any_dead_grants():
+                return False
+
             from plugins.memory.honcho.client import resolve_config_path
 
             host = getattr(self._config, "host", "") or ""
@@ -272,6 +282,7 @@ class HonchoSessionManager:
                 # SDK shape changed: rebuild the client and drop objects holding the old transport.
                 reset_honcho_client()
                 with self._cache_lock:
+                    self._client_generation += 1
                     self._peers_cache.clear()
                     self._sessions_cache.clear()
             return True
@@ -315,25 +326,32 @@ class HonchoSessionManager:
 
     def _sdk_session(self, session_id: str) -> Any:
         """Get or create the SDK session; a client rebuild clears the cache, so re-fetch."""
-        with self._cache_lock:
-            cached = self._sessions_cache.get(session_id)
-        if cached is not None:
-            return cached
-        sdk_session = self.honcho.session(session_id)
-        with self._cache_lock:
-            self._sessions_cache[session_id] = sdk_session
-        return sdk_session
+        while True:
+            with self._cache_lock:
+                cached = self._sessions_cache.get(session_id)
+                generation = self._client_generation
+            if cached is not None:
+                return cached
+            sdk_session = self.honcho.session(session_id)
+            with self._cache_lock:
+                if self._client_generation == generation:
+                    return self._sessions_cache.setdefault(session_id, sdk_session)
+            # The client was rebuilt while we resolved; this object holds the
+            # discarded transport. Don't cache it — resolve afresh.
 
     def _get_or_create_peer(self, peer_id: str) -> Any:
         """Get or create a Honcho peer (one get-or-create API call, then cached)."""
-        with self._cache_lock:
-            if peer_id in self._peers_cache:
-                return self._peers_cache[peer_id]
+        while True:
+            with self._cache_lock:
+                if peer_id in self._peers_cache:
+                    return self._peers_cache[peer_id]
+                generation = self._client_generation
 
-        peer = self._authed_call("peer setup", lambda: self.honcho.peer(peer_id))
-        with self._cache_lock:
-            self._peers_cache[peer_id] = peer
-        return peer
+            peer = self._authed_call("peer setup", lambda: self.honcho.peer(peer_id))
+            with self._cache_lock:
+                if self._client_generation == generation:
+                    return self._peers_cache.setdefault(peer_id, peer)
+            # Client rebuilt mid-resolve — drop the stale object and retry.
 
     def _get_or_create_honcho_session(
         self, session_id: str, user_peer: Any, assistant_peer: Any

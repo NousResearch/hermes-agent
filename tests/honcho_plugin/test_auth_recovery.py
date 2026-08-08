@@ -985,3 +985,164 @@ class TestInitAuthFailureNotice:
 
         out = provider.handle_tool_call("honcho_profile", {})
         assert "could not be initialized" in out
+
+
+# ---------------------------------------------------------------------------
+# hardening: exchange budget, failure cooldown, client-generation cache guard
+# ---------------------------------------------------------------------------
+
+
+class TestExchangeBudget:
+    def test_timed_out_first_attempt_skips_retry_when_budget_spent(self, tmp_path, monkeypatch):
+        """A first attempt that consumed the whole budget must not start a
+        second full-timeout exchange while holding the global refresh locks."""
+        path = tmp_path / "honcho.json"
+        _write(path, {"hosts": {"hermes": _host_block()}})
+        monkeypatch.setattr(oauth, "_REFRESH_RETRY_DELAY_SECONDS", 0)
+
+        calls = []
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(oauth.time, "monotonic", lambda: clock["now"])
+
+        def slow_timeout(url, data, timeout):
+            calls.append(timeout)
+            clock["now"] += oauth._REFRESH_TOTAL_BUDGET_SECONDS + 1
+            raise TimeoutError("token exchange timed out")
+
+        monkeypatch.setattr(oauth, "_http_post_form_status", slow_timeout)
+        token, refreshed = oauth.ensure_fresh_token(path, "hermes", now=1000)
+
+        assert token == "hch-at-old" and refreshed is False
+        assert len(calls) == 1  # no second exchange after the budget is gone
+
+    def test_fast_failure_retry_gets_remaining_budget(self, tmp_path, monkeypatch):
+        path = tmp_path / "honcho.json"
+        _write(path, {"hosts": {"hermes": _host_block()}})
+        monkeypatch.setattr(oauth, "_REFRESH_RETRY_DELAY_SECONDS", 0)
+
+        timeouts = []
+
+        def flaky(url, data, timeout):
+            timeouts.append(timeout)
+            if len(timeouts) == 1:
+                raise ConnectionError("reset")
+            return 200, _rotated_body()
+
+        monkeypatch.setattr(oauth, "_http_post_form_status", flaky)
+        token, refreshed = oauth.ensure_fresh_token(path, "hermes", now=1000)
+
+        assert refreshed is True and token == "hch-at-new1"
+        assert len(timeouts) == 2
+        # Retry timeout is bounded by both the per-attempt cap and the budget.
+        assert 0 < timeouts[1] <= oauth._REFRESH_TIMEOUT_SECONDS
+
+
+class TestFailureCooldown:
+    def test_repeated_calls_within_cooldown_do_not_reexchange(self, tmp_path, monkeypatch):
+        """After a transient failure, waiting callers fail open instead of
+        serializing their own full exchange cycles (dogpile guard)."""
+        path = tmp_path / "honcho.json"
+        _write(path, {"hosts": {"hermes": _host_block()}})
+        monkeypatch.setattr(oauth, "_REFRESH_RETRY_DELAY_SECONDS", 0)
+
+        calls = []
+
+        def boom(*a, **k):
+            calls.append(1)
+            raise ConnectionError("network down")
+
+        monkeypatch.setattr(oauth, "_http_post_form_status", boom)
+        oauth.ensure_fresh_token(path, "hermes", now=1000)
+        assert len(calls) == 2  # first attempt + its one retry
+
+        # Subsequent callers inside the cooldown window skip the endpoint.
+        for _ in range(3):
+            token, refreshed = oauth.ensure_fresh_token(path, "hermes", now=1000)
+            assert token == "hch-at-old" and refreshed is False
+        assert oauth.force_refresh_token(path, "hermes") is None
+        assert len(calls) == 2
+
+        # After the cooldown expires the exchange is attempted again.
+        key = (str(path), "hermes")
+        oauth._refresh_failure_at[key] -= oauth._REFRESH_FAILURE_COOLDOWN_SECONDS + 1
+        oauth.ensure_fresh_token(path, "hermes", now=1000)
+        assert len(calls) == 4
+
+    def test_relogin_clears_the_cooldown(self, tmp_path, monkeypatch):
+        path = tmp_path / "honcho.json"
+        _write(path, {"hosts": {"hermes": _host_block()}})
+        monkeypatch.setattr(oauth, "_REFRESH_RETRY_DELAY_SECONDS", 0)
+
+        def boom(*a, **k):
+            raise ConnectionError("network down")
+
+        monkeypatch.setattr(oauth, "_http_post_form_status", boom)
+        oauth.ensure_fresh_token(path, "hermes", now=1000)
+        assert oauth._in_failure_cooldown((str(path), "hermes")) is True
+
+        _relogin(path)
+        assert oauth._in_failure_cooldown((str(path), "hermes")) is False
+
+    def test_successful_rotation_clears_the_cooldown(self, tmp_path, monkeypatch):
+        path = tmp_path / "honcho.json"
+        _write(path, {"hosts": {"hermes": _host_block()}})
+        monkeypatch.setattr(oauth, "_REFRESH_RETRY_DELAY_SECONDS", 0)
+        key = (str(path), "hermes")
+        oauth._refresh_failure_at[key] = (
+            oauth.time.monotonic() - oauth._REFRESH_FAILURE_COOLDOWN_SECONDS - 1
+        )
+        monkeypatch.setattr(
+            oauth, "_http_post_form_status", lambda *a, **k: (200, _rotated_body())
+        )
+        token, refreshed = oauth.ensure_fresh_token(path, "hermes", now=1000)
+        assert refreshed is True
+        assert key not in oauth._refresh_failure_at
+
+
+class TestClientGenerationGuard:
+    def test_stale_object_resolved_across_rebuild_is_not_cached(self, monkeypatch):
+        """A resolver that fetched from the OLD client must not store its
+        object into the cache after _force_reauth rebuilt the client."""
+        from plugins.memory.honcho import session as session_mod
+
+        cfg = HonchoClientConfig(host="hermes", api_key="hch-at-x", enabled=True)
+        mgr = HonchoSessionManager(config=cfg)
+
+        stale_session = object()
+        fresh_session = object()
+        resolutions = []
+
+        class _Client:
+            def session(self, sid):
+                # First resolve returns the stale object and simulates a
+                # concurrent rebuild landing mid-flight; the retry gets fresh.
+                if not resolutions:
+                    resolutions.append("stale")
+                    with mgr._cache_lock:
+                        mgr._client_generation += 1
+                        mgr._sessions_cache.clear()
+                    return stale_session
+                resolutions.append("fresh")
+                return fresh_session
+
+        client = _Client()
+        monkeypatch.setattr(session_mod, "get_honcho_client", lambda *a, **k: client)
+        got = mgr._sdk_session("s")
+        assert got is fresh_session
+        assert mgr._sessions_cache["s"] is fresh_session
+        assert resolutions == ["stale", "fresh"]
+
+    def test_dead_grant_check_fast_path_skips_path_resolution(self, monkeypatch):
+        """With no dead grants, _reauth_required must not resolve the config
+        path at all (it runs before every SDK call)."""
+        from plugins.memory.honcho import client as client_mod
+
+        oauth._dead_grants.clear()
+
+        def _fail():
+            raise AssertionError("resolve_config_path must not run on the fast path")
+
+        monkeypatch.setattr(client_mod, "resolve_config_path", _fail)
+        cfg = HonchoClientConfig(host="hermes", api_key="hch-at-x", enabled=True)
+        mgr = HonchoSessionManager(config=cfg)
+        assert mgr._reauth_required() is False

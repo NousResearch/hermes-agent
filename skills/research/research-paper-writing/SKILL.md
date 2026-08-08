@@ -1276,58 +1276,7 @@ For converting between venues, see Phase 7 (Submission Preparation) — it cover
 
 ### Professional LaTeX Preamble
 
-Add these packages to any paper for professional quality. They are compatible with all major conference style files:
-
-```latex
-% --- Professional Packages (add after conference style file) ---
-
-% Typography
-\usepackage{microtype}              % Microtypographic improvements (protrusion, expansion)
-                                     % Makes text noticeably more polished — always include
-
-% Tables
-\usepackage{booktabs}               % Professional table rules (\toprule, \midrule, \bottomrule)
-\usepackage{siunitx}                % Consistent number formatting, decimal alignment
-                                     % Usage: \num{12345} → 12,345; \SI{3.5}{GHz} → 3.5 GHz
-                                     % Table alignment: S column type for decimal-aligned numbers
-
-% Figures
-\usepackage{graphicx}               % Include graphics (\includegraphics)
-\usepackage{subcaption}             % Subfigures with (a), (b), (c) labels
-                                     % Usage: \begin{subfigure}{0.48\textwidth} ... \end{subfigure}
-
-% Diagrams and Algorithms
-\usepackage{tikz}                   % Programmable vector diagrams
-\usetikzlibrary{arrows.meta, positioning, shapes.geometric, calc, fit, backgrounds}
-\usepackage[ruled,vlined]{algorithm2e}  % Professional pseudocode
-                                     % Alternative: \usepackage{algorithmicx} if template bundles it
-
-% Cross-references
-\usepackage{cleveref}               % Smart references: \cref{fig:x} → "Figure 1"
-                                     % MUST be loaded AFTER hyperref
-                                     % Handles: figures, tables, sections, equations, algorithms
-
-% Math (usually included by conference .sty, but verify)
-\usepackage{amsmath,amssymb}        % AMS math environments and symbols
-\usepackage{mathtools}              % Extends amsmath (dcases, coloneqq, etc.)
-
-% Colors (for figures and diagrams)
-\usepackage{xcolor}                 % Color management
-% Okabe-Ito colorblind-safe palette:
-\definecolor{okblue}{HTML}{0072B2}
-\definecolor{okorange}{HTML}{E69F00}
-\definecolor{okgreen}{HTML}{009E73}
-\definecolor{okred}{HTML}{D55E00}
-\definecolor{okpurple}{HTML}{CC79A7}
-\definecolor{okcyan}{HTML}{56B4E9}
-\definecolor{okyellow}{HTML}{F0E442}
-```
-
-**Notes:**
-- `microtype` is the single highest-impact package for visual quality. It adjusts character spacing at a sub-pixel level. Always include it.
-- `siunitx` handles decimal alignment in tables via the `S` column type — eliminates manual spacing.
-- `cleveref` must be loaded **after** `hyperref`. Most conference .sty files load hyperref, so put cleveref last.
-- Check if the conference template already loads any of these (especially `algorithm`, `amsmath`, `graphicx`). Don't double-load.
+Add these packages to any paper for professional quality (compatible with all major conference style files). Full preamble, notes, and Okabe-Ito colorblind-safe palette: see [`references/latex-preamble.md`](references/latex-preamble.md).
 
 ### siunitx Table Alignment
 
@@ -1405,80 +1354,7 @@ $\text{streak} \gets 0$\;
 
 ### TikZ Diagram Patterns
 
-TikZ is the standard for method diagrams in ML papers. Common patterns:
-
-**Pipeline/Flow Diagram** (most common in ML papers):
-
-```latex
-\begin{figure}[t]
-\centering
-\begin{tikzpicture}[
-  node distance=1.8cm,
-  box/.style={rectangle, draw, rounded corners, minimum height=1cm, 
-              minimum width=2cm, align=center, font=\small},
-  arrow/.style={-{Stealth[length=3mm]}, thick},
-]
-  \node[box, fill=okcyan!20] (input) {Input\\$x$};
-  \node[box, fill=okblue!20, right of=input] (encoder) {Encoder\\$f_\theta$};
-  \node[box, fill=okgreen!20, right of=encoder] (latent) {Latent\\$z$};
-  \node[box, fill=okorange!20, right of=latent] (decoder) {Decoder\\$g_\phi$};
-  \node[box, fill=okred!20, right of=decoder] (output) {Output\\$\hat{x}$};
-  
-  \draw[arrow] (input) -- (encoder);
-  \draw[arrow] (encoder) -- (latent);
-  \draw[arrow] (latent) -- (decoder);
-  \draw[arrow] (decoder) -- (output);
-\end{tikzpicture}
-\caption{Architecture overview. The encoder maps input $x$ to latent 
-representation $z$, which the decoder reconstructs.}
-\label{fig:architecture}
-\end{figure}
-```
-
-**Comparison/Matrix Diagram** (for showing method variants):
-
-```latex
-\begin{tikzpicture}[
-  cell/.style={rectangle, draw, minimum width=2.5cm, minimum height=1cm, 
-               align=center, font=\small},
-  header/.style={cell, fill=gray!20, font=\small\bfseries},
-]
-  % Headers
-  \node[header] at (0, 0) {Method};
-  \node[header] at (3, 0) {Converges?};
-  \node[header] at (6, 0) {Quality?};
-  % Rows
-  \node[cell] at (0, -1) {Single Pass};
-  \node[cell, fill=okgreen!15] at (3, -1) {N/A};
-  \node[cell, fill=okorange!15] at (6, -1) {Baseline};
-  \node[cell] at (0, -2) {Critique+Revise};
-  \node[cell, fill=okred!15] at (3, -2) {No};
-  \node[cell, fill=okred!15] at (6, -2) {Degrades};
-  \node[cell] at (0, -3) {Ours};
-  \node[cell, fill=okgreen!15] at (3, -3) {Yes ($k$=2)};
-  \node[cell, fill=okgreen!15] at (6, -3) {Improves};
-\end{tikzpicture}
-```
-
-**Iterative Loop Diagram** (for methods with feedback):
-
-```latex
-\begin{tikzpicture}[
-  node distance=2cm,
-  box/.style={rectangle, draw, rounded corners, minimum height=0.8cm, 
-              minimum width=1.8cm, align=center, font=\small},
-  arrow/.style={-{Stealth[length=3mm]}, thick},
-  label/.style={font=\scriptsize, midway, above},
-]
-  \node[box, fill=okblue!20] (gen) {Generator};
-  \node[box, fill=okred!20, right=2.5cm of gen] (critic) {Critic};
-  \node[box, fill=okgreen!20, below=1.5cm of $(gen)!0.5!(critic)$] (judge) {Judge Panel};
-  
-  \draw[arrow] (gen) -- node[label] {output $A$} (critic);
-  \draw[arrow] (critic) -- node[label, right] {critique $C$} (judge);
-  \draw[arrow] (judge) -| node[label, left, pos=0.3] {winner} (gen);
-\end{tikzpicture}
-```
+TikZ is the standard for method diagrams in ML papers. Ready-to-use pipeline, comparison-matrix, and iterative-loop diagram templates: see [`references/tikz-patterns.md`](references/tikz-patterns.md).
 
 ### latexdiff for Revision Tracking
 

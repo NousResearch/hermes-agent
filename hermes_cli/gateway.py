@@ -1766,6 +1766,14 @@ def _windows_gateway_should_absorb_console_controls() -> bool:
 _SERVICE_BASE = "hermes-gateway"
 SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 
+# The gateway is a long-lived supervisor: messaging adapters, cron ticks, tool
+# subprocess pipes, temp files, SQLite handles, browser/web sockets, and logs all
+# consume file descriptors. macOS launchd user jobs inherit a tiny 256 soft
+# nofile limit by default, which can leave the gateway looking alive while cron
+# is functionally wedged once the process hits EMFILE. Keep service-managed
+# gateways above that desktop default on every service backend.
+GATEWAY_SERVICE_NOFILE_LIMIT = 4096
+
 
 def _profile_suffix() -> str:
     """Derive a service-name suffix from the current HERMES_HOME.
@@ -2931,6 +2939,7 @@ Environment="HERMES_HOME={hermes_home}"
 Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
+LimitNOFILE={GATEWAY_SERVICE_NOFILE_LIMIT}
 RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
@@ -2969,6 +2978,7 @@ Environment="HERMES_HOME={hermes_home}"
 Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
+LimitNOFILE={GATEWAY_SERVICE_NOFILE_LIMIT}
 RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
@@ -4165,6 +4175,18 @@ def generate_launchd_plist() -> str:
     
     <key>KeepAlive</key>
     <true/>
+
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>{GATEWAY_SERVICE_NOFILE_LIMIT}</integer>
+    </dict>
+
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>{GATEWAY_SERVICE_NOFILE_LIMIT}</integer>
+    </dict>
 
     <!-- ThrottleInterval raises launchd's default 10s minimum respawn interval
          to 30s so a crash-looping gateway can't hammer launchd into a rapid

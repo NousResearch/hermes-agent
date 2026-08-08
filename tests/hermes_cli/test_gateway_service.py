@@ -1,6 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
+import plistlib
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -189,6 +190,15 @@ class TestGeneratedSystemdUnits:
         return f"TimeoutStopSec={timeout}"
 
 
+    def test_generated_units_set_file_descriptor_limits(self):
+        # macOS launchd user jobs inherit a 256 soft RLIMIT_NOFILE; the
+        # systemd units get the same explicit floor so a long-lived gateway
+        # (adapters, cron, tool pipes, SQLite, sockets) can't silently wedge
+        # on EMFILE. Mirrors TestGeneratedLaunchdPlists'
+        # test_launchd_plist_sets_file_descriptor_limits.
+        for system in (False, True):
+            unit = gateway_cli.generate_systemd_unit(system=system)
+            assert f"LimitNOFILE={gateway_cli.GATEWAY_SERVICE_NOFILE_LIMIT}" in unit
 
     def test_user_unit_does_not_leak_profile_node_symlink_target(self, tmp_path, monkeypatch):
         # Regression for the multi-profile gateway restart-loop flap (#48700):
@@ -232,6 +242,20 @@ class TestGeneratedSystemdUnits:
         assert str(local_bin) in plist
         assert str(profile_node_bin) not in plist
 
+
+
+class TestGeneratedLaunchdPlists:
+    def test_launchd_plist_sets_file_descriptor_limits(self):
+        plist = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+
+        assert (
+            plist["SoftResourceLimits"]["NumberOfFiles"]
+            == gateway_cli.GATEWAY_SERVICE_NOFILE_LIMIT
+        )
+        assert (
+            plist["HardResourceLimits"]["NumberOfFiles"]
+            == gateway_cli.GATEWAY_SERVICE_NOFILE_LIMIT
+        )
 
 
 class TestGatewayStopCleanup:

@@ -379,10 +379,15 @@ def _probe_voice_duration_seconds(path: str) -> Optional[int]:
         import subprocess
 
         if shutil.which("ffprobe"):
+            # OS media helper — scrub credentials, same rule as the voice
+            # TTS/STT and playback subprocesses (#56332 / #70342).
+            from tools.environments.local import hermes_subprocess_env
+
             proc = subprocess.run(
                 ["ffprobe", "-v", "error", "-show_entries", "format=duration",
                  "-of", "default=noprint_wrappers=1:nokey=1", path],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+                env=hermes_subprocess_env(inherit_credentials=False),
             )
             if proc.returncode == 0:
                 return _coerce_duration_seconds(proc.stdout.strip())

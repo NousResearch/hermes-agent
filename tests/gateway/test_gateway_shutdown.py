@@ -1,4 +1,5 @@
 import asyncio
+import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -9,6 +10,48 @@ from gateway.platforms.base import MessageEvent
 from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
 from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
+
+
+def test_systemd_planned_restart_helper_bounds_stale_main_pid(monkeypatch):
+    """A wedged post-drain gateway must not leave the helper waiting forever."""
+    runner, _adapter = make_restart_runner()
+    runner._restart_drain_timeout = 12.9
+    monkeypatch.setenv("INVOCATION_ID", "systemd-test")
+    monkeypatch.setattr(gateway_run.sys, "platform", "linux")
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 4321)
+
+    def fake_which(name):
+        return f"/usr/bin/{name}"
+
+    def fake_run(argv, **_kwargs):
+        # The gateway belongs to the user unit, not the system unit.
+        stdout = "4321\n" if "--user" in argv else "0\n"
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    popen = MagicMock()
+    monkeypatch.setattr("shutil.which", fake_which)
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr("subprocess.Popen", popen)
+
+    runner._launch_systemd_restart_shortcut()
+
+    argv = popen.call_args.args[0]
+    assert argv[:3] == ["/usr/bin/systemd-run", "--user", "--collect"]
+    shell_cmd = argv[-1]
+    assert "deadline=$(( $(date +%s) + 17 ))" in shell_cmd
+    assert "kill -0 4321" in shell_cmd
+    assert "[ $(date +%s) -lt $deadline ]" in shell_cmd
+    assert (
+        'main_pid=$(/usr/bin/systemctl --user show hermes-gateway '
+        '--property=MainPID --value 2>/dev/null)' in shell_cmd
+    )
+    assert 'if [ "$main_pid" = "4321" ]' in shell_cmd
+    assert (
+        "/usr/bin/systemctl --user kill --kill-whom=main --signal=SIGKILL "
+        "hermes-gateway" in shell_cmd
+    )
+    assert shell_cmd.index("--signal=SIGKILL") < shell_cmd.index("reset-failed")
+    assert shell_cmd.index("reset-failed") < shell_cmd.index("restart hermes-gateway")
 
 
 @pytest.mark.asyncio
@@ -269,5 +312,4 @@ def test_pid_exists_zombie_via_psutil_returns_false(monkeypatch):
     monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
     assert status._pid_exists(4242) is False
-
 

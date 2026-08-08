@@ -10128,7 +10128,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         automatic restarts and can delay repeated /restart tests.  A transient
         user service survives our cgroup teardown and explicitly starts the
         gateway as soon as this PID exits, while the unit keeps its normal
-        backoff for real crash loops.
+        backoff for real crash loops. If the gateway finishes logical teardown
+        but its process remains wedged, the helper waits only through the
+        configured drain budget plus five seconds, verifies the stale PID is
+        still the service's MainPID, then force-kills it before restarting.
         """
         if sys.platform != "linux" or not os.environ.get("INVOCATION_ID"):
             return
@@ -10172,12 +10175,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             system_pid = _query_pid([])
             user_pid = _query_pid(["--user"])
+            systemctl_arg = shlex.quote(systemctl)
             if str(current_pid) == system_pid:
                 scope_flags = []
-                systemctl_scope = "systemctl"
+                systemctl_scope = systemctl_arg
             elif str(current_pid) == user_pid:
                 scope_flags = ["--user"]
-                systemctl_scope = "systemctl --user"
+                systemctl_scope = f"{systemctl_arg} --user"
             else:
                 # MainPID does not match in either scope — likely invoked
                 # outside of systemd or the unit was renamed.  Bail out
@@ -10185,8 +10189,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
 
             service_arg = shlex.quote(service_name)
+            restart_after_s = max(
+                float(getattr(self, "_restart_drain_timeout", 0.0) or 0.0) + 5.0,
+                5.0,
+            )
             shell_cmd = (
-                f"while kill -0 {current_pid} 2>/dev/null; do sleep 0.2; done; "
+                f"deadline=$(( $(date +%s) + {int(restart_after_s)} )); "
+                f"while kill -0 {current_pid} 2>/dev/null && "
+                f"[ $(date +%s) -lt $deadline ]; do sleep 0.2; done; "
+                f"if kill -0 {current_pid} 2>/dev/null; then "
+                f"main_pid=$({systemctl_scope} show {service_arg} "
+                f"--property=MainPID --value 2>/dev/null); "
+                f"if [ \"$main_pid\" = \"{current_pid}\" ]; then "
+                f"{systemctl_scope} kill --kill-whom=main --signal=SIGKILL "
+                f"{service_arg}; fi; fi; "
                 f"{systemctl_scope} reset-failed {service_arg}; "
                 f"{systemctl_scope} restart {service_arg}"
             )
@@ -10207,10 +10223,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 start_new_session=True,
             )
             logger.info(
-                "Launched systemd planned-restart helper for %s (pid=%s, scope=%s)",
+                "Launched systemd planned-restart helper for %s "
+                "(pid=%s, scope=%s, force-after=%.0fs)",
                 service_name,
                 current_pid,
                 "user" if scope_flags else "system",
+                restart_after_s,
             )
         except Exception as e:
             logger.debug("Failed to launch systemd planned-restart helper: %s", e)

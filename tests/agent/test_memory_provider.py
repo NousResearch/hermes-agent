@@ -437,13 +437,15 @@ class TestUserInstalledProviderCli:
             "    def get_tool_schemas(self): return []\n"
             "    def handle_tool_call(self, *a, **kw): return '{}'\n"
             "def register(ctx):\n"
-            "    ctx.register_memory_provider(MyProvider())\n"
+            "    ctx.register_memory_provider(MyProvider())\n",
+            encoding="utf-8",
         )
-        (plugin_dir / "config.py").write_text("STATUS = 'ok'\n")
+        (plugin_dir / "config.py").write_text("STATUS = 'ok'\n", encoding="utf-8")
         (plugin_dir / "cli.py").write_text(
             "from . import config\n"
             "def register_cli(subparser):\n"
-            "    subparser.add_argument('--status', action='store_true')\n"
+            "    subparser.add_argument('--status', action='store_true')\n",
+            encoding="utf-8",
         )
         return plugin_dir
 

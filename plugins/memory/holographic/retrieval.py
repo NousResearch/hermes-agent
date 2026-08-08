@@ -65,6 +65,11 @@ class FactRetriever:
         # Stage 1: Get FTS5 candidates (more than limit for reranking headroom)
         candidates = self._fts_candidates(query, category, min_trust, limit * 3)
 
+        # LIKE fallback: trigram tokenizer fails for queries < 3 characters
+        # Chinese financial terms (港股/A股/茅台) are 2-3 chars and need this
+        if not candidates and len(query.strip()) < 3:
+            candidates = self._like_candidates(query, category, min_trust, limit * 3)
+
         if not candidates:
             return []
 
@@ -119,6 +124,7 @@ class FactRetriever:
         # Strip raw HRR bytes — callers expect JSON-serializable dicts
         for fact in results:
             fact.pop("hrr_vector", None)
+        self._bump_retrieval_count([r["fact_id"] for r in results])
         return results
 
     def probe(
@@ -199,7 +205,9 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self._bump_retrieval_count([r["fact_id"] for r in results])
+        return results
 
     def related(
         self,
@@ -269,7 +277,9 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self._bump_retrieval_count([r["fact_id"] for r in results])
+        return results
 
     def reason(
         self,
@@ -347,7 +357,9 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self._bump_retrieval_count([r["fact_id"] for r in results])
+        return results
 
     def contradict(
         self,
@@ -490,7 +502,66 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self._bump_retrieval_count([r["fact_id"] for r in results])
+        return results
+
+    def _bump_retrieval_count(self, fact_ids: list[int]) -> None:
+        """Increment retrieval_count for the given facts (best-effort)."""
+        if not fact_ids:
+            return
+        conn = self.store._conn
+        try:
+            with conn:
+                conn.executemany(
+                    "UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id = ?",
+                    [(fid,) for fid in fact_ids],
+                )
+        except Exception:
+            pass  # best-effort; never block the caller
+
+    def _like_candidates(
+        self,
+        query: str,
+        category: str | None,
+        min_trust: float,
+        limit: int,
+    ) -> list[dict]:
+        """LIKE-based fallback for short queries (< 3 chars) that trigram can't handle.
+
+        Trigram tokenizer requires >= 3 characters to produce tokens.
+        Chinese financial terms like 港股/A股/茅台 are 2-3 chars,
+        so we fall back to SQL LIKE for these cases.
+        """
+        conn = self.store._conn
+
+        params: list = []
+        where_clauses = ["f.content LIKE ?"]
+        params.append(f"%{query}%")
+
+        if category:
+            where_clauses.append("f.category = ?")
+            params.append(category)
+
+        where_clauses.append("f.trust_score >= ?")
+        params.append(min_trust)
+
+        where_sql = " AND ".join(where_clauses)
+        sql = f"""
+            SELECT f.*, 0.5 as fts_rank
+            FROM facts f
+            WHERE {where_sql}
+            ORDER BY f.trust_score DESC, f.retrieval_count DESC
+            LIMIT ?
+        """
+        params.append(limit)
+
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        except Exception:
+            return []
+
+        return [dict(row) for row in rows]
 
     def _fts_candidates(
         self,

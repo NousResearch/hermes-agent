@@ -135,6 +135,32 @@ BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 
+def _running_source_checkout_root() -> Optional[Path]:
+    """Return the git checkout containing this running Kanban module, if any."""
+    candidate = Path(__file__).resolve().parent.parent
+    return candidate if (candidate / ".git").exists() else None
+
+
+def _reject_live_source_dir_workspace(
+    workspace_kind: str, workspace_path: Optional[str]
+) -> None:
+    """Prevent a persistent ``dir`` task from editing Hermes' live checkout."""
+    if workspace_kind != "dir" or not workspace_path:
+        return
+    source_root = _running_source_checkout_root()
+    if source_root is None:
+        return
+    requested = Path(workspace_path).expanduser().resolve(strict=False)
+    try:
+        requested.relative_to(source_root)
+    except ValueError:
+        return
+    raise ValueError(
+        f"dir workspace {workspace_path!r} is inside the running Hermes source "
+        f"checkout {str(source_root)!r}; use an isolated worktree workspace instead"
+    )
+
+
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
     """Normalize a per-task reasoning effort into a storable level.
 
@@ -3152,6 +3178,8 @@ def create_task(
         board_default = board_meta.get("default_workdir")
         if board_default:
             workspace_path = str(board_default)
+
+    _reject_live_source_dir_workspace(workspace_kind, workspace_path)
 
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):
@@ -6658,6 +6686,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
                 f"{task.workspace_path!r}; use an absolute path "
                 f"(relative paths are ambiguous against the dispatcher's CWD)"
             )
+        _reject_live_source_dir_workspace(kind, str(p))
         p.mkdir(parents=True, exist_ok=True)
         return p
     if kind == "worktree":

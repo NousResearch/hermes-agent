@@ -1231,6 +1231,76 @@ def _make_task(**overrides) -> "kb.Task":
 # ---------------------------------------------------------------------------
 
 
+def test_create_task_rejects_dir_workspace_inside_running_source_checkout(kanban_home):
+    source_root = Path(kb.__file__).resolve().parent.parent
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="running Hermes source checkout"):
+            kb.create_task(
+                conn,
+                title="unsafe live edit",
+                workspace_kind="dir",
+                workspace_path=str(source_root / "hermes_cli"),
+            )
+
+
+def test_create_task_rejects_symlink_into_running_source_checkout(kanban_home, tmp_path):
+    source_root = Path(kb.__file__).resolve().parent.parent
+    alias = tmp_path / "source-alias"
+    alias.symlink_to(source_root, target_is_directory=True)
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="running Hermes source checkout"):
+            kb.create_task(
+                conn,
+                title="unsafe symlink edit",
+                workspace_kind="dir",
+                workspace_path=str(alias),
+            )
+
+
+def test_create_task_allows_separate_dir_and_worktree_workspace(kanban_home, tmp_path):
+    source_root = Path(kb.__file__).resolve().parent.parent
+
+    with kb.connect() as conn:
+        dir_task_id = kb.create_task(
+            conn,
+            title="safe separate directory",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path / "separate-repo"),
+        )
+        worktree_task_id = kb.create_task(
+            conn,
+            title="safe isolated worktree",
+            workspace_kind="worktree",
+            workspace_path=str(source_root / ".worktrees" / "safe-task"),
+        )
+
+        dir_task = kb.get_task(conn, dir_task_id)
+        worktree_task = kb.get_task(conn, worktree_task_id)
+        assert dir_task is not None
+        assert worktree_task is not None
+        assert dir_task.workspace_kind == "dir"
+        assert worktree_task.workspace_kind == "worktree"
+
+
+def test_resolve_workspace_rejects_legacy_live_source_dir_task(kanban_home):
+    source_root = Path(kb.__file__).resolve().parent.parent
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="legacy unsafe task")
+        conn.execute(
+            "UPDATE tasks SET workspace_kind='dir', workspace_path=? WHERE id=?",
+            (str(source_root), task_id),
+        )
+        conn.commit()
+        task = kb.get_task(conn, task_id)
+
+    assert task is not None
+    with pytest.raises(ValueError, match="running Hermes source checkout"):
+        kb.resolve_workspace(task)
+
+
 
 
 # ---------------------------------------------------------------------------

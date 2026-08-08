@@ -107,6 +107,29 @@ def memory_provider_tools_enabled(
         return False
 
 
+def memory_provider_tools_exposed(agent: Any) -> bool:
+    """Whether external memory-provider tools are exposed on ``agent``.
+
+    Same gate as ``inject_memory_provider_tools`` so the provider's
+    ``system_prompt_block()`` and its tool schemas are presented to the
+    model together — otherwise the system prompt would advertise tools
+    that don't exist in the tool surface (#81014).
+    """
+    tools = getattr(agent, "tools", None)
+    if isinstance(tools, (list, tuple)):
+        memory_tool_present = any(
+            isinstance(tool, dict) and tool.get("function", {}).get("name") == "memory"
+            for tool in tools
+        )
+    else:
+        memory_tool_present = False
+    return memory_provider_tools_enabled(
+        getattr(agent, "enabled_toolsets", None),
+        getattr(agent, "disabled_toolsets", None),
+        memory_tool_present=memory_tool_present,
+    )
+
+
 def inject_memory_provider_tools(agent: Any) -> int:
     """Append external memory-provider tool schemas to an agent tool surface."""
     memory_manager = getattr(agent, "_memory_manager", None)
@@ -119,11 +142,7 @@ def inject_memory_provider_tools(agent: Any) -> int:
         for tool in tools
         if isinstance(tool, dict)
     }
-    if not memory_provider_tools_enabled(
-        getattr(agent, "enabled_toolsets", None),
-        getattr(agent, "disabled_toolsets", None),
-        memory_tool_present="memory" in existing_tool_names,
-    ):
+    if not memory_provider_tools_exposed(agent):
         return 0
 
     get_schemas = getattr(memory_manager, "get_all_tool_schemas", None)

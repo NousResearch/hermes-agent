@@ -55,6 +55,67 @@ def _scoped_gate_env(name: str, default: str = "") -> str:
         return (os.getenv(name) or default).strip()
 
 
+def _normalize_telegram_base_url(raw: str) -> str:
+    """Return a PTB-compatible Telegram base URL.
+
+    python-telegram-bot's ``Bot._parse_base_url`` appends the bot token to the
+    URL as-is — ``https://api.telegram.org`` + ``<id>:<secret>`` is built into
+    ``https://api.telegram.org<id>:<secret>/<endpoint>``. The resulting
+    authority parses as ``host=api.telegram.org<id>`` with ``port=<secret>``,
+    and httpx raises ``InvalidURL("Invalid port: '<secret>'")`` before any
+    request goes out (#81788). The token ends up in the URL's authority
+    instead of the path.
+
+    Telegram's Bot API requires the URL to end in ``/bot`` (the local
+    telegram-bot-api server convention from upstream docs) — if it doesn't,
+    we auto-normalize by appending ``/bot`` to stay backward-compatible with
+    docs and onboarding that mistakenly trim the trailing segment, while
+    raising a clear, actionable error for URL shapes that are clearly broken
+    (no scheme, malformed port).
+    """
+    candidate = str(raw or "").strip()
+    if not candidate:
+        return candidate
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(candidate if "://" in candidate else f"//{candidate}")
+    except Exception:
+        return candidate
+    # Fail fast on a scheme-less base_url. `urlparse("//host:port")` does
+    # NOT raise — it parses as a protocol-relative URL with empty scheme —
+    # so without this check a missing scheme slips through the port
+    # validation below and resurfaces later as the same cryptic httpx
+    # InvalidURL at request time (team-review finding, #81788 follow-up).
+    if not parsed.scheme:
+        raise RuntimeError(
+            f"Malformed Telegram base_url {candidate!r}: missing URL scheme "
+            "(expected http:// or https://). Set "
+            "gateway.platforms.telegram.extra.base_url to a valid "
+            "http(s) URL ending in '/bot', or unset it to use the public "
+            "api.telegram.org."
+        )
+    # Accessing .port validates the port component — a malformed host:port
+    # segment (e.g. "http://127.0.0.1:6153export") raises ValueError, which
+    # we surface as a clear error rather than the cryptic httpx one.
+    try:
+        _ = parsed.port  # noqa: F841
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Malformed Telegram base_url {candidate!r}: {exc}. "
+            "Set gateway.platforms.telegram.extra.base_url to a valid "
+            "http(s) URL ending in '/bot' (the local Bot API server "
+            "convention), or unset it to use the public api.telegram.org."
+        ) from exc
+    # Strip trailing slash(es) so the suffix check is unambiguous.
+    trimmed = candidate.rstrip("/")
+    if trimmed.endswith("/bot") or trimmed.endswith("/bot{token}"):
+        return candidate
+    # PTB needs /bot (or a {token} placeholder) to place the token in the
+    # path; without it the token lands in the URL authority and httpx fails.
+    return f"{trimmed}/bot"
+
+
 def _consume_abandoned_task(task: asyncio.Task) -> None:
     """Observe a detached task's terminal exception to avoid noisy loop logs."""
     try:
@@ -3729,6 +3790,14 @@ class TelegramAdapter(BasePlatformAdapter):
             builder = Application.builder().token(self.config.token)
             custom_base_url = self.config.extra.get("base_url")
             if custom_base_url:
+                # PTB appends the bot token to whatever URL we hand it. If the
+                # URL doesn't end in /bot (or a {token} placeholder) the token
+                # lands in the URL authority — httpx then parses the post-colon
+                # half as a port and raises `InvalidURL("Invalid port: '<token
+                # after colon>'")`, which the adapter's retry loop surfaces as
+                # `Unknown error in HTTP implementation` (#81788). Auto-normalize
+                # to `/bot` and reject clearly malformed URLs up front.
+                custom_base_url = _normalize_telegram_base_url(custom_base_url)
                 builder = builder.base_url(custom_base_url)
                 builder = builder.base_file_url(
                     self.config.extra.get("base_file_url", custom_base_url)

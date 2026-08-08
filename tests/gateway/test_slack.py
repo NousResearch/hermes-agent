@@ -293,6 +293,42 @@ class TestSlackWorkspaceCollisionIsolation:
         assert adapter._channel_teams["D_SHARED"] == {"T_ONE", "T_TWO"}
         assert "D_SHARED" not in adapter._channel_team
 
+    @pytest.mark.asyncio
+    async def test_native_slash_drops_echoed_typed_prefix(self, adapter):
+        """A Slack command payload may echo ``!usage`` as its own argument."""
+        command = {
+            "command": "/usage",
+            "text": "!usage",
+            "user_id": "U123",
+            "channel_id": "C123",
+            "team_id": "T123",
+        }
+
+        await adapter._handle_slash_command(command)
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "/usage"
+        assert event.message_type == MessageType.COMMAND
+        assert event.get_command_args() == ""
+
+    @pytest.mark.asyncio
+    async def test_native_btw_drops_echoed_typed_prefix(self, adapter):
+        """The same Slack echo bug must not turn ``/btw`` into prompt ``!btw``."""
+        command = {
+            "command": "/btw",
+            "text": "!btw",
+            "user_id": "U123",
+            "channel_id": "C123",
+            "team_id": "T123",
+        }
+
+        await adapter._handle_slash_command(command)
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "/btw"
+        assert event.message_type == MessageType.COMMAND
+        assert event.get_command_args() == ""
+
 
 # ---------------------------------------------------------------------------
 # TestAppMentionHandler
@@ -1386,6 +1422,151 @@ class TestBangPrefixCommands:
         assert msg_event.channel_context == (
             "[Slack thread context]\nAlice: earlier note\n"
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("input_text", "expected_text"),
+        [
+            ("!usage", "/usage"),
+            ("!btw", "/btw"),
+            ("  !usage", "/usage"),
+            ("\t!btw", "/btw"),
+        ],
+    )
+    async def test_bang_info_command_aliases_and_leading_space(
+        self, adapter, input_text, expected_text
+    ):
+        """Usage/background aliases rewrite despite Slack composer whitespace."""
+        await adapter._handle_slack_message(self._make_event(input_text))
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == expected_text
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_bang_backtick_code_format_not_rewritten(self, adapter):
+        """Backticked bang text remains a normal message."""
+        evt = self._make_event(
+            "`!model deepseek-v4-flash`", thread_ts="1786070075.411639"
+        )
+        adapter._fetch_thread_parent_text = AsyncMock(return_value=None)
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type != MessageType.COMMAND
+        assert msg_event.text == "`!model deepseek-v4-flash`"
+
+    @pytest.mark.asyncio
+    async def test_bang_with_args_inside_thread(self, adapter):
+        """A threaded bang command retains its argument and thread identity."""
+        evt = self._make_event(
+            "!model deepseek-v4-flash", thread_ts="1786070075.411639"
+        )
+        adapter._fetch_thread_parent_text = AsyncMock(return_value=None)
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/model deepseek-v4-flash"
+        assert msg_event.message_type == MessageType.COMMAND
+        assert msg_event.get_command_args() == "deepseek-v4-flash"
+        assert msg_event.source.thread_id == "1786070075.411639"
+
+    @pytest.mark.asyncio
+    async def test_bang_with_args_and_rich_text_blocks_keeps_argument_clean(
+        self, adapter
+    ):
+        """The mirrored Block Kit command must not become duplicate arguments."""
+        evt = self._make_event(
+            "!model deepseek-v4-flash", thread_ts="1786070075.411639"
+        )
+        evt["blocks"] = [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [
+                            {"type": "text", "text": "!model deepseek-v4-flash"}
+                        ],
+                    }
+                ],
+            }
+        ]
+        adapter._fetch_thread_parent_text = AsyncMock(return_value=None)
+
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/model deepseek-v4-flash"
+        assert msg_event.message_type == MessageType.COMMAND
+        assert msg_event.get_command_args() == "deepseek-v4-flash"
+
+    @pytest.mark.asyncio
+    async def test_bang_in_new_thread_keeps_args_separate_from_context(self, adapter):
+        """Thread hydration must not move a command away from character zero."""
+        parent_context = (
+            "[Thread context — prior messages in this thread "
+            "(not yet in conversation history):]\n"
+            "snowkonn: 테스트\n"
+            "[End of thread context]\n\n"
+        )
+        adapter._has_active_session_for_thread = MagicMock(return_value=False)
+        adapter._fetch_thread_context = AsyncMock(return_value=parent_context)
+        adapter._fetch_thread_parent_text = AsyncMock(return_value="테스트")
+
+        evt = self._make_event(
+            "!model deepseek-v4-flash", thread_ts="1786070075.411639"
+        )
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.COMMAND
+        assert msg_event.text == "/model deepseek-v4-flash"
+        assert msg_event.get_command_args() == "deepseek-v4-flash"
+        assert msg_event.channel_context == parent_context
+        assert msg_event.source.thread_id == "1786070075.411639"
+
+    @pytest.mark.asyncio
+    async def test_bang_normal_reply_still_gets_context(self, adapter):
+        """Normal first thread replies retain their text and receive context."""
+        parent_context = (
+            "[Thread context — prior messages in this thread "
+            "(not yet in conversation history):]\n"
+            "snowkonn: 테스트\n"
+            "[End of thread context]\n\n"
+        )
+        adapter._has_active_session_for_thread = MagicMock(return_value=False)
+        adapter._fetch_thread_context = AsyncMock(return_value=parent_context)
+        adapter._fetch_thread_parent_text = AsyncMock(return_value="테스트")
+
+        evt = self._make_event("안녕 assistant", thread_ts="1786070075.411639")
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.TEXT
+        assert msg_event.text == "안녕 assistant"
+        assert msg_event.channel_context == parent_context
+
+    @pytest.mark.asyncio
+    async def test_bang_model_no_arg_inside_thread(self, adapter):
+        """A no-argument bang command remains discoverable in a thread."""
+        evt = self._make_event("!model", thread_ts="1786070075.411639")
+        adapter._fetch_thread_parent_text = AsyncMock(return_value=None)
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/model"
+        assert msg_event.message_type == MessageType.COMMAND
+        assert msg_event.get_command_args() == ""
+
+    @pytest.mark.asyncio
+    async def test_bang_with_bot_suffix_resolves(self, adapter):
+        """``!stop@hermes`` uses the same suffix stripping as slash commands."""
+        await adapter._handle_slack_message(self._make_event("!stop@hermes"))
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("/stop@hermes")
+        assert msg_event.message_type == MessageType.COMMAND
 
 
     @pytest.mark.asyncio
@@ -4558,4 +4739,3 @@ class TestSlackUserAgent:
         """Module constant matches the HermesAgent/<version> convention used
         elsewhere in the codebase for platform-partner attribution."""
         assert _slack_mod._HERMES_SLACK_USER_AGENT_PREFIX.startswith("HermesAgent/")
-

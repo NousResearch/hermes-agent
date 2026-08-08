@@ -5417,7 +5417,7 @@ class SlackAdapter(BasePlatformAdapter):
         # fields like title, title_link/from_url, text, footer, and fallback.
         # Without reading these, the agent never sees shared link previews.
         slack_attachments = event.get("attachments") or []
-        if slack_attachments:
+        if slack_attachments and not is_command_text:
             att_parts: list[str] = []
             for att in slack_attachments:
                 att_title = att.get("title", "")
@@ -7693,7 +7693,19 @@ class SlackAdapter(BasePlatformAdapter):
             # gateway command dispatcher by prepending the slash.  Only the
             # command delimiter is nonsemantic: preserve Slack's raw argument
             # payload, including meaningful internal/trailing spacing.
-            text = f"/{slash_name}" if not raw_text else f"/{slash_name} {raw_text}"
+            # Some Slack command surfaces echo the fallback command token as
+            # the entire payload (for example, ``/usage`` with ``!usage``).
+            # That echo is not an argument.
+            echoed_self_tokens = {
+                f"!{slash_name}".casefold(),
+                f"/{slash_name}".casefold(),
+            }
+            text = (
+                f"/{slash_name}"
+                if not raw_text
+                or raw_text.casefold() in echoed_self_tokens
+                else f"/{slash_name} {raw_text}"
+            )
 
         # Slack slash commands can originate from DMs or shared channels.
         # Preserve DM semantics only for DM channel IDs; shared channels must

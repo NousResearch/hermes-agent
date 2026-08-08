@@ -251,6 +251,127 @@ class TestMentionGating:
         assert adapter._dispatched == []
 
 
+# ── Thread routing (root e-tag → session thread_id) ──────────────────────
+#
+# Buzz threads are keyed by their ROOT event id (`buzz messages thread
+# --event <root>`).  The adapter must propagate it as thread_id on the
+# dispatched source, otherwise every thread in a channel collapses into one
+# session key and the gateway's busy interrupt/queue machinery crosses
+# events between threads (reply A lands in thread B and vice versa).
+
+
+class TestThreadRouting:
+
+    @pytest.fixture
+    def adapter(self):
+        a = _make_adapter()
+        a._dispatched = []
+
+        async def capture(**kwargs):
+            a._dispatched.append(kwargs)
+
+        a._dispatch_message = capture
+        a._message_handler = AsyncMock()
+        a._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        return a
+
+    async def _poll_with(self, adapter, *events):
+        cli = _ScriptedCli()
+        cli.script("messages", "get", list(events))
+        adapter._run_cli = cli
+        await adapter._poll_channel(CHANNEL)
+
+    def test_thread_id_from_event_root_tag(self):
+        """Deep thread reply → the ``root`` e-tag wins."""
+        ev = {"tags": [["h", CHANNEL], ["e", "ROOTID", "", "root"], ["e", "PARENTID", "", "reply"]]}
+        assert BuzzAdapter._thread_id_from_event(ev) == "ROOTID"
+
+    def test_thread_id_from_event_depth2_reply_only(self):
+        """Direct reply to a top-level message → the ``reply`` target IS the root."""
+        ev = {"tags": [["h", CHANNEL], ["e", "ROOTID", "", "reply"]]}
+        assert BuzzAdapter._thread_id_from_event(ev) == "ROOTID"
+
+    def test_thread_id_from_event_three_element_tag(self):
+        """3-element e-tag (no relay URL) — marker lives in position 2."""
+        ev = {"tags": [["e", "ROOTID", "root"]]}
+        assert BuzzAdapter._thread_id_from_event(ev) == "ROOTID"
+        ev = {"tags": [["e", "PARENTID", "reply"]]}
+        assert BuzzAdapter._thread_id_from_event(ev) == "PARENTID"
+
+    def test_thread_id_from_event_top_level(self):
+        """Top-level message (no e-tags) → no thread."""
+        assert BuzzAdapter._thread_id_from_event({"tags": [["h", CHANNEL]]}) is None
+
+    def test_thread_id_from_event_missing_tags(self):
+        """Missing/malformed tags never crash."""
+        assert BuzzAdapter._thread_id_from_event({}) is None
+        assert BuzzAdapter._thread_id_from_event({"tags": None}) is None
+        assert BuzzAdapter._thread_id_from_event({"tags": ["not-a-tag"]}) is None
+
+    @pytest.mark.asyncio
+    async def test_thread_reply_dispatches_with_thread_id(self, adapter):
+        """A reply inside a thread carries the ROOT id as thread_id."""
+        root = "r" * 64
+        await self._poll_with(
+            adapter,
+            _tagged_event("e1", CHANNEL, content="hey @Chip, in thread",
+                          created_at=10, reply_to="PARENT",
+                          root=root),
+        )
+        assert len(adapter._dispatched) == 1
+        assert adapter._dispatched[0]["thread_id"] == root
+
+    @pytest.mark.asyncio
+    async def test_top_level_message_dispatches_without_thread_id(self, adapter):
+        await self._poll_with(
+            adapter,
+            _tagged_event("e1", CHANNEL, content="hey @Chip top level", created_at=10),
+        )
+        assert len(adapter._dispatched) == 1
+        assert adapter._dispatched[0]["thread_id"] is None
+
+    def test_session_keys_isolate_threads_and_keep_top_level(self):
+        """E2E on the real resolution chain: adapter.build_source →
+        gateway.session.build_session_key.  The reported bug: two threads in
+        one channel collapsed into ONE session key (thread_id was None), so
+        the gateway's busy interrupt/queue machinery crossed events between
+        them.  With thread_id propagated, each thread must get its own key,
+        and top-level messages must NOT share the threaded sessions."""
+        from gateway.session import build_session_key
+
+        adapter = _make_adapter()
+        thread_a_root = "aa" + ("1" * 62)
+        thread_b_root = "bb" + ("2" * 62)
+        source_a = adapter.build_source(
+            chat_id=CHANNEL, chat_type="group",
+            user_id=OTHER_PUBKEY, user_name="other",
+            thread_id=thread_a_root,
+        )
+        source_b = adapter.build_source(
+            chat_id=CHANNEL, chat_type="group",
+            user_id=OTHER_PUBKEY, user_name="other",
+            thread_id=thread_b_root,
+        )
+        source_top = adapter.build_source(
+            chat_id=CHANNEL, chat_type="group",
+            user_id=OTHER_PUBKEY, user_name="other",
+        )
+        key_a = build_session_key(source_a)
+        key_b = build_session_key(source_b)
+        key_top = build_session_key(source_top)
+
+        # Thread A and thread B must never share a session (the bug).
+        assert key_a != key_b
+        # Thread keys are stable per root and carry the root id.
+        assert thread_a_root in key_a
+        assert thread_b_root in key_b
+        # Top-level messages keep their own channel-scoped session — they are
+        # not pulled into either thread's conversation.
+        assert key_top not in (key_a, key_b)
+        assert thread_a_root not in key_top
+        assert thread_b_root not in key_top
+
+
 # ── DM classification via p-tags (issue #68871) ──────────────────────────
 #
 # `buzz dms list` returns [] on some hosted relays, so DM conversations leak
@@ -261,9 +382,11 @@ class TestMentionGating:
 
 
 def _tagged_event(event_id, channel, *, content, pubkey=OTHER_PUBKEY,
-                  created_at=1000, kind=9, p=None, reply_to=None):
+                  created_at=1000, kind=9, p=None, reply_to=None, root=None):
     """Event with the tag shapes observed on a live relay (h/p/e tags)."""
     tags = [["h", channel]]
+    if root:
+        tags.append(["e", root, "", "root"])
     if reply_to:
         tags.append(["e", reply_to, "", "reply"])
     if p:

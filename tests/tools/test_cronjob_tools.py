@@ -615,3 +615,170 @@ class TestGithubExemptionAbuse:
         assert _scan_cron_prompt(
             "generate a keypair and explain id_rsa vs id_ed25519"
         ) == ""
+
+
+# =========================================================================
+# Skill-name validation at create/update (complements #77362's fire-time
+# hard-abort: a typo in skills=[...] should fail fast at the API boundary,
+# not weeks later when the job fires)
+# =========================================================================
+
+class TestCronSkillValidation:
+    @pytest.fixture(autouse=True)
+    def _setup_cron_dir(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        (hermes_home / "scripts").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+
+    @staticmethod
+    def _mock_skill_view(monkeypatch, ok_names=()):
+        import tools.skills_tool as st
+
+        def fake_view(name):
+            if name in ok_names:
+                return json.dumps({"success": True, "content": "skill body"})
+            return json.dumps({"success": False, "error": f"Skill '{name}' not found"})
+
+        monkeypatch.setattr(st, "skill_view", fake_view)
+
+    @staticmethod
+    def _mock_bundles(monkeypatch, bundle_names=()):
+        import agent.skill_bundles as sb
+        monkeypatch.setattr(
+            sb,
+            "resolve_bundle_command_key",
+            lambda cmd: f"/{cmd}" if cmd in bundle_names else None,
+        )
+
+    def test_create_rejects_unknown_skill(self, monkeypatch):
+        self._mock_bundles(monkeypatch)
+        self._mock_skill_view(monkeypatch)
+
+        result = json.loads(
+            cronjob(action="create", schedule="every 1h", skills=["bogus-skill"])
+        )
+
+        assert result["success"] is False
+        assert "Unknown skill(s): bogus-skill" in result["error"]
+        # nothing persisted
+        assert json.loads(cronjob(action="list"))["count"] == 0
+
+    def test_create_rejects_unknown_skill_alongside_resolvable(self, monkeypatch):
+        self._mock_bundles(monkeypatch)
+        self._mock_skill_view(monkeypatch, ok_names={"good-skill"})
+
+        result = json.loads(
+            cronjob(
+                action="create",
+                schedule="every 1h",
+                skills=["good-skill", "bogus-skill"],
+            )
+        )
+
+        assert result["success"] is False
+        assert "bogus-skill" in result["error"]
+        assert "good-skill" not in result["error"].split("Unknown skill(s): ")[1].split(" — ")[0]
+
+    def test_create_accepts_resolvable_skill(self, monkeypatch):
+        self._mock_bundles(monkeypatch)
+        self._mock_skill_view(monkeypatch, ok_names={"good-skill"})
+
+        result = json.loads(
+            cronjob(action="create", schedule="every 1h", skills=["good-skill"])
+        )
+
+        assert result["success"] is True
+        assert result["job"]["skills"] == ["good-skill"]
+
+    def test_create_accepts_bundle_name_without_skill(self, monkeypatch):
+        # Bundles shadow skill slugs at fire time — a bundle hit is valid even
+        # when no skill with that name exists (skill_view would fail).
+        self._mock_bundles(monkeypatch, bundle_names={"my-bundle"})
+        self._mock_skill_view(monkeypatch)
+
+        result = json.loads(
+            cronjob(action="create", schedule="every 1h", skills=["my-bundle"])
+        )
+
+        assert result["success"] is True
+
+    def test_create_no_agent_skips_skill_validation(self, monkeypatch):
+        # no_agent jobs never assemble a prompt — attached skills are inert
+        # and must not be gated. skill_view raising proves it is never called.
+        import tools.skills_tool as st
+        monkeypatch.setattr(
+            st, "skill_view",
+            lambda name: (_ for _ in ()).throw(AssertionError("skill_view called")),
+        )
+
+        from hermes_constants import get_hermes_home
+        (get_hermes_home() / "scripts" / "probe.sh").write_text("#!/bin/sh\necho ok\n")
+
+        result = json.loads(
+            cronjob(
+                action="create",
+                schedule="every 1h",
+                no_agent=True,
+                script="probe.sh",
+                skills=["bogus-skill"],
+            )
+        )
+
+        assert result["success"] is True
+
+    def test_update_rejects_unknown_skill(self, monkeypatch):
+        created = json.loads(cronjob(action="create", prompt="x", schedule="every 1h"))
+        job_id = created["job_id"]
+        self._mock_bundles(monkeypatch)
+        self._mock_skill_view(monkeypatch)
+
+        result = json.loads(
+            cronjob(action="update", job_id=job_id, skills=["bogus-skill"])
+        )
+
+        assert result["success"] is False
+        assert "Unknown skill(s): bogus-skill" in result["error"]
+        # stored job untouched
+        job = json.loads(cronjob(action="list"))["jobs"][0]
+        assert job["skills"] == []
+
+    def test_update_accepts_resolvable_skill(self, monkeypatch):
+        created = json.loads(cronjob(action="create", prompt="x", schedule="every 1h"))
+        job_id = created["job_id"]
+        self._mock_bundles(monkeypatch)
+        self._mock_skill_view(monkeypatch, ok_names={"good-skill"})
+
+        result = json.loads(
+            cronjob(action="update", job_id=job_id, skills=["good-skill"])
+        )
+
+        assert result["success"] is True
+        job = json.loads(cronjob(action="list"))["jobs"][0]
+        assert job["skills"] == ["good-skill"]
+
+    def test_update_skips_validation_for_no_agent_job(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        (get_hermes_home() / "scripts" / "probe.sh").write_text("#!/bin/sh\necho ok\n")
+        created = json.loads(
+            cronjob(
+                action="create",
+                schedule="every 1h",
+                no_agent=True,
+                script="probe.sh",
+            )
+        )
+        job_id = created["job_id"]
+        import tools.skills_tool as st
+        monkeypatch.setattr(
+            st, "skill_view",
+            lambda name: (_ for _ in ()).throw(AssertionError("skill_view called")),
+        )
+
+        result = json.loads(
+            cronjob(action="update", job_id=job_id, skills=["bogus-skill"])
+        )
+
+        assert result["success"] is True

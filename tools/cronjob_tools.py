@@ -402,6 +402,48 @@ def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None)
     return normalized
 
 
+def _validate_cron_skills(skill_names: List[str]) -> Optional[str]:
+    """Validate declared cron skill names at the API boundary.
+
+    The scheduler resolves each declared skill at fire time — bundle expansion
+    first (bundles shadow skill slugs), then ``skill_view()`` — and skips any
+    name that resolves to neither. A typo in ``skills=[...]`` therefore used to
+    surface only when the job fired (contextless run, or a hard abort once ALL
+    skills fail — #77362), potentially weeks after creation. Fail fast at
+    create/update time instead, mirroring the scheduler's resolution order.
+
+    Returns an error string listing the unresolvable names, else None.
+    """
+    if not skill_names:
+        return None
+
+    from agent.skill_bundles import resolve_bundle_command_key
+    from agent.skill_utils import normalize_skill_lookup_name
+    from tools.skills_tool import skill_view
+
+    unknown: List[str] = []
+    for name in skill_names:
+        raw = str(name).strip()
+        if not raw:
+            continue
+        # Bundles shadow skill slugs at fire time; a bundle hit is valid even
+        # if no skill with that name exists.
+        if resolve_bundle_command_key(raw.lstrip("/")):
+            continue
+        try:
+            loaded = json.loads(skill_view(normalize_skill_lookup_name(raw)))
+        except (json.JSONDecodeError, TypeError):
+            loaded = {}
+        if not loaded.get("success"):
+            unknown.append(raw)
+
+    if not unknown:
+        return None
+    return (
+        f"Unknown skill(s): {', '.join(unknown)} — not an installed skill or bundle. "
+        "The scheduler skips unresolvable skills at fire time, so the job would run "
+        "without them. Fix the name (see skills_list) or remove it from skills=[...]."
+    )
 
 
 def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash: bool = False) -> Optional[str]:
@@ -1080,6 +1122,12 @@ def cronjob(
                     )
             elif not prompt and not canonical_skills:
                 return tool_error("create requires either prompt or at least one skill", success=False)
+            # no_agent jobs never assemble a prompt, so attached skills are
+            # inert — don't gate them on resolvability.
+            if canonical_skills and not _no_agent:
+                skills_error = _validate_cron_skills(canonical_skills)
+                if skills_error:
+                    return tool_error(skills_error, success=False)
             if prompt:
                 scan_error = _scan_cron_prompt(prompt)
                 if scan_error:
@@ -1312,6 +1360,13 @@ def cronjob(
                 updates["deliver"] = _normalize_deliver_param(deliver)
             if skills is not None or skill is not None:
                 canonical_skills = _canonical_skills(skill, skills)
+                # Skip the resolvability gate when the effective job is
+                # no_agent — its skills are inert (never assembled).
+                eff_no_agent = bool(no_agent) if no_agent is not None else bool(job.get("no_agent"))
+                if canonical_skills and not eff_no_agent:
+                    skills_error = _validate_cron_skills(canonical_skills)
+                    if skills_error:
+                        return tool_error(skills_error, success=False)
                 updates["skills"] = canonical_skills
                 updates["skill"] = canonical_skills[0] if canonical_skills else None
             if model is not None:

@@ -4874,6 +4874,268 @@ class DiscordAdapter(BasePlatformAdapter):
             interaction, command_text, reason=reason or "unauthorized",
         )
 
+    async def _handle_review_slash(
+        self,
+        interaction: "discord.Interaction",
+        topic: str,
+        *,
+        create_kanban_tasks: bool = False,
+    ) -> None:
+        """Start an explicit, threaded multi-specialist review."""
+        if not await self._check_slash_authorization(interaction, "/review"):
+            return
+        topic = (topic or "").strip()
+        if not topic:
+            await interaction.response.send_message(
+                "A review topic is required.", ephemeral=True,
+            )
+            return
+        deferred_response = False
+        try:
+            await interaction.response.defer(ephemeral=True)
+            deferred_response = True
+        except Exception as e:
+            if not self._is_discord_unknown_interaction(e):
+                raise
+            logger.warning(
+                "[Discord] /review: interaction expired before defer. "
+                "Creating the thread anyway, skipping interaction followups.",
+            )
+        result = await self._create_thread(
+            interaction,
+            name=f"review-{topic[:70]}",
+            message=f"Review requested by <@{interaction.user.id}>: {topic}",
+            auto_archive_duration=4320,
+        )
+        if not result.get("success"):
+            if deferred_response:
+                await interaction.followup.send(
+                    result.get("error", "Could not create review thread."),
+                    ephemeral=True,
+                )
+            return
+        thread_id = str(result["thread_id"])
+        self._threads.mark(thread_id)
+        if deferred_response:
+            await interaction.followup.send(
+                f"Review started in <#{thread_id}>.", ephemeral=True,
+            )
+        task = asyncio.create_task(self._run_review_pipeline(
+            thread_id=thread_id,
+            topic=topic,
+            create_kanban_tasks=create_kanban_tasks,
+            invoking_user=str(interaction.user.id),
+            invoking_channel_id=str(interaction.channel_id),
+        ))
+        task.add_done_callback(_consume_background_task_result)
+
+    async def _run_review_agent(self, prompt: str) -> str:
+        process = await asyncio.create_subprocess_exec(
+            "hermes", "chat", "--model", "minimax-m3", "--quiet", "--query", prompt,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            raise RuntimeError("Review specialist timed out after 300 seconds")
+        if process.returncode != 0:
+            detail = stderr.decode("utf-8", "replace").strip()
+            raise RuntimeError(f"Review specialist failed: {detail[:500] or 'unknown error'}")
+        output = stdout.decode("utf-8", "replace").strip()
+        if not output:
+            raise RuntimeError("Review specialist returned no output")
+        return output
+
+    async def _send_review_message(self, thread: Any, content: str) -> None:
+        """Send review output in Discord-sized chunks with conservative pacing."""
+        for chunk in self.truncate_message(content, self.MAX_MESSAGE_LENGTH):
+            await thread.send(chunk)
+            await asyncio.sleep(0.4)
+
+    async def _run_review_pipeline(
+        self,
+        *,
+        thread_id: str,
+        topic: str,
+        create_kanban_tasks: bool,
+        invoking_user: str,
+        invoking_channel_id: str,
+    ) -> None:
+        specialists = [
+            (
+                "Architect",
+                "Evaluate structure, design boundaries, schema durability, and "
+                "long-term maintainability.",
+            ),
+            (
+                "Product",
+                "Evaluate user experience, adoption friction, cognitive load, "
+                "and return on investment.",
+            ),
+            (
+                "Cost",
+                "Evaluate token and runtime costs, operational complexity, "
+                "resource usage, and automation potential.",
+            ),
+            (
+                "Security",
+                "Evaluate trust boundaries, attack surface, credential handling, "
+                "input validation, and blast radius.",
+            ),
+            (
+                "Implementer",
+                "Evaluate real delivery effort, likely regressions, code edge "
+                "cases, and the tests required to ship safely.",
+            ),
+        ]
+        answers = await asyncio.gather(*[
+            self._run_review_agent(
+                "INDEPENDENT PERSPECTIVE\n"
+                f"You are the {role} specialist on a five-person review panel. "
+                f"Your lens: {focus}\n\n"
+                "Review the proposal independently; you have not seen the other "
+                "specialists' opinions.\n\n"
+                "OUTPUT FORMAT (Markdown, about 250-450 words)\n"
+                "- Position: support, support-with-conditions, reject, or abstain with a reason.\n"
+                "- Top 3 risks or strengths, ordered by severity.\n"
+                "- One concrete question for the other specialists.\n"
+                "- One concrete action item for the synthesis.\n\n"
+                "RULES\n"
+                "- Take a position; do not answer only with 'it depends'.\n"
+                "- Cite the proposal element you are reacting to.\n"
+                "- Review rather than redesign unless the topic asks for a redesign.\n"
+                "- Output only the structured response, without a preamble.\n\n"
+                f"TOPIC\n{topic}"
+            ) for role, focus in specialists
+        ])
+        thread = self._client.get_channel(int(thread_id)) if self._client else None
+        if thread is None and self._client:
+            thread = await self._client.fetch_channel(int(thread_id))
+        if thread is None:
+            raise RuntimeError(f"Could not resolve review thread {thread_id}")
+        for (role, _), answer in zip(specialists, answers):
+            await self._send_review_message(thread, f"**{role}**\n{answer}")
+
+        rebuttals = []
+        for round_no in range(2):
+            round_rebuttals = await asyncio.gather(*[
+                self._run_review_agent(
+                    f"CROSS-REBUTTAL — ROUND {round_no + 1} OF 2\n"
+                    "You are arbitrating a peer debate between two specialists.\n\n"
+                    f"TOPIC\n{topic}\n\n"
+                    f"PEER A — {specialists[i][0]}\n"
+                    f"{answers[i].replace('INDEPENDENT PERSPECTIVE', 'initial view')}\n\n"
+                    f"PEER B — {specialists[(i + 1) % len(specialists)][0]}\n"
+                    f"{answers[(i + 1) % len(specialists)].replace('INDEPENDENT PERSPECTIVE', 'initial view')}\n\n"
+                    "Write one debate contribution of about 200-350 words that:\n"
+                    "1. Identifies the strongest disagreement or unstated assumption.\n"
+                    "2. States which peer has the stronger case and why, citing both views.\n"
+                    "3. Names one concrete point the synthesis should preserve from each peer.\n"
+                    "4. Does not introduce a third design option.\n\n"
+                    "OUTPUT FORMAT\n"
+                    "- Disagreement: 1-2 sentences\n"
+                    "- Stronger case: the winning peer and why\n"
+                    "- Preserve from A: one item\n"
+                    "- Preserve from B: one item"
+                ) for i in range(len(specialists))
+            ])
+            rebuttals.extend(round_rebuttals)
+            for index, rebuttal in enumerate(round_rebuttals, start=1):
+                await self._send_review_message(
+                    thread, f"**Round {round_no + 1} rebuttal {index}**\n{rebuttal}"
+                )
+
+        perspective_text = "\n\n".join(
+            f"[{role}] {answer.replace('INDEPENDENT PERSPECTIVE', 'initial view')}"
+            for (role, _), answer in zip(specialists, answers)
+        )
+        rebuttal_text = "\n\n".join(
+            f"[Round {(index // len(specialists)) + 1} rebuttal "
+            f"{(index % len(specialists)) + 1}] "
+            f"{rebuttal.replace('CROSS-REBUTTAL', 'peer discussion')}"
+            for index, rebuttal in enumerate(rebuttals)
+        )
+        synthesis = await self._run_review_agent(
+            "MODERATOR SYNTHESIS\n"
+            "You are the moderator. Produce the canonical review record from "
+            "five independent perspectives and ten peer rebuttals.\n\n"
+            f"TOPIC\n{topic}\n\n"
+            f"PERSPECTIVES\n{perspective_text}\n\n"
+            f"PEER DISCUSSIONS\n{rebuttal_text}\n\n"
+            "OUTPUT FORMAT — exactly these four H2 sections, in this order:\n"
+            "## Consensus\n"
+            "- 3-7 concrete bullets supported by at least three specialists.\n\n"
+            "## Contested\n"
+            "- 1-5 bullets naming the split and why; write 'None.' if unanimous.\n\n"
+            "## Rejected\n"
+            "- 1-5 dropped positions with reasons; write 'None.' if none.\n\n"
+            "## Action Items\n"
+            "- 3-10 concrete, shippable, verb-first next steps.\n\n"
+            "RULES\n"
+            "- Use exactly the four H2 headings above.\n"
+            "- Every action item must start with '- '.\n"
+            "- Start with '## Consensus'; do not add a preamble."
+        )
+        await self._send_review_message(thread, f"**Synthesis**\n{synthesis}")
+        if create_kanban_tasks:
+            await self._create_review_kanban_tasks(
+                synthesis,
+                invoking_user=invoking_user,
+                invoking_channel_id=invoking_channel_id,
+            )
+
+    async def _create_review_kanban_tasks(
+        self,
+        synthesis: str,
+        *,
+        invoking_user: str,
+        invoking_channel_id: str,
+    ) -> List[str]:
+        tasks = []
+        _, separator, action_items = synthesis.partition("## Action Items")
+        if not separator:
+            logger.warning("[Discord] /review synthesis omitted the Action Items heading")
+            return tasks
+        action_items = action_items.split("\n## ", 1)[0]
+        for line in action_items.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("- "):
+                title = stripped[2:].strip()[:120]
+                if not title:
+                    continue
+                process = await asyncio.create_subprocess_exec(
+                    "hermes", "kanban", "create", title,
+                    "--body", synthesis,
+                    "--assignee", "worker-improve",
+                    "--initial-status", "running",
+                    "--json",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await process.communicate()
+                if process.returncode != 0:
+                    detail = stderr.decode("utf-8", "replace").strip()
+                    logger.warning(
+                        "[Discord] Could not auto-fire /review action item %r: %s",
+                        title,
+                        detail[:500] or "unknown error",
+                    )
+                    continue
+                try:
+                    payload = json.loads(stdout.decode("utf-8", "replace"))
+                    task_id = payload["id"]
+                except (UnicodeDecodeError, ValueError, KeyError, TypeError):
+                    logger.warning(
+                        "[Discord] Could not parse auto-fired /review task for %r",
+                        title,
+                    )
+                    continue
+                tasks.append(str(task_id))
+        return tasks
+
     async def _reject_slash(
         self, interaction: "discord.Interaction", command_text: str, *, reason: str,
     ) -> bool:
@@ -5579,6 +5841,22 @@ class DiscordAdapter(BasePlatformAdapter):
         @discord.app_commands.describe(scope="Optional: 'all' to deny all pending commands")
         async def slash_deny(interaction: discord.Interaction, scope: str = ""):
             await self._run_simple_slash(interaction, f"/deny {scope}".strip())
+
+        @tree.command(name="review", description="Run a structured multi-specialist review")
+        @discord.app_commands.describe(
+            topic="Design, proposal, code, or decision to review",
+            kanban="Create ready Kanban action items from the synthesis",
+        )
+        async def slash_review(
+            interaction: discord.Interaction,
+            topic: str,
+            kanban: bool = False,
+        ):
+            await self._handle_review_slash(
+                interaction,
+                topic,
+                create_kanban_tasks=kanban,
+            )
 
         @tree.command(name="thread", description="Create a new thread and start a Hermes session in it")
         @discord.app_commands.describe(

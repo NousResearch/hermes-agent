@@ -75,7 +75,6 @@ def register(ctx):
         toolset="hello_world",
         schema=schema,
         handler=handle_hello,
-        description="Return a friendly greeting for the given name.",
     )
 
     # --- Hook: log every tool call ---
@@ -86,6 +85,8 @@ def register(ctx):
 ```
 
 将两个文件放入 `~/.hermes/plugins/hello-world/`，重启 Hermes，模型即可立即调用 `hello_world`。每次工具调用后，hook 会打印一行日志。
+
+面向模型的工具描述应写在 `schema["description"]` 中。可选的 `ctx.register_tool(description=...)` 值是独立的 `ToolEntry` 注册表元数据：省略时，它会默认使用 schema 中的描述；但如果 schema 缺少 `description`，Hermes 不会把该元数据反向复制到 schema。建议只在 schema 中定义一次描述。如果同时提供两个值，请保持同步；模型看到的是 schema 中的值。
 
 `./.hermes/plugins/` 下的项目本地插件默认禁用。仅对可信仓库启用，方法是在启动 Hermes 前设置 `HERMES_ENABLE_PROJECT_PLUGINS=true`。
 

@@ -77,7 +77,6 @@ def register(ctx):
         toolset="hello_world",
         schema=schema,
         handler=handle_hello,
-        description="Return a friendly greeting for the given name.",
     )
 
     # --- Hook: log every tool call ---
@@ -88,6 +87,8 @@ def register(ctx):
 ```
 
 Drop both files into `~/.hermes/plugins/hello-world/`, restart Hermes, and the model can immediately call `hello_world`. The hook prints a log line after every tool invocation.
+
+The model-facing tool description belongs in `schema["description"]`. The optional `ctx.register_tool(description=...)` value is separate `ToolEntry` registry metadata: when omitted, it defaults to the schema description, but Hermes does not copy it back into a schema that lacks `description`. Prefer defining the text once in the schema. If you provide both values, keep them synchronized; the model sees the schema value.
 
 Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable them only for trusted repositories by setting `HERMES_ENABLE_PROJECT_PLUGINS=true` before starting Hermes.
 

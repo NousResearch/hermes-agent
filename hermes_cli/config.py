@@ -1281,6 +1281,41 @@ def _warn_once_per_provider(
     logger.warning(msg, *args)
 
 
+def _declared_models_to_mapping(value: Any) -> Dict[str, Any]:
+    """Coerce a custom-provider model declaration into ``{id: metadata}``.
+
+    Accepts the two shapes seen in real configs: a mapping (already
+    canonical) or a list of plain ids / ``{id: ...}`` rows written by hand
+    or by older Hermes versions. Anything else yields an empty mapping so
+    the caller leaves ``models`` unset rather than writing a bad shape.
+    """
+    if isinstance(value, dict) and value:
+        # Shallow-copy: the caller's `entry` may alias a cached config
+        # sub-dict, and the normalized entry escapes into long-lived runtime
+        # state (agent._custom_providers) — don't share the cached mapping.
+        return dict(value)
+
+    if not isinstance(value, list):
+        return {}
+
+    mapping: Dict[str, Any] = {}
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            mapping[item.strip()] = {}
+            continue
+        if not isinstance(item, dict):
+            continue
+        model_id = item.get("id")
+        if not isinstance(model_id, str) or not model_id.strip():
+            model_id = item.get("name")
+        if not isinstance(model_id, str) or not model_id.strip():
+            continue
+        mapping[model_id.strip()] = {
+            k: v for k, v in item.items() if k not in {"id", "name"}
+        }
+    return mapping
+
+
 def _normalize_custom_provider_entry(
     entry: Any,
     *,
@@ -1323,6 +1358,8 @@ def _normalize_custom_provider_entry(
         "provider",
         "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
         "api_mode", "transport", "model", "default_model", "models",
+        # Hand-written alias for ``models`` (gh-52266); merged in below.
+        "available_models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
@@ -1407,36 +1444,17 @@ def _normalize_custom_provider_entry(
     if isinstance(model_name, str) and model_name.strip():
         normalized["model"] = model_name.strip()
 
-    models = entry.get("models")
-    if isinstance(models, dict) and models:
-        # Shallow-copy: `entry` may alias a cached config sub-dict, and the
-        # normalized entry escapes into long-lived runtime state
-        # (agent._custom_providers) — don't share the cached models mapping.
-        normalized["models"] = dict(models)
-    elif isinstance(models, list) and models:
-        # Hand-edited configs (and older Hermes versions) may write
-        # ``models`` as a plain list of ids or as ``[{id: ...}]`` rows.
-        # Preserve both by converting to the dict shape downstream code
-        # expects; otherwise normalize silently drops the list and /model
-        # shows the provider with (0) models.
-        normalized_models: Dict[str, Any] = {}
-        for item in models:
-            if isinstance(item, str) and item.strip():
-                normalized_models[item.strip()] = {}
-                continue
-            if not isinstance(item, dict):
-                continue
-            model_id = item.get("id")
-            if not isinstance(model_id, str) or not model_id.strip():
-                model_id = item.get("name")
-            if not isinstance(model_id, str) or not model_id.strip():
-                continue
-            model_meta = {
-                k: v for k, v in item.items() if k not in {"id", "name"}
-            }
-            normalized_models[model_id.strip()] = model_meta
-        if normalized_models:
-            normalized["models"] = normalized_models
+    # ``models`` is the canonical declaration key, but hand-written configs
+    # also use ``available_models`` (gh-52266). That alias previously fell
+    # through to the unknown-key warning and was dropped, leaving the
+    # provider with (0) models: the picker showed nothing and every
+    # ``/model <id>`` for that provider failed to resolve. Merge both, with
+    # ``models`` metadata winning for ids declared in each.
+    merged_models: Dict[str, Any] = {}
+    for models_key in ("available_models", "models"):
+        merged_models.update(_declared_models_to_mapping(entry.get(models_key)))
+    if merged_models:
+        normalized["models"] = merged_models
 
     context_length = entry.get("context_length")
     if isinstance(context_length, int) and context_length > 0:

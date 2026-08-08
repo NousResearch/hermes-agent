@@ -5225,20 +5225,22 @@ class GatewaySlashCommandsMixin:
         async def _on_confirm(choice: str) -> Optional[str]:
             if choice == "cancel":
                 return t("gateway.reload_mcp.cancelled")
+            saved = False
             if choice == "always":
                 # Persist the opt-out and run the reload.
                 try:
                     from cli import save_config_value
-                    save_config_value("approvals.mcp_reload_confirm", False)
-                    logger.info(
-                        "User opted out of /reload-mcp confirmation (session=%s)",
-                        session_key,
-                    )
+                    saved = save_config_value("approvals.mcp_reload_confirm", False)
+                    if saved:
+                        logger.info(
+                            "User opted out of /reload-mcp confirmation (session=%s)",
+                            session_key,
+                        )
                 except Exception as exc:
                     logger.warning("Failed to persist mcp_reload_confirm=false: %s", exc)
             # once / always → run the reload
             result = await self._execute_mcp_reload(event)
-            if choice == "always":
+            if choice == "always" and saved:
                 return f"{result}\n\n" + t("gateway.reload_mcp.always_followup")
             return result
 

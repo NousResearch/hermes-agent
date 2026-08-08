@@ -237,8 +237,35 @@ memory:
   user_profile_enabled: true
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
+  cognitive: false          # opt in to add-time contradiction consolidation
   write_approval: false     # false = write freely (default) | true = require approval
 ```
+
+## Consolidating contradictions on add (`cognitive`)
+
+The built-in `MEMORY.md` and `USER.md` stores normally append each new entry.
+Set `memory.cognitive: true` to have an auxiliary model compare a single `add`
+against the existing entries first. It may keep, update, or remove old entries,
+but every accepted consolidation inserts the exact submitted new entry as its
+own artifact. This can remove a stale fact such as "uses PostgreSQL" while
+storing a later write that says the project switched to MySQL verbatim.
+
+The option is **off by default** because it adds an auxiliary-model request to
+eligible memory writes. It applies to single-entry `add` operations when the
+built-in store already has entries; atomic `operations` batches and external
+[memory providers](/user-guide/features/memory-providers) keep their existing
+behavior. The auxiliary request uses the normal task routing and can be
+overridden under `auxiliary.memory_consolidation`.
+
+Consolidation is fail-safe: malformed or ambiguous model output (including
+missing, duplicate, or out-of-range entry indices), any plan that does not
+explicitly insert the exact incoming fact, an unavailable auxiliary provider,
+or an over-budget result falls back to the normal append path without applying
+updates or deletions. Text containment is not treated as proof that an update
+retained a fact. Updated text is run through the same memory threat scanner
+before it can be stored. As with every memory write, the live files change
+immediately but the frozen system-prompt snapshot does not change until the
+next session, preserving prompt caching.
 
 ## Controlling memory writes (`write_approval`)
 

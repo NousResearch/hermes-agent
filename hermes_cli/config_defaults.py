@@ -1695,6 +1695,11 @@ DEFAULT_CONFIG = {
         #                     /memory pending, /memory approve <id>,
         #                     /memory reject <id>.
         # To disable memory entirely, use memory_enabled: false instead.
+        # Opt-in contradiction/redundancy consolidation for built-in memory
+        # writes. When enabled, add asks the auxiliary model for a conservative
+        # keep/update/delete plan before persisting. Any invalid/unsafe plan or
+        # auxiliary failure falls back to the normal append path.
+        "cognitive": False,
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token

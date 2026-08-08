@@ -2929,6 +2929,49 @@ def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> A
     return node
 
 
+_NEUTRAL_PERSONALITY_NAMES = frozenset({"", "none", "default", "neutral"})
+
+
+def _prompt_text(value: Any) -> str:
+    """Normalize config prompt values from YAML before handing them to AIAgent."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return "\n".join(str(item).strip() for item in value if str(item).strip())
+    return str(value).strip()
+
+
+def render_personality_prompt(value: Any) -> str:
+    """Render a string or structured personality definition to a prompt."""
+    if isinstance(value, dict):
+        parts = [value.get("system_prompt", "")]
+        if value.get("tone"):
+            parts.append(f'Tone: {value["tone"]}')
+        if value.get("style"):
+            parts.append(f'Style: {value["style"]}')
+        return "\n".join(str(part).strip() for part in parts if str(part).strip())
+    return _prompt_text(value)
+
+
+def resolve_ephemeral_system_prompt_from_config(cfg: Optional[Dict[str, Any]]) -> str:
+    """Resolve the session overlay from config.yaml.
+
+    ``display.personality`` is the selected named personality and wins when set.
+    Otherwise fall back to the user-owned ``agent.system_prompt``. Callers should
+    still prefer ``HERMES_EPHEMERAL_SYSTEM_PROMPT`` when that env var is set.
+    """
+    name = str(cfg_get(cfg, "display", "personality", default="") or "").strip().lower()
+    personalities = cfg_get(cfg, "agent", "personalities", default={}) or {}
+    if (
+        name not in _NEUTRAL_PERSONALITY_NAMES
+        and isinstance(personalities, dict)
+        and name in personalities
+    ):
+        return render_personality_prompt(personalities[name])
+    return _prompt_text(cfg_get(cfg, "agent", "system_prompt", default=""))
+
 
 def read_raw_config() -> Dict[str, Any]:
     """Read ~/.hermes/config.yaml as-is, without merging defaults or migrating.

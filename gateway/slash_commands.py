@@ -2519,34 +2519,34 @@ class GatewaySlashCommandsMixin:
             lines.append(t("gateway.personality.usage"))
             return "\n".join(lines)
 
-        def _resolve_prompt(value):
-            if isinstance(value, dict):
-                parts = [value.get("system_prompt", "")]
-                if value.get("tone"):
-                    parts.append(f'Tone: {value["tone"]}')
-                if value.get("style"):
-                    parts.append(f'Style: {value["style"]}')
-                return "\n".join(p for p in parts if p)
-            return str(value)
+        from hermes_cli.config import (
+            _prompt_text,
+            render_personality_prompt,
+        )
 
         if args in {"none", "default", "neutral"}:
+            # Persist the selection only. Never clear agent.system_prompt —
+            # that field is the user-owned manual overlay.
             try:
-                if "agent" not in config or not isinstance(config.get("agent"), dict):
-                    config["agent"] = {}
-                config["agent"]["system_prompt"] = ""
+                if "display" not in config or not isinstance(config.get("display"), dict):
+                    config["display"] = {}
+                config["display"]["personality"] = ""
                 atomic_config_write(config_path, config)
             except Exception as e:
                 return t("gateway.personality.save_failed", error=str(e))
-            self._ephemeral_system_prompt = ""
+            self._ephemeral_system_prompt = _prompt_text(
+                cfg_get(config, "agent", "system_prompt", default="")
+            )
             return t("gateway.personality.cleared")
         elif args in personalities:
-            new_prompt = _resolve_prompt(personalities[args])
+            new_prompt = render_personality_prompt(personalities[args])
 
-            # Write to config.yaml, same pattern as CLI save_config_value.
+            # Persist the personality name only — never write personality text
+            # into agent.system_prompt (user-owned manual overlay).
             try:
-                if "agent" not in config or not isinstance(config.get("agent"), dict):
-                    config["agent"] = {}
-                config["agent"]["system_prompt"] = new_prompt
+                if "display" not in config or not isinstance(config.get("display"), dict):
+                    config["display"] = {}
+                config["display"]["personality"] = args
                 atomic_config_write(config_path, config)
             except Exception as e:
                 return t("gateway.personality.save_failed", error=str(e))

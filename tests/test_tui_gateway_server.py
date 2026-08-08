@@ -7439,6 +7439,7 @@ def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
         history_version=4,
     )
     emits = []
+    writes = []
 
     server._sessions["sid"] = session
     monkeypatch.setattr(
@@ -7450,7 +7451,11 @@ def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
         server, "_session_info", lambda agent, *a: {"model": getattr(agent, "model", "?")}
     )
     monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
-    monkeypatch.setattr(server, "_write_config_key", lambda path, value: None)
+    monkeypatch.setattr(
+        server,
+        "_write_config_key",
+        lambda path, value: writes.append((path, value)),
+    )
 
     resp = server.handle_request(
         {
@@ -7473,6 +7478,8 @@ def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
     assert agent.ephemeral_system_prompt == "You are helpful."
     assert agent._cached_system_prompt == "old"
     assert ("session.info", "sid", {"model": "?"}) in emits
+    assert ("display.personality", "helpful") in writes
+    assert not any(path == "agent.system_prompt" for path, _ in writes)
 
 
 def test_compress_session_history_passes_force():

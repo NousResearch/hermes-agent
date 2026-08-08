@@ -9,11 +9,13 @@ import {
   type WakeIndicatorState,
   wakeIndicatorWindowBounds
 } from './wake-indicator'
+import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 
 interface WakeIndicatorWindowOptions {
   devServer?: string
   isMac: boolean
   loadWindowUrl: (window: BrowserWindow, url: string, label: string) => void
+  log: (message: string) => void
   preloadPath: string
   rendererIndex: () => string
   wireWindow: (window: BrowserWindow) => void
@@ -23,6 +25,7 @@ export function createWakeIndicatorWindowController({
   devServer,
   isMac,
   loadWindowUrl,
+  log,
   preloadPath,
   rendererIndex,
   wireWindow
@@ -99,6 +102,10 @@ export function createWakeIndicatorWindowController({
     }
 
     wireWindow(next)
+
+    // Log-only renderer lifecycle (#81290): the wake cue is ambient and
+    // macOS-only; its loss belongs in desktop.log, never resurrected.
+    installWindowRendererLifecycle(next, { kind: 'wake', callbacks: { log } })
 
     next.webContents.on('did-finish-load', sendState)
     next.once('ready-to-show', () => {

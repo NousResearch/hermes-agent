@@ -220,6 +220,7 @@ import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-market
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { readWindowBelow } from './window-below'
 import { createWindowRevealController } from './window-reveal'
+import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import {
   bindGeometryPersistence,
   computeWindowOptions,
@@ -1087,13 +1088,15 @@ const POOL_IDLE_MS = Math.max(60_000, Number(process.env.HERMES_DESKTOP_POOL_IDL
 // killing one to honor the soft cap would abort a running agent.
 const POOL_KEEPALIVE_FRESH_MS = 90_000
 let poolIdleReaper = null
-// Auto-reload budget for renderer crashes. A deterministic startup crash would
-// otherwise loop forever (reload → crash → reload), pinning CPU and spamming
-// logs. Allow a few reloads per rolling window, then stop and leave the dead
-// window so the user can read the error / quit.
+// Auto-reload budget for renderer crashes, shared by EVERY window (primary,
+// secondary session, instance) so a crash loop anywhere is suppressed after
+// the same budget instead of reloading per-window forever. A deterministic
+// startup crash would otherwise loop forever (reload → crash → reload),
+// pinning CPU and spamming logs. Allow a few reloads per rolling window, then
+// stop and leave the dead window so the user can read the error / quit.
 const RENDERER_RELOAD_WINDOW_MS = 60_000
 const RENDERER_RELOAD_MAX = 3
-let rendererReloadTimes = []
+const rendererReloadTimesRef: { current: number[] } = { current: [] }
 // Latched bootstrap failure: when the first-launch install fails, we hold
 // onto the error so subsequent startHermes() calls (e.g. the renderer's
 // ensureGatewayOpen retrying after the WS won't open) return the same error
@@ -8919,6 +8922,23 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
   attachRendererConsoleCapture(win, 'session-window', rememberLog)
 
+  // Renderer lifecycle diagnostics + recovery (#81290): a dead session-window
+  // renderer used to log nothing and stay black; now it logs with its window
+  // kind and reloads under the shared crash-loop budget, exactly like the
+  // primary window, without touching any other window.
+  installWindowRendererLifecycle(win, {
+    kind: 'secondary',
+    callbacks: {
+      log: rememberLog,
+      reload: () => {
+        win.webContents.reload()
+      }
+    },
+    reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
+    reloadMax: RENDERER_RELOAD_MAX,
+    recentReloadTimesRef: rendererReloadTimesRef
+  })
+
   loadWindowUrl(
     win,
     buildSessionWindowUrl(sessionId, {
@@ -8999,6 +9019,22 @@ function createInstanceWindow() {
   streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
 
+  // Renderer lifecycle diagnostics + recovery (#81290), same policy as the
+  // primary and session windows: a crashed instance renderer logs with its
+  // window kind and reloads under the shared crash-loop budget.
+  installWindowRendererLifecycle(win, {
+    kind: 'instance',
+    callbacks: {
+      log: rememberLog,
+      reload: () => {
+        win.webContents.reload()
+      }
+    },
+    reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
+    reloadMax: RENDERER_RELOAD_MAX,
+    recentReloadTimesRef: rendererReloadTimesRef
+  })
+
   win.on('closed', () => {
     instanceWindows.delete(win)
   })
@@ -9015,6 +9051,7 @@ const wakeIndicatorController = createWakeIndicatorWindowController({
   devServer: DEV_SERVER,
   isMac: IS_MAC,
   loadWindowUrl,
+  log: rememberLog,
   preloadPath: PRELOAD_PATH,
   rendererIndex: resolveRendererIndex,
   wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('wakeIndicator'))
@@ -9109,6 +9146,10 @@ function spawnPetOverlayWindow(bounds) {
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('petOverlay'))
 
   wireWindowReveal(win, { show: () => win.showInactive() })
+
+  // Log-only renderer lifecycle (#81290): a dead overlay must never resurrect
+  // itself over the app, but its loss belongs in desktop.log.
+  installWindowRendererLifecycle(win, { kind: 'overlay', callbacks: { log: rememberLog } })
 
   win.on('closed', () => {
     if (petOverlayWindow === win) {
@@ -9670,6 +9711,10 @@ function spawnQuickEntryWindow() {
   // its own OS window and a zoomed composer would overflow it.
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('quickEntry'))
 
+  // Log-only renderer lifecycle (#81290): a dead quick-entry window must never
+  // resurrect itself over the app, but its loss belongs in desktop.log.
+  installWindowRendererLifecycle(win, { kind: 'quick', callbacks: { log: rememberLog } })
+
   // Hide on blur. The window must never hold the user's focus captive — losing
   // focus is the cheapest, least surprising dismiss (matches Spotlight).
   win.on('blur', () => {
@@ -9908,71 +9953,60 @@ function createWindow() {
   streamThrottle.register(mainWindow)
   wireCommonWindowHandlers(mainWindow, zoomWiringForWindowKind('chat'))
 
-  mainWindow.webContents.on('render-process-gone', (_event, details) => {
-    rememberLog(`[renderer] render-process-gone reason=${details?.reason} exitCode=${details?.exitCode}`)
-
-    if (details?.reason === 'crashed' || details?.reason === 'oom') {
-      const now = Date.now()
-      rendererReloadTimes = rendererReloadTimes.filter(t => now - t < RENDERER_RELOAD_WINDOW_MS)
-
-      if (rendererReloadTimes.length >= RENDERER_RELOAD_MAX) {
-        rememberLog(
-          `[renderer] suppressing reload: ${rendererReloadTimes.length} crashes within ${RENDERER_RELOAD_WINDOW_MS}ms (likely a crash loop)`
-        )
-
+  // Per-window renderer lifecycle diagnostics + recovery (#81290). The reload
+  // policy (crashed/oom → bounded reload via the shared rolling budget, then
+  // the #38216 Windows sandbox relaunch check on suppression) is the same
+  // policy this window used before it moved into the shared helper, so a
+  // crashed peer renderer now logs and recovers exactly like the primary one.
+  installWindowRendererLifecycle(mainWindow, {
+    kind: 'main',
+    callbacks: {
+      log: rememberLog,
+      reload: () => {
+        mainWindow.webContents.reload()
+      },
+      onCrashLoopSuppressed: details => {
         // #38216 renderer flavor (same recovery as #56726, credit @Sahil-SS9):
         // a deterministic Windows renderer crash loop with the sandbox
         // breakpoint signature gets one --no-sandbox relaunch instead of a
         // dead window. Gated on the exit code so unrelated crash loops don't
         // silently drop the sandbox.
         if (
-          shouldRelaunchForRendererSandboxCrashLoop({
+          !shouldRelaunchForRendererSandboxCrashLoop({
             reason: details?.reason,
             exitCode: details?.exitCode,
             alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
             relaunchAttempted: windowsNoSandboxRelaunchAttempted
           })
         ) {
-          windowsNoSandboxRelaunchAttempted = true
-          windowsSandboxFallbackActive = true
-          windowsSandboxFallbackSticky = true
-          windowsSandboxFallbackReason = 'renderer-crash-loop'
-
-          try {
-            writeSandboxMarker(app.getPath('userData'), fallbackMarker('renderer-crash-loop', app.getVersion()))
-          } catch {
-            void 0
-          }
-
-          rememberLog('[renderer] Windows sandbox crash loop detected; relaunching once with --no-sandbox (#38216)')
-
-          try {
-            app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
-            app.exit(0)
-          } catch (err) {
-            rememberLog(`[renderer] --no-sandbox relaunch failed: ${err?.message || err}`)
-          }
-        }
-
-        return
-      }
-
-      rendererReloadTimes.push(now)
-      setImmediate(() => {
-        if (!mainWindow || mainWindow.isDestroyed()) {
           return
         }
 
-        try {
-          mainWindow.webContents.reload()
-        } catch (err) {
-          rememberLog(`[renderer] reload after crash failed: ${err?.message || err}`)
-        }
-      })
-    }
-  })
+        windowsNoSandboxRelaunchAttempted = true
+        windowsSandboxFallbackActive = true
+        windowsSandboxFallbackSticky = true
+        windowsSandboxFallbackReason = 'renderer-crash-loop'
 
-  mainWindow.webContents.on('unresponsive', () => rememberLog('[renderer] webContents became unresponsive'))
+        try {
+          writeSandboxMarker(app.getPath('userData'), fallbackMarker('renderer-crash-loop', app.getVersion()))
+        } catch {
+          void 0
+        }
+
+        rememberLog('[renderer] Windows sandbox crash loop detected; relaunching once with --no-sandbox (#38216)')
+
+        try {
+          app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+          app.exit(0)
+        } catch (err) {
+          rememberLog(`[renderer] --no-sandbox relaunch failed: ${err?.message || err}`)
+        }
+      }
+    },
+    reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
+    reloadMax: RENDERER_RELOAD_MAX,
+    recentReloadTimesRef: rendererReloadTimesRef
+  })
 
   // Electron always passes the event first. The canonical (Electron 36+) shape
   // is (event, messageDetails); the deprecated positional shape is

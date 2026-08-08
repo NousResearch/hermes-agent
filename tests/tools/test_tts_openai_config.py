@@ -77,6 +77,32 @@ class TestResolveOpenaiAudioClientConfig:
             == "Neither tts.openai.api_key in config nor VOICE_TOOLS_OPENAI_KEY/OPENAI_API_KEY is set"
         )
 
+    def test_gateway_unavailable_falls_back_to_direct_key(self):
+        """#79628: gateway preferred but dead → direct key used, not raised."""
+        config = {"openai": {"api_key": "cfg-key"}}
+        with patch.object(tts_tool, "_load_tts_config", return_value=config), \
+             patch.object(tts_tool, "prefers_gateway", return_value=True), \
+             patch.object(tts_tool, "resolve_openai_audio_api_key", return_value=""), \
+             patch.object(tts_tool, "resolve_managed_tool_gateway", return_value=None):
+            assert tts_tool._resolve_openai_audio_client_config() == (
+                "cfg-key",
+                "https://api.openai.com/v1",
+                False,
+            )
+
+    def test_gateway_unavailable_falls_back_to_env_key(self):
+        """#79628: env key also works as fallback."""
+        config = {"openai": {}}
+        with patch.object(tts_tool, "_load_tts_config", return_value=config), \
+             patch.object(tts_tool, "prefers_gateway", return_value=True), \
+             patch.object(tts_tool, "resolve_openai_audio_api_key", return_value="env-key"), \
+             patch.object(tts_tool, "resolve_managed_tool_gateway", return_value=None):
+            assert tts_tool._resolve_openai_audio_client_config() == (
+                "env-key",
+                "https://api.openai.com/v1",
+                False,
+            )
+
     def test_config_api_key_counts_as_available_backend(self):
         config = {"openai": {"api_key": "cfg-key"}}
         with patch.object(tts_tool, "_load_tts_config", return_value=config):

@@ -3266,6 +3266,11 @@ def _resolve_openai_audio_client_config() -> tuple[str, str, bool]:
 
     managed_gateway = resolve_managed_tool_gateway("openai-audio")
     if managed_gateway is None:
+        # Gateway preferred but unusable (expired Portal session) — fall
+        # back to the direct credential when present (#79628).
+        fallback_key = direct_api_key or cfg_api_key
+        if fallback_key:
+            return fallback_key, (cfg_base_url or DEFAULT_OPENAI_BASE_URL), False
         message = (
             "Neither tts.openai.api_key in config nor "
             "VOICE_TOOLS_OPENAI_KEY/OPENAI_API_KEY is set"

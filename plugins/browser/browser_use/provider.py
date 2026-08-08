@@ -152,6 +152,14 @@ class BrowserUseBrowserProvider(BrowserProvider):
             token_reader=None if refresh_token else peek_nous_access_token,
         )
         if managed is None:
+            # Gateway preferred but unusable (expired Portal session) — fall
+            # back to the direct credential when present (#79628).
+            if api_key:
+                return {
+                    "api_key": api_key,
+                    "base_url": _BASE_URL,
+                    "managed_mode": False,
+                }
             return None
 
         return {

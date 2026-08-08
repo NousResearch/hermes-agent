@@ -202,6 +202,115 @@ def test_managed_fal_submit_uses_gateway_origin_and_nous_token(monkeypatch):
     assert captured["sync_client_inits"] == 1
 
 
+def test_managed_fal_gateway_rejection_falls_back_to_direct_key(monkeypatch):
+    """#79628: gateway resolves but rejects (4xx) — degrade to direct FAL_KEY
+    instead of raising, mirroring the Krea/FAL unresolvable-gateway fallback."""
+    captured = {}
+    _install_fake_tools_package()
+    _install_fake_fal_client(captured)
+    # Direct key present + prefers_gateway true (gateway resolves)
+    monkeypatch.setenv("FAL_KEY", "fal-direct-123")
+    monkeypatch.setenv("FAL_QUEUE_GATEWAY_URL", "http://127.0.0.1:3009")
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
+
+    image_generation_tool = _load_tool_module(
+        "tools.image_generation_tool",
+        "image_generation_tool.py",
+    )
+    monkeypatch.setattr(image_generation_tool.uuid, "uuid4", lambda: "fal-submit-456")
+    # Force gateway resolution (prefers_gateway true) and a 4xx reject
+    monkeypatch.setattr(
+        image_generation_tool,
+        "prefers_gateway",
+        lambda *a, **k: True,
+    )
+    monkeypatch.setattr(
+        image_generation_tool,
+        "fal_key_is_configured",
+        lambda: True,
+    )
+    managed_error = Exception("gateway reject")
+    managed_error.status_code = 402  # type: ignore[attr-defined]
+
+    def direct_submit(model, arguments=None, headers=None):
+        captured["submit_via"] = "direct"
+        captured["direct_submit"] = (model, arguments, headers)
+        return "direct-ok"
+
+    monkeypatch.setattr(
+        image_generation_tool,
+        "fal_client",
+        types.SimpleNamespace(submit=direct_submit),
+    )
+
+    # _get_managed_fal_client builds a _ManagedFalSyncClient around fal_client —
+    # force the managed path to raise via a stub on the module
+    class RaisingManagedClient:
+        def submit(self, model, arguments=None, headers=None):
+            raise managed_error
+
+    monkeypatch.setattr(
+        image_generation_tool,
+        "_get_managed_fal_client",
+        lambda gateway: RaisingManagedClient(),
+    )
+
+    result = image_generation_tool._submit_fal_request(
+        "fal-ai/flux-2-pro",
+        {"prompt": "test prompt", "num_images": 1},
+    )
+
+    assert result == "direct-ok"
+    assert captured["submit_via"] == "direct"
+    assert captured["direct_submit"][0] == "fal-ai/flux-2-pro"
+
+
+def test_managed_fal_gateway_rejection_raises_when_no_direct_key(monkeypatch):
+    """#79628: gateway rejects (4xx) with NO direct key — raise with the
+    corrected message naming image_gen.use_gateway as the lever."""
+    captured = {}
+    _install_fake_tools_package()
+    _install_fake_fal_client(captured)
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.setenv("FAL_QUEUE_GATEWAY_URL", "http://127.0.0.1:3009")
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
+
+    image_generation_tool = _load_tool_module(
+        "tools.image_generation_tool",
+        "image_generation_tool.py",
+    )
+    monkeypatch.setattr(image_generation_tool.uuid, "uuid4", lambda: "fal-submit-789")
+    monkeypatch.setattr(
+        image_generation_tool,
+        "prefers_gateway",
+        lambda *a, **k: True,
+    )
+    monkeypatch.setattr(
+        image_generation_tool,
+        "fal_key_is_configured",
+        lambda: False,
+    )
+    managed_error = Exception("gateway reject")
+    managed_error.status_code = 402  # type: ignore[attr-defined]
+
+    class RaisingManagedClient:
+        def submit(self, model, arguments=None, headers=None):
+            raise managed_error
+
+    monkeypatch.setattr(
+        image_generation_tool,
+        "_get_managed_fal_client",
+        lambda gateway: RaisingManagedClient(),
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        image_generation_tool._submit_fal_request(
+            "fal-ai/flux-2-pro",
+            {"prompt": "test prompt"},
+        )
+    assert "image_gen.use_gateway" in str(excinfo.value)
+
+
 def test_openai_tts_uses_managed_audio_gateway_when_direct_key_absent(monkeypatch, tmp_path):
     captured = {}
     _install_fake_tools_package()

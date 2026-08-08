@@ -2,6 +2,7 @@
 
 import json
 from contextlib import contextmanager
+from contextvars import copy_context
 from pathlib import Path
 from unittest.mock import patch
 
@@ -914,6 +915,61 @@ class TestCuratorConsolidationDeleteGuard:
         # Skill must remain active on disk — fail closed, no archive.
         assert (skills_root / "active-skill").exists()
 
+    def test_background_review_read_survives_copied_tool_contexts(
+        self, tmp_path, monkeypatch
+    ):
+        """A view in one tool worker authorizes a patch in the next worker."""
+        from tools.skills_tool import skill_view
+        from tools.skill_manager_tool import _reset_background_review_read_marks
+
+        _reset_background_review_read_marks()
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch):
+            _create_curator_skill("reviewed", _skill_content("reviewed"))
+
+            viewed = copy_context().run(skill_view, "reviewed")
+            assert json.loads(viewed)["success"] is True
+
+            patched = copy_context().run(
+                skill_manage,
+                action="patch",
+                name="reviewed",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Do the thing safely.",
+            )
+            assert json.loads(patched)["success"] is True
+
+        _reset_background_review_read_marks()
+
+    def test_background_review_read_marks_stay_isolated_between_reviews(
+        self, tmp_path, monkeypatch
+    ):
+        """Copied tool contexts share only their own review's read marks."""
+        from tools.skills_tool import skill_view
+        from tools.skill_manager_tool import _reset_background_review_read_marks
+
+        _reset_background_review_read_marks()
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch):
+            _create_curator_skill("reviewed", _skill_content("reviewed"))
+
+            first_review = copy_context()
+            _reset_background_review_read_marks()
+            second_review = copy_context()
+
+            viewed = first_review.run(skill_view, "reviewed")
+            assert json.loads(viewed)["success"] is True
+
+            blocked = second_review.run(
+                skill_manage,
+                action="patch",
+                name="reviewed",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Do the thing safely.",
+            )
+            result = json.loads(blocked)
+            assert result["success"] is False
+            assert result.get("_read_before_write_required") is True
+
+        _reset_background_review_read_marks()
 
     def test_background_review_support_file_overwrite_requires_that_file_read(self, tmp_path, monkeypatch):
         from tools.skills_tool import skill_view

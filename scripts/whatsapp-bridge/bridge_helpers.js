@@ -157,7 +157,7 @@ export function pollUpdateForAggregation({
   return null;
 }
 
-export function buildTextSendPayload(text, { replyTo, messageStore } = {}) {
+export function buildTextSendPayload(text, { replyTo, messageStore, mentions = [] } = {}) {
   const content = { text };
   const options = {};
   const quoted = messageStore?.get(replyTo);
@@ -167,7 +167,45 @@ export function buildTextSendPayload(text, { replyTo, messageStore } = {}) {
     // literal/ignored `quoted` field instead of a native WhatsApp reply.
     options.quoted = quoted;
   }
+  if (mentions.length) {
+    content.mentions = mentions;
+  }
   return { content, options };
+}
+
+// Build a human-readable group roster from Baileys participants plus the
+// bridge's pushName cache. Names fall back to the participant username
+// (@handle) and finally the bare number so the list is never empty.
+export function buildGroupRoster(participants, nameCache = new Map()) {
+  const roster = [];
+  for (const p of participants || []) {
+    const id = p?.id;
+    if (!id) continue;
+    const name = nameCache.get(id)
+      || p.username
+      || id.replace(/@.*/, '');
+    roster.push({ id, name });
+  }
+  return roster;
+}
+
+// Resolve "@Name" tokens in outgoing text against a roster to JIDs, so the
+// model can tag a group member by display name without knowing their JID.
+// Matching is case-insensitive and substring-based on either side. Tokens are
+// single words (no spaces) so "@ankit kya haal" resolves "ankit", while
+// multi-word names like "Ankit Kumar" still match via substring.
+export function resolveAtNameMentions(text, roster) {
+  const tokens = [...String(text || '').matchAll(/@([\p{L}\p{N}_.-]+)/gu)].map(m => m[1].trim());
+  const mentions = [];
+  for (const token of tokens) {
+    const t = token.toLowerCase();
+    const match = (roster || []).find(r => {
+      const n = String(r.name || '').toLowerCase();
+      return n && (n.includes(t) || t.includes(n));
+    });
+    if (match && !mentions.includes(match.id)) mentions.push(match.id);
+  }
+  return mentions;
 }
 
 export function buildLocationPayload({ latitude, longitude, name, address } = {}) {

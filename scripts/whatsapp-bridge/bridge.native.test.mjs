@@ -15,6 +15,8 @@ import { getAggregateVotesInPollMessage } from '@whiskeysockets/baileys';
 import {
   buildPollPayload,
   buildTextSendPayload,
+  buildGroupRoster,
+  resolveAtNameMentions,
   createBoundedMessageStore,
   appendMediaFailureNote,
   extractBridgeEvent,
@@ -81,6 +83,62 @@ import {
   assert.deepEqual(content, { text: 'plain text' });
   assert.deepEqual(options, {});
   console.log('  ✓ unresolved replyTo falls back to plain text');
+}
+
+// -- mentions (WhatsApp @ tagging) -------------------------------------
+{
+  // Explicit mentions pass through to Baileys content.mentions
+  const { content } = buildTextSendPayload('@user reply', {
+    chatId: '15551234567@g.us',
+    mentions: ['15550002222@s.whatsapp.net'],
+  });
+  assert.deepEqual(content, { text: '@user reply', mentions: ['15550002222@s.whatsapp.net'] });
+  console.log('  ✓ explicit mentions pass through to Baileys content');
+}
+
+{
+  // No mentions → no mentions key in content
+  const { content } = buildTextSendPayload('plain reply', {
+    chatId: '15551234567@g.us',
+  });
+  assert.deepEqual(content, { text: 'plain reply' });
+  console.log('  ✓ no mentions key when none requested');
+}
+
+// -- group roster + @Name resolution ------------------------------------
+{
+  const roster = buildGroupRoster(
+    [
+      { id: '15550001111@s.whatsapp.net' },
+      { id: '15550002222@s.whatsapp.net', username: 'ankit' },
+      { id: '15550003333@s.whatsapp.net' },
+    ],
+    new Map([
+      ['15550001111@s.whatsapp.net', 'Dhruv'],
+      ['15550003333@s.whatsapp.net', 'Ankit Kumar'],
+    ]),
+  );
+  assert.deepEqual(roster, [
+    { id: '15550001111@s.whatsapp.net', name: 'Dhruv' },
+    { id: '15550002222@s.whatsapp.net', name: 'ankit' },
+    { id: '15550003333@s.whatsapp.net', name: 'Ankit Kumar' },
+  ]);
+  console.log('  ✓ roster prefers pushName, falls back to username/number');
+}
+
+{
+  const roster = [
+    { id: '15550001111@s.whatsapp.net', name: 'Dhruv' },
+    { id: '15550003333@s.whatsapp.net', name: 'Ankit Kumar' },
+  ];
+  // Case-insensitive substring match on either side
+  assert.deepEqual(resolveAtNameMentions('@ankit kya haal', roster), ['15550003333@s.whatsapp.net']);
+  assert.deepEqual(resolveAtNameMentions('sun @ANKIT ko bata', roster), ['15550003333@s.whatsapp.net']);
+  // Unknown name → no mention
+  assert.deepEqual(resolveAtNameMentions('@nobody hi', roster), []);
+  // No @tokens → no mentions
+  assert.deepEqual(resolveAtNameMentions('just text', roster), []);
+  console.log('  ✓ @Name resolves to JID case-insensitively, unknown names ignored');
 }
 
 // -- inbound quote/media/native metadata --------------------------------

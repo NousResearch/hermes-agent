@@ -1912,6 +1912,55 @@ def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str
 
 
 
+def configured_fallback_api_mode(fb: dict, fb_provider: str) -> str:
+    """Return the api_mode the operator declared for a fallback entry, or "".
+
+    Resolution order (first hit wins):
+
+    1. An explicit ``api_mode`` on the fallback entry itself.
+    2. The ``transport`` declared for ``fb_provider`` under config.yaml
+       ``providers:``, mapped through ``TRANSPORT_TO_API_MODE``.
+
+    Why this exists: ``try_activate_fallback`` used to derive the wire
+    protocol purely from heuristics that only recognise Anthropic by
+    hostname (``api.anthropic.com``) or a ``/anthropic`` path suffix.  An
+    Anthropic-Messages-compatible endpoint on any other host — a
+    self-hosted shim, a reverse proxy, a Cloudflare Worker — matched
+    neither, silently fell through to ``chat_completions``, and POSTed
+    ``/chat/completions`` to a server that only serves ``/v1/messages``,
+    yielding HTTP 404 on every fallback attempt.
+
+    The primary path already honours both signals via
+    ``determine_api_mode()``; only the fallback path ignored them.  Config
+    is authoritative here precisely because the heuristics cannot know
+    about an arbitrary host.
+
+    Returns "" when the operator declared nothing, leaving the existing
+    provider/base-URL/model heuristics untouched.
+    """
+    explicit = (fb.get("api_mode") or "").strip()
+    if explicit:
+        return explicit
+
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.providers import TRANSPORT_TO_API_MODE
+
+        entry = ((load_config() or {}).get("providers") or {}).get(fb_provider)
+        if isinstance(entry, dict):
+            transport = (entry.get("transport") or "").strip()
+            if transport:
+                return TRANSPORT_TO_API_MODE.get(transport, "")
+    except Exception as exc:
+        # Never let config resolution break failover — fall through to the
+        # heuristics, which is the pre-existing behaviour.
+        logger.debug(
+            "Fallback api_mode: could not resolve provider transport for %s: %s",
+            fb_provider, exc,
+        )
+    return ""
+
+
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain.
 
@@ -2057,7 +2106,15 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         fb_api_mode = "chat_completions"
         fb_base_url = str(fb_client.base_url)
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
-        if fb_provider == "openai-codex":
+
+        _fb_explicit_mode = configured_fallback_api_mode(fb, fb_provider)
+        if _fb_explicit_mode:
+            fb_api_mode = _fb_explicit_mode
+            logger.info(
+                "Fallback to %s/%s: using configured api_mode=%s",
+                fb_provider, fb_model, fb_api_mode,
+            )
+        elif fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
         elif fb_provider in {"nous", "nous-portal", "nousresearch"}:
             # Portal is dual-wire: anthropic/* must land on /v1/messages.

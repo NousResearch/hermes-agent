@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { $backendThemes, $pendingSkinApply, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
+import { $backendThemes, $pendingSkinApply, __resetBackendSkinSync, ingestBackendSkin, ingestBackendSkins } from './backend-sync'
 
 const skin = (name: string) => ({
   name,
@@ -104,6 +104,52 @@ describe('ingestBackendSkin', () => {
     ingestBackendSkin(undefined, { apply: true })
     ingestBackendSkin({ name: '' }, { apply: true })
 
+    expect($pendingSkinApply.get()).toBeNull()
+  })
+})
+
+describe('ingestBackendSkins', () => {
+  beforeEach(() => __resetBackendSkinSync())
+
+  it('registers every user skin in the payload', () => {
+    ingestBackendSkins([skin('neon'), skin('forest'), skin('ocean')])
+
+    expect($backendThemes.get().neon?.name).toBe('neon')
+    expect($backendThemes.get().forest?.name).toBe('forest')
+    expect($backendThemes.get().ocean?.name).toBe('ocean')
+  })
+
+  it('never registers default or built-in names', () => {
+    ingestBackendSkins([skin('default'), skin('mono'), skin('slate'), skin('neon')])
+
+    expect($backendThemes.get().default).toBeUndefined()
+    expect($backendThemes.get().mono).toBeUndefined()
+    expect($backendThemes.get().slate).toBeUndefined()
+    expect($backendThemes.get().neon?.name).toBe('neon')
+  })
+
+  it('never sets the apply baseline (bulk list is seed-only)', () => {
+    ingestBackendSkins([skin('neon'), skin('forest')])
+
+    expect($pendingSkinApply.get()).toBeNull()
+  })
+
+  it('a bulk list cannot snap back a manual desktop switch', () => {
+    // User manually switched the desktop theme, then a reconnect re-seeds the
+    // full skin list. The bulk list must not repaint or override the switch.
+    $pendingSkinApply.set(null)
+    ingestBackendSkins([skin('neon'), skin('forest')])
+
+    expect($pendingSkinApply.get()).toBeNull()
+  })
+
+  it('is a no-op for empty / malformed payloads', () => {
+    ingestBackendSkins(undefined)
+    ingestBackendSkins(null)
+    ingestBackendSkins([])
+    ingestBackendSkins([undefined, { name: '' }, {}])
+
+    expect(Object.keys($backendThemes.get())).toHaveLength(0)
     expect($pendingSkinApply.get()).toBeNull()
   })
 })

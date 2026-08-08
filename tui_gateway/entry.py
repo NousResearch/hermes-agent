@@ -20,7 +20,7 @@ import traceback
 from tui_gateway._stdin_recovery import handle_spurious_eof
 
 from tui_gateway import server
-from tui_gateway.server import _CRASH_LOG, dispatch, resolve_skin, write_json
+from tui_gateway.server import _CRASH_LOG, dispatch, resolve_all_skins, resolve_skin, write_json
 from tui_gateway.transport import TeeTransport
 
 logger = logging.getLogger(__name__)
@@ -437,7 +437,13 @@ def main():
         "params": {
             "type": "gateway.ready",
             # change_events: see tui_gateway/ws.py — clients demote legacy polls.
-            "payload": {"skin": resolve_skin(), "change_events": True},
+            # skins: every installed skin, so the desktop Appearance settings
+            # lists them natively (see ws.py for the same payload shape).
+            "payload": {
+                "skin": resolve_skin(),
+                "skins": resolve_all_skins(),
+                "change_events": True,
+            },
         },
     }):
         _log_exit("startup write failed (broken stdout pipe before first event)")

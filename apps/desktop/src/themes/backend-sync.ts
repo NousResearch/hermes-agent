@@ -37,6 +37,47 @@ export const $pendingSkinApply = atom<string | null>(null)
 // restart / disconnected), an explicit re-affirm must repaint, not no-op.
 let lastSynced: { applied: boolean; name: string } | null = null
 
+/**
+ * Fold every installed skin into the desktop registry at connect time.
+ *
+ * The `gateway.ready` payload now carries `skins` (all installed skins, built-in
+ * + user) alongside the active `skin`. This registers each one into
+ * `$backendThemes` so the built-in Appearance settings list every skin natively
+ * — not just the active one. It deliberately does NOT touch `lastSynced` or
+ * `$pendingSkinApply`: only the active skin (via `ingestBackendSkin`) owns the
+ * apply baseline, so a bulk list can never repaint or snap back a manual switch.
+ */
+export function ingestBackendSkins(skins: Array<HermesSkin | undefined | null> | undefined | null): void {
+  if (!Array.isArray(skins)) {
+    return
+  }
+
+  for (const skin of skins) {
+    const name = (skin && typeof skin === 'object' ? (skin.name ?? '') : '').trim()
+
+    // `default` is "no opinion" on the PALETTE and built-in names keep the
+    // desktop's own hand-tuned palette — same rules as ingestBackendSkin.
+    if (!name || name === 'default' || BUILTIN_THEMES[name]) {
+      continue
+    }
+
+    const theme = skinToDesktopTheme(skin as HermesSkin)
+
+    if (!theme) {
+      continue
+    }
+
+    const current = $backendThemes.get()
+
+    // Only write on a real change — the store stays referentially stable
+    // across a connect that didn't add anything, so the Appearance grid
+    // doesn't re-render pointlessly.
+    if (JSON.stringify(current[name]) !== JSON.stringify(theme)) {
+      $backendThemes.set({ ...current, [name]: theme })
+    }
+  }
+}
+
 /** Test-only: reset the module's apply guard + registry between cases. */
 export function __resetBackendSkinSync(): void {
   lastSynced = null

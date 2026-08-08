@@ -311,6 +311,7 @@ async def handle_ws(ws: Any) -> None:
         # (#60800). The skin payload is small (a dict of strings/arrays),
         # so the to_thread overhead is negligible.
         skin_payload = await asyncio.to_thread(server.resolve_skin)
+        skins_payload = await asyncio.to_thread(server.resolve_all_skins)
         ready_ok = await transport.write_async(
             {
                 "jsonrpc": "2.0",
@@ -320,7 +321,14 @@ async def handle_ws(ws: Any) -> None:
                     # change_events: this backend broadcasts pet.changed /
                     # cron.changed / sessions.changed, so clients can demote
                     # their legacy polls to slow backstops.
-                    "payload": {"skin": skin_payload, "change_events": True},
+                    # skins: every installed skin (built-in + user) with full
+                    # palettes, so the desktop Appearance settings can list
+                    # them natively — not just the active skin.
+                    "payload": {
+                        "skin": skin_payload,
+                        "skins": skins_payload,
+                        "change_events": True,
+                    },
                 },
             }
         )

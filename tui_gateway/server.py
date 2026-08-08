@@ -3260,27 +3260,55 @@ def _clear_pending(sid: str | None = None) -> None:
 # ── Agent factory ────────────────────────────────────────────────────
 
 
+def _skin_payload(skin) -> dict:
+    """One skin → the JSON-RPC payload shape (`HermesSkin` on the desktop)."""
+    return {
+        "name": skin.name,
+        "colors": skin.colors,
+        # Paired palettes: the TUI detects the terminal's polarity and
+        # prefers the matching hand-tuned block over adapting `colors`.
+        "light_colors": skin.light_colors,
+        "dark_colors": skin.dark_colors,
+        "branding": skin.branding,
+        "banner_logo": skin.banner_logo,
+        "banner_hero": skin.banner_hero,
+        "tool_prefix": skin.tool_prefix,
+        "help_header": (skin.branding or {}).get("help_header", ""),
+    }
+
+
 def resolve_skin() -> dict:
     try:
         from hermes_cli.skin_engine import init_skin_from_config, get_active_skin
 
         init_skin_from_config(_load_cfg())
-        skin = get_active_skin()
-        return {
-            "name": skin.name,
-            "colors": skin.colors,
-            # Paired palettes: the TUI detects the terminal's polarity and
-            # prefers the matching hand-tuned block over adapting `colors`.
-            "light_colors": skin.light_colors,
-            "dark_colors": skin.dark_colors,
-            "branding": skin.branding,
-            "banner_logo": skin.banner_logo,
-            "banner_hero": skin.banner_hero,
-            "tool_prefix": skin.tool_prefix,
-            "help_header": (skin.branding or {}).get("help_header", ""),
-        }
+        return _skin_payload(get_active_skin())
     except Exception:
         return {}
+
+
+def resolve_all_skins() -> list:
+    """Every available skin (built-in + user) as a full payload.
+
+    The desktop Appearance settings merge this list (via the gateway.ready
+    payload) so every installed skin shows up natively — not just the active
+    one, which is all `resolve_skin` carries. Skins that fail to load are
+    skipped, mirroring `resolve_skin`'s fail-open behavior.
+    """
+    try:
+        from hermes_cli.skin_engine import list_skins, load_skin
+    except Exception:
+        return []
+    out = []
+    for entry in list_skins():
+        try:
+            payload = _skin_payload(load_skin(entry["name"]))
+        except Exception:
+            continue
+        payload["description"] = entry.get("description", "")
+        payload["source"] = entry.get("source", "user")
+        out.append(payload)
+    return out
 
 
 # Signature of the last skin broadcast: (name, active user-file mtime). Lets the

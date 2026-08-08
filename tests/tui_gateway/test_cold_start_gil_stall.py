@@ -161,6 +161,56 @@ def test_handle_ws_ready_payload_wires_skin_through_to_thread():
 # ─── Fix 3: _warm_gateway_module pre-imports heavy chains ──────────────
 
 
+def test_ready_payload_carries_all_skins_beside_the_active_skin():
+    """gateway.ready must include the full skin list (built-in + user) so the
+    desktop Appearance settings lists every skin natively, not just the
+    active one (#desktop-theme-pack appearance integration)."""
+    import asyncio as _asyncio
+    import threading
+
+    import tui_gateway.server as server_mod
+    import tui_gateway.ws as ws_mod
+
+    idents = {}
+    frames = []
+
+    def _fake_resolve_all_skins():
+        idents["skins_thread"] = threading.get_ident()
+        return [{"name": "neon", "colors": {}}, {"name": "forest", "colors": {}}]
+
+    async def _scenario():
+        idents["loop_thread"] = threading.get_ident()
+        with patch.object(server_mod, "resolve_all_skins", _fake_resolve_all_skins):
+            # Reproduce handle_ws's ready-frame construction verbatim — the
+            # same to_thread pattern for the bulk list as for the active skin.
+            skins_payload = await _asyncio.to_thread(server_mod.resolve_all_skins)
+            frames.append(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "event",
+                    "params": {
+                        "type": "gateway.ready",
+                        "payload": {"skin": {"name": "neon"}, "skins": skins_payload, "change_events": True},
+                    },
+                }
+            )
+
+    _asyncio.run(_scenario())
+
+    assert frames[0]["params"]["payload"]["skins"] == [
+        {"name": "neon", "colors": {}},
+        {"name": "forest", "colors": {}},
+    ]
+    assert frames[0]["params"]["payload"]["skin"] == {"name": "neon"}
+    assert frames[0]["params"]["payload"]["change_events"] is True
+    assert idents["skins_thread"] != idents["loop_thread"]
+    # Belt and braces: the production site must route the bulk list through
+    # to_thread too — assert against the live source so a revert to inline
+    # resolve_all_skins() cannot slip past the behavioral stub above.
+    source = inspect.getsource(ws_mod.handle_ws)
+    assert "to_thread(server.resolve_all_skins)" in source
+
+
 def test_warm_gateway_module_imports_cold_start_chains():
     """_warm_gateway_module must pre-import the module chains that the
     first WS connection + RPC burst would otherwise import on the loop

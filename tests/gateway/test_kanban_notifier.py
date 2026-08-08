@@ -2,6 +2,7 @@ import asyncio
 import sqlite3
 from pathlib import Path
 
+import pytest
 
 from gateway.config import Platform
 from gateway.kanban_watchers import (
@@ -127,6 +128,21 @@ def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, m
     assert len(adapter.handled) == 1
     assert adapter.handled[0].source.chat_type == "dm"
     assert adapter.handled[0].source.thread_id == "20197"
+
+
+def test_kanban_notifier_dedupes_board_slugs_pointing_to_same_db(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "alias-a")
+    kb.create_board("alias-a", name="Alias A")
+    kb.write_board_metadata("alias-b", name="Alias B")
+    alias_a_db = kb.board_dir("alias-a") / "kanban.db"
+    alias_b_db = kb.board_dir("alias-b") / "kanban.db"
+    try:
+        alias_b_db.symlink_to(alias_a_db)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+    assert alias_a_db.resolve() == alias_b_db.resolve()
 
 
 def test_active_named_profile_subscription_is_delivered(tmp_path, monkeypatch):

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   isPaintableHex,
+  POST_ALT_SCREEN_CURSOR_RESTORE,
   resetTerminalModes,
   setTerminalBackground,
   setTerminalForeground,
@@ -27,6 +28,14 @@ describe('terminal mode reset', () => {
     expect(TERMINAL_MODE_RESET).toContain('\x1b[?1049l')
     expect(TERMINAL_MODE_RESET).toContain('\x1b[<u')
     expect(TERMINAL_MODE_RESET).toContain('\x1b[>4m')
+  })
+
+  it('parks the cursor after leaving alternate screen', () => {
+    const exitAltScreen = '\x1b[?1049l'
+    const index = TERMINAL_MODE_RESET.indexOf(exitAltScreen)
+
+    expect(index).toBeGreaterThanOrEqual(0)
+    expect(TERMINAL_MODE_RESET.slice(index + exitAltScreen.length)).toContain(POST_ALT_SCREEN_CURSOR_RESTORE)
   })
 
   it('writes reset sequence to TTY streams without fds', () => {

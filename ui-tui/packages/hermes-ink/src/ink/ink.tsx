@@ -91,7 +91,8 @@ import {
   ENABLE_KITTY_KEYBOARD,
   ENABLE_MODIFY_OTHER_KEYS,
   ERASE_SCREEN,
-  ERASE_SCROLLBACK
+  ERASE_SCROLLBACK,
+  MAIN_SCREEN_CURSOR_RESTORE
 } from './termio/csi.js'
 import {
   DBP,
@@ -2444,7 +2445,7 @@ export default class Ink {
       if (this.altScreenActive) {
         // <AlternateScreen>'s unmount effect won't run during signal-exit.
         // Exit alt screen FIRST so other cleanup sequences go to the main screen.
-        writeSync(1, EXIT_ALT_SCREEN)
+        writeSync(1, EXIT_ALT_SCREEN + MAIN_SCREEN_CURSOR_RESTORE)
       }
 
       // Disable mouse tracking — unconditional because altScreenActive can be

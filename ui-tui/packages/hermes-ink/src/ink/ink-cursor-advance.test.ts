@@ -3,8 +3,11 @@ import { EventEmitter } from 'events'
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 
+import { AlternateScreen } from './components/AlternateScreen.js'
 import Text from './components/Text.js'
 import Ink from './ink.js'
+import { MAIN_SCREEN_CURSOR_RESTORE } from './termio/csi.js'
+import { EXIT_ALT_SCREEN } from './termio/dec.js'
 
 class FakeTty extends EventEmitter {
   chunks: string[] = []
@@ -230,5 +233,17 @@ describe('Ink.noteExternalCursorAdvance', () => {
     expect(peek(ink).cursorDeclaration).toBeNull()
 
     ink.unmount()
+  })
+})
+
+describe('Ink alternate-screen cleanup', () => {
+  it('parks the main-screen cursor after AlternateScreen cleanup exits alt screen', () => {
+    const { ink, stdout } = makeInk()
+
+    ink.render(React.createElement(AlternateScreen, null, React.createElement(Text, null, 'hi')))
+    ink.onRender()
+    ink.unmount()
+
+    expect(stdout.chunks.join('')).toContain(EXIT_ALT_SCREEN + MAIN_SCREEN_CURSOR_RESTORE)
   })
 })

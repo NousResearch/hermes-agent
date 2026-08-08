@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-03T22:03:15Z",
+  "updated_at": "2026-08-06T14:48:19Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -135,6 +135,10 @@
         },
         {
           "id": "nvidia/nemotron-3-super-120b-a12b",
+          "description": ""
+        },
+        {
+          "id": "meta/muse-spark-1.2",
           "description": ""
         },
         {

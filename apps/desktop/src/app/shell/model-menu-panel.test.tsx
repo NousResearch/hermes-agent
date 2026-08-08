@@ -54,20 +54,20 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-function renderPanel(onSelectModel = vi.fn()) {
+function renderPanel(onSelectModel = vi.fn(), requestGateway = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   const content = render(
     <QueryClientProvider client={client}>
       <DropdownMenu open>
         <DropdownMenuContent>
-          <ModelMenuPanel onSelectModel={onSelectModel} requestGateway={vi.fn() as never} />
+          <ModelMenuPanel onSelectModel={onSelectModel} requestGateway={requestGateway as never} />
         </DropdownMenuContent>
       </DropdownMenu>
     </QueryClientProvider>
   )
 
-  return { onSelectModel, content }
+  return { onSelectModel, requestGateway, content }
 }
 
 describe('ModelMenuPanel MoA presets', () => {
@@ -141,6 +141,40 @@ describe('ModelMenuPanel current selection', () => {
 
     expect(currentRow?.querySelector('.codicon-check')).not.toBeNull()
     expect(staleRow?.querySelector('.codicon-check')).toBeNull()
+  })
+
+  it('pushes Thinking edits onto a named custom provider session', async () => {
+    const model = 'DeepSeek-V4-Flash-0731'
+    $currentProvider.set('custom')
+    $currentModel.set(model)
+    getGlobalModelOptions.mockResolvedValue({
+      model,
+      provider: 'custom:deepseek-v4-flash-0731',
+      providers: [
+        {
+          capabilities: { [model]: { reasoning: true } },
+          is_current: true,
+          models: [model],
+          name: model,
+          slug: 'deepseek-v4-flash-0731'
+        }
+      ]
+    })
+
+    const { content, requestGateway } = renderPanel()
+    const row = (await content.findByText('DeepSeek V4 Flash 0731')).closest('[role="menuitem"]')
+
+    expect(row?.querySelector('.codicon-check')).not.toBeNull()
+    fireEvent.pointerMove(row as Element, { pointerType: 'mouse' })
+    fireEvent.click(await screen.findByRole('switch'))
+
+    await vi.waitFor(() => {
+      expect(requestGateway).toHaveBeenCalledWith('config.set', {
+        key: 'reasoning',
+        session_id: 'runtime-1',
+        value: 'none'
+      })
+    })
   })
 })
 

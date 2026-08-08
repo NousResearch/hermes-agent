@@ -58,6 +58,27 @@ describe('model-status-label', () => {
       expect(currentPickerSelection(store, options)).toEqual(store)
     })
 
+    it('recovers a named custom provider from the current catalog row', () => {
+      const model = 'DeepSeek-V4-Flash-0731'
+
+      expect(
+        currentPickerSelection(
+          { model, provider: 'custom' },
+          {
+            model,
+            provider: 'custom:deepseek-v4-flash-0731',
+            providers: [
+              {
+                is_current: true,
+                models: [model],
+                slug: 'deepseek-v4-flash-0731'
+              }
+            ]
+          }
+        )
+      ).toEqual({ model, provider: 'deepseek-v4-flash-0731' })
+    })
+
     it('falls back to options when the store is empty', () => {
       expect(currentPickerSelection({ model: '', provider: '' }, options)).toEqual(options)
     })

@@ -1,11 +1,42 @@
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 
 _CREATE_NO_WINDOW = 0x08000000
+
+
+def _run_with_retained_stdin(cmd, *, env, cwd, timeout=10):
+    """Run *cmd* while keeping the stdin writer open (ACP JSON-RPC-like)."""
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+        env=env,
+    )
+    try:
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            stderr = proc.stderr.read() if proc.stderr else ""
+            raise AssertionError(
+                f"helper hung under retained stdin writer (stderr={stderr!r})"
+            )
+        stdout = proc.stdout.read() if proc.stdout else ""
+        stderr = proc.stderr.read() if proc.stderr else ""
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+    finally:
+        if proc.stdin:
+            proc.stdin.close()
 
 
 class _Completed:
@@ -131,22 +162,121 @@ def test_bounded_git_probe_spawn_failure_returns_empty(monkeypatch):
     assert _subprocess_compat.bounded_git_probe(["git", "-C", "/repo", "status"], timeout=1.5) == ""
 
 
+def test_bounded_captured_run_fast_path_spawn_contract_windows(monkeypatch):
+    """``bounded_captured_run`` keeps PIPE/PIPE/DEVNULL + hide flags on Windows."""
+    from hermes_cli import _subprocess_compat
+
+    spawns = []
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            spawns.append((cmd, kwargs))
+            self.returncode = 0
+
+        def communicate(self, timeout=None):
+            return ("ok\n", "warn\n")
+
+        def kill(self):  # pragma: no cover
+            raise AssertionError("kill() must not run when the child returns in time")
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", _FakePopen)
+
+    result = _subprocess_compat.bounded_captured_run(
+        ["bash", "--noprofile", "--norc", "-c", "true"], timeout=15
+    )
+    assert result.returncode == 0
+    assert result.stdout == "ok\n"
+    assert result.stderr == "warn\n"
+    assert len(spawns) == 1
+    _cmd, kwargs = spawns[0]
+    assert kwargs["stdout"] == subprocess.PIPE
+    assert kwargs["stderr"] == subprocess.PIPE
+    assert kwargs["stdin"] == subprocess.DEVNULL
+    assert kwargs["text"] is True
+    assert kwargs["encoding"] == "utf-8"
+    assert kwargs["errors"] == "replace"
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
 
 
+def test_bounded_captured_run_timeout_tree_kills_on_windows(monkeypatch):
+    """Timeout path: taskkill tree first, then kill fallback, then bounded drain."""
+    from hermes_cli import _subprocess_compat
+
+    events = []
+
+    class _HangingPopen:
+        def __init__(self, cmd, **kwargs):
+            self.returncode = None
+            self.pid = 5150
+
+        def communicate(self, timeout=None):
+            events.append(f"comm:{timeout}")
+            if timeout != 1:
+                raise subprocess.TimeoutExpired(cmd="bash", timeout=timeout)
+            return ("", "")
+
+        def kill(self):
+            events.append("kill")
+
+    def fake_run(cmd, **kwargs):
+        if cmd and cmd[0] == "taskkill":
+            events.append(("taskkill", list(cmd)))
+        return _Completed()
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", _HangingPopen)
+    monkeypatch.setattr(_subprocess_compat.subprocess, "run", fake_run)
+
+    result = _subprocess_compat.bounded_captured_run(["bash", "-c", "true"], timeout=15)
+    assert result.returncode == -1
+    assert result.stdout == ""
+    assert result.stderr == "timed out after 15s"
+    # Windows: walk the live tree before killing the launcher, then drain.
+    assert events == [
+        "comm:15",
+        ("taskkill", ["taskkill", "/T", "/F", "/PID", "5150"]),
+        "kill",
+        "comm:1",
+    ]
 
 
+def test_bounded_git_probe_timeout_returns_empty(monkeypatch):
+    """Wrapper must fail open to "" when the shared helper times out."""
+    from hermes_cli import _subprocess_compat
+
+    def _timeout_run(argv, *, timeout, env=None):
+        return subprocess.CompletedProcess(list(argv), -1, "", f"timed out after {timeout}s")
+
+    monkeypatch.setattr(_subprocess_compat, "bounded_captured_run", _timeout_run)
+    assert _subprocess_compat.bounded_git_probe(["git", "status"], timeout=1.5) == ""
 
 
-
-
-
-
-
-
-
-
-
-
+def test_bounded_captured_run_returns_under_retained_stdin():
+    """ACP/TUI hosts keep stdin open; probes must use DEVNULL or hang forever."""
+    blocker = (
+        "import sys\n"
+        "# Block if stdin is an open pipe with no EOF (inherited ACP stdin).\n"
+        "sys.stdin.buffer.read(1)\n"
+        "raise SystemExit(0)\n"
+    )
+    helper = (
+        "from hermes_cli._subprocess_compat import bounded_captured_run\n"
+        "import sys\n"
+        f"r = bounded_captured_run([sys.executable, '-c', {blocker!r}], timeout=5)\n"
+        "print(r.returncode)\n"
+    )
+    repo_root = str(Path(__file__).resolve().parents[1])
+    proc = _run_with_retained_stdin(
+        [sys.executable, "-c", helper],
+        env={**os.environ, "PYTHONPATH": repo_root},
+        cwd=repo_root,
+        timeout=10,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "0"
 
 
 def test_shell_hooks_hide_hook_command_windows(monkeypatch):

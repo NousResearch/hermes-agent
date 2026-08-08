@@ -18,6 +18,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from hermes_constants import PARTIAL_STREAM_STUB_ID
+
 
 def _make_anthropic_agent(**kwargs):
     from run_agent import AIAgent
@@ -62,6 +64,13 @@ def _tool_use_start_event(name="write_file"):
     return SimpleNamespace(
         type="content_block_start",
         content_block=SimpleNamespace(type="tool_use", name=name),
+    )
+
+
+def _text_delta_event(text="I'll write that now."):
+    return SimpleNamespace(
+        type="content_block_delta",
+        delta=SimpleNamespace(type="text_delta", text=text),
     )
 
 
@@ -117,3 +126,109 @@ class TestAnthropicMidToolCallStreamDrop:
             {"model": "claude-opus-4-7"}
         )
         assert response is text_only
+
+    def test_preamble_then_dropped_tool_retries_in_place(self, monkeypatch):
+        """A tool drop remains retryable after Anthropic streamed preamble text."""
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
+
+        dropped = MagicMock()
+        dropped.content = [_tool_use_block()]
+        dropped.stop_reason = None
+        dropped.usage = SimpleNamespace(input_tokens=10, output_tokens=2)
+
+        done = MagicMock()
+        done.content = [_tool_use_block(input_obj={"path": "a.txt"})]
+        done.stop_reason = "tool_use"
+        done.usage = SimpleNamespace(input_tokens=10, output_tokens=5)
+
+        agent = _make_anthropic_agent()
+        agent.stream_delta_callback = MagicMock()
+        agent._anthropic_client.messages.stream = MagicMock(
+            side_effect=[
+                _stream_cm(
+                    dropped,
+                    events=[_text_delta_event(), _tool_use_start_event()],
+                ),
+                _stream_cm(done, events=[_tool_use_start_event()]),
+            ]
+        )
+
+        response = agent._interruptible_streaming_api_call(
+            {"model": "claude-opus-4-7"}
+        )
+
+        assert response is done
+        assert agent._anthropic_client.messages.stream.call_count == 2
+
+    def test_exhausted_retry_stub_names_dropped_anthropic_tool(self, monkeypatch):
+        """Retry exhaustion preserves the dropped tool name in the warning stub."""
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
+
+        dropped = MagicMock()
+        dropped.content = [_tool_use_block()]
+        dropped.stop_reason = None
+        dropped.usage = SimpleNamespace(input_tokens=10, output_tokens=2)
+
+        agent = _make_anthropic_agent()
+        agent.stream_delta_callback = MagicMock()
+        agent._anthropic_client.messages.stream = MagicMock(
+            side_effect=[
+                _stream_cm(
+                    dropped,
+                    events=[_text_delta_event(), _tool_use_start_event()],
+                ),
+                _stream_cm(
+                    dropped,
+                    events=[_text_delta_event(), _tool_use_start_event()],
+                ),
+            ]
+        )
+
+        response = agent._interruptible_streaming_api_call(
+            {"model": "claude-opus-4-7"}
+        )
+
+        assert agent._anthropic_client.messages.stream.call_count == 2
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response._dropped_tool_names == ["write_file"]
+        assert (
+            "Stream stalled mid tool-call (write_file)"
+            in response.choices[0].message.content
+        )
+
+    def test_retry_state_does_not_promote_later_text_only_drop(self, monkeypatch):
+        """A prior tool drop must not make a later text-only drop retryable."""
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "2")
+
+        dropped_tool = MagicMock()
+        dropped_tool.content = [_tool_use_block()]
+        dropped_tool.stop_reason = None
+        dropped_tool.usage = SimpleNamespace(input_tokens=10, output_tokens=2)
+
+        dropped_text = MagicMock()
+        dropped_text.content = []
+        dropped_text.stop_reason = None
+        dropped_text.usage = SimpleNamespace(input_tokens=10, output_tokens=2)
+
+        unexpected_retry = MagicMock()
+        unexpected_retry.content = [_tool_use_block(input_obj={"path": "a.txt"})]
+        unexpected_retry.stop_reason = "tool_use"
+        unexpected_retry.usage = SimpleNamespace(input_tokens=10, output_tokens=5)
+
+        agent = _make_anthropic_agent()
+        agent.stream_delta_callback = MagicMock()
+        agent._anthropic_client.messages.stream = MagicMock(
+            side_effect=[
+                _stream_cm(dropped_tool, events=[_tool_use_start_event()]),
+                _stream_cm(dropped_text, events=[_text_delta_event()]),
+                _stream_cm(unexpected_retry, events=[_tool_use_start_event()]),
+            ]
+        )
+
+        response = agent._interruptible_streaming_api_call(
+            {"model": "claude-opus-4-7"}
+        )
+
+        assert agent._anthropic_client.messages.stream.call_count == 2
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response._dropped_tool_names is None

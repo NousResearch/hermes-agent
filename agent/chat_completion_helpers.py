@@ -3124,6 +3124,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             stream_attempt_state["current"] += 1
             attempt_id = int(stream_attempt_state["current"])
         provider_tool_in_flight["yes"] = False
+        result["partial_tool_names"] = []
         return attempt_id
 
     def _cancel_current_stream_attempt(reason: str) -> None:
@@ -3856,8 +3857,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     block = getattr(event, "content_block", None)
                     if block and getattr(block, "type", None) == "tool_use":
                         has_tool_use = True
+                        provider_tool_in_flight["yes"] = True
                         tool_name = getattr(block, "name", None)
                         if tool_name:
+                            result["partial_tool_names"].append(tool_name)
                             _fire_first_delta()
                             agent._fire_tool_gen_started(tool_name)
                 elif event_type == "content_block_delta":
@@ -4059,6 +4062,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             or _is_conn_err
                             or _is_sse_conn_err_preview
                             or _is_stream_parse_err
+                            or _is_empty_stream
                         )
                         _can_silent_retry = (
                             _partial_tool_in_flight
@@ -4102,7 +4106,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         # Reset in-memory accumulators so the next
                         # attempt's chunks don't concat onto the dead
                         # stream's partial JSON.
-                        result["partial_tool_names"] = []
                         deltas_were_sent["yes"] = False
                         first_delta_fired["done"] = False
                         agent._emit_stream_drop(

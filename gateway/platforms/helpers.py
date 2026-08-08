@@ -352,11 +352,23 @@ def _render_table_block(table_block: list[str]) -> str:
     rendered_groups: list[str] = []
     for index, row in enumerate(table_block[2:], start=1):
         cells = split_markdown_table_row(row)
+        heading_pos = None
         if has_row_label_col:
             heading = cells[0] if cells and cells[0] else f"Row {index}"
             data_cells = cells[1:]
         else:
-            heading = next((cell for cell in cells if cell), f"Row {index}")
+            # Remember WHICH cell became the heading, not just its text. The
+            # bullet to drop is the one that produced the heading — matching on
+            # value instead dropped every OTHER cell that happened to hold the
+            # same string, silently deleting real columns from the message.
+            # ``| prod | us-east | prod |`` under ``Env | Region | Status``
+            # rendered as "**prod** / • Region: us-east" — the Status column
+            # was gone. Repeated values are the norm in the status and
+            # comparison tables agents emit.
+            heading_pos = next(
+                (pos for pos, cell in enumerate(cells) if cell), None
+            )
+            heading = cells[heading_pos] if heading_pos is not None else f"Row {index}"
             data_cells = cells
 
         if len(data_cells) < len(headers):
@@ -365,8 +377,8 @@ def _render_table_block(table_block: list[str]) -> str:
             data_cells = data_cells[: len(headers)]
 
         bullets: list[str] = []
-        for header, value in zip(headers, data_cells):
-            if not has_row_label_col and value == heading:
+        for pos, (header, value) in enumerate(zip(headers, data_cells)):
+            if not has_row_label_col and pos == heading_pos:
                 continue
             bullets.append(f"• {header}: {value}")
 

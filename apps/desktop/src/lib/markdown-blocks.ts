@@ -115,6 +115,22 @@ function lexIncrementally(text: string): null | string[] {
 }
 
 export function parseMarkdownIntoBlocksCached(markdown: string): string[] {
+  try {
+    return parseMarkdownIntoBlocksCachedUnsafe(markdown)
+  } catch {
+    // A message that the markdown lexer cannot parse must never take the whole
+    // thread down: MessageRenderBoundary re-throws non-transient errors to the
+    // root boundary, which blanks the entire transcript. Fall back to the raw
+    // text as a single block so the message stays visible (join(blocks) ===
+    // markdown still holds). Drop any partial cache entry the failed lex may
+    // have left behind so a retry is not served stale data. See #80621.
+    exactCache.delete(markdown)
+
+    return [markdown]
+  }
+}
+
+function parseMarkdownIntoBlocksCachedUnsafe(markdown: string): string[] {
   const hit = exactCache.get(markdown)
 
   if (hit) {

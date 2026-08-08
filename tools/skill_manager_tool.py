@@ -1593,6 +1593,12 @@ def skill_manage(
         # review fork creates it — foreground `skill_manage(create)` calls are
         # user-directed, and those skills belong to the user (the curator must
         # not touch them). Best-effort; telemetry failures never break the tool.
+        #
+        # ``provenance`` is a separate field that records who authored the skill
+        # file, independent of the ``created_by`` curator-policy flag. It is set
+        # to ``"agent"`` for every ``skill_manage(create)`` call so the learning
+        # graph can identify agent-created skills without conflating them with
+        # the curator management opt-in.
         try:
             from tools.skill_usage import bump_patch, forget, record_created
             from tools.skill_provenance import is_background_review
@@ -1600,6 +1606,7 @@ def skill_manage(
                 record_created(
                     name,
                     agent_created=is_background_review(),
+                    provenance="agent",
                     task_id=task_id,
                     session_id=session_id,
                 )

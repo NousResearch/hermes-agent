@@ -3194,7 +3194,15 @@ class BasePlatformAdapter(ABC):
         """
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(platform=self.platform.value, **kwargs)
+            # Multiplexed secondary adapters share the process-level runtime
+            # status file with the primary adapter.  Their runner stamps a
+            # namespaced key (``<profile>:<platform>``) so one profile's fatal
+            # state cannot overwrite another profile's healthy entry.
+            platform_key = (
+                getattr(self, "_runtime_status_platform_key", None)
+                or self.platform.value
+            )
+            write_runtime_status(platform=platform_key, **kwargs)
         except Exception as exc:
             # Use getattr so object.__new__(...) test harnesses that skip __init__
             # don't blow up on attribute access.
@@ -3233,6 +3241,7 @@ class BasePlatformAdapter(ABC):
         """
         from gateway.status import (
             acquire_scoped_lock,
+            scoped_lock_owner_label,
             take_over_scoped_lock_holder,
         )
 
@@ -3280,11 +3289,21 @@ class BasePlatformAdapter(ABC):
                     return True
 
         owner_pid = existing.get('pid') if isinstance(existing, dict) else None
-        message = (
-            f'{resource_desc} already in use'
-            + (f' (PID {owner_pid})' if owner_pid else '')
-            + '. Stop the other gateway first.'
-        )
+        # OOF-3: scoped locks are machine-global, so the holder can be a
+        # different profile's gateway. A bare PID gives an operator no way to
+        # tell WHICH profile owns the credential — name it when we can.
+        owner_profile = scoped_lock_owner_label(existing)
+        if owner_profile:
+            holder = f" by the '{owner_profile}' profile gateway"
+            holder += f" (PID {owner_pid})" if owner_pid else ""
+            remedy = (
+                f" Stop that gateway first "
+                f"(hermes --profile {owner_profile} gateway stop)."
+            )
+        else:
+            holder = f" (PID {owner_pid})" if owner_pid else ""
+            remedy = " Stop the other gateway first."
+        message = f"{resource_desc} already in use{holder}.{remedy}"
         logger.error('[%s] %s', self.name, message)
         self._set_fatal_error(f'{scope}_lock', message, retryable=True)
         return False

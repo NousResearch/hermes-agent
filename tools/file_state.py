@@ -248,6 +248,14 @@ class FileStateRegistry:
         with self._state_lock:
             return list(self._reads.get(task_id, {}).keys())
 
+    def has_partial_read(self, task_id: str, resolved: str) -> bool:
+        """Return True if this agent's last read of ``resolved`` was partial."""
+        if _disabled():
+            return False
+        with self._state_lock:
+            stamp = self._reads.get(task_id, {}).get(resolved)
+        return bool(stamp and stamp[2])
+
     # ── Testing hooks ───────────────────────────────────────────────
     def clear(self) -> None:
         """Reset all state.  Intended for tests only."""
@@ -320,6 +328,10 @@ def known_reads(task_id: str) -> List[str]:
     return _registry.known_reads(task_id)
 
 
+def has_partial_read(task_id: str, resolved_or_path: str | Path) -> bool:
+    return _registry.has_partial_read(task_id, str(resolved_or_path))
+
+
 __all__ = [
     "FileStateRegistry",
     "get_registry",
@@ -329,4 +341,5 @@ __all__ = [
     "lock_path",
     "writes_since",
     "known_reads",
+    "has_partial_read",
 ]

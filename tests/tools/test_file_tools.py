@@ -6,6 +6,7 @@ handling without requiring a running terminal environment.
 
 import json
 import logging
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tools.file_tools import (
@@ -31,6 +32,54 @@ class TestReadFileHandler:
 
 
     @patch("tools.file_tools._get_file_ops")
+    def test_kanban_default_truncated_read_returns_guard_error(self, mock_get, monkeypatch):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_kanban")
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = "1|line\n"
+        result_obj.to_dict.return_value = {
+            "content": "1|line\n",
+            "total_lines": 876,
+            "truncated": True,
+            "hint": "Use offset=501 to continue reading",
+        }
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import _handle_read_file
+        result = json.loads(_handle_read_file({"path": "/tmp/big.txt"}, task_id="t_kanban"))
+
+        assert "error" in result
+        assert "Kanban worker safety" in result["error"]
+        assert result["truncated"] is True
+        assert result["content_returned"] is False
+        assert "content" not in result
+        mock_ops.read_file.assert_called_once_with("/tmp/big.txt", 1, 500)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_kanban_explicit_truncated_read_still_returns_page(self, mock_get, monkeypatch):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_kanban")
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = "1|line\n"
+        result_obj.to_dict.return_value = {
+            "content": "1|line\n",
+            "total_lines": 876,
+            "truncated": True,
+        }
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import _handle_read_file
+        result = json.loads(
+            _handle_read_file({"path": "/tmp/big.txt", "limit": 500}, task_id="t_kanban")
+        )
+
+        assert "error" not in result
+        assert result["content"] == "1|line\n"
+        assert result["truncated"] is True
+
+    @patch("tools.file_tools._get_file_ops")
     def test_exception_returns_error_json(self, mock_get):
         mock_get.side_effect = RuntimeError("terminal not available")
 
@@ -52,7 +101,7 @@ class TestWriteFileHandler:
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool("/tmp/out.txt", "hello world!\n"))
         assert result["status"] == "ok"
-        mock_ops.write_file.assert_called_once_with("/tmp/out.txt", "hello world!\n")
+        mock_ops.write_file.assert_called_once_with(str(Path("/tmp/out.txt").resolve()), "hello world!\n")
 
     @patch("tools.file_tools._get_file_ops")
     def test_permission_error_returns_error_json_without_error_log(self, mock_get, caplog):
@@ -143,8 +192,32 @@ class TestPatchHandler:
             old_string="foo", new_string="bar"
         ))
         assert result["status"] == "ok"
-        mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "foo", "bar", False)
+        mock_ops.patch_replace.assert_called_once_with(str(Path("/tmp/f.py").resolve()), "foo", "bar", False)
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_replace_mode_replace_all_flag(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"status": "ok", "replacements": 5}
+        mock_ops.patch_replace.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import patch_tool
+        patch_tool(mode="replace", path="/tmp/f.py",
+                   old_string="x", new_string="y", replace_all=True)
+        mock_ops.patch_replace.assert_called_once_with(str(Path("/tmp/f.py").resolve()), "x", "y", True)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_replace_mode_missing_path_errors(self, mock_get):
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(mode="replace", path=None, old_string="a", new_string="b"))
+        assert "error" in result
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_replace_mode_missing_strings_errors(self, mock_get):
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(mode="replace", path="/tmp/f.py", old_string=None, new_string="b"))
+        assert "error" in result
 
     @patch("tools.file_tools._get_file_ops")
     def test_patch_mode_calls_patch_v4a(self, mock_get):

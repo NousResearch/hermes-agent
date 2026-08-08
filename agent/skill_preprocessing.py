@@ -43,13 +43,22 @@ def substitute_template_vars(
 ) -> str:
     """Replace ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in skill content.
 
+    On remote terminal backends (Docker, SSH, ...) the skill directory is
+    mapped to the backend-visible path so bundled ``scripts/`` commands
+    resolve inside the sandbox; on local backends the host path is used
+    unchanged.
+
     Only substitutes tokens for which a concrete value is available --
     unresolved tokens are left in place so the author can spot them.
     """
     if not content:
         return content
 
-    skill_dir_str = str(skill_dir) if skill_dir else None
+    skill_dir_str = None
+    if skill_dir:
+        from agent.skill_path_mapping import map_skill_dir_for_backend
+
+        skill_dir_str = map_skill_dir_for_backend(skill_dir, task_id=session_id)
 
     def _replace(match: re.Match) -> str:
         token = match.group(1)

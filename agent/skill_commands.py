@@ -8,7 +8,7 @@ import json
 import logging
 import os
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Optional
 
 from hermes_constants import display_hermes_home
@@ -293,11 +293,26 @@ def _build_skill_message(
 
     parts = [activation_note, "", content.strip()]
 
+    # ── Map the skill directory to the backend-visible path when the active
+    #    terminal backend is remote (Docker/SSH/...).  Falls back to the host
+    #    path for local backends, so no behavior changes there.  Backend paths
+    #    are POSIX, so render them as PurePosixPath even on Windows hosts. ──
+    hint_dir: Path | PurePosixPath | None = None
+    if skill_dir:
+        from agent.skill_path_mapping import map_skill_dir_for_backend
+
+        mapped = map_skill_dir_for_backend(skill_dir, task_id=session_id)
+        hint_dir = (
+            PurePosixPath(mapped)
+            if mapped and mapped != str(skill_dir)
+            else skill_dir
+        )
+
     # ── Inject the absolute skill directory so the agent can reference
     #    bundled scripts without an extra skill_view() round-trip. ──
-    if skill_dir:
+    if hint_dir:
         parts.append("")
-        parts.append(f"[Skill directory: {skill_dir}]")
+        parts.append(f"[Skill directory: {hint_dir}]")
         parts.append(
             "Resolve any relative paths in this skill (e.g. `scripts/foo.js`, "
             "`templates/config.yaml`) against that directory, then run them "
@@ -344,7 +359,9 @@ def _build_skill_message(
                         rel = str(f.relative_to(skill_dir))
                         supporting.append(rel)
 
-    if supporting and skill_dir:
+    if supporting and hint_dir:
+        # hint_dir is only set when skill_dir is set (see mapping above).
+        assert skill_dir is not None
         try:
             skill_view_target = str(skill_dir.relative_to(SKILLS_DIR))
         except ValueError:
@@ -353,11 +370,20 @@ def _build_skill_message(
         parts.append("")
         parts.append("[This skill has supporting files:]")
         for sf in supporting:
-            parts.append(f"- {sf}  ->  {skill_dir / sf}")
+            if isinstance(hint_dir, PurePosixPath):
+                # Backend paths are POSIX — normalize Windows separators so
+                # the hint renders as a clean container path.  Strip a
+                # leading "/" so an absolute-looking entry can't reset the
+                # join base (PurePosixPath division discards the base when
+                # the right operand is absolute).
+                sf_for_join = PurePosixPath(sf.replace("\\", "/").lstrip("/"))
+            else:
+                sf_for_join = sf
+            parts.append(f"- {sf}  ->  {hint_dir / sf_for_join}")
         parts.append(
             f'\nLoad any of these with skill_view(name="{skill_view_target}", '
             f'file_path="<path>"), or run scripts directly by absolute path '
-            f"(e.g. `node {skill_dir}/scripts/foo.js`)."
+            f"(e.g. `node {hint_dir}/scripts/foo.js`)."
         )
 
     if user_instruction:

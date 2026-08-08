@@ -259,9 +259,14 @@ def get_skills_directory_mount(
     symlinks are present (the common case), the original directory is returned
     directly with zero overhead.
 
-    Returns a list of dicts with ``host_path`` and ``container_path`` keys.
-    The local skills dir mounts at ``<container_base>/skills``, external dirs
-    at ``<container_base>/external_skills/<index>``.
+    Returns a list of dicts with ``host_path``, ``container_path``, and
+    ``source_path`` keys.  ``host_path`` is what sandboxes bind-mount (when
+    symlinks are detected this is a sanitized copy, not the real tree);
+    ``source_path`` is the canonical host directory the mount represents
+    (used by path mapping so agent-visible paths resolve even when the
+    mount source is a sanitized copy).  The local skills dir mounts at
+    ``<container_base>/skills``, external dirs at
+    ``<container_base>/external_skills/<index>``.
     """
     mounts = []
     hermes_home = _resolve_hermes_home()
@@ -270,6 +275,7 @@ def get_skills_directory_mount(
         host_path = _safe_skills_path(skills_dir)
         mounts.append({
             "host_path": host_path,
+            "source_path": str(skills_dir),
             "container_path": f"{container_base.rstrip('/')}/skills",
         })
 
@@ -281,6 +287,7 @@ def get_skills_directory_mount(
                 host_path = _safe_skills_path(ext_dir)
                 mounts.append({
                     "host_path": host_path,
+                    "source_path": str(ext_dir),
                     "container_path": f"{container_base.rstrip('/')}/external_skills/{idx}",
                 })
     except ImportError:

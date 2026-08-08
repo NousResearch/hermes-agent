@@ -1225,6 +1225,86 @@ class TestSignalContentlessEnvelope:
         assert captured["event"].media_urls == ["/tmp/img.png"]
 
 
+class TestSignalOuterAccountGate:
+    """Multi-account SSE stream: parameterless URL + outer-account filtering.
+    Without ?account= signal-cli emits events for ALL accounts, each carrying
+    the owning account in the outer event object — anything for another
+    account must be discarded before unwrapping."""
+
+    @pytest.mark.asyncio
+    async def test_sse_url_is_parameterless(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        class FakeStream:
+            def __init__(self, method, url, **kwargs):
+                captured["url"] = url
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def aiter_text(self):
+                adapter._running = False  # stop loop after first iteration
+                yield ""
+
+        adapter.client = MagicMock()
+        adapter.client.stream = FakeStream
+        adapter._running = True
+
+        await adapter._sse_listener()
+
+        assert captured["url"] == f"{adapter.http_url}/api/v1/events"
+        assert "?" not in captured["url"]
+        assert "account=" not in captured["url"]
+
+    @pytest.mark.asyncio
+    async def test_discards_envelope_for_other_account(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, account="+155****4567")
+        dispatched = []
+
+        async def fake_handle(event):
+            dispatched.append(event)
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "account": "+499999999999",  # other account in the stream
+            "envelope": {
+                "sourceNumber": "+155****9999",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "timestamp": 1777600696077,
+                "dataMessage": {"message": "Hello from another account"},
+            },
+        })
+
+        assert not dispatched, "Envelope from another account must be discarded"
+
+    @pytest.mark.asyncio
+    async def test_accepts_envelope_for_own_account(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, account="+155****4567")
+        dispatched = []
+
+        async def fake_handle(event):
+            dispatched.append(event)
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "account": "+155****4567",  # own account
+            "envelope": {
+                "sourceNumber": "+155****9999",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "timestamp": 1777600696077,
+                "dataMessage": {"message": "Hello from my own account"},
+            },
+        })
+
+        assert dispatched, "Envelope from own account must be processed"
+
+
 class TestSignalSyncMessageHandling:
     """signal-cli running as a linked secondary device receives the user's
     own messages as ``syncMessage.sentMessage`` envelopes. Two cases must

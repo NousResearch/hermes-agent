@@ -68,6 +68,9 @@ _HERMES_CORE_TOOLS = [
     "session_search",
     # Clarifying questions
     "clarify",
+    # One-shot hidden follow-up timer for gateway sessions.
+    # Platform-gated in model_tools.py: hidden from local/api_server/webhook/sms/relay.
+    "self_nudge",
     # Code execution + delegation
     "execute_code", "delegate_task",
     # Cronjob management
@@ -281,6 +284,12 @@ TOOLSETS = {
     "clarify": {
         "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
         "tools": ["clarify"],
+        "includes": []
+    },
+    
+    "user_updates": {
+        "description": "Arm one-shot hidden follow-up nudges for the current gateway session",
+        "tools": ["self_nudge"],
         "includes": []
     },
     

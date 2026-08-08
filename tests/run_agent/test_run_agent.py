@@ -1446,6 +1446,17 @@ class TestBuildAssistantMessage:
             "google": {"thought_signature": "abc123"}
         }
 
+    def test_self_nudge_tool_call_redacts_private_note(self, agent):
+        tc = _mock_tool_call(
+            name="self_nudge",
+            arguments='{"delay_seconds":300,"note":"Check prod credentials."}',
+            call_id="call-1",
+        )
+        msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        result = agent._build_assistant_message(msg, "tool_calls")
+        persisted_args = result["tool_calls"][0]["function"]["arguments"]
+        assert json.loads(persisted_args) == {"delay_seconds": 300}
+
 
 
 

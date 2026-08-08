@@ -1807,7 +1807,10 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                 "type": tool_call.type,
                 "function": {
                     "name": tool_call.function.name,
-                    "arguments": tool_call.function.arguments
+                    "arguments": agent._sanitize_private_tool_arguments(
+                        tool_call.function.name,
+                        tool_call.function.arguments,
+                    ),
                 },
             }
             # Tool-call arguments are intentionally NOT redacted here. This

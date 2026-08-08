@@ -64,6 +64,10 @@ class _FakeAgent:
     def _deterministic_call_id(self, _name, _args, idx):
         return f"det_{idx}"
 
+    @staticmethod
+    def _sanitize_private_tool_arguments(_function_name, raw_arguments):
+        return raw_arguments
+
 
 def _build(arguments):
     tc = _FakeToolCall("call_1", "terminal", arguments)

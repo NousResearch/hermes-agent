@@ -2978,6 +2978,15 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 ),
                 next_args,
             )
+    elif function_name == "self_nudge":
+        def _execute(next_args: dict) -> Any:
+            return _finish_agent_tool(
+                agent._emit_self_nudge(
+                    next_args.get("delay_seconds", 0),
+                    next_args.get("note", ""),
+                ),
+                next_args,
+            )
     elif function_name == "read_terminal":
         def _execute(next_args: dict) -> Any:
             from tools.read_terminal_tool import read_terminal_tool as _read_terminal_tool

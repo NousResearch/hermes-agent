@@ -994,6 +994,60 @@ class AIAgent:
             except Exception:
                 logger.debug("status_callback error in _emit_warning", exc_info=True)
 
+    def _emit_self_nudge(self, delay_seconds: int, note: str = "") -> str:
+        """Arm a one-shot hidden follow-up timer for the current session."""
+        try:
+            seconds = int(delay_seconds)
+        except (TypeError, ValueError):
+            return json.dumps(
+                {"error": "delay_seconds must be an integer number of seconds."},
+                ensure_ascii=False,
+            )
+
+        if seconds <= 0:
+            return json.dumps(
+                {"error": "delay_seconds must be greater than zero."},
+                ensure_ascii=False,
+            )
+
+        callback = getattr(self, "self_nudge_callback", None)
+        if not callback:
+            return json.dumps(
+                {"error": "self_nudge is not available in this execution context."},
+                ensure_ascii=False,
+            )
+
+        try:
+            payload = callback(seconds, str(note or ""))
+        except Exception as exc:
+            return json.dumps(
+                {"error": f"Failed to arm self-nudge: {exc}"},
+                ensure_ascii=False,
+            )
+
+        if isinstance(payload, dict) and payload.get("armed"):
+            self._self_nudge_armed_this_turn = True
+            return json.dumps(payload, ensure_ascii=False)
+
+        if isinstance(payload, dict):
+            return json.dumps(payload, ensure_ascii=False)
+        return json.dumps({"error": "Failed to arm self-nudge."}, ensure_ascii=False)
+
+    @staticmethod
+    def _sanitize_private_tool_arguments(function_name: str, raw_arguments: Any) -> Any:
+        """Redact private tool-call fields before persisting/replaying history."""
+        if function_name != "self_nudge" or not isinstance(raw_arguments, str):
+            return raw_arguments
+        try:
+            parsed = json.loads(raw_arguments)
+        except Exception:
+            return raw_arguments
+        if not isinstance(parsed, dict) or "note" not in parsed:
+            return raw_arguments
+        parsed = dict(parsed)
+        parsed.pop("note", None)
+        return json.dumps(parsed, ensure_ascii=False)
+
     def _warn_context_overflow_blocked(
         self, reason: str, preflight_tokens: int, threshold_tokens: int
     ) -> None:

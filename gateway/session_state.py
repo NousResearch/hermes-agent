@@ -109,6 +109,12 @@ class ConversationState:
     ephemeral_pin: Optional[Tuple[Any, ...]] = None
     # Last voice-channel context delivered (None = never delivered).
     vc_last: Optional[str] = None
+    # Self-nudge timer task (asyncio.Task or None) — one per session.
+    self_nudge_task: Optional[Any] = None
+    # Self-nudge entry metadata (dict or None) — one per session.
+    self_nudge_entry: Optional[Dict[str, Any]] = None
+    # Pending hidden turn queued while session was busy (dict or None).
+    pending_hidden_turn: Optional[Dict[str, Any]] = None
 
     def clear(self) -> None:
         """Reset every conversation-scoped field to its default.
@@ -126,6 +132,9 @@ class ConversationState:
         self.sidecar_notes = []
         self.ephemeral_pin = None
         self.vc_last = None
+        self.self_nudge_task = None
+        self.self_nudge_entry = None
+        self.pending_hidden_turn = None
 
 
 @dataclass
@@ -397,6 +406,15 @@ LEGACY_FIELD_SPECS: Dict[str, _FieldSpec] = {
     ),
     "_session_vc_last": _FieldSpec(
         "conversation", "vc_last", lambda: None, _present_not_none
+    ),
+    "_self_nudge_tasks": _FieldSpec(
+        "conversation", "self_nudge_task", lambda: None, _present_not_none
+    ),
+    "_self_nudge_entries": _FieldSpec(
+        "conversation", "self_nudge_entry", lambda: None, _present_not_none
+    ),
+    "_pending_hidden_turns": _FieldSpec(
+        "conversation", "pending_hidden_turn", lambda: None, _present_not_none
     ),
     "_pending_approvals": _FieldSpec(
         "persistent", "approvals", lambda: None, _present_not_none

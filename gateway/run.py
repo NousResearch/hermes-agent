@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import queue
+import uuid
 import re
 import shlex
 import site
@@ -43,7 +44,7 @@ import time
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Awaitable, Callable, Dict, Optional, Any, List, Tuple, Union, cast
 
 from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
@@ -2486,6 +2487,8 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
 # session from bypassing the "already running" guard during the async gap
 # between the guard check and actual agent creation.
 _AGENT_PENDING_SENTINEL = object()
+_SELF_NUDGE_NO_REPLY = "NO_REPLY"
+_SELF_NUDGE_MAX_DELAY_SECONDS = 86400
 
 # Conversation-scoped per-session state registry (legacy contract).
 # The state itself now lives in ``SessionState.conversation`` (see
@@ -5859,6 +5862,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _queued_events = legacy_dict_property("_queued_events")
     _pending_turn_sidecar_notes = legacy_dict_property("_pending_turn_sidecar_notes")
     _pending_messages = legacy_dict_property("_pending_messages")
+    _self_nudge_tasks = legacy_dict_property("_self_nudge_tasks")
+    _self_nudge_entries = legacy_dict_property("_self_nudge_entries")
+    _pending_hidden_turns = legacy_dict_property("_pending_hidden_turns")
     _pending_native_image_paths_by_session = legacy_dict_property(
         "_pending_native_image_paths_by_session"
     )
@@ -7492,6 +7498,116 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._exit_cleanly = True
         self._exit_reason = reason
         self._shutdown_event.set()
+
+    def _build_self_nudge_text(self, entry: Dict[str, Any]) -> str:
+        """Build the hidden prompt text for a fired self-nudge."""
+        hidden_prefix = (
+            "[System note: A self-nudge timer you armed earlier has fired. "
+            "Resume from the last persisted context and continue the follow-up task below.]"
+        )
+        note = str(entry.get("note") or "").strip()
+        if note:
+            return f"{hidden_prefix}\n\nReminder:\n{note}"
+        return hidden_prefix
+
+    async def _cancel_self_nudge(self, session_key: str, reason: str = "") -> bool:
+        """Cancel the active self-nudge for a session, if any."""
+        task = self._self_nudge_tasks.pop(session_key, None)
+        self._self_nudge_entries.pop(session_key, None)
+        self._pending_hidden_turns.pop(session_key, None)
+        if task:
+            task.cancel()
+        entry_was = task is not None
+        if entry_was and reason:
+            logger.debug("Cancelled self-nudge for %s (%s)", session_key[:20], reason)
+        return entry_was
+
+    async def _arm_self_nudge(
+        self,
+        session_key: str,
+        source: SessionSource,
+        delay_seconds: int,
+        note: str = "",
+    ) -> Dict[str, Any]:
+        """Arm or replace a one-shot self-nudge for a session."""
+        seconds = int(delay_seconds)
+        if seconds <= 0:
+            return {"armed": False, "error": "delay_seconds must be greater than zero."}
+        if seconds > _SELF_NUDGE_MAX_DELAY_SECONDS:
+            return {
+                "armed": False,
+                "error": (
+                    f"delay_seconds exceeds the maximum of "
+                    f"{_SELF_NUDGE_MAX_DELAY_SECONDS} seconds."
+                ),
+            }
+
+        replaced = await self._cancel_self_nudge(session_key, reason="replaced")
+        due_at = datetime.now() + timedelta(seconds=seconds)
+        entry = {
+            "session_key": session_key,
+            "source": source.to_dict(),
+            "delay_seconds": seconds,
+            "note": str(note or "").strip(),
+            "due_at": due_at.isoformat(),
+        }
+        self._self_nudge_entries[session_key] = entry
+
+        task = asyncio.create_task(self._fire_self_nudge(entry))
+        self._self_nudge_tasks[session_key] = task
+
+        def _cleanup(done_task, key=session_key):
+            current = self._self_nudge_tasks.get(key)
+            if current is done_task:
+                self._self_nudge_tasks.pop(key, None)
+
+        task.add_done_callback(_cleanup)
+        return {
+            "armed": True,
+            "delay_seconds": seconds,
+            "due_at": due_at.isoformat(),
+            "replaced_existing": replaced,
+        }
+
+    async def _fire_self_nudge(self, entry: Dict[str, Any]) -> None:
+        """Wait for a self-nudge timer, then enqueue or run its hidden turn."""
+        session_key = entry.get("session_key") or ""
+        delay = max(int(entry.get("delay_seconds") or 0), 0)
+        if not session_key or delay <= 0:
+            return
+
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            raise
+
+        current = self._self_nudge_entries.get(session_key)
+        if current is not entry:
+            return
+        self._self_nudge_entries.pop(session_key, None)
+        if session_key in self._running_agents:
+            self._pending_hidden_turns[session_key] = entry
+            return
+        await self._run_self_nudge_entry(entry)
+
+    async def _run_self_nudge_entry(self, entry: Dict[str, Any]) -> None:
+        """Inject a hidden follow-up turn for a fired self-nudge."""
+        session_key = entry.get("session_key") or ""
+        if not session_key or session_key in self._running_agents:
+            return
+        try:
+            source = SessionSource.from_dict(entry.get("source") or {})
+        except Exception as e:
+            logger.warning("Skipping invalid self-nudge entry: %s", e)
+            return
+
+        event = MessageEvent(
+            text=self._build_self_nudge_text(entry),
+            source=source,
+            message_id=f"self-nudge-{uuid.uuid4().hex[:8]}",
+            persist_user_message="[System note: a self-nudge timer fired.]",
+        )
+        await self._handle_message_with_agent(event, source, session_key)
 
     def _running_agent_count(self) -> int:
         return len(self._running_agents)

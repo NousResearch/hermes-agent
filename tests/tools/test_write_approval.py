@@ -131,8 +131,8 @@ def test_load_on_disk_store_honors_configured_char_limits(hermes_home, monkeypat
 
     monkeypatch.setattr("hermes_cli.config.load_config", _boom)
     fallback = load_on_disk_store()
-    assert fallback.memory_char_limit == 2200
-    assert fallback.user_char_limit == 1375
+    assert fallback.memory_char_limit == 8800
+    assert fallback.user_char_limit == 5500
 
 
 # ---------------------------------------------------------------------------

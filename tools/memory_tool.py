@@ -162,7 +162,7 @@ class MemoryStore:
     # turn to budget exhaustion and suppress the user's reply (issue #42405).
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 8800, user_char_limit: int = 5500):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
@@ -889,8 +889,8 @@ def load_on_disk_store() -> "MemoryStore":
     Falls back to the built-in defaults if config can't be loaded, so this can
     never raise on a missing/unreadable config.
     """
-    memory_char_limit = 2200
-    user_char_limit = 1375
+    memory_char_limit = 8800
+    user_char_limit = 5500
     try:
         from hermes_cli.config import load_config
 

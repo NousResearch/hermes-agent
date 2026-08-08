@@ -602,9 +602,15 @@ def _chat_messages_to_responses_input(
                     # The Responses API requires a following item after each
                     # reasoning item (otherwise: missing_following_item error).
                     # When the assistant produced only reasoning with no visible
-                    # content, emit an empty assistant message as the required
-                    # following item.
-                    items.append({"role": "assistant", "content": ""})
+                    # content, emit a following item.  If tool_calls are present
+                    # they already satisfy the requirement (they are valid
+                    # follow-up items per the Responses spec); otherwise emit a
+                    # single-space assistant message so that strict providers
+                    # (e.g. Volcano Engine) that reject empty content strings
+                    # do not return 400 MissingParameter.
+                    _pending_tc = msg.get("tool_calls")
+                    if not (isinstance(_pending_tc, list) and _pending_tc):
+                        items.append({"role": "assistant", "content": " "})
 
                 tool_calls = msg.get("tool_calls")
                 if isinstance(tool_calls, list):

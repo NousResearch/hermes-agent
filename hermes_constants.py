@@ -388,11 +388,116 @@ def hermes_managed_node_tree_present(home: Path | None = None) -> bool:
     return False
 
 
-def _heal_managed_node_windows() -> bool:
-    """Redownload the portable Node zip into ``%HERMES_HOME%\\node`` on Windows."""
+def _path_under_any(path: str, roots: list[str]) -> bool:
+    """Return True when *path* sits inside one of *roots* (same drive).
+
+    Windows paths are case-insensitive and psutil / env vars can disagree on
+    drive-letter casing, so compare through ``normcase`` (a no-op on POSIX).
+    Each root is evaluated individually so disjoint roots both work.
+    """
+    path_norm = os.path.normcase(os.path.normpath(path))
+    for root in roots:
+        root_norm = os.path.normcase(os.path.normpath(root))
+        try:
+            if os.path.commonpath([path_norm, root_norm]) == root_norm:
+                return True
+        except ValueError:
+            # Different drives on Windows — commonpath raises.
+            continue
+    return False
+
+
+def managed_node_tree_in_use(home: Path | None = None) -> bool:
+    """Return True when any running process executes from the managed Node tree.
+
+    Windows locks executables and loaded scripts against deletion or
+    overwrite while a process runs them, so the updater must not rewrite
+    ``%HERMES_HOME%\\node`` while the desktop app's Node processes hold it —
+    ``PermissionError: [WinError 5]`` on ``npm.cmd`` is the classic symptom
+    (#80926). Always ``False`` on POSIX, which has no equivalent lock
+    semantics.
+
+    The scan is a fast pre-check that avoids pointless re-downloads in
+    long-lived processes; the rename-based swap in
+    :func:`_heal_managed_node_windows` is the authoritative in-use guard.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import psutil
+    except Exception:
+        return False
+    dirs: list[str] = []
+    for directory in iter_hermes_node_dirs(home):
+        try:
+            dirs.append(str(Path(directory).resolve()))
+        except OSError:
+            continue
+    if not dirs:
+        return False
+    try:
+        procs = psutil.process_iter(["exe", "cmdline"])
+    except Exception:
+        return False
+    for proc in procs:
+        try:
+            info = proc.info
+        except Exception:
+            continue
+        exe = info.get("exe")
+        if exe:
+            try:
+                exe_path = str(Path(exe).resolve())
+            except (OSError, ValueError):
+                exe_path = str(exe)
+            if _path_under_any(exe_path, dirs):
+                return True
+        for arg in info.get("cmdline") or []:
+            if _path_under_any(arg, dirs):
+                return True
+    return False
+
+
+_managed_node_in_use_notice_printed = False
+
+
+def _print_managed_node_in_use_notice() -> None:
+    """Print the managed-Node deferral notice once per process."""
+    global _managed_node_in_use_notice_printed
+    if _managed_node_in_use_notice_printed:
+        return
+    _managed_node_in_use_notice_printed = True
+    print(
+        "→ Hermes-managed Node.js is in use by a running app; deferring its "
+        "upgrade until the app is closed (re-run `hermes update` afterwards).",
+        flush=True,
+    )
+
+
+def _heal_managed_node_windows(home: Path | None = None) -> bool | None:
+    """Redownload the portable Node zip into ``%HERMES_HOME%\\node`` on Windows.
+
+    Returns ``True`` on success, ``False`` on a genuine failure (offline,
+    download error, bad archive), and ``None`` when the tree is in use and the
+    heal is deferred — callers must not record the once-per-process attempt
+    for ``None`` so a later call can retry once the tree is free.
+
+    The replacement is staging-first: the new tree is fully downloaded and
+    extracted to a sibling ``node.new-*`` directory, then the live tree is
+    renamed aside (``node.old-*``) and the staged tree renamed into place.
+    The live tree is never deleted before its replacement is ready, so an
+    interrupted heal cannot gut the running installation. Windows allows
+    renaming a tree whose executables are running (images are mapped with
+    ``FILE_SHARE_DELETE`` — the same mechanism as the hermes.exe quarantine);
+    when the OS refuses the rename, that refusal *is* the in-use signal and
+    the heal defers instead of forcing the write and crashing with
+    ``PermissionError: [WinError 5]`` on ``npm.cmd`` (#80926).
+    """
     import re
     import tempfile
+    import time
     import urllib.request
+    import uuid
     import zipfile
 
     arch = (os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE", "")).lower()
@@ -405,7 +510,35 @@ def _heal_managed_node_windows() -> bool:
     else:
         return False
 
-    home = get_hermes_home()
+    home = home or get_hermes_home()
+    target = home / "node"
+
+    # Cheap pre-check: skip the download and staging work when the tree is
+    # already visibly in use.  The rename-based swap below is the
+    # authoritative guard — this scan only avoids pointless re-downloads for
+    # long-lived processes whose npm resolution retries.
+    if managed_node_tree_in_use(home):
+        _print_managed_node_in_use_notice()
+        return None
+
+    # Best-effort sweep of staging/backup litter from interrupted runs; a
+    # locked file simply stays for the next attempt.  Only dirs older than
+    # 10 minutes are removed so a concurrent heal's in-flight swap (whose
+    # staged/backup dirs are seconds old) is never disturbed.
+    cutoff = time.time() - 600
+    for stale in home.glob("node.old-*"):
+        try:
+            if stale.stat().st_mtime < cutoff:
+                shutil.rmtree(stale, ignore_errors=True)
+        except OSError:
+            continue
+    for stale in home.glob("node.new-*"):
+        try:
+            if stale.stat().st_mtime < cutoff:
+                shutil.rmtree(stale, ignore_errors=True)
+        except OSError:
+            continue
+
     index_url = f"https://nodejs.org/dist/latest-v{_HERMES_NODE_TARGET_MAJOR}.x/"
     try:
         with urllib.request.urlopen(index_url, timeout=60) as response:
@@ -428,6 +561,9 @@ def _heal_managed_node_windows() -> bool:
     except OSError:
         return False
 
+    token = uuid.uuid4().hex[:8]
+    staged = home / f"node.new-{token}"
+    backup = home / f"node.old-{token}"
     try:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
@@ -440,12 +576,50 @@ def _heal_managed_node_windows() -> bool:
             extracted = next(extract_dir.glob("node-v*"), None)
             if extracted is None or not extracted.is_dir():
                 return False
-            target = home / "node"
-            if target.exists():
-                shutil.rmtree(target)
-            shutil.move(str(extracted), str(target))
+            # Move the fully-extracted tree to a sibling staging dir so the
+            # swap below is a same-volume rename.
+            shutil.move(str(extracted), str(staged))
     except OSError:
         return False
+
+    if target.exists():
+        try:
+            os.replace(str(target), str(backup))
+        except OSError:
+            # The OS refuses to move the live tree — a running process holds
+            # it.  Defer; the old tree is untouched and the next resolution
+            # (e.g. the next update after the app is closed) retries.
+            _print_managed_node_in_use_notice()
+            shutil.rmtree(staged, ignore_errors=True)
+            return None
+        # A rename preserves the directory's mtime, so a backup renamed from
+        # a long-lived tree would instantly look older than the litter-sweep
+        # cutoff to a concurrent heal.  Touch it (best-effort — a failure
+        # must not abort the swap, which already succeeded) so the in-flight
+        # backup is never swept mid-swap.
+        try:
+            os.utime(backup, None)
+        except OSError:
+            pass
+        try:
+            os.replace(str(staged), str(target))
+        except OSError:
+            # Roll the live tree back and report the failure.
+            try:
+                os.replace(str(backup), str(target))
+            except OSError:
+                pass
+            shutil.rmtree(staged, ignore_errors=True)
+            return False
+        # The old tree is no longer canonical; locked files may keep it on
+        # disk until the next heal attempt, which is safe.
+        shutil.rmtree(backup, ignore_errors=True)
+    else:
+        try:
+            os.replace(str(staged), str(target))
+        except OSError:
+            shutil.rmtree(staged, ignore_errors=True)
+            return False
 
     return node_tool_runnable(str(target / "node.exe"))
 
@@ -530,16 +704,26 @@ def heal_hermes_managed_node() -> bool:
     Runs at most once per process. POSIX installs shell out to
     ``heal_managed_node`` in ``scripts/lib/node-bootstrap.sh``; Windows
     downloads the portable zip directly (same source as ``install.ps1``).
+    A Windows deferral (the tree is in use by a running app) does NOT record
+    the attempt, so a later call — or the next process — can heal once the
+    tree is free (#80926).
     """
     global _managed_node_heal_attempted
     if _managed_node_heal_attempted:
         return False
     if not hermes_managed_node_tree_present():
         return False
-    _managed_node_heal_attempted = True
 
     if sys.platform == "win32":
-        return _heal_managed_node_windows()
+        result = _heal_managed_node_windows()
+        if result is None:
+            # In-use deferral: leave the attempt flag clear so a later call
+            # in this process can heal after the app releases the tree.
+            return False
+        _managed_node_heal_attempted = True
+        return bool(result)
+
+    _managed_node_heal_attempted = True
 
     if not _NODE_BOOTSTRAP_SCRIPT.is_file():
         return False

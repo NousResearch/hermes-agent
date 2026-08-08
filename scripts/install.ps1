@@ -904,6 +904,15 @@ function Update-ManagedNpm {
         } catch { }
     }
 
+    # In-app updates run while the desktop app's Node processes are alive.
+    # The managed npm lives inside the very tree they execute from, so an
+    # in-place upgrade would hit WinError 5 (Access denied) on npm.cmd
+    # (#80926).  Defer; the next update with the app closed retries.
+    if (Test-ManagedNodeInUse $NodeDir) {
+        Write-Warn "Hermes-managed Node.js is in use by a running app; skipping the bundled npm upgrade (applies on a later update with the app closed)."
+        return $false
+    }
+
     Write-Info "Upgrading bundled npm to satisfy $range ..."
 
     $tmpCwd = Join-Path $env:TEMP ("hermes-npm-upgrade-" + [Guid]::NewGuid().ToString("N"))
@@ -940,6 +949,17 @@ function Update-ManagedNpm {
 
     Write-Success "npm $(& $npmCmd --version 2>$null) installed"
     return $true
+}
+
+function Test-ManagedNodeInUse {
+    param([string]$NodeDir)
+    # Windows locks files that running processes execute from.  During an
+    # in-app update the desktop app's Node processes may hold the managed
+    # tree open, and rewriting it then fails with WinError 5 (Access denied)
+    # on npm.cmd (#80926).  Cheap pre-check used to skip destructive steps;
+    # the rename/move itself remains the authoritative guard.
+    return @(Get-Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -like "$NodeDir\*" }).Count -gt 0
 }
 
 # Re-discover uv without re-installing it.  Cross-process stage drivers
@@ -1542,8 +1562,55 @@ function Test-Node {
 
             $extractedDir = Get-ChildItem $tmpDir -Directory | Select-Object -First 1
             if ($extractedDir) {
-                if (Test-Path "$HermesHome\node") { Remove-Item -Recurse -Force "$HermesHome\node" }
-                Move-Item $extractedDir.FullName "$HermesHome\node"
+                # Rename-swap instead of delete-then-move: the live tree is
+                # never removed before its replacement is fully extracted.
+                # Windows permits renaming a tree with running executables,
+                # but if a process holds it without FILE_SHARE_DELETE the
+                # rename fails with WinError 5 -- that refusal means the tree
+                # is in use, so defer instead of forcing the write (#80926).
+                # Best-effort sweep of staging/backup litter from interrupted
+                # runs; locked files simply stay for the next attempt.  Only
+                # dirs older than 10 minutes are removed so a concurrent
+                # heal's in-flight swap is never disturbed.
+                Get-ChildItem "$HermesHome" -Directory -Filter "node.old-*" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-10) } |
+                    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+                Get-ChildItem "$HermesHome" -Directory -Filter "node.new-*" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-10) } |
+                    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+                $stamp = [Guid]::NewGuid().ToString("N")
+                if (Test-Path "$HermesHome\node") {
+                    try {
+                        Rename-Item "$HermesHome\node" "$HermesHome\node.old-$stamp" -ErrorAction Stop
+                    } catch {
+                        Write-Warn "Hermes-managed Node.js is in use by a running app; deferring its upgrade. Close the app and re-run the update."
+                        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+                        Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+                        return $false
+                    }
+                    # A rename preserves LastWriteTime, so a backup renamed
+                    # from a long-lived tree would instantly look older than
+                    # the litter-sweep cutoff to a concurrent heal.  Touch it
+                    # (best-effort) so the in-flight backup is never swept.
+                    try {
+                        (Get-Item "$HermesHome\node.old-$stamp").LastWriteTime = Get-Date
+                    } catch { }
+                }
+                try {
+                    Move-Item $extractedDir.FullName "$HermesHome\node" -ErrorAction Stop
+                } catch {
+                    # Restore the live tree before bailing.  A cross-volume
+                    # Move-Item may have left a partial target, so clear it
+                    # first (best-effort) before renaming the old tree back.
+                    if (Test-Path "$HermesHome\node.old-$stamp") {
+                        Remove-Item -Recurse -Force "$HermesHome\node" -ErrorAction SilentlyContinue
+                        Rename-Item "$HermesHome\node.old-$stamp" "$HermesHome\node" -ErrorAction SilentlyContinue
+                    }
+                    Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+                    Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+                    return $false
+                }
+                Remove-Item -Recurse -Force "$HermesHome\node.old-$stamp" -ErrorAction SilentlyContinue
 
                 # Session PATH so the rest of this run sees node/npm.
                 $env:Path = "$HermesHome\node;$env:Path"

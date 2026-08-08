@@ -34,6 +34,13 @@ export type ScanOutcome =
   | { kind: 'blocked'; result: VenvBlockerScanResult }
   | { kind: 'probe-failure'; error: string }
 
+/** Settling knobs for the blocked-verdict retry. Injectable for testing. */
+export interface ScanSettleOptions {
+  attempts?: number
+  delayMs?: number
+  sleep?: (ms: number) => Promise<void>
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -41,9 +48,23 @@ export type ScanOutcome =
 const SCAN_TIMEOUT_MS = 15000
 const SCAN_MODULE = 'hermes_cli._scan_venv_blockers'
 
+// The scan runs immediately after releaseBackendLock tree-kills the desktop's
+// own backends. On Windows the OS does not retire those PIDs instantly —
+// tree-killed grandchildren cascade-settle over several scheduler ticks, so
+// psutil.process_iter() keeps reporting dying entries for a short window and
+// the preflight aborts an update that was actually fine (#74805). Re-probe a
+// couple of times before believing "blocked", mirroring the poll-until-clear
+// pattern releaseBackendLock already uses for the venv shim.
+const SCAN_BLOCKED_ATTEMPTS = 3
+const SCAN_SETTLE_DELAY_MS = 500
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
 
 /**
  * Strictly validate and parse the JSON output from the venv-blocker scan.
@@ -109,12 +130,42 @@ export function parseVenvBlockerScanOutput(raw: string): ScanOutcome {
 }
 
 /**
- * Run the venv-blocker scan subprocess.  Async so the Electron main-process
- * event loop is never blocked by the psutil process scan (up to 15s on a
- * loaded Windows box).  Accepts optional overrides for testing (dependency
- * injection).
+ * Run the venv-blocker scan, re-probing a blocked verdict a few times so a
+ * process table that has not finished retiring the backends we just killed
+ * does not abort an otherwise-fine update (#74805).  Async so the Electron
+ * main-process event loop is never blocked by the psutil process scan (up to
+ * 15s per probe on a loaded Windows box).  Accepts optional overrides for
+ * testing (dependency injection).
  */
 export async function scanVenvBlockers(
+  updateRoot: string,
+  execOverride?: typeof execFileAsync,
+  resolveOverride?: typeof resolveVenvPython,
+  settleOverride?: ScanSettleOptions
+): Promise<ScanOutcome> {
+  const attempts = Math.max(1, settleOverride?.attempts ?? SCAN_BLOCKED_ATTEMPTS)
+  const delayMs = Math.max(0, settleOverride?.delayMs ?? SCAN_SETTLE_DELAY_MS)
+  const sleep = settleOverride?.sleep || defaultSleep
+
+  let outcome = await runVenvBlockerProbe(updateRoot, execOverride, resolveOverride)
+
+  // Only a 'blocked' verdict is retried. 'clear' is already the answer we
+  // want, and 'probe-failure' means the venv state is unknown — re-running a
+  // broken probe cannot turn that into knowledge, and the caller must abort
+  // either way.
+  for (let attempt = 1; attempt < attempts && outcome.kind === 'blocked'; attempt += 1) {
+    await sleep(delayMs)
+    outcome = await runVenvBlockerProbe(updateRoot, execOverride, resolveOverride)
+  }
+
+  return outcome
+}
+
+/**
+ * One probe of the venv-blocker scan subprocess.  No retry, no settling delay
+ * — callers wanting the race-tolerant behaviour should use scanVenvBlockers.
+ */
+export async function runVenvBlockerProbe(
   updateRoot: string,
   execOverride?: typeof execFileAsync,
   resolveOverride?: typeof resolveVenvPython

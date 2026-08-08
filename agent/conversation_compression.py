@@ -3737,10 +3737,75 @@ def _compress_context_via_codex_app_server(
     return messages, existing_prompt
 
 
+def _image_source_to_data_url(source: Any) -> Optional[str]:
+    if not isinstance(source, dict) or source.get("type") != "base64":
+        return None
+    data = source.get("data")
+    if not isinstance(data, str) or not data:
+        return None
+    media_type = str(source.get("media_type") or "image/jpeg").strip()
+    if not media_type.startswith("image/"):
+        media_type = "image/jpeg"
+    return f"data:{media_type};base64,{data}"
+
+
+def _write_data_url_to_image_source(source: dict, data_url: str) -> None:
+    header, _, data = data_url.partition(",")
+    media_type = "image/jpeg"
+    if header.startswith("data:"):
+        candidate = header[len("data:"):].split(";", 1)[0].strip()
+        if candidate.startswith("image/"):
+            media_type = candidate
+    source["type"] = "base64"
+    source["media_type"] = media_type
+    source["data"] = data
+
+
+def apply_image_url_replacements_in_messages(
+    messages: list,
+    replacements: dict[str, str],
+) -> int:
+    """Mirror repaired API image payloads into canonical session messages."""
+    if not messages or not replacements:
+        return 0
+
+    changed = 0
+    for msg in messages:
+        if not isinstance(msg, dict) or not isinstance(msg.get("content"), list):
+            continue
+        for part in msg["content"]:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "image":
+                source = part.get("source")
+                old_url = _image_source_to_data_url(source)
+                new_url = replacements.get(old_url or "")
+                if new_url and isinstance(source, dict):
+                    _write_data_url_to_image_source(source, new_url)
+                    changed += 1
+                continue
+            if part.get("type") not in {"image_url", "input_image"}:
+                continue
+            image_value = part.get("image_url")
+            if isinstance(image_value, dict):
+                old_url = image_value.get("url")
+                new_url = replacements.get(old_url) if isinstance(old_url, str) else None
+                if new_url:
+                    image_value["url"] = new_url
+                    changed += 1
+            elif isinstance(image_value, str):
+                new_url = replacements.get(image_value)
+                if new_url:
+                    part["image_url"] = new_url
+                    changed += 1
+    return changed
+
+
 def try_shrink_image_parts_in_messages(
     api_messages: list,
     *,
     max_dimension: int = 8000,
+    replacements: Optional[dict[str, str]] = None,
 ) -> bool:
     """Re-encode all native image parts at a smaller size to recover from
     image-too-large errors (Anthropic 5 MB, unknown other providers).
@@ -3756,7 +3821,9 @@ def try_shrink_image_parts_in_messages(
     under Anthropic's 5 MB ceiling with header overhead) or whose longest side
     exceeds ``max_dimension``, write the base64 to a tempfile, call
     ``vision_tools._resize_image_for_vision`` to produce a smaller data
-    URL, and substitute it in place.
+    URL, and substitute it in place. When ``replacements`` is supplied, it is
+    populated with each original-to-repaired data URL pair so the caller can
+    mirror the exact repair into canonical session history without re-encoding.
 
     Non-data-URL images (http/https URLs) are not touched — the provider
     fetches those itself and the size limit is different.
@@ -3910,17 +3977,6 @@ def try_shrink_image_parts_in_messages(
             logger.warning("image-shrink recovery: re-encode failed — %s", exc)
             return None, triggered_by is not None
 
-    def _source_to_data_url(source: Any) -> Optional[str]:
-        if not isinstance(source, dict) or source.get("type") != "base64":
-            return None
-        data = source.get("data")
-        if not isinstance(data, str) or not data:
-            return None
-        media_type = str(source.get("media_type") or "image/jpeg").strip()
-        if not media_type.startswith("image/"):
-            media_type = "image/jpeg"
-        return f"data:{media_type};base64,{data}"
-
     def _write_data_url_to_source(source: dict, data_url: str) -> dict:
         """Return a NEW source dict carrying the re-encoded payload.
 
@@ -3962,9 +4018,11 @@ def try_shrink_image_parts_in_messages(
             ptype = part.get("type")
             if ptype == "image":
                 source = part.get("source")
-                url = _source_to_data_url(source)
+                url = _image_source_to_data_url(source)
                 resized, unshrinkable = _shrink_data_url(url or "")
                 if resized and isinstance(source, dict):
+                    if replacements is not None and url:
+                        replacements[url] = resized
                     if new_content is None:
                         new_content = list(content)
                     new_content[part_idx] = {
@@ -3984,6 +4042,8 @@ def try_shrink_image_parts_in_messages(
                 url = image_value.get("url", "")
                 resized, unshrinkable = _shrink_data_url(url)
                 if resized:
+                    if replacements is not None:
+                        replacements[url] = resized
                     if new_content is None:
                         new_content = list(content)
                     new_content[part_idx] = {
@@ -3996,6 +4056,8 @@ def try_shrink_image_parts_in_messages(
             elif isinstance(image_value, str):
                 resized, unshrinkable = _shrink_data_url(image_value)
                 if resized:
+                    if replacements is not None:
+                        replacements[image_value] = resized
                     if new_content is None:
                         new_content = list(content)
                     new_content[part_idx] = {**part, "image_url": resized}
@@ -4031,5 +4093,6 @@ __all__ = [
     "check_compression_model_feasibility",
     "replay_compression_warning",
     "compress_context",
+    "apply_image_url_replacements_in_messages",
     "try_shrink_image_parts_in_messages",
 ]

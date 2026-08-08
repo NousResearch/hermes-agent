@@ -1,0 +1,205 @@
+{
+  "name": "Gutenberg",
+  "slug": "gutenberg",
+  "year": 1455,
+  "collection": "1939-flagship",
+  "source": "Gutenberg Bible",
+  "source_type": "artwork",
+  "roles": {
+    "Background": {
+      "hex": "#0A0A0F",
+      "tints": [
+        "#4E4E54",
+        "#39393F",
+        "#25252B",
+        "#17171C",
+        "#0A0A0F",
+        "#040407",
+        "#000001",
+        "#000001",
+        "#000001",
+        "#000001"
+      ],
+      "curve": "dark",
+      "legend_text": "#f0ede8",
+      "semantic": "Page background, card surfaces, dark containers, slide backgrounds"
+    },
+    "Canvas": {
+      "hex": "#D7CEB9",
+      "tints": [
+        "#FFF7E1",
+        "#FFF7E1",
+        "#F2E9D3",
+        "#E4DBC6",
+        "#D7CEB9",
+        "#F2E9D3",
+        "#BDB5A0",
+        "#AAA28D",
+        "#98907B",
+        "#867E6A"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Light surfaces, content areas, card backgrounds in light mode, readable surface"
+    },
+    "Text": {
+      "hex": "#624110",
+      "tints": [
+        "#CFA778",
+        "#AE885A",
+        "#8F6B3D",
+        "#714E20",
+        "#624110",
+        "#634110",
+        "#3E1E00",
+        "#290A00",
+        "#140000",
+        "#030000"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Body text, descriptions, metadata, paragraph text"
+    },
+    "Highlight": {
+      "hex": "#C56C7A",
+      "tints": [
+        "#FFD8E6",
+        "#FFBAC7",
+        "#F89AA8",
+        "#D67B89",
+        "#C56C7A",
+        "#944050",
+        "#9A4555",
+        "#802E3F",
+        "#67162B",
+        "#4E0018"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Headings, CTAs, hero text, primary accent, emphasis"
+    },
+    "Support": {
+      "hex": "#253D38",
+      "tints": [
+        "#86A19C",
+        "#69837E",
+        "#4D6661",
+        "#324A45",
+        "#253D38",
+        "#0C2420",
+        "#051C19",
+        "#000A07",
+        "#000000",
+        "#000000"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Secondary accent, links, subtle emphasis, hover states"
+    },
+    "Chart1": {
+      "hex": "#FFF66B",
+      "tints": [
+        "#FFF66B",
+        "#FFF66B",
+        "#FFF66B",
+        "#FFF66B",
+        "#FFF66B",
+        "#F4D13F",
+        "#F3D13F",
+        "#D9B60E",
+        "#BF9D00",
+        "#A68400"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Primary data series, first category color, bar/line accent"
+    },
+    "Chart2": {
+      "hex": "#0E1528",
+      "tints": [
+        "#67718A",
+        "#4B556D",
+        "#313A50",
+        "#192135",
+        "#0E1528",
+        "#0A1124",
+        "#000009",
+        "#000004",
+        "#000004",
+        "#000004"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Secondary data series, comparison color, secondary chart accent"
+    },
+    "Muted": {
+      "hex": "#756563",
+      "tints": [
+        "#AB9A98",
+        "#9C8B89",
+        "#8C7C7A",
+        "#80706E",
+        "#756563",
+        "#7E6E6C",
+        "#60514F",
+        "#60514F",
+        "#60514F",
+        "#60514F"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Borders, disabled states, tertiary text, subtle dividers, placeholders"
+    }
+  },
+  "contrast": {
+    "text_on_background": 2.15,
+    "highlight_on_background": 5.46,
+    "highlight_on_canvas": 2.31,
+    "support_on_background": 1.7,
+    "chart1_on_background": 17.54,
+    "chart2_on_background": 1.09,
+    "canvas_on_background": 12.62
+  },
+  "recommended_uses": {
+    "dark_mode": {
+      "background": "Background",
+      "surface": "Background tint 800 (swatch index 6)",
+      "text_primary": "Text",
+      "text_secondary": "Muted",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 700 (swatch index 7)"
+    },
+    "light_mode": {
+      "background": "Canvas",
+      "surface": "Canvas tint 100 (swatch index 2)",
+      "text_primary": "Background tint 900 (swatch index 8)",
+      "text_secondary": "Muted tint 600 (swatch index 5)",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 300 (swatch index 2)"
+    }
+  },
+  "pptx_mapping": {
+    "title_text": "Highlight",
+    "body_text": "Text",
+    "slide_background": "Background",
+    "accent_bar": "Support",
+    "chart_series_1": "Chart1",
+    "chart_series_2": "Chart2"
+  },
+  "docx_mapping": {
+    "heading_1": "Highlight",
+    "heading_2": "Support",
+    "body_text": "Text",
+    "page_background": "Background",
+    "table_header_bg": "Background tint 700 (swatch index 7)",
+    "table_header_text": "Highlight tint 100 (swatch index 1)",
+    "link_color": "Support"
+  },
+  "perceptual_volume": 0.00404
+}

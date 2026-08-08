@@ -1,0 +1,205 @@
+{
+  "name": "Pussy Wagon",
+  "slug": "pussy-wagon-2003",
+  "year": 2003,
+  "collection": "1939-flagship",
+  "source": "Kill Bill: Vol. 1",
+  "source_type": "film_still",
+  "roles": {
+    "Background": {
+      "hex": "#1A0A0F",
+      "tints": [
+        "#645054",
+        "#4E3A3F",
+        "#38262A",
+        "#29181C",
+        "#1A0A0F",
+        "#110407",
+        "#060001",
+        "#030000",
+        "#030000",
+        "#030000"
+      ],
+      "curve": "dark",
+      "legend_text": "#f0ede8",
+      "semantic": "Page background, card surfaces, dark containers, slide backgrounds"
+    },
+    "Canvas": {
+      "hex": "#CECAC0",
+      "tints": [
+        "#FCF8ED",
+        "#F9F5EA",
+        "#E9E5DA",
+        "#DBD7CD",
+        "#CECAC0",
+        "#E9E5DA",
+        "#B5B1A6",
+        "#A29E94",
+        "#908C82",
+        "#7E7A70"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Light surfaces, content areas, card backgrounds in light mode, readable surface"
+    },
+    "Text": {
+      "hex": "#663C17",
+      "tints": [
+        "#D4A27C",
+        "#B4835E",
+        "#946641",
+        "#754925",
+        "#663C17",
+        "#673C17",
+        "#411900",
+        "#2B0500",
+        "#160000",
+        "#040000"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Body text, descriptions, metadata, paragraph text"
+    },
+    "Highlight": {
+      "hex": "#8F95D8",
+      "tints": [
+        "#EAF1FF",
+        "#DDE5FF",
+        "#BDC4FF",
+        "#9EA4E9",
+        "#8F95D8",
+        "#6468A8",
+        "#696DAE",
+        "#535695",
+        "#3E407C",
+        "#2B2A64"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Headings, CTAs, hero text, primary accent, emphasis"
+    },
+    "Support": {
+      "hex": "#BBCB82",
+      "tints": [
+        "#F0FFB7",
+        "#F0FFB7",
+        "#EBFDB2",
+        "#CBDC92",
+        "#BBCB82",
+        "#9CAC64",
+        "#92A25A",
+        "#7B8A42",
+        "#64722A",
+        "#4E5B0D"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary accent, links, subtle emphasis, hover states"
+    },
+    "Chart1": {
+      "hex": "#FFDE86",
+      "tints": [
+        "#FFF098",
+        "#FFF098",
+        "#FFF098",
+        "#FFEF96",
+        "#FFDE86",
+        "#E4B45C",
+        "#E3B45C",
+        "#C99A41",
+        "#AF8223",
+        "#966A00"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Primary data series, first category color, bar/line accent"
+    },
+    "Chart2": {
+      "hex": "#151B5D",
+      "tints": [
+        "#6E81CC",
+        "#5263AB",
+        "#38468B",
+        "#202A6D",
+        "#151B5D",
+        "#121658",
+        "#050038",
+        "#040021",
+        "#04001B",
+        "#04001B"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Secondary data series, comparison color, secondary chart accent"
+    },
+    "Muted": {
+      "hex": "#6F6D5D",
+      "tints": [
+        "#A5A392",
+        "#959383",
+        "#868474",
+        "#7A7868",
+        "#6F6D5D",
+        "#787666",
+        "#585647",
+        "#575546",
+        "#575546",
+        "#575546"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Borders, disabled states, tertiary text, subtle dividers, placeholders"
+    }
+  },
+  "contrast": {
+    "text_on_background": 2.03,
+    "highlight_on_background": 6.82,
+    "highlight_on_canvas": 1.72,
+    "support_on_background": 10.95,
+    "chart1_on_background": 14.66,
+    "chart2_on_background": 1.23,
+    "canvas_on_background": 11.73
+  },
+  "recommended_uses": {
+    "dark_mode": {
+      "background": "Background",
+      "surface": "Background tint 800 (swatch index 6)",
+      "text_primary": "Text",
+      "text_secondary": "Muted",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 700 (swatch index 7)"
+    },
+    "light_mode": {
+      "background": "Canvas",
+      "surface": "Canvas tint 100 (swatch index 2)",
+      "text_primary": "Background tint 900 (swatch index 8)",
+      "text_secondary": "Muted tint 600 (swatch index 5)",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 300 (swatch index 2)"
+    }
+  },
+  "pptx_mapping": {
+    "title_text": "Highlight",
+    "body_text": "Text",
+    "slide_background": "Background",
+    "accent_bar": "Support",
+    "chart_series_1": "Chart1",
+    "chart_series_2": "Chart2"
+  },
+  "docx_mapping": {
+    "heading_1": "Highlight",
+    "heading_2": "Support",
+    "body_text": "Text",
+    "page_background": "Background",
+    "table_header_bg": "Background tint 700 (swatch index 7)",
+    "table_header_text": "Highlight tint 100 (swatch index 1)",
+    "link_color": "Support"
+  },
+  "perceptual_volume": 0.00417
+}

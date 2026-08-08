@@ -11,6 +11,41 @@ from tools.registry import registry, tool_error
 _GATEWAY_REACTION_TIMEOUT = 10.0
 
 
+def _canonical_standard_emoji(emoji: str) -> str | None:
+    """Return PTB's canonical spelling for a standard reaction emoji.
+
+    Telegram's display form may add a variation selector (for example ``❤️``),
+    while ``python-telegram-bot``'s ``ReactionEmoji`` enum uses ``❤``. Passing
+    the display form makes PTB misclassify it as a custom-emoji ID. Match
+    variation-selector-insensitively, but keep ZWJ structure otherwise intact.
+    """
+    # Telegram's standard list canonically omits the presentation selector on
+    # simple one-base reactions such as ❤. Do this without PTB so collection
+    # environments that mock optional Telegram modules behave identically.
+    if "\u200d" not in emoji and emoji.endswith(("\ufe0e", "\ufe0f")):
+        emoji = emoji[:-1]
+
+    try:
+        from telegram.constants import ReactionEmoji
+    except ImportError:
+        # Preserve compatibility with minimal/older Telegram installations;
+        # the live adapter/API remains the final validator there.
+        return emoji
+
+    allowed = {str(getattr(item, "value", item)) for item in ReactionEmoji}
+    if not allowed:
+        return emoji
+    if emoji in allowed:
+        return emoji
+    key = emoji.replace("\ufe0e", "").replace("\ufe0f", "")
+    matches = {
+        item
+        for item in allowed
+        if item.replace("\ufe0e", "").replace("\ufe0f", "") == key
+    }
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
 TELEGRAM_REACTION_SCHEMA = {
     "name": "telegram_react",
     "description": (
@@ -25,7 +60,7 @@ TELEGRAM_REACTION_SCHEMA = {
         "properties": {
             "emoji": {
                 "type": "string",
-                "description": "A single Telegram-supported standard emoji, such as 👍, ❤️, 😂, or 👀.",
+                "description": "A single Telegram-supported standard emoji, such as 👍, ❤, 😂, or 👀.",
             },
         },
         "required": ["emoji"],
@@ -39,10 +74,14 @@ def telegram_reaction_tool(emoji: str) -> str:
     emoji = (emoji or "").strip()
     if not emoji:
         return tool_error("An emoji is required.")
-
     platform = str(get_session_env("HERMES_SESSION_PLATFORM", "") or "").lower()
     if platform != "telegram":
         return tool_error("This tool is only available in a Telegram session.")
+
+    canonical_emoji = _canonical_standard_emoji(emoji)
+    if canonical_emoji is None:
+        return tool_error("Telegram does not support that standard reaction emoji.")
+    emoji = canonical_emoji
 
     chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
     message_id = get_session_env("HERMES_SESSION_MESSAGE_ID", "")

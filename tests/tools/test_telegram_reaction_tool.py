@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import subprocess
+import sys
 import threading
 
 from gateway.config import Platform
@@ -83,10 +85,43 @@ def test_telegram_reaction_tool_is_scoped_and_uses_current_source(monkeypatch):
     assert executed["thread_id"] == loop_thread.ident
     assert executed["kwargs"] == {
         "chat_id": "-100",
-        "emoji": "❤️",
+        "emoji": "❤",
         "message_id": "900",
     }
     assert set(module.TELEGRAM_REACTION_SCHEMA["parameters"]["properties"]) == {"emoji"}
+
+
+def test_telegram_reaction_tool_normalizes_variation_selectors():
+    from tools import telegram_reaction_tool as module
+
+    assert module._canonical_standard_emoji("❤️") == "❤"
+    assert module._canonical_standard_emoji("👍") == "👍"
+
+
+def test_every_installed_standard_reaction_and_display_alias_is_canonicalized():
+    # Some adapter tests install optional-dependency mocks in sys.modules at
+    # collection time. Use a fresh interpreter to inspect the real PTB enum.
+    script = r'''
+from telegram.constants import ReactionEmoji
+from tools.telegram_reaction_tool import _canonical_standard_emoji
+
+reactions = [str(getattr(item, "value", item)) for item in ReactionEmoji]
+assert len(reactions) >= 70
+for emoji in reactions:
+    assert _canonical_standard_emoji(emoji) == emoji
+    if "\u200d" not in emoji and not emoji.endswith(("\ufe0e", "\ufe0f")):
+        assert _canonical_standard_emoji(f"{emoji}\ufe0f") == emoji
+    if "\u200d" in emoji and "\ufe0f" in emoji:
+        assert _canonical_standard_emoji(emoji.replace("\ufe0f", "")) == emoji
+print(len(reactions))
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert int(result.stdout.strip()) >= 70
 
 
 def test_telegram_reaction_tool_is_telegram_only_and_eager():

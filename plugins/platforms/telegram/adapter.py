@@ -10427,6 +10427,27 @@ class TelegramAdapter(BasePlatformAdapter):
         """Set a single emoji reaction on a Telegram message."""
         if not self._bot:
             return False
+        # PTB's standard-reaction enum uses canonical spellings that can omit
+        # display variation selectors (``❤`` vs ``❤️``). Canonicalise direct
+        # adapter callers too; otherwise PTB treats the display form as a
+        # custom-emoji ID and Telegram rejects it.
+        if "\u200d" not in emoji and emoji.endswith(("\ufe0e", "\ufe0f")):
+            emoji = emoji[:-1]
+        try:
+            from telegram.constants import ReactionEmoji
+
+            allowed = {str(getattr(item, "value", item)) for item in ReactionEmoji}
+            if emoji not in allowed:
+                key = emoji.replace("\ufe0e", "").replace("\ufe0f", "")
+                matches = {
+                    item
+                    for item in allowed
+                    if item.replace("\ufe0e", "").replace("\ufe0f", "") == key
+                }
+                if len(matches) == 1:
+                    emoji = next(iter(matches))
+        except ImportError:
+            pass
         try:
             await self._bot.set_message_reaction(
                 chat_id=normalize_telegram_chat_id(chat_id),

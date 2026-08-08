@@ -96,7 +96,7 @@ async def test_intentional_reaction_ignores_lifecycle_flag(monkeypatch):
     adapter._bot.set_message_reaction.assert_awaited_once_with(
         chat_id=123,
         message_id=456,
-        reaction="❤️",
+        reaction="❤",
     )
 
 

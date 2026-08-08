@@ -227,6 +227,7 @@ def _get_backend() -> str:
     Falls back to whichever API key is present for users who configured
     keys manually without running setup.
     """
+    _ensure_web_plugins_loaded()
     configured = (_load_web_config().get("backend") or "").lower().strip()
     if configured in _LEGACY_WEB_BACKENDS or _registered_web_provider(configured) is not None:
         return configured
@@ -320,6 +321,7 @@ def _is_backend_available(backend: str) -> bool:
     (issues #28651, #31873, #32698). Built-in backends keep their cheap
     hardcoded probes below.
     """
+    _ensure_web_plugins_loaded()
     backend = (backend or "").lower().strip()
     if backend not in _LEGACY_WEB_BACKENDS:
         registered = _registered_web_provider_available(backend)

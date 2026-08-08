@@ -205,6 +205,29 @@ export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk)"
 python -m pip install -e '.[termux]' -c constraints-termux.txt
 ```
 
+### Old Android kernel (< 5.4) — Rust can't compile `jiter`
+
+The installer aborts with `Hermes Agent cannot install on this Termux environment` and a message about Rust / `jiter` (see [#26891](https://github.com/NousResearch/hermes-agent/issues/26891)).
+
+Root cause: `openai==2.24.0` is a **core** Hermes dependency and transitively requires [`jiter`](https://pypi.org/project/jiter/), a Rust-based JSON parser. `jiter` does not publish a wheel for `aarch64-unknown-linux-android`, so pip falls back to building from source via [`maturin`](https://pypi.org/project/maturin/) + Rust. Upstream `rustup` refuses to install for the `aarch64-unknown-linux-android` target, and on devices with kernel ≤ 4.19 even Termux's own `pkg install rust` typically fails (mirror packages are built against newer kernels).
+
+Pin a known device baseline (Kernel 4.19.111 / Samsung M12 / Android 11) was the original reproduction in #26891.
+
+Any one of the following workarounds is enough:
+
+1. **Retry `pkg`** — the failure is sometimes a transient Termux mirror issue:
+
+   ```bash
+   pkg update && pkg install -y rust
+   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+   ```
+
+2. **Use a device or proot/chroot with kernel ≥ 5.4** — that's the lower bound where Termux's Rust packages reliably build. Most Android 12+ devices ship with a 5.4 / 5.10 kernel.
+
+3. **Use the hosted Hermes service** — no local Rust toolchain is required.
+
+The installer's `verify_termux_rust_toolchain` pre-flight prints the kernel version (`uname -r`) and the link to #26891 in the failure message so you can confirm at a glance which case you're in.
+
 ### `hermes doctor` says ripgrep or Node is missing
 
 Install them with Termux packages:

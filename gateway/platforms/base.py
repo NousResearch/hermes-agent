@@ -3844,6 +3844,17 @@ class BasePlatformAdapter(ABC):
     # property) so the stream consumer knows not to short-circuit.
     REQUIRES_EDIT_FINALIZE: bool = False
 
+    # Weaker companion to REQUIRES_EDIT_FINALIZE: adapters that attach a
+    # rich payload (e.g. Slack Block Kit ``rich_blocks``) ONLY on the
+    # finalize=True edit must still receive that edit even when the last
+    # streamed chunk already delivered the identical text — otherwise the
+    # payload is silently dropped on single-chunk messages (#77805).
+    # Unlike REQUIRES_EDIT_FINALIZE, a mid-stream finalize edit that DID
+    # run already attached the payload, so the stream consumer's
+    # redundant-final-edit skip stays active for these adapters (no
+    # double finalize edit).
+    FINALIZE_EDIT_ATTACHES_RICH_PAYLOAD: bool = False
+
     async def create_handoff_thread(
         self,
         parent_chat_id: str,

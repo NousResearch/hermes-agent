@@ -120,6 +120,81 @@ class TestFinalizeCapabilityGate:
         picky.edit_message.assert_called_once()
         assert picky.edit_message.call_args[1]["finalize"] is True
 
+    @pytest.mark.asyncio
+    async def test_identical_text_skip_respects_rich_payload_flag(self):
+        """Adapters that attach a rich payload on the finalize edit (Slack
+        Block Kit rich_blocks, #77805) must still receive the finalize=True
+        edit when the last streamed chunk already delivered the identical
+        text — otherwise the block payload is silently dropped."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.FINALIZE_EDIT_ATTACHES_RICH_PAYLOAD = True
+        adapter.send = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="m1",
+        ))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="m1",
+        ))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(adapter, "chat_1")
+        await consumer._send_or_edit("hello")  # first send
+        await consumer._send_or_edit("hello", finalize=True)  # identical
+        # The finalize edit must go through so the adapter can attach
+        # its rich payload (blocks) to the final message.
+        adapter.edit_message.assert_called_once()
+        assert adapter.edit_message.call_args[1]["finalize"] is True
+
+    @pytest.mark.asyncio
+    async def test_slack_single_chunk_finalize_edit_after_last_chunk(self):
+        """End-to-end regression for #77805: when the last streamed chunk
+        already delivered the full text, the finalize=True edit that
+        attaches Slack rich_blocks must still run after the stream ends.
+
+        Short single-chunk message on a Slack-like adapter
+        (FINALIZE_EDIT_ATTACHES_RICH_PAYLOAD=True, REQUIRES_EDIT_FINALIZE
+        False): the preview is created by the first send, then the done
+        tick carries text identical to the last frame — the finalize edit
+        must not be short-circuited.  Exactly one finalize edit (the
+        redundant-edit skip must still prevent a double edit)."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.FINALIZE_EDIT_ATTACHES_RICH_PAYLOAD = True
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="m1",
+        ))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="m1",
+        ))
+        # Empty cursor: the done tick's text is identical to the last
+        # streamed frame (no cursor to strip), reproducing the exact
+        # finalize-skip condition reported in #77805.
+        config = StreamConsumerConfig(
+            edit_interval=10.0, buffer_threshold=5, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.02)
+        consumer.on_delta("Hello")
+        await asyncio.sleep(0.05)  # buffer_threshold creates the preview
+        consumer.finish()
+        await asyncio.sleep(0.1)
+        await task
+
+        finals = [
+            call.kwargs.get("finalize")
+            for call in adapter.edit_message.call_args_list
+        ]
+        assert finals and finals[-1] is True, (
+            "finalize=True edit skipped when the last chunk already "
+            "delivered the full text — Slack rich_blocks silently "
+            "dropped (#77805)"
+        )
+        assert finals.count(True) == 1, (
+            "expected exactly one finalize edit; got %r" % (finals,)
+        )
+        assert consumer._final_content_delivered is True
+
 
 class TestEditMessageFinalizeSignature:
     """Every concrete platform adapter must accept the ``finalize`` kwarg.

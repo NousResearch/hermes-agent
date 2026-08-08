@@ -108,6 +108,18 @@ def test_slack_mock_bootstrap_preserves_installed_packages():
     if PathFinder.find_spec("slack_sdk") is not None:
         assert isinstance(importlib.import_module("slack_sdk.errors"), ModuleType)
 
+
+def test_slack_adapter_declares_rich_payload_finalize_flag():
+    """Slack's edit_message attaches Block Kit blocks only on the
+    finalize=True edit, so the adapter must declare
+    FINALIZE_EDIT_ATTACHES_RICH_PAYLOAD for the stream consumer to keep
+    emitting that edit when the last streamed chunk already delivered the
+    identical text (#77805).  It must NOT claim REQUIRES_EDIT_FINALIZE:
+    Slack has no streaming lifecycle to close, and that flag would force
+    a redundant second finalize edit."""
+    assert SlackAdapter.FINALIZE_EDIT_ATTACHES_RICH_PAYLOAD is True
+    assert SlackAdapter.REQUIRES_EDIT_FINALIZE is False
+
 # ---------------------------------------------------------------------------
 # TestIgnoredChannelOutboundSuppression
 # ---------------------------------------------------------------------------

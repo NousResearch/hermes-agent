@@ -310,6 +310,22 @@ def _create_session_db_for_oneshot():
         return None
 
 
+def _discover_mcp_tools_for_oneshot() -> None:
+    """Register configured MCP tools before oneshot snapshots toolsets.
+
+    MCP discovery is best-effort in other startup paths: a misconfigured or
+    unreachable MCP server should not prevent a normal agent session from
+    starting. ``hermes -z`` needs the same pre-agent registration point while
+    preserving that tolerant behavior.
+    """
+    try:
+        from tools.mcp_tool import discover_mcp_tools
+
+        discover_mcp_tools()
+    except Exception as exc:
+        logging.debug("MCP tool discovery skipped for oneshot mode: %s", exc)
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -328,6 +344,8 @@ def _run_agent(
     from run_agent import AIAgent
 
     cfg = load_config()
+
+    _discover_mcp_tools_for_oneshot()
 
     # Resolve effective model: explicit arg → env var → config.
     model_cfg = cfg.get("model") or {}

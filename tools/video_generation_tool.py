@@ -145,6 +145,17 @@ VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
                     "dependent)."
                 ),
             },
+            "upscale": {
+                "type": "boolean",
+                "description": (
+                    "Optional high-resolution pass: when true, the generated "
+                    "video is run through the active backend's video upscaler "
+                    "(extra cost and latency, roughly 2x resolution). Use when "
+                    "the user asks for high-res / 4K output. Omit for the "
+                    "model's native resolution. Ignored by backends without "
+                    "an upscaler."
+                ),
+            },
             "model": {
                 "type": "string",
                 "description": (
@@ -328,6 +339,7 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     negative_prompt = (args.get("negative_prompt") or "").strip() or None
     audio = _coerce_bool(args.get("audio"))
     seed = _coerce_int(args.get("seed"))
+    upscale = _coerce_bool(args.get("upscale"))
     model_override = (args.get("model") or "").strip() or None
 
     # Soft validation — providers do their own. Prompt is required by the
@@ -361,6 +373,7 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
         "negative_prompt": negative_prompt,
         "audio": audio,
         "seed": seed,
+        "upscale": upscale,
     }
     # Drop None entries so providers see clean defaults.
     kwargs = {k: v for k, v in kwargs.items() if v is not None}

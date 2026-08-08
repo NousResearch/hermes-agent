@@ -532,6 +532,45 @@ def _check_fal_video_available() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Upscaler (SeedVR2 — video upscale pass)
+# ---------------------------------------------------------------------------
+
+# ByteDance SeedVR2 on FAL: $0.001/megapixel of output video. A 5s 720p→1440p
+# 2x pass is roughly $0.44. Faithful restoration-style upscaler (the same
+# model family Krea exposes as its "SeedVR2" video enhancer).
+UPSCALER_ENDPOINT = "fal-ai/seedvr/upscale/video"
+UPSCALER_FACTOR = 2
+
+
+def _upscale_video(video_url: str) -> Optional[str]:
+    """Upscale a generated video via SeedVR2; return the new URL or None.
+
+    Best-effort: any failure logs and returns ``None`` so the caller falls
+    back to the native-resolution video — an upscale failure must never
+    destroy an already-successful generation.
+    """
+    try:
+        logger.info("Upscaling video with SeedVR2 (%dx)...", UPSCALER_FACTOR)
+        handle = _submit_fal_video_request(UPSCALER_ENDPOINT, {
+            "video_url": video_url,
+            "upscale_mode": "factor",
+            "upscale_factor": UPSCALER_FACTOR,
+        })
+        result = handle.get()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Video upscale failed: %s", exc)
+        return None
+
+    video = (result or {}).get("video") if isinstance(result, dict) else None
+    if isinstance(video, dict) and video.get("url"):
+        return video["url"]
+    if isinstance(video, str) and video:
+        return video
+    logger.warning("Video upscaler returned no URL")
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Provider
 # ---------------------------------------------------------------------------
 
@@ -618,6 +657,7 @@ class FALVideoGenProvider(VideoGenProvider):
         negative_prompt: Optional[str] = None,
         audio: Optional[bool] = None,
         seed: Optional[int] = None,
+        upscale: Optional[bool] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         if not _check_fal_video_available():
@@ -722,9 +762,25 @@ class FALVideoGenProvider(VideoGenProvider):
                 provider="fal", model=family_id, prompt=prompt,
             )
 
-        extra: Dict[str, Any] = {"endpoint": endpoint}
+        # Optional high-resolution pass (SeedVR2). Explicit agent/user opt-in
+        # only; best-effort — failure falls back to the native-resolution
+        # video rather than failing the generation.
+        upscaled = False
+        if upscale:
+            upscaled_url = _upscale_video(url)
+            if upscaled_url:
+                url = upscaled_url
+                upscaled = True
+            else:
+                logger.warning(
+                    "Video upscale pass failed — returning native-resolution video"
+                )
+
+        extra: Dict[str, Any] = {"endpoint": endpoint, "upscaled": upscaled}
+        if upscaled:
+            extra["upscale_factor"] = UPSCALER_FACTOR
         if isinstance(video, dict):
-            if video.get("file_size"):
+            if video.get("file_size") and not upscaled:
                 extra["file_size"] = video["file_size"]
             if video.get("content_type"):
                 extra["content_type"] = video["content_type"]

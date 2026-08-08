@@ -2231,6 +2231,7 @@ class HermesACPAgent(acp.Agent):
                     if isinstance(tool, dict)
                 },
                 enabled_toolsets=toolsets,
+                disabled_toolsets=getattr(state.agent, "disabled_toolsets", None),
                 _memory_manager=getattr(state.agent, "_memory_manager", None),
             )
             inject_memory_provider_tools(tool_view)

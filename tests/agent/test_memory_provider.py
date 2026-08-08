@@ -862,7 +862,9 @@ class TestHonchoCadenceTracking:
 
 
 class TestMemoryToolToolsetGate:
-    """Issue #5544: memory provider tools must respect platform_toolsets.
+    """Issue #5544: memory provider tools must respect platform_toolsets,
+    and Issue #45422: external memory providers work when the built-in memory
+    toolset is present or implicitly enabled via resolve_toolset.
 
     Before the fix, MemoryManager.get_all_tool_schemas() output was appended
     to AIAgent.tools unconditionally in agent_init.py — bypassing the
@@ -874,10 +876,13 @@ class TestMemoryToolToolsetGate:
     These tests exercise the shared gate used by agent init and ACP refreshes.
     The gate condition is:
 
-        disabled_toolsets includes memory → skip injection
-        enabled_toolsets is None        → no filter, inject (backward compat)
-        selected toolsets include memory → user opted in, inject
-        otherwise (incl. [])            → skip injection
+        disabled_toolsets includes "memory" → skip injection
+        memory tool is present in tool surface → inject
+        enabled_toolsets is None            → no filter, inject (backward compat)
+        enabled_toolsets includes "memory"  → user opted in, inject
+        selected toolsets include "memory"
+          (via resolve_toolset)             → user opted in, inject
+        otherwise (incl. [])                → skip injection
     """
 
     @staticmethod

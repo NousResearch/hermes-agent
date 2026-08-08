@@ -86,7 +86,19 @@ def memory_provider_tools_enabled(
     *,
     memory_tool_present: bool = False,
 ) -> bool:
-    """Return whether external memory-provider tools should be exposed."""
+    """Return whether external memory-provider tools should be exposed.
+
+    Gate logic (Issue #45422, #5544):
+      disabled_toolsets includes "memory" → skip (global nuclear option — user
+                                             explicitly opted out of ALL memory)
+      memory_tool_present is True          → inject (built-in memory tool is
+                                               already in the tool surface)
+      enabled_toolsets is None             → no filter, inject (backward compat)
+      enabled_toolsets includes "memory"   → user opted in, inject
+      selected toolsets include "memory"
+        (via resolve_toolset)             → user opted in, inject
+      otherwise (incl. [])                → skip (constrained platform, no tools)
+    """
     if disabled_toolsets and "memory" in disabled_toolsets:
         return False
     if memory_tool_present:

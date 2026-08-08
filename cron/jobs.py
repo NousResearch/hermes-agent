@@ -709,6 +709,38 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     )
 
 
+def _validate_duration_repeat(
+    schedule: Dict[str, Any], repeat: Optional[int]
+) -> None:
+    """Reject a multi-run repeat count paired with a bare one-shot duration."""
+    if (
+        schedule.get("kind") != "once"
+        or not isinstance(repeat, int)
+        or repeat <= 1
+    ):
+        return
+
+    display = schedule.get("display")
+    match = (
+        re.fullmatch(r"once in\s+(.+)", display, flags=re.IGNORECASE)
+        if isinstance(display, str)
+        else None
+    )
+    if not match:
+        return
+
+    duration = match.group(1).strip()
+    try:
+        parse_duration(duration)
+    except ValueError:
+        return
+
+    raise ValueError(
+        f"Bare duration schedule '{duration}' is one-shot and cannot be combined "
+        f"with repeat={repeat}. Use schedule='every {duration}' for repeated runs."
+    )
+
+
 def _ensure_aware(dt: datetime) -> datetime:
     """Return a timezone-aware datetime in Hermes configured timezone.
 
@@ -1654,6 +1686,7 @@ def create_job(
     # Auto-set repeat=1 for one-shot schedules if not specified
     if parsed_schedule["kind"] == "once" and repeat is None:
         repeat = 1
+    _validate_duration_repeat(parsed_schedule, repeat)
 
     # Default delivery to origin if available, otherwise local
     if deliver is None:
@@ -1907,6 +1940,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     _upd_script or None,
                 )
             schedule_changed = "schedule" in updates
+            repeat_changed = "repeat" in updates
             inference_fields_changed = bool(
                 {"provider", "model", "base_url", "no_agent"}.intersection(updates)
             ) and _normalized_inference_axes(updated) != previous_inference_axes
@@ -1916,19 +1950,27 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updated["skills"] = normalized_skills
                 updated["skill"] = normalized_skills[0] if normalized_skills else None
 
-            if schedule_changed:
+            if schedule_changed or repeat_changed:
                 updated_schedule = updated["schedule"]
                 # The API may pass schedule as a raw string (e.g. "every 10m")
                 # instead of a pre-parsed dict.  Normalize it the same way
                 # create_job() does so downstream code can call .get() safely.
                 if isinstance(updated_schedule, str):
                     updated_schedule = parse_schedule(updated_schedule)
-                    updated["schedule"] = updated_schedule
-                updated["schedule_display"] = updates.get(
-                    "schedule_display",
-                    updated_schedule.get("display", updated.get("schedule_display")),
+                repeat_state = updated.get("repeat")
+                repeat_times = (
+                    repeat_state.get("times")
+                    if isinstance(repeat_state, dict)
+                    else repeat_state
                 )
-                if updated.get("state") != "paused":
+                _validate_duration_repeat(updated_schedule, repeat_times)
+                if schedule_changed:
+                    updated["schedule"] = updated_schedule
+                    updated["schedule_display"] = updates.get(
+                        "schedule_display",
+                        updated_schedule.get("display", updated.get("schedule_display")),
+                    )
+                if schedule_changed and updated.get("state") != "paused":
                     updated_next_run = compute_next_run(updated_schedule)
                     # Same guard as create_job: an UPDATE that sets a one-shot
                     # to a time >ONESHOT_GRACE_SECONDS in the past would store

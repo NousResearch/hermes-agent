@@ -1,0 +1,83 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+# Schema version 1.
+manifest_version: 1
+
+name: robotsshop
+description: >-
+  RobotsShop Trust Index — x402 settlement truth for agents (free payTo
+  mismatches, free→paid onramp, free trips). stdio FastMCP; no API key required
+  for free tools.
+
+source: https://github.com/AnalogHubris/robotsshop-mcp
+
+# How to launch the server once installed. The keys here map 1:1 to the
+# `mcp_servers.<name>` block written into ~/.hermes/config.yaml by the
+# existing `_save_mcp_server()` helper in hermes_cli/mcp_config.py.
+transport:
+  type: stdio
+  # For git-installed servers, ${INSTALL_DIR} is substituted at install time
+  # with the path the catalog cloned the repo into. The catalog never
+  # auto-updates: the user re-runs `hermes mcp install official/robotsshop` to
+  # refresh.
+  command: "${INSTALL_DIR}/.venv/bin/python"
+  args:
+    - "${INSTALL_DIR}/trust_index_mcp.py"
+  env:
+    # Public free API (no key). Override only if self-hosting a mirror.
+    TRUST_INDEX_API: "https://api.robotsshop.io"
+
+# Optional install step. Omit for npm/uvx servers where transport.command
+# is the install (`npx -y package`). Use for repos that need a local clone
+# + dependency install.
+install:
+  type: git
+  url: https://github.com/AnalogHubris/robotsshop-mcp.git
+  # Pinned per catalog dependency policy: full commit SHA (branches and tags
+  # can be moved; SHAs cannot), and the pinned commit must be at least
+  # 2 weeks old at pin time — same supply-chain rules as pyproject
+  # dependencies. NOTE (2026-07-15 rebase): package shipped 2026-07-14 so this
+  # pin is younger than the usual 2-week cooldown. Free tools only, no secrets,
+  # public HTTPS API. Maintainers may hold merge until the pin ages or grant a
+  # one-time waiver. Bumping the pin is a PR to this manifest.
+  # Commit: chore: pin catalog ref after docs commit (2026-07-14)
+  ref: 6f88737bbbda06984faa69931b8cc87104597556
+  # Bootstrap commands run inside the cloned directory after clone.
+  bootstrap:
+    - "python3 -m venv .venv"
+    - ".venv/bin/pip install -r requirements.txt"
+
+# Authentication. Three shapes:
+#   type: api_key  — prompt for env vars, write to ~/.hermes/.env
+#   type: oauth    — provider-mediated or remote MCP native OAuth (case 1/2)
+#   type: none     — no credentials needed
+auth:
+  type: none
+
+# Tool selection at install time:
+# Free tools only. Paid depth is HTTP x402 outside this MCP (see paid_routes_help).
+# payto_mismatches is an alias of mismatches — leave off default to save schema tokens.
+tools:
+  default_enabled:
+    - onramp
+    - mismatches
+    - stats
+    - leaderboard
+    - lookup
+    - free_trips
+    - paid_routes_help
+
+post_install: |
+  RobotsShop Trust Index talks to the public API (default
+  https://api.robotsshop.io). Free tools never attach payment. Paid depth is
+  HTTP x402 (Base USDC) — see paid_routes_help.
+
+  Suggested habit: onramp → mismatches → lookup before spending USDC on an
+  endpoint.
+
+  Site: https://robotsshop.io
+  Repo: https://github.com/AnalogHubris/robotsshop-mcp
+  Contact: hello@robotsshop.io
+
+  Start a new Hermes session (or /reload-mcp) to load tools.

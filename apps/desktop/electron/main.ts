@@ -9715,22 +9715,17 @@ function createWindow() {
 
   mainWindow.webContents.on('unresponsive', () => rememberLog('[renderer] webContents became unresponsive'))
 
-  // Electron always passes the event first. The canonical (Electron 36+) shape
-  // is (event, messageDetails); the deprecated positional shape is
-  // (event, level, message, line, sourceId). Handle both. `level` is numeric
-  // (0..3), where 3 === error.
-  mainWindow.webContents.on('console-message', (_event, detailsOrLevel, message, line, sourceId) => {
-    const details = detailsOrLevel && typeof detailsOrLevel === 'object' ? detailsOrLevel : null
-    const level = details ? details.level : detailsOrLevel
-
-    if (level !== 3) {
+  // Electron always passes the event first. The canonical (Electron 36+)
+  // shape is (event, details); the deprecated positional shape was
+  // (event, level, message, line, sourceId). We run Electron 40, where the
+  // positional fallback itself emits a deprecation warning, so use the
+  // canonical shape only. `details.level` is numeric (0..3), 3 === error.
+  mainWindow.webContents.on('console-message', (_event, details) => {
+    if (details.level !== 3) {
       return
     }
 
-    const text = details ? details.message : message
-    const src = details ? details.sourceUrl : sourceId
-    const lineNo = details ? details.lineNumber : line
-    rememberLog(`[renderer console] ${text} (${src}:${lineNo})`)
+    rememberLog(`[renderer console] ${details.message} (${details.sourceUrl}:${details.lineNumber})`)
   })
 
   loadWindowUrl(mainWindow, DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(), 'Renderer')

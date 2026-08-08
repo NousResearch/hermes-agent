@@ -51,7 +51,10 @@ export function resolveDefaultWslDistro(): string {
       encoding: 'utf8',
       env: { ...process.env, WSL_UTF8: '1' },
       timeout: 2000,
-      windowsHide: true
+      windowsHide: true,
+      // Silence wsl.exe's own stderr (e.g. "WSL is not installed" on hosts
+      // without it) — that output is noise here; we only need stdout.
+      stdio: ['ignore', 'pipe', 'ignore']
     })
 
     cachedDistro = parseDefaultDistro(out) || 'Ubuntu'

@@ -1,7 +1,8 @@
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from typing import Any
 
 from agent.turn_finalizer import finalize_turn
+from run_agent import AIAgent
 
 
 class FakeAgent:
@@ -126,6 +127,66 @@ def test_final_response_closes_tool_tail_before_persistence(monkeypatch):
     assert result["messages"][-1] == {"role": "assistant", "content": "Done."}
     assert agent.persisted_messages is not None
     assert agent.persisted_messages[-1] == {"role": "assistant", "content": "Done."}
+
+
+def test_empty_failure_sentinel_absent_after_finalize_and_session_persist(monkeypatch):
+    """Marked terminal sentinel must stay out after real drop + session persist.
+
+    ``conversation_loop`` appends assistant("(empty)") with
+    ``_empty_terminal_sentinel`` then sets ``final_response="(empty)"``.
+    ``finalize_turn`` calls the production
+    ``AIAgent._drop_trailing_empty_response_scaffolding`` helper, then the
+    #43849 close block must not re-append an unmarked copy that
+    ``AIAgent._persist_session`` would keep in durable SessionDB / resume
+    history (unmarked ``(empty)`` survives persist by design).
+    """
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    agent._session_persist_lock = None
+    agent._session_messages = []
+    agent.flushed_session_db_messages = []
+    agent._save_session_log = lambda _messages: None
+    agent._flush_messages_to_session_db = (
+        lambda messages, conversation_history=None: agent.flushed_session_db_messages.append(
+            [dict(message) for message in messages]
+        )
+    )
+    agent._drop_trailing_empty_response_scaffolding = MethodType(
+        AIAgent._drop_trailing_empty_response_scaffolding, agent
+    )
+    agent._persist_session = MethodType(AIAgent._persist_session, agent)
+
+    messages = [
+        {"role": "user", "content": "do work"},
+        {
+            "role": "assistant",
+            "content": "(empty)",
+            "_empty_terminal_sentinel": True,
+        },
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response="(empty)",
+        api_call_count=3,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="do work",
+        original_user_message="do work",
+        _should_review_memory=False,
+        _turn_exit_reason="empty_response_exhausted",
+    )
+
+    assert agent.flushed_session_db_messages, "expected real _persist_session flush"
+    durable = agent.flushed_session_db_messages[-1]
+    assert durable == [{"role": "user", "content": "do work"}]
+    assert all(message.get("content") != "(empty)" for message in durable)
+    assert all(message.get("content") != "(empty)" for message in result["messages"])
+    assert all(not message.get("_empty_terminal_sentinel") for message in result["messages"])
 
 
 def test_final_response_fills_pure_tool_call_tail(monkeypatch):

@@ -204,15 +204,82 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     return 0 if upstream_rev == local_rev else UPDATE_AVAILABLE_NO_COUNT
 
 
+def _git_head_file(repo_dir: Path) -> Optional[Path]:
+    """Return a checkout's HEAD file, including linked-worktree gitdirs."""
+    dotgit = repo_dir / ".git"
+    if dotgit.is_dir():
+        return dotgit / "HEAD"
+    if not dotgit.is_file():
+        return None
+    try:
+        text = dotgit.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    if not text.startswith("gitdir:"):
+        return None
+    gitdir = Path(text.split(":", 1)[1].strip())
+    if not gitdir.is_absolute():
+        gitdir = (dotgit.parent / gitdir).resolve()
+    return gitdir / "HEAD"
+
+
+def _detached_release_tag_status(repo_dir: Path, origin_url: str | None) -> Optional[int]:
+    """Compare an exact detached release tag with the latest upstream tag."""
+    if _canonical_github_remote(origin_url) != _OFFICIAL_REPO_CANONICAL:
+        return None
+
+    head_file = _git_head_file(repo_dir)
+    if head_file is None:
+        return None
+    try:
+        head_text = head_file.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    if not head_text or head_text.startswith("ref:"):
+        return None
+
+    # Numeric v-tags are published releases. Ad-hoc tags such as v-nightly
+    # retain the normal main-branch comparison.
+    current_tag = _git_stdout(
+        ["describe", "--tags", "--exact-match", "--match", "v[0-9]*", "HEAD"],
+        cwd=repo_dir,
+    )
+    if not current_tag:
+        return None
+
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "ls-remote",
+                "--refs",
+                "--sort=-version:refname",
+                "--tags",
+                _UPSTREAM_REPO_URL,
+                "refs/tags/v[0-9]*",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+
+    for line in (result.stdout or "").splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2 and parts[1].startswith("refs/tags/"):
+            latest_tag = parts[1].removeprefix("refs/tags/")
+            return 0 if current_tag == latest_tag else UPDATE_AVAILABLE_NO_COUNT
+    return None
+
+
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     """Count commits behind origin/main in a local checkout."""
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
-    if _is_official_ssh_remote(origin_url):
-        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
-        checked = _check_via_rev(head_rev) if head_rev else None
-        if checked == UPDATE_AVAILABLE_NO_COUNT:
-            return 1
-        return checked
 
     # Installer checkouts are shallow (`git clone --depth 1`). On a shallow
     # clone the history stops at a single commit, so a plain `git fetch` would
@@ -224,6 +291,18 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     # count path unchanged. Mirrors the desktop fix in apps/desktop/electron/main.cjs.
     shallow = _git_stdout(["rev-parse", "--is-shallow-repository"], cwd=repo_dir)
     is_shallow = shallow == "true"
+
+    if not is_shallow:
+        tagged_status = _detached_release_tag_status(repo_dir, origin_url)
+        if tagged_status is not None:
+            return tagged_status
+
+    if _is_official_ssh_remote(origin_url):
+        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+        checked = _check_via_rev(head_rev) if head_rev else None
+        if checked == UPDATE_AVAILABLE_NO_COUNT:
+            return 1
+        return checked
 
     try:
         # Scope the fetch to the one branch the behind-count compares against.

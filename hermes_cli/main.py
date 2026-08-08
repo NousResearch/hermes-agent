@@ -2046,7 +2046,6 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             # npm `omit=dev` config would silently skip them and the TUI
             # build would fail. See _run_npm_install_deterministic.
             "--include=dev",
-            "--silent",
             "--no-fund",
             "--no-audit",
             "--progress=false",

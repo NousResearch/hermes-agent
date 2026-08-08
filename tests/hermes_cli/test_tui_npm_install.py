@@ -176,3 +176,51 @@ def test_make_tui_argv_omits_workspace_when_tui_has_own_lockfile(
     assert install_cmd[:2] == ["/bin/npm", "install"]
     # cwd must be tui_dir (standalone), not parent
     assert calls[0][1]["cwd"] == str(tui_dir)
+
+
+def test_make_tui_argv_preserves_engine_failure_for_recovery(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    """The startup install must retain npm's EBADENGINE diagnostic.
+
+    npm's ``--silent`` mode exits non-zero with empty stdout/stderr for this
+    failure, which prevents the recovery path from either upgrading a managed
+    npm or printing the manual command for an unmanaged one.
+    """
+    from hermes_cli import npm_engine
+
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    (tui_dir / "package-lock.json").write_text("{}")
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+
+    engine_error = (
+        "npm error code EBADENGINE\n"
+        'npm error notsup Required: {"node":">=20.0.0","npm":">=12.0.0"}\n'
+        'npm error notsup Actual: {"node":"v24.0.0","npm":"11.13.0"}\n'
+    )
+
+    def fake_run(cmd, **kwargs):
+        stderr = "" if "--silent" in cmd else engine_error
+        return types.SimpleNamespace(returncode=1, stdout="", stderr=stderr)
+
+    seen = {}
+
+    def fake_repair(npm, output):
+        seen["npm"] = npm
+        seen["output"] = output
+        return False
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(npm_engine, "maybe_repair_npm_engine", fake_repair)
+
+    with pytest.raises(SystemExit):
+        main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    assert seen["npm"] == "/bin/npm"
+    assert "EBADENGINE" in seen["output"]

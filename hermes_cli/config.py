@@ -989,6 +989,11 @@ def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
     return missing
 
 
+def _is_index(segment: str) -> bool:
+    """True when a dotted-path segment addresses a list index (``a.0.b``)."""
+    return segment.isdigit()
+
+
 def _set_nested(config, dotted_key: str, value):
     """Set a value at an arbitrarily nested dotted key path.
 
@@ -998,13 +1003,14 @@ def _set_nested(config, dotted_key: str, value):
       _set_nested(c, "providers.1", "x") → c["providers"][1] = "x"
 
     Intermediate dicts are created on demand.  List indices are parsed
-    from numeric path segments; the referenced index must already exist
-    (we do not grow lists — the user is navigating into structure they
-    wrote themselves).  If a segment targets a non-container leaf
-    (scalar), the leaf is replaced with a fresh dict so the write can
-    proceed — this preserves the pre-existing behavior for bare scalar
-    overrides (e.g. setting ``a.b.c`` where ``a.b`` was previously a
-    string).
+    from numeric path segments.  A numeric segment also *creates* the list
+    when the parent key is missing (``hooks.pre_tool_call.0.command`` on an
+    empty config yields a one-element list, not a dict keyed ``"0"`` —
+    #76974), and grows a short list so the index resolves.  If a segment
+    targets a non-container leaf (scalar), the leaf is replaced with a fresh
+    container so the write can proceed — this preserves the pre-existing
+    behavior for bare scalar overrides (e.g. setting ``a.b.c`` where ``a.b``
+    was previously a string).
 
     Guards against #17876: before this fix the code unconditionally
     replaced any non-dict value (including lists) with ``{}``, silently
@@ -1013,7 +1019,7 @@ def _set_nested(config, dotted_key: str, value):
     """
     parts = dotted_key.split(".")
     current = config
-    for part in parts[:-1]:
+    for depth, part in enumerate(parts[:-1]):
         if isinstance(current, list):
             try:
                 idx = int(part)
@@ -1025,10 +1031,20 @@ def _set_nested(config, dotted_key: str, value):
             current = current[idx]
         elif isinstance(current, dict):
             existing = current.get(part)
-            # Preserve dicts and lists; replace missing/scalar with a fresh dict.
+            # Preserve dicts and lists; replace missing/scalar with a fresh
+            # container. Seed a LIST when the next segment is a numeric index,
+            # so creating list-of-dicts config works and not just editing it
+            # (#76974): before this, `hooks.pre_tool_call.0.command` produced
+            # a dict with the string key "0", which the runtime never reads.
             if part not in current or not isinstance(existing, (dict, list)):
-                current[part] = {}
+                current[part] = [] if _is_index(parts[depth + 1]) else {}
             current = current[part]
+            # Grow a seeded/short list so the upcoming index resolves.
+            if isinstance(current, list):
+                nxt = parts[depth + 1]
+                if _is_index(nxt):
+                    while len(current) <= int(nxt):
+                        current.append({})
         else:
             raise TypeError(
                 f"Cannot navigate into {type(current).__name__} at key {dotted_key!r}"

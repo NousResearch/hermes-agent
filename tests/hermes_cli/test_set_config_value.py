@@ -723,3 +723,57 @@ class TestMalformedYAMLConfigPreservation:
         assert "Cannot parse" in captured.out or "Cannot parse" in captured.err
         raw = _read_config(_isolated_hermes_home)
         assert raw == self.BROKEN_CONFIG
+
+
+class TestSetNestedListCreation:
+    """`_set_nested` must CREATE list-of-dicts config, not just edit it (#76974).
+
+    Before the fix a numeric segment under a missing key produced a dict with
+    the string key "0", so `hooks:` written via `hermes config set` was never
+    read by the runtime — the CLI reported success and the feature stayed off.
+    """
+
+    def test_numeric_segment_creates_list_not_string_keyed_dict(self):
+        from hermes_cli.config import _set_nested
+
+        cfg = {}
+        _set_nested(cfg, "hooks.pre_tool_call.0.command", "/tmp/hook.py")
+
+        assert isinstance(cfg["hooks"]["pre_tool_call"], list)
+        assert cfg["hooks"]["pre_tool_call"] == [{"command": "/tmp/hook.py"}]
+
+    def test_grows_list_to_reach_index(self):
+        from hermes_cli.config import _set_nested
+
+        cfg = {}
+        _set_nested(cfg, "a.2.k", "v")
+
+        assert isinstance(cfg["a"], list)
+        assert len(cfg["a"]) == 3
+        assert cfg["a"][2] == {"k": "v"}
+
+    def test_editing_an_existing_list_is_unchanged(self):
+        """Regression guard: the pre-existing edit path must keep working."""
+        from hermes_cli.config import _set_nested
+
+        cfg = {"hooks": {"pre_llm_call": [{"command": "/old.py", "timeout": 20}]}}
+        _set_nested(cfg, "hooks.pre_llm_call.0.command", "/new.py")
+
+        assert cfg["hooks"]["pre_llm_call"] == [{"command": "/new.py", "timeout": 20}]
+
+    def test_non_numeric_segment_still_creates_dict(self):
+        from hermes_cli.config import _set_nested
+
+        cfg = {}
+        _set_nested(cfg, "agent.model.name", "x")
+
+        assert cfg == {"agent": {"model": {"name": "x"}}}
+
+    def test_existing_list_is_not_clobbered(self):
+        """#17876 guard must survive: a list under a dotted path is preserved."""
+        from hermes_cli.config import _set_nested
+
+        cfg = {"custom_providers": [{"name": "a"}, {"name": "b"}]}
+        _set_nested(cfg, "custom_providers.1.name", "c")
+
+        assert cfg["custom_providers"] == [{"name": "a"}, {"name": "c"}]

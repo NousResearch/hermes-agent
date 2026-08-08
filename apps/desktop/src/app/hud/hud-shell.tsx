@@ -17,6 +17,7 @@ import { titlebarButtonClass } from '../shell/titlebar'
 import { useHudClickThrough } from './click-through'
 import { useHudGlass } from './glass'
 import { useHudGoto, useReportHudSession } from './handoff'
+import { useHudThreadFocus } from './thread-focus'
 
 /** How long the transcript lingers at its glanceable opacity — after a turn
  *  lands, or after you let go of the composer — before it goes. This is the ONLY
@@ -308,6 +309,7 @@ export function HudShell() {
     }
   }, [])
 
+  useHudThreadFocus(rootRef)
   useHudGlass(rootRef, recent || held, filled)
   useHudClickThrough(rootRef)
 

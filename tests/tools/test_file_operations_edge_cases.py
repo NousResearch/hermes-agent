@@ -244,7 +244,7 @@ class TestPaginationBounds:
         assert result.files == ["a.py"]
         rg_commands = [cmd for cmd in commands if cmd.startswith("rg --files")]
         assert rg_commands
-        assert "| head -n 1" in rg_commands[0]
+        assert "| command head -n 1" in rg_commands[0]
 
 
 # =========================================================================

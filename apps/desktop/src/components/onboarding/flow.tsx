@@ -319,8 +319,17 @@ function ConfirmingModelPanel({
         currentModel={flow.currentModel}
         currentProvider={flow.providerSlug}
         onOpenChange={setPickerOpen}
-        onSelect={({ model }) => {
-          void setOnboardingModel(model)
+        onSelect={({ model, provider }) => {
+          // The picker lists models from every configured provider, not just
+          // the one the user just signed in with. Persist the assignment
+          // against the provider that actually serves the picked model (and
+          // sync the card label to it) — otherwise a foreign model gets
+          // paired with the sign-in provider and chat errors out.
+          const picked = options.data?.providers?.find(
+            p => String(p.slug).toLowerCase() === String(provider).toLowerCase()
+          )
+
+          void setOnboardingModel(model, provider, picked?.name)
           setPickerOpen(false)
         }}
         open={pickerOpen}

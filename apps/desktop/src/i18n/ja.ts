@@ -2553,6 +2553,7 @@ export const ja = defineLocale({
       moreActions: 'その他のアクション',
       branchNewChat: '新しいチャットでブランチ',
       react: 'リアクション',
+      quoteInNewMessage: '新しいメッセージに引用',
       dismissError: 'エラーを閉じる',
       filesChanged: count => `${count} 件のファイルを変更`,
       reviewChanges: 'レビュー',

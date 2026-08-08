@@ -4,6 +4,7 @@ import { type FC, type ReactNode, useCallback, useRef, useState } from 'react'
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { messageAttachmentRefs, messageContentText } from '@/components/assistant-ui/thread/content'
 import { ReactionBadge, ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
+import { QuoteSelectionContextMenu, selectedTextWithin } from '@/components/assistant-ui/thread/quote-selection'
 import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
 import { useMessageReactions } from '@/components/assistant-ui/thread/use-message-reactions'
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
@@ -275,6 +276,7 @@ export const UserMessage: FC<{
         }
         messageId={messageId}
       >
+        <QuoteSelectionContextMenu>
         <ActionBarPrimitive.Root className="relative w-full max-w-full" data-slot="aui_user-bubble-actions">
           <div className="human-message-with-todos-wrapper flex w-full flex-col gap-0">
             <ReactionPicker
@@ -292,7 +294,7 @@ export const UserMessage: FC<{
                   readOnly || !reactionsEnabled
                     ? undefined
                     : event => {
-                        if (hasTextSelection()) {
+                        if (selectedTextWithin(event.currentTarget)) {
                           return
                         }
 
@@ -432,6 +434,7 @@ export const UserMessage: FC<{
             </BranchPickerPrimitive.Root>
           </div>
         </ActionBarPrimitive.Root>
+        </QuoteSelectionContextMenu>
       </StickyHumanMessageContainer>
     </MessagePrimitive.Root>
   )

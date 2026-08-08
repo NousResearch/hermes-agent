@@ -2908,6 +2908,7 @@ export const zh: Translations = {
       moreActions: '更多操作',
       branchNewChat: '在新对话中分支',
       react: '回应',
+      quoteInNewMessage: '在新消息中引用',
       dismissError: '关闭错误',
       filesChanged: count => `${count} 个文件已更改`,
       reviewChanges: '查看',

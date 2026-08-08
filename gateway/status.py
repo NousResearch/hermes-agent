@@ -988,12 +988,35 @@ def write_runtime_status(
     error_code: Any = _UNSET,
     error_message: Any = _UNSET,
     served_profiles: Any = _UNSET,
+    clear_predecessor_platforms: bool = False,
 ) -> None:
-    """Persist gateway runtime health information for diagnostics/status."""
+    """Persist gateway runtime health information for diagnostics/status.
+
+    ``clear_predecessor_platforms`` is for the successor gateway's first
+    ``starting`` stamp.  It evaluates the persisted process identity before
+    replacing it with the current one, so platform state from a dead predecessor
+    cannot be attributed to the successor.
+    """
     path = _get_runtime_status_path()
     payload = _read_json_file(path) or _build_runtime_status_record()
     previous_payload = copy.deepcopy(payload)
     current_record = _build_pid_record()
+    if clear_predecessor_platforms:
+        previous_pid = _pid_from_record(payload)
+        previous_start_time = payload.get("start_time")
+        process_changed = (
+            previous_pid is not None
+            and (
+                previous_pid != current_record["pid"]
+                or (
+                    previous_start_time is not None
+                    and current_record["start_time"] is not None
+                    and previous_start_time != current_record["start_time"]
+                )
+            )
+        )
+        if process_changed:
+            payload["platforms"] = {}
     payload.setdefault("platforms", {})
     payload["kind"] = current_record["kind"]
     payload["pid"] = current_record["pid"]

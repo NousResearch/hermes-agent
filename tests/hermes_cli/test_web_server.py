@@ -4418,3 +4418,301 @@ class TestDashboardComponentHealth:
         assert self.ws.DASHBOARD_HEALTH.selftest_status == "failing"
         assert self.ws.DASHBOARD_HEALTH.selftest_http_status == 500
         assert self.ws.DASHBOARD_HEALTH.snapshot()["status"] == "degraded"
+class TestStatusStalePlatformSnapshot:
+    """/api/status must not surface a platform snapshot from a dead gateway.
+
+    ``gateway_state.json`` is a single file rewritten in place.  After a
+    predecessor dies, a successor can claim ``gateway.pid`` before making its
+    first ``write_runtime_status(gateway_state="starting")`` call.  During that
+    window the state file still contains the predecessor's PID and platform
+    snapshot, so the resolved live PID and the record's PID disagree.  The
+    dashboard would otherwise render "Discord — connected" for a process that
+    never connected to Discord.  The successor's first status stamp closes this
+    window by clearing a predecessor-owned platform block before re-stamping the
+    runtime record.
+
+    ``resolve_gateway_liveness`` validates PIDs for the *liveness* answer only;
+    it deliberately does not gate the platform snapshot.  These tests pin the
+    trust boundary in ``get_status()``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from gateway.config import Platform
+        import hermes_cli.web_server as web_server
+
+        home = get_hermes_home()
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text(
+            yaml.safe_dump({"platforms": {"discord": {"enabled": True}}}), encoding="utf-8"
+        )
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", home / "state.db")
+
+        # Neutralise everything /api/status touches except the liveness ladder.
+        monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
+        monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
+
+        class _FakeGatewayConfig:
+            def get_connected_platforms(self):
+                return [Platform.DISCORD]
+
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config", lambda: _FakeGatewayConfig()
+        )
+
+        self.web_server = web_server
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    @staticmethod
+    def _runtime(pid, *, state="running"):
+        record = {
+            "gateway_state": state,
+            "platforms": {
+                "discord": {"state": "connected", "updated_at": "2026-06-01T00:00:00+00:00"}
+            },
+            "exit_reason": None,
+            "updated_at": "2026-06-01T00:00:00+00:00",
+        }
+        if pid is not None:
+            record["pid"] = pid
+        return record
+
+    def test_platforms_surfaced_when_runtime_pid_matches_live_pid(self, monkeypatch):
+        """The healthy case: same process wrote the snapshot that is now live."""
+        monkeypatch.setattr(self.web_server, "get_running_pid_cached", lambda *a, **k: 4242)
+        monkeypatch.setattr(
+            self.web_server, "read_runtime_status", lambda *a, **k: self._runtime(4242)
+        )
+
+        data = self.client.get("/api/status").json()
+
+        assert data["gateway_running"] is True
+        assert data["gateway_pid"] == 4242
+        assert data["gateway_state"] == "running"
+        assert data["gateway_platforms"].get("discord"), (
+            "a snapshot written by the live PID must still be surfaced; "
+            f"got {data['gateway_platforms']!r}"
+        )
+
+    def test_platforms_suppressed_when_runtime_pid_differs_from_live_pid(self, monkeypatch):
+        """The bug: the snapshot belongs to a gateway that is no longer running.
+
+        Liveness is still ``running`` — a real gateway IS up — but its platform
+        connections are unknown, so reporting the dead process's "connected"
+        Discord entry is worse than reporting nothing.
+        """
+        monkeypatch.setattr(self.web_server, "get_running_pid_cached", lambda *a, **k: 9999)
+        monkeypatch.setattr(
+            self.web_server, "read_runtime_status", lambda *a, **k: self._runtime(4242)
+        )
+
+        data = self.client.get("/api/status").json()
+
+        assert data["gateway_running"] is True
+        assert data["gateway_pid"] == 9999
+        assert data["gateway_state"] == "running", (
+            "liveness is unaffected by the snapshot guard — only the platform "
+            "block is untrusted"
+        )
+        assert data["gateway_platforms"] == {}, (
+            "a platforms snapshot written by PID 4242 must not be attributed to "
+            f"live PID 9999; got {data['gateway_platforms']!r}"
+        )
+
+    def test_stringified_runtime_pid_is_coerced_not_trusted(self, monkeypatch):
+        """A persisted ``"pid": "4242"`` must still be compared, not waved through.
+
+        JSON writers and hand-edited state files stringify PIDs.  A plain
+        ``isinstance(pid, int)`` check fails *open* on those records and
+        surfaces the stale snapshot, which is exactly the bug this guard
+        exists to prevent.  ``_pid_from_record`` is the repo's canonical
+        coercion and is what production uses everywhere else it reads a PID.
+        """
+        monkeypatch.setattr(self.web_server, "get_running_pid_cached", lambda *a, **k: 9999)
+        monkeypatch.setattr(
+            self.web_server, "read_runtime_status", lambda *a, **k: self._runtime("4242")
+        )
+
+        data = self.client.get("/api/status").json()
+
+        assert data["gateway_running"] is True
+        assert data["gateway_platforms"] == {}, (
+            'a record with "pid": "4242" must be coerced and compared against '
+            f"live PID 9999, not skipped; got {data['gateway_platforms']!r}"
+        )
+
+    def test_unparseable_runtime_pid_keeps_previous_behaviour(self, monkeypatch):
+        """A pid we cannot make sense of must not silently suppress the block.
+
+        ``_pid_from_record`` returns ``None`` when ``pid`` is missing, ``None``,
+        or cannot be parsed by ``int()``, as with ``"nonsense"``.  The guard then
+        stands down and the record keeps its pre-fix behaviour.  Values accepted
+        by ``int()``, including bools and floats, are compared instead.
+        """
+        monkeypatch.setattr(self.web_server, "get_running_pid_cached", lambda *a, **k: 9999)
+        monkeypatch.setattr(
+            self.web_server, "read_runtime_status", lambda *a, **k: self._runtime("nonsense")
+        )
+
+        data = self.client.get("/api/status").json()
+
+        assert data["gateway_running"] is True
+        assert data["gateway_platforms"].get("discord"), (
+            "an unparseable pid must not be treated as a mismatch; "
+            f"got {data['gateway_platforms']!r}"
+        )
+
+    def test_platforms_surfaced_when_runtime_record_has_no_pid(self, monkeypatch):
+        """No PID in the record means nothing to disagree with — no regression.
+
+        Legacy gateways and hand-written state files omit ``pid``; suppressing
+        their snapshot would be a behaviour change well beyond this fix.
+        """
+        monkeypatch.setattr(self.web_server, "get_running_pid_cached", lambda *a, **k: 4242)
+        monkeypatch.setattr(
+            self.web_server, "read_runtime_status", lambda *a, **k: self._runtime(None)
+        )
+
+        data = self.client.get("/api/status").json()
+
+        assert data["gateway_running"] is True
+        assert data["gateway_platforms"].get("discord"), (
+            "a pid-less runtime record must keep its previous behaviour; "
+            f"got {data['gateway_platforms']!r}"
+        )
+
+    def test_remote_health_body_is_not_pid_gated(self, monkeypatch):
+        """A cross-container gateway's own body is self-consistent — leave it alone.
+
+        When no local PID answers and the HTTP health probe does, the body IS the
+        remote gateway's live report of itself. Its PID belongs to another host and
+        must never be compared against a local PID.
+        """
+        remote_body = {
+            "pid": 4242,
+            "gateway_state": "running",
+            "platforms": {"discord": {"state": "connected"}},
+            "updated_at": "2026-06-01T00:00:00+00:00",
+        }
+        monkeypatch.setattr(self.web_server, "get_running_pid_cached", lambda *a, **k: None)
+        monkeypatch.setattr(self.web_server, "read_runtime_status", lambda *a, **k: None)
+        monkeypatch.setattr(
+            self.web_server, "_GATEWAY_HEALTH_URL", "http://gateway:8787/health"
+        )
+        monkeypatch.setattr(
+            self.web_server, "_probe_gateway_health", lambda: (True, remote_body)
+        )
+
+        data = self.client.get("/api/status").json()
+
+        assert data["gateway_running"] is True
+        assert data["gateway_state"] == "running"
+        assert data["gateway_platforms"].get("discord"), (
+            "the remote health body is the gateway's own report; the local-PID "
+            f"guard must not apply to it. got {data['gateway_platforms']!r}"
+        )
+
+    def test_stopped_gateway_still_reports_no_platforms(self, monkeypatch):
+        """The pre-existing stopped path must be untouched by the guard."""
+        monkeypatch.setattr(self.web_server, "get_running_pid_cached", lambda *a, **k: None)
+        monkeypatch.setattr(
+            self.web_server, "get_runtime_status_running_pid", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            self.web_server,
+            "read_runtime_status",
+            lambda *a, **k: self._runtime(4242, state="stopped"),
+        )
+
+        data = self.client.get("/api/status").json()
+
+        assert data["gateway_running"] is False
+        assert data["gateway_state"] == "stopped"
+        assert data["gateway_platforms"] == {}
+
+
+class TestRuntimeStatusRestartClearsPredecessorPlatformsBlock:
+    """A successor must reject predecessor platforms before stamping its PID.
+
+    ``write_runtime_status`` is a read-modify-write that normally preserves the
+    existing ``platforms`` block.  Gateway startup must compare that persisted
+    record with the successor before the write re-stamps ``pid``/``start_time``;
+    otherwise the stale predecessor snapshot becomes indistinguishable from a
+    live successor snapshot.
+    """
+
+    def test_restart_clears_stale_platforms_before_stamping_the_new_pid(
+        self, monkeypatch, _isolate_hermes_home
+    ):
+        import gateway.status as gs
+
+        # Gateway A (pid 4242) starts and reports Discord connected.
+        monkeypatch.setattr(gs.os, "getpid", lambda: 4242)
+        monkeypatch.setattr(gs, "_get_process_start_time", lambda pid: 111.0)
+        gs.write_runtime_status(gateway_state="running", exit_reason=None)
+        gs.write_runtime_status(
+            platform="discord",
+            platform_state="connected",
+            error_code=None,
+            error_message=None,
+        )
+
+        # Gateway A dies abruptly; gateway B (pid 9999) starts and makes its
+        # first status write (gateway/run.py, "starting").
+        monkeypatch.setattr(gs.os, "getpid", lambda: 9999)
+        monkeypatch.setattr(gs, "_get_process_start_time", lambda pid: 222.0)
+        gs.write_runtime_status(
+            gateway_state="starting",
+            exit_reason=None,
+            clear_predecessor_platforms=True,
+        )
+
+        record = gs.read_runtime_status()
+
+        assert record["pid"] == 9999, "the writer always stamps the current pid"
+        assert record["start_time"] == 222.0
+        assert record["platforms"] == {}, (
+            "startup must clear the dead gateway's platform snapshot before "
+            "re-stamping the record with the successor pid"
+        )
+
+    def test_restart_clears_stale_platforms_when_pid_is_reused(
+        self, monkeypatch, _isolate_hermes_home
+    ):
+        import gateway.status as gs
+
+        monkeypatch.setattr(gs.os, "getpid", lambda: 4242)
+        monkeypatch.setattr(gs, "_get_process_start_time", lambda pid: 111.0)
+        gs.write_runtime_status(gateway_state="running", exit_reason=None)
+        gs.write_runtime_status(
+            platform="discord",
+            platform_state="connected",
+            error_code=None,
+            error_message=None,
+        )
+
+        # The OS reuses the predecessor's numeric PID for a later gateway.
+        monkeypatch.setattr(gs, "_get_process_start_time", lambda pid: 222.0)
+        gs.write_runtime_status(
+            gateway_state="starting",
+            exit_reason=None,
+            clear_predecessor_platforms=True,
+        )
+
+        record = gs.read_runtime_status()
+
+        assert record["pid"] == 4242
+        assert record["start_time"] == 222.0
+        assert record["platforms"] == {}, (
+            "a matching numeric pid with a different process start time is a "
+            "reused pid, not authority to inherit predecessor platforms"
+        )

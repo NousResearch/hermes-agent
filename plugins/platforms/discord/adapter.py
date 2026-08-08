@@ -1159,6 +1159,38 @@ class DiscordAdapter(BasePlatformAdapter):
         except (TypeError, ValueError):
             return 0
 
+    def _refresh_transport_status(self, state: str) -> None:
+        """Refresh the runtime-status badge for a discord.py transport event.
+
+        Deliberately does NOT route through ``_mark_connected`` /
+        ``_mark_disconnected``: those mutate adapter *lifecycle* state, and the
+        events that reach here are routine transport churn, not lifecycle
+        transitions.
+
+        - ``_mark_disconnected()`` sets ``_running = False``.  discord.py
+          dispatches ``on_disconnect`` on every internal reconnect (a
+          ``ReconnectWebSocket`` session resume, or any transient ``OSError`` /
+          ``ConnectionClosed``), so flipping ``_running`` there would end
+          ``_liveness_loop`` permanently — nothing restarts it, since
+          ``_start_liveness_probe()`` is only reached from ``connect()``, which
+          discord.py never re-enters — and would disarm the split-brain guard in
+          ``_handle_bot_task_done`` (it short-circuits on ``not self._running``).
+        - ``_mark_connected()`` sets ``_running = True`` and clears
+          ``_fatal_error_*``.  The client can dispatch one more READY/RESUMED
+          while ``_notify_liveness_fatal_error`` awaits ``client.close()``, which
+          would wipe the ``discord_websocket_health_stale`` fatal the watchdog
+          just raised and resurrect an adapter the runner is tearing down.
+
+        The fatal short-circuit of ``_mark_disconnected`` is preserved: a live
+        fatal error is a more specific badge than either transport state, and an
+        intentional teardown (``_disconnecting``) already owns the final write.
+        """
+        if self.has_fatal_error or getattr(self, "_disconnecting", False):
+            return
+        self._write_runtime_status_safe(
+            state, platform_state=state, error_code=None, error_message=None
+        )
+
     def _handle_bot_task_done(self, task: asyncio.Task) -> None:
         """Surface post-startup discord.py task exits to the gateway supervisor.
 
@@ -1351,6 +1383,24 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 if adapter_self._missed_message_backfill_enabled():
                     adapter_self._ensure_missed_message_backfill_task()
+
+                # discord.py owns the socket after ``connect()`` returns and
+                # re-fires READY on every internal reconnect, so this is the
+                # only hook that can refresh runtime status for a session the
+                # adapter never re-entered ``connect()`` for.
+                adapter_self._refresh_transport_status("connected")
+
+            @self._client.event
+            async def on_resumed():
+                """Gateway session replayed after a transient socket drop."""
+                logger.info("[%s] Discord gateway session resumed", adapter_self.name)
+                adapter_self._refresh_transport_status("connected")
+
+            @self._client.event
+            async def on_disconnect():
+                """Gateway socket dropped — surface it instead of a stale badge."""
+                logger.info("[%s] Discord gateway disconnected", adapter_self.name)
+                adapter_self._refresh_transport_status("disconnected")
 
             @self._client.event
             async def on_message(message: DiscordMessage):

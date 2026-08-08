@@ -88,6 +88,7 @@ from plugins.memory.config_schema import (
     get_provider_config_schema,
 )
 from gateway.status import (
+    _pid_from_record,
     derive_gateway_busy,
     derive_gateway_drainable,
     get_running_pid_cached,
@@ -3133,6 +3134,42 @@ async def get_status(profile: Optional[str] = None):
         if runtime:
             gateway_state = runtime.get("gateway_state")
             gateway_platforms = runtime.get("platforms") or {}
+            # Trust boundary for the platform snapshot.  ``gateway_state.json``
+            # is one file rewritten in place, and ``resolve_gateway_liveness``
+            # validates PIDs for the *liveness* answer only — it deliberately
+            # does not gate this block — so the dashboard can render "Discord
+            # connected" for a process that never connected.
+            #
+            # Scope, precisely: this fires after a predecessor dies with its
+            # final PID/platform snapshot still in ``gateway_state.json`` and a
+            # successor claims ``gateway.pid``, but before the successor's first
+            # status stamp.  Gateway startup separately clears a predecessor's
+            # platform block before re-stamping the record, so this reader-side
+            # check covers the reachable handoff window rather than becoming
+            # unreachable at that first write.
+            #
+            # Only ever applied to the LOCAL record: a remote health body is
+            # the other container's own self-report and its PID belongs to
+            # another host, so comparing it to a local PID is meaningless.
+            if (
+                runtime is local_runtime
+                and liveness.source != "health"
+                and gateway_pid is not None
+            ):
+                # ``_pid_from_record`` is the repo-wide coercion for a persisted
+                # pid: every value accepted by ``int()`` is compared, including
+                # stringified pids, bools, and floats.  A missing, None, or
+                # unparseable pid returns None, so only then does the guard stand
+                # down; coercible mismatches suppress the snapshot fail-closed.
+                runtime_pid = _pid_from_record(runtime)
+                if runtime_pid is not None and runtime_pid != gateway_pid:
+                    _log.debug(
+                        "/api/status suppressing platforms snapshot from pid %s; "
+                        "live gateway pid is %s",
+                        runtime_pid,
+                        gateway_pid,
+                    )
+                    gateway_platforms = {}
             if configured_gateway_platforms is not None:
                 gateway_platforms = {
                     key: value

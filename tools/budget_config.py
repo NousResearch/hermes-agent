@@ -19,6 +19,68 @@ DEFAULT_TURN_BUDGET_CHARS: int = 200_000
 DEFAULT_PREVIEW_SIZE_CHARS: int = 1_500
 
 
+# --- CONFIG-DRIVEN OVERRIDES ---------------------------------------------------
+# The per-result cap (100K chars) silently truncates large MCP/tool results (e.g.
+# a code-search server returning a 200K-char snippet), and there is no config lever
+# for it: `tool_output.max_bytes` only bounds terminal output, not generic results.
+# This reads an OPTIONAL `tool_budget:` block from the active config.yaml so the
+# caps are tunable, and lets specific tools be pinned to no cap. Fully guarded:
+# with no block (or on any error) every constant is byte-identical to before.
+#   tool_budget:
+#     default_result_size_chars: 500000   # per tool result ("inf" = unlimited)
+#     turn_budget_chars: 2000000          # aggregate per assistant turn
+#     preview_size_chars: 8000            # inline preview before the truncation note
+#     per_result_window_fraction: 0.5     # of ctx window a single result may take
+#     per_turn_window_fraction: 1.0       # of ctx window the whole turn may take
+#     unlimited_tools: [get_code_snippet, search_code, get_architecture, trace_path]
+def _load_budget_overrides() -> Dict:
+    """Return the `tool_budget:` mapping from the active config, or {} if absent.
+
+    Reads a single config file — ``$HERMES_HOME/config.yaml`` (falling back to
+    ``~/.hermes/config.yaml`` only when HERMES_HOME is unset). Fully guarded: any
+    error returns {}. Respecting HERMES_HOME keeps this hermetically testable —
+    a test points HERMES_HOME at a tmp dir and gets exactly that config.
+    """
+    import os
+    try:
+        import yaml  # type: ignore
+        home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+        path = os.path.join(home, "config.yaml")
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as fh:
+                data = yaml.safe_load(fh) or {}
+            block = data.get("tool_budget")
+            if isinstance(block, dict):
+                return block
+    except Exception:
+        pass
+    return {}
+
+
+_BUDGET_OVERRIDES: Dict = _load_budget_overrides()
+
+
+def _ov_num(key: str, default):
+    v = _BUDGET_OVERRIDES.get(key)
+    if v is None:
+        return default
+    if isinstance(v, str) and v.strip().lower() in ("inf", "unlimited", "none"):
+        return float("inf")
+    try:
+        return type(default)(v)
+    except Exception:
+        return default
+
+
+DEFAULT_RESULT_SIZE_CHARS = _ov_num("default_result_size_chars", DEFAULT_RESULT_SIZE_CHARS)
+DEFAULT_TURN_BUDGET_CHARS = _ov_num("turn_budget_chars", DEFAULT_TURN_BUDGET_CHARS)
+DEFAULT_PREVIEW_SIZE_CHARS = _ov_num("preview_size_chars", DEFAULT_PREVIEW_SIZE_CHARS)
+for _tool in (_BUDGET_OVERRIDES.get("unlimited_tools") or []):
+    if isinstance(_tool, str):
+        PINNED_THRESHOLDS[_tool] = float("inf")
+# -------------------------------------------------------------------------------
+
+
 @dataclass(frozen=True)
 class BudgetConfig:
     """Immutable budget constants for the 3-layer tool result persistence system.
@@ -74,6 +136,9 @@ _CHARS_PER_TOKEN: int = 4
 # compete), so these stay well under 1.0.
 _PER_RESULT_WINDOW_FRACTION: float = 0.15
 _PER_TURN_WINDOW_FRACTION: float = 0.30
+# Config-driven (tool_budget.per_result_window_fraction / per_turn_window_fraction):
+_PER_RESULT_WINDOW_FRACTION = _ov_num("per_result_window_fraction", _PER_RESULT_WINDOW_FRACTION)
+_PER_TURN_WINDOW_FRACTION = _ov_num("per_turn_window_fraction", _PER_TURN_WINDOW_FRACTION)
 
 # Floor so even a tiny-but-admitted model still gets a usable preview/result
 # rather than a 0-char budget.

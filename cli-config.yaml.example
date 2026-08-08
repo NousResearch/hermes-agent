@@ -556,6 +556,27 @@ compression:
   # auxiliary section below (auxiliary.compression.provider / model).
 
 # =============================================================================
+# Tool-result truncation budget (optional; top-level block)
+# =============================================================================
+# Controls when a large tool/MCP result is persisted-and-truncated before it is
+# handed back to the model. The defaults (100K chars per result, 200K per turn)
+# are correct for large-window models but silently truncate big MCP payloads
+# (e.g. a code-search server returning a 200K-char snippet) with no config lever
+# — tool_output.max_bytes only bounds *terminal* output, not generic results.
+# With NO tool_budget block, behavior is byte-identical to the built-in defaults.
+# Resolution order per tool is unchanged: pinned > overrides > registry > default.
+#
+# tool_budget:
+#   default_result_size_chars: 500000   # per tool result ("inf"/"unlimited" = uncapped)
+#   turn_budget_chars: 2000000          # aggregate across all tool results in one turn
+#   preview_size_chars: 8000            # inline preview shown before the truncation note
+#   per_result_window_fraction: 0.5     # of the model window a single result may occupy
+#   per_turn_window_fraction: 1.0       # of the model window the whole turn may occupy
+#   unlimited_tools:                    # pin specific tools to no cap (like read_file)
+#     - search_code
+#     - get_code_snippet
+
+# =============================================================================
 # Anthropic prompt caching TTL
 # =============================================================================
 # When prompt caching is active (Claude via OpenRouter or native Anthropic),

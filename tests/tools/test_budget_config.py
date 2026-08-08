@@ -173,3 +173,52 @@ class TestBudgetForContextWindow:
         threshold = cfg.resolve_threshold("mcp_firecrawl_firecrawl_search")
         assert threshold < huge_len
         assert cfg.default_result_size < huge_len
+
+
+# ---------------------------------------------------------------------------
+# Config-driven overrides (the optional `tool_budget:` block)
+# ---------------------------------------------------------------------------
+
+
+class TestConfigDrivenOverrides:
+    """`tool_budget:` in config.yaml tunes the caps; absent = defaults."""
+
+    def test_no_block_returns_empty(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text("model:\n  default: x\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.budget_config import _load_budget_overrides
+        assert _load_budget_overrides() == {}
+
+    def test_missing_config_file_returns_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "nope"))
+        from tools.budget_config import _load_budget_overrides
+        assert _load_budget_overrides() == {}
+
+    def test_block_is_read(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "tool_budget:\n"
+            "  default_result_size_chars: 500000\n"
+            "  unlimited_tools:\n"
+            "    - search_code\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.budget_config import _load_budget_overrides
+        ov = _load_budget_overrides()
+        assert ov["default_result_size_chars"] == 500_000
+        assert ov["unlimited_tools"] == ["search_code"]
+
+    def test_malformed_block_is_ignored(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text("tool_budget: not-a-mapping\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.budget_config import _load_budget_overrides
+        assert _load_budget_overrides() == {}
+
+    def test_ov_num_coerces_and_defaults(self, monkeypatch):
+        import tools.budget_config as b
+        monkeypatch.setattr(
+            b, "_BUDGET_OVERRIDES", {"a": "500000", "b": "inf", "c": "unlimited"}
+        )
+        assert b._ov_num("a", 100) == 500_000
+        assert b._ov_num("b", 100) == float("inf")
+        assert b._ov_num("c", 100) == float("inf")
+        assert b._ov_num("missing", 42) == 42

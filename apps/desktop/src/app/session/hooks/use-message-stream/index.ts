@@ -11,6 +11,7 @@ import {
   chatMessageText,
   type GatewayEventPayload,
   mergeFinalAssistantText,
+  normalizeWhitespace,
   reasoningPart,
   renderMediaTags,
   upsertToolPart
@@ -625,14 +626,23 @@ export function useMessageStream({
               existing.interim &&
               finalText &&
               existingText &&
-              (finalText === existingText || finalText.startsWith(existingText) || existingText.startsWith(finalText))
+              (finalText === existingText ||
+                finalText.startsWith(existingText) ||
+                existingText.startsWith(finalText) ||
+                // Tool-heavy turns sometimes produce a final whose whitespace
+                // doesn't match the sealed interim exactly (collapsed runs of
+                // spaces, stray newlines, trailing whitespace from the final
+                // decoder). Treat whitespace-normalized equality as a settle
+                // signal so the live UI agrees with the single DB row instead
+                // of appending a duplicate bubble (#81422).
+                normalizeWhitespace(finalText) === normalizeWhitespace(existingText))
             )
 
             if (existing.pending || (!interimBoundaryPending && finalText && existingText === finalText)) {
               nextMessages = prev.map((message, messageIndex) =>
                 messageIndex === index ? completeMessage(message) : message
               )
-            } else if (interimBoundaryPending && (responsePreviewed || finalContinuesInterim)) {
+            } else if (
               // Settle the interim in place instead of creating a duplicate —
               // the DB has one row, so the live UI must agree. Previously this
               // was gated on `responsePreviewed` alone, so a NON-previewed
@@ -642,6 +652,18 @@ export function useMessageStream({
               // for ordinary tool-call turns while `responsePreviewed` still
               // covers the verify-on-stop continuation-budget case even when the
               // final text was rewritten and no longer shares a prefix.
+              //
+              // The whitespace-equality clause has to fire on `existing.interim`
+              // (not `interimBoundaryPending`): a chained `message.start` between
+              // the interim seal and the final `message.complete` — the pattern
+              // open PR #76583 fixes for the prefix-continuity case — resets
+              // `interimBoundaryPending` to false via
+              // `apps/desktop/src/app/session/hooks/use-message-stream/gateway-event.ts:620`,
+              // making the new clause unreachable when it's exactly the case that
+              // produces a whitespace-equivalent final (#81422, follow-up).
+              (interimBoundaryPending && responsePreviewed) ||
+              finalContinuesInterim
+            ) {
               nextMessages = prev.map((message, messageIndex) =>
                 messageIndex === index ? completeMessage(message) : message
               )

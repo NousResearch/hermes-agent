@@ -226,7 +226,17 @@ export function collectUnspokenTurnSpeech(
   return { id, pending, text: parts.join('\n\n') }
 }
 
-const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim()
+/**
+ * Collapse runs of any whitespace to a single space and trim the ends.
+ *
+ * Used by `mergeFinalAssistantText` to compare streamed interim text against
+ * the authoritative final response after stripping formatting-only
+ * differences (collapsed whitespace, leading/trailing spaces). Exported so
+ * adjacent settle logic in `use-message-stream` can reuse the same
+ * normalization when deciding whether a sealed interim and a non-previewed
+ * final represent the same assistant message.
+ */
+export const normalizeWhitespace = (value: string) => value.replace(/\s+/g, ' ').trim()
 
 /**
  * Merge the final assistant text into a message's parts.
@@ -240,7 +250,7 @@ const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim()
  * - Appends the final text as a new text part.
  */
 export function mergeFinalAssistantText(parts: ChatMessagePart[], finalText: string): ChatMessagePart[] {
-  const dedupeReference = normalizeWs(finalText)
+  const dedupeReference = normalizeWhitespace(finalText)
 
   const kept = parts.filter(part => {
     if (part.type === 'text') {
@@ -258,7 +268,7 @@ export function mergeFinalAssistantText(parts: ChatMessagePart[], finalText: str
     // Reasoning is a restatement only when the final FULLY covers it.
     // The reverse direction is not considered — a short final must not
     // swallow a longer reasoning block (#61447).
-    const r = normalizeWs(part.text)
+    const r = normalizeWhitespace(part.text)
 
     return !(r && dedupeReference.startsWith(r))
   })

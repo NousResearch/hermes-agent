@@ -311,4 +311,22 @@ describe('useMessageStream interim text sealing', () => {
     await start()
     expect(getState().interimBoundaryPending).toBe(false)
   })
+
+  it('settles a whitespace-normalized-equivalent final onto a non-previewed interim (#81422)', async () => {
+    await mountStream()
+    await start()
+
+    // Tool-heavy Desktop turn: the streamed interim is sealed with one
+    // whitespace shape; the final decoder collapses whitespace and adds a
+    // trailing space. Neither strict equality nor prefix-either-way matches,
+    // but they are functionally the same reply. Settle onto the sealed
+    // interim so the live UI agrees with the single DB row instead of
+    // appending a duplicate bubble.
+    await delta('here is the final answer')
+    await interim('here is the final answer')
+    await complete('here  is  the  final  answer ')
+
+    const texts = assistantMessages()
+    expect(texts.filter(t => t.replace(/\s+/g, ' ').trim() === 'here is the final answer')).toHaveLength(1)
+  })
 })

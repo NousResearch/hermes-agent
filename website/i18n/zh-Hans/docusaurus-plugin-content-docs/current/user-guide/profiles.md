@@ -40,13 +40,13 @@ hermes profile create researcher --description "Reads source code and external d
 
 你也可以稍后通过 `hermes profile describe` 设置或自动生成描述——完整路由模型请参阅 [Kanban 指南](./features/kanban#auto-vs-manual-orchestration)。
 
-### 仅克隆配置（`--clone`）
+### 克隆设置与整理后的记忆（`--clone`）
 
 ```bash
 hermes profile create work --clone
 ```
 
-将当前 profile 的 `config.yaml`、`.env`、`SOUL.md` 和 skills 复制到新 profile。API 密钥、模型和能力相同，但会话和记忆是全新的。编辑 `~/.hermes/profiles/work/.env` 可使用不同的 API 密钥，编辑 `~/.hermes/profiles/work/SOUL.md` 可设置不同的人格。
+将当前 profile 的 `config.yaml`、`.env` 凭据、`SOUL.md`、整理后的记忆（`memories/MEMORY.md` 和 `memories/USER.md`）以及 skills 复制到新 profile。克隆后的 profile 会保留相同的 API 密钥、模型、能力、人格和整理后的身份上下文，但会话历史为空。由于 `.env` 可能包含 API 密钥和令牌，如果新 profile 应使用不同凭据，请编辑 `~/.hermes/profiles/work/.env`；如需不同人格，请编辑 `~/.hermes/profiles/work/SOUL.md`。
 
 ### 克隆全部内容（`--clone-all`）
 
@@ -62,7 +62,7 @@ hermes profile create backup --clone-all
 hermes profile create work --clone-from coder
 ```
 
-`--clone-from <source>` 会直接选择源 profile，并隐含执行 config/skills/SOUL 克隆。若要完整复制该源 profile，请与 `--clone-all` 组合使用：
+`--clone-from <source>` 会直接选择源 profile，并隐含执行与 `--clone` 相同的 config、`.env` 凭据、SOUL、整理后的记忆和 skills 克隆。若要完整复制该源 profile，请与 `--clone-all` 组合使用：
 
 ```bash
 hermes profile create work-backup --clone-from coder --clone-all

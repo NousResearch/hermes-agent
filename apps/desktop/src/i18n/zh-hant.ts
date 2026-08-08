@@ -1399,9 +1399,11 @@ export const zhHant = defineLocale({
     nameLabel: '名稱',
     cloneFrom: '複製來源',
     cloneFromNone: '無（空白）',
-    cloneFromDesc: '從選取的來源設定檔複製設定、技能和 SOUL.md。',
+    cloneFromDesc:
+      '從選取的來源設定檔複製設定、.env 憑證、SOUL.md、整理後的記憶和技能。工作階段歷史保持全新。',
     cloneFromDefault: '從預設設定檔複製設定',
-    cloneFromDefaultDesc: '從您的預設設定檔複製設定、技能和 SOUL.md。',
+    cloneFromDefaultDesc:
+      '從您的預設設定檔複製設定、.env 憑證、SOUL.md、整理後的記憶和技能。工作階段歷史保持全新。',
     invalidName: hint => `設定檔名稱無效。${hint}`,
     nameRequired: '名稱為必填',
     creating: '建立中…',

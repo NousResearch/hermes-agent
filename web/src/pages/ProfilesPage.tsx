@@ -292,7 +292,14 @@ export default function ProfilesPage() {
       distribution: p.distribution ?? "Distribution",
       advancedOptions: p.advancedOptions ?? "Advanced options",
       cloneAll:
-        p.cloneAll ?? "Clone everything (memories, sessions, skills, state)",
+        p.cloneAll ??
+        "Clone all profile state (excluding session history and backups)",
+      cloneConfigDetails:
+        p.cloneConfigDetails ??
+        "Copies config, .env credentials, SOUL.md, curated memory, and skills. Sessions stay fresh.",
+      cloneAllDetails:
+        p.cloneAllDetails ??
+        "Copies all profile files, including .env credentials and memory; excludes session history, backups, snapshots, and checkpoints.",
       noSkillsOption: p.noSkillsOption ?? "Don't seed bundled skills",
       descriptionOptional: p.descriptionOptional ?? "Description (optional)",
       modelOptional: p.modelOptional ?? "Model (optional)",
@@ -879,6 +886,11 @@ export default function ProfilesPage() {
                     </SelectOption>
                   ))}
                 </Select>
+                {cloning && (
+                  <p className="text-xs text-muted-foreground">
+                    {cloneAll ? L.cloneAllDetails : L.cloneConfigDetails}
+                  </p>
+                )}
               </div>
 
               <div className="grid gap-2">

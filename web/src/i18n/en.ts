@@ -312,7 +312,7 @@ export const en: Translations = {
     nameRule:
       "Lowercase letters, digits, _ and - only; must start with a letter or digit; up to 64 characters.",
     invalidName: "Invalid profile name",
-    cloneFrom: "Clone config from",
+    cloneFrom: "Clone from",
     cloneFromNone: "None (blank)",
     allProfiles: "Profiles",
     noProfiles: "No profiles found.",
@@ -356,7 +356,11 @@ export const en: Translations = {
     describeFailed: "Could not generate description",
     distribution: "Distribution",
     advancedOptions: "Advanced options",
-    cloneAll: "Clone everything (memories, sessions, skills, state)",
+    cloneAll: "Clone all profile state (excluding session history and backups)",
+    cloneConfigDetails:
+      "Copies config, .env credentials, SOUL.md, curated memory, and skills. Sessions stay fresh.",
+    cloneAllDetails:
+      "Copies all profile files, including .env credentials and memory; excludes session history, backups, snapshots, and checkpoints.",
     noSkillsOption: "Don't seed bundled skills",
     descriptionOptional: "Description (optional)",
     modelOptional: "Model (optional)",

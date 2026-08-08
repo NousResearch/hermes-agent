@@ -12,6 +12,7 @@ import {
   findNext,
   findPrevious,
   initFindInPageListener,
+  initOpenFindBarListener,
   setFindQuery
 } from '@/store/find-in-page'
 
@@ -71,6 +72,11 @@ export function FindBar() {
   // subscription is deliberately mount-scoped and NOT tied to `active` —
   // results for an in-flight search must still land if the bar just closed.
   useEffect(() => initFindInPageListener(), [])
+
+  // Mirror the find-results listener for the main-process Ctrl/Cmd+F
+  // forward — on Pop!_OS / GNOME the GTK compositor grabs the chord at
+  // the windowing layer (#81727).
+  useEffect(() => initOpenFindBarListener(), [])
 
   // Debounce search — fire findInPage 200ms after the user stops typing.
   useEffect(() => {

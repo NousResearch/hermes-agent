@@ -381,6 +381,10 @@ declare global {
       findInPage: (query: string, options?: { forward?: boolean; findNext?: boolean }) => Promise<{ count: number }>
       stopFindInPage: () => Promise<void>
       onFoundInPage: (callback: (result: { activeMatchOrdinal: number; count: number }) => void) => () => void
+      // Main-process `before-input-event` forwards Ctrl/Cmd+F here so the
+      // renderer can still open the FindBar when the OS compositor has
+      // already grabbed the chord (#81727, e.g. Pop!_OS / GNOME).
+      onOpenFindBarRequested: (callback: () => void) => () => void
     }
   }
 }

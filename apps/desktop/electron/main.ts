@@ -117,7 +117,7 @@ import {
   tuiResumeArgs
 } from './external-terminal'
 import { findGitBash as _findGitBash } from './find-git-bash'
-import { installFoundInPageForwarder, performFind, stopFind } from './find-in-page'
+import { installFindShortcut, installFoundInPageForwarder, performFind, stopFind } from './find-in-page'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
 import { readDirForIpc } from './fs-read-dir'
 import {
@@ -10015,6 +10015,13 @@ async function startHermes() {
 function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {}) {
   installPreviewShortcut(win)
   installDevToolsShortcut(win)
+  // Claim Ctrl/Cmd+F in the main process — on Pop!_OS / GNOME-based Linux
+  // distros the GTK compositor grabs Ctrl+F at the windowing layer before
+  // the renderer's keydown listener fires (#81727). Routing it through
+  // `before-input-event` strictly precedes that compositor shortcut, and
+  // the renderer's find-in-page pipeline still owns the FindBar UI and the
+  // search itself.
+  installFindShortcut(win)
 
   if (zoom) {
     installZoomShortcuts(win)

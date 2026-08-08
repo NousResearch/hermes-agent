@@ -128,3 +128,49 @@ export function resetFindInPageListenerForTest(): void {
   detachListener = undefined
   listenerRefs = 0
 }
+
+// Same refcount pattern as `initFindInPageListener`, but for the
+// "main-process Ctrl/Cmd+F forwarded to renderer" channel. On Pop!_OS /
+// GNOME-based Linux distros the GTK compositor grabs Ctrl+F before the
+// renderer's keydown listener can fire — the main process intercepts the
+// chord via `before-input-event` and emits this IPC, so the renderer can
+// still open the FindBar (#81727).
+let openFindBarRefs = 0
+let detachOpenFindBar: (() => void) | undefined
+
+export function initOpenFindBarListener(): () => void {
+  openFindBarRefs += 1
+
+  if (openFindBarRefs === 1) {
+    detachOpenFindBar = window.hermesDesktop?.onOpenFindBarRequested?.(() => {
+      openFindBar()
+    })
+  }
+
+  let released = false
+
+  return () => {
+    if (released) {
+      return
+    }
+    released = true
+    openFindBarRefs -= 1
+
+    if (openFindBarRefs === 0) {
+      detachOpenFindBar?.()
+      detachOpenFindBar = undefined
+    }
+  }
+}
+
+/** Test seam: number of live "open find bar" subscriptions. */
+export function openFindBarListenerCount(): number {
+  return openFindBarRefs
+}
+
+/** Test seam: detach the open-find-bar bridge listener and zero the refcount. */
+export function resetOpenFindBarListenerForTest(): void {
+  detachOpenFindBar?.()
+  detachOpenFindBar = undefined
+  openFindBarRefs = 0
+}

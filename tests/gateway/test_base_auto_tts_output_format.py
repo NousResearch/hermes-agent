@@ -11,6 +11,7 @@ voice bubble). The fix passes an explicit output path from
 """
 
 import asyncio
+import os
 import json
 from unittest.mock import AsyncMock, patch
 
@@ -141,3 +142,98 @@ async def test_base_auto_tts_skips_playback_when_tool_reports_failure():
     adapter.play_tts.assert_not_awaited()
     # Text reply still goes out.
     assert adapter.sent and adapter.sent[0]["content"] == "reply text"
+
+
+# ---------------------------------------------------------------------------
+# #80386: Docker HERMES_WRITE_SAFE_ROOT must not reject auto-TTS paths
+# ---------------------------------------------------------------------------
+
+
+def test_output_path_respects_write_safe_root(tmp_path, monkeypatch):
+    """Docker defaults HERMES_HOME and WRITE_SAFE_ROOT to the same tree.
+
+    Auto-TTS must land under that tree, not /tmp (which is write-denied).
+    """
+    from agent.file_safety import is_write_denied
+
+    safe = tmp_path / "opt" / "data"
+    safe.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(safe))
+    monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe))
+    # Clear any profile override context if present
+    monkeypatch.delenv("HERMES_HOME_PROFILE", raising=False)
+
+    path = build_auto_tts_output_path(Platform.DISCORD)
+    assert path.startswith(str(safe / "tmp" / "hermes_voice")), path
+    assert path.endswith(".mp3")
+    assert not is_write_denied(path), path
+    import tempfile
+    system_voice = os.path.join(tempfile.gettempdir(), "hermes_voice")
+    assert not path.startswith(system_voice + os.sep), path
+
+
+def test_output_path_falls_back_to_safe_root_when_home_outside(tmp_path, monkeypatch):
+    """If HERMES_HOME is outside WRITE_SAFE_ROOT, use the safe root."""
+    from agent.file_safety import is_write_denied
+    import tempfile
+
+    home = tmp_path / "home"
+    safe = tmp_path / "safe"
+    home.mkdir()
+    safe.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe))
+
+    path = build_auto_tts_output_path(Platform.DISCORD)
+    assert path.startswith(str(safe / "tmp" / "hermes_voice")), path
+    assert not is_write_denied(path), path
+    system_voice = os.path.join(tempfile.gettempdir(), "hermes_voice")
+    assert not path.startswith(system_voice + os.sep), path
+
+
+def test_output_path_uses_system_temp_without_safe_root(tmp_path, monkeypatch):
+    """Without WRITE_SAFE_ROOT, HERMES_HOME/tmp is still preferred and allowed."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_WRITE_SAFE_ROOT", raising=False)
+
+    path = build_auto_tts_output_path(Platform.DISCORD)
+    assert path.startswith(str(home / "tmp" / "hermes_voice")), path
+
+
+def test_auto_tts_base_dir_shared_with_cli_and_discord_siblings(tmp_path, monkeypatch):
+    """CLI voice and Discord ack paths must use the same write-safe base (#80398).
+
+    Triage: cli.py and discord play_ack_in_voice used bare /tmp/hermes_voice
+    and hit is_write_denied under Docker HERMES_WRITE_SAFE_ROOT.
+    """
+    from agent.file_safety import is_write_denied
+    from gateway.platforms.base import _auto_tts_base_dir
+    import tempfile
+
+    safe = tmp_path / "opt" / "data"
+    safe.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(safe))
+    monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe))
+    monkeypatch.delenv("HERMES_HOME_PROFILE", raising=False)
+
+    base = _auto_tts_base_dir()
+    assert base == str(safe / "tmp" / "hermes_voice")
+    probe = os.path.join(base, "tts_cli.mp3")
+    assert not is_write_denied(probe), probe
+    system_voice = os.path.join(tempfile.gettempdir(), "hermes_voice")
+    assert base != system_voice
+
+    # Source-level: sibling call sites route through _auto_tts_base_dir.
+    # Read files directly — importing cli patches hermes_cli.voice.speak_text.
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    for name, rel, needle in (
+        ("cli.py voice path", "cli.py", "from gateway.platforms.base import _auto_tts_base_dir"),
+        ("hermes_cli/voice.py speak_text", "hermes_cli/voice.py", "from gateway.platforms.base import _auto_tts_base_dir"),
+        ("discord play_ack_in_voice", "plugins/platforms/discord/adapter.py", "_auto_tts_base_dir()"),
+    ):
+        source = (root / rel).read_text(encoding="utf-8")
+        assert needle in source, f"{name} should use _auto_tts_base_dir"

@@ -5229,7 +5229,14 @@ class DiscordAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
             finally:
-                self._typing_tasks.pop(chat_id, None)
+                # Only clear the registry if WE are still the entry it holds.
+                # A later turn can arm a fresh loop for this channel before an
+                # earlier, already-cancelled loop reaches this line; popping
+                # unconditionally would deregister the NEWER loop, leaving it
+                # running with no owner able to stop it (a "typing…" bubble
+                # that never clears).
+                if self._typing_tasks.get(chat_id) is asyncio.current_task():
+                    self._typing_tasks.pop(chat_id, None)
 
         self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
 

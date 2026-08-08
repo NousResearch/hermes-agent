@@ -1074,13 +1074,11 @@ def build_resume_recovery_note(
     startup auto-resume turn synthesized by
     ``_schedule_resume_pending_sessions`` with no human message attached.
 
-    ``interactive`` selects the empty-message guidance: on interactive
-    platforms a human is present, so "report the restore and ask what next"
-    is right.  On non-interactive event platforms (webhook, API server —
-    adapters with ``interactive_resume = False``) nobody can answer; the
-    resumed turn must instead complete the interrupted work, or the task is
-    silently abandoned behind a "restored" acknowledgement that goes
-    nowhere (#57056).
+    Empty startup auto-resume turns always continue the saved unfinished
+    work.  This applies to interactive chats as well as non-interactive event
+    platforms: asking the user what to do next abandons a task that is already
+    present in the transcript and clears the durable recovery marker after the
+    acknowledgement turn completes.
     """
     reason_phrase = (
         "a gateway restart"
@@ -1098,20 +1096,11 @@ def build_resume_recovery_note(
             "Do NOT re-execute old tool calls — skip any "
             "unfinished work from the conversation history."
         )
-    elif interactive:
-        resume_guidance = (
-            "Report to the user that the session was restored "
-            "successfully and ask what they would like to do next."
-        )
-        tail_guidance = (
-            "Do NOT re-execute old tool calls — skip any "
-            "unfinished work from the conversation history."
-        )
     else:
         resume_guidance = (
-            "No user is present on this non-interactive platform, "
-            "so do NOT emit a 'session restored' acknowledgement "
-            "or ask questions. Review the conversation history and "
+            "Do NOT emit only a 'session restored' acknowledgement "
+            "or ask the user to restate the task. Review the conversation "
+            "history and "
             "CONTINUE the interrupted task to completion."
         )
         tail_guidance = (
@@ -5368,12 +5357,10 @@ class TurnRunner:
             _persist_user_message_override = ctx.message
             # The empty-message case is the auto-resume startup turn
             # synthesized by _schedule_resume_pending_sessions — there is
-            # no NEW user message to address.  Guidance is adapter-aware:
-            # interactive platforms report the restore and ask what next;
-            # non-interactive event platforms (webhook, API server)
-            # continue the interrupted work instead, because nobody is
-            # present to answer and an acknowledgement would silently
-            # abandon the task (#57056).
+            # no NEW user message to address. All adapters continue the saved
+            # unfinished work; a restore-only acknowledgement would complete
+            # this synthetic turn and clear the durable resume marker without
+            # doing the work recorded in the transcript.
             _resume_adapter = self._runner._adapter_for_source(ctx.source)
             _interactive_resume = bool(
                 getattr(_resume_adapter, "interactive_resume", True)

@@ -12,5 +12,7 @@
   <true/>
   <key>com.apple.security.device.camera</key>
   <true/>
+  <key>com.apple.security.device.screen-capture</key>
+  <true/>
 </dict>
 </plist>

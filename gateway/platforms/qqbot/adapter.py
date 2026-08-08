@@ -254,6 +254,7 @@ class QQAdapter(BasePlatformAdapter):
         self._heartbeat_interval: float = 30.0  # seconds, updated by Hello
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
+        self._last_event_time: float = 0.0  # monotonic time of last server event
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
 
         # Request/response correlation
@@ -730,6 +731,8 @@ class QQAdapter(BasePlatformAdapter):
             if msg.type == aiohttp.WSMsgType.TEXT:
                 payload = self._parse_json(msg.data)
                 if payload:
+                    import time as _time
+                    self._last_event_time = _time.monotonic()
                     self._dispatch_payload(payload)
             elif msg.type in {aiohttp.WSMsgType.PING,}:
                 # aiohttp auto-replies with PONG
@@ -743,18 +746,37 @@ class QQAdapter(BasePlatformAdapter):
         """Send periodic heartbeats (QQ Gateway expects op 1 heartbeat with latest seq).
 
         The interval is set from the Hello (op 10) event's heartbeat_interval.
-        QQ's default is ~41s; we send at 80% of the interval to stay safe.
+        QQ's default is ~41s; we send at 50% of the interval to stay safe.
         """
         try:
             while self._running:
-                await asyncio.sleep(self._heartbeat_interval)
+                await asyncio.sleep(self._heartbeat_interval * 0.5)
                 if not self._ws or self._ws.closed:
                     continue
+                # Zombie connection detection: if no server events for 5 min,
+                # close WS to trigger reconnection
+                if self._last_event_time > 0:
+                    import time as _time
+                    idle = _time.monotonic() - self._last_event_time
+                    if idle > 900:
+                        logger.warning(
+                            "[%s] No server events for %.0fs, closing zombie connection",
+                            self._log_tag, idle,
+                        )
+                        try:
+                            await self._ws.close()
+                        except Exception:
+                            pass
+                        continue
                 try:
                     # d should be the latest sequence number received, or null
                     await self._ws.send_json({"op": 1, "d": self._last_seq})
                 except Exception as exc:
-                    logger.debug("[%s] Heartbeat failed: %s", self._log_tag, exc)
+                    logger.debug("[%s] Heartbeat failed: %s, closing for reconnect", self._log_tag, exc)
+                    try:
+                        await self._ws.close()
+                    except Exception:
+                        pass
         except asyncio.CancelledError:
             pass
 

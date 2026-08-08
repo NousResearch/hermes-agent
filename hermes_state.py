@@ -5854,6 +5854,30 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return self._execute_write(_do) or 0
 
+    def prune_zombie_sessions(self) -> int:
+        """Mark zombie sessions (ended_at=NULL, older than 1h) as crashed.
+
+        Hot-patch: fixes crash-induced sessions that never got end_session()
+        called, leaving ended_at=NULL forever.  Sets end_reason='crash'.
+        """
+        cutoff = time.time() - 3600  # 1 hour
+
+        def _do(conn):
+            now = time.time()
+            result = conn.execute(
+                """
+                UPDATE sessions
+                SET ended_at = ?,
+                    end_reason = 'crash'
+                WHERE ended_at IS NULL
+                  AND started_at < ?
+                """,
+                (now, cutoff),
+            )
+            return result.rowcount
+
+        return self._execute_write(_do) or 0
+
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""
         # Cost/usage readers (/status, /usage, gateway endpoints) reach the
@@ -8712,6 +8736,28 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 (session_id,),
             )
         self._execute_write(_do)
+
+    @staticmethod
+    def _archive_session_files(sessions_dir: Optional[Path], session_id: str) -> None:
+        """Move transcript files to archive/sessions/ before deletion.
+
+        Hot-patch: preserves session transcripts in archive/sessions/ for
+        post-mortem debugging.  Silently skips on any filesystem error.
+        """
+        if sessions_dir is None:
+            return
+        archive_dir = sessions_dir / "archive" / "sessions"
+        try:
+            archive_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+        for suffix in (".json", ".jsonl"):
+            src = sessions_dir / f"{session_id}{suffix}"
+            try:
+                if src.exists():
+                    src.rename(archive_dir / src.name)
+            except OSError:
+                pass
 
     @staticmethod
     def _remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:

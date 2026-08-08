@@ -3478,7 +3478,7 @@ def check_dangerous_command(command: str, env_type: str,
             "approvals.cron_mode: approve in config.yaml."
         ),
         autoapprove_log_prefix=(
-            "AUTO-APPROVED dangerous command in non-interactive non-gateway context"
+            "BLOCKED dangerous command in non-interactive non-gateway context"
         ),
     )
 

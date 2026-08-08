@@ -16,9 +16,9 @@ import pytest
 
 @pytest.fixture()
 def isolated_kanban_home_with_profiles(monkeypatch):
-    """Spin up a fresh HERMES_HOME with kanban DB + alpha/beta profiles."""
+    """Spin up a fresh HERMES_HOME with the profiles used by these tests."""
     test_home = tempfile.mkdtemp(prefix="kanban_per_profile_cap_test_")
-    for prof in ("alpha", "beta", "default"):
+    for prof in ("alpha", "beta", "default", "coordinator"):
         os.makedirs(os.path.join(test_home, "profiles", prof), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", test_home)
     for mod in list(sys.modules.keys()):
@@ -98,3 +98,52 @@ def test_capped_tasks_dispatched_on_subsequent_tick(isolated_kanban_home_with_pr
     assert res2.spawned[0][0] != spawned_id  # different task this time
 
 
+def test_dry_run_respects_global_cap_with_running_task(
+    isolated_kanban_home_with_profiles,
+):
+    kb = isolated_kanban_home_with_profiles
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        running_id = kb.create_task(
+            conn, title="coordinator", assignee="coordinator",
+        )
+        conn.execute(
+            "UPDATE tasks SET status = 'running' WHERE id = ?",
+            (running_id,),
+        )
+        ready_id = kb.create_task(conn, title="ready", assignee="alpha")
+        review_ids = []
+        for i in range(3):
+            review_id = kb.create_task(
+                conn,
+                title=f"review-{i}",
+                assignee="beta",
+                priority=3 - i,
+            )
+            conn.execute(
+                "UPDATE tasks SET status = 'review' WHERE id = ?",
+                (review_id,),
+            )
+            review_ids.append(review_id)
+
+    dispatch_options = {
+        "max_in_progress": 3,
+        "max_in_progress_per_profile": 3,
+    }
+    with kb.connect_closing() as conn:
+        predicted = kb.dispatch_once(conn, dry_run=True, **dispatch_options)
+        running = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+        ).fetchone()[0]
+        actual = kb.dispatch_once(
+            conn, spawn_fn=_fake_spawn, dry_run=False, **dispatch_options,
+        )
+
+    assert running == 1
+    assert [(task_id, assignee) for task_id, assignee, _ in predicted.spawned] == [
+        (task_id, assignee) for task_id, assignee, _ in actual.spawned
+    ]
+    assert [task_id for task_id, _, _ in predicted.spawned] == [
+        ready_id,
+        review_ids[0],
+    ]

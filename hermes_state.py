@@ -3300,9 +3300,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         cannot corrupt B-tree pages under I/O pressure.
 
         PASSIVE does not truncate the WAL file — it stays at its
-        high-water mark.  WAL truncation happens in :meth:`close`
-        (TRUNCATE) and pre-VACUUM checkpoints, which run infrequently
-        under controlled conditions.
+        high-water mark.  All checkpoint paths (periodic, :meth:`close`,
+        pre-VACUUM) use PASSIVE for the same corruption-avoidance
+        reason (issue #80255).
 
         Previous TRUNCATE strategy caused B-tree corruption on large
         databases (65K+ pages) due to the exclusive-lock I/O pressure
@@ -3325,8 +3325,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """Close the database connection.
 
         Drains queued token deltas first (the background writer needs the
-        connection). Writable connections then attempt a TRUNCATE WAL
-        checkpoint so exiting writer processes help shrink the WAL file.
+        connection). Writable connections then attempt a PASSIVE WAL
+        checkpoint — TRUNCATE's exclusive-lock I/O can corrupt B-tree
+        pages if shutdown is interrupted mid-checkpoint (issue #80255).
         Read-only connections never request a checkpoint.
         """
         self._stop_token_writer()
@@ -3357,10 +3358,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if self._conn:
                 if not self.read_only:
                     try:
-                        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                        self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
                     except Exception as exc:
                         logger.debug(
-                            "WAL checkpoint (TRUNCATE) at close failed: %s",
+                            "WAL checkpoint (PASSIVE) at close failed: %s",
                             exc,
                         )
                 self._conn.close()
@@ -10129,9 +10130,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         with self._lock:
             # Best-effort WAL checkpoint first, then VACUUM.
             try:
-                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
             except Exception as exc:
-                logger.debug("WAL checkpoint (TRUNCATE) before VACUUM failed: %s", exc)
+                logger.debug("WAL checkpoint (PASSIVE) before VACUUM failed: %s", exc)
             self._conn.execute("VACUUM")
         return optimized
 

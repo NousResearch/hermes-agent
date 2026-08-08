@@ -30,15 +30,16 @@ def _make_long_messages(count: int = 12) -> list[dict]:
     return messages
 
 
-def test_compress_calls_gc_collect(compressor, monkeypatch):
-    """compress() must call gc.collect() once before returning the result."""
+def test_compress_uses_post_compression_trim_once(compressor, monkeypatch):
+    """Compression must use the existing trim path without double collection."""
     mock_collect = MagicMock()
     monkeypatch.setattr(gc, "collect", mock_collect)
 
-    # The post-compression memory trim calls gc.collect() on Linux/glibc, which
-    # would double-count here. It is tested independently in mem_trim tests;
-    # disable it so this test measures only the explicit collect in compress().
-    monkeypatch.setattr("hermes_cli.mem_trim.trim_memory", lambda **_: None)
+    def fake_trim_memory(**kwargs):
+        assert kwargs == {"reason": "post-compression"}
+        gc.collect()
+
+    monkeypatch.setattr("hermes_cli.mem_trim.trim_memory", fake_trim_memory)
 
     # Force a successful compression path without needing a real aux model.
     compressor._generate_summary = lambda *args, **kwargs: "summary"
@@ -46,4 +47,4 @@ def test_compress_calls_gc_collect(compressor, monkeypatch):
 
     compressor.compress(messages, current_tokens=100000, force=True)
 
-    assert mock_collect.call_count == 1, "gc.collect() was not called by compress()"
+    assert mock_collect.call_count == 1, "compression must not double-collect"

@@ -16,7 +16,6 @@ Improvements over v2:
   - Richer tool call/result detail in summarizer input
 """
 
-import gc
 import hashlib
 import json
 import logging
@@ -7084,11 +7083,6 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._micro_compact_consecutive_failures = 0
         self._micro_compact_last_failure_cursor = -1
         self._proactive_prune_rearm_tokens = 0
-
-        # A full compaction has just dropped the pruned middle-window message
-        # pages. Run the collector once so those transient allocations are
-        # released before the next turn grows the working set. (#70684)
-        gc.collect()
 
         return compressed
 

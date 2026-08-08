@@ -942,6 +942,27 @@ class TestMemoryToolToolsetGate:
         assert tools == []
         assert names == set()
 
+    def test_blocked_toolsets_log_the_effective_gate_inputs(self, caplog):
+        """A silent zero-tool result must expose enough state to diagnose it."""
+        mgr = self._mgr_with_tools("fact_store")
+        agent = SimpleNamespace(
+            _memory_manager=mgr,
+            enabled_toolsets=["terminal", "web"],
+            disabled_toolsets=[],
+            tools=[],
+            valid_tool_names=set(),
+        )
+
+        with caplog.at_level("DEBUG", logger="agent.memory_manager"):
+            assert inject_memory_provider_tools(agent) == 0
+
+        assert (
+            "Memory provider tools not injected: toolset gate disabled" in caplog.text
+        )
+        assert "enabled_toolsets=['terminal', 'web']" in caplog.text
+        assert "disabled_toolsets=[]" in caplog.text
+        assert "memory_tool_present=False" in caplog.text
+
     def test_toolsets_without_memory_blocks_injection(self):
         """Toolsets that don't include memory must suppress injection."""
         mgr = self._mgr_with_tools("fact_store")

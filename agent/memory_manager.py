@@ -119,11 +119,21 @@ def inject_memory_provider_tools(agent: Any) -> int:
         for tool in tools
         if isinstance(tool, dict)
     }
+    enabled_toolsets = getattr(agent, "enabled_toolsets", None)
+    disabled_toolsets = getattr(agent, "disabled_toolsets", None)
+    memory_tool_present = "memory" in existing_tool_names
     if not memory_provider_tools_enabled(
-        getattr(agent, "enabled_toolsets", None),
-        getattr(agent, "disabled_toolsets", None),
-        memory_tool_present="memory" in existing_tool_names,
+        enabled_toolsets,
+        disabled_toolsets,
+        memory_tool_present=memory_tool_present,
     ):
+        logger.debug(
+            "Memory provider tools not injected: toolset gate disabled "
+            "(enabled_toolsets=%r, disabled_toolsets=%r, memory_tool_present=%s)",
+            enabled_toolsets,
+            disabled_toolsets,
+            memory_tool_present,
+        )
         return 0
 
     get_schemas = getattr(memory_manager, "get_all_tool_schemas", None)

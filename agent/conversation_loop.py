@@ -3681,6 +3681,35 @@ def run_conversation(
                         )
                 
                 _retry.has_retried_429 = False  # Reset on success
+                # A validated response from the original primary proves its
+                # previous rate-limit/billing state recovered. A fallback
+                # response must not clear the primary's persisted history.
+                primary_runtime = getattr(agent, "_primary_runtime", None) or {}
+                primary_provider = (primary_runtime.get("provider") or "").strip().lower()
+                current_provider = (getattr(agent, "provider", "") or "").strip().lower()
+                if (
+                    primary_provider
+                    and current_provider == primary_provider
+                    and not agent._fallback_activated
+                ):
+                    try:
+                        from agent.cooldown_manager import (
+                            build_cooldown_key,
+                            get_cooldown_manager,
+                        )
+
+                        successful_key = getattr(
+                            agent, "api_key", primary_runtime.get("api_key")
+                        )
+                        manager = get_cooldown_manager()
+                        manager.clear(primary_provider)  # provider-scoped billing
+                        manager.clear(
+                            build_cooldown_key(
+                                primary_provider, successful_key, "rate_limit"
+                            )
+                        )
+                    except Exception:
+                        logger.debug("Failed to clear recovered primary cooldown", exc_info=True)
                 # Note: don't clear the retry buffer here — an "API call
                 # success" only means we got bytes back, not that we got
                 # usable content. Empty responses still loop through the

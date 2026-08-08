@@ -3569,6 +3569,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
     )
     assume_yes = bool(getattr(args, "yes", False))
 
+    # Stay on the update target branch after the update finishes instead of
+    # switching back to the pre-update branch. The desktop app passes this so
+    # a product update always ends on the tracked branch (default main) — the
+    # packaged desktop app is rebuilt from the checkout AFTER this update
+    # returns, so leaving HEAD on a stale feature branch would rebuild the
+    # desktop from the old code (field report: desktop stuck at old version
+    # while CLI reported "already up to date").
+    stay_on_branch = bool(getattr(args, "stay_on_branch", False))
+
     # Whether this update is running without a human at the keyboard.
     # Interactive terminal updates always stash-and-ask (unchanged behavior);
     # only non-interactive updates (desktop/chat app, gateway, `--yes`) consult
@@ -3848,15 +3857,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _m()._sync_with_upstream_if_needed(git_cmd, _m().PROJECT_ROOT)
 
             # Restore stash and switch back to original branch if we moved
+            # (unless --stay-on-branch: the desktop product update must end on
+            # the tracked branch, and auto-restoring a feature-branch stash
+            # onto main would contaminate it — keep the stash for manual
+            # recovery on the original branch instead).
             if auto_stash_ref is not None:
-                _m()._restore_stashed_changes(
-                    git_cmd,
-                    _m().PROJECT_ROOT,
-                    auto_stash_ref,
-                    prompt_user=prompt_for_restore,
-                    input_fn=gw_input_fn,
-                )
-            if current_branch not in {branch, "HEAD"}:
+                if stay_on_branch:
+                    print()
+                    print("  ℹ Local changes preserved in stash (not auto-restored because")
+                    print("    the update stayed on the target branch).")
+                    print(f"    Restore manually on your branch with: git stash apply {auto_stash_ref}")
+                else:
+                    _m()._restore_stashed_changes(
+                        git_cmd,
+                        _m().PROJECT_ROOT,
+                        auto_stash_ref,
+                        prompt_user=prompt_for_restore,
+                        input_fn=gw_input_fn,
+                    )
+            if not stay_on_branch and current_branch not in {branch, "HEAD"}:
                 subprocess.run(
                     git_cmd + ["checkout", current_branch],
                     cwd=_m().PROJECT_ROOT,
@@ -4038,6 +4057,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
                     )
                     print("  Restore manually with: git stash apply")
+                elif stay_on_branch:
+                    # Desktop product update: we intentionally end on the
+                    # tracked branch (main). Auto-applying a feature-branch
+                    # stash here would contaminate main with WIP that belongs
+                    # on the developer's branch — keep it for manual recovery.
+                    print()
+                    print("  ℹ Local changes preserved in stash (not auto-restored because")
+                    print("    the update stayed on the target branch).")
+                    print(f"    Restore manually on your branch with: git stash apply {auto_stash_ref}")
                 elif discard_local_changes:
                     # Non-interactive update + user opted into discarding local
                     # source edits (updates.non_interactive_local_changes:

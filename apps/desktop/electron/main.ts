@@ -217,6 +217,7 @@ import {
   MIN_WIDTH as WINDOW_MIN_WIDTH
 } from './window-state'
 import { hiddenWindowsChildOptions } from './windows-child-options'
+import { resolvePetOverlayBounds } from './pet-overlay'
 import {
   buildPathExtCandidates,
   chooseUpdaterArgs,
@@ -8901,6 +8902,12 @@ const wakeIndicatorController = createWakeIndicatorWindowController({
 // pushes pet state over IPC (hermes:pet-overlay:state); the overlay just renders
 // it. Control flows back (pop-in, composer submit) via hermes:pet-overlay:control.
 let petOverlayWindow = null
+// Set while a close is in flight: Electron's close() is async and can be
+// aborted on macOS, so the window may still be alive after closePetOverlay().
+// openPetOverlay must never reuse (or leave) a closing window — otherwise two
+// overlays can coexist and the orphaned one, rendering nothing, becomes an
+// invisible mouse-enabled transparent region that eats desktop clicks.
+let petOverlayClosing = false
 
 function petOverlayUrl() {
   if (DEV_SERVER) {
@@ -8963,6 +8970,17 @@ function spawnPetOverlayWindow(bounds) {
   win.setAlwaysOnTop(true, IS_MAC ? 'floating' : 'screen-saver')
   win.setHiddenInMissionControl?.(true)
 
+  // The overlay is a transparent rectangle; only the sprite pixels should be
+  // interactive. The renderer toggles click-through as the cursor enters/
+  // leaves the sprite (hermes:pet-overlay:ignore-mouse), but the window MUST
+  // start click-through from the main process: if the overlay page is slow to
+  // load, blank, or its renderer has died, a mouse-enabled transparent window
+  // sits over the desktop eating clicks (the invisible "dead zone" bug). The
+  // wake indicator already uses this spawn-time ignore pattern. forward:true
+  // keeps mousemove flowing to the page so the renderer can re-arm
+  // interactivity the moment the cursor touches a solid sprite pixel.
+  win.setIgnoreMouseEvents(true, { forward: true })
+
   try {
     // Electron docs: macOS may transform process type on each
     // setVisibleOnAllWorkspaces() call unless skipTransformProcessType=true,
@@ -8988,6 +9006,8 @@ function spawnPetOverlayWindow(bounds) {
   })
 
   win.on('closed', () => {
+    petOverlayClosing = false
+
     if (petOverlayWindow === win) {
       petOverlayWindow = null
     }
@@ -9006,7 +9026,7 @@ function spawnPetOverlayWindow(bounds) {
 }
 
 function openPetOverlay(bounds) {
-  if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
+  if (petOverlayWindow && !petOverlayWindow.isDestroyed() && !petOverlayClosing) {
     if (bounds) {
       petOverlayWindow.setBounds({
         x: Math.round(bounds.x),
@@ -9021,6 +9041,14 @@ function openPetOverlay(bounds) {
     return petOverlayWindow
   }
 
+  // A previous close was requested but never finished (close() can be aborted
+  // on macOS) — force the stale window down before spawning a replacement so
+  // two overlays can never coexist.
+  if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
+    petOverlayWindow.destroy()
+  }
+
+  petOverlayClosing = false
   petOverlayWindow = spawnPetOverlayWindow(bounds)
 
   return petOverlayWindow
@@ -9028,10 +9056,60 @@ function openPetOverlay(bounds) {
 
 function closePetOverlay() {
   if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
+    petOverlayClosing = true
     petOverlayWindow.close()
   }
 
-  petOverlayWindow = null
+  // The 'closed' handler nulls petOverlayWindow and clears the flag — do NOT
+  // null here: an open() racing a slow/aborted close would otherwise spawn a
+  // second overlay while the first is still on screen (see petOverlayClosing).
+}
+
+// Re-home the popped-out pet after a display change: if the overlay still sits
+// on a connected display it stays put; otherwise it is re-centered on the main
+// window's display (see resolvePetOverlayBounds). The corrected spot is pushed
+// back to the renderer via the existing 'bounds' control channel, which it
+// persists for the next pop-out/restart.
+function rehomePetOverlay() {
+  if (!petOverlayWindow || petOverlayWindow.isDestroyed() || petOverlayClosing) {
+    return
+  }
+
+  let anchor = null
+
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      anchor = mainWindow.getContentBounds()
+    }
+  } catch {
+    // Resolve falls back to the primary display when the anchor is unknown.
+  }
+
+  const current = petOverlayWindow.getBounds()
+  const resolved = resolvePetOverlayBounds(current, screen.getAllDisplays(), anchor)
+
+  if (!resolved) {
+    return
+  }
+
+  if (
+    resolved.x === current.x &&
+    resolved.y === current.y &&
+    resolved.width === current.width &&
+    resolved.height === current.height
+  ) {
+    return
+  }
+
+  petOverlayWindow.setBounds(resolved)
+  // Re-assert click-through after a display-driven move so a re-home can never
+  // leave a mouse-enabled transparent region behind (same bug class as the
+  // spawn-time default above).
+  petOverlayWindow.setIgnoreMouseEvents(true, { forward: true })
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('hermes:pet-overlay:control', { type: 'bounds', bounds: resolved })
+  }
 }
 
 // ── Quick Entry ─────────────────────────────────────────────────────────────
@@ -9602,6 +9680,26 @@ ipcMain.handle('hermes:pet-overlay:open', async (_event, request) => {
     }
   } catch {
     // Fall back to raw bounds if the window geometry is unavailable.
+  }
+
+  // A remembered/dragged spot is only trusted while it still lands on a
+  // connected display — otherwise the transparent, non-activating overlay
+  // would open off-screen (e.g. saved on an external monitor that has since
+  // been unplugged) and the pet would be unfindable. Re-center on the main
+  // window's display instead, and echo the corrected bounds so the renderer
+  // persists the on-screen spot (self-healing).
+  if (screenBounds) {
+    let anchor = null
+
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        anchor = mainWindow.getContentBounds()
+      }
+    } catch {
+      // Resolve falls back to the primary display when the anchor is unknown.
+    }
+
+    screenBounds = resolvePetOverlayBounds(screenBounds, screen.getAllDisplays(), anchor) ?? screenBounds
   }
 
   openPetOverlay(screenBounds)
@@ -11870,6 +11968,18 @@ app.whenReady().then(() => {
 
     screen.on('display-removed', reposition)
   }
+
+  // The popped-out pet must never be stranded on a disconnected display: when
+  // the topology changes, pull an off-screen overlay back onto the display
+  // that holds the main window (and persist the corrected spot). Unlike the
+  // wake indicator this applies on every platform — the pet overlay exists
+  // everywhere, and rehomePetOverlay is a cheap no-op while the pet is in the
+  // window or still on-screen.
+  screen.on('display-added', rehomePetOverlay)
+
+  screen.on('display-metrics-changed', rehomePetOverlay)
+
+  screen.on('display-removed', rehomePetOverlay)
 
   createWindow()
 

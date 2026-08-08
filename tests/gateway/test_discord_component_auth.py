@@ -278,3 +278,118 @@ def test_other_views_not_admin_gated():
     )
     assert sc._check_auth(_interaction(11111)) is True
 
+
+# ---------------------------------------------------------------------------
+# Session-owner binding (#80281): exec-approval clicks must be bound to the
+# session owner.  Default scope is "owner" — only the user who triggered the
+# command may approve.  "admins" allows any configured admin.  "any" preserves
+# the legacy behavior where any admitted user can approve.
+# ---------------------------------------------------------------------------
+
+
+def test_owner_scope_owner_can_approve():
+    """The user who triggered the command can approve (owner scope, default)."""
+    view = ExecApprovalView(
+        session_key="s",
+        allowed_user_ids={"11111"},
+        requesting_user_id="11111",
+    )
+    assert view._check_auth(_interaction(11111)) is True
+
+
+def test_owner_scope_non_owner_rejected():
+    """A different admitted user cannot approve (owner scope, default)."""
+    view = ExecApprovalView(
+        session_key="s",
+        allowed_user_ids={"11111", "22222"},
+        requesting_user_id="11111",
+    )
+    assert view._check_auth(_interaction(22222)) is False
+
+
+def test_owner_scope_no_requesting_user_falls_back_to_legacy():
+    """Without requesting_user_id, any admitted user can approve (legacy)."""
+    view = ExecApprovalView(
+        session_key="s",
+        allowed_user_ids={"11111", "22222"},
+        requesting_user_id=None,
+    )
+    assert view._check_auth(_interaction(22222)) is True
+
+
+def test_any_scope_allows_non_owner():
+    """approval_scope='any' preserves legacy behavior — any admitted user."""
+    view = ExecApprovalView(
+        session_key="s",
+        allowed_user_ids={"11111", "22222"},
+        requesting_user_id="11111",
+        approval_scope="any",
+    )
+    assert view._check_auth(_interaction(22222)) is True
+
+
+def test_admins_scope_admin_can_approve():
+    """approval_scope='admins' allows a configured admin to approve."""
+    view = ExecApprovalView(
+        session_key="s",
+        allowed_user_ids={"11111", "22222"},
+        require_admin=True,
+        admin_user_ids={"22222"},
+        requesting_user_id="11111",
+        approval_scope="admins",
+    )
+    # 22222 is an admin → can approve even though 11111 triggered the command.
+    assert view._check_auth(_interaction(22222)) is True
+
+
+def test_admins_scope_non_admin_non_owner_rejected():
+    """approval_scope='admins' rejects a non-admin who is also not the owner."""
+    view = ExecApprovalView(
+        session_key="s",
+        allowed_user_ids={"11111", "22222", "33333"},
+        require_admin=True,
+        admin_user_ids={"22222"},
+        requesting_user_id="11111",
+        approval_scope="admins",
+    )
+    # 33333 is admitted but neither the owner nor an admin → rejected.
+    assert view._check_auth(_interaction(33333)) is False
+
+
+def test_invalid_approval_scope_falls_back_to_owner():
+    """An unrecognized approval_scope value defaults to 'owner'."""
+    view = ExecApprovalView(
+        session_key="s",
+        allowed_user_ids={"11111", "22222"},
+        requesting_user_id="11111",
+        approval_scope="bogus",
+    )
+    assert view.approval_scope == "owner"
+    assert view._check_auth(_interaction(22222)) is False
+
+
+def test_resolve_approval_scope_default_is_owner():
+    """No config → 'owner' (the secure default)."""
+    from plugins.platforms.discord.adapter import _resolve_approval_scope
+    assert _resolve_approval_scope(None) == "owner"
+    assert _resolve_approval_scope({}) == "owner"
+
+
+def test_resolve_approval_scope_any():
+    from plugins.platforms.discord.adapter import _resolve_approval_scope
+    assert _resolve_approval_scope({"approval_scope": "any"}) == "any"
+
+
+def test_resolve_approval_scope_admins():
+    from plugins.platforms.discord.adapter import _resolve_approval_scope
+    assert _resolve_approval_scope({"approval_scope": "admins"}) == "admins"
+
+
+def test_resolve_approval_scope_invalid_falls_back(caplog):
+    import logging
+    from plugins.platforms.discord.adapter import _resolve_approval_scope
+    with caplog.at_level(logging.WARNING):
+        result = _resolve_approval_scope({"approval_scope": "nonsense"})
+    assert result == "owner"
+    assert any("approval_scope" in r.message for r in caplog.records)
+

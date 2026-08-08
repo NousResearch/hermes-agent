@@ -216,13 +216,56 @@ def check_email_requirements() -> bool:
     return all([addr, pwd, imap, smtp])
 
 
+_CHARSET_ALIASES = {
+    # Aliases seen in the wild that Python's codec registry doesn't know.
+    # "unknown-8bit" / "x-unknown" are RFC 1428 placeholders some MTAs (QQ
+    # Mail among them) emit when the original charset was lost (#35901).
+    "unknown-8bit": "utf-8",
+    "unknown": "utf-8",
+    "x-unknown": "utf-8",
+    "default": "utf-8",
+    "ansi_x3.110-1983": "latin-1",
+    "cp-850": "cp850",
+    "gb2312": "gb18030",  # superset; avoids failures on GBK extensions
+    "gbk": "gb18030",
+    "ks_c_5601-1987": "cp949",
+}
+
+
+def _safe_decode(payload: bytes, charset: "Optional[str]") -> str:
+    """Decode *payload* without ever raising.
+
+    Unknown or malformed charset labels (``unknown-8bit``, misspelled names,
+    attacker-controlled garbage) previously raised ``LookupError`` from
+    ``bytes.decode`` — ``errors="replace"`` only guards decode errors, not a
+    missing codec — which aborted the whole IMAP fetch and dropped every
+    message in the batch (#35901, #55381, #55383). Fall back through a small
+    alias table, then UTF-8, then latin-1 (which never fails).
+    """
+    label = (charset or "utf-8").strip().strip("\"'").lower() or "utf-8"
+    label = _CHARSET_ALIASES.get(label, label)
+    for candidate in (label, "utf-8"):
+        try:
+            return payload.decode(candidate, errors="replace")
+        except (LookupError, ValueError):
+            continue
+    return payload.decode("latin-1", errors="replace")
+
+
 def _decode_header_value(raw: str) -> str:
-    """Decode an RFC 2047 encoded email header into a plain string."""
-    parts = decode_header(raw)
+    """Decode an RFC 2047 encoded email header into a plain string.
+
+    Never raises: malformed encoded-words or unknown charsets degrade to
+    replacement characters instead of crashing the fetch loop (#55381).
+    """
+    try:
+        parts = decode_header(raw)
+    except Exception:  # malformed RFC 2047 structure
+        return raw
     decoded = []
     for part, charset in parts:
         if isinstance(part, bytes):
-            decoded.append(part.decode(charset or "utf-8", errors="replace"))
+            decoded.append(_safe_decode(part, charset))
         else:
             decoded.append(part)
     return " ".join(decoded)
@@ -240,8 +283,7 @@ def _extract_text_body(msg: email_lib.message.Message) -> str:
             if content_type == "text/plain":
                 payload = part.get_payload(decode=True)
                 if payload:
-                    charset = part.get_content_charset() or "utf-8"
-                    return payload.decode(charset, errors="replace")
+                    return _safe_decode(payload, part.get_content_charset())
         # Fallback: try text/html and strip tags
         for part in msg.walk():
             content_type = part.get_content_type()
@@ -251,15 +293,13 @@ def _extract_text_body(msg: email_lib.message.Message) -> str:
             if content_type == "text/html":
                 payload = part.get_payload(decode=True)
                 if payload:
-                    charset = part.get_content_charset() or "utf-8"
-                    html = payload.decode(charset, errors="replace")
+                    html = _safe_decode(payload, part.get_content_charset())
                     return _strip_html(html)
         return ""
     else:
         payload = msg.get_payload(decode=True)
         if payload:
-            charset = msg.get_content_charset() or "utf-8"
-            text = payload.decode(charset, errors="replace")
+            text = _safe_decode(payload, msg.get_content_charset())
             if msg.get_content_type() == "text/html":
                 return _strip_html(text)
             return text

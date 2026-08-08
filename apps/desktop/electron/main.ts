@@ -135,6 +135,7 @@ import {
   TEXT_PREVIEW_SOURCE_MAX_BYTES
 } from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
+import { registerLoginItemHandlers } from './login-item'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
   oauthGuardMayHardFail,
@@ -9467,6 +9468,8 @@ function createWindow() {
     sendWindowStateChanged()
   })
 }
+
+registerLoginItemHandlers(app, ipcMain)
 
 ipcMain.handle('hermes:connection', async (_event, profile) => ensureBackend(profile))
 // Reconnect-after-wake recovery. A REMOTE primary backend has no child process,

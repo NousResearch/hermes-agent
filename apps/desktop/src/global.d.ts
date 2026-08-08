@@ -14,6 +14,13 @@ export {}
 declare global {
   interface Window {
     hermesDesktop: {
+      loginItem?: {
+        get: () => Promise<{ openAtLogin: boolean; supported: boolean }>
+        set: (options: {
+          openAtLogin: boolean
+          openAsHidden?: boolean
+        }) => Promise<{ openAtLogin: boolean; supported: boolean }>
+      }
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to lazily spawn/reuse that
       // profile's backend from the pool.

@@ -313,6 +313,7 @@ export function ConfigSettings({
             label={c.keepAwakeTitle}
             onChange={setKeepAwake}
           />
+          <LoginItemSetting />
           <QuickEntrySettings />
         </>
       )}
@@ -427,6 +428,89 @@ function AttachmentSizeSetting() {
       }
       description={c.attachmentSizeDesc}
       title={c.attachmentSizeTitle}
+    />
+  )
+}
+
+/** Launch Hermes Desktop at Windows login, via the Electron login-item API.
+ *  Device-local preference (like keepAwake): lives in Advanced, not
+ *  config.yaml, and is independent of the gateway autostart. */
+export function LoginItemSetting() {
+  const { t } = useI18n()
+  const [openAtLogin, setOpenAtLogin] = useState(false)
+  const [supported, setSupported] = useState(true)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    const api = window.hermesDesktop?.loginItem
+
+    if (!api?.get) {
+      setSupported(false)
+
+      return
+    }
+
+    let cancelled = false
+
+    void api
+      .get()
+      .then(settings => {
+        if (!cancelled) {
+          setSupported(settings?.supported ?? true)
+          setOpenAtLogin(settings?.openAtLogin ?? false)
+        }
+      })
+      .catch(() => {
+        // The login-item API is unavailable outside a supported desktop build.
+        if (!cancelled) {
+          setSupported(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const handleChange = async (checked: boolean) => {
+    if (!window.hermesDesktop?.loginItem) {
+      setSupported(false)
+
+      return
+    }
+
+    const previous = openAtLogin
+    setBusy(true)
+
+    try {
+      const state = await window.hermesDesktop.loginItem.set({ openAtLogin: checked })
+
+      // `set` returns Electron's authoritative state: only reflect what
+      // actually landed, and never claim success for a rejected write.
+      setSupported(state?.supported ?? true)
+      setOpenAtLogin(state?.openAtLogin ?? previous)
+    } catch (err) {
+      // A failed or unsupported write must not flip the toggle — but the
+      // failure must be visible, not silent (keep_open review requirement:
+      // surface or report login-item write failures).
+      setOpenAtLogin(previous)
+      notifyError(err, t.settings.desktopLoginItem.saveFailed)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!supported) {
+    return null
+  }
+
+  return (
+    <ToggleRow
+      checked={openAtLogin}
+      description={t.settings.desktopLoginItem.description}
+      disabled={busy}
+      label={t.settings.desktopLoginItem.title}
+      onChange={handleChange}
     />
   )
 }

@@ -6,6 +6,8 @@ import type { ProfileInfo } from '@/types/hermes'
 
 const getConnectionConfig = vi.fn()
 const saveConnectionConfig = vi.fn()
+const loginItemGet = vi.fn()
+const loginItemSet = vi.fn()
 const profiles = atom<ProfileInfo[]>([])
 
 vi.mock('@/store/profile', () => ({
@@ -47,9 +49,11 @@ beforeEach(() => {
   ])
   getConnectionConfig.mockResolvedValue(localConnection)
   saveConnectionConfig.mockResolvedValue(localConnection)
+  loginItemGet.mockResolvedValue({ openAtLogin: false })
+  loginItemSet.mockResolvedValue({ openAtLogin: true })
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
-    value: { getConnectionConfig, saveConnectionConfig }
+    value: { getConnectionConfig, saveConnectionConfig, loginItem: { get: loginItemGet, set: loginItemSet } }
   })
 })
 

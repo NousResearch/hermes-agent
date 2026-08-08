@@ -1,6 +1,10 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 contextBridge.exposeInMainWorld('hermesDesktop', {
+  loginItem: {
+    get: () => ipcRenderer.invoke('hermes:login-item:get'),
+    set: options => ipcRenderer.invoke('hermes:login-item:set', options)
+  },
   getConnection: profile => ipcRenderer.invoke('hermes:connection', profile),
   revalidateConnection: () => ipcRenderer.invoke('hermes:connection:revalidate'),
   touchBackend: profile => ipcRenderer.invoke('hermes:backend:touch', profile),

@@ -294,11 +294,22 @@ def emit_llms_full() -> str:
 
 def main() -> None:
     STATIC.mkdir(exist_ok=True)
-    index = emit_llms_index()
+    llms_txt = STATIC / "llms.txt"
+
+    # Preserve the hand-curated llms.txt — it contains editorially selected
+    # entries with Blog, Videos, Key Facts, and Contact sections that the
+    # auto-generator cannot produce from doc frontmatter alone. The
+    # auto-generator's SECTIONS dict would produce a 100+ entry index which
+    # violates the 10–30 entry guideline. Maintain llms.txt by hand.
+    if not llms_txt.exists():
+        index = emit_llms_index()
+        llms_txt.write_text(index, encoding="utf-8")
+        print(f"Wrote fallback {llms_txt} ({len(index):,} bytes)")
+    else:
+        print(f"Preserved hand-curated {llms_txt}")
+
     full = emit_llms_full()
-    (STATIC / "llms.txt").write_text(index, encoding="utf-8")
     (STATIC / "llms-full.txt").write_text(full, encoding="utf-8")
-    print(f"Wrote {STATIC / 'llms.txt'} ({len(index):,} bytes)")
     print(f"Wrote {STATIC / 'llms-full.txt'} ({len(full):,} bytes)")
 
 

@@ -1893,6 +1893,50 @@ def reset_file_dedup(task_id: str = None):
                     task_data["dedup_hits"].clear()
 
 
+def transfer_file_dedup(
+    old_task_id: str | None,
+    new_task_id: str | None,
+) -> bool:
+    """Move the per-task read tracker from ``old_task_id`` to ``new_task_id``.
+
+    Resuming a session in the middle of a turn (``/resume <other>``) rotates
+    ``self.session_id`` from one ID to another.  ``read_file_tool`` keys its
+    dedup cache on that same id, so the freshly-resumed session starts with
+    an empty cache and the agent re-reads files it already has in its
+    rehydrated transcript — pulling every attachment through the gateway
+    again (issue #81725).
+
+    Moving the cache forward preserves the dedup behaviour across the
+    boundary: a ``read_file`` for a path the agent already saw in the
+    previous session returns the cheap "File unchanged" stub instead of
+    re-fetching the bytes.  The ``mtime`` guard inside ``read_file_tool``
+    still invalidates a stale entry if the file changed on disk between
+    sessions, so correctness is preserved.
+
+    Returns ``True`` if a non-empty tracker was moved, ``False`` otherwise
+    (no source tracker, missing ids, or the target already has its own
+    state — we never clobber an existing target to avoid stealing cache
+    state from a parallel session).  Callers that want a strict handoff
+    should call ``reset_file_dedup(new_task_id)`` first.
+    """
+    if not old_task_id or not new_task_id or old_task_id == new_task_id:
+        return False
+    with _read_tracker_lock:
+        old_data = _read_tracker.get(old_task_id)
+        if not old_data:
+            return False
+        # Don't overwrite an existing tracker on the new id — a parallel
+        # session (e.g. a delegated subagent) might already own it.
+        if _read_tracker.get(new_task_id):
+            return False
+        # Move the dict by reference so the contents stay shared; clear
+        # the old slot so the previous session doesn't shadow future
+        # accidental writes back into the same key.
+        _read_tracker[new_task_id] = old_data
+        del _read_tracker[old_task_id]
+        return True
+
+
 def notify_other_tool_call(task_id: str = "default"):
     """Reset consecutive read/search counter for a task.
 

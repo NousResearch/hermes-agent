@@ -1052,6 +1052,20 @@ class CLICommandsMixin:
         self._pending_title = None
         _sync_process_session_id(target_id)
 
+        # Carry the read-file dedup cache across the session switch so the
+        # resumed agent doesn't re-read files it already has in its
+        # rehydrated transcript.  read_file_tool keys dedup on session_id,
+        # so without this handoff the new session starts with an empty
+        # cache and pulls every prior attachment through the gateway again
+        # (#81725).  No-op if the old session had no tracker entries.
+        if old_session_id and old_session_id != target_id:
+            try:
+                from tools.file_tools import transfer_file_dedup
+
+                transfer_file_dedup(old_session_id, target_id)
+            except Exception:
+                pass
+
         # Load conversation history (strip transcript-only metadata entries).
         # repair_alternation: this /resume feeds LIVE REPLAY — ``restored``
         # becomes ``self.conversation_history`` for subsequent turns. Heal a

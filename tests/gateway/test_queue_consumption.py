@@ -220,3 +220,49 @@ class TestBusyInputModeQueueFifo:
         assert runner._queue_depth(session_key, adapter=adapter) == len(texts)
 
 
+class TestUserPriorityOverInternalEvents:
+    def _make_runner_and_adapter(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._queued_events = {}
+        adapter = _StubAdapter()
+        runner.adapters = {Platform.TELEGRAM: adapter}
+        return runner, adapter
+
+    @staticmethod
+    def _event(text: str, *, internal: bool = False) -> MessageEvent:
+        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None)
+        return MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id=f"m-{text}",
+            internal=internal,
+        )
+
+    def test_users_run_before_internal_events_in_arrival_order(self):
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:priority"
+        for text, internal in (("internal-1", True), ("user-1", False), ("internal-2", True), ("user-2", False)):
+            runner._queue_or_replace_pending_event(session_key, self._event(text, internal=internal))
+
+        assert adapter._pending_messages[session_key].text == "user-1"
+        assert [event.text for event in runner._queued_events[session_key]] == [
+            "user-2", "internal-1", "internal-2"
+        ]
+
+    def test_full_queue_replaces_internal_not_user_input(self):
+        from gateway.run import GatewayRunner
+
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:priority-cap"
+        for index in range(GatewayRunner._BUSY_QUEUE_MAX_PENDING):
+            runner._queue_or_replace_pending_event(session_key, self._event(f"internal-{index}", internal=True))
+
+        runner._queue_or_replace_pending_event(session_key, self._event("user-steer"))
+
+        assert adapter._pending_messages[session_key].text == "user-steer"
+        assert runner._queue_depth(session_key, adapter=adapter) == GatewayRunner._BUSY_QUEUE_MAX_PENDING
+        assert all(event.internal for event in runner._queued_events[session_key])
+

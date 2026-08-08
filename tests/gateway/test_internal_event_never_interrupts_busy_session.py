@@ -69,6 +69,7 @@ def _make_runner() -> GatewayRunner:
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._pending_messages = {}
+    runner._queued_events = {}
     runner._busy_ack_ts = {}
     runner._draining = False
     runner.adapters = {}
@@ -127,3 +128,79 @@ async def test_internal_event_does_not_interrupt_busy_session() -> None:
     adapter._send_with_retry.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_user_interrupt_replaces_queued_internal_completion() -> None:
+    """User steering becomes the next turn rather than waiting behind a synthetic completion."""
+    runner = _make_runner()
+    runner._busy_input_mode = "interrupt"
+    adapter = _make_adapter()
+    internal = _make_internal_event(text="[background process completed]")
+    user_event = _make_internal_event(text="please stop")
+    object.__setattr__(user_event, "internal", False)
+    object.__setattr__(user_event, "source", internal.source)
+    session_key = build_session_key(user_event.source)
+    adapter._pending_messages[session_key] = internal
+    parent = _make_running_parent()
+    runner._running_agents[session_key] = parent
+    runner.adapters[user_event.source.platform] = adapter
+
+    assert await runner._handle_active_session_busy_message(user_event, session_key) is True
+    parent.interrupt.assert_called_once_with("please stop")
+    assert adapter._pending_messages[session_key] is user_event
+    assert runner._queued_events[session_key] == [internal]
+
+
+@pytest.mark.asyncio
+async def test_non_internal_event_still_interrupts() -> None:
+    """A real user message still interrupts, and becomes the next queued turn."""
+    runner = _make_runner()
+    runner._busy_input_mode = "interrupt"
+    adapter = _make_adapter()
+    internal = _make_internal_event(text="[background process completed]")
+    event = _make_internal_event(text="please stop")
+    object.__setattr__(event, "internal", False)
+    object.__setattr__(event, "source", internal.source)
+    sk = build_session_key(event.source)
+    adapter._pending_messages[sk] = internal
+    parent = _make_running_parent()
+    runner._running_agents[sk] = parent
+    runner.adapters[event.source.platform] = adapter
+
+    handled = await runner._handle_active_session_busy_message(event, sk)
+
+    assert handled is True
+    parent.interrupt.assert_called_once_with("please stop")
+    assert adapter._pending_messages[sk] is event
+    assert runner._queued_events[sk] == [internal]
+
+
+@pytest.mark.asyncio
+async def test_user_interrupt_outranks_multiple_queued_internal_events() -> None:
+    """With one internal completion in the head slot AND another already in
+    the overflow, a user interrupt takes the head slot and both internal
+    events cascade after it in their original arrival order."""
+    runner = _make_runner()
+    runner._busy_input_mode = "interrupt"
+    adapter = _make_adapter()
+
+    internal_head = _make_internal_event(text="[background process 1 completed]")
+    internal_tail = _make_internal_event(text="[background process 2 completed]")
+    object.__setattr__(internal_tail, "message_id", "msg2")
+    user_event = _make_internal_event(text="pivot to the other approach")
+    object.__setattr__(user_event, "internal", False)
+    object.__setattr__(user_event, "source", internal_head.source)
+    object.__setattr__(user_event, "message_id", "user-msg")
+
+    sk = build_session_key(user_event.source)
+    adapter._pending_messages[sk] = internal_head
+    runner._queued_events[sk] = [internal_tail]
+    parent = _make_running_parent()
+    runner._running_agents[sk] = parent
+    runner.adapters[user_event.source.platform] = adapter
+
+    handled = await runner._handle_active_session_busy_message(user_event, sk)
+
+    assert handled is True
+    parent.interrupt.assert_called_once_with("pivot to the other approach")
+    assert adapter._pending_messages[sk] is user_event
+    assert runner._queued_events[sk] == [internal_head, internal_tail]

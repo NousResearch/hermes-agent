@@ -766,6 +766,24 @@
   user-select: none;
 }
 
+/* Multi-profile hint: the placeholder is prefixed with `<profile name> · ` and
+   the prefix region is painted in the profile color from
+   --composer-placeholder-profile-color. We can't span-style `::before content`,
+   so we use a background-clip:text gradient: profile color up to the end of
+   the profile-name prefix, then the muted foreground for the rest. Scoped to
+   [data-placeholder-profile='true'] so single-profile users keep the base
+   muted color with no per-glyph split. */
+[data-slot='composer-rich-input'][data-placeholder-profile='true']:is(:empty, [data-empty])::before {
+  background: linear-gradient(
+    to right,
+    var(--composer-placeholder-profile-color) 0 0.95em,
+    color-mix(in srgb, var(--muted-foreground) 60%, transparent) 0.95em
+  );
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
 /* Primitive-level pointer cursor for every interactive control (buttons,
    selects, menu items, switches, tabs, summaries). Keeps individual
    components from having to hardcode `cursor-pointer`; explicit cursor

@@ -1,6 +1,6 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef } from 'react'
+import { type ClipboardEvent, type CSSProperties, type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { composerFill, composerFloatingStrip, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
@@ -339,8 +339,20 @@ export function ChatBar({
   })
 
   // Resting / reconnecting / starting placeholder text, re-rolled only on a real
-  // conversation change.
-  const placeholder = useComposerPlaceholder({ disabled, reconnecting, sessionId })
+  // conversation change. Multi-profile users get a `<profile> · ` prefix and
+  // a profile-colored region; the profile color flows through to the editor as
+  // a CSS custom property the `::before` reads.
+  const { profileColor: placeholderProfileColor, text: placeholder } = useComposerPlaceholder({
+    disabled,
+    reconnecting,
+    sessionId
+  })
+  const placeholderStyle = placeholderProfileColor
+    ? ({
+        '--composer-placeholder-profile-color': placeholderProfileColor
+      } as CSSProperties)
+    : undefined
+  const placeholderProfile = placeholderProfileColor ? 'true' : undefined
 
   // Trigger / completion engine: @// detection, the adapter-driven item list,
   // popover selection, and chip insertion. The keydown nav block below consumes
@@ -952,6 +964,7 @@ export function ChatBar({
         )}
         contentEditable={!inputDisabled}
         data-placeholder={placeholder}
+        data-placeholder-profile={placeholderProfile}
         data-slot={RICH_INPUT_SLOT}
         onBeforeInput={handleEditorBeforeInput}
         onBlur={() => window.setTimeout(closeTrigger, 80)}
@@ -986,6 +999,7 @@ export function ChatBar({
         ref={editorRef}
         role="textbox"
         spellCheck={false}
+        style={placeholderStyle}
         suppressContentEditableWarning
       />
       <ComposerDirectiveActions editorRef={editorRef} />

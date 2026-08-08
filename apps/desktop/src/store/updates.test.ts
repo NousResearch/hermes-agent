@@ -863,12 +863,14 @@ describe('applyBackendUpdate recovery', () => {
 describe('startUpdatePoller', () => {
   const checkMock = vi.fn()
   const onProgressMock = vi.fn()
+  const handoffResultMock = vi.fn()
   const listeners: Record<string, Function> = {}
 
   beforeEach(() => {
     storage.clear()
     checkMock.mockReset()
     onProgressMock.mockReset()
+    handoffResultMock.mockReset()
     Object.keys(listeners).forEach(k => delete listeners[k])
     checkMock.mockResolvedValue({
       supported: true,
@@ -876,9 +878,10 @@ describe('startUpdatePoller', () => {
       targetSha: 'sha-abc',
       fetchedAt: 0
     })
+    handoffResultMock.mockResolvedValue({ pending: false })
     $updateStatus.set(null)
     ;(globalThis as unknown as { window: unknown }).window = {
-      hermesDesktop: { updates: { check: checkMock, onProgress: onProgressMock } },
+      hermesDesktop: { updates: { check: checkMock, onProgress: onProgressMock, handoffResult: handoffResultMock } },
       addEventListener: vi.fn((event: string, handler: Function) => {
         listeners[event] = handler
       }),
@@ -926,5 +929,57 @@ describe('startUpdatePoller', () => {
     await vi.advanceTimersByTimeAsync(0)
 
     expect(checkMock).toHaveBeenCalled()
+  })
+
+  it('lands on a closeable error state when a failed hand-off is detected on startup (#57645)', async () => {
+    handoffResultMock.mockResolvedValue({
+      pending: true,
+      failed: true,
+      recordedSha: 'aaa111',
+      currentSha: 'aaa111',
+      recordedVersion: '0.18.0'
+    })
+    resetUpdateApplyState()
+
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect($updateApply.get().stage).toBe('error')
+    expect($updateApply.get().error).toBe('handoff-failed')
+    expect($updateApply.get().applying).toBe(false)
+    expect($updateOverlayOpen.get()).toBe(true)
+  })
+
+  it('does not surface an error when the hand-off succeeded (SHA changed) (#57645)', async () => {
+    handoffResultMock.mockResolvedValue({
+      pending: false,
+      succeeded: true
+    })
+    resetUpdateApplyState()
+
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect($updateApply.get().stage).not.toBe('error')
+    expect($updateApply.get().applying).toBe(false)
+  })
+
+  it('does not surface an error when the hand-off is deferred (update still running) (#57645)', async () => {
+    handoffResultMock.mockResolvedValue({
+      pending: true,
+      deferred: true,
+      recordedSha: 'aaa111',
+      currentSha: 'aaa111',
+      recordedVersion: '0.18.0'
+    })
+    resetUpdateApplyState()
+
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+
+    // A deferred hand-off is NOT a failure — no closeable error state.
+    expect($updateApply.get().stage).not.toBe('error')
+    expect($updateApply.get().error).not.toBe('handoff-failed')
+    expect($updateApply.get().applying).toBe(false)
   })
 })

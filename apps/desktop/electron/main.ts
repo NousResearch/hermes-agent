@@ -189,6 +189,7 @@ import { createStreamThrottle } from './stream-throttle'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
+import { readUpdateHandoffResult, writeHermesUpdateHandoff } from './update-handoff-marker'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { runRebuildWithRetry } from './update-rebuild'
 import {
@@ -2989,6 +2990,24 @@ async function applyUpdates(opts = {}) {
       }
     }
 
+    // Record the pre-hand-off git SHA + version so the relaunched instance
+    // can detect a silently-failed update (the updater never completed → same
+    // SHA on next boot) and surface a closeable error instead of silently
+    // reverting to the old version. (#57645)
+    let preHandoffSha = ''
+
+    try {
+      const head = await runGit(['rev-parse', 'HEAD'], { cwd: updateRoot })
+      preHandoffSha = (head.stdout || '').trim()
+    } catch {
+      // best-effort; the marker still records version + timestamp
+    }
+
+    writeHermesUpdateHandoff(HERMES_HOME, {
+      sha: preHandoffSha,
+      version: resolveHermesVersion()
+    })
+
     // Detached so the updater outlives this process — it needs us GONE before
     // `hermes update` will run (the venv shim is locked while we live).
     const child = spawnUpdaterProcess(updater, updaterArgs, {
@@ -3576,6 +3595,25 @@ fi
 
     return { ok: true, backendUpdated: true, rebuiltApp }
   }
+
+  // Record the pre-swap git SHA + version so the relaunched instance can detect
+  // a silently-failed ditto swap (the detached script's swap can fall through,
+  // reopening the OLD destination bundle) and surface a closeable error instead
+  // of silently reverting to the old version. (#57645) This mirrors the
+  // marker write in the staged-helper hand-off path.
+  let preSwapSha = ''
+
+  try {
+    const head = await runGit(['rev-parse', 'HEAD'], { cwd: updateRoot })
+    preSwapSha = (head.stdout || '').trim()
+  } catch {
+    // best-effort; the marker still records version + timestamp
+  }
+
+  writeHermesUpdateHandoff(HERMES_HOME, {
+    sha: preSwapSha,
+    version: resolveHermesVersion()
+  })
 
   const child = spawn('/bin/bash', [scriptPath], { detached: true, stdio: 'ignore' })
   child.unref()
@@ -11429,6 +11467,20 @@ ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
     message: error?.message || String(error)
   }))
 )
+
+// Post-relaunch validation (#57645): when the desktop handed off to the
+// detached hermes-setup updater and quit, the next instance checks whether
+// the git SHA actually changed. If it didn't, the updater failed silently
+// and the renderer surfaces a closeable error instead of silently reverting.
+ipcMain.handle('hermes:updates:handoff-result', async () => {
+  try {
+    const updateRoot = resolveUpdateRoot()
+
+    return readUpdateHandoffResult(HERMES_HOME, updateRoot)
+  } catch (error) {
+    return { pending: false, error: error?.message || String(error) }
+  }
+})
 
 ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig())
 

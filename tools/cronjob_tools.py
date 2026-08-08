@@ -553,7 +553,7 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     return None
 
 
-def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
+def _format_job(job: Dict[str, Any], *, include_prompt: bool = False) -> Dict[str, Any]:
     prompt = str(job.get("prompt") or "")
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
     job_id = str(job.get("id") or "unknown")
@@ -594,6 +594,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if include_prompt:
+        result["prompt"] = prompt
     return result
 
 
@@ -1052,6 +1054,7 @@ def cronjob(
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
+    include_prompt: bool = False,
     task_id: str = None,
     session_id: Optional[str] = None,
 ) -> str:
@@ -1166,7 +1169,10 @@ def cronjob(
             )
 
         if normalized == "list":
-            jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
+            jobs = [
+                _format_job(job, include_prompt=include_prompt)
+                for job in list_jobs(include_disabled=include_disabled)
+            ]
             return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
 
         if not job_id:
@@ -1198,6 +1204,24 @@ def cronjob(
             )
         # Resolve to canonical ID (supports name-based lookup)
         job_id = job["id"]
+
+        if normalized in {"get", "show"}:
+            full_job = get_job(job_id) or job
+            formatted = _format_job(full_job, include_prompt=True)
+            # Include fields that are too verbose or internal for the compact
+            # list view but useful when inspecting a single job in detail.
+            for key in (
+                "schedule",
+                "repeat",
+                "origin",
+                "context_from",
+                "created_at",
+                "last_error",
+            ):
+                val = full_job.get(key)
+                if val is not None:
+                    formatted[key] = val
+            return json.dumps({"success": True, "job": formatted}, indent=2)
 
         if normalized == "remove":
             removed = remove_job(job_id)
@@ -1430,7 +1454,10 @@ def cronjob(
                 return tool_error("No updates provided.", success=False)
             updated = update_job(job_id, updates)
             _notify_provider_jobs_changed_safe()
-            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+            return json.dumps(
+                {"success": True, "job": _format_job(updated, include_prompt=include_prompt)},
+                indent=2,
+            )
 
         return tool_error(f"Unknown cron action '{action}'", success=False)
 
@@ -1444,7 +1471,8 @@ CRONJOB_SCHEMA = {
     "description": """Manage scheduled cron jobs with a single compressed tool.
 
 Use action='create' to schedule a new job from a prompt or one or more skills.
-Use action='list' to inspect jobs.
+Use action='list' to inspect jobs (shows only a 100-char prompt preview).
+Use action='get' with a job_id to read one job's FULL prompt and config — use this before editing to review the exact stored text. 'show' is an alias for 'get'.
 Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing job.
 
 action='run' fires the job immediately in the BACKGROUND (like delegate_task): the call returns at once with a handle and the job's outcome re-enters the conversation as a new message when it finishes. Do not wait or poll after triggering a run — just continue. Optionally pass 'prompt' with action='run' to inject transient per-run context (appended to the job's stored prompt for that single fire only, never persisted).
@@ -1465,11 +1493,11 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
         "properties": {
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
+                "description": "One of: create, list, get, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED. Use action='get' to read a job's full prompt before editing."
             },
             "job_id": {
                 "type": "string",
-                "description": "Required for update/pause/resume/remove/run"
+                "description": "Required for get/update/pause/resume/remove/run"
             },
             "prompt": {
                 "type": "string",
@@ -1552,6 +1580,11 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "boolean",
                 "description": "When True, this job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context instead of asking 'what is that?'. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread is opened for the job and its replies; on DM-only platforms (WhatsApp/Signal) the brief is mirrored into the origin DM session. Use this for conversational recurring jobs the user will reply to — daily briefings, reminders that kick off follow-up work. Leave unset for fire-and-forget alerts/watchdogs. Overrides the global cron.mirror_delivery config for this one job. Only the origin chat is touched (never fan-out targets); no effect when deliver='local'."
             },
+            "include_prompt": {
+                "type": "boolean",
+                "default": False,
+                "description": "When True, include the job's full prompt in the response for action='list' and action='update'. Default is False (only a 100-char prompt_preview is returned). Set to True to audit or back up the exact prompt text. action='get' always includes the full prompt regardless of this flag."
+            },
         },
         "required": ["action"]
     }
@@ -1611,6 +1644,7 @@ registry.register(
         no_agent=args.get("no_agent"),
         monitor_script=args.get("monitor_script"),
         monitor_url=args.get("monitor_url"),
+        include_prompt=args.get("include_prompt", False),
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
     ),

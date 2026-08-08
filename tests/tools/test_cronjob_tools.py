@@ -246,6 +246,69 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_get_returns_full_prompt(self):
+        long_prompt = "Inspect the current job before editing. " * 8
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt=long_prompt,
+                schedule="every 1h",
+                name="Inspectable",
+            )
+        )
+        result = json.loads(cronjob(action="get", job_id=created["job_id"]))
+        assert result["success"] is True
+        assert result["job"]["job_id"] == created["job_id"]
+        assert result["job"]["name"] == "Inspectable"
+        assert result["job"]["prompt"] == long_prompt
+        assert result["job"]["prompt_preview"].endswith("...")
+
+    def test_show_alias_resolves_by_name(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Full prompt by name",
+                schedule="every 1h",
+                name="named-inspection-job",
+            )
+        )
+        result = json.loads(cronjob(action="show", job_id="named-inspection-job"))
+        assert result["success"] is True
+        assert result["job"]["job_id"] == created["job_id"]
+        assert result["job"]["prompt"] == "Full prompt by name"
+
+    def test_get_missing_job_returns_error(self):
+        result = json.loads(cronjob(action="get", job_id="nonexistent"))
+        assert result["success"] is False
+        assert "not found" in result["error"]
+
+    def test_list_default_excludes_full_prompt(self):
+        long_prompt = "A prompt long enough to be truncated in preview. " * 5
+        cronjob(action="create", prompt=long_prompt, schedule="every 1h")
+        listing = json.loads(cronjob(action="list"))
+        assert "prompt" not in listing["jobs"][0]
+        assert listing["jobs"][0]["prompt_preview"].endswith("...")
+
+    def test_list_include_prompt_returns_full_text(self):
+        long_prompt = "A prompt long enough to be truncated in preview. " * 5
+        cronjob(action="create", prompt=long_prompt, schedule="every 1h")
+        listing = json.loads(cronjob(action="list", include_prompt=True))
+        assert listing["jobs"][0]["prompt"] == long_prompt
+
+    def test_update_include_prompt_echoes_full_text(self):
+        created = json.loads(cronjob(action="create", prompt="old", schedule="every 1h"))
+        new_prompt = "new full prompt text"
+        result = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                prompt=new_prompt,
+                include_prompt=True,
+            )
+        )
+        assert result["success"] is True
+        assert result["job"]["prompt"] == new_prompt
+
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
 

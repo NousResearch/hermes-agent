@@ -43,6 +43,7 @@ def _make_adapter():
     adapter._mention_patterns = []
     adapter._free_response_chats = set()
     adapter._whatsapp_free_response_chats = lambda: set()
+    adapter._last_inbound_by_chat = {}
     return adapter
 
 

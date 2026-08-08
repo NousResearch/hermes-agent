@@ -541,10 +541,16 @@ class _OpenWakeWordEngine(_Engine):
         framework = resolve_inference_framework(cfg)
         # The platform-correct onnxruntime wheel is pinned in pyproject.toml:
         # 1.23.2 on Intel macOS (the last release with a Darwin x86_64 wheel),
-        # 1.27.0 elsewhere. The default feature installs `onnxruntime`, so
-        # ``wake.openwakeword`` resolves on every supported platform (#81560,
+        # 1.27.0 elsewhere. lazy_deps specs cannot carry PEP 508 markers, so
+        # ``wake.openwakeword`` hard-pins 1.27.0 and would fail its version
+        # match on Intel macOS (where 1.23.2 is installed via the [wake]
+        # extra). Use the slim feature there — it omits onnxruntime, which the
+        # extra already provides at the platform-correct version (#81560,
         # #81577).
-        lazy_deps.ensure("wake.openwakeword", prompt=False)
+        if _is_macos_intel():
+            lazy_deps.ensure("wake.openwakeword.slim", prompt=False)
+        else:
+            lazy_deps.ensure("wake.openwakeword", prompt=False)
 
         import openwakeword
         from openwakeword.model import Model
@@ -918,7 +924,7 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
         # All supported platforms install the default wake.openwakeword
         # feature; pyproject.toml pins the right onnxruntime wheel per
         # platform (1.23.2 on Intel macOS, 1.27.0 elsewhere — #81560, #81577).
-        feature = "wake.openwakeword"
+        feature = "wake.openwakeword.slim" if _is_macos_intel() else "wake.openwakeword"
     deps_ok = lazy_deps.is_available(feature)
     lazy_ok = lazy_deps._allow_lazy_installs()
     # The audio probe imports sounddevice + numpy — two of the very packages

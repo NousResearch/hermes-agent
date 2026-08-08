@@ -279,13 +279,15 @@ def test_explicit_framework_kept_off_broken_platform(monkeypatch):
     assert downloaded == [ww._bundled_wakeword_path("onnx")]
 
 
-def test_intel_macos_engine_ensures_default_stack(monkeypatch):
-    # Intel macOS now uses the default wake.openwakeword feature — the
-    # pyproject.toml platform markers pin onnxruntime==1.23.2 (the last
-    # Darwin x86_64 wheel) there (#81560, #81577). The engine must ensure
-    # the *default* feature, not the slim variant (which was a stopgap for
-    # the 1.27.0-only pin) and not the tflite feature (ai-edge-litert also
-    # ships no Intel macOS wheel).
+def test_intel_macos_engine_ensures_slim_stack(monkeypatch):
+    # Intel macOS: the [wake] extra installs onnxruntime==1.23.2 (the last
+    # Darwin x86_64 wheel) via pyproject's platform marker, but lazy_deps
+    # specs cannot carry markers — `wake.openwakeword` hard-pins 1.27.0 and
+    # its version match would fail against a 1.23.2 install, re-raising the
+    # #81560 lazy-install failure at engine construction. The engine must
+    # ensure the slim feature (openwakeword + sounddevice + numpy, no
+    # onnxruntime) on Intel macOS; the extra already provides the runtime
+    # at the platform-correct version (#81577 follow-up).
     _install_fake_openwakeword(monkeypatch)
     ensured = []
     monkeypatch.setattr(
@@ -294,6 +296,25 @@ def test_intel_macos_engine_ensures_default_stack(monkeypatch):
     monkeypatch.setattr(ww, "ensure_tflite_runtime", lambda: True)
     monkeypatch.setattr(ww.sys, "platform", "darwin")
     monkeypatch.setattr("platform.machine", lambda: "x86_64")
+    ww._OpenWakeWordEngine(
+        {"provider": "openwakeword", "openwakeword": {"inference_framework": "onnx"}}
+    )
+    assert "wake.openwakeword.slim" in ensured
+    assert "wake.openwakeword" not in ensured
+    assert "wake.openwakeword.tflite" not in ensured
+
+
+def test_non_intel_macos_engine_ensures_default_stack(monkeypatch):
+    # Everywhere else the default feature (with onnxruntime==1.27.0) is
+    # correct — the platform-correct wheel is installable there.
+    _install_fake_openwakeword(monkeypatch)
+    ensured = []
+    monkeypatch.setattr(
+        "tools.lazy_deps.ensure", lambda feature, prompt=False: ensured.append(feature)
+    )
+    monkeypatch.setattr(ww, "ensure_tflite_runtime", lambda: True)
+    monkeypatch.setattr(ww.sys, "platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
     ww._OpenWakeWordEngine(
         {"provider": "openwakeword", "openwakeword": {"inference_framework": "onnx"}}
     )

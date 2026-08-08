@@ -13,11 +13,18 @@ import {
   $busy,
   $connection,
   $currentCwd,
+  $currentModel,
+  $currentProvider,
   $currentUsage,
   $messages,
   $sessions,
   $terminalBackend,
   $turnStartedAt,
+  getCurrentModelSource,
+  markComposerSelectionManual,
+  setCurrentModel,
+  setCurrentModelSource,
+  setCurrentProvider,
   setCurrentUsage,
   setMessages,
   setSessions
@@ -1037,7 +1044,88 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
   afterEach(() => {
     cleanup()
     $busy.set(false)
+    setCurrentModel('')
+    setCurrentProvider('')
+    setCurrentModelSource('')
     vi.restoreAllMocks()
+  })
+
+  it('reconciles the composer model after a typed /model switch', async () => {
+    setCurrentModel('old-model')
+    setCurrentProvider('old-provider')
+    setCurrentModelSource('manual')
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        return { output: '✓ Model switched: new-model' } as never
+      }
+
+      if (method === 'model.options') {
+        return { model: 'new-model', provider: 'new-provider' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/model new-model --provider new-provider')
+
+    expect(requestGateway).toHaveBeenCalledWith('model.options', { session_id: RUNTIME_SESSION_ID })
+    expect($currentModel.get()).toBe('new-model')
+    expect($currentProvider.get()).toBe('new-provider')
+    expect(getCurrentModelSource()).toBe('manual')
+  })
+
+  it('does not overwrite a newer picker selection while typed /model is in flight', async () => {
+    setCurrentModel('old-model')
+    setCurrentProvider('old-provider')
+    setCurrentModelSource('manual')
+
+    let resolveSlashExec: (value: unknown) => void = () => undefined
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        return new Promise(resolve => {
+          resolveSlashExec = resolve
+        }) as never
+      }
+
+      if (method === 'model.options') {
+        return { model: 'typed-model', provider: 'typed-provider' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const submitting = handle!.submitText('/model typed-model --provider typed-provider')
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('slash.exec', expect.anything()))
+
+    setCurrentModel('picker-model')
+    setCurrentProvider('picker-provider')
+    markComposerSelectionManual()
+    resolveSlashExec({ output: '✓ Model switched: typed-model' })
+    await submitting
+
+    expect(requestGateway).not.toHaveBeenCalledWith('model.options', expect.anything())
+    expect($currentModel.get()).toBe('picker-model')
+    expect($currentProvider.get()).toBe('picker-provider')
   })
 
   it('executes /approvals against the focused profile session and persists its mode', async () => {

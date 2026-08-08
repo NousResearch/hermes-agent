@@ -28,8 +28,12 @@ import {
   $connection,
   $sessions,
   $yoloActive,
+  getComposerSelectionGeneration,
+  markComposerSelectionManual,
   resolveComposerSessionKey,
   setActiveSessionId,
+  setCurrentModel,
+  setCurrentProvider,
   setCurrentUsage,
   setModelPickerOpen,
   setSessionPickerOpen,
@@ -46,6 +50,7 @@ import {
   type WakeStatusResponse,
   type WakeStopResponse
 } from '@/store/wake-word'
+import type { ModelOptionsResponse } from '@/types/hermes'
 
 import type {
   BrowserManageResponse,
@@ -245,6 +250,10 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       // path that talks to slash.exec / command.dispatch.
       async function runExec(ctx: SlashActionCtx): Promise<void> {
         const { arg, command, name } = ctx
+
+        const typedModelSelectionGeneration =
+          name === 'model' && arg.trim() ? getComposerSelectionGeneration() : null
+
         const resolved = await withSlashOutput(ctx)
 
         if (!resolved) {
@@ -381,6 +390,42 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // indicator tracks pause/resume/clear immediately.
           if (name === 'goal' && output?.output) {
             applyGoalStatusText(sessionId, output.output)
+          }
+
+          // The typed `/model <name>` path is executed by the slash worker,
+          // then mirrored onto the live session. Its response is text-only,
+          // so reconcile the composer's model pill from the backend's
+          // authoritative session state rather than parsing that display text.
+          // A picker click or session switch that lands while this request is
+          // in flight is newer intent and must win over the delayed response.
+          if (
+            typedModelSelectionGeneration !== null &&
+            activeSessionIdRef.current === sessionId &&
+            getComposerSelectionGeneration() === typedModelSelectionGeneration
+          ) {
+            try {
+              const current = await requestGateway<ModelOptionsResponse>('model.options', { session_id: sessionId })
+
+              if (
+                activeSessionIdRef.current === sessionId &&
+                getComposerSelectionGeneration() === typedModelSelectionGeneration &&
+                (typeof current.model === 'string' || typeof current.provider === 'string')
+              ) {
+                if (typeof current.model === 'string') {
+                  setCurrentModel(current.model)
+                }
+
+                if (typeof current.provider === 'string') {
+                  setCurrentProvider(current.provider)
+                }
+
+                markComposerSelectionManual()
+              }
+            } catch {
+              // The command already succeeded and session.info remains the
+              // fallback reconciliation path; never mask its output because a
+              // follow-up metadata read failed.
+            }
           }
 
           renderSlashOutput(output?.warning ? `warning: ${output.warning}\n${body}` : body)

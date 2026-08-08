@@ -191,6 +191,13 @@ _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+# Match a full markdown table block: header row, separator, body rows.
+# Used for substitution — converts matches to ASCII + code fence.
+_MARKDOWN_TABLE_BLOCK_RE = re.compile(
+    r"(?:^|\n)(\|[^\n]+\|\n\|[-:| ]+\|\n(?:(?:\|[^\n]*\|\n?))*)",
+    re.MULTILINE,
+)
+
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -436,6 +443,7 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    table_mode: str = "card"  # "card" (Card-Kit native table) | "ascii" (ASCII code-fence table)
 
 
 @dataclass
@@ -495,7 +503,157 @@ def _sender_identity(sender: Any) -> frozenset:
 
 
 def _escape_markdown_text(text: str) -> str:
-    return _MARKDOWN_SPECIAL_CHARS_RE.sub(r"\\\1", text)
+    return _MARKDOWN_SPECIAL_CHARS_RE.sub(r"\", text)
+
+
+def _markdown_table_to_ascii(table_text: str) -> str:
+    """Convert a markdown table to an ASCII box-drawing table.
+
+    Handles CJK characters (counted as width 2 for alignment).
+    Returns the table wrapped in a code fence for monospace rendering
+    inside Feishu post md elements.
+    """
+    lines = table_text.strip().split("\n")
+    if len(lines) < 2:
+        return table_text
+
+    rows: list[list[str]] = []
+    for line in lines:
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if all(re.match(r"^[-: ]+$", c) for c in cells):
+            continue
+        rows.append(cells)
+
+    if not rows:
+        return table_text
+
+    num_cols = max(len(r) for r in rows)
+    col_widths = [0] * num_cols
+    for row in rows:
+        for j, cell in enumerate(row):
+            if j < num_cols:
+                w = sum(2 if ord(c) > 127 else 1 for c in cell)
+                col_widths[j] = max(col_widths[j], w)
+    col_widths = [max(w, 3) for w in col_widths]
+
+    def _pad_cell(text: str, width: int) -> str:
+        text_width = sum(2 if ord(c) > 127 else 1 for c in text)
+        return text + " " * max(width - text_width, 0)
+
+    def _make_sep(char: str) -> str:
+        return "+" + "+".join(char * (w + 2) for w in col_widths) + "+"
+
+    result: list[str] = []
+    result.append(_make_sep("-"))
+    result.append(
+        "| " + " | ".join(_pad_cell(rows[0][j], col_widths[j]) for j in range(num_cols)) + " |"
+    )
+    result.append(_make_sep("="))
+    for row in rows[1:]:
+        padded = [_pad_cell(row[j] if j < len(row) else "", col_widths[j]) for j in range(num_cols)]
+        result.append("| " + " | ".join(padded) + " |")
+    result.append(_make_sep("-"))
+
+    return "\n".join(result)
+
+
+def _parse_markdown_table_rows(table_text: str) -> tuple[list[str], list[list[str]]]:
+    """Parse a markdown table block into (headers, data_rows).
+
+    Skips the separator row.  Pads short rows to match the header column
+    count.  Returns empty lists when the block is too short to be a valid
+    table.
+    """
+    lines = table_text.strip().split("\n")
+    if len(lines) < 2:
+        return [], []
+
+    rows_data: list[list[str]] = []
+    for line in lines:
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if all(re.match(r"^[-: ]+$", c) for c in cells):
+            continue
+        rows_data.append(cells)
+
+    if len(rows_data) < 2:
+        return [], []
+
+    headers = rows_data[0]
+    num_cols = len(headers)
+    data_rows = rows_data[1:]
+
+    # Pad short rows
+    for row in data_rows:
+        if len(row) < num_cols:
+            row.extend([""] * (num_cols - len(row)))
+        elif len(row) > num_cols:
+            del row[num_cols:]
+
+    return headers, data_rows
+
+
+def _markdown_table_to_table_element(table_text: str) -> dict:
+    """Convert a single markdown table to a Feishu Card-Kit 2.0 ``table`` element.
+
+    Falls back to a ``markdown`` code-fenced ASCII table when parsing fails
+    (e.g. 1-column table or empty block).
+    """
+    headers, data_rows = _parse_markdown_table_rows(table_text)
+    if len(headers) < 2 or not data_rows:
+        # Single-column or degenerate table — render as code-fenced ASCII
+        ascii_table = _markdown_table_to_ascii(table_text)
+        return {"tag": "markdown", "content": f"```\n{ascii_table}\n```"}
+
+    return {
+        "tag": "table",
+        "columns": [{"name": h, "display_name": h, "data_type": "text", "width": "auto"} for h in headers],
+        "rows": [
+            {headers[j]: str(cell) for j, cell in enumerate(row)}
+            for row in data_rows
+        ],
+    }
+
+
+def _build_table_card_text(
+    content: str,
+    table_matches: list[re.Match],
+) -> tuple[str, str]:
+    """Build an interactive card from content containing markdown tables.
+
+    Prose between and around tables becomes ``markdown`` card elements;
+    each table becomes a native ``table`` element.  When no tables are
+    found or the result is empty, falls back to the ASCII+post path so
+    the caller can try the existing code path.
+
+    Returns ``(msg_type, payload_json)``.
+    """
+    card_elements: list[dict] = []
+    last_end = 0
+
+    for match in table_matches:
+        # Prose before this table
+        before = content[last_end : match.start()].strip()
+        if before:
+            card_elements.append({"tag": "markdown", "content": before})
+
+        table_element = _markdown_table_to_table_element(match.group(1))
+        card_elements.append(table_element)
+        last_end = match.end()
+
+    # Trailing prose
+    after = content[last_end:].strip()
+    if after:
+        card_elements.append({"tag": "markdown", "content": after})
+
+    if not card_elements:
+        return ("", "")
+
+    card = {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "body": {"elements": card_elements},
+    }
+    return "interactive", json.dumps(card, ensure_ascii=False)
 
 
 def _to_boolean(value: Any) -> bool:
@@ -1661,6 +1819,7 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            table_mode=str(extra.get("table_mode", "card")).strip().lower(),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1693,6 +1852,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._table_mode = settings.table_mode
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -1982,26 +2142,42 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    # post failures are caught by _POST_CONTENT_INVALID_RE; interactive
+                    # card failures can produce a variety of errors (card validation,
+                    # table column names, etc.) — fall back to ASCII table for any of them.
+                    is_post_fail = msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc))
+                    is_interactive = msg_type == "interactive"
+                    if not (is_post_fail or is_interactive):
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                    logger.warning("[Feishu] %s payload rejected by API; falling back to ASCII", msg_type)
+                    fallback_content = _MARKDOWN_TABLE_BLOCK_RE.sub(
+                        lambda m: "\n```\n" + _markdown_table_to_ascii(m.group(1)) + "\n```\n",
+                        chunk,
+                    )
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                        msg_type="post",
+                        payload=_build_markdown_post_payload(fallback_content),
                         reply_to=reply_to,
                         metadata=metadata,
                     )
                 if (
-                    msg_type == "post"
-                    and not self._response_succeeded(response)
-                    and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
+                    not self._response_succeeded(response)
+                    and (
+                        (msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or "")))
+                        or msg_type == "interactive"
+                    )
                 ):
-                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
+                    logger.warning("[Feishu] %s payload rejected by API response; falling back to ASCII. "
+                                   "Error: %s", msg_type, getattr(response, 'msg', str(response)))
+                    fallback_content = _MARKDOWN_TABLE_BLOCK_RE.sub(
+                        lambda m: "\n```\n" + _markdown_table_to_ascii(m.group(1)) + "\n```\n",
+                        chunk,
+                    )
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                        msg_type="post",
+                        payload=_build_markdown_post_payload(fallback_content),
                         reply_to=reply_to,
                         metadata=metadata,
                     )
@@ -2031,8 +2207,8 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await self._run_blocking(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
-            if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
-                logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
+            if not result.success and msg_type in ("post", "interactive") and _POST_CONTENT_INVALID_RE.search(result.error or ""):
+                logger.warning("[Feishu] Invalid %s update payload rejected by API; falling back to plain text", msg_type)
                 fallback_body = self._build_update_message_body(
                     msg_type="text",
                     content=json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
@@ -4640,13 +4816,37 @@ class FeishuAdapter(BasePlatformAdapter):
     def _build_outbound_payload(
         self, content: str, *, prefer_post: bool = False,
     ) -> tuple[str, str]:
-        # Empirically (issue #52786), current Feishu clients render markdown
-        # tables inside ``post``-type ``md`` elements natively. The previous
-        # table-downgrade branch forced any table-containing message to
-        # ``text``, which left Feishu readers seeing the raw pipe-and-dash
-        # source instead of a rendered table. Trust the common markdown path
-        # for table content too.
+        # Feishu chat messages do not render raw markdown tables.  When a
+        # table is detected, convert it to an interactive card with a native
+        # Card-Kit ``table`` component — the only stable table rendering path
+        # in Feishu (post-type ``md`` elements drop tables silently).
+        # Surrounding prose is preserved as ``markdown`` card elements.
+        # If the table is degenerate (1 column or empty), fall back to the
+        # ASCII+code-fence approach inside a post message.
         #
+        # table_mode config toggle:
+        #   "card" (default) → Card-Kit native table, ASCII fallback on failure
+        #   "ascii"          → skip Card-Kit entirely, always ASCII code-fence
+        if _MARKDOWN_TABLE_RE.search(content):
+            table_mode = getattr(self, "_table_mode", "card")
+            if table_mode == "ascii":
+                # User explicitly prefers ASCII tables — skip Card-Kit
+                converted = _MARKDOWN_TABLE_BLOCK_RE.sub(
+                    lambda m: "\n```\n" + _markdown_table_to_ascii(m.group(1)) + "\n```\n",
+                    content,
+                )
+                return "post", _build_markdown_post_payload(converted)
+            table_matches = list(_MARKDOWN_TABLE_BLOCK_RE.finditer(content))
+            if table_matches:
+                msg_type, card_payload = _build_table_card_text(content, table_matches)
+                if msg_type:
+                    return msg_type, card_payload
+            # Card build failed (e.g. empty elements) — fall back to ASCII
+            converted = _MARKDOWN_TABLE_BLOCK_RE.sub(
+                lambda m: "\n```\n" + _markdown_table_to_ascii(m.group(1)) + "\n```\n",
+                content,
+            )
+            return "post", _build_markdown_post_payload(converted)
         # ``prefer_post`` lets ``send`` treat the chunk as part of a larger
         # markdown document: when a long markdown reply is split at
         # MAX_MESSAGE_LENGTH, the per-chunk regex would otherwise
@@ -4949,6 +5149,7 @@ class FeishuAdapter(BasePlatformAdapter):
             # transport.  The tag tells the server to use the Channel protocol
             # which enables group-message routing in addition to P2P DM.
             # See https://github.com/NousResearch/hermes-agent/issues/50656
+            # NOTE: extra_ua_tags requires lark-oapi >= 1.6.0
             extra_ua_tags=["channel"],
         )
         self._ws_future = loop.run_in_executor(

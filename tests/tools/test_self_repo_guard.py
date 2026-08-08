@@ -80,6 +80,8 @@ class TestBlocksMutationsInSourceRepo:
             "/usr/bin/git checkout main",
             "sh -c 'git checkout main'",
             "bash -lc 'git switch main'",
+            "bash -o pipefail -c 'git checkout main'",
+            "bash +O extglob -c 'git checkout main'",
         ],
     )
     def test_wrappers_and_nested_shells(self, repo, command):

@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from tools.approval import (
+    _bash_exec_payload,
     _deobfuscate_shell_word_for_detection,
     _iter_shell_command_starts,
     _read_shell_word,
@@ -308,14 +309,16 @@ def _cd_target(executable: str, args: list[str], cwd: Path) -> Path | None:
 
 
 def _shell_script_arg(args: list[str]) -> str | None:
-    for index, arg in enumerate(args):
-        if arg == "--":
-            break
-        if arg.startswith("-") and "c" in arg[1:]:
-            return args[index + 1] if index + 1 < len(args) else None
-        if not arg.startswith("-"):
-            break
-    return None
+    """Return the script string owned by a shell's ``-c``, if present.
+
+    Delegates to approval.py's ``_bash_exec_payload``, which parses bash's
+    real option grammar (``-O/-o`` consume the next argument, short-option
+    bundles, ``--init-file``/``--rcfile``). A naive "leading option containing
+    'c'" scan fails open on ``bash -o pipefail -c '<script>'`` — the ``-o``
+    operand hides the ``-c`` and the script is never scanned.
+    """
+    has_c, payload = _bash_exec_payload(args)
+    return payload if has_c else None
 
 
 def _heredoc_specs(line: str) -> list[_Heredoc]:

@@ -2,12 +2,18 @@ import { type Simulation } from 'd3-force'
 import { atom, type WritableAtom } from 'nanostores'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import { useThemeEpoch } from '@/hooks/use-theme-epoch'
+import { useI18n } from '@/i18n'
 import { createDoubleTapDetector, isSmartZoomWheel } from '@/lib/trackpad-gestures'
 import type { StarmapGraph } from '@/types/hermes'
 
 import { computePalette, memoryInkFor, resolveRgb, rgba } from './color'
 import { RING_OUTER, TILT, ZOOM_MAX, ZOOM_MIN } from './constants'
+import { createGifExport } from './export-gif'
+import { createVideoExport } from './export-video'
 import { clamp, distToSegmentSq, fitScale, fitViewport, nodeRadius } from './geometry'
 import { NodeContextMenu, type NodeMenuTarget } from './node-context-menu'
 import { drawScene, drawScramble } from './render'
@@ -108,6 +114,7 @@ export function StarMap({
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const wrapRef = useRef<HTMLDivElement | null>(null)
+  const { t } = useI18n()
 
   const simRef = useRef<null | Simulation<SimNode, SimLink>>(null)
   const nodesRef = useRef<SimNode[]>([])
@@ -156,6 +163,10 @@ export function StarMap({
   const [selectedId, setSelectedId] = useState<null | string>(null)
   const [menuTarget, setMenuTarget] = useState<NodeMenuTarget | null>(null)
   const [size, setSize] = useState({ h: 0, w: 0 })
+  // Video export: true while the build-up is being recorded to a file.
+  const [exporting, setExporting] = useState(false)
+  // GIF export: true while the build-up is being sampled to an animated GIF.
+  const [gifExporting, setGifExporting] = useState(false)
   // Increments on every theme repaint (shared hook) so the legend swatch and the
   // canvas palette re-resolve against the freshly-painted CSS custom properties.
   const themeEpoch = useThemeEpoch()
@@ -442,6 +453,137 @@ export function StarMap({
     },
     [fitForReveal, setRevealValue]
   )
+
+  // The exporter is created once and reused per export; `finish()` resolves
+  // with each run's Blob. Recording state drives a spinner on the button.
+  const exporterRef = useRef<ReturnType<typeof createVideoExport> | null>(null)
+  const gifExporterRef = useRef<ReturnType<typeof createGifExport> | null>(null)
+
+  // Kick off a fresh build-up and record it to a video file. Mirrors
+  // onTogglePlay's "replay from the start" reset, then starts the recorder
+  // before entering `playing`. Completion is handled by the `playing` effect
+  // below (it flips to false when the sweep + camera settle), which calls
+  // finish() and downloads the WebM.
+  const onExportVideo = useCallback(() => {
+    const canvas = canvasRef.current
+
+    if (!canvas || exporting) {
+      return
+    }
+
+    let exporter = exporterRef.current
+
+    if (!exporter) {
+      exporter = createVideoExport(canvas)
+      exporterRef.current = exporter
+    }
+
+    // Replay from a clean, empty state (snap straight to reveal 0, no fade-out).
+    resetFades()
+    fitForReveal(0)
+    setRevealValue(0)
+
+    try {
+      exporter.start(30)
+      setExporting(true)
+      setPlaying(true)
+    } catch (err) {
+      console.error('Video export failed to start:', err)
+      setExporting(false)
+    }
+  }, [exporting, fitForReveal, resetFades, setRevealValue])
+
+  // Same flow, but for an animated GIF: start sampling the live canvas while
+  // the build-up plays the same cinematic sweep. Completion is handled by the
+  // shared effect below (it fires when `playing` flips to false).
+  const onExportGif = useCallback(() => {
+    const canvas = canvasRef.current
+
+    if (!canvas || exporting || gifExporting) {
+      return
+    }
+
+    let exporter = gifExporterRef.current
+
+    if (!exporter) {
+      exporter = createGifExport(canvas)
+      gifExporterRef.current = exporter
+    }
+
+    // Replay from a clean, empty state (snap straight to reveal 0, no fade-out).
+    resetFades()
+    fitForReveal(0)
+    setRevealValue(0)
+
+    try {
+      exporter.start()
+      setGifExporting(true)
+      setPlaying(true)
+    } catch (err) {
+      console.error('GIF export failed to start:', err)
+      setGifExporting(false)
+    }
+  }, [exporting, fitForReveal, gifExporting, resetFades, setRevealValue])
+
+  // When a build-up ends (`playing` → false) while an export is in flight,
+  // finalize the recording and save the file. Supports video (WebM) and GIF.
+  useEffect(() => {
+    if (playing) {
+      return
+    }
+
+    const exporter = exporterRef.current
+    const gifExporter = gifExporterRef.current
+
+    if (!exporting && !gifExporting) {
+      return
+    }
+
+    let cancelled = false
+
+    const finalize = (blob: Blob, ext: string) => {
+      if (cancelled) {
+        return
+      }
+
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `memory-graph-${Date.now()}.${ext}`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 5000)
+    }
+
+    Promise.resolve()
+      .then(async () => {
+        if (gifExporting && gifExporter) {
+          return finalize(await gifExporter.finish(), 'gif')
+        }
+
+        if (exporting && exporter) {
+          const blob = await exporter.finish()
+          // Extension follows the recorder's actual mime (mp4 or webm).
+          const ext = blob.type.includes('mp4') ? 'mp4' : 'webm'
+
+          return finalize(blob, ext)
+        }
+      })
+      .catch((err) => {
+        console.error('Export failed:', err)
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setExporting(false)
+          setGifExporting(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [exporting, gifExporting, playing])
 
   // Spacebar toggles playback (unless typing, or the play button itself is
   // focused — that already handles Space natively, so skip to avoid a double).
@@ -959,8 +1101,32 @@ export function StarMap({
         />
       </div>
 
-      {/* Share / import (WoW-talent-style code) — bottom-right, mirroring the legend. */}
-      <div className="pointer-events-auto absolute bottom-2 right-2 z-20 [-webkit-app-region:no-drag]">
+      {/* GIF + video export — bottom-right, mirroring the legend. */}
+      <div className="pointer-events-auto absolute bottom-2 right-2 z-20 flex items-center gap-1 [-webkit-app-region:no-drag]">
+        <Tip label={t.starmap.exportGif}>
+          <Button
+            aria-label={t.starmap.exportGif}
+            className="text-muted-foreground hover:text-foreground"
+            disabled={gifExporting || exporting}
+            onClick={onExportGif}
+            size="icon"
+            variant="ghost"
+          >
+            <Codicon className={gifExporting ? 'animate-spin' : ''} name={gifExporting ? 'sync' : 'gist'} size="0.9rem" />
+          </Button>
+        </Tip>
+        <Tip label={t.starmap.exportVideo}>
+          <Button
+            aria-label={t.starmap.exportVideo}
+            className="text-muted-foreground hover:text-foreground"
+            disabled={exporting || gifExporting}
+            onClick={onExportVideo}
+            size="icon"
+            variant="ghost"
+          >
+            <Codicon className={exporting ? 'animate-spin' : ''} name={exporting ? 'sync' : 'device-camera-video'} size="0.9rem" />
+          </Button>
+        </Tip>
         <ShareControls imported={imported} onImport={importCode} onResetMap={onResetMap} shareCode={shareCode} />
       </div>
 

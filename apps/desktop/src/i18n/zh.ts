@@ -1316,7 +1316,9 @@ export const zh: Translations = {
     importEmpty: '粘贴图谱代码以加载。',
     importSuccess: nodes => `已加载包含 ${nodes} 个节点的图谱。`,
     importedBadge: '导入的图谱',
-    resetToMine: '返回我的图谱'
+    resetToMine: '返回我的图谱',
+    exportVideo: '将构建过程导出为视频',
+    exportGif: '将构建过程导出为 GIF'
   },
   agents: {
     close: '关闭代理',

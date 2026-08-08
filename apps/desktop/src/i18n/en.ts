@@ -1120,7 +1120,9 @@ export const en: Translations = {
     importEmpty: 'Paste a map code to load it.',
     importSuccess: nodes => `Loaded a map with ${nodes} ${nodes === 1 ? 'node' : 'nodes'}.`,
     importedBadge: 'imported map',
-    resetToMine: 'Back to my map'
+    resetToMine: 'Back to my map',
+    exportVideo: 'Export build-up as video',
+    exportGif: 'Export build-up as GIF'
   },
   agents: {
     close: 'Close agents',

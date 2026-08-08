@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from collections import OrderedDict
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
@@ -538,3 +539,121 @@ class TestStandaloneSend:
         assert all("nsec1x" not in str(a) for a in captured["args"])
 
 
+
+
+# ── Thread tagging ────────────────────────────────────────────────────────
+
+
+class TestThreadExtraction:
+
+    def test_root_e_tag_extracted(self):
+        """Root e-tag with marker 'root' is extracted as thread_id."""
+        tags = [
+            ["h", CHANNEL],
+            ["e", "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789", "", "root"],
+        ]
+        assert _buzz_mod.BuzzAdapter._extract_thread_id(tags) == \
+            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+
+    def test_reply_e_tag_extracted_when_no_root(self):
+        """Reply e-tag is extracted as thread_id when no root marker exists."""
+        tags = [
+            ["h", CHANNEL],
+            ["e", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "", "reply"],
+        ]
+        assert _buzz_mod.BuzzAdapter._extract_thread_id(tags) == \
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+    def test_root_wins_over_reply(self):
+        """Root marker takes priority over reply marker."""
+        tags = [
+            ["e", "root_event_id_placeholder_root_event_id_placeholder_rootid", "", "root"],
+            ["e", "reply_event_id_placeholder_reply_event_id_placeholder_reply", "", "reply"],
+        ]
+        assert _buzz_mod.BuzzAdapter._extract_thread_id(tags) == \
+            "root_event_id_placeholder_root_event_id_placeholder_rootid"
+
+    def test_no_e_tag_returns_none(self):
+        """None returned when no e-tags present."""
+        tags = [["h", CHANNEL], ["p", OTHER_PUBKEY]]
+        assert _buzz_mod.BuzzAdapter._extract_thread_id(tags) is None
+
+    def test_non_list_tags_returns_none(self):
+        """None returned for non-list tags."""
+        assert _buzz_mod.BuzzAdapter._extract_thread_id(None) is None
+        assert _buzz_mod.BuzzAdapter._extract_thread_id("not-a-list") is None
+
+
+class TestThreadedReplyDispatch:
+
+    @pytest.fixture
+    def adapter(self):
+        a = _make_adapter()
+        a._dispatched = []
+
+        async def capture(**kwargs):
+            a._dispatched.append(kwargs)
+
+        a._dispatch_message = capture
+        a._message_handler = AsyncMock()
+        cli = _ScriptedCli()
+        cli.script("users", "get", [{"pubkey": OTHER_PUBKEY, "display_name": "testuser"}])
+        a._run_cli = cli
+        return a
+
+    @pytest.mark.asyncio
+    async def test_threaded_reply_dispatches_without_mention(self, adapter):
+        """Replies with a known root tag dispatch even without @mention."""
+        root_id = "root_event_id_placeholder_root_event_id_placeholder_rootid"
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group", "last_ts": 0, "seen": {}, "active_threads": {root_id},
+        }
+        adapter._allowed_pubkeys = set()
+
+        event = _tagged_event("e1", CHANNEL, content="sounds good", reply_to=root_id)
+        state = adapter._channel_state[CHANNEL]
+        await adapter._handle_event(CHANNEL, state, event)
+        assert len(adapter._dispatched) == 1
+
+    @pytest.mark.asyncio
+    async def test_mention_in_unrelated_thread_still_dispatches(self, adapter):
+        """@mention in a thread we haven't seen triggers dispatch + tracking."""
+        root_id = "new_thread_root_new_thread_root_new_thread_root_ne"
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group", "last_ts": 0, "seen": {}, "active_threads": set(),
+        }
+        adapter._allowed_pubkeys = set()
+
+        event = _tagged_event("e1", CHANNEL, content="@Chip what about this?", reply_to=root_id)
+        state = adapter._channel_state[CHANNEL]
+        await adapter._handle_event(CHANNEL, state, event)
+        assert len(adapter._dispatched) == 1
+        assert root_id in adapter._channel_state[CHANNEL]["active_threads"]
+
+    @pytest.mark.asyncio
+    async def test_non_thread_reply_ignored_without_mention(self, adapter):
+        """Thread reply without a tracked root AND without @mention is still ignored."""
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group", "last_ts": 0, "seen": {}, "active_threads": set(),
+        }
+        adapter._allowed_pubkeys = set()
+        unknown_root = "unknown_root_id_unknown_root_id_unknown_root_id_unkn"
+
+        event = _tagged_event("e1", CHANNEL, content="just chatting", reply_to=unknown_root)
+        state = adapter._channel_state[CHANNEL]
+        await adapter._handle_event(CHANNEL, state, event)
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_root_message_mention_tracks_for_replies(self, adapter):
+        """An @mentioned non-threaded message creates an active-thread entry."""
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group", "last_ts": 0, "seen": {}, "active_threads": set(),
+        }
+        adapter._allowed_pubkeys = set()
+
+        event = _event("e1", content="@Chip what do you think?")
+        state = adapter._channel_state[CHANNEL]
+        await adapter._handle_event(CHANNEL, state, event)
+        assert len(adapter._dispatched) == 1
+        assert "e1" in adapter._channel_state[CHANNEL]["active_threads"]

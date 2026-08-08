@@ -920,7 +920,7 @@ class BuzzAdapter(BasePlatformAdapter):
 
     async def _seed_channel(self, channel_id: str, chat_type: str) -> None:
         """Initialize a channel's high-water mark from its newest events."""
-        state = {"chat_type": chat_type, "last_ts": 0, "seen": OrderedDict()}
+        state = {"chat_type": chat_type, "last_ts": 0, "seen": OrderedDict(), "active_threads": set()}
         self._channel_state[channel_id] = state
         code, out, err = await self._run_cli(
             ["messages", "get", "--channel", channel_id, "--limit", str(_FETCH_LIMIT)]
@@ -967,7 +967,7 @@ class BuzzAdapter(BasePlatformAdapter):
                 if seed:
                     await self._seed_channel(dm_id, chat_type="dm")
                 else:
-                    self._channel_state[dm_id] = {"chat_type": "dm", "last_ts": 0, "seen": OrderedDict()}
+                    self._channel_state[dm_id] = {"chat_type": "dm", "last_ts": 0, "seen": OrderedDict(), "active_threads": set()}
                 self._channel_names.setdefault(dm_id, "DM")
 
         code, out, _err = await self._run_cli(["channels", "list"])
@@ -984,7 +984,7 @@ class BuzzAdapter(BasePlatformAdapter):
             if seed:
                 await self._seed_channel(ch_id, chat_type="group")
             else:
-                self._channel_state[ch_id] = {"chat_type": "group", "last_ts": 0, "seen": OrderedDict()}
+                self._channel_state[ch_id] = {"chat_type": "group", "last_ts": 0, "seen": OrderedDict(), "active_threads": set()}
 
     async def _poll_channel(self, channel_id: str) -> None:
         state = self._channel_state.get(channel_id)
@@ -1030,10 +1030,28 @@ class BuzzAdapter(BasePlatformAdapter):
         self._maybe_latch_dm(channel_id, state, event)
 
         is_dm = state["chat_type"] == "dm"
+        # Track active-thread context for group channels. Nostr e-tags tell us
+        # when a message is a reply inside a thread the agent already
+        # participates in — non-mentioned replies in those threads should
+        # dispatch so the conversation can continue without @-mentions.
+        thread_id = self._extract_thread_id(event.get("tags"))
+        if thread_id and not is_dm and self.require_mention:
+            active_threads = state.setdefault("active_threads", set())
+            if thread_id in active_threads and not self._is_mentioned(content):
+                pass  # fall through to dispatch — this is an active-thread reply
+            elif self._is_mentioned(content):
+                active_threads.add(thread_id)
+                pass
+            else:
+                return
+        elif not thread_id and not is_dm and self.require_mention and self._is_mentioned(content):
+            # The agent was @-mentioned in a root message. Mark the message as
+            # an active thread root so replies inside it also dispatch.
+            state.setdefault("active_threads", set()).add(event_id)
         # In shared channels, respond only when addressed — unless
         # require_mention is disabled, in which case respond to every message.
         # DMs always dispatch.
-        if not is_dm and self.require_mention and not self._is_mentioned(content):
+        elif not is_dm and self.require_mention and not self._is_mentioned(content):
             return
 
         # Adapter-level allow-list (the gateway applies BUZZ_ALLOWED_USERS /
@@ -1056,6 +1074,7 @@ class BuzzAdapter(BasePlatformAdapter):
             user_name=await self._resolve_user_name(pubkey),
             message_id=event_id,
             created_at=created_at,
+            thread_id=thread_id,
         )
 
     # ── DM classification (issue #68871) ──────────────────────────────────
@@ -1176,6 +1195,35 @@ class BuzzAdapter(BasePlatformAdapter):
         stripped = re.sub(pattern, "", text, count=1, flags=re.IGNORECASE)
         return stripped.strip()
 
+    @staticmethod
+    def _extract_thread_id(tags: list) -> str | None:
+        """Extract the thread root from Nostr e-tags.
+
+        Nostr kind-9 chat events mark thread context with ``e`` tags:
+            ``["e", "<root-event-id>", "", "root"]``  — thread root
+            ``["e", "<parent-event-id>", "", "reply"]`` — direct parent
+
+        Returns the ``root`` event id first (which anchors the whole thread),
+        falling back to the ``reply`` parent.  When both are present they
+        always point to the same thread tree, so either one gives the gateway
+        enough context to reply in-thread.
+        """
+        if not isinstance(tags, list):
+            return None
+        root_id = None
+        reply_id = None
+        for tag in tags:
+            if not isinstance(tag, (list, tuple)) or len(tag) < 2:
+                continue
+            if tag[0] != "e":
+                continue
+            marker = tag[3] if len(tag) > 3 else ""
+            if marker == "root" and not root_id:
+                root_id = str(tag[1])
+            elif marker == "reply" and not reply_id:
+                reply_id = str(tag[1])
+        return root_id or reply_id
+
     async def _resolve_user_name(self, pubkey: str) -> str:
         """Resolve a pubkey to a display name (cached; falls back to npub prefix).
 
@@ -1219,6 +1267,7 @@ class BuzzAdapter(BasePlatformAdapter):
         user_name: str,
         message_id: str,
         created_at: int,
+        thread_id: str | None = None,
     ) -> None:
         """Build a MessageEvent and hand it to the base class handler."""
         if not self._message_handler:
@@ -1230,6 +1279,7 @@ class BuzzAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             user_id=user_id,
             user_name=user_name,
+            thread_id=thread_id,
         )
 
         event = MessageEvent(

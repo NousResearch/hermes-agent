@@ -180,6 +180,7 @@ present (may be `null`); the rest are included only when set.
 | `guild_id` | string | no | **Legacy alias, no longer read by the connector.** As of D-Q2.5c the connector reads and writes only `scope_id`; the gateway's agent-wide `SessionSource.to_dict()` still emits `guild_id` (mirrored to `scope_id`) for non-relay session persistence, so it may still appear on the wire but the connector ignores it. Do not depend on it. |
 | `parent_chat_id` | string | no | Parent channel when `chat_id` refers to a thread. |
 | `message_id` | string | no | Id of the triggering message (for pin/reply/react). |
+| `prospective_thread_id` | string | no | Discord auto-thread continuity: a channel message's own id, stamped when the connector's auto-thread policy WILL deliver it into a thread reusing that id. Lets the gateway key the initiating channel message and its later thread follow-ups (`thread_id` == this value) to the SAME session — see `build_session_key()`. |
 
 > `is_bot` (author-is-a-bot/webhook classification) exists on the gateway-side
 > dataclass but is **intentionally NOT on the wire** in v1 — it is not part of
@@ -398,7 +399,7 @@ The gateway calls the transport with action dicts. Source of truth:
 | `prompt` | `chat_id`, `prompt_kind`, `prompt_id`, `content` (the question), `options[]{id,label,style?}`, `timeout_s?`, `reply_to?`, `metadata?` | `{success: bool, message_id?, error?}` |
 | `react` | `chat_id`, `message_id`, `emoji`, `remove?`, `metadata?` | `{success: bool, error?}` |
 | `thread_create` | `chat_id` (parent), `thread_name`, `message_id?` (anchor), `metadata?` | `{success: bool, thread_id?, error?}` |
-| `thread_rename` | `chat_id` (parent), `message_id` (the THREAD id), `thread_name`, `only_if_current_name?`, `metadata?` | `{success: bool, error?}` |
+| `thread_rename` | `chat_id` (parent), `message_id` (the THREAD id), `thread_name`, `only_if_connector_created?` or `only_if_current_name?`, `metadata?` | `{success: bool, error?}` |
 
 `get_chat_info(chat_id)` is a separate proxied call returning at least
 `{name, type}`.
@@ -488,9 +489,15 @@ LLM-title semantic renames. `thread_create`: Discord posts a channel thread
 message and returns its `ts` (threads there are message-anchored — an
 explicit `message_id` anchor is echoed back verbatim). The created id rides
 `SendResult.thread_id`. `thread_rename`: Discord PATCHes the thread channel;
-Telegram `editForumTopic`. The **`only_if_current_name` no-clobber guard**
-is the native adapters' human-rename-wins semantics, enforced
-CONNECTOR-side: Discord reads the current name first and no-ops (structured
+Telegram `editForumTopic`. Two no-clobber guards exist, mutually exclusive on
+the wire (the gateway sends at most one): **`only_if_connector_created`**
+(preferred) asks the connector to enforce the guard from its OWN
+created-name memory instead of a byte-for-byte name comparison, which
+drifted on any normalization difference and silently declined renames; the
+**`only_if_current_name` string guard** is kept for the native-marker lane
+and older connectors that predate the created-name memory. Both encode the
+native adapters' human-rename-wins semantics, enforced CONNECTOR-side:
+Discord reads the guard's source of truth first and no-ops (structured
 `success:false`) on mismatch; Telegram has no topic-name read, so a GUARDED
 rename is unsatisfiable and fails safe (unguarded renames proceed). Slack
 does not advertise `thread_rename` (a root message's text is content, not a

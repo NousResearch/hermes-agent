@@ -347,6 +347,45 @@ CATALOG: List[AutomationBlueprint] = [
         tags=("prices", "shopping", "travel", "monitor"),
     ),
     AutomationBlueprint(
+        key="competitor-watch",
+        title="Competitor news watch",
+        description="Track named companies for material news — launches, "
+        "pricing, funding, filings — with a cited digest.",
+        category="general",
+        schedule_template="{minute} {hour} * * {dow}",
+        prompt_template=(
+            "Load the competitor-news-monitor skill and run the tick for this "
+            "watch: companies {companies}; event categories {categories}. "
+            "Collect incrementally from the last cutoff, deduplicate by "
+            "underlying event, score materiality against the watch contract, "
+            "and deliver a cited digest of material events only. If there are "
+            "no material events, respond with [SILENT]. On the first run, "
+            "execute the skill's setup phase first: freeze the watchlist, "
+            "build source coverage, and write the watch contract state file."
+        ),
+        slots=[
+            BlueprintSlot(
+                name="companies", type="text", label="Which companies?",
+                default="two or three competitors, by canonical name",
+                help="canonical names and domains; aliases help dedup",
+            ),
+            BlueprintSlot(
+                name="categories", type="text", label="Which events matter?",
+                default="product launches, pricing changes, funding, "
+                "partnerships, executive moves, incidents",
+            ),
+            _TIME("09:00"),
+            BlueprintSlot(
+                name="recurrence", type="weekdays", label="Repeat on",
+                default="monday",
+                options=tuple(WEEKDAY_PRESETS.keys()),
+            ),
+            _DELIVER,
+        ],
+        skills=("competitor-news-monitor",),
+        tags=("competitors", "news", "monitor", "research"),
+    ),
+    AutomationBlueprint(
         key="habit-checkin",
         title="Habit check-in",
         description="A recurring nudge to keep a habit on track and reflect "

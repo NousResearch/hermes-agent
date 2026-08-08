@@ -1,15 +1,33 @@
 ---
-name: competitor-news-monitor
-description: "Watch named companies for material news; cited digests."
-version: 0.1.0
-author: Ben Barclay (benbarclay), Hermes Agent
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  hermes:
-    tags: [Competitors, News, Market-Research, Monitoring]
-    related_skills: [blogwatcher]
+title: "Competitor News Monitor — Watch named companies for material news; cited digests"
+sidebar_label: "Competitor News Monitor"
+description: "Watch named companies for material news; cited digests"
 ---
+
+{/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
+
+# Competitor News Monitor
+
+Watch named companies for material news; cited digests.
+
+## Skill metadata
+
+| | |
+|---|---|
+| Source | Bundled (installed by default) |
+| Path | `skills/research/competitor-news-monitor` |
+| Version | `0.1.0` |
+| Author | Ben Barclay (benbarclay), Hermes Agent |
+| License | MIT |
+| Platforms | linux, macos, windows |
+| Tags | `Competitors`, `News`, `Market-Research`, `Monitoring` |
+| Related skills | [`blogwatcher`](/docs/user-guide/skills/bundled/research/research-blogwatcher) |
+
+## Reference: full SKILL.md
+
+:::info
+The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+:::
 
 # Competitor News Monitor
 

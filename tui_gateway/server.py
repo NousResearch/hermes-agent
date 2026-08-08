@@ -1438,17 +1438,36 @@ def _profile_home(profile: str | None) -> Path | None:
 
 
 def _profile_scoped(handler):
-    """Bind ``params['profile']``'s HERMES_HOME around a pet RPC handler.
+    """Bind a profile or owning session's HERMES_HOME around an RPC handler.
 
-    Pets are per-profile: ``display.pet.*`` lives in the profile's config.yaml and
-    sprites install under its ``pets/`` dir (both resolve via ``get_hermes_home``).
-    The desktop sends ``profile`` on pet calls so config + pets dir resolve to the
-    focused profile even in app-global remote mode, where one backend serves every
-    profile. No-op for the launch profile (own-profile backends already resolve it).
+    App-global remote mode serves all profiles from one backend. Newer desktop
+    callers can provide ``params['profile']`` directly; command-oriented RPCs
+    also carry ``session_id``. The server-owned session binding is authoritative
+    and takes precedence over a client profile hint.
     """
 
     def wrapper(rid, params):
-        home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
+        request_params = params if isinstance(params, dict) else {}
+        home = None
+        session = _sessions.get(str(request_params.get("session_id") or ""))
+        if isinstance(session, dict):
+            session_home = session.get("profile_home")
+            if session_home:
+                try:
+                    candidate = Path(session_home)
+                    if candidate.exists():
+                        if candidate.resolve() == Path(_hermes_home).resolve():
+                            return handler(rid, params)
+                        home = candidate
+                except (OSError, TypeError, ValueError):
+                    pass
+            # A server-owned session binding is authoritative even when it is
+            # the launch profile (profile_home is None) or its recorded path is
+            # stale. Do not let a client profile hint retarget that session.
+            if home is None:
+                return handler(rid, params)
+        else:
+            home = _profile_home(request_params.get("profile"))
         if home is None:
             return handler(rid, params)
         token = set_hermes_home_override(home)

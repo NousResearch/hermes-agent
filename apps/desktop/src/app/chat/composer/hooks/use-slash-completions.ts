@@ -21,6 +21,7 @@ import {
   peekCachedSlashCompletion
 } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $sessions } from '@/store/session'
 
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
@@ -61,6 +62,7 @@ const SESSION_INLINE_LIMIT = 7
 /** Live `/` completions backed by the gateway's `complete.slash` RPC. */
 export function useSlashCompletions(options: {
   gateway: HermesGateway | null
+  sessionId?: string | null
   /** Desktop theme list — `/skin` is owned client-side, so its arg completions
    *  come from here, not the backend (whose skin list is CLI/TUI-only). */
   skinThemes?: DesktopThemeCommandOption[]
@@ -69,9 +71,11 @@ export function useSlashCompletions(options: {
   adapter: Unstable_TriggerAdapter
   loading: boolean
 } {
-  const { gateway, skinThemes, activeSkin } = options
+  const { gateway, sessionId, skinThemes, activeSkin } = options
   const enabled = Boolean(gateway)
   const epoch = useStore($slashCompletionsEpoch)
+  const activeProfile = normalizeProfileKey(useStore($activeGatewayProfile))
+  const cacheScope = `profile:${activeProfile}:${sessionId ? `session:${sessionId}` : 'no-session'}`
 
   const fetcher = useCallback(
     async (query: string): Promise<CompletionPayload> => {
@@ -143,7 +147,12 @@ export function useSlashCompletions(options: {
       try {
         if (!query) {
           const catalog = filterDesktopCommandsCatalog(
-            await cachedSlashCompletion('catalog', () => gateway.request<CommandsCatalogLike>('commands.catalog'))
+            await cachedSlashCompletion(`catalog:${cacheScope}`, () =>
+              gateway.request<CommandsCatalogLike>('commands.catalog', {
+                profile: activeProfile,
+                ...(sessionId ? { session_id: sessionId } : {})
+              })
+            )
           )
 
           // Prefer the categorized layout so the popover renders section headers
@@ -183,8 +192,12 @@ export function useSlashCompletions(options: {
           return { items, query }
         }
 
-        const result = await cachedSlashCompletion(`slash:${text.toLowerCase()}`, () =>
-          gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', { text })
+        const result = await cachedSlashCompletion(`slash:${cacheScope}:${text.toLowerCase()}`, () =>
+          gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', {
+            profile: activeProfile,
+            ...(sessionId ? { session_id: sessionId } : {}),
+            text
+          })
         )
 
         // Arg-completion items (replace_from > 1) carry just the arg stub —
@@ -232,7 +245,7 @@ export function useSlashCompletions(options: {
         // search that hides a match is broken. Usage rides along on the catalog
         // response, which the popover has already fetched by the time anyone
         // types; if it somehow hasn't, order falls back to the backend's.
-        const catalogSkills = peekCachedSlashCompletion<CommandsCatalogLike>('catalog')?.skills
+        const catalogSkills = peekCachedSlashCompletion<CommandsCatalogLike>(`catalog:${cacheScope}`)?.skills
 
         const ranked = [
           ...decorated.filter(item => item.group !== 'Skills'),
@@ -249,7 +262,7 @@ export function useSlashCompletions(options: {
         return { items: [], query }
       }
     },
-    [gateway, skinThemes, activeSkin]
+    [gateway, skinThemes, activeSkin, activeProfile, cacheScope, sessionId]
   )
 
   const toItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {
@@ -291,10 +304,12 @@ export function useSlashCompletions(options: {
         return true
       }
 
-      return hasCachedSlashCompletion(query ? `slash:${text.toLowerCase()}` : 'catalog')
+      return hasCachedSlashCompletion(
+        query ? `slash:${cacheScope}:${text.toLowerCase()}` : `catalog:${cacheScope}`
+      )
     },
-    [skinThemes]
+    [skinThemes, cacheScope]
   )
 
-  return useLiveCompletionAdapter({ enabled, epoch, fetcher, isCached, toItem })
+  return useLiveCompletionAdapter({ enabled, epoch, scopeKey: cacheScope, fetcher, isCached, toItem })
 }

@@ -38,6 +38,79 @@ def _neuter_agent_prewarm_timer(request, monkeypatch):
     yield
 
 
+def test_command_catalog_scopes_skill_resolution_to_session_or_explicit_profile(tmp_path, monkeypatch):
+    """Desktop slash catalog/completion must resolve the selected profile's skills."""
+    from agent import skill_commands
+    from agent import skill_utils
+    from tools import skills_tool
+
+    launch_home = tmp_path / "launch"
+    search_home = tmp_path / "search"
+    for home, name in ((launch_home, "launch-only"), (search_home, "search-only")):
+        skill_dir = home / "skills" / "local" / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name} skill\n---\n\n#{name}\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", launch_home / "skills")
+    monkeypatch.setattr(skills_tool, "_SKILLS_DIR_AT_IMPORT", launch_home / "skills")
+    monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda: [])
+    monkeypatch.setattr(skill_commands, "_skill_commands", {})
+    monkeypatch.setattr(skill_commands, "_skill_commands_platform", None)
+
+    token = set_hermes_home_override(launch_home)
+    try:
+        monkeypatch.setattr(server, "_hermes_home", launch_home)
+        server._sessions["search-session"] = {
+            "profile_home": str(search_home),
+            "session_key": "search-session",
+        }
+        server._sessions["launch-session"] = {
+            "profile_home": None,
+            "session_key": "launch-session",
+        }
+
+        catalog = server._methods["commands.catalog"]("r1", {"session_id": "search-session"})
+        catalog_names = {command for command, _description in catalog["result"]["pairs"]}
+        assert "/search-only" in catalog_names
+        assert "/launch-only" not in catalog_names
+
+        completion = server._methods["complete.slash"](
+            "r2", {"session_id": "search-session", "text": "/search"}
+        )
+        completion_names = {item["text"] for item in completion["result"]["items"]}
+        assert "search-only" in completion_names
+
+        monkeypatch.setattr(
+            server,
+            "_profile_home",
+            lambda name: search_home if name == "search" else None,
+        )
+
+        launch_catalog = server._methods["commands.catalog"](
+            "r3",
+            {"session_id": "launch-session", "profile": "search"},
+        )
+        launch_catalog_names = {
+            command for command, _description in launch_catalog["result"]["pairs"]
+        }
+        assert "/launch-only" in launch_catalog_names
+        assert "/search-only" not in launch_catalog_names
+
+        profile_catalog = server._methods["commands.catalog"]("r4", {"profile": "search"})
+        profile_catalog_names = {
+            command for command, _description in profile_catalog["result"]["pairs"]
+        }
+        assert "/search-only" in profile_catalog_names
+        assert "/launch-only" not in profile_catalog_names
+    finally:
+        server._sessions.pop("search-session", None)
+        server._sessions.pop("launch-session", None)
+        reset_hermes_home_override(token)
+
+
 def test_session_slot_is_claimed_on_first_turn_not_on_create(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

@@ -253,6 +253,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("commands.catalog")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Registry-backed slash metadata for the TUI — categorized, no aliases."""
     try:

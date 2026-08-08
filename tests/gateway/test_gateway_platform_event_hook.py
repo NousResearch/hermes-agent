@@ -2,9 +2,9 @@
 
 Covers the normalized-envelope pattern that replaces raw-SDK handler args:
 * only ``gateway_platform_event`` is registered in ``VALID_HOOKS`` (no inert
-  hook surface pending #64231)
-* ``BasePlatformAdapter._fire_gateway_hook`` routes to ``invoke_hook`` with a
-  ``has_hook`` no-subscriber fast-path and per-call error isolation
+  hook surface without a concrete fire site)
+* the adapter forwards normalized events to a runner-owned callback; the runner
+  performs the authoritative post-auth check before invoking plugins
 * ``TelegramAdapter._normalize_platform_event`` maps an inbound PTB update to a
   stable ``{platform, event_type, payload}`` envelope (no raw SDK objects),
   including custom-emoji reactions
@@ -25,6 +25,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from gateway.config import PlatformConfig
 
 
 _repo = str(Path(__file__).resolve().parents[2])
@@ -53,7 +55,13 @@ def _ensure_telegram_mock() -> None:
 _ensure_telegram_mock()
 
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
-from hermes_cli.plugins import VALID_HOOKS  # noqa: E402
+from gateway.run import GatewayRunner  # noqa: E402
+from hermes_cli.plugins import (  # noqa: E402
+    VALID_HOOKS,
+    PluginContext,
+    PluginManager,
+    PluginManifest,
+)
 
 
 def _adapter(extra=None) -> TelegramAdapter:
@@ -115,7 +123,7 @@ class TestHookRegistration:
     def test_gateway_platform_event_registered_reserved_absent(self):
         """register_hook rejects names not in VALID_HOOKS, so the implemented
         hook must be present. The reserved gateway_* names are deliberately
-        absent (no inert surface pending #64231); lock that in."""
+        absent (no inert surface without a concrete fire site); lock that in."""
         assert "gateway_platform_event" in VALID_HOOKS
         assert "gateway_session_titled" not in VALID_HOOKS
         assert "gateway_message_delivered" not in VALID_HOOKS
@@ -123,54 +131,79 @@ class TestHookRegistration:
 
 
 # ---------------------------------------------------------------------------
-# BasePlatformAdapter._fire_gateway_hook — routing + isolation
+# Runner-owned dispatch — authoritative post-auth gate + isolation
 # ---------------------------------------------------------------------------
 
-class TestFireGatewayHook:
-    def test_routes_to_invoke_hook_with_kwargs(self):
-        a = _adapter()
-        captured: dict = {}
-
-        def fake_invoke(name, **kwargs):
-            captured["name"] = name
-            captured["kwargs"] = kwargs
-
+class TestRunnerDispatch:
+    def test_authorized_event_routes_normalized_envelope(self):
+        runner = object.__new__(GatewayRunner)
+        runner._is_user_authorized = lambda source: source.user_id == "777"
         mgr = MagicMock()
         mgr.has_hook.return_value = True
-        mgr.invoke_hook.side_effect = fake_invoke
-
-        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
-            a._fire_gateway_hook(
-                "gateway_platform_event",
-                platform="telegram", event_type="reaction", payload={"emojis": ["x"]},
-            )
-
-        assert captured["name"] == "gateway_platform_event"
-        assert captured["kwargs"] == {
-            "platform": "telegram", "event_type": "reaction", "payload": {"emojis": ["x"]},
+        source = _adapter()._source_from_reaction_for_auth(
+            _auth_reaction_update(user_id=777)
+        )
+        event = {
+            "platform": "telegram",
+            "event_type": "reaction",
+            "payload": {"chat_id": "123", "message_id": "456", "emojis": ["x"]},
         }
 
-    def test_skips_dispatch_when_no_subscriber(self):
-        """has_hook False -> invoke_hook never called."""
-        a = _adapter()
+        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+            asyncio.run(runner._handle_gateway_platform_event(event, source))
+
+        mgr.invoke_hook.assert_called_once_with("gateway_platform_event", **event)
+
+    def test_unauthorized_event_never_reaches_hooks(self):
+        runner = object.__new__(GatewayRunner)
+        runner._is_user_authorized = lambda source: False
         mgr = MagicMock()
-        mgr.has_hook.return_value = False
+        source = _adapter()._source_from_reaction_for_auth(
+            _auth_reaction_update(user_id=777)
+        )
 
         with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
-            a._fire_gateway_hook("gateway_platform_event", platform="telegram")
+            asyncio.run(runner._handle_gateway_platform_event(
+                {"platform": "telegram", "event_type": "reaction", "payload": {}},
+                source,
+            ))
+
+        mgr.has_hook.assert_not_called()
+        mgr.invoke_hook.assert_not_called()
+
+    def test_skips_dispatch_when_no_subscriber(self):
+        runner = object.__new__(GatewayRunner)
+        runner._is_user_authorized = lambda source: True
+        mgr = MagicMock()
+        mgr.has_hook.return_value = False
+        source = _adapter()._source_from_reaction_for_auth(
+            _auth_reaction_update(user_id=777)
+        )
+
+        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+            asyncio.run(runner._handle_gateway_platform_event(
+                {"platform": "telegram", "event_type": "reaction", "payload": {}},
+                source,
+            ))
 
         mgr.has_hook.assert_called_once_with("gateway_platform_event")
         mgr.invoke_hook.assert_not_called()
 
     def test_plugin_layer_error_is_isolated(self):
-        """A raising invoke_hook OR get_plugin_manager must not propagate."""
-        a = _adapter()
+        runner = object.__new__(GatewayRunner)
+        runner._is_user_authorized = lambda source: True
         mgr = MagicMock()
         mgr.has_hook.return_value = True
         mgr.invoke_hook.side_effect = RuntimeError("plugin boom")
+        source = _adapter()._source_from_reaction_for_auth(
+            _auth_reaction_update(user_id=777)
+        )
 
         with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
-            a._fire_gateway_hook("gateway_platform_event", platform="telegram")  # no raise
+            asyncio.run(runner._handle_gateway_platform_event(
+                {"platform": "telegram", "event_type": "reaction", "payload": {}},
+                source,
+            ))  # no raise
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +253,7 @@ class TestNormalizePlatformEvent:
         assert event["payload"]["custom_emoji_ids"] == ["555"]
 
     def test_non_reaction_update_returns_none(self):
-        """Unsupported update types return None (payload contracts pending #64231)."""
+        """Unsupported update types return None until a concrete contract exists."""
         a = _adapter()
         update = MagicMock()
         update.message_reaction = None  # e.g. an edited_message or chat_member update
@@ -236,24 +269,28 @@ class TestOnPlatformUpdate:
     def test_fires_gateway_platform_event_with_envelope(self):
         a = _adapter()
         seen: list = []
-        a._fire_gateway_hook = lambda name, **kw: seen.append((name, kw))  # type: ignore[assignment]
+        async def observe(event, source):
+            seen.append((event, source))
+        a.set_platform_event_handler(observe)
 
         asyncio.run(a._on_platform_update(
             _reaction_update([_reaction(emoji="\U0001F44E")], 123, 456), context=MagicMock(),
         ))
 
         assert len(seen) == 1
-        name, kwargs = seen[0]
-        assert name == "gateway_platform_event"
-        assert kwargs["platform"] == "telegram"
-        assert kwargs["event_type"] == "reaction"
-        assert kwargs["payload"]["emojis"] == ["\U0001F44E"]
-        assert kwargs["payload"]["chat_id"] == "123"
+        event, source = seen[0]
+        assert event["platform"] == "telegram"
+        assert event["event_type"] == "reaction"
+        assert event["payload"]["emojis"] == ["\U0001F44E"]
+        assert event["payload"]["chat_id"] == "123"
+        assert source.chat_id == "123"
 
     def test_unsupported_update_does_not_fire(self):
         a = _adapter()
         seen: list = []
-        a._fire_gateway_hook = lambda name, **kw: seen.append((name, kw))  # type: ignore[assignment]
+        async def observe(event, source):
+            seen.append((event, source))
+        a.set_platform_event_handler(observe)
 
         update = MagicMock()
         update.message_reaction = None
@@ -265,7 +302,9 @@ class TestOnPlatformUpdate:
         """A malformed update that makes normalize raise must be swallowed — the
         observer can't break the adapter (regression guard for the try/except)."""
         a = _adapter()
-        a._fire_gateway_hook = lambda *a_, **kw: pytest.fail("must not fire on normalize error")  # type: ignore[assignment]
+        async def observe(event, source):
+            pytest.fail("must not fire on normalize error")
+        a.set_platform_event_handler(observe)
 
         def boom(update):
             raise RuntimeError("malformed update")
@@ -278,52 +317,19 @@ class TestOnPlatformUpdate:
 # TelegramAdapter._on_platform_update post-auth gate (#64176)
 # ---------------------------------------------------------------------------
 
-class TestOnPlatformUpdateAuthGate:
-    """The catch-all sees every inbound update. A reaction from a sender the
-    message intake would reject must NOT reach plugins, using the same
-    authorization decision as inbound gateway traffic."""
-
-    def test_unauthorized_reaction_does_not_fire(self):
-        a = _adapter(extra={"allow_from": ["999"]})  # reactor 777 not allowed
+class TestOnPlatformUpdateAuthBoundary:
+    def test_without_runner_callback_fails_closed(self):
+        """A catch-all PTB handler must not expose pre-auth updates merely because
+        adapter-local intake would defer an unknown DM to the pairing flow."""
+        a = _adapter(extra={})
         seen: list = []
-        a._fire_gateway_hook = lambda name, **kw: seen.append((name, kw))  # type: ignore[assignment]
-
+        # No set_platform_event_handler: the authoritative gateway boundary has
+        # not been installed, so even a syntactically valid reaction is dropped.
         asyncio.run(a._on_platform_update(
             _auth_reaction_update(user_id=777), context=MagicMock(),
         ))
 
         assert seen == []
-
-    def test_authorized_reaction_fires(self):
-        a = _adapter(extra={"allow_from": ["777"]})  # reactor 777 allowed
-        seen: list = []
-        a._fire_gateway_hook = lambda name, **kw: seen.append((name, kw))  # type: ignore[assignment]
-
-        asyncio.run(a._on_platform_update(
-            _auth_reaction_update(user_id=777), context=MagicMock(),
-        ))
-
-        assert len(seen) == 1
-        assert seen[0][0] == "gateway_platform_event"
-
-    def test_open_config_defers_to_pairing_flow(self):
-        """With no allow_from and no env allowlist, intake defers (open) and the
-        event fires, matching the message intake pairing flow."""
-        a = _adapter(extra={})
-        seen: list = []
-        a._fire_gateway_hook = lambda name, **kw: seen.append((name, kw))  # type: ignore[assignment]
-        cleared = {k: "" for k in (
-            "TELEGRAM_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_USERS",
-            "TELEGRAM_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS",
-            "GATEWAY_ALLOW_ALL_USERS",
-        )}
-
-        with patch.dict("os.environ", cleared, clear=False):
-            asyncio.run(a._on_platform_update(
-                _auth_reaction_update(user_id=777), context=MagicMock(),
-            ))
-
-        assert len(seen) == 1
 
     def test_non_reaction_update_fails_closed(self):
         """A future event type whose update carries no message_reaction must
@@ -332,7 +338,9 @@ class TestOnPlatformUpdateAuthGate:
         and fire it despite the restrictive allow_from."""
         a = _adapter(extra={"allow_from": ["999"]})
         seen: list = []
-        a._fire_gateway_hook = lambda name, **kw: seen.append((name, kw))  # type: ignore[assignment]
+        async def observe(event, source):
+            seen.append((event, source))
+        a.set_platform_event_handler(observe)
 
         update = MagicMock()
         update.message_reaction = None  # a future, not-yet-wired event type
@@ -344,6 +352,86 @@ class TestOnPlatformUpdateAuthGate:
         asyncio.run(a._on_platform_update(update, context=MagicMock()))
 
         assert seen == []  # fail closed: never fires without a real auth decision
+
+    @pytest.mark.parametrize("missing", ["actor", "chat", "message_id"])
+    def test_malformed_reaction_identity_fails_closed(self, missing):
+        a = _adapter()
+        seen = []
+
+        async def observe(event, source):
+            seen.append((event, source))
+
+        a.set_platform_event_handler(observe)
+        update = _auth_reaction_update(user_id=777)
+        if missing == "actor":
+            update.message_reaction.user = None
+            update.message_reaction.actor_chat = None
+        elif missing == "chat":
+            update.message_reaction.chat = None
+        else:
+            update.message_reaction.message_id = None
+
+        asyncio.run(a._on_platform_update(update, context=MagicMock()))
+
+        assert seen == []
+
+
+class TestProfileScopedPlatformEventHandler:
+    def test_secondary_handler_stamps_profile_before_dispatch(self, monkeypatch):
+        runner = object.__new__(GatewayRunner)
+        captured = {}
+
+        async def dispatch(event, source):
+            captured["event"] = event
+            captured["profile"] = source.profile
+
+        runner._handle_gateway_platform_event = dispatch
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir", lambda name: None,
+        )
+        handler = runner._make_profile_platform_event_handler("work")
+        source = _adapter()._source_from_reaction_for_auth(
+            _auth_reaction_update(user_id=777)
+        )
+
+        asyncio.run(handler({"platform": "telegram", "event_type": "reaction", "payload": {}}, source))
+
+        assert captured["profile"] == "work"
+
+
+class TestFixturePluginObservationPath:
+    def test_reaction_reaches_real_registered_plugin_callback(self):
+        """Adapter -> normalized source/envelope -> runner auth -> real plugin bus."""
+        manager = PluginManager()
+        context = PluginContext(
+            PluginManifest(name="reaction-fixture", source="user"), manager,
+        )
+        seen = []
+        context.register_hook(
+            "gateway_platform_event", lambda **event: seen.append(event),
+        )
+
+        runner = object.__new__(GatewayRunner)
+        runner._is_user_authorized = lambda source: source.user_id == "777"
+        adapter = _adapter()
+        adapter.set_platform_event_handler(runner._handle_gateway_platform_event)
+
+        with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+            asyncio.run(adapter._on_platform_update(
+                _auth_reaction_update(user_id=777), context=MagicMock(),
+            ))
+
+        assert seen == [{
+            "platform": "telegram",
+            "event_type": "reaction",
+            "payload": {
+                "emojis": ["\U0001F44D"],
+                "custom_emoji_ids": [],
+                "chat_id": "123",
+                "message_id": "456",
+                "thread_id": None,
+            },
+        }]
 
 
 # ---------------------------------------------------------------------------
@@ -399,3 +487,49 @@ class TestRegisterHandlers:
 
         assert rebuilt_app.add_handler.call_count == 6
         assert len(self._observer_calls(rebuilt_app)) == 1
+
+    def test_transient_init_rebuild_uses_shared_registration(self, monkeypatch):
+        """The real connect retry path must call the shared registration method
+        for the rebuilt PTB Application, not duplicate only the core handlers."""
+        a = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+        first_app = MagicMock()
+        first_app.bot = MagicMock()
+        first_app.initialize = MagicMock(side_effect=OSError("transient"))
+        rebuilt_app = MagicMock()
+        rebuilt_app.bot = MagicMock()
+        rebuilt_app.initialize = MagicMock(side_effect=RuntimeError("stop after rebuild"))
+
+        builder = MagicMock()
+        builder.token.return_value = builder
+        builder.request.return_value = builder
+        builder.get_updates_request.return_value = builder
+        builder.build.side_effect = [first_app, rebuilt_app]
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.Application",
+            SimpleNamespace(builder=MagicMock(return_value=builder)),
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.HTTPXRequest", lambda **kwargs: MagicMock(),
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.discover_fallback_ips",
+            lambda: _async_value([]),
+        )
+        monkeypatch.setattr("asyncio.sleep", MagicMock(return_value=_async_value(None)))
+        monkeypatch.setattr(
+            "gateway.status.acquire_scoped_lock",
+            lambda scope, identity, metadata=None: (True, None),
+        )
+        a._register_handlers = MagicMock()
+
+        result = asyncio.run(a.connect())
+
+        assert result is False
+        assert a._register_handlers.call_args_list == [
+            ((first_app,), {}),
+            ((rebuilt_app,), {}),
+        ]
+
+
+async def _async_value(value):
+    return value

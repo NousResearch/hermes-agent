@@ -222,15 +222,15 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_blocked",
     # Gateway platform-boundary observer hooks (#64176). Observer-only; each
     # callback isolated by invoke_hook. Payloads are normalized envelopes only,
-    # never raw platform SDK objects (per #64176 / #64182 ground rule); raw
-    # access is a separate capability-gated action API, not a hook.
+    # never raw platform SDK objects (per #64176 / #64182 ground rule). This
+    # surface grants no adapter handles or platform actions.
     #
     #   gateway_platform_event: inbound platform event as a normalized envelope.
     #       Kwargs: platform, event_type, payload (event_type-specific dict).
     #       Telegram reactions fire today. Other event types and their hook
-    #       names land here together with their real fire-sites and payload
-    #       contracts when #64176's taxonomy is finalized (#64231); no inert
-    #       VALID_HOOKS surface is registered ahead of implementation.
+    #       names land here only together with real fire-sites and payload
+    #       contracts; no inert VALID_HOOKS surface is registered ahead of
+    #       implementation.
     "gateway_platform_event",
 }
 
@@ -2687,7 +2687,12 @@ class PluginManager:
         are reused.  All injected context is ephemeral — never
         persisted to session DB.
         """
-        kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
+        # Most legacy observer hooks carry the shared telemetry marker. Gateway
+        # platform events define event-local additive envelopes instead: injecting
+        # a bus-wide version here would turn unrelated adapter payloads into one
+        # monolithic compatibility contract (#64176).
+        if hook_name != "gateway_platform_event":
+            kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         callbacks = self._hooks.get(hook_name, [])
         results: List[Any] = []
         for cb in callbacks:

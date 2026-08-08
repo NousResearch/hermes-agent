@@ -127,6 +127,9 @@ class _SecondaryRecoveryAdapter:
     def set_authorization_check(self, handler):
         self.authorization_check = handler
 
+    def set_platform_event_handler(self, handler):
+        self.platform_event_handler = handler
+
 
 def _secondary_recovery_runner(*, running=True):
     runner = GatewayRunner.__new__(GatewayRunner)

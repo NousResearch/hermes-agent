@@ -45,6 +45,10 @@ _ENV_VARS = (
     "BUZZ_POLL_INTERVAL",
     "BUZZ_CLI_PATH",
     "BUZZ_CREDENTIALS_FILE",
+    "BUZZ_AUTO_JOIN_CHANNELS",
+    "BUZZ_THREAD_SESSIONS",
+    "BUZZ_AUTO_JOIN_CHANNEL_NAME_PATTERN",
+    "BUZZ_AUTO_JOIN_STATE_FILE",
 )
 
 
@@ -407,6 +411,22 @@ class TestBuzzAdapterSend:
         # Our own event id is marked seen for echo suppression
         assert "evt123" in adapter._channel_state[CHANNEL]["seen"]
 
+    @pytest.mark.asyncio
+    async def test_thread_session_send_prefers_root_over_immediate_reply(self):
+        adapter = _make_adapter({"thread_sessions": True})
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt124"})
+        adapter._run_cli = cli
+
+        await adapter.send(
+            CHANNEL,
+            "same visible thread",
+            reply_to="immediate-reply",
+            metadata={"thread_id": "thread-root"},
+        )
+
+        args, _ = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == "thread-root"
 
     @pytest.mark.asyncio
     async def test_send_image_local_file_uses_file_flag(self, tmp_path):
@@ -420,6 +440,190 @@ class TestBuzzAdapterSend:
         assert result.success is True
         args, _stdin = cli.calls[0]
         assert args[args.index("--file") + 1] == str(img)
+
+    @pytest.mark.asyncio
+    async def test_send_image_uses_visible_thread_root(self, tmp_path):
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG fake")
+        adapter = _make_adapter({"thread_sessions": True})
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt127"})
+        adapter._run_cli = cli
+
+        await adapter.send_image(
+            CHANNEL,
+            str(img),
+            reply_to="immediate-reply",
+            metadata={"thread_id": "thread-root"},
+        )
+
+        args, _ = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == "thread-root"
+
+
+class TestBuzzThreadResolution:
+
+    @pytest.mark.asyncio
+    async def test_direct_reply_resolves_parent_as_thread_root(self):
+        adapter = _make_adapter({"thread_sessions": True})
+        cli = _ScriptedCli()
+        root = _event("root", created_at=10)
+        cli.script("messages", "thread", [root])
+        adapter._run_cli = cli
+        reply = _event("reply", created_at=20)
+        reply["tags"].append(["e", "root", "", "reply"])
+
+        assert await adapter._resolve_thread_root(CHANNEL, reply) == "root"
+        assert cli.calls[0][0][-1] == "root"
+
+    @pytest.mark.asyncio
+    async def test_markerless_nested_reply_walks_parent_chain(self):
+        adapter = _make_adapter({"thread_sessions": True})
+        cli = _ScriptedCli()
+        parent = _event("parent", created_at=20)
+        parent["tags"].append(["e", "root", "", "reply"])
+        root = _event("root", created_at=10)
+        cli.script("messages", "thread", [parent])
+        cli.script("messages", "thread", [root])
+        adapter._run_cli = cli
+        reply = _event("reply", created_at=30)
+        reply["tags"].append(["e", "parent", "", "reply"])
+
+        assert await adapter._resolve_thread_root(CHANNEL, reply) == "root"
+
+    @pytest.mark.asyncio
+    async def test_explicit_root_marker_needs_no_cli_lookup(self):
+        adapter = _make_adapter({"thread_sessions": True})
+        cli = _ScriptedCli()
+        adapter._run_cli = cli
+        reply = _event("reply")
+        reply["tags"].extend([
+            ["e", "root", "", "root"],
+            ["e", "parent", "", "reply"],
+        ])
+
+        assert await adapter._resolve_thread_root(CHANNEL, reply) == "root"
+        assert cli.calls == []
+
+    @pytest.mark.asyncio
+    async def test_transient_parent_lookup_fallback_is_not_cached(self):
+        adapter = _make_adapter({"thread_sessions": True})
+        cli = _ScriptedCli()
+        cli.script("messages", "thread", [], code=2, stderr="temporary")
+        adapter._run_cli = cli
+        reply = _event("reply")
+        reply["tags"].append(["e", "parent", "", "reply"])
+
+        assert await adapter._resolve_thread_root(CHANNEL, reply) == "parent"
+        assert "reply" not in adapter._thread_root_cache
+        assert len(cli.calls) == 3
+
+    @pytest.mark.asyncio
+    async def test_parent_lookup_retry_can_recover_authoritatively(self):
+        adapter = _make_adapter({"thread_sessions": True})
+        cli = _ScriptedCli()
+        # A relay can acknowledge the query before the parent replica catches
+        # up, so successful-but-empty reads must retry too.
+        cli.script("messages", "thread", [], code=0)
+        cli.script("messages", "thread", [_event("parent")])
+        adapter._run_cli = cli
+        reply = _event("reply")
+        reply["tags"].append(["e", "parent", "", "reply"])
+
+        assert await adapter._resolve_thread_root(CHANNEL, reply) == "parent"
+        assert adapter._thread_root_cache["reply"] == "parent"
+
+
+    @pytest.mark.asyncio
+    async def test_dm_message_keeps_conversation_session_unthreaded(self):
+        adapter = _make_adapter({"thread_sessions": True, "require_mention": False})
+        adapter._channel_state[DM_CHANNEL] = {
+            "chat_type": "dm", "last_ts": 0, "seen": {},
+        }
+        adapter._dispatched = []
+
+        async def capture(**kwargs):
+            adapter._dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+        cli = _ScriptedCli()
+        adapter._run_cli = cli
+        event = _tagged_event(
+            "dm-event", DM_CHANNEL, content="continue", p=SELF_PUBKEY,
+        )
+
+        await adapter._handle_event(
+            DM_CHANNEL, adapter._channel_state[DM_CHANNEL], event,
+        )
+        assert adapter._dispatched[0]["thread_id"] is None
+
+
+class TestBuzzAutoJoin:
+
+    @pytest.mark.asyncio
+    async def test_discovery_uses_lookback_for_first_message(self, monkeypatch, tmp_path):
+        state_file = tmp_path / "auto-joined.json"
+        adapter = _make_adapter({
+            "auto_join_channels": True,
+            "auto_join_state_file": str(state_file),
+        })
+        cli = _ScriptedCli()
+        cli.script("channels", "list", [
+            {"channel_id": CHANNEL, "name": "new", "description": "new channel"},
+        ])
+        cli.script("channels", "list", [])
+        adapter._run_cli = cli
+        monkeypatch.setattr(_buzz_mod.time, "time", lambda: 1000)
+
+        await adapter._discover_group_channels(seed=False)
+
+        assert adapter._channel_state[CHANNEL]["last_ts"] == 970
+        assert any(call[0][:2] == ["channels", "join"] for call in cli.calls)
+        assert CHANNEL in adapter._load_auto_joined_channels()
+
+    def test_persisted_auto_join_channel_is_scoped_by_relay_and_identity(self, tmp_path):
+        state_file = tmp_path / "auto-joined.json"
+        adapter = _make_adapter({
+            "auto_join_channels": True,
+            "auto_join_state_file": str(state_file),
+        })
+        adapter._persist_auto_joined_channel(CHANNEL)
+
+        assert adapter._load_auto_joined_channels() == {CHANNEL}
+        payload = json.loads(state_file.read_text(encoding="utf-8"))
+        assert payload["scopes"][adapter._auto_join_scope_key()] == [CHANNEL]
+
+    @pytest.mark.asyncio
+    async def test_auto_join_name_pattern_limits_scope(self, tmp_path):
+        adapter = _make_adapter({
+            "auto_join_channels": True,
+            "auto_join_channel_name_pattern": r"^project-",
+            "auto_join_state_file": str(tmp_path / "state.json"),
+        })
+        cli = _ScriptedCli()
+        cli.script("channels", "list", [
+            {"channel_id": CHANNEL, "name": "private-topic", "description": ""},
+        ])
+        adapter._run_cli = cli
+
+        await adapter._discover_group_channels(seed=False)
+
+        assert CHANNEL not in adapter._channel_state
+        assert not any(call[0][:2] == ["channels", "join"] for call in cli.calls)
+
+    @pytest.mark.asyncio
+    async def test_new_dm_uses_same_discovery_lookback(self, monkeypatch):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("dms", "list", [{"dm_id": DM_CHANNEL}])
+        cli.script("channels", "list", [])
+        adapter._run_cli = cli
+        monkeypatch.setattr(_buzz_mod.time, "time", lambda: 1000)
+
+        await adapter._discover_dms(seed=False)
+
+        assert adapter._channel_state[DM_CHANNEL]["last_ts"] == 970
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -536,5 +740,3 @@ class TestStandaloneSend:
         assert captured["input_text"] == "cron says hi"
         # The private key must never be part of argv
         assert all("nsec1x" not in str(a) for a in captured["args"])
-
-

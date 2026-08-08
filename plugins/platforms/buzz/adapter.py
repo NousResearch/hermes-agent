@@ -95,6 +95,15 @@ _SEEN_CAP = 500
 # Re-run DM discovery (``dms list`` plus the channels-list fallback) every
 # N poll sweeps to pick up conversations opened mid-run.
 _DM_DISCOVERY_EVERY = 5
+# How often the WebSocket loop re-syncs subscriptions with newly discovered
+# channels (seconds of receive silence before a discovery sweep).
+_WS_SUB_SYNC_INTERVAL = 10.0
+# Include a small history overlap when adopting a channel so a message posted
+# immediately after channel/DM creation is not lost before discovery.
+_DISCOVERY_LOOKBACK_SECONDS = 30
+# Bound on the per-message thread-root resolution cache.
+_THREAD_ROOT_CACHE_CAP = 2000
+_THREAD_ROOT_LOOKUP_DELAYS = (0.0, 0.25, 0.75)
 
 _DEFAULT_POLL_INTERVAL = 4.0
 _MIN_POLL_INTERVAL = 1.0
@@ -106,6 +115,10 @@ _WS_AUTH_TIMEOUT = 20.0
 _WS_MAX_MESSAGE_BYTES = 2_000_000
 _WS_MEMBERSHIP_KIND = 44100
 _WS_MEMBERSHIP_SUB_ID = "hermes-buzz-membership"
+_WS_CHANNELS_SUB_PREFIX = "hermes-buzz-channels-"
+# Buzz advertises at most 10 filters per Nostr REQ. Chunking keeps per-channel
+# high-water marks without opening one subscription per profile.
+_WS_FILTERS_PER_SUBSCRIPTION = 10
 
 # Where to look for a credentials JSON (keys: nsec / private_key_hex) when
 # BUZZ_PRIVATE_KEY is not set.  Module-level so tests can point it at a tmpdir.
@@ -392,6 +405,52 @@ class BuzzAdapter(BasePlatformAdapter):
             _rm_cfg = _rm_raw
         self.require_mention = str(_rm_cfg).strip().lower() not in ("false", "0", "no", "off")
 
+        # Per-thread sessions: resolve each message's thread root and pass it
+        # as the source thread_id so Hermes sessions and replies stay attached
+        # to the Buzz thread head instead of nesting below the latest reply.
+        _ts_raw = os.getenv("BUZZ_THREAD_SESSIONS")
+        if _ts_raw is None:
+            _ts_cfg = extra.get("thread_sessions", False)
+        else:
+            _ts_cfg = _ts_raw
+        self.thread_sessions = str(_ts_cfg).strip().lower() in ("true", "1", "yes", "on")
+
+        # Periodically discover group channels, join newly-created open ones,
+        # and add them to the active inbound subscription set.
+        _aj_raw = os.getenv("BUZZ_AUTO_JOIN_CHANNELS")
+        if _aj_raw is None:
+            _aj_cfg = extra.get("auto_join_channels", False)
+        else:
+            _aj_cfg = _aj_raw
+        self.auto_join_channels = str(_aj_cfg).strip().lower() in ("true", "1", "yes", "on")
+        self.auto_join_channel_name_pattern = str(
+            os.getenv("BUZZ_AUTO_JOIN_CHANNEL_NAME_PATTERN")
+            or extra.get("auto_join_channel_name_pattern", "")
+            or ""
+        ).strip()
+        try:
+            self._auto_join_name_re = (
+                re.compile(self.auto_join_channel_name_pattern)
+                if self.auto_join_channel_name_pattern
+                else None
+            )
+        except re.error as exc:
+            logger.error("Buzz: invalid auto-join channel-name pattern: %s", exc)
+            self._auto_join_name_re = None
+            self.auto_join_channels = False
+
+        state_override = str(
+            os.getenv("BUZZ_AUTO_JOIN_STATE_FILE")
+            or extra.get("auto_join_state_file", "")
+            or ""
+        ).strip()
+        hermes_home = Path(os.getenv("HERMES_HOME", "~/.hermes")).expanduser()
+        self._auto_join_state_file = (
+            Path(state_override).expanduser()
+            if state_override
+            else hermes_home / "shared" / "buzz" / "auto-joined-channels.json"
+        )
+
         # Inbound transport: "auto" (WebSocket with poll fallback, default),
         # "websocket" (require WS; fail connect when it can't authenticate),
         # or "poll" (CLI polling only). Env (BUZZ_TRANSPORT) overrides
@@ -427,6 +486,7 @@ class BuzzAdapter(BasePlatformAdapter):
         self._ws_ready: Optional[asyncio.Event] = None
         self._ws_active = False  # True while the WS loop owns inbound delivery
         self._membership_since = 0
+        self._ws_subscribed_channels: set = set()
         self._lock_key: Optional[str] = None
         # channel_id -> {"chat_type", "last_ts", "seen": OrderedDict[event_id, None]}
         self._channel_state: Dict[str, dict] = {}
@@ -436,10 +496,72 @@ class BuzzAdapter(BasePlatformAdapter):
         self._channel_meta: Dict[str, dict] = {}
         self._user_names: Dict[str, str] = {}
         self._poll_count = 0
+        # message event id -> resolved thread root event id
+        self._thread_root_cache: Dict[str, str] = {}
 
     @property
     def name(self) -> str:
         return "Buzz"
+
+    def _auto_join_scope_key(self) -> str:
+        return f"{self.relay_url}|{self._self_pubkey}"
+
+    def _read_auto_join_state(self) -> dict:
+        try:
+            data = json.loads(self._auto_join_state_file.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {"version": 1, "scopes": {}}
+        except (OSError, ValueError) as exc:
+            logger.warning("Buzz: could not read auto-join state: %s", exc)
+            return {"version": 1, "scopes": {}}
+        if not isinstance(data, dict) or not isinstance(data.get("scopes"), dict):
+            return {"version": 1, "scopes": {}}
+        return data
+
+    def _load_auto_joined_channels(self) -> set:
+        if not self.auto_join_channels or not self._self_pubkey:
+            return set()
+        data = self._read_auto_join_state()
+        channels = data["scopes"].get(self._auto_join_scope_key(), [])
+        return {
+            str(channel_id)
+            for channel_id in channels
+            if isinstance(channel_id, str) and channel_id
+        }
+
+    def _persist_auto_joined_channel(self, channel_id: str) -> None:
+        """Persist a discovered channel for initial seeding after restart."""
+        if not self.auto_join_channels or not self._self_pubkey or not channel_id:
+            return
+        data = self._read_auto_join_state()
+        scopes = data.setdefault("scopes", {})
+        scope_key = self._auto_join_scope_key()
+        channels = {
+            str(value)
+            for value in scopes.get(scope_key, [])
+            if isinstance(value, str) and value
+        }
+        if channel_id in channels:
+            return
+        channels.add(channel_id)
+        scopes[scope_key] = sorted(channels)
+        tmp = self._auto_join_state_file.with_name(
+            f".{self._auto_join_state_file.name}.{os.getpid()}.tmp"
+        )
+        try:
+            self._auto_join_state_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            os.chmod(tmp, 0o600)
+            tmp.replace(self._auto_join_state_file)
+        except OSError as exc:
+            logger.warning("Buzz: could not persist auto-joined channel: %s", exc)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     # ── buzz-cli plumbing ─────────────────────────────────────────────────
 
@@ -510,6 +632,9 @@ class BuzzAdapter(BasePlatformAdapter):
         except ImportError:
             self._lock_key = None  # status module not available (e.g. tests)
 
+        # Reconcile opt-in profile channels before building the watch set so
+        # channels created or restored during startup are seeded immediately.
+
         # Map channel ids to names and pick the watch set.
         code, out, err = await self._run_cli(["channels", "list"])
         if code != 0:
@@ -526,7 +651,14 @@ class BuzzAdapter(BasePlatformAdapter):
         for ch in listed:
             if ch.get("channel_id"):
                 self._channel_meta[str(ch["channel_id"])] = ch
-        watch = self.channels or list(self._channel_names)
+        persisted_channels = self._load_auto_joined_channels()
+        if self.channels:
+            watch = list(dict.fromkeys([
+                *self.channels,
+                *(channel_id for channel_id in persisted_channels if channel_id in self._channel_names),
+            ]))
+        else:
+            watch = list(self._channel_names)
         if not watch:
             logger.error("Buzz: no channels to watch (configure BUZZ_CHANNELS or join a channel)")
             self._set_fatal_error("config_missing", "no Buzz channels to watch", retryable=False)
@@ -599,6 +731,18 @@ class BuzzAdapter(BasePlatformAdapter):
 
     # ── Sending ───────────────────────────────────────────────────────────
 
+    def _resolve_reply_target(
+        self,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Choose the visible Buzz thread head for every outbound type."""
+        metadata_thread_id = (metadata or {}).get("thread_id")
+        if self.thread_sessions and metadata_thread_id:
+            return str(metadata_thread_id)
+        target = reply_to or metadata_thread_id
+        return str(target) if target else None
+
     async def send(
         self,
         chat_id: str,
@@ -609,9 +753,14 @@ class BuzzAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
-        reply_target = reply_to or (metadata or {}).get("thread_id")
+        # The gateway passes the immediate inbound message as reply_to. Inside
+        # a Buzz thread that would create a reply-to-a-reply, which the normal
+        # thread view hides below a nested thread. Prefer the resolved thread
+        # head whenever thread sessions are enabled so every Hermes response
+        # remains a direct child of the visible thread head.
+        reply_target = self._resolve_reply_target(reply_to, metadata)
         if reply_target:
-            args += ["--reply-to", str(reply_target)]
+            args += ["--reply-to", reply_target]
         code, out, err = await self._run_cli(args, input_text=content)
         if code != 0:
             return SendResult(
@@ -681,8 +830,9 @@ class BuzzAdapter(BasePlatformAdapter):
                 "--file", str(local),
                 "--content", "-",
             ]
-            if reply_to:
-                args += ["--reply-to", str(reply_to)]
+            reply_target = self._resolve_reply_target(reply_to, metadata)
+            if reply_target:
+                args += ["--reply-to", reply_target]
             code, out, err = await self._run_cli(args, input_text=caption or "")
             if code != 0:
                 return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
@@ -790,24 +940,35 @@ class BuzzAdapter(BasePlatformAdapter):
                 detail = response[-1] if len(response) > 1 else "authentication failed"
                 raise ConnectionError(f"Buzz WebSocket AUTH failed: {detail}")
 
-    async def _send_channel_subscription(self, websocket, subscription_id: str, channel_id: str) -> None:
-        state = self._channel_state.get(channel_id) or {}
-        since = max(int(state.get("last_ts") or time.time()) - 1, 0)
-        request = [
-            "REQ",
-            subscription_id,
-            {"kinds": [_CHAT_KIND], "#h": [channel_id], "since": since},
-        ]
-        await websocket.send(json.dumps(request, separators=(",", ":")))
+    async def _send_channel_subscriptions(self, websocket) -> List[str]:
+        """Subscribe to all conversations in a bounded number of REQs.
+
+        Each channel remains a separate filter so it keeps its own high-water
+        mark, but the relay sees one subscription rather than one subscription
+        per Hermes profile. This keeps profile-channel sync scalable.
+        """
+        filters = []
+        for channel_id, state in self._channel_state.items():
+            since = max(int(state.get("last_ts") or time.time()) - 1, 0)
+            filters.append({"kinds": [_CHAT_KIND], "#h": [channel_id], "since": since})
+        subscription_ids = []
+        for offset in range(0, len(filters), _WS_FILTERS_PER_SUBSCRIPTION):
+            subscription_id = f"{_WS_CHANNELS_SUB_PREFIX}{offset // _WS_FILTERS_PER_SUBSCRIPTION}"
+            request = [
+                "REQ", subscription_id,
+                *filters[offset:offset + _WS_FILTERS_PER_SUBSCRIPTION],
+            ]
+            await websocket.send(json.dumps(request, separators=(",", ":")))
+            subscription_ids.append(subscription_id)
+        return subscription_ids
 
     async def _subscribe_websocket(self, websocket) -> Dict[str, Optional[str]]:
         """Subscribe to every watched conversation plus membership events
         (kind 44100 p-tagged to us) for live DM discovery."""
         subscriptions: Dict[str, Optional[str]] = {}
-        for index, channel_id in enumerate(list(self._channel_state)):
-            subscription_id = f"hermes-buzz-{index}"
-            subscriptions[subscription_id] = channel_id
-            await self._send_channel_subscription(websocket, subscription_id, channel_id)
+        for subscription_id in await self._send_channel_subscriptions(websocket):
+            subscriptions[subscription_id] = "*"
+        self._ws_subscribed_channels = set(self._channel_state)
         if self._self_pubkey:
             request = [
                 "REQ",
@@ -826,15 +987,9 @@ class BuzzAdapter(BasePlatformAdapter):
         """A membership event p-tagged to us: rediscover conversations and
         subscribe to any new ones (fresh DMs dispatch from their beginning)."""
         self._membership_since = max(self._membership_since, int(event.get("created_at") or 0))
-        before = set(self._channel_state)
         await self._discover_dms(seed=False)
-        for channel_id in self._channel_state:
-            if channel_id in before:
-                continue
-            subscription_id = f"hermes-buzz-dm-{len(subscriptions)}"
-            subscriptions[subscription_id] = channel_id
-            await self._send_channel_subscription(websocket, subscription_id, channel_id)
-            logger.info("Buzz: subscribed to new conversation %s", channel_id)
+        await self._discover_group_channels(seed=False)
+        await self._sync_ws_subscriptions(websocket, subscriptions)
 
     async def _websocket_loop(self) -> None:
         """Persistent authenticated subscription with bounded reconnect
@@ -862,7 +1017,22 @@ class BuzzAdapter(BasePlatformAdapter):
                         if self._ws_ready is not None:
                             self._ws_ready.set()
                         backoff = 1.0
-                        async for raw in websocket:
+                        loop = asyncio.get_running_loop()
+                        next_subscription_sync = loop.time() + _WS_SUB_SYNC_INTERVAL
+                        while True:
+                            timeout = max(next_subscription_sync - loop.time(), 0.0)
+                            try:
+                                raw = await asyncio.wait_for(
+                                    websocket.recv(), timeout=timeout
+                                )
+                            except asyncio.TimeoutError:
+                                await self._discover_dms(seed=False)
+                                await self._discover_group_channels(seed=False)
+                                await self._sync_ws_subscriptions(websocket, subscriptions)
+                                next_subscription_sync = (
+                                    loop.time() + _WS_SUB_SYNC_INTERVAL
+                                )
+                                continue
                             try:
                                 message = json.loads(raw)
                             except (ValueError, TypeError):
@@ -878,7 +1048,16 @@ class BuzzAdapter(BasePlatformAdapter):
                                 if subscription_id == _WS_MEMBERSHIP_SUB_ID:
                                     await self._handle_membership_event(websocket, subscriptions, event)
                                     continue
-                                channel_id = subscriptions.get(subscription_id)
+                                channel_id = None
+                                if subscription_id.startswith(_WS_CHANNELS_SUB_PREFIX):
+                                    for tag in event.get("tags") or []:
+                                        if (
+                                            isinstance(tag, (list, tuple))
+                                            and len(tag) > 1
+                                            and tag[0] == "h"
+                                        ):
+                                            channel_id = str(tag[1])
+                                            break
                                 state = self._channel_state.get(channel_id or "")
                                 if channel_id and state is not None:
                                     await self._handle_event(channel_id, state, event)
@@ -909,6 +1088,7 @@ class BuzzAdapter(BasePlatformAdapter):
                 try:
                     if self._poll_count % _DM_DISCOVERY_EVERY == 0:
                         await self._discover_dms(seed=False)
+                        await self._discover_group_channels(seed=False)
                     for channel_id in list(self._channel_state):
                         await self._poll_channel(channel_id)
                 except asyncio.CancelledError:
@@ -967,7 +1147,13 @@ class BuzzAdapter(BasePlatformAdapter):
                 if seed:
                     await self._seed_channel(dm_id, chat_type="dm")
                 else:
-                    self._channel_state[dm_id] = {"chat_type": "dm", "last_ts": 0, "seen": OrderedDict()}
+                    self._channel_state[dm_id] = {
+                        "chat_type": "dm",
+                        "last_ts": max(
+                            int(time.time()) - _DISCOVERY_LOOKBACK_SECONDS, 0
+                        ),
+                        "seen": OrderedDict(),
+                    }
                 self._channel_names.setdefault(dm_id, "DM")
 
         code, out, _err = await self._run_cli(["channels", "list"])
@@ -984,7 +1170,94 @@ class BuzzAdapter(BasePlatformAdapter):
             if seed:
                 await self._seed_channel(ch_id, chat_type="group")
             else:
-                self._channel_state[ch_id] = {"chat_type": "group", "last_ts": 0, "seen": OrderedDict()}
+                self._channel_state[ch_id] = {
+                    "chat_type": "group",
+                    "last_ts": max(
+                        int(time.time()) - _DISCOVERY_LOOKBACK_SECONDS, 0
+                    ),
+                    "seen": OrderedDict(),
+                }
+
+    async def _discover_group_channels(self, *, seed: bool) -> None:
+        """Join and watch newly-created open Buzz channels."""
+        if not self.auto_join_channels:
+            return
+
+        code, out, _err = await self._run_cli(["channels", "list"])
+        if code != 0:
+            return
+
+        listed = _parse_json_list(out)
+        member_ids: Optional[set] = None
+        for channel in listed:
+            channel_id = str(channel.get("channel_id") or "")
+            if not channel_id or channel_id in self._channel_state:
+                continue
+
+            self._channel_meta[channel_id] = channel
+            self._channel_names.setdefault(
+                channel_id, str(channel.get("name") or channel_id)
+            )
+            if self._may_reclassify_as_dm(channel_id):
+                continue
+            channel_name = str(channel.get("name") or "")
+            if self._auto_join_name_re and not self._auto_join_name_re.search(channel_name):
+                continue
+
+            if member_ids is None:
+                member_code, member_out, _ = await self._run_cli(
+                    ["channels", "list", "--member"]
+                )
+                if member_code != 0:
+                    return
+                member_ids = {
+                    str(item.get("channel_id"))
+                    for item in _parse_json_list(member_out)
+                    if item.get("channel_id")
+                }
+
+            if channel_id not in member_ids:
+                join_code, _, join_err = await self._run_cli(
+                    ["channels", "join", "--channel", channel_id]
+                )
+                if join_code != 0:
+                    logger.debug(
+                        "Buzz: auto-join of channel %s failed — %s",
+                        channel_id,
+                        _cli_error_message(join_err, join_code),
+                    )
+                    continue
+                logger.info("Buzz: auto-joined channel %s", channel_id)
+
+            self._persist_auto_joined_channel(channel_id)
+
+            if seed:
+                await self._seed_channel(channel_id, chat_type="group")
+            else:
+                self._channel_state[channel_id] = {
+                    "chat_type": "group",
+                    "last_ts": max(
+                        int(time.time()) - _DISCOVERY_LOOKBACK_SECONDS, 0
+                    ),
+                    "seen": OrderedDict(),
+                }
+
+    async def _sync_ws_subscriptions(
+        self, websocket, subscriptions: Dict[str, Optional[str]]
+    ) -> None:
+        """Refresh the single live subscription after channel-set changes."""
+        current = set(self._channel_state)
+        if current == self._ws_subscribed_channels:
+            return
+        for subscription_id in list(subscriptions):
+            if not subscription_id.startswith(_WS_CHANNELS_SUB_PREFIX):
+                continue
+            await websocket.send(json.dumps(["CLOSE", subscription_id], separators=(",", ":")))
+            subscriptions.pop(subscription_id, None)
+        for subscription_id in await self._send_channel_subscriptions(websocket):
+            subscriptions[subscription_id] = "*"
+        self._ws_subscribed_channels = current
+        logger.info("Buzz: refreshed aggregate subscription for %d conversations", len(current))
 
     async def _poll_channel(self, channel_id: str) -> None:
         state = self._channel_state.get(channel_id)
@@ -1048,6 +1321,13 @@ class BuzzAdapter(BasePlatformAdapter):
         # strip applies to both chat types.
         dispatch_text = self._strip_mention(content)
 
+        thread_id = None
+        # A DM is one continuing conversation unless it carries a native
+        # thread model of its own. Treating every untagged DM message as a new
+        # thread would create a fresh Hermes session on every turn.
+        if self.thread_sessions and not is_dm:
+            thread_id = await self._resolve_thread_root(channel_id, event)
+
         await self._dispatch_message(
             text=dispatch_text,
             chat_id=channel_id,
@@ -1056,7 +1336,106 @@ class BuzzAdapter(BasePlatformAdapter):
             user_name=await self._resolve_user_name(pubkey),
             message_id=event_id,
             created_at=created_at,
+            thread_id=thread_id,
         )
+
+    # ── Thread-session resolution ────────────────────────
+
+    async def _resolve_thread_root(
+        self,
+        channel_id: str,
+        event: dict,
+        _visited: Optional[set] = None,
+    ) -> Optional[str]:
+        """Return the thread-head event id for an inbound Buzz event."""
+        root, _authoritative = await self._resolve_thread_root_result(
+            channel_id, event, _visited
+        )
+        return root
+
+    async def _resolve_thread_root_result(
+        self,
+        channel_id: str,
+        event: dict,
+        _visited: Optional[set] = None,
+    ) -> Tuple[Optional[str], bool]:
+        """Return ``(root, authoritative)``; never cache fallback guesses."""
+        event_id = str(event.get("id") or "")
+        if not event_id:
+            return None, False
+
+        visited = set(_visited or ())
+        if event_id in visited or len(visited) >= 64:
+            return None, False
+        visited.add(event_id)
+
+        e_tags = []
+        tags = event.get("tags")
+        if isinstance(tags, list):
+            for tag in tags:
+                if (
+                    isinstance(tag, (list, tuple))
+                    and len(tag) > 1
+                    and tag[0] == "e"
+                    and str(tag[1])
+                ):
+                    e_tags.append(tag)
+
+        if not e_tags:
+            # A top-level message heads its own Buzz thread.
+            return event_id, True
+
+        for tag in e_tags:
+            if len(tag) > 3 and str(tag[3]) == "root":
+                return str(tag[1]), True
+
+        cached = self._thread_root_cache.get(event_id)
+        if cached:
+            return cached, True
+
+        root, authoritative = await self._fetch_thread_root(
+            channel_id, e_tags, visited
+        )
+        if root and authoritative:
+            self._thread_root_cache[event_id] = root
+            if len(self._thread_root_cache) > _THREAD_ROOT_CACHE_CAP:
+                keys = list(self._thread_root_cache)
+                for key in keys[: len(keys) // 2]:
+                    self._thread_root_cache.pop(key, None)
+        return root, authoritative
+
+    async def _fetch_thread_root(
+        self, channel_id: str, e_tags: List[list], visited: set
+    ) -> Tuple[Optional[str], bool]:
+        """Fetch the direct parent and recursively resolve its thread head."""
+        reply_tags = [
+            tag for tag in e_tags if len(tag) > 3 and str(tag[3]) == "reply"
+        ]
+        parent_id = str((reply_tags[-1] if reply_tags else e_tags[-1])[1])
+        parent_event = None
+        for delay in _THREAD_ROOT_LOOKUP_DELAYS:
+            if delay:
+                await asyncio.sleep(delay)
+            code, out, _err = await self._run_cli(
+                ["messages", "thread", "--channel", channel_id, "--event", parent_id]
+            )
+            if code != 0:
+                continue
+            events = _parse_json_list(out)
+            parent_event = next(
+                (item for item in events if str(item.get("id") or "") == parent_id),
+                None,
+            )
+            # A successful but empty read can be relay eventual consistency,
+            # just like a transient non-zero exit. Retry both cases.
+            if parent_event is not None:
+                break
+        if parent_event is None:
+            return parent_id, False
+        root, authoritative = await self._resolve_thread_root_result(
+            channel_id, parent_event, visited
+        )
+        return (root or parent_id), authoritative
 
     # ── DM classification (issue #68871) ──────────────────────────────────
     #
@@ -1219,6 +1598,7 @@ class BuzzAdapter(BasePlatformAdapter):
         user_name: str,
         message_id: str,
         created_at: int,
+        thread_id: Optional[str] = None,
     ) -> None:
         """Build a MessageEvent and hand it to the base class handler."""
         if not self._message_handler:
@@ -1230,6 +1610,7 @@ class BuzzAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             user_id=user_id,
             user_name=user_name,
+            thread_id=thread_id,
         )
 
         event = MessageEvent(

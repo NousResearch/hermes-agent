@@ -23,6 +23,17 @@ def _signed_thinking_block(thinking_chars: int, sig_chars: int) -> dict:
 
 
 class TestBudgetExcludesReasoningDetailsEnvelope:
+    def test_reasoning_aliases_charge_the_larger_value_once(self):
+        """reasoning is internal; chat completions replays at most one alias."""
+        short = "s" * 4_000
+        long = "l" * 12_000
+        base = {"role": "assistant", "content": "hi"}
+        both = dict(base, reasoning=short, reasoning_content=long)
+        longer_only = dict(base, reasoning_content=long)
+
+        assert _estimate_msg_budget_tokens(both) == \
+            _estimate_msg_budget_tokens(longer_only)
+
     def test_signature_blob_not_charged(self):
         base = {"role": "assistant", "content": "hello there"}
         with_envelope = dict(

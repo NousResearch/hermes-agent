@@ -93,6 +93,19 @@ class TestEstimateMessagesTokensRough:
         assert estimate_messages_tokens_rough([persisted_shape]) == \
             estimate_messages_tokens_rough([wire_shape])
 
+    def test_duplicate_reasoning_aliases_are_charged_once(self):
+        """Only one reasoning alias can survive chat-completions replay."""
+        prose = "reasoning token pressure " * 2_000
+        wire_shape = {
+            "role": "assistant",
+            "content": "done",
+            "reasoning_content": prose,
+        }
+        persisted_shape = dict(wire_shape, reasoning=prose)
+
+        assert estimate_messages_tokens_rough([persisted_shape]) == \
+            estimate_messages_tokens_rough([wire_shape])
+
     def test_api_content_is_counted_when_it_differs_from_content(self):
         """The sidecar is what's sent, so its size is the one that matters."""
         big_sidecar = "cached prompt bytes " * 2000

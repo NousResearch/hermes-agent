@@ -5972,6 +5972,40 @@ class TestReasoningReplayForStrictProviders:
         sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
         replayed_assistant = next(msg for msg in sent_messages if msg.get("role") == "assistant")
         assert replayed_assistant["reasoning_content"] == "provider-native scratchpad"
+        assert "reasoning" not in replayed_assistant
+
+    def test_duplicate_reasoning_aliases_replay_once_on_kimi_chat_completions(self, agent):
+        self._setup_agent(agent)
+        agent.base_url = "https://api.kimi.com/coding/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "kimi-coding"
+        prose = "same provider reasoning"
+        prior_assistant = {
+            "role": "assistant",
+            "content": "answer",
+            "reasoning": prose,
+            "reasoning_content": prose,
+        }
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="done", finish_reason="stop"
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "next step", conversation_history=[prior_assistant]
+            )
+
+        assert result["completed"] is True
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        replayed_assistant = next(
+            msg for msg in sent_messages if msg.get("role") == "assistant"
+        )
+        assert replayed_assistant["reasoning_content"] == prose
+        assert "reasoning" not in replayed_assistant
 
 
 

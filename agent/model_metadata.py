@@ -3216,9 +3216,24 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
         and bool(sidecar)
         and msg.get("role") in ("user", "assistant")
     )
+    reasoning_aliases = ("reasoning", "reasoning_content")
+    has_both_reasoning_aliases = all(key in msg for key in reasoning_aliases)
+    reasoning_replay = None
+    if has_both_reasoning_aliases:
+        # ``reasoning`` is an internal normalized alias. Chat-completions
+        # replay always removes it after optionally copying one value to
+        # ``reasoning_content``. Keep the larger alias as a conservative
+        # provider-agnostic estimate, but never charge both persisted copies.
+        reasoning_replay = max(
+            (msg[key] for key in reasoning_aliases),
+            key=lambda value: len(str(value)),
+        )
+
     shadow: Dict[str, Any] = {}
     for k, v in msg.items():
         if k in ("_anthropic_content_blocks", "reasoning_details"):
+            continue
+        if has_both_reasoning_aliases and k in reasoning_aliases:
             continue
         if k == "api_content":
             # Always popped before the request is built; only counted when it
@@ -3248,6 +3263,8 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
                 shadow[k] = v
         else:
             shadow[k] = v
+    if has_both_reasoning_aliases:
+        shadow["reasoning_content"] = reasoning_replay
     return shadow
 
 

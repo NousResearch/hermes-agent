@@ -856,19 +856,24 @@ def _serialized_length_for_budget(value: Any) -> int:
         return len(str(value))
 
 
-# Provider replay/metadata fields that ride the wire on every request but are
-# invisible to ``msg["content"]``/``msg["tool_calls"]`` accounting.  Codex
-# Responses sessions in particular carry ``codex_reasoning_items`` blobs of
-# ``encrypted_content`` that can dominate the serialized session (a measured
-# 214-turn session held ~115K tokens / 27% of its payload there — #55572).
+# Provider replay/metadata fields invisible to
+# ``msg["content"]``/``msg["tool_calls"]`` accounting. ``reasoning`` and
+# ``reasoning_content`` are aliases: chat-completions replay removes the
+# internal ``reasoning`` key and sends at most one ``reasoning_content`` value.
+# Count the larger persisted alias once so provider-specific echo-back remains
+# conservatively covered without double-charging duplicate history rows.
+_REASONING_REPLAY_KEYS = ("reasoning", "reasoning_content")
+
+# Codex Responses sessions carry these blobs on every request. In particular,
+# ``codex_reasoning_items`` encrypted content can dominate the serialized
+# session (a measured 214-turn session held ~115K tokens / 27% of its payload
+# there — #55572).
 #
 # ``reasoning_details`` is handled separately (see
 # ``_reasoning_details_text_chars``): its signed/base64 envelope is excluded
 # from the budget, mirroring the preflight estimator's exclusion in
 # ``model_metadata._estimate_message_tokens_without_images`` (#73298).
 _REPLAY_BUDGET_KEYS = (
-    "reasoning",
-    "reasoning_content",
     "codex_reasoning_items",
     "codex_message_items",
 )
@@ -936,6 +941,10 @@ def _estimate_msg_budget_tokens(msg: dict) -> int:
     for tc in msg.get("tool_calls") or []:
         if isinstance(tc, dict):
             tokens += estimate_tokens_rough(str(tc))
+    tokens += max(
+        _serialized_length_for_budget(msg.get(key))
+        for key in _REASONING_REPLAY_KEYS
+    ) // _CHARS_PER_TOKEN
     for key in _REPLAY_BUDGET_KEYS:
         tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
     # reasoning_details: charge only the thinking TEXT, never the signed /

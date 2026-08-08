@@ -274,7 +274,7 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
         "umask 077 && "
         f"[ ! -L {quoted_dir} ] && mkdir -p {quoted_dir} && "
         f"[ -O {quoted_dir} ] && chmod 700 {quoted_dir} && "
-        f"(find {quoted_dir} -type f -name '*.txt' -mtime +{RESULT_TTL_DAYS} "
+        f"(find {quoted_dir} -type f -name '*.txt' -mtime +{RESULT_TTL_DAYS - 1} "
         "-exec rm -f {} + 2>/dev/null || true) && "
         f"rm -f {quoted_path} && cat > {quoted_path}"
     )

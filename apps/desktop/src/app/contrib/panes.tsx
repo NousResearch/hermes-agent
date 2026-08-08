@@ -18,6 +18,7 @@ import type { GroupSetter } from '@/app/shell/group-setter'
 import type { StatusbarItem } from '@/app/shell/statusbar-controls'
 import type { TitlebarTool } from '@/app/shell/titlebar-controls'
 import { DecodeText } from '@/components/ui/decode-text'
+import { LogTail } from '@/components/chat/log-tail'
 import { ContribBoundary } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
@@ -53,12 +54,9 @@ export function LogsPane() {
   }
 
   // No chrome of its own — the zone header (when the user summons it) is the
-  // pane's only label. Just the tail.
-  return (
-    <pre className="h-full min-h-0 overflow-auto whitespace-pre-wrap break-words p-2.5 font-mono text-[0.66rem] leading-relaxed text-(--ui-text-secondary)">
-      {data.lines.join('\n')}
-    </pre>
-  )
+  // pane's only label. Just the tail, on the shared LogTail surface so log text
+  // is selectable and the tail follows unless the user scrolls up.
+  return <LogTail emptyLabel="no log output yet" lines={data.lines} />
 }
 
 // ---------------------------------------------------------------------------

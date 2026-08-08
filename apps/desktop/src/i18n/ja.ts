@@ -665,7 +665,9 @@ export const ja = defineLocale({
       imported: '設定をインポートしました',
       invalidJson: '設定 JSON が無効です',
       keepAwakeTitle: 'コンピューターをスリープさせない',
-      keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。'
+      keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。',
+      minimizeToTrayTitle: '閉じるときにシステムトレイへ最小化',
+      minimizeToTrayDesc: 'Windows では、閉じる (X) をクリックすると Hermes を終了せずにシステムトレイへ隠し、動作を継続します。トレイアイコンを右クリックして「終了」を選ぶと終了します。macOS と Linux では利用できません。'
     },
     quickEntry: {
       enabledTitle: 'クイック入力',

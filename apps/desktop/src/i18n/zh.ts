@@ -777,6 +777,8 @@ export const zh: Translations = {
       invalidJson: '配置 JSON 无效',
       keepAwakeTitle: '保持电脑唤醒',
       keepAwakeDesc: '阻止本机休眠，让长时间或通宵运行继续进行。屏幕仍可变暗。',
+      minimizeToTrayTitle: '关闭时最小化到系统托盘',
+      minimizeToTrayDesc: '在 Windows 上，点击关闭（X）会将 Hermes 隐藏到系统托盘而不是退出，使其继续运行。右键点击托盘图标并选择“退出”即可退出。macOS 和 Linux 不支持此功能。',
       attachmentSizeTitle: '预览 / 图片加载大小上限',
       attachmentSizeDesc:
         '桌面端为预览和图片附件加载本地文件的大小上限（MB）。默认为 16。远程非图片附件使用单独的 256 MB 上限。设置过大会将整个文件读入内存，可能导致应用卡死或崩溃。',

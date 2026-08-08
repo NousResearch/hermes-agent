@@ -153,6 +153,9 @@ declare global {
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
       setTranslucency?: (payload: { intensity: number }) => void
       setKeepAwake?: (on: boolean) => void
+      /** Windows only: hide the app to the system tray on window close instead
+       *  of quitting. Main owns the tray icon + the close intercept. */
+      setMinimizeToTray?: (on: boolean) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       openPreviewInBrowser?: (url: string) => Promise<void>

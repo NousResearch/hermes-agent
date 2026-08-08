@@ -652,7 +652,9 @@ export const zhHant = defineLocale({
       imported: '設定已匯入',
       invalidJson: '設定 JSON 無效',
       keepAwakeTitle: '保持電腦喚醒',
-      keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。'
+      keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
+      minimizeToTrayTitle: '關閉時最小化到系統匣',
+      minimizeToTrayDesc: '在 Windows 上，點擊關閉（X）會將 Hermes 隱藏到系統匣而不是結束，使其持續運作。在系統匣圖示上按右鍵並選擇「結束」即可退出。macOS 和 Linux 不支援此功能。'
     },
     quickEntry: {
       enabledTitle: '快速輸入',

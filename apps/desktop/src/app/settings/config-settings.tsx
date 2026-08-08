@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { isWindows } from '@/lib/platform'
 import {
   $dataUrlReadMaxMb,
   clampDataUrlReadMaxMb,
@@ -19,6 +20,7 @@ import {
   setDataUrlReadMaxMb
 } from '@/store/data-url-read-max'
 import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
+import { $minimizeToTray, setMinimizeToTray } from '@/store/minimize-to-tray'
 import { notify, notifyError } from '@/store/notifications'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
@@ -313,6 +315,9 @@ export function ConfigSettings({
             label={c.keepAwakeTitle}
             onChange={setKeepAwake}
           />
+          {isWindows() ? (
+            <MinimizeToTraySettings />
+          ) : null}
           <QuickEntrySettings />
         </>
       )}
@@ -427,6 +432,24 @@ function AttachmentSizeSetting() {
       }
       description={c.attachmentSizeDesc}
       title={c.attachmentSizeTitle}
+    />
+  )
+}
+
+/** Windows-only: hide the app to the system tray on window close instead of
+ *  quitting, so the agent keeps running. Mirrors the preference to the main
+ *  process, which owns the tray icon + the close intercept. */
+function MinimizeToTraySettings() {
+  const { t } = useI18n()
+  const c = t.settings.config
+  const minimizeToTray = useStore($minimizeToTray)
+
+  return (
+    <ToggleRow
+      checked={minimizeToTray}
+      description={c.minimizeToTrayDesc}
+      label={c.minimizeToTrayTitle}
+      onChange={setMinimizeToTray}
     />
   )
 }

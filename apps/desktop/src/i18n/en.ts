@@ -567,6 +567,8 @@ export const en: Translations = {
       invalidJson: 'Invalid config JSON',
       keepAwakeTitle: 'Keep computer awake',
       keepAwakeDesc: 'Stop this machine from sleeping so long or overnight runs keep going. The display can still dim.',
+      minimizeToTrayTitle: 'Minimize to system tray on close',
+      minimizeToTrayDesc: 'On Windows, clicking the close (X) hides Hermes to the system tray instead of quitting, so it keeps running. Right-click the tray icon and choose Exit to quit. Not available on macOS or Linux.',
       attachmentSizeTitle: 'Max preview / image load size',
       attachmentSizeDesc:
         'How big a local file Desktop will load for previews and image attach, in MB. Default is 16. Remote non-image attach uses a separate 256 MB cap. Setting this very high loads the whole file into memory and can freeze or crash the app.',

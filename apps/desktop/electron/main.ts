@@ -27,7 +27,8 @@ import {
   screen,
   session,
   shell,
-  systemPreferences
+  systemPreferences,
+  Tray
 } from 'electron'
 import nodePty from 'node-pty'
 
@@ -187,6 +188,7 @@ import {
 } from './ssh-connection'
 import { createStreamThrottle } from './stream-throttle'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
+import { createTrayController, shouldMinimizeToTray } from './tray-close'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
@@ -2616,6 +2618,28 @@ let isQuittingForHandoff = false
 // (the app.quit() that follows re-enters before-quit and must pass through).
 let quitPromptOpen = false
 let quitConfirmedWithActiveWork = false
+
+// Set in `before-quit` so the close handler can tell a real quit (any path:
+// File → Quit, tray Exit, hand-off, a second-instance quit) from a plain
+// "click the X" hide. Deriving it from the other latches is wrong — a plain
+// app.quit() with no active work leaves them all false, which would make the
+// close handler hide the window instead of quitting.
+let isQuitting = false
+
+// Close-to-tray (Windows only): clicking X hides the main window to the system
+// tray instead of quitting, so the agent keeps running. `trayMinimizeEnabled`
+// is the user preference (persisted, renderer-driven). `trayController` owns
+// the tray icon; it is only built when the preference is on AND we're on
+// Windows. macOS always quits on close (Dock convention), so the flag is inert
+// there.
+let trayMinimizeEnabled = false
+
+const trayController = createTrayController(
+  IS_WINDOWS,
+  nativeImagePath => new Tray(nativeImagePath),
+  path => (path ? nativeImage.createFromPath(path) : nativeImage.createEmpty()),
+  template => Menu.buildFromTemplate(template)
+)
 
 // Resolve the staged updater binary the desktop may hand an update to. On
 // Windows that binary owns ALL repo mutation — running `hermes update` +
@@ -9347,7 +9371,32 @@ function createWindow() {
   mainWindow.on('moved', schedulePersistWindowState)
   mainWindow.on('maximize', schedulePersistWindowState)
   mainWindow.on('unmaximize', schedulePersistWindowState)
-  mainWindow.on('close', () => schedulePersistWindowState.flush())
+  // Close-to-tray (Windows): clicking X hides the window to the system tray
+  // instead of quitting, so the agent keeps running. A real quit (app.quit()
+  // from the tray "Exit" menu, the in-app quit, or a hand-off relaunch) must
+  // pass through and actually close the window — shouldMinimizeToTray encodes
+  // that, and preventDefault is only called for the intercepted hide.
+  mainWindow.on('close', event => {
+    if (
+      shouldMinimizeToTray({
+        event,
+        isEnabled: trayMinimizeEnabled,
+        isMainWindow: true,
+        isQuitting,
+        isQuittingForHandoff,
+        isWindows: IS_WINDOWS
+      })
+    ) {
+      // Persist geometry first (the backstop below is skipped for the hide),
+      // then hide. The window stays alive off-screen; tray "Open" restores it.
+      schedulePersistWindowState.flush()
+      mainWindow?.hide()
+
+      return
+    }
+
+    schedulePersistWindowState.flush()
+  })
 
   // the closed wrapper remains truthy, so clear only the window this callback owns.
   const createdMainWindow = mainWindow
@@ -10661,6 +10710,56 @@ ipcMain.on('hermes:translucency', (_event, payload) => {
   }
 })
 
+// Close-to-tray (Windows): the renderer persists the preference and mirrors it
+// here. Main builds/destroys the tray icon to match. macOS is handled upstream
+// (shouldMinimizeToTray always says no there), so the tray is never built off
+// Windows regardless of the flag.
+const TRAY_MINIMIZE_CONFIG_PATH = path.join(app.getPath('userData'), 'tray-minimize.json')
+
+function readPersistedTrayMinimize(): boolean {
+  try {
+    return JSON.parse(fs.readFileSync(TRAY_MINIMIZE_CONFIG_PATH, 'utf8')).enabled === true
+  } catch {
+    return false
+  }
+}
+
+function applyTrayMinimize(enabled: boolean) {
+  trayMinimizeEnabled = enabled
+
+  if (enabled && IS_WINDOWS) {
+    trayController.build({
+      iconPath: getAppIconPath(),
+      // A plain app.quit(): `before-quit` sets the `isQuitting` latch and
+      // runs the same active-work guard as every other quit, so the
+      // "Keep Running / Quit Anyway" prompt still appears with a turn in
+      // flight. Do NOT pre-set quitConfirmedWithActiveWork here — that would
+      // suppress the confirmation.
+      onQuit: () => app.quit(),
+      onRestore: () => ensureMainWindow(mainWindow, {
+        createWindow,
+        focusWindow,
+        isReady: app.isReady()
+      })
+    })
+  } else {
+    trayController.destroy()
+  }
+}
+
+ipcMain.on('hermes:tray-minimize:set', (_event, enabled) => {
+  const on = Boolean(enabled)
+
+  applyTrayMinimize(on)
+
+  try {
+    fs.mkdirSync(path.dirname(TRAY_MINIMIZE_CONFIG_PATH), { recursive: true })
+    fs.writeFileSync(TRAY_MINIMIZE_CONFIG_PATH, JSON.stringify({ enabled: on }, null, 2), 'utf8')
+  } catch (error) {
+    rememberLog(`[tray-minimize] write failed: ${error.message}`)
+  }
+})
+
 // Keep-awake: hold the machine awake for long/overnight runs. Main owns the one
 // blocker and its persisted state so a cold launch restores it (applied on
 // ready — powerSaveBlocker needs the app ready). The renderer toggles it from
@@ -11860,6 +11959,9 @@ app.whenReady().then(() => {
   // it without the renderer visiting Settings. A failed registration is logged
   // here and surfaced in Settings via the IPC state (never silent).
   applyQuickEntrySettings(readQuickEntrySettings())
+  // Close-to-tray: restore the preference so a cold launch hides to the tray
+  // without the renderer visiting Settings (and the tray icon reappears).
+  applyTrayMinimize(readPersistedTrayMinimize())
 
   if (IS_MAC) {
     const reposition = () => wakeIndicatorController.reposition()
@@ -11961,11 +12063,22 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
 }
 
 app.on('before-quit', event => {
+  // Signal a genuine quit to the close handler (runs before the tray is
+  // destroyed below), so every quit path — File → Quit, tray Exit, hand-off —
+  // closes the window instead of hiding it. The close handler reads this latch
+  // (set here) rather than the active-work latches, which are false on a plain
+  // quit and would otherwise be mistaken for a plain "click the X" hide.
+  isQuitting = true
+
   // Runs ahead of every teardown below, so "Keep Running" leaves the app
   // exactly as it was.
   if (heldQuitForActiveWork(event)) {
     return
   }
+
+  // A tray-minimized window is merely hidden, not closed; drop the tray icon
+  // so a real quit leaves no orphan in the system tray.
+  trayController.destroy()
 
   if ((sshConnections.size > 0 || sshBootstrapCoordinator.promises().length > 0) && !sshQuitTeardownDone) {
     event.preventDefault()

@@ -626,6 +626,10 @@ export const ar = defineLocale({
       failedLoad: 'فشل تحميل الإعدادات',
       autosaveFailed: 'فشل الحفظ التلقائي',
       imported: 'تم استيراد الإعدادات',
+      keepAwakeTitle: 'إبقاء الكمبيوتر مستيقظًا',
+      keepAwakeDesc: 'امنع هذا الجهاز من النوم حتى تستمر المهام الطويلة أو طوال الليل. يمكن للشاشة التعتيم.',
+      minimizeToTrayTitle: 'تصغير إلى علبة النظام عند الإغلاق',
+      minimizeToTrayDesc: 'في Windows، يؤدي النقر على الإغلاق (X) إلى إخفاء Hermes في علبة النظام بدلًا من الإنهاء، ليكمل العمل. انقر بزر الماوس الأيمن على أيقونة العلبة واختر خروج للإنهاء. غير متاح على macOS أو Linux.',
       invalidJson: 'JSON غير صالح'
     },
     quickEntry: {

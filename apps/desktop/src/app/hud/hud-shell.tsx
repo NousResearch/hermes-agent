@@ -358,7 +358,7 @@ export function HudShell() {
       <Tip label={t.titlebar.exitHud}>
         <Button
           aria-label={t.titlebar.exitHud}
-          className={`${titlebarButtonClass} absolute right-1.5 top-1.5 z-20 bg-transparent [-webkit-app-region:no-drag]`}
+          className={`${titlebarButtonClass} absolute z-20`}
           data-hud-exit=""
           onClick={closeHud}
           size="icon-titlebar"

@@ -945,6 +945,17 @@
   --arc-c2: color-mix(in srgb, var(--arc-c1) 45%, transparent);
 }
 
+/* HUD composer — same travelling arc as a working sidebar row, 2px and pill-
+   rounded to match the bar. */
+.arc-border.arc-composer,
+:root.dark .arc-border.arc-composer {
+  --arc-width: 2px;
+  --arc-standoff: 0rem;
+  --arc-radius: 0.75rem;
+  --arc-c2: color-mix(in srgb, var(--arc-c1) 45%, transparent);
+  z-index: 6;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .arc-border::before {
     animation: none;
@@ -2255,6 +2266,11 @@ button[data-slot='aui_msg-reactions'] svg {
      both directions is what made this feel mechanical. */
   --hud-ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
   --hud-ease-exit: cubic-bezier(0.4, 0, 0.7, 0.2);
+  /* The band is narrower than the bar, centred under it, so the bar's corner
+     controls sit clear of the sheet's edge instead of on top of it. */
+  --hud-band-inset: 0.5rem;
+  /* Clear space above the composer for the exit chip. */
+  --hud-chip-strip: 1.625rem;
 }
 
 /* Chat surface carries nothing in HUD mode — the visual is the BAND below. */
@@ -2266,11 +2282,6 @@ button[data-slot='aui_msg-reactions'] svg {
 /* The scrollback — the chat BAND, straight from the nous-viz2d chat (which is
    the reference for this whole surface): a fixed-height smoked strip hugging
    the input, tinted from the theme, with the text simply sitting in it.
-  /* The band is narrower than the bar, centred under it, so the bar's corner
-     controls sit clear of the sheet's edge instead of on top of it. */
-  --hud-band-inset: 0.5rem;
-  /* Clear space above the composer for the exit chip. */
-  --hud-chip-strip: 1.625rem;
 
      - viz2d: `bg-black/20` at rest → `bg-black/60` on hover / focus-within /
        pending. Same mechanism here, theme-aware: the tint is the theme's own
@@ -2351,10 +2362,6 @@ button[data-slot='aui_msg-reactions'] svg {
    should be disappearing. The way through is NSVisualEffectView.maskImage
    behind a small native addon, which is its own change. */
 [data-hud-shell] [data-hud-glass] {
-  /* The exit chip rides this box, not the band — the band is the whole window,
-     so anchoring there left the chip stranded in empty space above a short
-     transcript. */
-  anchor-name: --hud-band;
   position: absolute;
   right: var(--hud-band-inset);
   bottom: 0;
@@ -2531,12 +2538,18 @@ button[data-slot='aui_msg-reactions'] svg {
 /* ── Edge flip ───────────────────────────────────────────────────────────────
    Parked in the top half of the screen (data-hud-edge='top', broadcast by
    main on move/resize), the whole HUD mirrors vertically: composer hugs the
-   window's top edge, the band hangs BELOW it, text melts at the bottom, and
-   the drag strip moves to the bottom dead zone. Same four surfaces, same
-   variables — only the anchors swap. */
+   window's top edge, the band hangs BELOW it, and text melts at the bottom.
+   Same surfaces, same variables — only the anchors swap.
+
+   The bar would sit flush against the window's top edge, leaving no "above the
+   composer" to put anything in — which is where the exit chip belongs. Reserve
+   the strip as dock padding rather than moving the bar: --hud-bar-height is
+   measured from the dock's box, so the band's offset picks the gap up on its
+   own instead of needing a second variable kept in sync. */
 [data-hud-shell][data-hud-edge='top'] [data-slot='composer-dock'] {
   top: 0 !important;
   bottom: auto !important;
+  padding-top: var(--hud-chip-strip) !important;
 }
 
 [data-hud-shell][data-hud-edge='top'] [data-slot='composer-bounds'] {
@@ -2727,62 +2740,76 @@ button[data-slot='aui_msg-reactions'] svg {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
   box-shadow: none !important;
+  transition: border-color var(--hud-reveal) var(--hud-ease-enter);
 }
 
-/* The exit button: a real control, visible at rest, on a card chip so it
-   reads against any backdrop.
+/* Focus: the border the bar already has, in the accent. Everything with its own
+   geometry is out — the bar sits flush against the window, so a ring or a
+   shadow is sawn off by the window before any CSS can shape it, and paying for
+   the clearance moves the bar. Recolouring what is already drawn costs no
+   space, cannot be clipped, and leaves the working arc as the only ring. */
+[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-slot='composer-surface'] {
+  border-color: var(--dt-primary) !important;
+}
 
-   Square (aspect-ratio 1/1 on the app's titlebar button size) and INSET from
-   the band's corner — tucked flush it read as a mistake; a chip floating in
-   the corner with its own margin reads as intentional. anchor() to the band:
-   calc()-based attempts drifted because the composer's measured vars are
-   inline-scoped and stale outside [data-chat-surface]. */
+/* Long-press drag armed — the whole bar is the handle until release. */
+[data-hud-shell] [data-slot='composer-root'][data-hud-grabbing] [data-slot='composer-dock'] {
+  cursor: grabbing;
+}
 
+/* The exit button. HUD mode has no titlebar, so this is the only visible way
+   back; it lives in the open space off the bar's outer edge, at the right.
+
+   A bare themed glyph rather than a chip: it sits over whatever the user is
+   really working in, and a card floating there is a stray fragment of app on
+   their screen.
+
+   Placed from --hud-bar-height rather than CSS anchor(). Lightning CSS drops a
+   whole rule containing an `anchor()` on the vertical axis, so the flipped-edge
+   override never reached the browser and the chip rendered off screen. */
 [data-hud-shell] [data-hud-exit] {
-  position-anchor: --hud-band;
   left: auto;
-  bottom: auto;
-  right: calc(anchor(right) + 0.5rem);
-  top: calc(anchor(top) + 0.5rem);
+  top: auto;
+  right: 0.375rem;
+  bottom: calc(var(--hud-bar-height, var(--composer-fallback-height)) + 0.375rem);
   aspect-ratio: 1;
   height: auto;
-  background: var(--dt-card) !important;
-  border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: 0.5rem;
-  /* Part of the band, so it lives and dies with it — same states, same timing.
-     Left visible at rest it is a lone chip hovering in empty space a hundred
-     pixels above the bar; revealed on hovering the window it pops up whenever
-     the cursor crosses the HUD on its way somewhere else. */
+  background: transparent !important;
+  border: 0;
+  color: var(--ui-text-primary) !important;
+  /* Focus only. A turn landing brings the transcript up but doesn't mean you
+     are reaching for the window controls, and at rest this is a lone chip
+     hovering over whatever you're actually working in. */
   opacity: 0;
   transition: opacity var(--hud-fade) var(--hud-ease-exit);
-  /* And it takes clicks on exactly the same terms as the band it sits in —
-     visible or nothing. A faded-out control that still takes clicks is an
-     invisible button floating over the app behind; a lit one that doesn't is
-     the dead chip you get from keying this to focus alone. */
+  /* Clicks on exactly the same terms as the paint — a faded-out control that
+     still takes them is an invisible button floating over the app behind. */
   pointer-events: none;
 }
 
-[data-hud-shell][data-hud-recent] [data-hud-exit],
-[data-hud-shell]:focus-within [data-hud-exit] {
-  pointer-events: auto;
-}
-
-/* Flipped, the sheet's top corner is behind the bar — drop the chip clear of
-   it so it stays in the transcript rather than under the composer. */
+/* Flipped, "above the composer" is the reserved strip at the top of the
+   window rather than a gap the band has to leave. */
 [data-hud-shell][data-hud-edge='top'] [data-hud-exit] {
-  top: calc(anchor(top) + var(--hud-bar-height, var(--composer-fallback-height)) + 0.5rem);
+  bottom: auto;
+  top: 0;
 }
 
-[data-hud-shell][data-hud-recent] [data-hud-exit],
 [data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-exit] {
   opacity: 0.75;
+  pointer-events: auto;
   transition-duration: var(--hud-reveal);
   transition-delay: 0s;
 }
 
-[data-hud-shell][data-hud-recent] [data-hud-exit]:hover,
 [data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-exit]:hover {
   opacity: 1;
+}
+
+/* The composer's drop target is a full-window dashed sheet sized for the app's
+   chat column. In the HUD it is a white slab hanging under the bar on a fresh
+   thread, and there is nowhere to drop anything into a bar anyway. */
+[data-hud-shell] [data-slot='chat-drop-overlay'] {
+  display: none !important;
 }
 
 /* The dock's fade-to-surface gradient assumes a chat column behind it; over a
@@ -2805,13 +2832,6 @@ button[data-slot='aui_msg-reactions'] svg {
    a HUD is a small window and a 400px menu cannot fit in it. */
 html:has([data-hud-shell]) [data-slot='dropdown-menu-content'] [class*='max-h-'],
 html:has([data-hud-shell]) [data-slot='popover-content'] [class*='max-h-'] {
-/* The composer's drop target is a full-window dashed sheet sized for the app's
-   chat column. In the HUD it is a white slab hanging under the bar on a fresh
-   thread, and there is nowhere to drop anything into a bar anyway. */
-[data-hud-shell] [data-slot='chat-drop-overlay'] {
-  display: none !important;
-}
-
   max-height: max(5rem, calc(100dvh - 9rem)) !important;
 }
 

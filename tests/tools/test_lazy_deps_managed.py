@@ -24,7 +24,12 @@ def _missing_and_installable(monkeypatch):
     ``allow_lazy_installs: false`` otherwise short-circuits with a different
     rejection reason).
     """
-    monkeypatch.setattr(lazy_deps, "feature_missing", lambda _f: ("some-pkg==1.0",))
+    monkeypatch.setattr(
+        lazy_deps, "feature_missing",
+        # ensure() passes the ``runtime`` flag (added for #80390) — the mock
+        # must tolerate it to keep forcing the "missing" state.
+        lambda _f, **kw: ("some-pkg==1.0",),
+    )
     monkeypatch.setattr(lazy_deps, "_allow_lazy_installs", lambda: True)
     monkeypatch.setattr(lazy_deps, "_lazy_install_target", lambda: None)
 

@@ -475,6 +475,26 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
 # Status
 # ---------------------------------------------------------------------------
 
+def _runtime_lazy_missing(provider_name: str) -> tuple[str, ...]:
+    """Return lazy specs the provider's runtime retain path is missing.
+
+    Mirrors the exact predicate the runtime uses — the memory providers gate
+    retains on ``tools.lazy_deps.ensure(f"memory.{provider_name}")`` — so
+    ``status`` and runtime can never disagree (#80388). Uses the same runtime
+    semantics as ``ensure`` (a newer-than-pin install counts as satisfied and
+    is never reported missing). Empty when the provider has no lazy feature
+    or its deps are satisfied.
+    """
+    feature = f"memory.{provider_name}"
+    try:
+        from tools.lazy_deps import LAZY_DEPS, feature_missing
+    except Exception:
+        return ()  # lazy_deps unavailable — fall back to the plugin's own check
+    if feature not in LAZY_DEPS:
+        return ()
+    return tuple(feature_missing(feature, runtime=True))
+
+
 def cmd_status(args) -> None:
     """Show current memory provider config."""
     from hermes_cli.config import load_config
@@ -528,24 +548,40 @@ def cmd_status(args) -> None:
 
         if provider:
             print("\n  Plugin:    installed ✓")
-            if provider.is_available():
+            runtime_missing = _runtime_lazy_missing(provider_name)
+            plugin_ok = provider.is_available()
+            if plugin_ok and not runtime_missing:
                 print("  Status:    available ✓")
             else:
                 print("  Status:    not available ✗")
-                schema = provider.get_config_schema() if hasattr(provider, "get_config_schema") else []
-                # Check all fields that have env_var (both secret and non-secret)
-                required_fields = [f for f in schema if f.get("env_var")]
-                if required_fields:
-                    print("  Missing:")
-                    for f in required_fields:
-                        env_var = f.get("env_var", "")
-                        url = f.get("url", "")
-                        is_set = bool(os.environ.get(env_var))
-                        mark = "✓" if is_set else "✗"
-                        line = f"    {mark} {env_var}"
-                        if url and not is_set:
-                            line += f"  → {url}"
-                        print(line)
+                if runtime_missing:
+                    print("  Missing runtime deps:")
+                    for spec in runtime_missing:
+                        print(f"    ✗ {spec}")
+                    try:
+                        from tools.lazy_deps import feature_install_command
+
+                        manual = feature_install_command(f"memory.{provider_name}")
+                    except Exception:
+                        manual = None
+                    if manual:
+                        print("  Fix: run 'hermes memory setup' — or install manually:")
+                        print(f"    {manual}")
+                if not plugin_ok:
+                    schema = provider.get_config_schema() if hasattr(provider, "get_config_schema") else []
+                    # Check all fields that have env_var (both secret and non-secret)
+                    required_fields = [f for f in schema if f.get("env_var")]
+                    if required_fields:
+                        print("  Missing:")
+                        for f in required_fields:
+                            env_var = f.get("env_var", "")
+                            url = f.get("url", "")
+                            is_set = bool(os.environ.get(env_var))
+                            mark = "✓" if is_set else "✗"
+                            line = f"    {mark} {env_var}"
+                            if url and not is_set:
+                                line += f"  → {url}"
+                            print(line)
         else:
             print("\n  Plugin:    NOT installed ✗")
             print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")

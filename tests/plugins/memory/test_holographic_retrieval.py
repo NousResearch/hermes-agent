@@ -161,10 +161,13 @@ def test_search_encodes_query_vector_once(hoisted_retriever, monkeypatch):
 
 
 def test_search_results_bit_identical_to_unhoisted(hoisted_retriever):
-    """Parity: hoisted search() must produce the exact pre-fix results.
+    """Parity: hoisted search() must produce the exact same results as the
+    equivalent unhoisted loop.
 
-    Replicates the pre-fix loop (query vector encoded per candidate) as the
-    reference and compares full scored output for exact equality.
+    Replicates the unhoisted loop (query vector encoded per candidate) as
+    the reference and compares full scored output for exact equality. The
+    reference uses the same corrected query encoding (encode_query) as
+    search(), so this test pins the hoist, not the encoding.
     """
     r = hoisted_retriever
     query = "deploy target setting"
@@ -182,7 +185,7 @@ def test_search_results_bit_identical_to_unhoisted(hoisted_retriever):
         fts_score = fact.get("fts_rank", 0.0)
         if r.hrr_weight > 0 and fact.get("hrr_vector"):
             fact_vec = hrr.bytes_to_phases(fact["hrr_vector"])
-            query_vec = hrr.encode_text(query, r.hrr_dim)  # per-candidate
+            query_vec = hrr.encode_query(query, r.hrr_dim)  # per-candidate
             hrr_sim = (hrr.similarity(query_vec, fact_vec) + 1.0) / 2.0
         else:
             hrr_sim = 0.5
@@ -237,4 +240,91 @@ def test_search_without_vectors_never_encodes(hoisted_retriever, monkeypatch):
     assert calls == [], (
         f"encode_text called {len(calls)}x with zero vector candidates — "
         "lazy hoist regressed to eager"
+    )
+
+
+# ---------------------------------------------------------------------------
+# HRR query-space fix: search() must compare the query in the fact space.
+#
+# Facts store content bound to ROLE_CONTENT (encode_fact). The old
+# search() compared a raw, unbound query bundle against that, which is
+# unrelated to every stored fact — the HRR score was pure noise.
+# encode_query binds the query to ROLE_CONTENT and restores the signal.
+# ---------------------------------------------------------------------------
+
+DIM = 1024
+
+
+def test_encode_query_lives_in_the_fact_space():
+    """encode_query must land in the same space as encode_fact.
+
+    The old search() compared a raw, unbound encode_text bundle, which
+    is unrelated to stored fact vectors.
+    """
+    fact_vec = hrr.encode_fact("the deployment rollback failed", [], DIM)
+    matching = hrr.encode_query("deployment rollback", DIM)
+    unrelated = hrr.encode_query("compaction threshold tuning", DIM)
+    raw = hrr.encode_text("deployment rollback", DIM)  # the old encoding: unbound
+
+    bound_sim = hrr.similarity(matching, fact_vec)
+    raw_sim = hrr.similarity(raw, fact_vec)
+    unrelated_sim = hrr.similarity(unrelated, fact_vec)
+
+    # Same-space query is clearly similar to a fact sharing its content...
+    assert bound_sim > 0.5, f"expected a real signal, got {bound_sim:.3f}"
+    # ...and clearly beats the old raw (unbound) comparison...
+    assert bound_sim > raw_sim + 0.1, (
+        f"bound query ({bound_sim:.3f}) must beat the old raw comparison "
+        f"({raw_sim:.3f})"
+    )
+    # ...and an unrelated query.
+    assert bound_sim > unrelated_sim + 0.1, (
+        f"matching query ({bound_sim:.3f}) must beat unrelated "
+        f"({unrelated_sim:.3f})"
+    )
+    # Binding scrambles the vector: the bound query is unrelated to its
+    # own unbound bundle.
+    assert hrr.similarity(matching, raw) < 0.5
+
+
+def test_search_pure_hrr_separates_matching_fact(tmp_path):
+    """With HRR as the only scoring signal, the matching fact must win.
+
+    Regression test for the fix: before it, every candidate scored ~0.5
+    (noise), so the HRR signal was dead weight and a matching fact had
+    no advantage.
+    """
+    store = MemoryStore(str(tmp_path / "query_space.db"))
+    try:
+        store.add_fact(
+            content="deployment rollback migration stale state",
+            category="project",
+        )
+        store.add_fact(
+            content="deployment config tuned for high traffic",
+            category="project",
+        )
+        store.add_fact(
+            content="rollback procedure documented in the runbook",
+            category="project",
+        )
+        retriever = FactRetriever(
+            store=store,
+            fts_weight=0.0,
+            jaccard_weight=0.0,
+            hrr_weight=1.0,
+        )
+        results = retriever.search("deployment rollback migration state", limit=3)
+    finally:
+        store.close()
+
+    assert results, "expected FTS candidates"
+    target = next(r for r in results if "migration stale" in r["content"])
+    distractors = [r for r in results if "migration stale" not in r["content"]]
+    assert distractors, "distractors must be FTS candidates too"
+    margin = target["score"] - max(d["score"] for d in distractors)
+    assert margin > 0.1, (
+        "HRR must clearly separate the matching fact from candidates that "
+        f"share only one query token (margin={margin:.3f}, "
+        f"target={target['score']:.3f})"
     )

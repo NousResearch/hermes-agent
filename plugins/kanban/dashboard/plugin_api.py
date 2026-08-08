@@ -511,6 +511,39 @@ def get_board(
 
 
 # ---------------------------------------------------------------------------
+# GET /tasks/locate/:id — resolve a deep link across active boards
+# ---------------------------------------------------------------------------
+
+@router.get("/tasks/locate/{task_id}")
+def locate_task(task_id: str):
+    """Return the active board containing ``task_id``.
+
+    Dashboard links intentionally carry only the globally-random task id so
+    chat integrations do not need to know which board currently owns a card.
+    Archived boards and archived cards are excluded: those links fall back to
+    the normal board with a small not-found notice instead of opening stale
+    work.
+    """
+    for meta in kanban_db.list_boards(include_archived=False):
+        slug = meta["slug"]
+        conn = _conn(board=slug)
+        try:
+            task = kanban_db.get_task(conn, task_id)
+            if task is not None and task.status != "archived":
+                return {
+                    "board": slug,
+                    "task": {
+                        "id": task.id,
+                        "title": task.title,
+                        "status": task.status,
+                    },
+                }
+        finally:
+            conn.close()
+    raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+
+
+# ---------------------------------------------------------------------------
 # GET /tasks/:id
 # ---------------------------------------------------------------------------
 

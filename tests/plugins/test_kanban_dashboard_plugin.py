@@ -115,6 +115,56 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_locate_task_finds_active_card_across_boards(client):
+    kb.create_board("ops")
+    created = client.post(
+        "/api/plugins/kanban/tasks?board=ops",
+        json={"title": "Deep-linked card"},
+    ).json()["task"]
+
+    response = client.get(
+        f"/api/plugins/kanban/tasks/locate/{created['id']}"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "board": "ops",
+        "task": {
+            "id": created["id"],
+            "title": "Deep-linked card",
+            "status": "ready",
+        },
+    }
+
+
+def test_locate_task_treats_unknown_and_archived_cards_as_not_found(client):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Archived card"},
+    ).json()["task"]
+    archived = client.patch(
+        f"/api/plugins/kanban/tasks/{created['id']}",
+        json={"status": "archived"},
+    )
+    assert archived.status_code == 200
+
+    for task_id in (created["id"], "t_does_not_exist"):
+        response = client.get(f"/api/plugins/kanban/tasks/locate/{task_id}")
+        assert response.status_code == 404
+
+
+def test_dashboard_bundle_supports_task_deep_links():
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    assert 'new URLSearchParams(window.location.search).get("task")' in bundle
+    assert "`${API}/tasks/locate/${encodeURIComponent(deepLinkTaskId)}`" in bundle
+    assert "was not found or is archived" in bundle
+    assert "replaceTaskInLocation(taskId)" in bundle
+
+
 def test_patch_board_sets_project_directory(client, tmp_path):
     """Board-level default_workdir must be editable after creation."""
     kb.create_board("late-config")

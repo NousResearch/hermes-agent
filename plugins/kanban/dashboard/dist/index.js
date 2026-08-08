@@ -504,6 +504,23 @@
   // Root page
   // -------------------------------------------------------------------------
 
+  function taskIdFromLocation() {
+    try {
+      return (new URLSearchParams(window.location.search).get("task") || "").trim();
+    } catch (_e) {
+      return "";
+    }
+  }
+
+  function replaceTaskInLocation(taskId) {
+    try {
+      const url = new URL(window.location.href);
+      if (taskId) url.searchParams.set("task", taskId);
+      else url.searchParams.delete("task");
+      window.history.replaceState(window.history.state, "", url.pathname + url.search + url.hash);
+    } catch (_e) { /* non-fatal: drawer navigation still works */ }
+  }
+
   function KanbanPage() {
     const { t } = useI18n();
     const [board, setBoard] = useState(() => readSelectedBoard() || null);
@@ -531,7 +548,18 @@
     const [laneByProfile, setLaneByProfile] = useState(true);
     const [configApplied, setConfigApplied] = useState(false);
 
+    const [deepLinkTaskId] = useState(taskIdFromLocation);
+    const [deepLinkNotice, setDeepLinkNotice] = useState(null);
     const [selectedTaskId, setSelectedTaskId] = useState(null);
+    const openTask = useCallback(function (taskId) {
+      setSelectedTaskId(taskId);
+      setDeepLinkNotice(null);
+      replaceTaskInLocation(taskId);
+    }, []);
+    const closeTask = useCallback(function () {
+      setSelectedTaskId(null);
+      replaceTaskInLocation(null);
+    }, []);
     const [selectedIds, setSelectedIds] = useState(() => new Set());
     const [lastSelectedId, setLastSelectedId] = useState(null);
     const [failedIds, setFailedIds] = useState(() => new Set());
@@ -606,6 +634,35 @@
     }, [board]);
 
     useEffect(function () { loadBoardList(); }, [loadBoardList]);
+
+    // Resolve /kanban?task=<id> without requiring callers to know the board.
+    // The auth gate preserves the full path+query in its `next` parameter, so
+    // this runs unchanged after an OAuth/password round trip.
+    useEffect(function () {
+      if (!deepLinkTaskId) return;
+      SDK.fetchJSON(`${API}/tasks/locate/${encodeURIComponent(deepLinkTaskId)}`)
+        .then(function (result) {
+          const targetBoard = result && result.board;
+          const targetTask = result && result.task && result.task.id;
+          if (!targetBoard || !targetTask) throw new Error("invalid task lookup response");
+          if (targetBoard !== board) {
+            setBoardData(null);
+            cursorRef.current = 0;
+            setLoading(true);
+            setBoard(targetBoard);
+            writeSelectedBoard(targetBoard);
+            setSearch("");
+            setTenantFilter("");
+            setAssigneeFilter("");
+            setIncludeArchived(false);
+          }
+          openTask(targetTask);
+        })
+        .catch(function () {
+          setDeepLinkNotice(`Card ${deepLinkTaskId} was not found or is archived.`);
+          replaceTaskInLocation(null);
+        });
+    }, []);  // deep-link input is immutable for this page load
 
     const scheduleReload = useCallback(function () {
       if (reloadTimerRef.current) return;
@@ -1069,7 +1126,7 @@
         h(OrchestrationPanel, null),
         h(AttentionStrip, {
           boardData,
-          onOpen: setSelectedTaskId,
+          onOpen: openTask,
         }),
         h(BoardToolbar, {
           board: boardData,
@@ -1093,6 +1150,10 @@
          onSelectAllVisible: selectAllVisible,
          onDelete: deleteSelected,
        }) : null,
+        deepLinkNotice ? h("div", {
+          className: "text-xs text-muted-foreground border border-border bg-muted/40 px-3 py-2",
+          role: "status",
+        }, deepLinkNotice) : null,
         error ? h("div", { className: "text-xs text-destructive px-2" }, error) : null,
         h(BoardColumns, {
           board: filteredBoard,
@@ -1109,15 +1170,15 @@
           onMove: moveTask,
           onMoveSelected: moveSelected,
           onDelete: deleteTask,
-          onOpen: setSelectedTaskId,
+          onOpen: openTask,
           onCreate: createTask,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
         }),
         selectedTaskId ? h(TaskDrawer, {
           taskId: selectedTaskId,
           boardSlug: board,
-          onClose: function () { setSelectedTaskId(null); },
-          onOpenTask: setSelectedTaskId,
+          onClose: closeTask,
+          onOpenTask: openTask,
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),

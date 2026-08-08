@@ -3020,10 +3020,28 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
         def _is_suppressed(_p, _s):  # type: ignore[misc]
             return False
 
-    # Seed from the custom_providers config entry's api_key field
+    # Seed from the custom_providers config entry's api_key / key_env field.
+    # key_env (and its api_key_env alias) is the documented convention for
+    # custom providers; _seed_custom_pool was the lone seeding path that
+    # ignored it, leaving the pool empty (#79130).  Resolve via the same
+    # .env-prefer-over-os.environ pattern as _seed_from_env below so stale
+    # parent-process env vars cannot override deliberate .env changes.
     cp_config = _get_custom_provider_config(pool_key)
     if cp_config:
         api_key = str(cp_config.get("api_key") or "").strip()
+        if not api_key:
+            _key_env_name = str(
+                cp_config.get("key_env")
+                or cp_config.get("api_key_env")
+                or ""
+            ).strip()
+            if _key_env_name:
+                _env_file = load_env()
+                api_key = (
+                    _env_file.get(_key_env_name)
+                    or _get_secret(_key_env_name, "")
+                    or ""
+                ).strip()
         base_url = str(cp_config.get("base_url") or "").strip().rstrip("/")
         name = str(cp_config.get("name") or "").strip()
         if api_key:

@@ -359,6 +359,27 @@ describe('useModelControls', () => {
     expect(setGlobalModel).not.toHaveBeenCalled()
   })
 
+  it('does not emit an empty provider flag when a live model pick has no provider', async () => {
+    const requestGateway = vi.fn().mockResolvedValue({})
+    let controls!: Controls
+
+    $activeSessionId.set('session-1')
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(
+      controls.selectModel({
+        model: 'custom:qwen3.6-35b-a3b',
+        provider: ''
+      })
+    ).resolves.toBe(true)
+
+    expect(requestGateway).toHaveBeenCalledWith('config.set', {
+      session_id: 'session-1',
+      key: 'model',
+      value: 'custom:qwen3.6-35b-a3b --session'
+    })
+  })
+
   it('updates only the active profile new-chat cache', async () => {
     const queryClient = new QueryClient()
     $activeGatewayProfile.set('compass')

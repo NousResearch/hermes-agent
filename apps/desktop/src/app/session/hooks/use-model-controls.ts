@@ -207,10 +207,11 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
       }
 
       try {
+        const providerFlag = selection.provider ? ` --provider ${selection.provider}` : ''
         const result = await requestGateway<{ deferred?: boolean }>('config.set', {
           session_id: liveSessionId,
           key: 'model',
-          value: `${selection.model} --provider ${selection.provider} --session`
+          value: `${selection.model}${providerFlag} --session`
         })
 
         // A pick made DURING a turn is queued by the gateway and applied at the

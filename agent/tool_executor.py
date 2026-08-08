@@ -214,6 +214,14 @@ def _capture_agent_tool_execution_route(
         expected_epoch,
         function_name,
     )
+    if route is None and expected_kind == "registry":
+        # Direct/internal callers may extend ``valid_tool_names`` without
+        # rebuilding the optional route map. Leave those legacy calls to the
+        # existing dispatcher, which still revalidates the epoch before a
+        # handler starts; a captured-but-replaced entry remains fail-closed.
+        registry_routes = getattr(agent, "_tool_registry_routes", None)
+        if isinstance(registry_routes, dict) and function_name not in registry_routes:
+            return None
     if (
         route is None
         or route[0] != expected_kind

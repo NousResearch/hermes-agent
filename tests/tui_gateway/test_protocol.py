@@ -636,6 +636,97 @@ def test_skills_manage_search_uses_tools_hub_sources(server):
     search.assert_called_once_with("showroom", ["source"], source_filter="all", limit=20)
 
 
+def _seed_untracked_skill(monkeypatch, tmp_path, name="note-taker"):
+    """Put an untracked skill (no hub lock entry) at the install path.
+
+    Returns (skill_dir, do_install_calls); ``do_install`` is stubbed so the
+    test asserts on whether it is *reached*, never on a real network install.
+    """
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub as tools_hub
+
+    monkeypatch.setattr(tools_hub, "SKILLS_DIR", tmp_path / "skills")
+    skill_dir = tmp_path / "skills" / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: note-taker\ndescription: hand written\n---\n# my own notes\n",
+        encoding="utf-8",
+    )
+
+    calls = []
+    monkeypatch.setattr(cli_hub, "do_install", lambda *a, **kw: calls.append((a, kw)))
+    return skill_dir, calls
+
+
+def test_skills_manage_install_reports_untracked_refusal(server, monkeypatch, tmp_path):
+    """A refused install must not be reported as ``installed: True``.
+
+    ``do_install()`` refuses to replace a skill that has no hub lock entry with
+    a bare ``return``, and this handler hands it a console whose ``print`` is a
+    no-op — so the refusal and its "use --force" hint are both invisible here.
+    Before this was fixed the handler returned ``{"installed": True}`` for an
+    install that never happened.
+    """
+    skill_dir, calls = _seed_untracked_skill(monkeypatch, tmp_path)
+
+    resp = server.handle_request({
+        "id": "skills-install",
+        "method": "skills.manage",
+        "params": {"action": "install", "query": "note-taker"},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["installed"] is False
+    assert result["reason"] == "untracked_skill_exists"
+    assert result["path"] == str(skill_dir.resolve())
+    assert "force: true" in result["message"]
+    # The guard runs before do_install(), so the rmtree inside
+    # install_from_quarantine() is never reached either.
+    assert calls == []
+    assert (skill_dir / "SKILL.md").read_text(encoding="utf-8").endswith("# my own notes\n")
+
+
+def test_skills_manage_install_forwards_force_override(server, monkeypatch, tmp_path):
+    """``force`` is the override on this surface, and it reaches ``do_install``.
+
+    Without it the handler has no way to consent past the guard at all.
+    """
+    _skill_dir, calls = _seed_untracked_skill(monkeypatch, tmp_path)
+
+    resp = server.handle_request({
+        "id": "skills-install-force",
+        "method": "skills.manage",
+        "params": {"action": "install", "query": "note-taker", "force": True},
+    })
+
+    assert "error" not in resp
+    assert resp["result"] == {"installed": True, "name": "note-taker"}
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args == ("note-taker",)
+    assert kwargs["force"] is True
+    assert kwargs["skip_confirm"] is True
+
+
+def test_skills_manage_install_force_is_not_bare_truthiness(server, monkeypatch, tmp_path):
+    """``"false"`` over JSON-RPC must not consent to a destructive overwrite.
+
+    ``bool("false")`` is ``True``; this gate decides whether a user's own skill
+    directory gets rmtree'd, so it goes through the project's shared coercion.
+    """
+    _skill_dir, calls = _seed_untracked_skill(monkeypatch, tmp_path)
+
+    resp = server.handle_request({
+        "id": "skills-install-strforce",
+        "method": "skills.manage",
+        "params": {"action": "install", "query": "note-taker", "force": "false"},
+    })
+
+    assert resp["result"]["installed"] is False
+    assert calls == []
+
+
 # ── dispatch(): pool routing for long handlers (#12546) ──────────────
 
 

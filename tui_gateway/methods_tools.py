@@ -1743,13 +1743,38 @@ def _(rid, params: dict) -> dict:
                 },
             )
         if action == "install":
-            from hermes_cli.skills_hub import do_install
+            from hermes_cli.skills_hub import _untracked_skill_dir, do_install
+            from utils import is_truthy_value
 
             class _Q:
                 def print(self, *a, **k):
                     pass
 
-            do_install(query, skip_confirm=True, console=_Q())
+            # do_install()'s untracked-skill guard refuses with a bare return
+            # and reports through the console above, whose print() discards
+            # everything -- so a refusal is indistinguishable from success on
+            # this surface. Consult the guard's own helper before calling, and
+            # forward force so the refusal is overridable here as it is on the
+            # CLI. This call site passes no category, so neither does the
+            # pre-check; resolving the directory is left to the helper rather
+            # than rebuilt here, so the two surfaces name the same target.
+            force = is_truthy_value(params.get("force", False))
+            if not force:
+                untracked = _untracked_skill_dir(query, "")
+                if untracked is not None:
+                    return _ok(rid, {
+                        "installed": False,
+                        "name": query,
+                        "reason": "untracked_skill_exists",
+                        "path": str(untracked),
+                        "message": (
+                            f"'{query}' already exists at {untracked} and is not "
+                            "tracked by the skills hub (a local or user-edited "
+                            "skill). Installing would replace it. Retry with "
+                            "force: true to overwrite."
+                        ),
+                    })
+            do_install(query, force=force, skip_confirm=True, console=_Q())
             return _ok(rid, {"installed": True, "name": query})
         if action == "browse":
             from hermes_cli.skills_hub import browse_skills

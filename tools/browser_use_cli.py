@@ -308,13 +308,8 @@ _HEADER_BASE = (
     "Batch each sub-procedure (navigate, wait, extract, act) into one call "
     "— do not spend a call per action — but for long extractions prefer "
     "several medium calls that append to workspace files over one giant "
-    "call, so progress survives timeouts. js() takes a JS expression: "
-    "js('document.title') or js('(() => {...})()') — a bare '() => {...}' "
-    "returns the function itself, uncalled. The CLI's own documentation "
-    "follows and is complete (no need to read separate browser-use skill "
-    "files) — where it shows shell heredocs (browser-use <<'PY' … PY), pass "
-    "the Python as `code` instead; where it shows BU_NAME=<name>, pass "
-    "session=<name> instead."
+    "call, so progress survives timeouts. For a named cloud browser, pass "
+    "session=<name> (never BU_NAME env syntax)."
 )
 
 _HEADER_VISION = (
@@ -331,7 +326,13 @@ _HEADER_TEXT_ONLY = (
     "clicks — skip the screenshot-driven workflow described below."
 )
 
-_DESCRIPTION_HEADER = _HEADER_BASE
+_DESCRIPTION_HEADER = _HEADER_BASE  # back-compat alias for external imports
+
+# NOTE: browser_exec is additionally gated at tool-definition time — sessions
+# whose resolved toolsets do not include ``terminal`` never see it (see
+# model_tools._compute_tool_definitions). The check_fn registered below only
+# answers "is Browser Use mode configured"; surface policy lives with the
+# session, not in the process-wide TTL-cached check_fn.
 
 
 def _description_header() -> str:
@@ -348,32 +349,45 @@ def _description_header() -> str:
 _skill_text_cache: Optional[str] = None
 _skill_text_fetched = False
 
+# Pinned quick-reference for the CLI's pre-imported helpers. Replaces the
+# live ``browser-use skill`` fetch: embedding whatever text the installed CLI
+# version prints would ship uncontrolled third-party content into every
+# session's system-side schema (version drift across machines, supply-chain
+# exposure, and a byte-unstable prompt). A/B benchmarked Aug 2026 (108 runs,
+# opus-4.8 + kimi-k3, 6 multi-step tasks x 3 reps): header-only schema went
+# 36/36 vs 36/36 for the full skill dump at ~equal tokens (-60% vs the
+# legacy browser_* toolset either way). The pinned digest below keeps the
+# first-call reliability of the helper names without the 7.7KB dump.
+_HELPERS_DIGEST = (
+    "\n\nHELPERS (pre-imported): new_tab(url) opens/navigates (use for the "
+    "FIRST navigation), goto_url(url) navigates the current tab, "
+    "wait_for_load() after navigation, page_info() summarizes the current "
+    "page state, js(expr) evaluates a JS expression and returns its value "
+    "(js('document.title'); wrap function bodies as js('(() => {...})()') — "
+    "a bare '() => {...}' returns the function itself, uncalled), "
+    "fill_input(selector, text) types into inputs, click_at_xy(x, y) clicks "
+    "viewport coordinates, capture_screenshot() saves and prints a "
+    "screenshot path, cdp('Domain.method', **kwargs) is raw CDP — "
+    "cdp('Accessibility.getFullAXTree')['nodes'] lists every element's "
+    "role/name/backendDOMNodeId (filter in Python before printing; it is "
+    "thousands of nodes), then cdp('DOM.getBoxModel', backendNodeId=n) gives "
+    "click coordinates. ensure_real_tab() recovers from a stale/internal "
+    "tab. Login walls: stop and ask the user; never guess credentials."
+)
+
 
 def _cli_skill_text() -> str:
-    """Return the installed CLI's skill"""
-    global _skill_text_cache, _skill_text_fetched
-    if _skill_text_fetched:
-        return _skill_text_cache or ""
-    _skill_text_fetched = True
-    cmd = _find_cli()
-    if not cmd:
-        return ""
-    try:
-        proc = subprocess.run(
-            [*cmd, "skill"], capture_output=True, text=True, timeout=30
-        )
-        if proc.returncode == 0 and proc.stdout.strip():
-            _skill_text_cache = proc.stdout.strip()
-    except Exception as e:
-        logger.debug("Could not fetch browser-use skill text: %s", e)
+    """Deprecated: always returns "" — the schema uses the pinned header.
+
+    Kept so tests and any external callers keep importing a stable symbol;
+    see _HELPERS_DIGEST for the rationale (benchmark-backed removal of the
+    live ``browser-use skill`` fetch).
+    """
     return _skill_text_cache or ""
 
 
 def _dynamic_schema_overrides() -> dict:
-    skill = _cli_skill_text()
-    if not skill:
-        return {}
-    return {"description": _description_header() + "\n\n---\n\n" + skill}
+    return {"description": _description_header() + _HELPERS_DIGEST}
 
 
 BROWSER_EXEC_SCHEMA = {
@@ -381,8 +395,8 @@ BROWSER_EXEC_SCHEMA = {
     # Static fallback, used only when the CLI (and uvx) is unavailable
     "description": (
         _HEADER_BASE
-        + "\n\n(The browser-use CLI is not installed yet, so its full skill "
-        "documentation could not be loaded. Install it with "
+        + _HELPERS_DIGEST
+        + "\n\n(The browser-use CLI is not installed yet. Install it with "
         "`uv tool install browser-use`.)"
     ),
     "parameters": {

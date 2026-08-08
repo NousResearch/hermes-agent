@@ -75,6 +75,13 @@ browser:
 
 Cloud browsers need `browser-use auth login` or `BROWSER_USE_API_KEY`.
 
+:::note
+Because Browser Use mode executes model-written Python on your machine, the
+`browser_exec` tool is only offered to sessions that also have terminal
+access. Platforms configured without the terminal toolset (e.g. a locked-down
+messaging surface) keep the default browser tools instead.
+:::
+
 ### Firecrawl cloud mode
 
 To use Firecrawl as your cloud browser provider, add:

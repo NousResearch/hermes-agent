@@ -87,6 +87,36 @@ class TestToolSurfaceSwap:
         assert "browser_exec" in TOOLSETS["browser"]["tools"]
         assert "browser_exec" in TOOLSETS["coding"]["tools"]
 
+    def test_browser_exec_stripped_without_terminal(self, monkeypatch):
+        """Sessions without the terminal surface must not regain host code
+        execution through browser_exec (arbitrary Python via the CLI)."""
+        monkeypatch.setattr(bu_cli, "is_browser_use_cli_mode", lambda: True)
+        from tools.registry import registry
+
+        entry = registry.get_entry("browser_exec")
+        monkeypatch.setattr(entry, "check_fn", lambda: True)
+        import model_tools
+
+        defs = model_tools.get_tool_definitions(
+            enabled_toolsets=["browser"], quiet_mode=False
+        )
+        names = {t["function"]["name"] for t in defs}
+        assert "browser_exec" not in names
+
+    def test_browser_exec_present_with_terminal(self, monkeypatch):
+        monkeypatch.setattr(bu_cli, "is_browser_use_cli_mode", lambda: True)
+        from tools.registry import registry
+
+        entry = registry.get_entry("browser_exec")
+        monkeypatch.setattr(entry, "check_fn", lambda: True)
+        import model_tools
+
+        defs = model_tools.get_tool_definitions(
+            enabled_toolsets=["browser", "terminal"], quiet_mode=False
+        )
+        names = {t["function"]["name"] for t in defs}
+        assert "browser_exec" in names
+
 
 class TestFindCli:
     def test_prefers_installed_binary(self, monkeypatch):
@@ -287,10 +317,14 @@ class TestBrowserUseSlashCommand:
         assert saved["browser"]["backend"] == "browser-use"
         assert stub.session_resets == 1
 
-    def test_use_off_removes_backend(self, monkeypatch):
+    def test_use_off_pins_backend_off(self, monkeypatch):
+        """`off` must be written explicitly (BACKEND_DISABLED), not removed:
+        with the key merely deleted, is_legacy_browser_use_cloud_config()
+        would re-activate CLI mode on the next start for anyone with
+        BROWSER_USE_API_KEY set, so /browser use off wouldn't stick."""
         config = {"browser": {"backend": "browser-use"}}
         stub, saved = self._run("/browser use off", config, monkeypatch)
-        assert "backend" not in saved["browser"]
+        assert saved["browser"]["backend"] == bu_cli.BACKEND_DISABLED
         assert stub.session_resets == 1
 
     def test_use_bad_arg_prints_usage_without_writing(self, monkeypatch):
@@ -420,33 +454,32 @@ class TestHeaderVariants:
 
 
 class TestSkillTextDescription:
-    @pytest.fixture(autouse=True)
-    def _reset_skill_cache(self, monkeypatch):
-        monkeypatch.setattr(bu_cli, "_skill_text_cache", None)
-        monkeypatch.setattr(bu_cli, "_skill_text_fetched", False)
-        yield
+    """The schema description is fully pinned: header + _HELPERS_DIGEST.
 
-    def test_description_is_verbatim_cli_skill_text(self, tmp_path, monkeypatch):
-        cli = _fake_cli(
-            tmp_path,
-            'if [ "$1" = "skill" ]; then echo "# Browser Use\nverbatim skill body"; fi\n',
+    The live ``browser-use skill`` fetch was removed after A/B benchmarking
+    showed the pinned digest matches the full skill dump on success rate
+    (36/36 vs 36/36, opus-4.8 + kimi-k3) — see tools/browser_use_cli.py.
+    """
+
+    def test_description_is_pinned_header_plus_digest(self, monkeypatch):
+        # Even with a CLI present, the description must NOT shell out.
+        monkeypatch.setattr(
+            bu_cli, "_find_cli",
+            lambda: (_ for _ in ()).throw(AssertionError("schema must not invoke the CLI")),
         )
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
         overrides = bu_cli._dynamic_schema_overrides()
-        assert overrides["description"].startswith(bu_cli._DESCRIPTION_HEADER)
-        assert overrides["description"].endswith("# Browser Use\nverbatim skill body")
+        assert overrides["description"].startswith(bu_cli._HEADER_BASE)
+        assert overrides["description"].endswith(bu_cli._HELPERS_DIGEST)
 
-    def test_skill_text_cached_after_first_fetch(self, tmp_path, monkeypatch):
-        calls = []
-        cli = _fake_cli(tmp_path, 'echo "skill text"\n')
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: (calls.append(1), [cli])[1])
-        assert "skill text" in bu_cli._cli_skill_text()
-        assert "skill text" in bu_cli._cli_skill_text()
-        assert len(calls) == 1
+    def test_digest_names_core_helpers(self):
+        for helper in ("new_tab(", "page_info()", "js(", "fill_input(",
+                       "click_at_xy(", "capture_screenshot()", "cdp("):
+            assert helper in bu_cli._HELPERS_DIGEST
 
-    def test_no_override_when_cli_missing(self, monkeypatch):
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
-        assert bu_cli._dynamic_schema_overrides() == {}
+    def test_static_fallback_carries_digest_and_install_hint(self):
+        desc = bu_cli.BROWSER_EXEC_SCHEMA["description"]
+        assert bu_cli._HELPERS_DIGEST in desc
+        assert "uv tool install browser-use" in desc
 
 
 class TestBrowserExec:

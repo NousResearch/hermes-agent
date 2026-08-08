@@ -240,7 +240,14 @@ class WSTransport:
                 # observe the failure before they get a chance to touch the
                 # socket.
                 self._closed = True
-                _log.warning(
+                # Suppress the noisy send-after-close cascade: once one
+                # concurrent send fails and latches _closed, sibling sends
+                # (from other subagent worker threads) hit a closed socket
+                # and raise RuntimeError("Cannot call 'send' once a close
+                # message has been sent"). That's expected teardown noise,
+                # not a new failure — log it at debug, not warning.
+                _log.log(
+                    logging.DEBUG if isinstance(exc, RuntimeError) else logging.WARNING,
                     "ws send failed peer=%s error_type=%s error=%s",
                     self._peer, type(exc).__name__, exc,
                 )

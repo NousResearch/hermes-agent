@@ -2921,6 +2921,116 @@ def _detect_venv_python_processes(
         matches.append((int(pid), str(name), cmdline_raw[:120]))
     return matches
 
+def _detect_active_update_ancestor() -> tuple[int, str, str] | None:
+    """Return the Desktop-owned ancestor that makes an update unsafe.
+
+    A terminal tool launched for a Desktop session runs beneath either the
+    TUI slash worker or the Desktop ``hermes serve`` backend. Updating from
+    that process tree mutates the checkout that is executing the active turn
+    and may stop it during restart. This is intentionally ancestor-based: the
+    venv-holder scan excludes the updater's ancestors so it does not report
+    the updater's own launcher chain.
+
+    Returns ``(pid, name, kind)`` for the nearest matching ancestor, or
+    ``None`` when psutil is unavailable, process metadata cannot be read, or
+    the update was launched from an ordinary terminal. Never raises.
+    """
+    try:
+        import psutil
+    except Exception:
+        return None
+
+    try:
+        ancestors = psutil.Process().parents()
+    except Exception:
+        return None
+
+    for ancestor in ancestors:
+        try:
+            cmdline = [str(part) for part in (ancestor.cmdline() or [])]
+        except Exception:
+            continue
+        argv = [part.lower().replace("\\", "/") for part in cmdline]
+
+        def _has_sequence(*parts: str) -> bool:
+            width = len(parts)
+            return any(
+                tuple(argv[index : index + width]) == parts
+                for index in range(len(argv) - width + 1)
+            )
+
+        def _has_serve_command(args: list[str]) -> bool:
+            """Recognize Desktop's serve command after its profile selector."""
+            index = 0
+            while index < len(args):
+                part = args[index]
+                if part == "serve":
+                    return True
+                if part in {"--profile", "-p"}:
+                    if index + 1 >= len(args):
+                        return False
+                    index += 2
+                    continue
+                if part.startswith("--profile="):
+                    index += 1
+                    continue
+                return False
+            return False
+
+        backend_args = None
+        for index in range(len(argv) - 1):
+            if argv[index : index + 2] == ["-m", "hermes_cli.main"]:
+                backend_args = argv[index + 2 :]
+                break
+        if backend_args is None:
+            for index, part in enumerate(argv):
+                if part.endswith("/hermes_cli/main.py"):
+                    backend_args = argv[index + 1 :]
+                    break
+        if backend_args is None:
+            for index, part in enumerate(argv[:2]):
+                if Path(part).name in {"hermes", "hermes.exe"}:
+                    backend_args = argv[index + 1 :]
+                    break
+
+        is_slash_worker = _has_sequence("-m", "tui_gateway.slash_worker") or any(
+            part.endswith("/tui_gateway/slash_worker.py") for part in argv
+        )
+        is_desktop_backend = backend_args is not None and _has_serve_command(
+            backend_args
+        )
+        if not (is_slash_worker or is_desktop_backend):
+            continue
+        try:
+            pid = int(ancestor.pid)
+        except Exception:
+            continue
+        try:
+            name = str(ancestor.name() or "python")
+        except Exception:
+            name = "python"
+        kind = "Desktop slash worker" if is_slash_worker else "Desktop backend"
+        return pid, name, kind
+    return None
+
+def _format_active_update_ancestor_message(match: tuple[int, str, str]) -> str:
+    """Explain why an update launched inside active Desktop work is refused."""
+    pid, name, kind = match
+    return "\n".join(
+        [
+            "✗ Refusing to update from inside an active Desktop session or worker.",
+            f"  {kind}: PID {pid} ({name})",
+            "",
+            "  Updating here can mutate the running checkout and cause active",
+            "  sessions or workers to be stopped or interrupted.",
+            "  Wait for the work to finish, then run `hermes update` from a",
+            "  separate terminal outside Hermes Desktop.",
+            "",
+            "  To interrupt the active work deliberately, run:",
+            "    hermes update --force",
+        ]
+    )
+
 def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> str:
     """Explain which venv processes block the update and how to clear them."""
     lines = [
@@ -3595,6 +3705,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     print("⚕ Updating Hermes Agent...")
     print()
+
+    # A terminal command launched by a Desktop agent runs inside the active
+    # backend/slash-worker process tree. Refuse before even the pre-update
+    # backup: later checkout and restart steps can invalidate or terminate the
+    # very session executing this command. ``--force`` is the issue's explicit
+    # destructive override and keeps ordinary standalone terminal updates
+    # unchanged.
+    if not getattr(args, "force", False):
+        active_ancestor = _m()._detect_active_update_ancestor()
+        if active_ancestor is not None:
+            print(_format_active_update_ancestor_message(active_ancestor))
+            sys.exit(2)
 
     # On Windows, abort early if another hermes.exe is holding the venv shim
     # open. Continuing would result in a string of WinError 32 warnings and

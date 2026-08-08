@@ -6194,3 +6194,156 @@ class TestMemoryContextSanitization:
         assert "memory-context" not in result.lower()
         assert "stale observation" not in result
         assert "how is the honcho working" in result
+
+
+class TestToolCallStats:
+    """Unit tests for run_agent._compute_tool_call_stats (#73389)."""
+
+    def test_no_messages_returns_zero_and_used_false(self):
+        from run_agent import _compute_tool_call_stats
+        stats = _compute_tool_call_stats([])
+        assert stats["used"] is False
+        assert stats["requests"] == 0
+        assert stats["successful"] == 0
+        assert stats["failed"] == 0
+        assert stats["total_results"] == 0
+
+    def test_non_list_messages_is_safe(self):
+        from run_agent import _compute_tool_call_stats
+        stats = _compute_tool_call_stats(None)
+        assert stats["used"] is False
+        assert _compute_tool_call_stats("not a list")["used"] is False
+
+    def test_counts_assistant_tool_calls_as_requests(self):
+        from run_agent import _compute_tool_call_stats
+        messages = [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "1", "function": {"name": "read_file", "arguments": "{}"}},
+                {"id": "2", "function": {"name": "web_search", "arguments": "{}"}},
+            ]},
+        ]
+        stats = _compute_tool_call_stats(messages)
+        assert stats["requests"] == 2
+        assert stats["used"] is True
+
+    def test_plain_tool_result_counts_as_success(self):
+        from run_agent import _compute_tool_call_stats
+        messages = [
+            {"role": "tool", "tool_call_id": "1", "name": "read_file",
+             "content": "def foo(): pass"},
+        ]
+        stats = _compute_tool_call_stats(messages)
+        assert stats["successful"] == 1
+        assert stats["failed"] == 0
+        assert stats["total_results"] == 1
+        assert stats["used"] is True
+
+    def test_json_success_true_counts_as_success(self):
+        import json
+        from run_agent import _compute_tool_call_stats
+        messages = [
+            {"role": "tool", "tool_call_id": "1", "name": "search",
+             "content": json.dumps({"success": True, "data": [1, 2, 3]})},
+        ]
+        stats = _compute_tool_call_stats(messages)
+        assert stats["successful"] == 1
+        assert stats["failed"] == 0
+
+    def test_json_success_false_counts_as_failed(self):
+        import json
+        from run_agent import _compute_tool_call_stats
+        messages = [
+            {"role": "tool", "tool_call_id": "1", "name": "search",
+             "content": json.dumps({"success": False, "error": "bad input"})},
+        ]
+        stats = _compute_tool_call_stats(messages)
+        assert stats["successful"] == 0
+        assert stats["failed"] == 1
+
+    def test_error_prefix_counts_as_failed(self):
+        from run_agent import _compute_tool_call_stats
+        cases = [
+            "Error: tool disabled",
+            "Skipped: another tool call in this response used an invalid name",
+            "Invalid JSON arguments. expected `}`. Please retry with valid JSON.",
+        ]
+        for body in cases:
+            stats = _compute_tool_call_stats([
+                {"role": "tool", "tool_call_id": "1", "name": "t", "content": body},
+            ])
+            assert stats["failed"] == 1, f"expected failure for: {body[:30]}"
+            assert stats["successful"] == 0
+
+    def test_real_mcp_outage_scenario(self):
+        """Reproduces issue #73389: zero-successful session should flag used."""
+        from run_agent import _compute_tool_call_stats
+        messages = [
+            {"role": "user", "content": "Triage alert #1234 using MCP tools."},
+            {"role": "assistant", "tool_calls": [
+                {"id": "a", "function": {"name": "mcp_monitoring_query", "arguments": "{}"}},
+                {"id": "b", "function": {"name": "mcp_cmdb_lookup", "arguments": "{}"}},
+                {"id": "c", "function": {"name": "mcp_ti_enrich", "arguments": "{}"}},
+                {"id": "d", "function": {"name": "mcp_ticket_search", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "a", "name": "mcp_monitoring_query",
+             "content": "Error: MCP server monitoring is unreachable"},
+            {"role": "tool", "tool_call_id": "b", "name": "mcp_cmdb_lookup",
+             "content": "Error: MCP server cmdb is unreachable"},
+            {"role": "tool", "tool_call_id": "c", "name": "mcp_ti_enrich",
+             "content": "Error: MCP server threat-intel is unreachable"},
+            {"role": "tool", "tool_call_id": "d", "name": "mcp_ticket_search",
+             "content": "Error: MCP server ticketing is unreachable"},
+            {"role": "assistant", "tool_calls": [
+                {"id": "e", "function": {"name": "web_search",
+                 "arguments": '{"q": "alert signature"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "e", "name": "web_search",
+             "content": '["https://example.com/notes"]'},
+            {"role": "assistant", "content": (
+                "MEDIUM confidence disposition. MCP tools are unavailable; "
+                "enrichment performed via general web search only."
+            )},
+        ]
+        stats = _compute_tool_call_stats(messages)
+        assert stats["requests"] == 5
+        assert stats["successful"] == 1
+        assert stats["failed"] == 4
+        assert stats["total_results"] == 5
+        assert stats["used"] is True
+
+    def test_function_role_is_treated_like_tool(self):
+        from run_agent import _compute_tool_call_stats
+        messages = [
+            {"role": "function", "name": "search", "content": "Error: down"},
+        ]
+        stats = _compute_tool_call_stats(messages)
+        assert stats["failed"] == 1
+        assert stats["used"] is True
+
+    def test_start_index_excludes_conversation_history(self):
+        """start_index must skip prior-turn conversation_history messages."""
+        import json
+        from run_agent import _compute_tool_call_stats
+        messages = [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "tool_calls": [
+                {"id": "h1", "function": {"name": "web_search", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "h1", "name": "web_search",
+             "content": json.dumps({"success": True})},
+            {"role": "user", "content": "Follow up"},
+            {"role": "assistant", "tool_calls": [
+                {"id": "c1", "function": {"name": "read_file", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "name": "read_file",
+             "content": json.dumps({"success": True})},
+        ]
+        # Without start_index: 2 requests, 2 successful
+        assert _compute_tool_call_stats(messages)["requests"] == 2
+        assert _compute_tool_call_stats(messages)["successful"] == 2
+        # With start_index=3 (first-turn history): only current turn counted
+        stats = _compute_tool_call_stats(messages, start_index=3)
+        assert stats["requests"] == 1
+        assert stats["successful"] == 1
+        assert stats["used"] is True

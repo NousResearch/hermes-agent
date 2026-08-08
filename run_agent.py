@@ -66,6 +66,61 @@ from types import SimpleNamespace
 from hermes_constants import get_hermes_home
 
 
+def _compute_tool_call_stats(messages: Any, start_index: int = 0) -> Dict[str, Any]:
+    """Count tool-call requests and success/failure results from turn messages.
+
+    ``start_index`` trims any shared prefix of ``messages`` (typically the
+    prior-turn ``conversation_history`` list) so only the current turn's
+    appended messages are counted.  Passing ``len(conversation_history)``
+    prevents leaking prior-turn tool activity into the current turn's stats.
+    """
+    stats: Dict[str, Any] = {
+        "requests": 0,
+        "successful": 0,
+        "failed": 0,
+        "total_results": 0,
+        "used": False,
+    }
+    if not isinstance(messages, list):
+        return stats
+    error_prefixes = ("error:", "skipped:", "invalid json arguments")
+    iterable = messages[start_index:] if start_index > 0 else messages
+    for m in iterable:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        if role == "assistant":
+            tcs = m.get("tool_calls") or m.get("tool_call")
+            if isinstance(tcs, list):
+                stats["requests"] += len(tcs)
+            continue
+        if role in {"tool", "function"}:
+            stats["total_results"] += 1
+            content = m.get("content")
+            failed = False
+            if isinstance(content, str):
+                stripped = content.lstrip()
+                lower = stripped.lower()
+                if lower.startswith(error_prefixes):
+                    failed = True
+                else:
+                    head = stripped[:1]
+                    if head in ("{", "["):
+                        try:
+                            parsed = json.loads(stripped)
+                        except Exception:
+                            parsed = None
+                        if isinstance(parsed, dict):
+                            if parsed.get("success") is False or parsed.get("error"):
+                                failed = True
+            if failed:
+                stats["failed"] += 1
+            else:
+                stats["successful"] += 1
+    stats["used"] = stats["requests"] > 0 or stats["total_results"] > 0
+    return stats
+
+
 def _launch_cwd_for_session(source: str) -> Optional[str]:
     """Working directory to stamp on a new session row, or None.
 
@@ -7916,6 +7971,12 @@ class AIAgent:
             if task_started:
                 task_finished = True
                 finish_task_run(**task_context, result=result)
+            if isinstance(result, dict):
+                msgs = result.get("messages")
+                if isinstance(msgs, list):
+                    history_len = len(conversation_history) if isinstance(conversation_history, list) else 0
+                    stats = _compute_tool_call_stats(msgs, start_index=history_len)
+                    result["tool_call_stats"] = stats
             return result
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, InterruptedError)) or (

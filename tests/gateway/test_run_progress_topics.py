@@ -717,6 +717,23 @@ class CommentaryAgent:
         }
 
 
+class ClarifyContextFallbackAgent:
+    def __init__(self, **kwargs):
+        self.tools = []
+        self.interim_assistant_callback = None
+        self.clarify_context_callback = None
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        assert self.interim_assistant_callback is None
+        assert callable(self.clarify_context_callback)
+        self.clarify_context_callback("Decision context that must precede the poll.")
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class PreviewedResponseAgent:
     def __init__(self, **kwargs):
         self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
@@ -978,6 +995,30 @@ async def test_display_streaming_does_not_enable_gateway_streaming(monkeypatch, 
     assert result.get("already_sent") is not True
     assert adapter.edits == []
     assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
+
+
+@pytest.mark.asyncio
+async def test_clarify_context_fallback_is_wired_when_interim_messages_are_disabled(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ClarifyContextFallbackAgent,
+        session_id="sess-clarify-context-fallback",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "interim_assistant_messages": False,
+            },
+            "streaming": {"enabled": False},
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert [call["content"] for call in adapter.sent] == [
+        "Decision context that must precede the poll."
+    ]
 
 
 class TransformedStreamAgent:

@@ -158,29 +158,39 @@ def _codex_commentary_message_response(text: str):
     )
 
 
-def _codex_commentary_final_tool_response(commentary: str, final_answer: str = "Done."):
-    return SimpleNamespace(
-        output=[
-            SimpleNamespace(
-                type="message",
-                phase="commentary",
-                status="completed",
-                content=[SimpleNamespace(type="output_text", text=commentary)],
-            ),
+def _codex_commentary_final_tool_response(
+    commentary: str,
+    final_answer: str | None = "Done.",
+    tool_name: str = "terminal",
+):
+    output = [
+        SimpleNamespace(
+            type="message",
+            phase="commentary",
+            status="completed",
+            content=[SimpleNamespace(type="output_text", text=commentary)],
+        )
+    ]
+    if final_answer is not None:
+        output.append(
             SimpleNamespace(
                 type="message",
                 phase="final_answer",
                 status="completed",
                 content=[SimpleNamespace(type="output_text", text=final_answer)],
-            ),
-            SimpleNamespace(
-                type="function_call",
-                id="fc_1",
-                call_id="call_1",
-                name="terminal",
-                arguments="{}",
-            ),
-        ],
+            )
+        )
+    output.append(
+        SimpleNamespace(
+            type="function_call",
+            id="fc_1",
+            call_id="call_1",
+            name=tool_name,
+            arguments="{}",
+        )
+    )
+    return SimpleNamespace(
+        output=output,
         usage=SimpleNamespace(input_tokens=8, output_tokens=5, total_tokens=13),
         status="completed",
         model="gpt-5-codex",
@@ -1642,12 +1652,58 @@ def test_interim_commentary_precedes_content_from_real_codex_normalization(monke
     }
 
 
+def test_clarify_context_is_delivered_when_generic_interim_messages_are_disabled(monkeypatch):
+    """A decision prompt must not lose commentary that explains its choices."""
+    agent = _build_agent(monkeypatch)
+    delivered = []
+    setattr(agent, "interim_assistant_callback", None)
+    setattr(
+        agent,
+        "clarify_context_callback",
+        lambda text, *, already_streamed=False: delivered.append(text),
+    )
+
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    normalized, finish_reason = _normalize_codex_response(
+        _codex_commentary_final_tool_response(
+            "Long decision context and trade-offs.",
+            final_answer=None,
+            tool_name="clarify",
+        )
+    )
+    assert finish_reason == "tool_calls"
+    assert (normalized.content or "") == ""
+
+    agent._emit_interim_assistant_message(
+        agent._build_assistant_message(normalized, finish_reason)
+    )
+
+    assert delivered == ["Long decision context and trade-offs."]
 
 
+def test_clarify_context_fallback_does_not_surface_other_interim_messages(monkeypatch):
+    """The fallback preserves quiet-mode semantics for non-clarify tool turns."""
+    agent = _build_agent(monkeypatch)
+    delivered = []
+    setattr(agent, "interim_assistant_callback", None)
+    setattr(
+        agent,
+        "clarify_context_callback",
+        lambda text, *, already_streamed=False: delivered.append(text),
+    )
 
+    agent._emit_interim_assistant_message(
+        {
+            "role": "assistant",
+            "content": "I'll inspect the repository first.",
+            "tool_calls": [
+                {"function": {"name": "terminal", "arguments": "{}"}}
+            ],
+        }
+    )
 
-
-
+    assert delivered == []
 
 
 def test_stream_delta_strips_leaked_memory_context(monkeypatch):

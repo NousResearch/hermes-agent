@@ -85,7 +85,7 @@ gateway:
 
 **Why these defaults:**
 
-- `interim_assistant_messages: false` — prevents intermediate tool results, reasoning comments, and progress updates from being posted as separate messages to the channel. Only the final response goes to the channel.
+- `interim_assistant_messages: false` — prevents ordinary intermediate tool results, reasoning comments, and progress updates from being posted as separate messages to the channel. Decision-critical prose paired with a `clarify` prompt is still delivered before its choices.
 - `tool_progress: off` — suppresses tool progress bubbles (e.g., "Running terminal command...", "Reading file..."). Keeps the channel focused on actual results, not process.
 - `poll_interval: 4` — balances inbound latency (up to 4s delay) against relay load. Lower values increase polling frequency; higher values reduce it.
 - `allowed_users: []` + `allow_all_users: false` — private mode by default. Only listed users can interact. Set `allow_all_users: true` for community mode where everyone can chat (admin tier still restricted to the owner).

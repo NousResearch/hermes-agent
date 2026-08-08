@@ -6292,8 +6292,16 @@ class AIAgent:
         when the only streamed text was unrelated mid-turn commentary. (#65919
         review: response-loss blocker)
         """
+        if not isinstance(assistant_msg, dict):
+            return
         cb = getattr(self, "interim_assistant_callback", None)
-        if cb is None or not isinstance(assistant_msg, dict):
+        if cb is None and self._assistant_message_calls_tool(assistant_msg, "clarify"):
+            # A clarify poll is not self-explanatory when the model put the
+            # decision packet in commentary immediately before the tool call.
+            # Quiet chat profiles may intentionally suppress ordinary interim
+            # narration, but must still receive this decision-critical context.
+            cb = getattr(self, "clarify_context_callback", None)
+        if cb is None:
             return
         commentary_parts = self._extract_codex_interim_visible_parts(assistant_msg)
         undelivered_parts: List[str] = []
@@ -6329,6 +6337,27 @@ class AIAgent:
                 self._record_delivered_interim_text(visible)
         except Exception:
             logger.debug("interim_assistant_callback error", exc_info=True)
+
+    @staticmethod
+    def _assistant_message_calls_tool(
+        assistant_msg: Dict[str, Any], tool_name: str
+    ) -> bool:
+        """Return whether a persisted assistant turn invokes ``tool_name``."""
+        expected = str(tool_name or "").rsplit(".", 1)[-1]
+        for tool_call in assistant_msg.get("tool_calls") or []:
+            if isinstance(tool_call, dict):
+                function = tool_call.get("function") or {}
+                name = (
+                    function.get("name") if isinstance(function, dict) else None
+                ) or tool_call.get("name")
+            else:
+                function = getattr(tool_call, "function", None)
+                name = getattr(function, "name", None) or getattr(
+                    tool_call, "name", None
+                )
+            if str(name or "").rsplit(".", 1)[-1] == expected:
+                return True
+        return False
 
     def _ensure_stream_writer_state(self) -> None:
         """Lazily create the single-writer guard fields (#65991).

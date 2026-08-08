@@ -937,6 +937,7 @@ describe('resumeSession failure recovery', () => {
             interimBoundaryPending: false,
             interrupted: false,
             messages: [],
+            adoptedRunningTurn: false,
             model: '',
             needsInput: false,
             pendingBranchGroup: null,

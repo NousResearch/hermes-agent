@@ -7094,16 +7094,32 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
                     except (json.JSONDecodeError, TypeError):
                         args = {}
                     tool_call_args[tc_id] = (fn["name"], args)
-            if not content_text.strip():
+            # A tool-call-only assistant frame (empty ``content``) must
+            # survive so the desktop resume payload can route the tool
+            # invocation back to its id — dropping it here loses the link
+            # between the call and its result. (#43233 + Teknium review)
+            if not content_text.strip() and not m.get("tool_calls"):
                 continue
         if role == "tool":
             tc_id = m.get("tool_call_id", "")
             tc_info = tool_call_args.get(tc_id) if tc_id else None
             name = (tc_info[0] if tc_info else None) or m.get("tool_name") or "tool"
             args = (tc_info[1] if tc_info else None) or {}
-            messages.append(
-                {"role": "tool", "name": name, "context": _tool_ctx(name, args)}
-            )
+            # Preserve the original tool result link so the desktop resume
+            # payload can pair the tool result with the call that produced it.
+            # The legacy code path dropped ``tool_call_id`` here, which broke
+            # the link for any consumer that needed to route the result back to
+            # its invocation (e.g. the assistant frame re-injection on resume).
+            # Keep the synthesized ``name`` + ``context`` for the human-readable
+            # affordance, and carry the original id forward. The raw result
+            # payload is deliberately NOT forwarded: tool output can contain
+            # secrets, and the desktop transcript must stay redacted.
+            messages.append({
+                "role": "tool",
+                "name": name,
+                "context": _tool_ctx(name, args),
+                "tool_call_id": tc_id,
+            })
             continue
         # An assistant turn may carry only reasoning/thinking content with no
         # visible text (extended-thinking turns, thinking-only recovery
@@ -7121,9 +7137,13 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         has_reasoning = role == "assistant" and any(
             m.get(key) for key in reasoning_keys
         )
-        if not content_text.strip() and not has_reasoning:
+        if not content_text.strip() and not has_reasoning and not (
+            role == "assistant" and m.get("tool_calls")
+        ):
             continue
         msg = {"role": role, "text": content_text}
+        if role == "assistant" and m.get("tool_calls"):
+            msg["tool_calls"] = m["tool_calls"]
         # Durable row identity, stamped by _rows_to_conversation. The renderer's
         # own message ids are ephemeral (timestamp+index derived, and a
         # different shape for live vs rehydrated vs optimistic rows), so

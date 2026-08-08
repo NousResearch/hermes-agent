@@ -84,4 +84,9 @@ fi
 # fail with EACCES. Mirrors main-wrapper.sh.
 export HOME=/opt/data
 
+# Ensure HERMES_HOME is set before the real hermes binary runs. When
+# invoked via `docker exec` the s6 container_environment is not consulted,
+# so the Dockerfile ENV directive may be absent (#65165).
+export HERMES_HOME="${HERMES_HOME:-$HOME}"
+
 exec "$S6_SUID" hermes "$REAL" "$@"

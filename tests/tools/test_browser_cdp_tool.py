@@ -201,6 +201,65 @@ def test_browser_level_redacts_secret_result(cdp_server):
     assert result["result"]["result"]["value"].startswith("sk-")
 
 
+def test_frame_id_supervisor_path_redacts_secret_result(monkeypatch):
+    """frame_id / supervisor success path must redact like the stateless path."""
+    import concurrent.futures
+    import threading
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    import tools.browser_supervisor as browser_supervisor
+
+    fake_key = "sk-" + "CDPSECRETFRAMERESULT1234567890"
+    frame_id = "oopif-frame-1"
+    child_sid = "child-session-1"
+
+    snap = SimpleNamespace(
+        frame_tree={
+            "top": {"frame_id": "top-frame"},
+            "children": [{"frame_id": frame_id, "session_id": child_sid}],
+        }
+    )
+    supervisor = SimpleNamespace(
+        snapshot=lambda: snap,
+        _state_lock=threading.Lock(),
+        _frames={},
+        _loop=SimpleNamespace(is_running=lambda: True),
+    )
+    registry = MagicMock()
+    registry.get.return_value = supervisor
+    monkeypatch.setattr(browser_supervisor, "SUPERVISOR_REGISTRY", registry)
+
+    def fake_schedule(coro, loop):
+        coro.close()
+        fut = concurrent.futures.Future()
+        fut.set_result(
+            {"result": {"result": {"type": "string", "value": fake_key}}}
+        )
+        return fut
+
+    monkeypatch.setattr(
+        "agent.async_utils.safe_schedule_threadsafe", fake_schedule
+    )
+
+    result = json.loads(
+        browser_cdp_tool._browser_cdp_via_supervisor(
+            task_id="task-1",
+            frame_id=frame_id,
+            method="Runtime.evaluate",
+            params={"expression": "document.body.innerText"},
+            timeout=5.0,
+        )
+    )
+
+    assert result["success"] is True
+    assert result["frame_id"] == frame_id
+    assert result["session_id"] == child_sid
+    serialized = json.dumps(result)
+    assert "CDPSECRETFRAMERESULT" not in serialized
+    assert result["result"]["result"]["value"].startswith("sk-")
+
+
 # ---------------------------------------------------------------------------
 # Happy-path: target-attached call
 # ---------------------------------------------------------------------------

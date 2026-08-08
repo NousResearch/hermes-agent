@@ -386,7 +386,9 @@ def _browser_cdp_via_supervisor(
         "method": method,
         "frame_id": frame_id,
         "session_id": child_sid,
-        "result": result_msg.get("result", {}),
+        # Same redaction as the stateless/target_id path — frame_id routing
+        # must not leak secrets that sibling path would scrub.
+        "result": _redact_cdp_output(result_msg.get("result", {})),
     }
     return json.dumps(payload, ensure_ascii=False)
 

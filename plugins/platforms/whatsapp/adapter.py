@@ -285,7 +285,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
-from gateway.whatsapp_identity import to_whatsapp_jid
+from gateway.whatsapp_identity import canonical_whatsapp_identifier, to_whatsapp_jid
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -1339,7 +1339,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 # asyncio.create_task pattern for mark_read).
                                 asyncio.create_task(self._send_read_receipt(msg_data))
                                 if event.message_type == MessageType.TEXT:
-                                    self._enqueue_text_event(event)
+                                    await self._enqueue_text_event(event)
                                 else:
                                     await self.handle_message(event)
             except asyncio.CancelledError:
@@ -1392,15 +1392,67 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             profile=event.source.profile,
         )
 
-    def _enqueue_text_event(self, event: MessageEvent) -> None:
+    @staticmethod
+    def _text_batch_sender(event: MessageEvent) -> Optional[str]:
+        """Return the stable sender identity that is safe to batch together."""
+        source = event.source
+        sender_id = source.user_id_alt or source.user_id
+        if sender_id:
+            return canonical_whatsapp_identifier(str(sender_id)) or str(sender_id)
+        if source.chat_type in {"dm", "private"} and source.chat_id:
+            return canonical_whatsapp_identifier(str(source.chat_id)) or str(source.chat_id)
+        return None
+
+    def _can_merge_text_batch_events(
+        self,
+        existing: MessageEvent,
+        incoming: MessageEvent,
+    ) -> bool:
+        """Only merge events whose verified WhatsApp sender is identical."""
+        existing_sender = self._text_batch_sender(existing)
+        incoming_sender = self._text_batch_sender(incoming)
+        return existing_sender is not None and existing_sender == incoming_sender
+
+    async def _flush_text_batch_now(self, key: str) -> bool:
+        """Cancel one debounce timer and dispatch its buffered event immediately."""
+        event = self._pending_text_batches.pop(key, None)
+        if event is None:
+            # The timer may already have claimed this event and entered
+            # handle_message(). Do not cancel it mid-dispatch: wait so a
+            # sender transition cannot overtake or lose the earlier batch.
+            task = self._pending_text_batch_tasks.get(key)
+            if task and task is not asyncio.current_task() and not task.done():
+                await asyncio.gather(task, return_exceptions=True)
+            return False
+        task = self._pending_text_batch_tasks.pop(key, None)
+        if task and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await self.handle_message(event)
+        return True
+
+    async def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer.
 
         When WhatsApp delivers rapid-fire messages (e.g. forwarded
         batches), this concatenates them and waits for a short quiet
-        period before dispatching the combined message.
+        period before dispatching the combined message. In a shared group,
+        a sender change flushes the earlier sender first so attribution and
+        chronological order are preserved.
         """
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
+        if existing is None:
+            # A timer removes its event immediately before dispatch. If that
+            # dispatch is still in flight, let it finish before a later sender
+            # can start a new batch or cancel the task below.
+            in_flight = self._pending_text_batch_tasks.get(key)
+            if in_flight and in_flight is not asyncio.current_task() and not in_flight.done():
+                await asyncio.gather(in_flight, return_exceptions=True)
+                existing = self._pending_text_batches.get(key)
+        if existing is not None and not self._can_merge_text_batch_events(existing, event):
+            await self._flush_text_batch_now(key)
+            existing = None
         chunk_len = len(event.text or "")
         if existing is None:
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]

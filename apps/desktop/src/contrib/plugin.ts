@@ -12,6 +12,9 @@
  * through the plugin host loader (next phase); this is that seam.
  */
 
+import type { ReactNode } from 'react'
+
+import type { ComposerRenderArea, ComposerRenderContext } from '@/app/chat/composer/contrib'
 import { pluginRest, type PluginRestOptions, pluginSocket } from '@/hermes'
 import { createPluginI18n, type PluginI18n } from '@/i18n'
 import { readKey, writeKey } from '@/lib/storage'
@@ -25,7 +28,20 @@ export type { PluginNativeNotificationInput } from '@/store/native-notifications
 
 /** A contribution as a plugin author writes it — provenance + id scoping are
  *  the host's job, so those fields are off-limits here. */
-export type PluginContribution = Omit<Contribution, 'source' | 'id'> & { id: string }
+type PluginContributionBase = Omit<Contribution, 'source' | 'id' | 'render'> & {
+  id: string
+  /** Generic contribution areas invoke render without a context argument. */
+  render?: () => ReactNode
+}
+
+/** Render-area contributions receive the context the host actually supplies. */
+export type ComposerRenderContribution = Omit<PluginContributionBase, 'area' | 'render'> & {
+  area: ComposerRenderArea
+  render: (ctx: ComposerRenderContext) => ReactNode
+}
+
+/** A plugin contribution, with the composer render seam typed by its runtime contract. */
+export type PluginContribution = PluginContributionBase | ComposerRenderContribution
 
 /** Namespaced JSON persistence (the VS Code `globalState` analog). Keys live
  *  under `hermes.plugin.<id>.` — plugins can't read or clobber each other. */
@@ -60,9 +76,15 @@ export interface PluginContext {
   /** The resolved plugin source tag, e.g. `'plugin:cost-meter'`. */
   readonly source: string
   /** Register one contribution (id namespaced, source stamped). */
-  register: (c: PluginContribution) => () => void
+  register: {
+    (c: ComposerRenderContribution): () => void
+    (c: PluginContribution): () => void
+  }
   /** Register several at once; the returned disposer removes all of them. */
-  registerMany: (cs: PluginContribution[]) => () => void
+  registerMany: {
+    (cs: ComposerRenderContribution[]): () => void
+    (cs: PluginContribution[]): () => void
+  }
   /** Register an arbitrary cleanup to run on unload/disable — for side effects
    *  that aren't contributions or sockets (store subscriptions, timers). Runs
    *  alongside every other disposer when the plugin deactivates. */

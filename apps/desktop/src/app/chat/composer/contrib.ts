@@ -21,12 +21,15 @@
  */
 
 import { useMemo } from 'react'
+import type { RefObject } from 'react'
 
 import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import type { TodoItem } from '@/lib/todos'
 import type { ComposerAttachment } from '@/store/composer'
 import type { ComposerAction } from '@/store/composer-actions'
+
+import { composerInsertWouldChange, insertComposerContentsAtCaret } from './rich-editor'
 
 export const COMPOSER_AREAS = {
   top: 'composer.top',
@@ -38,6 +41,13 @@ export const COMPOSER_AREAS = {
   attachments: 'composer.attachments',
   microActions: 'composer.microActions'
 } as const
+
+export type ComposerRenderArea =
+  | typeof COMPOSER_AREAS.actions
+  | typeof COMPOSER_AREAS.bottom
+  | typeof COMPOSER_AREAS.leading
+  | typeof COMPOSER_AREAS.underside
+  | typeof COMPOSER_AREAS.top
 
 export interface ComposerDraft {
   text: string
@@ -53,6 +63,88 @@ export interface ComposerMiddleware {
 export interface ComposerAttachmentContext {
   insertText: (text: string) => void
 }
+
+/**
+ * Edit bridge handed to composer RENDER-area contributions (`composer.actions`,
+ * `composer.top`, `composer.bottom`, `composer.leading`, `composer.underside`)
+ * as the first argument of their `render` function.
+ *
+ * Backed by the composer's own undo stack and DOM pipeline — an insert here
+ * lands on the same ⌘Z history as typing, replaces the live selection, and
+ * hydrates directives into chips exactly like a paste. Plugins must NOT reach
+ * for `execCommand` or `innerHTML`; that bypasses both the app's undo stack and
+ * its chip/IME safety.
+ */
+export interface ComposerRenderContext {
+  /**
+   * Insert `text` at the caret, replacing any selection inside the composer
+   * editor. The pre-edit state is banked on the app undo stack first, so a
+   * single ⌘Z reverts the insert. Directives in the text (`@url:…`, `/…`)
+   * hydrate into chips through the app's own rendering pipeline.
+   *
+   * True no-op — nothing banked, redo preserved — only when the replacement
+   * would leave the serialized text AND DOM structure unchanged (empty insert
+   * at a collapsed caret, or text identical to what is already there).
+   * Replacing a non-collapsed selection with `''` deletes the selection, and a
+   * text-identical replacement that changes structure (plain `@kind:value`
+   * hydrating into a chip) is a real edit that banks its own undo point.
+   * Also a no-op while the editor is unmounted or during IME composition.
+   * Multi-insert sequences bank one undo point per call — bundle a wrapping
+   * edit into ONE `insertText` call (the full replacement string) so undo
+   * reverts the whole action at once.
+   */
+  insertText: (text: string) => void
+}
+
+export interface CreateComposerRenderContextArgs {
+  /** The rich-editor contentEditable, live. */
+  editorRef: RefObject<HTMLDivElement | null>
+  /** True while an IME preedit is being composed (see `composingRef` in
+   *  index.tsx). Inserts are suppressed during composition — landing DOM edits
+   *  inside a live preedit corrupts it (the execCommand bug class). */
+  composingRef: RefObject<boolean>
+  /** Bank the pre-edit state on the app undo stack. */
+  recordUndoPoint: () => void
+  /** Flush editor DOM → draft state after the edit (rAF-coalesced, like the
+   *  paste path). */
+  scheduleFlushEditorToDraft: (editor: HTMLDivElement) => void
+}
+
+/**
+ * Build the composer's edit bridge for render-area contributions. Mirrors the
+ * app's own paste path exactly — bank the pre-edit state on the app undo
+ * stack, mutate through the app's own DOM pipeline (`insertComposerContentsAtCaret`:
+ * Range-based, chips hydrate, never `execCommand`/`innerHTML`), then flush the
+ * draft state. Selection-aware by construction: the insert replaces whatever
+ * range the document selection holds inside the editor (a plugin's popover
+ * click does not destroy the editor's selection), else lands at the caret.
+ */
+export function createComposerRenderContext({
+  editorRef,
+  composingRef,
+  recordUndoPoint,
+  scheduleFlushEditorToDraft
+}: CreateComposerRenderContextArgs): ComposerRenderContext {
+  return {
+    insertText: (text: string) => {
+      const editor = editorRef.current
+
+      // No editor, or an IME preedit in flight — inserting would corrupt it.
+      if (!editor || composingRef.current) {
+        return
+      }
+
+      if (!composerInsertWouldChange(editor, text)) {
+        return
+      }
+
+      recordUndoPoint()
+      insertComposerContentsAtCaret(editor, text)
+      scheduleFlushEditorToDraft(editor)
+    }
+  }
+}
+
 
 /** Payload of a `composer.attachments` data contribution — an entry in the
  *  composer's "+" attach menu. */

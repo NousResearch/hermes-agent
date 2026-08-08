@@ -338,6 +338,51 @@ ctx.register({ id: 'noir', area: THEMES_AREA, data: myDesktopTheme })
 attachment source, or transform a draft before it is sent (`ComposerMiddleware`
 with a `handler(draft) => draft | null`).
 
+**Render-area edit bridge.** The composer render areas (`top`, `bottom`,
+`leading`, `actions`, `underside`) hand every contribution's `render` a
+`ComposerRenderContext` as its first argument — the sanctioned way for a
+toolbar action to edit the draft:
+
+```javascript
+import { COMPOSER_AREAS } from '@hermes/plugin-sdk'
+
+ctx.register({
+  id: 'bold',
+  area: COMPOSER_AREAS.actions,
+  render: (bridge) =>
+    jsx('button', {
+      onClick: () => {
+        const selection = window.getSelection()?.toString()
+        bridge.insertText(`**${selection ?? ''}**`)
+      },
+      children: 'B'
+    })
+})
+```
+
+`bridge.insertText(text)` inserts at the caret (replacing the live selection),
+banks the pre-edit state on the **app's own undo stack** (one ⌘Z reverts the
+insert), and runs through the app's rendering pipeline — directives in the
+text hydrate into chips. The bridge is a true no-op — nothing is banked, so
+redo survives — only when the replacement would leave the editor's serialized
+text **and** DOM structure unchanged (an empty insert at a collapsed caret,
+or text identical to what is already there). Replacing a live (non-collapsed)
+selection with `''` is NOT a no-op: it deletes the selection. A replacement
+that changes structure even when the text reads the same — plain
+`@kind:value` text hydrating into a chip — is likewise a real edit that banks
+its own undo point; like any new edit, it invalidates an existing redo branch. The bridge is also a no-op while the
+composer is in IME composition. Never use `execCommand('insertText')`,
+`innerHTML`, or direct DOM mutation: those bypass the host's undo,
+normalization, draft-flush, and chip/IME safety. Bundle a wrapping edit into
+ONE `insertText` call so undo reverts the whole action at once.
+
+The context argument is only available on composer **render** areas: those are
+the areas whose `render` the runtime invokes with a `ComposerRenderContext`
+argument. Every other area's `render` is called with no arguments, and the SDK
+types (`ComposerRenderContribution` vs the plain `PluginContribution`) reject
+a context parameter there — a typed context callback compiles only where the
+host actually supplies one.
+
 ### Mount-scoped chrome (`Contribute`)
 
 `ctx.register` is for **permanent** contributions. When chrome should live and

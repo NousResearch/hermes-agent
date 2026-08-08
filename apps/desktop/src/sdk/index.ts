@@ -116,7 +116,13 @@ export const host = {
 // Every contribution surface, plugin-reachable: register keybinds, palette
 // commands, routes, themes, panes, composer extensions, and bar items with
 // the same area ids + payload types core uses.
-export { COMPOSER_AREAS, type ComposerAttachmentProvider, type ComposerMiddleware } from '@/app/chat/composer/contrib'
+export {
+  COMPOSER_AREAS,
+  type ComposerAttachmentProvider,
+  type ComposerMiddleware,
+  type ComposerRenderArea,
+  type ComposerRenderContext
+} from '@/app/chat/composer/contrib'
 
 // -- ui: the design language --------------------------------------------------
 
@@ -197,6 +203,7 @@ export { Textarea } from '@/components/ui/textarea'
 export { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 export type { GatewayEventListener } from '@/contrib/events'
 export type {
+  ComposerRenderContribution,
   HermesPlugin,
   PluginContext,
   PluginContribution,

@@ -4,7 +4,6 @@ import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, u
 
 import { composerFill, composerFloatingStrip, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
-import { Slot as ContribSlot } from '@/contrib/react/slot'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
@@ -30,7 +29,8 @@ import {
   slashArgStage
 } from './composer-utils'
 import { ContextMenu } from './context-menu'
-import { COMPOSER_AREAS, runComposerMiddleware } from './contrib'
+import { COMPOSER_AREAS, createComposerRenderContext, runComposerMiddleware } from './contrib'
+import { ComposerRenderSlot } from './contrib-slot'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
@@ -374,7 +374,7 @@ export function ChatBar({
   // flushes to one per paint is lossless.
   const flushRafRef = useRef<number | undefined>(undefined)
 
-  const flushEditorToDraft = (editor: HTMLDivElement) => {
+  const flushEditorToDraft = useCallback((editor: HTMLDivElement) => {
     if (flushRafRef.current !== undefined) {
       window.cancelAnimationFrame(flushRafRef.current)
       flushRafRef.current = undefined
@@ -390,21 +390,38 @@ export function ChatBar({
     }
 
     window.setTimeout(refreshTrigger, 0)
-  }
+  }, [draftRef, refreshTrigger, setComposerText])
 
   // Coalesce the high-frequency input/paste flushes to one per frame. Immediate
   // paths (compositionend, Enter/keydown, submit) keep calling
   // flushEditorToDraft directly, which cancels any pending coalesced run first.
-  const scheduleFlushEditorToDraft = (editor: HTMLDivElement) => {
-    if (flushRafRef.current !== undefined) {
-      return
-    }
+  const scheduleFlushEditorToDraft = useCallback(
+    (editor: HTMLDivElement) => {
+      if (flushRafRef.current !== undefined) {
+        return
+      }
 
-    flushRafRef.current = window.requestAnimationFrame(() => {
-      flushRafRef.current = undefined
-      flushEditorToDraft(editor)
-    })
-  }
+      flushRafRef.current = window.requestAnimationFrame(() => {
+        flushRafRef.current = undefined
+        flushEditorToDraft(editor)
+      })
+    },
+    [flushEditorToDraft]
+  )
+
+  // The edit bridge handed to composer render-area contributions
+  // (composer.actions etc.). See createComposerRenderContext — it mirrors the
+  // paste path: undo point first, then the app's own DOM pipeline, then flush.
+  const composerRenderContext = useMemo(
+    () =>
+      createComposerRenderContext({
+        composingRef,
+        editorRef,
+        recordUndoPoint,
+        scheduleFlushEditorToDraft
+      }),
+    [composingRef, editorRef, recordUndoPoint, scheduleFlushEditorToDraft]
+  )
 
   useEffect(
     () => () => {
@@ -1213,7 +1230,7 @@ export function ChatBar({
                   {/* Contribution seams: banners above, a row below, inline
                     additions beside the "+" menu and before the controls.
                     All four render nothing until something contributes. */}
-                  <ContribSlot area={COMPOSER_AREAS.top} />
+                  <ComposerRenderSlot area={COMPOSER_AREAS.top} ctx={composerRenderContext} />
                   <VoiceActivity state={voiceActivityState} />
                   <VoicePlaybackActivity />
                   {queueEdit && editingQueuedPrompt && (
@@ -1251,15 +1268,15 @@ export function ChatBar({
                   >
                     <div className="flex translate-y-[3px] items-start gap-(--composer-control-gap) self-start [grid-area:menu]">
                       {contextMenu}
-                      <ContribSlot area={COMPOSER_AREAS.leading} />
+                      <ComposerRenderSlot area={COMPOSER_AREAS.leading} ctx={composerRenderContext} />
                     </div>
                     <div className="min-w-0 [grid-area:input]">{input}</div>
                     <div className="flex items-center justify-end gap-(--composer-control-gap) [grid-area:controls]">
-                      <ContribSlot area={COMPOSER_AREAS.actions} />
+                      <ComposerRenderSlot area={COMPOSER_AREAS.actions} ctx={composerRenderContext} />
                       {controls}
                     </div>
                   </div>
-                  <ContribSlot area={COMPOSER_AREAS.bottom} />
+                  <ComposerRenderSlot area={COMPOSER_AREAS.bottom} ctx={composerRenderContext} />
                 </div>
               </div>
             </div>
@@ -1269,7 +1286,7 @@ export function ChatBar({
               the pop-out drag region. Same px as the strip above, so the two
               bracket the composer on one vertical line. */}
           <div className={cn(composerFloatingStrip, 'px-[5px] pt-1.5 empty:hidden')}>
-            <ContribSlot area={COMPOSER_AREAS.underside} />
+            <ComposerRenderSlot area={COMPOSER_AREAS.underside} ctx={composerRenderContext} />
           </div>
         </div>
       </ComposerPrimitive.Unstable_TriggerPopoverRoot>

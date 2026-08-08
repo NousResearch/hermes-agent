@@ -244,6 +244,105 @@ function composerSelectionRange(editor: HTMLElement) {
   return { range, selection }
 }
 
+type ComposerSelectionHit = NonNullable<ReturnType<typeof composerSelectionRange>>
+
+function nodePath(root: Node, node: Node): number[] | null {
+  const path: number[] = []
+  let current: Node | null = node
+
+  while (current && current !== root) {
+    const parent: Node | null = current.parentNode
+
+    if (!parent) {
+      return null
+    }
+
+    const index = Array.from(parent.childNodes).indexOf(current as ChildNode)
+
+    if (index < 0) {
+      return null
+    }
+
+    path.unshift(index)
+    current = parent
+  }
+
+  return current === root ? path : null
+}
+
+function nodeAtPath(root: Node, path: number[]): Node | null {
+  let current: Node | null = root
+
+  for (const index of path) {
+    current = current?.childNodes[index] ?? null
+  }
+
+  return current
+}
+
+function cloneSelectionRange(editor: HTMLElement, clone: HTMLElement, hit: ComposerSelectionHit): Range | null {
+  const startPath = nodePath(editor, hit.range.startContainer)
+  const endPath = nodePath(editor, hit.range.endContainer)
+
+  if (!startPath || !endPath) {
+    return null
+  }
+
+  const start = nodeAtPath(clone, startPath)
+  const end = nodeAtPath(clone, endPath)
+
+  if (!start || !end) {
+    return null
+  }
+
+  const range = document.createRange()
+  range.setStart(start, hit.range.startOffset)
+  range.setEnd(end, hit.range.endOffset)
+
+  return range
+}
+
+/** Meaningful editor structure, with Chromium's empty text-node litter ignored
+ * and adjacent text nodes coalesced. Serialized text alone cannot tell plain
+ * directive text from the chip the insertion pipeline would hydrate it into. */
+function composerStructureSignature(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return node.textContent ? `text:${JSON.stringify(node.textContent)}` : ''
+  }
+
+  if (node.nodeType !== Node.ELEMENT_NODE) {
+    return ''
+  }
+
+  const element = node as HTMLElement
+
+  const attrs = Array.from(element.attributes)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(attr => `${attr.name}=${JSON.stringify(attr.value)}`)
+    .join(';')
+
+  const children: string[] = []
+
+  for (const child of element.childNodes) {
+    const signature = composerStructureSignature(child)
+
+    if (!signature) {
+      continue
+    }
+
+    if (child.nodeType === Node.TEXT_NODE && children.at(-1)?.startsWith('text:')) {
+      const previous = children.pop()!
+      const previousText = JSON.parse(previous.slice('text:'.length)) as string
+      const currentText = JSON.parse(signature.slice('text:'.length)) as string
+      children.push(`text:${JSON.stringify(previousText + currentText)}`)
+    } else {
+      children.push(signature)
+    }
+  }
+
+  return `element:${element.tagName.toLowerCase()}[${attrs}](${children.join('|')})`
+}
+
 /** Serialized text from the editor's start up to (`container`, `offset`).
  *
  *  Chips are ATOMIC here: each contributes an object-replacement placeholder
@@ -296,20 +395,12 @@ function atTokenBoundary(editor: HTMLElement, range: Range | null): boolean {
  *  `consumeBefore` characters immediately before the caret are swallowed by the
  *  insert. That's how a paste into an open `@url:` scope replaces the scope
  *  instead of stacking on it (`@url:@url:\`https://…\``). */
-export function insertComposerContentsAtCaret(editor: HTMLElement, text: string, consumeBefore = 0) {
-  const scoped = consumeBefore > 0 ? rangeBeforeCaret(editor, consumeBefore) : null
-
-  if (scoped) {
-    scoped.deleteContents()
-    scoped.collapse(true)
-
-    const selection = window.getSelection()
-
-    selection?.removeAllRanges()
-    selection?.addRange(scoped)
-  }
-
-  const hit = composerSelectionRange(editor)
+function insertComposerContentsAtSelection(
+  editor: HTMLElement,
+  text: string,
+  hit: ComposerSelectionHit | { range: Range; selection: null } | null,
+  fallbackSelection: Selection | null
+) {
   const fragment = document.createDocumentFragment()
 
   // Before measuring the boundary — a replaced selection puts the insertion
@@ -338,14 +429,60 @@ export function insertComposerContentsAtCaret(editor: HTMLElement, text: string,
     editor.append(fragment)
   }
 
+  const selection = hit?.selection ?? fallbackSelection
+
   if (tail) {
     const caret = document.createRange()
     caret.setStartAfter(tail)
     caret.collapse(true)
-    const selection = hit?.selection ?? window.getSelection()
     selection?.removeAllRanges()
     selection?.addRange(caret)
+  } else if (hit) {
+    hit.range.collapse(true)
+    selection?.removeAllRanges()
+    selection?.addRange(hit.range)
   }
+}
+
+export function insertComposerContentsAtCaret(editor: HTMLElement, text: string, consumeBefore = 0) {
+  const scoped = consumeBefore > 0 ? rangeBeforeCaret(editor, consumeBefore) : null
+
+  if (scoped) {
+    scoped.deleteContents()
+    scoped.collapse(true)
+
+    const selection = window.getSelection()
+
+    selection?.removeAllRanges()
+    selection?.addRange(scoped)
+  }
+
+  insertComposerContentsAtSelection(editor, text, composerSelectionRange(editor), window.getSelection())
+}
+
+/** True when the host pipeline would change the editor's serialized text or
+ * meaningful DOM structure. An empty replacement is a deletion when a live
+ * selection is non-collapsed. */
+export function composerInsertWouldChange(editor: HTMLElement, text: string): boolean {
+  const hit = composerSelectionRange(editor)
+  const clone = editor.cloneNode(true) as HTMLElement
+  const cloneRange = hit ? cloneSelectionRange(editor, clone, hit) : null
+
+  if (hit && !cloneRange) {
+    return true
+  }
+
+  insertComposerContentsAtSelection(
+    clone,
+    text,
+    cloneRange ? { range: cloneRange, selection: null } : null,
+    null
+  )
+
+  return (
+    composerPlainText(editor) !== composerPlainText(clone) ||
+    composerStructureSignature(editor) !== composerStructureSignature(clone)
+  )
 }
 
 /** Range covering exactly `length` serialized characters immediately before a

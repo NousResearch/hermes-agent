@@ -58,6 +58,7 @@ CATALOG: List[CatalogEntry] = [
             "schedule": "0 8 * * *",
             "name": "Daily briefing",
             "deliver": "origin",
+            "allow_silent": False,
         },
     ),
     CatalogEntry(
@@ -99,6 +100,7 @@ CATALOG: List[CatalogEntry] = [
             "schedule": "0 18 * * 0",
             "name": "Weekly review",
             "deliver": "origin",
+            "allow_silent": False,
         },
     ),
     CatalogEntry(
@@ -116,6 +118,7 @@ CATALOG: List[CatalogEntry] = [
             "schedule": "0 9 * * 1-5",
             "name": "Workday start reminder",
             "deliver": "origin",
+            "allow_silent": False,
         },
     ),
 ]

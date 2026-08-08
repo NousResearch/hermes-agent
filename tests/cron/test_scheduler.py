@@ -944,13 +944,15 @@ class TestRunJobSkillBacked:
 class TestSilentDelivery:
     """Verify that [SILENT] responses suppress delivery while still saving output."""
 
-    def _make_job(self):
-        return {
+    def _make_job(self, **overrides):
+        job = {
             "id": "monitor-job",
             "name": "monitor",
             "deliver": "origin",
             "origin": {"platform": "telegram", "chat_id": "123"},
         }
+        job.update(overrides)
+        return job
 
     def test_silent_response_suppresses_delivery(self, caplog):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
@@ -990,6 +992,29 @@ class TestSilentDelivery:
             tick(verbose=False)
         deliver_mock.assert_called_once()
 
+
+    def test_allow_silent_false_delivers_marker_response(self):
+        """Always-deliver jobs must not be silently dropped by the marker gate."""
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job(allow_silent=False)]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT]", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_called_once()
+
+    def test_allow_silent_false_still_suppresses_scheduler_internal_silence(self):
+        """Scheduler-generated no-output signals must not leak the marker."""
+        output = "# Cron Job Output\n\n**Job:** monitor\n**Status:** silent (empty output)\n"
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job(allow_silent=False)]), \
+             patch("cron.scheduler.run_job", return_value=(True, output, "[SILENT]", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_not_called()
 
     def test_whitespace_only_response_is_marked_failed_not_delivered(self):
         """Whitespace-only final responses should behave like empty responses."""
@@ -1038,13 +1063,45 @@ class TestOneShotDispatchClaim:
 
 
 class TestBuildJobPromptSilentHint:
-    """Verify _build_job_prompt always injects [SILENT] guidance."""
+    """Verify _build_job_prompt injects the right delivery guidance."""
 
     def test_hint_always_present(self):
         job = {"prompt": "Check for updates"}
         result = _build_job_prompt(job)
         assert "[SILENT]" in result
         assert "Check for updates" in result
+
+    def test_hint_present_even_without_prompt(self):
+        job = {"prompt": ""}
+        result = _build_job_prompt(job)
+        assert "[SILENT]" in result
+
+    def test_hint_present_when_legacy_prompt_is_null(self):
+        job = {"id": "abc123deadbe", "name": None, "prompt": None}
+        result = _build_job_prompt(job)
+        assert "[SILENT]" in result
+
+    def test_silent_hint_omitted_for_always_deliver_jobs(self):
+        job = {"prompt": "Daily briefing", "allow_silent": False}
+        result = _build_job_prompt(job)
+        assert "[SILENT]" not in result
+        assert "Always produce a concise final response" in result
+        assert "Daily briefing" in result
+
+    def test_delivery_guidance_present(self):
+        """Cron hint tells agents their final response is auto-delivered."""
+        job = {"prompt": "Generate a report"}
+        result = _build_job_prompt(job)
+        assert "do NOT use send_message" in result
+        assert "automatically delivered" in result
+
+    def test_delivery_guidance_precedes_user_prompt(self):
+        """System guidance appears before the user's prompt text."""
+        job = {"prompt": "My custom prompt"}
+        result = _build_job_prompt(job)
+        system_pos = result.index("do NOT use send_message")
+        prompt_pos = result.index("My custom prompt")
+        assert system_pos < prompt_pos
 
 
 class TestParseWakeGate:

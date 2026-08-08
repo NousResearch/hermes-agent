@@ -72,6 +72,15 @@ class TestScheduleResolution:
         spec = fill_blueprint(get_blueprint("morning-brief"), {})
         assert spec["schedule"] == "0 8 * * *"
 
+    def test_morning_briefing_is_always_deliver(self):
+        spec = fill_blueprint(get_blueprint("morning-brief"), {})
+        assert spec["allow_silent"] is False
+
+    def test_report_blueprints_are_always_deliver(self):
+        for key in ("morning-brief", "weekly-review", "workday-start"):
+            spec = fill_blueprint(get_blueprint(key), {})
+            assert spec["allow_silent"] is False
+
 
 class TestValidation:
     def test_invalid_time_rejected(self):

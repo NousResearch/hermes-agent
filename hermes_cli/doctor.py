@@ -320,8 +320,8 @@ def check_info(text: str):
 STATE_DB_SIZE_WARN_BYTES = 1 * 1024 * 1024 * 1024   # 1 GiB logical size
 
 
-# Shared byte formatter (private alias: this module's rendering helpers and
-# tests refer to ``_human_bytes``).
+# Shared byte formatter, aliased to the name this module's three rendering
+# call sites already use.
 from hermes_cli.sizefmt import format_bytes as _human_bytes
 
 

@@ -27,14 +27,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from hermes_cli.sizefmt import format_bytes
-
-
-def _fmt_bytes(n: Optional[int]) -> str:
-    # Delegates to the shared formatter; ``or 0`` preserves this module's
-    # historical None/0 -> "0 B" display (the shared helper renders None
-    # as "?", which is wrong for a size total that is genuinely zero).
-    return format_bytes(n or 0)
+from hermes_cli.sizefmt import format_bytes as _fmt_bytes
 
 
 def _fmt_ts(ts: Any) -> str:

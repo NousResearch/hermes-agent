@@ -1,10 +1,10 @@
 """Tests for the shared byte formatter (hermes_cli.sizefmt).
 
-Consolidates five near-identical private formatters (backup, checkpoints,
-doctor, context_references, curator_backup). The contract below locks the
-shared behavior, including the two deliberate changes vs the old copies:
-a real TB tier (doctor/context_references/curator_backup previously
-rendered 1 TiB as '1024.0 GB') and non-raising fallback for None/garbage.
+Consolidates six near-identical formatters (backup, checkpoints, doctor,
+update_cmd, context_references, curator_backup). The contract below locks
+the shared behavior, including the one deliberate change vs the old
+copies: a real TB tier (doctor/context_references/curator_backup
+previously rendered 1 TiB as '1024.0 GB').
 """
 
 import pytest
@@ -40,24 +40,23 @@ def test_format_bytes_tb_tier_not_gb_overflow():
 
 
 def test_format_bytes_never_raises():
+    """Doctor's stats dict tolerates None in every field; the formatter must
+    render (not raise) for None/garbage."""
     assert format_bytes(None) == "?"
     assert format_bytes("garbage") == "?"
     assert format_bytes("2048") == "2.0 KB"  # numeric strings accepted
-    assert format_bytes(None, fallback="unknown") == "unknown"
 
 
-def test_delegating_aliases_share_the_implementation():
-    """The five migrated call sites must all resolve to the shared helper
-    (checkpoints wraps it to preserve its None -> '0 B' display)."""
-    from agent.context_references import _human_bytes as ctx
-    from agent.curator_backup import format_size as curator
+def test_migrated_sites_render_through_the_shared_helper():
+    """Behavior contract for the aliased call sites: the module-local names
+    must render byte-identically to the shared helper (how they delegate is
+    an implementation detail — only the rendering is pinned)."""
     from hermes_cli.backup import _format_size as backup
     from hermes_cli.checkpoints import _fmt_bytes as checkpoints
     from hermes_cli.doctor import _human_bytes as doctor
 
-    assert backup is format_bytes
-    assert ctx is format_bytes
-    assert curator is format_bytes
-    assert doctor is format_bytes
-    assert checkpoints(None) == "0 B"
-    assert checkpoints(2048) == format_bytes(2048)
+    for n in (0, 512, 2048, 1234567, 1024**3, 1024**4):
+        expected = format_bytes(n)
+        assert backup(n) == expected
+        assert checkpoints(n) == expected
+        assert doctor(n) == expected

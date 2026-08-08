@@ -1,11 +1,8 @@
 """Small shared size-formatting helpers for CLI/agent output.
 
-Public home for the human-readable byte formatter that previously existed
-as five near-identical private copies (``hermes_cli/backup.py``,
-``hermes_cli/checkpoints.py``, ``hermes_cli/doctor.py``,
-``agent/context_references.py``, ``agent/curator_backup.py``). Sibling of
-``hermes_cli.timefmt``, and kept dependency-free for the same reason:
-lightweight consumers must not drag in the whole CLI surface.
+Sibling of ``hermes_cli.timefmt`` (same extraction rationale: a tiny
+purpose-named module lightweight consumers can import without dragging in
+the CLI surface). Replaces six near-identical private byte formatters.
 
 Two in-repo formatters intentionally do NOT delegate here:
 
@@ -19,20 +16,21 @@ Two in-repo formatters intentionally do NOT delegate here:
 from __future__ import annotations
 
 
-def format_bytes(n, *, fallback: str = "?") -> str:
+def format_bytes(n) -> str:
     """1234567 -> '1.2 MB' (B/KB/MB/GB/TB; integer bytes, one decimal above).
 
-    Accepts anything ``float()`` accepts; returns *fallback* for None or
-    unparseable input so display call sites never raise.
+    Accepts anything ``float()`` accepts; returns ``"?"`` for None or
+    unparseable input so display call sites never raise (contract inherited
+    from doctor's original copy — its stats dict tolerates None fields).
     """
     try:
         size = float(n)
     except (TypeError, ValueError):
-        return fallback
+        return "?"
     if size < 1024:
         return f"{int(size)} B"
-    for unit in ("KB", "MB", "GB", "TB"):
+    for unit in ("KB", "MB", "GB"):
         size /= 1024.0
-        if size < 1024 or unit == "TB":
+        if size < 1024:
             return f"{size:.1f} {unit}"
-    return f"{size:.1f} TB"  # unreachable; keeps type-checkers satisfied
+    return f"{size / 1024.0:.1f} TB"

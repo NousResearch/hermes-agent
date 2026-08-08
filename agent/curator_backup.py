@@ -50,10 +50,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
 from agent.skill_utils import is_excluded_skill_path
-
-# Shared byte formatter; public name ``format_size`` is part of this module's
-# established surface, so alias rather than churn the callers.
-from hermes_cli.sizefmt import format_bytes as format_size
+from hermes_cli.sizefmt import format_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -749,6 +746,6 @@ def summarize_backups() -> str:
             f"{r.get('id','?'):<24}  "
             f"{(r.get('reason','?') or '?')[:40]:<40}  "
             f"{r.get('skill_files', 0):>6}  "
-            f"{format_size(int(r.get('archive_bytes', 0))):>8}"
+            f"{format_bytes(int(r.get('archive_bytes', 0))):>8}"
         )
     return "\n".join(lines)

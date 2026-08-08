@@ -13,7 +13,7 @@ from typing import Awaitable, Callable
 
 from agent.model_metadata import estimate_tokens_rough
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
-from hermes_cli.sizefmt import format_bytes as _human_bytes
+from hermes_cli.sizefmt import format_bytes
 
 _QUOTED_REFERENCE_VALUE = r'(?:`[^`\n]+`|"[^"\n]+"|\'[^\'\n]+\')'
 REFERENCE_PATTERN = re.compile(
@@ -559,7 +559,7 @@ def _binary_reference_block(ref: ContextReference, path: Path) -> str:
     mime, _ = mimetypes.guess_type(path.name)
     mime = mime or "application/octet-stream"
     try:
-        size = _human_bytes(path.stat().st_size)
+        size = format_bytes(path.stat().st_size)
     except OSError:
         size = "unknown size"
     return (

@@ -8,7 +8,7 @@ import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tre
 import { getAllSessionMessages, getLatestSessionMessages, getSession, type SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
-import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
+import { $activeGatewayProfile, $gatewaySwapTarget, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
   $activeSessionId,
@@ -464,6 +464,7 @@ describe('createBackendSessionForSend profile routing', () => {
   afterEach(() => {
     cleanup()
     $newChatProfile.set(null)
+    $gatewaySwapTarget.set(null)
     $activeGatewayProfile.set('default')
     $projectScope.set(ALL_PROJECTS)
     $projectTree.set([])
@@ -487,6 +488,19 @@ describe('createBackendSessionForSend profile routing', () => {
     })
 
     expect(params).toMatchObject({ profile: 'coder' })
+  })
+
+  it('keeps the pending profile switch as the new-chat target', async () => {
+    // Cmd+N clears the per-profile quick-create selection. If a profile switch
+    // is still opening its gateway, the visible intent is the pending target,
+    // not the previous live gateway profile.
+    const params = await createWith(() => {
+      $activeGatewayProfile.set('private-xiaomi')
+      $gatewaySwapTarget.set('rebel-soul')
+      $newChatProfile.set(null)
+    })
+
+    expect(params).toMatchObject({ profile: 'rebel-soul' })
   })
 
   it('honours an explicit per-profile "+" selection', async () => {

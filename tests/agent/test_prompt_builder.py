@@ -36,6 +36,7 @@ from agent.prompt_builder import (
     WSL_ENVIRONMENT_HINT,
 )
 from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
 # =========================================================================
@@ -528,6 +529,92 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=None, skip_soul=True)
         assert "Never give up" not in result
         assert result == ""
+
+    def test_skips_agents_md_from_another_profile(self, monkeypatch, tmp_path):
+        root = tmp_path / "hermes"
+        active_home = root / "profiles" / "rebel-soul"
+        foreign_workspace = root / "profiles" / "private-xiaomi" / "workspace"
+        active_home.mkdir(parents=True)
+        foreign_workspace.mkdir(parents=True)
+        (foreign_workspace / "AGENTS.md").write_text(
+            "PRIVATE XIAOMI IDENTITY", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(active_home))
+
+        result = build_context_files_prompt(cwd=str(foreign_workspace), skip_soul=True)
+
+        assert "PRIVATE XIAOMI IDENTITY" not in result
+        assert result == ""
+
+    def test_skips_foreign_profile_under_context_home_override_root(
+        self, monkeypatch, tmp_path
+    ):
+        launch_root = tmp_path / "launch-root"
+        scoped_root = tmp_path / "scoped-root"
+        active_home = scoped_root / "profiles" / "rebel-soul"
+        foreign_workspace = scoped_root / "profiles" / "private-xiaomi" / "workspace"
+        launch_root.mkdir()
+        active_home.mkdir(parents=True)
+        foreign_workspace.mkdir(parents=True)
+        (foreign_workspace / "AGENTS.md").write_text(
+            "CONTEXT OVERRIDE FOREIGN IDENTITY", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(launch_root))
+        token = set_hermes_home_override(active_home)
+        try:
+            result = build_context_files_prompt(
+                cwd=str(foreign_workspace), skip_soul=True
+            )
+        finally:
+            reset_hermes_home_override(token)
+
+        assert "CONTEXT OVERRIDE FOREIGN IDENTITY" not in result
+        assert result == ""
+
+    def test_skips_logical_foreign_profile_when_profile_dir_is_symlinked(
+        self, monkeypatch, tmp_path
+    ):
+        root = tmp_path / "hermes"
+        active_home = root / "profiles" / "rebel-soul"
+        external_profile = tmp_path / "external-private-xiaomi"
+        external_workspace = external_profile / "workspace"
+        foreign_link = root / "profiles" / "private-xiaomi"
+        active_home.mkdir(parents=True)
+        external_workspace.mkdir(parents=True)
+        (external_workspace / "AGENTS.md").write_text(
+            "SYMLINKED FOREIGN IDENTITY", encoding="utf-8"
+        )
+        try:
+            foreign_link.symlink_to(external_profile, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"directory symlinks unavailable: {exc}")
+        monkeypatch.setenv("HERMES_HOME", str(active_home))
+
+        result = build_context_files_prompt(
+            cwd=str(foreign_link / "workspace"), skip_soul=True
+        )
+
+        assert "SYMLINKED FOREIGN IDENTITY" not in result
+        assert result == ""
+
+    def test_allows_explicit_cross_profile_context(self, monkeypatch, tmp_path):
+        root = tmp_path / "hermes"
+        active_home = root / "profiles" / "rebel-soul"
+        foreign_workspace = root / "profiles" / "private-xiaomi" / "workspace"
+        active_home.mkdir(parents=True)
+        foreign_workspace.mkdir(parents=True)
+        (foreign_workspace / "AGENTS.md").write_text(
+            "EXPLICIT SHARED WORKSPACE", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(active_home))
+
+        result = build_context_files_prompt(
+            cwd=str(foreign_workspace),
+            skip_soul=True,
+            allow_cross_profile_context=True,
+        )
+
+        assert "EXPLICIT SHARED WORKSPACE" in result
 
 
 

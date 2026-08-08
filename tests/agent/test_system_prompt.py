@@ -34,10 +34,14 @@ def _captured_context_cwd(agent):
     captured = {}
 
     def fake_context_files(
-        cwd=None, skip_soul=False, context_length=None,
+        cwd=None,
+        skip_soul=False,
+        context_length=None,
         allow_install_tree_fallback=False,
+        allow_cross_profile_context=False,
     ):
         captured["cwd"] = cwd
+        captured["allow_cross_profile_context"] = allow_cross_profile_context
         return ""
 
     with (
@@ -50,6 +54,23 @@ def _captured_context_cwd(agent):
     return captured["cwd"]
 
 
+def _captured_cross_profile_context_flag(agent):
+    captured = {}
+
+    def fake_context_files(**kwargs):
+        captured.update(kwargs)
+        return ""
+
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", side_effect=fake_context_files),
+    ):
+        build_system_prompt_parts(agent)
+    return captured.get("allow_cross_profile_context", False)
+
+
 class TestContextFileCwd:
     def test_none_when_terminal_cwd_unset(self, monkeypatch):
         # Unset → None, so discovery falls back to the launch dir inside
@@ -60,6 +81,12 @@ class TestContextFileCwd:
     def test_configured_dir_when_terminal_cwd_set(self, monkeypatch, tmp_path):
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         assert _captured_context_cwd(_make_agent()) == tmp_path
+
+    def test_cross_profile_context_opt_in_is_cli_only(self):
+        assert _captured_cross_profile_context_flag(_make_agent(platform="cli")) is True
+        assert _captured_cross_profile_context_flag(_make_agent(platform="tui")) is True
+        assert _captured_cross_profile_context_flag(_make_agent(platform="desktop")) is False
+        assert _captured_cross_profile_context_flag(_make_agent(platform="telegram")) is False
 
 
 def _stable_prompt(agent):
@@ -80,6 +107,20 @@ def _prompt_parts(agent):
         patch("run_agent.build_context_files_prompt", return_value=""),
     ):
         return build_system_prompt_parts(agent)
+
+
+def test_named_profile_hint_uses_current_and_default_homes(monkeypatch, tmp_path):
+    root = tmp_path / "hermes"
+    profile_home = root / "profiles" / "rebel-soul"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    with patch("agent.file_safety._resolve_active_profile_name", return_value="rebel-soul"):
+        stable = _stable_prompt(_make_agent())
+
+    assert f"This session reads and writes {profile_home}/." in stable
+    assert f"The default profile's data lives at {root}/skills/" in stable
+    assert str(profile_home / "profiles" / "rebel-soul") not in stable
 
 
 def _init_code_repo(path):
@@ -142,6 +183,7 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
     monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE", "HELP")
     monkeypatch.setattr(system_prompt, "STEER_CHANNEL_NOTE", "STEER")
     monkeypatch.setattr(system_prompt, "get_hermes_home", lambda: Path("/hermes"))
+    monkeypatch.setattr(system_prompt, "get_default_hermes_root", lambda: Path("/hermes"))
 
     expected_profile = (
         "Active Hermes profile: default. Other profiles (if any) live "

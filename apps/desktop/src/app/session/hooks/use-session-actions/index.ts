@@ -13,7 +13,13 @@ import { migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
-import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  $gatewaySwapTarget,
+  $newChatProfile,
+  ensureGatewayProfile,
+  normalizeProfileKey
+} from '@/store/profile'
 import {
   beginSessionMutation,
   endSessionMutation,
@@ -170,7 +176,12 @@ async function desktopSessionCreateParams(cwd: string): Promise<Record<string, u
     provider: $currentProvider.get().trim()
   }
 
-  const profile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())
+  // A pending gateway swap is still the user's visible profile intent. Cmd+N
+  // deliberately clears a stale per-profile quick-create selection, but must
+  // not route the new session back through the previous live backend while
+  // that explicit profile switch is still opening (#79003 class).
+  const profile = $newChatProfile.get() ?? $gatewaySwapTarget.get() ?? normalizeProfileKey($activeGatewayProfile.get())
+
   await ensureGatewayProfile(profile)
 
   return {

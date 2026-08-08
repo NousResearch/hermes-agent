@@ -44,11 +44,12 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import BinaryIO, Dict, List, Tuple
 
 
 # Default test discovery roots.
@@ -305,14 +306,39 @@ def _run_one_file_once(
     file_timeout: float,
 ) -> Tuple[Path, int, str, dict[str, int], float]:
     """Single attempt of a per-file pytest subprocess (see _run_one_file)."""
+    if sys.platform == "win32":
+        # A gateway/pythonw parent may not have a usable console handle.
+        # Give pytest a real file so its terminal writer never inherits one.
+        with tempfile.TemporaryFile() as output_file:
+            return _run_one_file_once_captured(
+                file, pytest_args, repo_root, file_timeout, output_file
+            )
+    return _run_one_file_once_captured(
+        file, pytest_args, repo_root, file_timeout, None
+    )
+
+
+def _run_one_file_once_captured(
+    file: Path,
+    pytest_args: List[str],
+    repo_root: Path,
+    file_timeout: float,
+    output_file: BinaryIO | None,
+) -> Tuple[Path, int, str, dict[str, int], float]:
     cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
+
+    def captured_output(pipe_output: str | None) -> str:
+        if output_file is None:
+            return pipe_output or ""
+        output_file.seek(0)
+        return output_file.read().decode("utf-8", errors="replace")
     
     subproc_start = time.monotonic()
     # launch the pytest process
     proc = subprocess.Popen(
         cmd,
         cwd=repo_root,
-        stdout=subprocess.PIPE,
+        stdout=output_file if output_file is not None else subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace",
         env=os.environ,
@@ -343,6 +369,8 @@ def _run_one_file_once(
             output, _ = proc.communicate(timeout=10)
         except subprocess.TimeoutExpired:
             output = "(file timeout exceeded; output unavailable)"
+        else:
+            output = captured_output(output)
         rc = 124  # de facto convention for "killed by timeout".
         output = (
             f"({file_timeout:.0f}s exceeded; "
@@ -357,6 +385,7 @@ def _run_one_file_once(
         # Happy path: pytest exited on its own. Kill the group anyway in
         # case it left grandchildren behind; already-dead is a no-op.
         _kill_tree(proc, pgid=pgid)
+        output = captured_output(output)
 
         output +=  "\n"
 

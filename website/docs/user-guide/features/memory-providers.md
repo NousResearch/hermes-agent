@@ -94,7 +94,7 @@ The legacy `hermes honcho setup` command still works (it now redirects to `herme
 | `dialecticMaxChars` | `600` | Max chars of dialectic result injected into system prompt |
 | `recallMode` | `'hybrid'` | `hybrid` (auto-inject + tools), `context` (inject only), `tools` (tools only) |
 | `writeFrequency` | `'async'` | When to flush messages: `async` (background thread), `turn` (sync), `session` (batch on end), or integer N |
-| `saveMessages` | `true` | Whether to persist messages to Honcho API |
+| `saveMessages` | `true` | Allow automatic turn persistence, built-in profile-write mirroring, and startup migration of `MEMORY.md` / `USER.md` / `SOUL.md`. When `false`, those automatic paths send no content; explicit tool writes such as `honcho_conclude` remain available |
 | `observationMode` | `'directional'` | `directional` (all on) or `unified` (shared pool). Override with `observation` object |
 | `messageMaxChars` | `25000` | Max chars per message (chunked if exceeded) |
 | `dialecticMaxInputChars` | `10000` | Max chars for dialectic query input to `peer.chat()` |

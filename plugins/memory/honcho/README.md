@@ -215,7 +215,7 @@ Pick **[e]** at the prompt to set the three keys directly instead of going throu
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `writeFrequency` | string/int | `"async"` | `"async"` (background), `"turn"` (sync per turn), `"session"` (batch on end), or integer N (every N turns) |
-| `saveMessages` | bool | `true` | Persist messages to Honcho API |
+| `saveMessages` | bool | `true` | Allow automatic turn persistence, built-in profile-write mirroring, and startup migration of `MEMORY.md` / `USER.md` / `SOUL.md`. When `false`, those automatic paths send no content; explicit tool writes such as `honcho_conclude` remain available |
 
 ### Session Resolution
 

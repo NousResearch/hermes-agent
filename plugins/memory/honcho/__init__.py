@@ -488,12 +488,18 @@ class HonchoMemoryProvider(MemoryProvider):
         # not treat that partially initialized state as usable.
         session = self._manager.get_or_create(self._session_key)
 
-        # Skip under per-session strategy: every Hermes run creates a fresh
-        # Honcho session by design, so uploading MEMORY.md/USER.md/SOUL.md to
-        # each one would flood the backend with short-lived duplicates instead
-        # of performing a one-time migration.
+        # saveMessages=false is the privacy boundary for every automatic
+        # content write, including startup migration. Also skip under the
+        # per-session strategy: every Hermes run creates a fresh Honcho session,
+        # so uploading MEMORY.md/USER.md/SOUL.md to each one would flood the
+        # backend with short-lived duplicates instead of migrating once.
         try:
-            if not session.messages and cfg.session_strategy != "per-session":
+            if not self._automatic_persistence_enabled():
+                logger.debug(
+                    "Honcho memory file migration skipped: saveMessages is disabled (%s)",
+                    self._session_key,
+                )
+            elif not session.messages and cfg.session_strategy != "per-session":
                 from hermes_constants import get_hermes_home
                 mem_dir = str(get_hermes_home() / "memories")
                 self._manager.migrate_memory_files(self._session_key, mem_dir)
@@ -593,6 +599,16 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._session_initialized:
             return True
         return not (self._init_thread and self._init_thread.is_alive())
+
+    def _automatic_persistence_enabled(self) -> bool:
+        """Return whether automatic message and startup-file writes are allowed.
+
+        ``saveMessages`` controls automatic persistence only. Explicit tool
+        writes such as ``honcho_conclude`` intentionally bypass this check.
+        ``getattr`` preserves the historical enabled-by-default behavior for
+        legacy/test config objects that predate the setting.
+        """
+        return bool(getattr(self._config, "save_messages", True))
 
     def _format_first_turn_context(self, ctx: dict) -> str:
         """Format the prefetch context dict into a readable system prompt block."""
@@ -1322,6 +1338,8 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if self._cron_skipped:
             return
+        if not self._automatic_persistence_enabled():
+            return
         if self._recall_mode == "tools" and not self._session_ready():
             return
         if not self._session_ready():
@@ -1368,6 +1386,8 @@ class HonchoMemoryProvider(MemoryProvider):
             return
         if self._cron_skipped:
             return
+        if not self._automatic_persistence_enabled():
+            return
         if self._recall_mode == "tools" and not self._session_ready():
             return
         if not self._session_ready():
@@ -1386,6 +1406,8 @@ class HonchoMemoryProvider(MemoryProvider):
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Flush all pending messages to Honcho on session end."""
         if self._cron_skipped:
+            return
+        if not self._automatic_persistence_enabled():
             return
         if not self._manager:
             return
@@ -1530,7 +1552,15 @@ class HonchoMemoryProvider(MemoryProvider):
             if t and t.is_alive():
                 t.join(timeout=5.0)
         # Flush any remaining messages
-        if self._manager and not (self._init_thread and self._init_thread.is_alive() and not self._session_initialized):
+        if (
+            self._automatic_persistence_enabled()
+            and self._manager
+            and not (
+                self._init_thread
+                and self._init_thread.is_alive()
+                and not self._session_initialized
+            )
+        ):
             try:
                 self._manager.flush_all()
             except Exception:

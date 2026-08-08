@@ -178,7 +178,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             label="Save messages",
             kind=KIND_BOOL,
             default="true",
-            description="Persist conversation messages to Honcho.",
+            description="Allow automatic turn persistence, profile-write mirroring, and startup memory-file migration. Explicit Honcho tool writes remain available.",
             group="Message writing",
         ),
         ProviderField(

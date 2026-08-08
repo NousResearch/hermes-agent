@@ -207,6 +207,50 @@ class TestMcpAdd:
         assert config["mcp_servers"]["ink"]["url"] == "https://mcp.ml.ink/mcp"
 
 
+    def test_add_http_query_token_keeps_secret_in_profile_env(self, capsys, monkeypatch):
+        """CLI query auth stores only an env reference in the server config."""
+        def mock_probe(name, config, **kw):
+            assert config == {
+                "url": "https://windmill.example/mcp",
+                "auth": "query",
+                "token": "${MCP_WINDMILL_API_KEY}",
+            }
+            return [("list_tools", "List tools")]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._prompt", lambda *args, **kwargs: "query-secret"
+        )
+        inputs = iter(["y", ""])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import read_raw_config
+
+        cmd_mcp_add(
+            _make_args(
+                name="Windmill",
+                url="https://windmill.example/mcp",
+                auth="query",
+            )
+        )
+
+        out = capsys.readouterr().out
+        assert "Saved" in out
+        server = read_raw_config()["mcp_servers"]["Windmill"]
+        assert server == {
+            "url": "https://windmill.example/mcp",
+            "auth": "query",
+            "token": "${MCP_WINDMILL_API_KEY}",
+            "enabled": True,
+        }
+        env_text = (Path(os.environ["HERMES_HOME"]) / ".env").read_text()
+        assert "MCP_WINDMILL_API_KEY=query-secret" in env_text
+        assert "query-secret" not in str(server)
+
+
     def test_add_stdio_server_with_env(self, tmp_path, capsys, monkeypatch):
         """Stdio servers can persist explicit environment variables."""
         fake_tools = [FakeTool("search", "Search repos")]

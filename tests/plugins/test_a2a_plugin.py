@@ -1618,3 +1618,128 @@ print('fake reply')
         title = con.execute("SELECT title FROM sessions WHERE id='sess-1'").fetchone()[0]
         con.close()
         assert title == "a2a-dev-ctx-unsafe-value"
+
+
+# ── standalone_sender_fn (hermes send / cron out-of-process delivery) ──
+
+def test_standalone_send_delivers_new_task_to_peer(monkeypatch):
+    from plugins.platforms.a2a.adapter import _standalone_send
+
+    peer = {"url": "http://peer:9900", "auth": {"type": "bearer", "token": "t"}, "timeout": 30, "capabilities": []}
+    calls = {}
+
+    def fake_resolve(name):
+        calls["resolved"] = name
+        return peer if name == "macmini" else None
+
+    monkeypatch.setattr("plugins.platforms.a2a.tools._resolve_peer", fake_resolve)
+    monkeypatch.setattr(
+        "plugins.platforms.a2a.tools._send_task",
+        lambda *a, **k: ("peer reply text", "ctx-abc", "completed"),
+    )
+
+    result = asyncio.run(_standalone_send(None, "macmini", "hello"))
+
+    assert calls["resolved"] == "macmini"
+    assert result["success"] is True
+    assert result["message_id"] == "ctx-abc"
+    assert "peer reply text" in result["note"]
+
+
+def test_standalone_send_strips_a2a_prefix(monkeypatch):
+    from plugins.platforms.a2a.adapter import _standalone_send
+
+    seen = {}
+
+    def fake_resolve(name):
+        seen["name"] = name
+        return {"url": "http://peer:9900", "auth": {}, "timeout": 30, "capabilities": []}
+
+    monkeypatch.setattr("plugins.platforms.a2a.tools._resolve_peer", fake_resolve)
+    monkeypatch.setattr(
+        "plugins.platforms.a2a.tools._send_task",
+        lambda *a, **k: ("", "ctx-1", "completed"),
+    )
+
+    asyncio.run(_standalone_send(None, "a2a:macmini", "hi"))
+    assert seen["name"] == "macmini"
+
+
+def test_standalone_send_surfaces_input_required_state(monkeypatch):
+    from plugins.platforms.a2a.adapter import _standalone_send
+
+    monkeypatch.setattr(
+        "plugins.platforms.a2a.tools._resolve_peer",
+        lambda name: {"url": "http://peer:9900", "auth": {}, "timeout": 30, "capabilities": []},
+    )
+    monkeypatch.setattr(
+        "plugins.platforms.a2a.tools._send_task",
+        lambda *a, **k: ("是否允许删除该文件？", "ctx-9", "TASK_STATE_INPUT_REQUIRED"),
+    )
+
+    result = asyncio.run(_standalone_send(None, "macmini", "delete the file"))
+
+    assert result["success"] is True
+    assert result["needs_input"] is True
+    assert result["message_id"] == "ctx-9"
+    assert "是否允许删除该文件" in result["note"]
+
+
+def test_standalone_send_unknown_peer_errors(monkeypatch):
+    from plugins.platforms.a2a.adapter import _standalone_send
+
+    monkeypatch.setattr("plugins.platforms.a2a.tools._resolve_peer", lambda name: None)
+    monkeypatch.setattr(
+        "plugins.platforms.a2a.tools._send_task",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not send")),
+    )
+
+    result = asyncio.run(_standalone_send(None, "ghost", "hi"))
+
+    assert result["success"] is False
+    assert "ghost" in result["error"]
+
+
+def test_standalone_send_surfaces_transport_failure(monkeypatch):
+    from plugins.platforms.a2a.adapter import _standalone_send
+
+    monkeypatch.setattr(
+        "plugins.platforms.a2a.tools._resolve_peer",
+        lambda name: {"url": "http://peer:9900", "auth": {}, "timeout": 5, "capabilities": []},
+    )
+    monkeypatch.setattr(
+        "plugins.platforms.a2a.tools._send_task",
+        lambda *a, **k: (_ for _ in ()).throw(TimeoutError("timed out")),
+    )
+
+    result = asyncio.run(_standalone_send(None, "macmini", "hi"))
+
+    assert result["success"] is False
+    assert "timed out" in result["error"]
+
+
+# ── private-host proxy bypass (urllib env-proxy trap) ──
+
+def test_is_private_host_bypasses_proxy_for_tailscale_cgnat() -> None:
+    from plugins.platforms.a2a.tools import _is_private_host
+
+    assert _is_private_host("http://100.81.221.19:9900") is True   # Tailscale CGNAT
+    assert _is_private_host("http://100.64.0.1:9900") is True       # CGNAT range edge
+    assert _is_private_host("http://100.127.255.254:9900") is True  # CGNAT range edge
+
+
+def test_is_private_host_bypasses_proxy_for_lan_and_loopback() -> None:
+    from plugins.platforms.a2a.tools import _is_private_host
+
+    assert _is_private_host("http://192.168.31.233:9900") is True
+    assert _is_private_host("http://10.0.0.5:9900") is True
+    assert _is_private_host("http://localhost:9900") is True
+    assert _is_private_host("http://127.0.0.1:9900") is True
+
+
+def test_is_private_host_leaves_public_hosts_to_env_proxy() -> None:
+    from plugins.platforms.a2a.tools import _is_private_host
+
+    assert _is_private_host("https://a2a.example.com") is False
+    assert _is_private_host("https://peer.example.net:8443") is False
+    assert _is_private_host("http://8.8.8.8:9900") is False

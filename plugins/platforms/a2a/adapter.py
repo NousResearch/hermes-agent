@@ -1270,3 +1270,64 @@ class A2AAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": f"a2a:{chat_id}", "type": "dm"}
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document: bool = False,
+) -> Dict[str, Any]:
+    """Out-of-process A2A delivery for ``hermes send`` / cron.
+
+    The live adapter replies into an *existing* pending peer session
+    (identified by its ``ctx-...`` id). This standalone path instead starts
+    a NEW task on the peer via ``message/send`` — the only sensible
+    semantics when the gateway is not in this process. ``chat_id`` is a peer
+    name from ``config.yaml`` → ``a2a_agents`` (optionally carrying the
+    ``a2a:`` prefix the channel directory displays). ``thread_id`` /
+    ``media_files`` are accepted for signature parity only — A2A has no
+    thread or attachment primitive.
+    """
+    from .tools import _resolve_peer, _send_task
+
+    peer_name = chat_id
+    if peer_name.startswith("a2a:"):
+        peer_name = peer_name[len("a2a:"):]
+
+    peer = _resolve_peer(peer_name)
+    if peer is None:
+        return {
+            "success": False,
+            "error": (
+                f"No A2A peer '{peer_name}' in config.yaml a2a_agents. "
+                f"Configure it there or pass a direct URL as the target."
+            ),
+        }
+
+    try:
+        reply, context_id, state = await asyncio.to_thread(
+            _send_task, peer_name, peer, message, ""
+        )
+    except Exception as exc:  # urllib errors, timeouts, protocol errors
+        return {"success": False, "error": f"A2A send to {peer_name} failed: {exc}"}
+
+    note = f"A2A task delivered to {peer_name}"
+    if state == protocol.STATE_INPUT_REQUIRED:
+        # The peer needs the operator to answer before it can proceed —
+        # surface that explicitly instead of looking like a completed task.
+        return {
+            "success": True,
+            "message_id": context_id,
+            "needs_input": True,
+            "note": (
+                f"A2A peer {peer_name} needs input: {reply[:300]} — "
+                f"answer by sending again with context '{context_id}'."
+            ),
+        }
+    if reply:
+        note += f" — peer reply: {reply[:300]}"
+    return {"success": True, "message_id": context_id, "note": note}

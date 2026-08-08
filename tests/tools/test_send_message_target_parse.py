@@ -64,3 +64,62 @@ def test_send_message_routes_whatsapp_group_jid_without_home_fallback() -> None:
         force_document=False,
     )
 
+
+def test_a2a_ctx_id_is_explicit() -> None:
+    chat_id, thread_id, is_explicit = _parse_target_ref("a2a", "ctx-25a5d320aaa34f07")
+
+    assert chat_id == "ctx-25a5d320aaa34f07"
+    assert thread_id is None
+    assert is_explicit is True
+
+
+def test_a2a_peer_name_is_explicit() -> None:
+    chat_id, thread_id, is_explicit = _parse_target_ref("a2a", "macmini")
+
+    assert chat_id == "macmini"
+    assert thread_id is None
+    assert is_explicit is True
+
+
+def test_a2a_prefixed_peer_name_is_explicit() -> None:
+    chat_id, thread_id, is_explicit = _parse_target_ref("a2a", "a2a:macmini")
+
+    assert chat_id == "a2a:macmini"
+    assert thread_id is None
+    assert is_explicit is True
+
+
+def test_send_message_routes_a2a_peer_name_without_home_fallback() -> None:
+    a2a_cfg = SimpleNamespace(enabled=True, token=None, extra={"port": 9900})
+    config = SimpleNamespace(
+        platforms={Platform("a2a"): a2a_cfg},
+        get_home_channel=lambda _platform: None,
+    )
+
+    with patch("gateway.config.load_gateway_config", return_value=config), \
+         patch("tools.interrupt.is_interrupted", return_value=False), \
+         patch("gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("peer names should not resolve via directory")), \
+         patch("model_tools._run_async", side_effect=_run_async_immediately), \
+         patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+         patch("gateway.mirror.mirror_to_session", return_value=True):
+        result = json.loads(
+            send_message_tool(
+                {
+                    "action": "send",
+                    "target": "a2a:macmini",
+                    "message": "hello peer",
+                }
+            )
+        )
+
+    assert result["success"] is True
+    send_mock.assert_awaited_once_with(
+        Platform("a2a"),
+        a2a_cfg,
+        "macmini",
+        "hello peer",
+        thread_id=None,
+        media_files=[],
+        force_document=False,
+    )
+

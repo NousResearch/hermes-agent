@@ -106,7 +106,7 @@ def register(ctx) -> None:
 
     # 2) Inbound platform adapter.
     try:
-        from .adapter import A2AAdapter
+        from .adapter import A2AAdapter, _standalone_send
         ctx.register_platform(
             name="a2a",
             label="A2A",
@@ -122,6 +122,10 @@ def register(ctx) -> None:
             allow_all_env="A2A_ALLOW_ALL_USERS",
             cron_deliver_env_var="A2A_HOME_CHANNEL",
             allow_update_command=False,
+            # Out-of-process delivery (hermes send / cron): starts a new
+            # task on the peer via message/send. Without this hook those
+            # paths fail with "No live adapter for platform 'a2a'".
+            standalone_sender_fn=_standalone_send,
             platform_hint=(
                 "You are reachable over the A2A (Agent-to-Agent) protocol. "
                 "Messages prefixed with [A2A inbound ...] come from another "

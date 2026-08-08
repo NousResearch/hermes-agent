@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional, TypedDict
@@ -78,9 +79,43 @@ def _auth_header(auth: dict) -> dict:
 # HTTP
 # --------------------------------------------------------------------------
 
+# A2A peers are frequently private/Tailscale addresses (100.64.0.0/10 CGNAT,
+# 192.168.x, localhost) that must NEVER be routed through an HTTP proxy —
+# a proxy either can't reach them (502) or leaks the request off-LAN.
+# urllib's default opener honors env proxies (and only the *lowercase*
+# no_proxy list on most platforms — a classic env-var case trap), so build a
+# proxy-free opener and use it for private hosts.
+_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _is_private_host(url: str) -> bool:
+    """True for loopback / private / link-local / CGNAT (Tailscale) hosts."""
+    try:
+        import ipaddress
+
+        host = (urllib.parse.urlparse(url).hostname or "").lower()
+        if host in ("localhost", "localhost.localdomain"):
+            return True
+        ip = ipaddress.ip_address(host)
+        if ip.is_loopback or ip.is_private or ip.is_link_local:
+            return True
+        # Tailscale uses the CGNAT range 100.64.0.0/10. ip.is_private covers
+        # it on 3.11+; check explicitly so older runtimes behave the same.
+        cgnat = ipaddress.ip_network("100.64.0.0/10")
+        return ip in cgnat
+    except ValueError:
+        return False  # unresolvable hostname — let env proxies apply
+
+
+def _opener_for(url: str):
+    if _is_private_host(url):
+        return _NO_PROXY_OPENER.open
+    return urllib.request.urlopen
+
+
 def _http_get_json(url: str, headers: dict, timeout: int) -> dict:
     req = urllib.request.Request(url, headers=headers, method="GET")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
+    with _opener_for(url)(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -88,7 +123,7 @@ def _http_post_json(url: str, body: dict, headers: dict, timeout: int) -> dict:
     data = json.dumps(body).encode("utf-8")
     hdrs = {"Content-Type": "application/json", "A2A-Version": protocol.PROTOCOL_VERSION, **headers}
     req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
+    with _opener_for(url)(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
         return json.loads(resp.read().decode("utf-8"))
 
 

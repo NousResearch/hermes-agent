@@ -469,6 +469,62 @@ class TestUniversalMediaEgress:
         assert "MEDIA:" not in cleaned
 
 
+class TestMediaDeliveryAgentVisibleCachePath:
+    """Inbound notes teach the agent ``to_agent_visible_cache_path`` spellings;
+    outbound MEDIA must invert them or the file the model was told to re-send
+    is silently skipped as 'unsafe'."""
+
+    def test_docker_agent_visible_cache_path_validates_to_host(
+        self, tmp_path, monkeypatch,
+    ):
+        hermes_home = tmp_path / ".hermes"
+        cached = hermes_home / "cache" / "images" / "photo.png"
+        cached.parent.mkdir(parents=True)
+        cached.write_bytes(b"\x89PNG\r\n\x1a\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
+
+        from tools.credential_files import to_agent_visible_cache_path
+
+        visible = to_agent_visible_cache_path(str(cached))
+        assert visible == "/root/.hermes/cache/images/photo.png"
+
+        assert BasePlatformAdapter.validate_media_delivery_path(visible) == str(
+            cached.resolve()
+        )
+
+    def test_filter_keeps_docker_agent_visible_cache_path(
+        self, tmp_path, monkeypatch,
+    ):
+        hermes_home = tmp_path / ".hermes"
+        cached = hermes_home / "cache" / "images" / "photo.png"
+        cached.parent.mkdir(parents=True)
+        cached.write_bytes(b"\x89PNG\r\n\x1a\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
+
+        filtered = BasePlatformAdapter.filter_media_delivery_paths([
+            ("/root/.hermes/cache/images/photo.png", False),
+        ])
+        assert filtered == [(str(cached.resolve()), False)]
+
+    def test_non_cache_container_path_still_rejected(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
+
+        assert (
+            BasePlatformAdapter.validate_media_delivery_path(
+                "/root/not-a-hermes-cache/secret.png"
+            )
+            is None
+        )
+
+
 class TestMediaDeliveryPathValidation:
     def _patch_roots(self, monkeypatch, *roots):
         monkeypatch.setattr(

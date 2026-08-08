@@ -1683,6 +1683,13 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     host's secrets to that same user.
 
     Symlinks are resolved before any containment / denylist check.
+
+    Agent-visible cache paths (``/root/.hermes/cache/...`` under docker/modal,
+    ``~/.hermes/cache/...`` under ssh) are inverted to the host staging file
+    via :func:`tools.credential_files.from_agent_visible_cache_path` *before*
+    ``expanduser`` — inbound attachment notes teach the agent those spellings
+    (:meth:`CachedMedia.context_note`), and without the inverse ``MEDIA:`` /
+    ``send_message`` silently drops the file the model was told to re-send.
     """
     if not path:
         return None
@@ -1693,6 +1700,18 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     candidate = candidate.lstrip("`\"'").rstrip("`\"',.;:)}]")
     if not candidate:
         return None
+
+    # Inverse of inbound to_agent_visible_cache_path — must run before
+    # expanduser so a literal ``~/.hermes/...`` ssh spelling is not rewritten
+    # against the host home (wrong tree under profiles / non-default
+    # HERMES_HOME). Docker ``/root/.hermes/...`` is unchanged by expanduser;
+    # translating first is still required so resolve() sees the host file.
+    try:
+        from tools.credential_files import from_agent_visible_cache_path
+
+        candidate = from_agent_visible_cache_path(candidate)
+    except Exception:
+        pass
 
     try:
         expanded = Path(os.path.expanduser(candidate))

@@ -247,6 +247,55 @@ class TestGatewayRuntimeStatus:
                 == 139
             ), cmdline
 
+    def test_runtime_status_running_pid_tolerates_small_start_time_drift(self, monkeypatch):
+        """Regression (macOS field report): psutil ``create_time()`` for the SAME
+        live process shifted by exactly 1s (100 centiseconds) after a venv
+        psutil upgrade, so the strict-equality PID-reuse guard rejected the
+        live gateway and the dashboard reported it "stopped" while its
+        platforms were connected and its heartbeat fresh.  Fingerprints within
+        ``_START_TIME_TOLERANCE`` must be treated as the same process.
+        """
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+            "start_time": 178526682901,
+        }
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(
+            status, "_get_process_start_time", lambda pid: 178526682801
+        )
+        monkeypatch.setattr(
+            status, "_read_process_cmdline", lambda pid: "hermes gateway run --replace"
+        )
+
+        assert status.get_runtime_status_running_pid(payload) == 139
+
+    def test_runtime_status_running_pid_still_rejects_large_start_time_mismatch(
+        self, monkeypatch
+    ):
+        """A fingerprint gap far beyond the drift tolerance is a genuinely
+        recycled PID and must still be rejected."""
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+            "start_time": 178526682901,
+        }
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(
+            status, "_get_process_start_time", lambda pid: 178526682901 + 360_000
+        )
+        monkeypatch.setattr(
+            status, "_read_process_cmdline", lambda pid: "hermes gateway run --replace"
+        )
+
+        assert status.get_runtime_status_running_pid(payload) is None
+
 
     def test_command_line_belongs_to_profile_normalizes_separators(self):
         """A Windows argv renders HERMES_HOME with backslashes while the

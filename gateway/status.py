@@ -325,6 +325,35 @@ def get_process_start_time(pid: int) -> Optional[int]:
     return _get_process_start_time(pid)
 
 
+#: Tolerance for comparing start-time fingerprints, in fingerprint units:
+#: centiseconds on macOS/Windows (psutil), clock ticks on Linux (typically
+#: 100Hz) — ~2 seconds either way.  See ``_start_times_match``.
+_START_TIME_TOLERANCE = 200
+
+
+def _start_times_match(recorded: Any, current: Any) -> bool:
+    """Return True when two start-time fingerprints identify the same process.
+
+    Strict equality proved too brittle on the psutil path (macOS/Windows):
+    ``create_time()`` for the *same* live process can shift by ~1s across a
+    psutil upgrade or an NTP step adjustment.  Observed in the field: a
+    long-running macOS gateway recorded its fingerprint at spawn, a later venv
+    update moved psutil's derivation by exactly 1s, and every subsequent
+    liveness probe rejected the live PID — the dashboard reported a running
+    gateway (platforms connected, heartbeat fresh) as "stopped".
+
+    A 2s window keeps the PID-reuse guard effective: a false positive requires
+    the OS to recycle the same PID onto a new process whose start instant lands
+    within 2s of the original's, and the surrounding command-line/profile
+    checks must also misidentify it.  Non-numeric fingerprints (defensive:
+    hand-edited state files) fall back to strict equality.
+    """
+    try:
+        return abs(float(current) - float(recorded)) <= _START_TIME_TOLERANCE
+    except (TypeError, ValueError):
+        return current == recorded
+
+
 def _read_process_cmdline(pid: int) -> Optional[str]:
     """Return the process command line as a space-separated string.
 
@@ -1085,7 +1114,7 @@ def runtime_status_pid_is_live(record: Optional[dict[str, Any]]) -> bool:
     if (
         recorded_start is not None
         and current_start is not None
-        and current_start != recorded_start
+        and not _start_times_match(recorded_start, current_start)
     ):
         return False
     return True
@@ -1325,7 +1354,7 @@ def get_runtime_status_running_pid(
     if (
         recorded_start is not None
         and current_start is not None
-        and current_start != recorded_start
+        and not _start_times_match(recorded_start, current_start)
     ):
         return None
 
@@ -2199,7 +2228,7 @@ def get_running_pid(
 
         recorded_start = record.get("start_time")
         current_start = _get_process_start_time(pid)
-        if recorded_start is not None and current_start is not None and current_start != recorded_start:
+        if recorded_start is not None and current_start is not None and not _start_times_match(recorded_start, current_start):
             continue
 
         if _record_matches_live_gateway_pid(record, pid):

@@ -378,3 +378,80 @@ class TestBrowserVisionPrivateNetworkGuard:
         result_raw = browser_browser_vision(question="what", task_id="test")
         result = json.loads(result_raw)
         assert "private or internal address" not in result.get("error", "")
+
+
+# Behavioral metadata: both content-returning entry points must use the same
+# guard/probe contract while preserving the legacy error envelope.
+@pytest.mark.parametrize(
+    ("entrypoint", "kwargs"),
+    [
+        pytest.param(browser_browser_snapshot, {"task_id": "shared"}, id="snapshot"),
+        pytest.param(
+            browser_browser_vision,
+            {"question": "what do you see", "task_id": "shared"},
+            id="vision",
+        ),
+    ],
+)
+def test_content_entrypoints_share_private_page_helpers(monkeypatch, entrypoint, kwargs):
+    """Snapshot and vision block via the shared SSRF helpers with the old payload."""
+    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser_tool, "_last_session_key", lambda key: key)
+    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(
+        browser_tool,
+        "_current_page_private_url",
+        lambda task_id: "http://127.0.0.1:8080/secret",
+    )
+    monkeypatch.setattr(
+        browser_tool,
+        "_run_browser_command",
+        lambda *args, **kwargs: _make_snapshot_result(),
+    )
+
+    result = json.loads(entrypoint(**kwargs))
+
+    assert result == {
+        "success": False,
+        "error": (
+            "Blocked: page URL targets a private or internal address "
+            "(http://127.0.0.1:8080/secret). This may have been caused by a "
+            "JavaScript navigation via browser_console."
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    ("entrypoint", "kwargs"),
+    [
+        pytest.param(browser_browser_snapshot, {"task_id": "inactive"}, id="snapshot"),
+        pytest.param(
+            browser_browser_vision,
+            {"question": "what do you see", "task_id": "inactive"},
+            id="vision",
+        ),
+    ],
+)
+def test_content_entrypoints_do_not_probe_when_shared_guard_is_inactive(
+    monkeypatch, entrypoint, kwargs
+):
+    """The common gate prevents unnecessary URL probes for trusted sessions."""
+    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser_tool, "_last_session_key", lambda key: key)
+    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: False)
+
+    def fail_probe(task_id):
+        raise AssertionError("_current_page_private_url must not be probed")
+
+    monkeypatch.setattr(browser_tool, "_current_page_private_url", fail_probe)
+    monkeypatch.setattr(
+        browser_tool,
+        "_run_browser_command",
+        lambda task_id, command, *args, **kwargs: (
+            _make_snapshot_result() if command == "snapshot" else _make_screenshot_result()
+        ),
+    )
+
+    result = json.loads(entrypoint(**kwargs))
+
+    assert "private or internal address" not in result.get("error", "")

@@ -30,8 +30,14 @@ const TYPING_SELECTOR = '[data-slot="composer-rich-input"]:focus'
  * read as sitting down to use it. Queried live rather than tracked from
  * document.activeElement, which stays put when the window is blurred and would
  * latch the frost on forever once the user had ever typed here.
+ *
+ * `backing` is the veto over both of those. Because the frost is the window and
+ * not the sheet, it is only ever right when the sheet covers the window; short
+ * of that the excess is frost over empty space. Gating the caller's `engaged`
+ * alone would not do it — focus turns the frost on by itself, which is how a
+ * brand new thread still frosted its whole empty window.
  */
-export function useHudGlass(rootRef: RefObject<HTMLElement | null>, engaged: boolean): void {
+export function useHudGlass(rootRef: RefObject<HTMLElement | null>, engaged: boolean, backing: boolean): void {
   useEffect(() => {
     const root = rootRef.current
     const setVibrancy = window.hermesDesktop?.hud?.setVibrancy
@@ -43,7 +49,7 @@ export function useHudGlass(rootRef: RefObject<HTMLElement | null>, engaged: boo
     let on: boolean | null = null
 
     const apply = () => {
-      const next = engaged || root.querySelector(TYPING_SELECTOR) !== null
+      const next = backing && (engaged || root.querySelector(TYPING_SELECTOR) !== null)
 
       if (on !== next) {
         on = next
@@ -60,5 +66,5 @@ export function useHudGlass(rootRef: RefObject<HTMLElement | null>, engaged: boo
       root.removeEventListener('focusin', apply)
       root.removeEventListener('focusout', apply)
     }
-  }, [engaged, rootRef])
+  }, [backing, engaged, rootRef])
 }

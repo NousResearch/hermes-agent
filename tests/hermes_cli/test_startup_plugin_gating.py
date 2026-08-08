@@ -74,6 +74,11 @@ def _live_subcommand_names() -> set[str]:
 # ── _plugin_cli_discovery_needed ───────────────────────────────────────────
 
 
+def test_contacts_skips_plugin_discovery():
+    with patch.object(sys, "argv", ["hermes", "contacts", "list"]):
+        assert _plugin_cli_discovery_needed() is False
+
+
 # ── _BUILTIN_SUBCOMMANDS ↔ argparse registration parity ────────────────────
 
 

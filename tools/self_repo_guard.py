@@ -27,6 +27,9 @@ _WORKTREE_MUTATIONS = frozenset({
     "clean",
     "cherry-pick",
     "revert",
+    # bisect drives repeated checkouts of the running root — the exact
+    # module-version-skew hazard this guard exists for.
+    "bisect",
 })
 _WORKTREE_TARGET_ACTIONS = frozenset({"move", "remove"})
 _STASH_SAFE_ACTIONS = frozenset({"list", "show", "create", "store", "drop", "clear"})
@@ -35,7 +38,6 @@ _KNOWN_GIT_BUILTINS = frozenset({
     "add",
     "am",
     "apply",
-    "bisect",
     "blame",
     "branch",
     "bundle",

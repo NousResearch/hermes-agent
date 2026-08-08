@@ -30,6 +30,8 @@ class TestBlocksMutationsInSourceRepo:
         [
             "checkout pr-51020",
             "switch main",
+            "bisect start",
+            "bisect good HEAD~10",
             "reset --hard origin/main",
             "reset --har origin/main",
             "rebase origin/main",

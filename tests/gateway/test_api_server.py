@@ -355,6 +355,72 @@ def auth_adapter():
 # ---------------------------------------------------------------------------
 
 
+class TestRunAgentProviderResolutionFailure:
+    """_run_agent()'s _ProviderAuthResolutionError branch serves session
+    chat/stream, chat completions and Responses. It used to hard-label every
+    provider-runtime resolution failure "Provider authentication failed", so a
+    quota cap told operators to re-authenticate valid credentials.
+
+    These drive the real handler (not the shared helper) so the wiring is
+    covered: reverting the branch fails them.
+    """
+
+    @staticmethod
+    def _production_wrapped(auth_error):
+        """Reproduce the chain _run_agent() sees: AuthError -> RuntimeError
+        (from _resolve_runtime_agent_kwargs) -> _ProviderAuthResolutionError
+        (from _create_agent)."""
+        from gateway.platforms.api_server import _ProviderAuthResolutionError
+
+        try:
+            raise RuntimeError(str(auth_error)) from auth_error
+        except RuntimeError as inner:
+            try:
+                raise _ProviderAuthResolutionError(str(inner)) from inner
+            except _ProviderAuthResolutionError as outer:
+                return outer
+
+    async def _final_response(self, adapter, side_effect):
+        with patch.object(adapter, "_create_agent", side_effect=side_effect):
+            result, usage = await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                session_id="session-123",
+            )
+        assert usage == {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        assert result["api_calls"] == 0
+        return result["final_response"]
+
+    @pytest.mark.asyncio
+    async def test_quota_cap_is_not_labeled_authentication_failure(self, adapter):
+        from hermes_cli.auth import AuthError, CODEX_RATE_LIMITED_CODE
+
+        quota = AuthError(
+            "Codex provider quota exhausted (429); retry after 160602s. "
+            "Credentials are still valid.",
+            provider="openai-codex",
+            code=CODEX_RATE_LIMITED_CODE,
+            relogin_required=False,
+        )
+        text = await self._final_response(adapter, self._production_wrapped(quota))
+        assert "authentication failed" not in text.lower()
+        # api_server is a programmatic surface, so raw detail is preserved.
+        assert "quota exhausted" in text
+
+    @pytest.mark.asyncio
+    async def test_credential_failure_still_surfaces_its_detail(self, adapter):
+        from gateway.platforms.api_server import _ProviderAuthResolutionError
+
+        text = await self._final_response(
+            adapter,
+            _ProviderAuthResolutionError("No credentials found for provider 'nous'"),
+        )
+        assert text == (
+            "⚠️ Provider runtime resolution failed: "
+            "No credentials found for provider 'nous'"
+        )
+
+
 class TestAgentExecution:
     @pytest.mark.asyncio
     async def test_run_agent_uses_session_id_as_task_id(self, adapter):

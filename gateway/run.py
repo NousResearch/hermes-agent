@@ -644,24 +644,135 @@ def _format_exec_approval_fallback(
     )
 
 
+# Shared reply copy so the text- and exception-based classifiers cannot drift.
+_GATEWAY_REPLY_AUTH = (
+    "⚠️ Provider authentication failed. Check the configured credentials; "
+    "raw provider details are in the gateway logs."
+)
+_GATEWAY_REPLY_POLICY = (
+    "⚠️ The model provider rejected the request. I kept the raw provider "
+    "error out of chat; check gateway logs for details or try rephrasing."
+)
+_GATEWAY_REPLY_RATE_LIMIT = (
+    "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
+)
+_GATEWAY_REPLY_TEMPORARY = (
+    "⚠️ The model provider is temporarily unavailable. Please retry in a few seconds."
+)
+_GATEWAY_REPLY_GENERIC = (
+    "⚠️ The model provider failed after retries. I kept raw provider details "
+    "out of chat; check gateway logs for diagnostics."
+)
+
+# Entitlement failures are neither bad credentials nor rate limits: the operator
+# has to top up or renew, so AuthError's own actionable wording is the useful
+# reply and must not be flattened into the generic category.
+_GATEWAY_ENTITLEMENT_CODES = frozenset({
+    "subscription_required",
+    "insufficient_credits",
+    "subscription_expired",
+    "no_usable_credits",
+    "account_missing",
+})
+
+# AuthError codes that report a provider-side fault rather than anything wrong
+# with the operator's credentials — e.g. auth.py raises code="server_error" for
+# "Failed to resolve a Nous inference API key". Telling the operator to check
+# credentials there is exactly the mislabel this change removes.
+_GATEWAY_NON_CREDENTIAL_CODES = frozenset({"server_error"})
+
+
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
     if _GATEWAY_AUTH_ERROR_RE.search(text):
-        return (
-            "⚠️ Provider authentication failed. Check the configured credentials; "
-            "raw provider details are in the gateway logs."
-        )
+        return _GATEWAY_REPLY_AUTH
     if _GATEWAY_PROVIDER_POLICY_RE.search(text):
-        return (
-            "⚠️ The model provider rejected the request. I kept the raw provider "
-            "error out of chat; check gateway logs for details or try rephrasing."
-        )
+        return _GATEWAY_REPLY_POLICY
     if _GATEWAY_RATE_LIMIT_RE.search(text):
-        return "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
-    return (
-        "⚠️ The model provider failed after retries. I kept raw provider details "
-        "out of chat; check gateway logs for diagnostics."
-    )
+        return _GATEWAY_REPLY_RATE_LIMIT
+    return _GATEWAY_REPLY_GENERIC
+
+
+def _gateway_provider_exception_reply(exc: BaseException) -> str:
+    """Classify a provider-resolution failure, preferring structured error data.
+
+    Callers used to hard-label every runtime-resolution failure "Provider
+    authentication failed". A provider quota cap therefore reached chat as a
+    credentials problem, sending the operator to re-authenticate credentials
+    that were valid the whole time (#32790 reports the same confusion).
+
+    ``AuthError`` already distinguishes quota, entitlement and credential
+    failures, so consult it before falling back to matching the rendered
+    string. The original ``AuthError`` arrives wrapped —
+    ``_resolve_runtime_agent_kwargs`` re-raises it as
+    ``RuntimeError(format_runtime_provider_error(exc)) from exc``, and
+    ``api_server`` adds a ``_ProviderAuthResolutionError`` layer on top — so
+    walk the ``__cause__`` chain rather than inspecting only the outermost
+    exception.
+    """
+    try:
+        from hermes_cli.auth import AuthError, format_auth_error, is_rate_limited_auth_error
+    except Exception:  # pragma: no cover - fall back to text classification
+        return _gateway_provider_error_reply(str(exc))
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, AuthError):
+            if is_rate_limited_auth_error(current):
+                return _GATEWAY_REPLY_RATE_LIMIT
+            code = getattr(current, "code", None)
+            if code in _GATEWAY_ENTITLEMENT_CODES:
+                # Already actionable ("top up/renew credits, then retry"), and
+                # safe for chat: entitlement wording carries no raw provider
+                # payload or credentials.
+                return f"⚠️ {format_auth_error(current)}"
+            if code == "temporarily_unavailable":
+                return _GATEWAY_REPLY_TEMPORARY
+            if code in _GATEWAY_NON_CREDENTIAL_CODES:
+                return _GATEWAY_REPLY_GENERIC
+            # Every other AuthError code in the tree is credential-shaped
+            # (not_logged_in, invalid_token, codex_auth_missing, refresh_failed,
+            # token_exchange_failed, …). Deliberately not gated on
+            # relogin_required: genuine credential errors such as "No Anthropic
+            # credentials found" (code="missing_api_key") leave it False.
+            return _GATEWAY_REPLY_AUTH
+        current = current.__cause__
+
+    return _gateway_provider_error_reply(str(exc))
+
+
+def _gateway_runtime_failure_text(exc: BaseException, platform: Any) -> str:
+    """Reply text for a provider-runtime resolution failure on ``platform``.
+
+    Programmatic surfaces (CLI/TUI ``local``, ``api_server``, webhooks) keep the
+    raw exception; chat surfaces get the short classified category. Either way
+    the old unconditional "Provider authentication failed" label is gone — it
+    described a quota cap as a credentials problem.
+
+    Shared with ``gateway.platforms.api_server``, which has its own
+    ``_ProviderAuthResolutionError`` handlers and does not route through
+    ``_sanitize_gateway_final_response``.
+    """
+    if _gateway_surface_passes_raw_text(platform):
+        return f"⚠️ Provider runtime resolution failed: {exc}"
+    return _gateway_provider_exception_reply(exc)
+
+
+def _gateway_runtime_failure_response(exc: BaseException, platform: Any) -> dict:
+    """Build the turn result for a provider-runtime resolution failure.
+
+    ``api_calls`` is 0 because the failure happens while resolving credentials,
+    before any request is issued — that zero is the tell in the gateway log when
+    diagnosing one of these.
+    """
+    return {
+        "final_response": _gateway_runtime_failure_text(exc, platform),
+        "messages": [],
+        "api_calls": 0,
+        "tools": [],
+    }
 
 
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
@@ -4500,12 +4611,7 @@ class TurnRunner:
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
             )
         except Exception as exc:
-            return {
-                "final_response": f"⚠️ Provider authentication failed: {exc}",
-                "messages": [],
-                "api_calls": 0,
-                "tools": [],
-            }
+            return _gateway_runtime_failure_response(exc, getattr(ctx.source, "platform", None))
 
         pr = self._runner._provider_routing
         reasoning_config = self._runner._resolve_session_reasoning_config(

@@ -6292,15 +6292,18 @@ class APIServerAdapter(BasePlatformAdapter):
                     # all (raw aiohttp 500, no JSON body).  Handling it
                     # here, once, covers every _run_agent() caller;
                     # /v1/runs has its own branch in its executor.
-                    logger.warning("Provider authentication failed for session=%s: %s",
+                    # Not necessarily an auth problem: _resolve_runtime_agent_kwargs()
+                    # raises the same RuntimeError for a rate-limited AuthError, so
+                    # labeling every one of these "authentication failed" sent
+                    # operators to re-authenticate credentials that were fine.
+                    # Classify off the wrapped AuthError instead — reachable via
+                    # __cause__ because both raise sites use `raise ... from exc`.
+                    from gateway.run import _gateway_runtime_failure_response
+
+                    logger.warning("Provider runtime resolution failed for session=%s: %s",
                                    session_id or "", exc)
                     return (
-                        {
-                            "final_response": f"⚠️ Provider authentication failed: {exc}",
-                            "messages": [],
-                            "api_calls": 0,
-                            "tools": [],
-                        },
+                        _gateway_runtime_failure_response(exc, "api_server"),
                         {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
                     )
                 finally:
@@ -6773,8 +6776,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 # message the other endpoints give a provider auth/credential
                 # failure, instead of falling through to the generic
                 # except-Exception branch below.
-                logger.warning("Provider authentication failed for run=%s: %s", run_id, exc)
-                error_msg = f"⚠️ Provider authentication failed: {exc}"
+                # Same classification as the _run_agent() branch above: a quota
+                # cap must not be reported to /v1/runs as an auth failure.
+                from gateway.run import _gateway_runtime_failure_text
+
+                logger.warning("Provider runtime resolution failed for run=%s: %s", run_id, exc)
+                error_msg = _gateway_runtime_failure_text(exc, "api_server")
                 self._set_run_status(
                     run_id,
                     "failed",

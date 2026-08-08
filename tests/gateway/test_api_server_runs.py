@@ -605,27 +605,34 @@ class TestStopRun:
 
 
 class TestRunsProviderAuthFailure:
-    @pytest.mark.asyncio
-    async def test_status_reports_provider_auth_failure_distinctly(self, adapter):
-        """/v1/runs builds its own agent via _create_agent() and does not
-        route through _run_agent(), so the controlled "Provider
-        authentication failed" message added there does not cover this
-        endpoint. _handle_runs()'s own _ProviderAuthResolutionError branch
-        must give the same distinguished message instead of the generic
-        except-Exception "run failed" text."""
+    @staticmethod
+    def _production_wrapped(auth_error):
+        """Reproduce the exact chain /v1/runs sees in production.
+
+        _resolve_runtime_agent_kwargs() re-raises the AuthError as a
+        RuntimeError, and _create_agent() then wraps that in
+        _ProviderAuthResolutionError — so the AuthError is two __cause__ levels
+        down, not one.
+        """
         from gateway.platforms.api_server import _ProviderAuthResolutionError
 
+        try:
+            raise RuntimeError(str(auth_error)) from auth_error
+        except RuntimeError as inner:
+            try:
+                raise _ProviderAuthResolutionError(str(inner)) from inner
+            except _ProviderAuthResolutionError as outer:
+                return outer
+
+    async def _failed_run_status(self, adapter, side_effect):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             with patch.object(adapter, "_create_agent") as mock_create:
-                mock_create.side_effect = _ProviderAuthResolutionError(
-                    "No credentials found for provider 'nous'"
-                )
+                mock_create.side_effect = side_effect
 
                 resp = await cli.post("/v1/runs", json={"input": "hello"})
                 assert resp.status == 202
-                data = await resp.json()
-                run_id = data["run_id"]
+                run_id = (await resp.json())["run_id"]
 
                 for _ in range(40):
                     status_resp = await cli.get(f"/v1/runs/{run_id}")
@@ -633,7 +640,46 @@ class TestRunsProviderAuthFailure:
                     if status["status"] == "failed":
                         break
                     await asyncio.sleep(0.05)
+        return status
 
-                assert status["status"] == "failed"
-                assert status["error"] == "⚠️ Provider authentication failed: No credentials found for provider 'nous'"
-                assert status["last_event"] == "run.failed"
+    @pytest.mark.asyncio
+    async def test_status_reports_provider_resolution_failure_distinctly(self, adapter):
+        """/v1/runs builds its own agent via _create_agent() and does not route
+        through _run_agent(), so _handle_runs()'s own
+        _ProviderAuthResolutionError branch must give a distinguished message
+        instead of the generic except-Exception "run failed" text.
+
+        /v1/runs is a programmatic surface, so it keeps the raw provider text —
+        only the inaccurate "authentication failed" label is gone.
+        """
+        from gateway.platforms.api_server import _ProviderAuthResolutionError
+
+        status = await self._failed_run_status(
+            adapter,
+            _ProviderAuthResolutionError("No credentials found for provider 'nous'"),
+        )
+        assert status["status"] == "failed"
+        assert status["last_event"] == "run.failed"
+        assert status["error"] == (
+            "⚠️ Provider runtime resolution failed: "
+            "No credentials found for provider 'nous'"
+        )
+
+    @pytest.mark.asyncio
+    async def test_quota_cap_is_not_reported_as_authentication_failure(self, adapter):
+        """A rate-limited AuthError reaches this branch through the same wrapper
+        as a credential failure. Reporting it as "authentication failed" sends
+        the operator to re-authenticate credentials that are valid."""
+        from hermes_cli.auth import AuthError, CODEX_RATE_LIMITED_CODE
+
+        quota = AuthError(
+            "Codex provider quota exhausted (429); retry after 160602s. "
+            "Credentials are still valid.",
+            provider="openai-codex",
+            code=CODEX_RATE_LIMITED_CODE,
+            relogin_required=False,
+        )
+        status = await self._failed_run_status(adapter, self._production_wrapped(quota))
+        assert status["status"] == "failed"
+        assert "authentication failed" not in status["error"].lower()
+        assert "quota exhausted" in status["error"]

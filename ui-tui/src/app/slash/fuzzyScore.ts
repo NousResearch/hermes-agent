@@ -51,9 +51,7 @@ function scoreFields(fields: string[], query: string, offset: number): number {
 
 /** Score one item against a normalized query. Lower is better; Infinity = no match. */
 export function scoreSlashMenuItem(item: SlashScoreItem, query: string): number {
-  const commandFields = [item.id, item.label ?? '', ...(item.aliases ?? [])]
-    .filter(Boolean)
-    .flatMap(tokenizeSearchText)
+  const commandFields = [item.id, item.label ?? '', ...(item.aliases ?? [])].filter(Boolean).flatMap(tokenizeSearchText)
 
   const descriptionFields = tokenizeSearchText(item.description ?? '')
 

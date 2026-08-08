@@ -17,7 +17,12 @@ describe('tokenizeSearchText', () => {
 })
 
 describe('scoreSlashMenuItem', () => {
-  const item = { aliases: ['recap', 'summary'], description: 'Turn session recaps on/off', id: 'recaps', label: 'recaps' }
+  const item = {
+    aliases: ['recap', 'summary'],
+    description: 'Turn session recaps on/off',
+    id: 'recaps',
+    label: 'recaps'
+  }
 
   it('scores exact name matches at tier 0', () => {
     expect(scoreSlashMenuItem(item, 'recaps')).toBe(0)
@@ -65,11 +70,7 @@ describe('rankSlashItems', () => {
   })
 
   it('ranks name matches above description matches and drops non-matches', () => {
-    const ranked = rankSlashItems(
-      [{ help: 'model picker widget', id: 'gallery' }, ...apps],
-      '/model',
-      toScoreItem
-    )
+    const ranked = rankSlashItems([{ help: 'model picker widget', id: 'gallery' }, ...apps], '/model', toScoreItem)
 
     expect(ranked.map(app => app.id)).toEqual(['models', 'gallery'])
   })

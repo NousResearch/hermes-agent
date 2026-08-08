@@ -38,6 +38,18 @@ from hermes_state import SessionDB
 # compose_user_api_content — the single source of the injection composition
 # ---------------------------------------------------------------------------
 
+# ``invoke_hook`` fans out by hook NAME — one stub answering every name with the
+# same payload also feeds ``pre_persist_user_message``, whose returns are
+# *durable* and are composed into ``content`` (that hook's whole point). These
+# tests pin the opposite invariant: ``content`` stays clean and the composed
+# body lives in the ``api_content`` sidecar. So scope the stub to the hook it
+# actually models — the ephemeral ``pre_llm_call`` context injection.
+def _pre_llm_call_context(*results):
+    def _stub(hook_name, **_kwargs):
+        return list(results) if hook_name == "pre_llm_call" else []
+    return _stub
+
+
 class TestComposeUserApiContent:
     def test_none_when_nothing_to_inject(self):
         assert compose_user_api_content("hello", "", "") is None
@@ -250,7 +262,7 @@ class TestPrologueStamping:
         agent = _FakeAgent()
         with patch(
             "hermes_cli.plugins.invoke_hook",
-            return_value=[{"context": "PLUGIN-CTX"}],
+            _pre_llm_call_context({"context": "PLUGIN-CTX"}),
         ):
             ctx = _build(agent)
         msg = ctx.messages[ctx.current_turn_user_idx]
@@ -276,7 +288,7 @@ class TestPrologueStamping:
         agent.api_mode = "codex_app_server"
         with patch(
             "hermes_cli.plugins.invoke_hook",
-            return_value=[{"context": "PLUGIN-CTX"}],
+            _pre_llm_call_context({"context": "PLUGIN-CTX"}),
         ):
             ctx = _build(agent)
         assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
@@ -577,7 +589,7 @@ class TestPrologueMoaAndInPlaceBackfill:
         agent = _FakeAgent()
         with patch(
             "hermes_cli.plugins.invoke_hook",
-            return_value=[{"context": "PLUGIN-CTX"}],
+            _pre_llm_call_context({"context": "PLUGIN-CTX"}),
         ):
             ctx = _build(agent, moa_active=True)
         assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
@@ -630,7 +642,7 @@ class TestPrologueMoaAndInPlaceBackfill:
         ]
         with patch(
             "hermes_cli.plugins.invoke_hook",
-            return_value=[{"context": "PLUGIN-CTX"}],
+            _pre_llm_call_context({"context": "PLUGIN-CTX"}),
         ):
             ctx = _build(agent, conversation_history=history)
 

@@ -1628,6 +1628,7 @@ class ContextCompressor(ContextEngine):
                 api_key=self.api_key,
                 config_context_length=self._config_context_length,
                 provider=self.provider,
+                custom_providers=self._custom_providers,
             )
             # Small-context threshold floor: models under 512K trigger at
             # >=75% so compaction doesn't fire with half the window still
@@ -2402,12 +2403,18 @@ class ContextCompressor(ContextEngine):
         proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096,
         min_tail_user_messages: int = 1,
+        custom_providers: list | None = None,
     ):
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
         self.provider = provider
         self.api_mode = api_mode
+        # Per-model context_length overrides from custom_providers config.
+        # Threaded to get_model_context_length() in _resolve_context_length()
+        # so deferred resolution (first context_length property access) honors
+        # the same per-model overrides that startup resolution does (#15779).
+        self._custom_providers = custom_providers
         # Per-model threshold overrides (longest substring match wins).
         # Stored as a plain dict; resolved in _resolve_threshold(), then the
         # small-context floor is applied on top.

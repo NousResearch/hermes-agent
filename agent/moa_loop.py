@@ -639,6 +639,21 @@ _REFERENCE_DEFAULT_OUTPUT_RESERVE = 8192
 _REFERENCE_TRIM_SAFETY_FRACTION = 0.10
 
 
+def _load_custom_providers() -> list | None:
+    """Best-effort load of custom_providers from config.
+
+    Used by _trim_messages_for_reference to honor per-model context_length
+    overrides (custom_providers[].models.<id>.context_length) when resolving
+    reference model context windows. Returns None on any failure so the
+    resolver falls through to probing — never breaks a MoA turn.
+    """
+    try:
+        from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+        return get_compatible_custom_providers(load_config_readonly())
+    except Exception:
+        return None
+
+
 def _trim_messages_for_reference(
     messages: list[dict[str, Any]],
     slot: dict[str, str],
@@ -704,6 +719,7 @@ def _trim_messages_for_reference(
                 base_url=str(runtime.get("base_url") or ""),
                 api_key=str(runtime.get("api_key") or ""),
                 provider=provider,
+                custom_providers=_load_custom_providers(),
             )
         except Exception:
             logger.debug(

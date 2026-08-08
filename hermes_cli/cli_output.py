@@ -5,7 +5,7 @@ functions previously duplicated across setup.py, tools_config.py,
 mcp_config.py, and memory_setup.py.
 """
 
-from hermes_cli.colors import Colors, color
+from hermes_cli.colors import Palette, semantic
 from hermes_cli.secret_prompt import masked_secret_prompt
 
 
@@ -13,28 +13,32 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 def print_info(text: str) -> None:
-    """Print a dim informational message."""
-    print(color(f"  {text}", Colors.DIM))
+    """Print a dim informational message (Palette.INFO)."""
+    print(semantic(f"  {text}", Palette.INFO))
 
 
 def print_success(text: str) -> None:
-    """Print a green success message with ✓ prefix."""
-    print(color(f"✓ {text}", Colors.GREEN))
+    """Print a success message with ✓ prefix (Palette.SUCCESS)."""
+    print(semantic(f"✓ {text}", Palette.SUCCESS))
 
 
 def print_warning(text: str) -> None:
-    """Print a yellow warning message with ⚠ prefix."""
-    print(color(f"⚠ {text}", Colors.YELLOW))
+    """Print a warning message with ⚠ prefix (Palette.WARNING)."""
+    print(semantic(f"⚠ {text}", Palette.WARNING))
 
 
 def print_error(text: str) -> None:
-    """Print a red error message with ✗ prefix."""
-    print(color(f"✗ {text}", Colors.RED))
+    """Print an error message with ✗ prefix (Palette.ERROR)."""
+    print(semantic(f"✗ {text}", Palette.ERROR))
 
 
 def print_header(text: str) -> None:
-    """Print a bold yellow header."""
-    print(color(f"\n  {text}", Colors.YELLOW))
+    """Print a section header in the design-system heading style.
+
+    Uses :data:`Palette.HEADING` (cyan + bold) so section titles read
+    consistently across the CLI instead of varying per call site.
+    """
+    print(semantic(f"\n  {text}", Palette.HEADING))
 
 
 # ─── Input Prompts ────────────────────────────────────────────────────────────
@@ -54,7 +58,7 @@ def prompt(
     Returns empty string on Ctrl-C or EOF.
     """
     suffix = f" [{default}]" if default else ""
-    display = color(f"  {question}{suffix}: ", Colors.YELLOW)
+    display = semantic(f"  {question}{suffix}: ", Palette.PROMPT)
 
     try:
         if password:

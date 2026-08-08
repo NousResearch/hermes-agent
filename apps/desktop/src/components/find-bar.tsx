@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 
+import { appViewForPath, isOverlayView } from '@/app/routes'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { findBarKeyAction, formatMatchLabel } from '@/lib/find-in-page'
@@ -121,7 +122,7 @@ export function FindBar() {
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
   }, [active])
 
-  if (!active) {
+  if (!active || isOverlayView(appViewForPath(pathname))) {
     return null
   }
 
@@ -159,7 +160,7 @@ export function FindBar() {
   return (
     <div
       className={cn(
-        'pointer-events-auto fixed right-4 top-[calc(var(--titlebar-height,0px)+0.5rem)] z-50',
+        'pointer-events-auto fixed right-[calc(var(--titlebar-tools-right,0.75rem)+var(--titlebar-tools-width,0px)+0.5rem)] top-[calc(var(--titlebar-height,0px)+0.5rem)] z-50',
         'flex items-center gap-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-surface-background) px-2 py-1 shadow-md'
       )}
       role="search"

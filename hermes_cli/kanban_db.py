@@ -4842,6 +4842,7 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    expected_claim_lock: Optional[str] = None,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
 
@@ -4870,6 +4871,10 @@ def complete_task(
     Any suspected phantom references are recorded as a
     ``suspected_hallucinated_references`` event. This pass is advisory
     and never blocks.
+
+    When ``expected_claim_lock`` is provided, completion is fenced to the
+    worker that owns that claim. A retry after the successful commit returns
+    success without repeating completion side effects.
     """
     now = int(time.time())
 
@@ -4904,7 +4909,67 @@ def complete_task(
         conn, task_id, metadata, summary=summary, result=result,
     )
     with write_txn(conn):
-        if expected_run_id is None:
+        if expected_claim_lock is not None:
+            current = conn.execute(
+                "SELECT status, claim_lock, current_run_id "
+                "FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            if current is None:
+                return False
+            if current["status"] == "done":
+                event_sql = (
+                    "SELECT payload FROM task_events "
+                    "WHERE task_id = ? AND kind = 'completed'"
+                )
+                event_params: list[Any] = [task_id]
+                if expected_run_id is not None:
+                    event_sql += " AND run_id = ?"
+                    event_params.append(int(expected_run_id))
+                event_sql += " ORDER BY id DESC LIMIT 1"
+                event_row = conn.execute(
+                    event_sql, tuple(event_params)
+                ).fetchone()
+                try:
+                    event_payload = (
+                        json.loads(event_row["payload"])
+                        if event_row and event_row["payload"]
+                        else {}
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    event_payload = {}
+                expected_digest = hashlib.sha256(
+                    expected_claim_lock.encode("utf-8")
+                ).hexdigest()
+                return (
+                    event_payload.get("completion_claim_lock_sha256")
+                    == expected_digest
+                )
+            if current["claim_lock"] != expected_claim_lock:
+                return False
+            if (
+                expected_run_id is not None
+                and current["current_run_id"] != int(expected_run_id)
+            ):
+                return False
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'done',
+                       result       = ?,
+                       completed_at = ?,
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL,
+                       block_kind   = NULL,
+                       block_recurrences = 0
+                 WHERE id = ?
+                   AND status IN ('running', 'ready', 'blocked')
+                   AND claim_lock = ?
+                """,
+                (result, now, task_id, expected_claim_lock),
+            )
+        elif expected_run_id is None:
             cur = conn.execute(
                 """
                 UPDATE tasks
@@ -4980,6 +5045,10 @@ def complete_task(
             "result_len": len(result) if result else 0,
             "summary": ev_summary or None,
         }
+        if expected_claim_lock is not None:
+            completed_payload["completion_claim_lock_sha256"] = hashlib.sha256(
+                expected_claim_lock.encode("utf-8")
+            ).hexdigest()
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
         # Carry artifact paths in the event payload so the gateway

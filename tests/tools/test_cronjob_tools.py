@@ -2,11 +2,13 @@
 
 import json
 import pytest
+from unittest.mock import patch
 
 from tools.cronjob_tools import (
     _scan_cron_prompt,
     check_cronjob_requirements,
     cronjob,
+    _check_cron_ticker_warning,
 )
 
 
@@ -245,6 +247,59 @@ class TestUnifiedCronjobTool:
         assert listing["count"] == 1
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
+
+    def test_create_warns_when_gateway_not_running(self):
+        """Direct create-response regression (keep_open on #51790): builtin
+        scheduler + no gateway must surface the ticker warning on create.message.
+        """
+        with (
+            patch(
+                "cron.scheduler_provider.resolve_cron_scheduler",
+                side_effect=Exception("no external scheduler configured"),
+            ),
+            patch("gateway.status.get_running_pid", return_value=None),
+        ):
+            created = json.loads(
+                cronjob(action="create", prompt="Check", schedule="every 1h")
+            )
+
+        assert created["success"] is True
+        assert "gateway is not running" in created["message"].lower(), created["message"]
+        assert "will NOT fire automatically" in created["message"]
+
+    def test_create_does_not_warn_when_gateway_running(self):
+        """Warning must not appear when get_running_pid returns a live pid."""
+        with (
+            patch(
+                "cron.scheduler_provider.resolve_cron_scheduler",
+                side_effect=Exception("no external scheduler configured"),
+            ),
+            patch("gateway.status.get_running_pid", return_value=12345),
+        ):
+            created = json.loads(
+                cronjob(action="create", prompt="Check", schedule="every 1h")
+            )
+
+        assert created["success"] is True
+        assert "gateway is not running" not in created["message"].lower(), created["message"]
+
+    def test_create_does_not_warn_for_non_builtin_scheduler(self):
+        """External scheduler (Chronos) + no gateway PID must stay silent."""
+        from types import SimpleNamespace
+
+        with (
+            patch(
+                "cron.scheduler_provider.resolve_cron_scheduler",
+                return_value=SimpleNamespace(name="chronos"),
+            ),
+            patch("gateway.status.get_running_pid", return_value=None),
+        ):
+            created = json.loads(
+                cronjob(action="create", prompt="Check", schedule="every 1h")
+            )
+
+        assert created["success"] is True
+        assert "gateway is not running" not in created["message"].lower(), created["message"]
 
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
@@ -615,3 +670,52 @@ class TestGithubExemptionAbuse:
         assert _scan_cron_prompt(
             "generate a keypair and explain id_rsa vs id_ed25519"
         ) == ""
+
+class TestCronTickerWarning:
+    """Unit coverage for _check_cron_ticker_warning (helper + provider gate)."""
+
+    def test_builtin_no_gateway_warns(self):
+        with (
+            patch(
+                "cron.scheduler_provider.resolve_cron_scheduler",
+                side_effect=Exception("no external scheduler configured"),
+            ),
+            patch("gateway.status.get_running_pid", return_value=None),
+        ):
+            msg = _check_cron_ticker_warning()
+        assert msg is not None
+        assert "gateway is not running" in msg.lower()
+        assert "hermes cron tick" in msg
+
+    def test_builtin_gateway_running_silent(self):
+        with (
+            patch(
+                "cron.scheduler_provider.resolve_cron_scheduler",
+                side_effect=Exception("no external scheduler configured"),
+            ),
+            patch("gateway.status.get_running_pid", return_value=12345),
+        ):
+            assert _check_cron_ticker_warning() is None
+
+    def test_non_builtin_no_gateway_silent(self):
+        from types import SimpleNamespace
+
+        with (
+            patch(
+                "cron.scheduler_provider.resolve_cron_scheduler",
+                return_value=SimpleNamespace(name="chronos"),
+            ),
+            patch("gateway.status.get_running_pid", return_value=None),
+        ):
+            assert _check_cron_ticker_warning() is None
+
+    def test_status_probe_error_is_best_effort(self):
+        with (
+            patch(
+                "cron.scheduler_provider.resolve_cron_scheduler",
+                side_effect=Exception("no external scheduler configured"),
+            ),
+            patch("gateway.status.get_running_pid", side_effect=RuntimeError("boom")),
+        ):
+            assert _check_cron_ticker_warning() is None
+

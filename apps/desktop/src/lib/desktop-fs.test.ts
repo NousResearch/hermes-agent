@@ -75,7 +75,7 @@ describe('desktop filesystem facade', () => {
   })
 
   it('uses local Electron filesystem methods in local mode', async () => {
-    $connection.set({ mode: 'local' } as never)
+    $connection.set({ mode: 'local', profile: 'team-local' } as never)
 
     await expect(readDesktopDir('/work')).resolves.toEqual({
       entries: [{ name: 'local', path: '/local', isDirectory: true }]
@@ -89,7 +89,7 @@ describe('desktop filesystem facade', () => {
     expect(readFileText).toHaveBeenCalledWith('/work/file.txt')
     expect(readFileDataUrl).toHaveBeenCalledWith('/work/file.txt')
     expect(gitRoot).toHaveBeenCalledWith('/work')
-    expect(selectPaths).toHaveBeenCalledWith({ directories: true })
+    expect(selectPaths).toHaveBeenCalledWith({ directories: true, profile: 'team-local' })
     expect(api).not.toHaveBeenCalled()
   })
 
@@ -195,12 +195,12 @@ describe('desktop filesystem facade', () => {
 
   it('uses the local Electron picker for remote file selection', async () => {
     const remoteSelect = vi.fn(async () => ['/remote/project'])
-    $connection.set({ mode: 'remote' } as never)
+    $connection.set({ mode: 'remote', profile: 'team-remote' } as never)
     setDesktopFsRemotePicker({ selectPaths: remoteSelect })
 
     await expect(selectDesktopPaths({ directories: false, multiple: false })).resolves.toEqual(['/local'])
 
-    expect(selectPaths).toHaveBeenCalledWith({ directories: false, multiple: false })
+    expect(selectPaths).toHaveBeenCalledWith({ directories: false, multiple: false, profile: 'team-remote' })
     expect(remoteSelect).not.toHaveBeenCalled()
   })
 

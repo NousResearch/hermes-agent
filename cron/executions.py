@@ -236,16 +236,27 @@ def recover_interrupted_executions() -> int:
 def list_executions(
     *, job_id: Optional[str] = None, limit: int = 50,
     before_claimed_at: Optional[str] = None,
+    before_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Return indexed, newest-first execution history with cursor pagination."""
+    """Return indexed, newest-first execution history with cursor pagination.
+
+    Pass both cursor fields from the last record of the previous page so rows
+    sharing one ``claimed_at`` value remain reachable.
+    """
     clauses: List[str] = []
     params: List[Any] = []
     if job_id is not None:
         clauses.append("job_id=?")
         params.append(str(job_id))
     if before_claimed_at is not None:
-        clauses.append("claimed_at < ?")
-        params.append(str(before_claimed_at))
+        if before_id is None:
+            clauses.append("claimed_at < ?")
+            params.append(str(before_claimed_at))
+        else:
+            clauses.append("(claimed_at, id) < (?, ?)")
+            params.extend((str(before_claimed_at), str(before_id)))
+    elif before_id is not None:
+        raise ValueError("before_id requires before_claimed_at")
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     params.append(max(1, min(int(limit), 500)))
     with _transaction() as conn:

@@ -39,6 +39,37 @@ def test_execution_transitions_are_durable(monkeypatch, tmp_path):
     assert persisted == [completed]
 
 
+def test_execution_history_composite_cursor_preserves_tied_timestamps(
+    monkeypatch, tmp_path
+):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    for _ in range(4):
+        executions.create_execution("cursor-job", source="builtin")
+    with executions._transaction() as conn:
+        conn.execute(
+            "UPDATE executions SET claimed_at=?",
+            ("2026-08-03T00:00:00+00:00",),
+        )
+
+    expected = executions.list_executions(job_id="cursor-job", limit=10)
+    first_page = executions.list_executions(job_id="cursor-job", limit=2)
+    cursor = first_page[-1]
+    second_page = executions.list_executions(
+        job_id="cursor-job",
+        limit=2,
+        before_claimed_at=cursor["claimed_at"],
+        before_id=cursor["id"],
+    )
+
+    assert [row["id"] for row in first_page + second_page] == [
+        row["id"] for row in expected
+    ]
+    with __import__("pytest").raises(
+        ValueError, match="before_id requires before_claimed_at"
+    ):
+        executions.list_executions(before_id=cursor["id"])
+
+
 def test_terminal_execution_cannot_be_rewritten(monkeypatch, tmp_path):
     executions = _point_ledger(monkeypatch, tmp_path)
     record = executions.create_execution("immutable", source="builtin")

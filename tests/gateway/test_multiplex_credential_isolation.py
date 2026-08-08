@@ -88,6 +88,45 @@ class TestProfilePathResolutionUnderMultiplexScope:
         assert b_seen == prof_b / "skills"
 
 
+def test_unrouted_source_uses_gateway_home_not_inherited_profile_scope(
+    tmp_path, monkeypatch
+):
+    """A default-lane turn must not inherit the previous routed profile.
+
+    Messaging tasks are spawned with ``copy_context()``.  If the spawning task
+    still carries a secondary profile's HERMES_HOME override, resolving an
+    unrouted source through ``get_active_profile_name()`` incorrectly treats
+    that secondary profile as the gateway's primary profile.
+    """
+    import gateway.run as run_mod
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+    from hermes_cli import profiles
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    root = tmp_path / ".hermes"
+    inherited = root / "profiles" / "bastion"
+    inherited.mkdir(parents=True)
+
+    monkeypatch.setattr(run_mod, "_hermes_home", root)
+    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: root)
+    monkeypatch.setattr(profiles, "_get_profiles_root", lambda: root / "profiles")
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True, profile_routes=[])
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="default-lane")
+
+    token = set_hermes_home_override(str(inherited))
+    try:
+        assert runner._resolve_profile_home_for_source(source) == root
+    finally:
+        reset_hermes_home_override(token)
+
+
 def test_cold_profile_hydrates_external_source_without_global_env(
     tmp_path, monkeypatch
 ):

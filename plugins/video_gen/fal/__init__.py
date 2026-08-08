@@ -14,10 +14,15 @@ Model families (each with t2v + i2v endpoints):
     pixverse-v6   fal-ai/pixverse/v6/text-to-video               /  fal-ai/pixverse/v6/image-to-video
 
   Premium tier:
-    veo3.1        fal-ai/veo3.1                                  /  fal-ai/veo3.1/image-to-video
-    seedance-2.0  bytedance/seedance-2.0/text-to-video           /  bytedance/seedance-2.0/image-to-video
-    kling-v3-4k   fal-ai/kling-video/v3/4k/text-to-video         /  fal-ai/kling-video/v3/4k/image-to-video
-    happy-horse   alibaba/happy-horse/text-to-video              /  alibaba/happy-horse/image-to-video
+    veo3.1             fal-ai/veo3.1                             /  fal-ai/veo3.1/image-to-video
+    seedance-2.0       bytedance/seedance-2.0/text-to-video      /  bytedance/seedance-2.0/image-to-video
+    seedance-2.5       bytedance/seedance-2.5/text-to-video      /  bytedance/seedance-2.5/image-to-video
+    minimax-h3         minimax/h3/text-to-video                  /  minimax/h3/image-to-video
+    kling-v3-4k        fal-ai/kling-video/v3/4k/text-to-video    /  fal-ai/kling-video/v3/4k/image-to-video
+    happy-horse        alibaba/happy-horse/text-to-video         /  alibaba/happy-horse/image-to-video
+
+  Cheap tier (continued):
+    seedance-2.0-mini  bytedance/seedance-2.0/mini/text-to-video /  bytedance/seedance-2.0/mini/image-to-video
 
 Selection precedence for the active family:
     1. ``model=`` arg from the tool call
@@ -96,6 +101,20 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "audio": True,
         "negative": True,
     },
+    "seedance-2.0-mini": {
+        "display": "Seedance 2.0 Mini",
+        "speed": "~30-90s",
+        "price": "cheap",
+        "strengths": "ByteDance. Faster/cheaper Seedance tier, audio + lip-sync, 4-15s.",
+        "tier": "cheap",
+        "text_endpoint": "bytedance/seedance-2.0/mini/text-to-video",
+        "image_endpoint": "bytedance/seedance-2.0/mini/image-to-video",
+        "aspect_ratios": ("21:9", "16:9", "4:3", "1:1", "3:4", "9:16"),
+        "resolutions": ("480p", "720p"),
+        "durations": (4, 15),
+        "audio": True,
+        "negative": False,
+    },
     # ─── Expensive / premium tier ──────────────────────────────────────
     "veo3.1": {
         "display": "Veo 3.1",
@@ -126,6 +145,99 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "resolutions": ("480p", "720p", "1080p"),
         "durations": (4, 15),
         "audio": True,
+        "negative": False,
+    },
+    "seedance-2.5": {
+        "display": "Seedance 2.5",
+        "speed": "~60-180s",
+        "price": "premium",
+        "strengths": "ByteDance flagship. Native 30s single-pass, audio in the same latent space, lip-sync.",
+        "tier": "premium",
+        "text_endpoint": "bytedance/seedance-2.5/text-to-video",
+        "image_endpoint": "bytedance/seedance-2.5/image-to-video",
+        # i2v accepts only "auto" for aspect_ratio (it follows the input
+        # image), so aspect_ratio is dropped for image jobs via
+        # image_drop_keys.
+        "image_drop_keys": ("aspect_ratio",),
+        "aspect_ratios": ("21:9", "16:9", "4:3", "1:1", "3:4", "9:16"),
+        "resolutions": ("480p", "720p"),
+        "durations": (4, 30),
+        "audio": True,
+        "negative": False,
+    },
+    "minimax-h3": {
+        "display": "MiniMax H3",
+        "speed": "~60-180s",
+        "price": "premium",
+        "strengths": "MiniMax frontier. Native 2K (up to 4K), 5-15s, seven aspect ratios.",
+        "tier": "premium",
+        "text_endpoint": "minimax/h3/text-to-video",
+        "image_endpoint": "minimax/h3/image-to-video",
+        # H3 takes duration as a JSON integer, not the stringified form
+        # most FAL endpoints use.
+        "duration_int": True,
+        # i2v derives the aspect ratio from the input image and rejects
+        # the key entirely.
+        "image_drop_keys": ("aspect_ratio",),
+        "aspect_ratios": ("21:9", "16:9", "4:3", "1:1", "3:4", "9:16"),
+        # H3 uses capitalized/2K-style resolution enums — mapped from the
+        # tool's usual 720p/1080p-style values via resolution_aliases.
+        "resolutions": ("768P", "2K", "4K"),
+        "resolution_aliases": {
+            "480p": "768P", "540p": "768P", "720p": "768P", "768p": "768P",
+            "1080p": "2K", "2k": "2K", "4k": "4K", "2160p": "4K",
+        },
+        "durations": (5, 15),
+        "audio": False,  # audio is native/always-on; no generate_audio key
+        "negative": False,
+    },
+    "flux-3": {
+        "display": "FLUX 3 (via FAL)",
+        "speed": "~60-120s",
+        "price": "premium",
+        "strengths": "Black Forest Labs frontier video. Native audio, 5-20s, 8 aspect ratios.",
+        "tier": "premium",
+        "text_endpoint": "blackforestlabs/flux-3/text-to-video",
+        "image_endpoint": "blackforestlabs/flux-3/image-to-video",
+        # FLUX 3 duration enum is "auto" | 5..20 as JSON integers.
+        "duration_int": True,
+        "aspect_ratios": ("21:9", "2:1", "16:9", "4:3", "1:1", "3:4", "9:16"),
+        "resolutions": ("720p", "1080p"),
+        "durations": (5, 20),
+        "audio": True,
+        "negative": False,
+    },
+    "grok-imagine-1.5": {
+        "display": "Grok Imagine 1.5 (via FAL)",
+        "speed": "~30-90s",
+        "price": "premium",
+        "strengths": "xAI. Fast stylized video with audio, 1-15s, cheap per second.",
+        "tier": "premium",
+        "text_endpoint": "xai/grok-imagine-video/v1.5/text-to-video",
+        "image_endpoint": "xai/grok-imagine-video/v1.5/image-to-video",
+        "duration_int": True,
+        # i2v derives aspect from the input image; the key is t2v-only.
+        "image_drop_keys": ("aspect_ratio",),
+        "aspect_ratios": ("16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16"),
+        "resolutions": ("480p", "720p", "1080p"),
+        "durations": (1, 15),
+        "audio": False,  # audio is native; no generate_audio key
+        "negative": False,
+    },
+    "gemini-omni-flash": {
+        "display": "Gemini Omni Flash (via FAL)",
+        "speed": "~60-120s",
+        "price": "premium",
+        "strengths": "Google. Image-to-video with audio, physics-grounded motion, 3-10s.",
+        "tier": "premium",
+        # No text-to-video endpoint on FAL — image/reference only.
+        "text_endpoint": None,
+        "image_endpoint": "google/gemini-omni-flash/image-to-video",
+        "duration_int": True,
+        "aspect_ratios": ("16:9", "9:16"),
+        "resolutions": None,
+        "durations": (3, 10),
+        "audio": False,  # audio is native; no generate_audio key
         "negative": False,
     },
     "kling-v3-4k": {
@@ -270,22 +382,37 @@ def _build_payload(
         # otherwise let the endpoint auto-crop / use its default
 
     if family.get("resolutions"):
-        if resolution in family["resolutions"]:
-            payload["resolution"] = resolution
+        # Some families use non-standard resolution enums (e.g. MiniMax H3's
+        # "768P"/"2K"/"4K"); resolution_aliases maps the tool's usual
+        # 720p/1080p-style values onto them.
+        aliases = family.get("resolution_aliases") or {}
+        resolved = aliases.get((resolution or "").lower(), resolution)
+        if resolved in family["resolutions"]:
+            payload["resolution"] = resolved
         # else: let the endpoint default
 
     clamped = _clamp_duration(family, duration)
     if clamped is not None and family.get("durations"):
-        # FAL exposes duration as a string in the queue API ("8" not 8).
-        # Some families (e.g. veo3.1) require a unit suffix ("4s" not "4").
-        suffix = family.get("duration_suffix", "")
-        payload["duration"] = f"{clamped}{suffix}"
+        if family.get("duration_int"):
+            # A few endpoints (MiniMax H3) require duration as a JSON integer.
+            payload["duration"] = clamped
+        else:
+            # FAL exposes duration as a string in the queue API ("8" not 8).
+            # Some families (e.g. veo3.1) require a unit suffix ("4s" not "4").
+            suffix = family.get("duration_suffix", "")
+            payload["duration"] = f"{clamped}{suffix}"
 
     if family.get("audio") and audio is not None:
         payload["generate_audio"] = bool(audio)
 
     if family.get("negative") and negative_prompt:
         payload["negative_prompt"] = negative_prompt
+
+    # Keys the family's image-to-video endpoint rejects outright (e.g.
+    # Seedance 2.5 / MiniMax H3 derive aspect_ratio from the input image).
+    if image_url:
+        for key in family.get("image_drop_keys", ()):  # type: ignore[assignment]
+            payload.pop(key, None)
 
     return payload
 
@@ -456,7 +583,7 @@ class FALVideoGenProvider(VideoGenProvider):
         return {
             "name": "FAL",
             "badge": "paid",
-            "tag": "LTX, Pixverse, Veo 3.1, Seedance 2.0, Kling 4K, Happy Horse — text-to-video & image-to-video",
+            "tag": "LTX, Pixverse, Seedance 2.0/2.5 + Mini, MiniMax H3, Veo 3.1, Kling 4K, Happy Horse — text-to-video & image-to-video",
             "env_vars": [
                 {
                     "key": "FAL_KEY",
@@ -608,7 +735,7 @@ class FALVideoGenProvider(VideoGenProvider):
             prompt=prompt,
             modality=modality_used,
             aspect_ratio=aspect_ratio if "aspect_ratio" in payload else "",
-            duration=int("".join(c for c in payload["duration"] if c.isdigit()) or "0") if "duration" in payload else 0,
+            duration=int("".join(c for c in str(payload["duration"]) if c.isdigit()) or "0") if "duration" in payload else 0,
             provider="fal",
             extra=extra,
         )

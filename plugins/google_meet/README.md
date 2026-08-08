@@ -73,6 +73,46 @@ hermes meet auth                                         # optional
 hermes meet join https://meet.google.com/abc-defg-hij    # transcribe
 ```
 
+## Verifying admission (cron / auto-join scripts)
+
+`hermes meet join` blocks until the bot is actually admitted to the
+meeting (or denied / lobby-timeout) before returning, and translates
+the verdict into an exit code so cron jobs that trust the exit code
+no longer silently treat a denial as success (issue #24826):
+
+| exit | meaning                                              |
+|------|------------------------------------------------------|
+| 0    | admitted (`inCall=True` / `joinedAt` set)            |
+| 1    | bot subprocess failed to spawn / generic failure     |
+| 2    | URL refused (not a `meet.google.com` URL)            |
+| 3    | host denied admission                                |
+| 4    | lobby timeout — host never admitted within ~5min     |
+| 5    | bot exited / no active session before admission      |
+| 6    | wait budget exhausted, lobby state still pending     |
+
+Default wait budget is 90s; override with `--wait <seconds>`.  Pass
+`--no-wait` to keep the legacy spawn-and-return semantics.
+
+The same verdict is reachable structurally:
+
+```bash
+$ hermes meet join https://meet.google.com/abc-defg-hij
+# stdout: full status JSON, including these derived fields:
+#   "joined": true,
+#   "admissionState": "joined",
+#   "waitOutcome": "joined",
+#   "error": null
+```
+
+`hermes meet status` also surfaces the same `joined` /
+`admissionState` derived fields, so a user-script poll loop can
+branch on a single field instead of re-deriving the verdict from
+`inCall`, `joinedAt`, `error`, and `leaveReason`.
+
+For agent-side workflows, `meet_join(url=…, wait_for_admission=true,
+wait_seconds=60)` folds the verdict into the tool response — `success`
+is true only when admission is confirmed.
+
 ## Realtime mode
 
 Linux (preferred, most automated):

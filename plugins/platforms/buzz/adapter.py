@@ -101,7 +101,7 @@ _MIN_POLL_INTERVAL = 1.0
 _CLI_TIMEOUT = 30.0
 
 # WebSocket transport (NIP-42 authenticated Nostr subscription).
-# kind 44100 is Buzz's channel-membership event — used for live DM discovery.
+# kind 44100 is Buzz's channel-membership event — used for live conversation discovery.
 _WS_AUTH_TIMEOUT = 20.0
 _WS_MAX_MESSAGE_BYTES = 2_000_000
 _WS_MEMBERSHIP_KIND = 44100
@@ -801,8 +801,7 @@ class BuzzAdapter(BasePlatformAdapter):
         await websocket.send(json.dumps(request, separators=(",", ":")))
 
     async def _subscribe_websocket(self, websocket) -> Dict[str, Optional[str]]:
-        """Subscribe to every watched conversation plus membership events
-        (kind 44100 p-tagged to us) for live DM discovery."""
+        """Subscribe to watched conversations and live membership events."""
         subscriptions: Dict[str, Optional[str]] = {}
         for index, channel_id in enumerate(list(self._channel_state)):
             subscription_id = f"hermes-buzz-{index}"
@@ -822,16 +821,47 @@ class BuzzAdapter(BasePlatformAdapter):
             subscriptions[_WS_MEMBERSHIP_SUB_ID] = None
         return subscriptions
 
+    @staticmethod
+    def _membership_channel_id(event: dict) -> str:
+        """Extract the channel UUID from a relay-signed membership event."""
+        tags = event.get("tags")
+        if not isinstance(tags, list):
+            return ""
+        for tag in tags:
+            if isinstance(tag, (list, tuple)) and len(tag) > 1 and tag[0] == "h":
+                return str(tag[1]).strip()
+        return ""
+
     async def _handle_membership_event(self, websocket, subscriptions: Dict[str, Optional[str]], event: dict) -> None:
-        """A membership event p-tagged to us: rediscover conversations and
-        subscribe to any new ones (fresh DMs dispatch from their beginning)."""
-        self._membership_since = max(self._membership_since, int(event.get("created_at") or 0))
+        """Subscribe live when this identity joins a channel or fresh DM."""
+        membership_at = int(event.get("created_at") or time.time())
+        self._membership_since = max(self._membership_since, membership_at)
         before = set(self._channel_state)
         await self._discover_dms(seed=False)
+
+        # ``_discover_dms`` intentionally ignores real community channels so
+        # they cannot be misclassified as mention-free DMs.  A relay-signed
+        # kind-44100 event is stronger evidence: its ``h`` tag identifies the
+        # channel this identity just joined.  Follow it in automatic mode, or
+        # only when it is present in the explicit BUZZ_CHANNELS allowlist.
+        membership_channel = self._membership_channel_id(event)
+        channel_is_allowed = not self.channels or membership_channel in self.channels
+        if (
+            membership_channel
+            and channel_is_allowed
+            and membership_channel not in self._channel_state
+        ):
+            self._channel_state[membership_channel] = {
+                "chat_type": "group",
+                "last_ts": membership_at,
+                "seen": OrderedDict(),
+            }
+            self._channel_names.setdefault(membership_channel, membership_channel)
+
         for channel_id in self._channel_state:
             if channel_id in before:
                 continue
-            subscription_id = f"hermes-buzz-dm-{len(subscriptions)}"
+            subscription_id = f"hermes-buzz-membership-{len(subscriptions)}"
             subscriptions[subscription_id] = channel_id
             await self._send_channel_subscription(websocket, subscription_id, channel_id)
             logger.info("Buzz: subscribed to new conversation %s", channel_id)

@@ -9,6 +9,7 @@ lifecycle as wired into BuzzAdapter.
 import asyncio
 import json
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -29,6 +30,7 @@ SELF_PUBKEY = "9fd5c7ba6d3ef224da78f541e0fcb9c50f72cc63edb19aae76ac6a0474dfa860"
 # BIP-340 test vector 0 private key
 TEST_PRIVATE_KEY = "00" * 31 + "03"
 CHANNEL = "ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd"
+NEW_CHANNEL = "462f7626-db2d-4450-bf5a-ea22637c48c0"
 
 
 def _make_adapter(extra=None):
@@ -119,3 +121,71 @@ async def test_websocket_auth_raises_on_rejection():
         await adapter._authenticate_websocket(RejectingWs())
 
 
+def _membership_event(channel_id=NEW_CHANNEL, *, created_at=2_000):
+    return {
+        "id": "membership-event",
+        "pubkey": "b" * 64,
+        "content": "",
+        "created_at": created_at,
+        "kind": 44100,
+        "tags": [["p", SELF_PUBKEY], ["h", channel_id]],
+    }
+
+
+@pytest.mark.asyncio
+async def test_membership_event_subscribes_new_channel_in_automatic_mode():
+    adapter = _make_adapter()
+    adapter._discover_dms = AsyncMock()
+    websocket = _FakeWebSocket()
+    subscriptions = {"hermes-buzz-membership": None}
+
+    await adapter._handle_membership_event(
+        websocket,
+        subscriptions,
+        _membership_event(),
+    )
+
+    state = adapter._channel_state[NEW_CHANNEL]
+    assert state["chat_type"] == "group"
+    assert state["last_ts"] == 2_000
+    assert NEW_CHANNEL in subscriptions.values()
+    assert websocket.sent[-1] == [
+        "REQ",
+        next(key for key, value in subscriptions.items() if value == NEW_CHANNEL),
+        {"kinds": [9], "#h": [NEW_CHANNEL], "since": 1_999},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_membership_event_respects_explicit_channel_allowlist():
+    adapter = _make_adapter({"channels": [CHANNEL]})
+    adapter._discover_dms = AsyncMock()
+    websocket = _FakeWebSocket()
+    subscriptions = {"hermes-buzz-membership": None}
+
+    await adapter._handle_membership_event(
+        websocket,
+        subscriptions,
+        _membership_event(),
+    )
+
+    assert NEW_CHANNEL not in adapter._channel_state
+    assert NEW_CHANNEL not in subscriptions.values()
+    assert websocket.sent == []
+
+
+@pytest.mark.asyncio
+async def test_membership_event_subscribes_explicitly_allowed_channel():
+    adapter = _make_adapter({"channels": [NEW_CHANNEL]})
+    adapter._discover_dms = AsyncMock()
+    websocket = _FakeWebSocket()
+    subscriptions = {"hermes-buzz-membership": None}
+
+    await adapter._handle_membership_event(
+        websocket,
+        subscriptions,
+        _membership_event(),
+    )
+
+    assert NEW_CHANNEL in adapter._channel_state
+    assert NEW_CHANNEL in subscriptions.values()

@@ -301,3 +301,38 @@ def test_check_website_access_fails_open_on_malformed_config(tmp_path, monkeypat
     # With default path, errors are caught and fail open
     result = check_website_access("https://example.com")
     assert result is None  # allowed, not crashed
+
+
+def test_unknown_keys_with_non_string_yaml_values(tmp_path, caplog):
+    """YAML mapping keys can be non-string (int, bool, etc.).
+
+    ``sorted(unknown)`` would raise ``TypeError`` when mixing str and int
+    keys.  This regression test ensures the warning log uses ``str()`` on
+    every key before sorting.
+    """
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "security": {
+                    "website_blocklist": {
+                        "enabled": True,
+                        "domains": ["example.com"],
+                        1: "not-a-valid-key",
+                        True: "also-not-valid",
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        policy = load_website_blocklist(config_path)
+
+    assert policy["enabled"] is True
+    assert "Unknown keys" in caplog.text
+    # Verify no TypeError was raised and the warning logged successfully

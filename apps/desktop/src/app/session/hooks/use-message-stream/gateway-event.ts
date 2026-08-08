@@ -66,6 +66,7 @@ import {
 } from '@/store/session'
 import { dropSessionState } from '@/store/session-states'
 import { pruneDelegateFallbackSubagents, pruneFinishedSessionSubagents, upsertSubagent } from '@/store/subagents'
+import { requestScrollToBottom } from '@/store/thread-scroll'
 import { clearActiveSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
@@ -957,6 +958,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             // "needs input" indicator on its row — works for the active session
             // too, and survives alt-tab / window blur (unlike a toast).
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+
+            if (sessionId === activeSessionIdRef.current) {
+              requestScrollToBottom()
+            }
           }
 
           dispatchNativeNotification({

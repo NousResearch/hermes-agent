@@ -1982,16 +1982,38 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    if (
+                        msg_type == "post"
+                        and (metadata or {}).get("thread_id")
+                        and "99992402" in str(exc)
+                    ):
+                        # Feishu rejects the receive_id_type=thread_id create
+                        # path for post payloads. Strip thread routing and
+                        # retry so the message lands in the main chat instead
+                        # of being dropped (audio got the same fix in
+                        # _send_uploaded_file_message).
+                        logger.warning(
+                            "[Feishu] Post+thread_id rejected by API (%s); retrying without thread routing",
+                            exc,
+                        )
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type=msg_type,
+                            payload=payload,
+                            reply_to=None,
+                            metadata={k: v for k, v in (metadata or {}).items() if k != "thread_id"},
+                        )
+                    elif msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                        reply_to=reply_to,
-                        metadata=metadata,
-                    )
+                    else:
+                        logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
                 if (
                     msg_type == "post"
                     and not self._response_succeeded(response)
@@ -2004,6 +2026,22 @@ class FeishuAdapter(BasePlatformAdapter):
                         payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
                         reply_to=reply_to,
                         metadata=metadata,
+                    )
+                # Post + thread_id → 99992402 response path (create with
+                # receive_id_type=thread_id). Retry without thread routing.
+                if (
+                    msg_type == "post"
+                    and not self._response_succeeded(response)
+                    and getattr(response, "code", None) == 99992402
+                    and (metadata or {}).get("thread_id")
+                ):
+                    logger.warning("[Feishu] Post+thread_id rejected by API response; retrying without thread routing")
+                    response = await self._feishu_send_with_retry(
+                        chat_id=chat_id,
+                        msg_type=msg_type,
+                        payload=payload,
+                        reply_to=None,
+                        metadata={k: v for k, v in (metadata or {}).items() if k != "thread_id"},
                     )
                 last_response = response
 

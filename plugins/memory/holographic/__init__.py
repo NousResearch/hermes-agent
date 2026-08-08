@@ -268,6 +268,14 @@ class HolographicMemoryProvider(MemoryProvider):
 
     # -- Tool handlers -------------------------------------------------------
 
+    def _bump_retrieval(self, results: list[dict]) -> None:
+        """Count retrieved facts so the memory janitor sees actual usage."""
+        if not results or self._store is None:
+            return
+        self._store.bump_retrieval(
+            [r["fact_id"] for r in results if r.get("fact_id") is not None]
+        )
+
     def _handle_fact_store(self, args: dict) -> str:
         try:
             action = args["action"]
@@ -289,6 +297,7 @@ class HolographicMemoryProvider(MemoryProvider):
                     min_trust=float(args.get("min_trust", self._min_trust)),
                     limit=int(args.get("limit", 10)),
                 )
+                self._bump_retrieval(results)
                 return json.dumps({"results": results, "count": len(results)})
 
             elif action == "probe":
@@ -297,6 +306,7 @@ class HolographicMemoryProvider(MemoryProvider):
                     category=args.get("category"),
                     limit=int(args.get("limit", 10)),
                 )
+                self._bump_retrieval(results)
                 return json.dumps({"results": results, "count": len(results)})
 
             elif action == "related":
@@ -305,6 +315,7 @@ class HolographicMemoryProvider(MemoryProvider):
                     category=args.get("category"),
                     limit=int(args.get("limit", 10)),
                 )
+                self._bump_retrieval(results)
                 return json.dumps({"results": results, "count": len(results)})
 
             elif action == "reason":

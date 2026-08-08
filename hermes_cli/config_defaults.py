@@ -1858,6 +1858,13 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # Create-time overlap check.  When true, skill_manage(create) compares
+        # the proposed name/description/headings/body against active skills and
+        # blocks high-confidence lexical overlaps before writing.  The check is
+        # deterministic and local; it makes no network or model call.  Pass
+        # allow_overlap=true with a non-empty overlap_reason for an intentional
+        # companion skill.  False preserves the historical create behaviour.
+        "creation_requires_approval": False,
         # Approval gate for skill_manage (create/edit/patch/write_file/delete/
         # remove_file), applied to BOTH foreground agent turns and the
         # background self-improvement review fork.

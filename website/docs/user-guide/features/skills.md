@@ -527,6 +527,40 @@ in the pending JSON file). Memory writes have the same gate under
 > (dangerous-pattern heuristics), not an approval gate — the two are
 > independent. See [Guard on agent-created skill writes](/user-guide/configuration#guard-on-agent-created-skill-writes).
 
+### Preventing overlapping skill creation (`skills.creation_requires_approval`)
+
+`skills.write_approval` reviews every skill write. If you only want protection
+against creating a second skill for an existing workflow, enable the narrower
+create-time overlap check instead:
+
+```yaml
+skills:
+  creation_requires_approval: false  # true = block high-confidence overlaps
+```
+
+When enabled, `skill_manage(action="create")` compares the proposed skill's
+name, description, headings, and bounded body text against active skills in the
+local and configured external skill directories. The check is deterministic,
+local, and does not call a model or the network. Archived and excluded skill
+paths are ignored.
+
+A blocked create returns up to three candidates with their score and matching
+terms. Patch the closest existing skill when it owns the workflow. If the new
+skill is deliberately a companion — for example, a platform-specific variant
+with a clear boundary — pass both of these fields:
+
+```json
+{
+  "allow_overlap": true,
+  "overlap_reason": "Linux-specific window rules; the existing skill covers macOS KWin behavior."
+}
+```
+
+The reason is required so intentional overlap is explicit in the tool call. The
+setting is independent of `skills.write_approval`; enabling both stages writes
+for human review and still performs overlap validation when the staged create is
+applied.
+
 ## Skills Hub
 
 Browse, search, install, and manage skills from online registries, `skills.sh`, direct well-known skill endpoints, and official optional skills.

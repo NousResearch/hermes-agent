@@ -69,6 +69,39 @@ description: Use when deploying multi-region Kubernetes clusters with custom CNI
 Step 1.
 """
 
+OVERLAP_EXISTING_CONTENT = """\
+---
+name: kubernetes-deployment-ops
+description: Use when deploying Kubernetes workloads and debugging Helm.
+---
+
+# Kubernetes Deployment and Helm Operations
+
+Deploy Kubernetes workloads, inspect Helm release failures, and verify rollout health.
+"""
+
+OVERLAP_PROPOSED_CONTENT = """\
+---
+name: kubernetes-deployment-troubleshooting
+description: Use when deploying Kubernetes workloads and fixing Helm.
+---
+
+# Kubernetes Deployment and Helm Troubleshooting
+
+Troubleshoot Kubernetes workloads, Helm release failures, and rollout health.
+"""
+
+UNRELATED_CONTENT = """\
+---
+name: family-photo-editing
+description: Use when organizing and editing family photos.
+---
+
+# Family Photo Editing
+
+Organize albums, crop images, and export finished photos.
+"""
+
 
 # ---------------------------------------------------------------------------
 # _validate_name
@@ -162,6 +195,110 @@ class TestCreateSkill:
             result = _create_skill("my-skill", VALID_SKILL_CONTENT)
         assert result["success"] is False
         assert "already exists" in result["error"]
+
+    def test_semantic_overlap_is_opt_in(self, tmp_path):
+        with _skill_dir(tmp_path), patch(
+            "tools.skill_manager_tool._skill_creation_overlap_enabled", return_value=False
+        ):
+            _create_skill("kubernetes-deployment-ops", OVERLAP_EXISTING_CONTENT)
+            result = _create_skill(
+                "kubernetes-deployment-troubleshooting", OVERLAP_PROPOSED_CONTENT
+            )
+
+        assert result["success"] is True
+
+    def test_semantic_overlap_blocked_before_directory_write(self, tmp_path):
+        with _skill_dir(tmp_path), patch(
+            "tools.skill_manager_tool._skill_creation_overlap_enabled", return_value=True
+        ):
+            assert _create_skill("kubernetes-deployment-ops", OVERLAP_EXISTING_CONTENT)["success"]
+            result = _create_skill(
+                "kubernetes-deployment-troubleshooting", OVERLAP_PROPOSED_CONTENT
+            )
+
+        assert result["success"] is False
+        assert "overlaps existing skill" in result["error"]
+        assert result["overlap_candidates"][0]["name"] == "kubernetes-deployment-ops"
+        assert result["overlap_candidates"][0]["high_confidence"] is True
+        assert any(
+            signal["field"] == "name"
+            for signal in result["overlap_candidates"][0]["signals"]
+        )
+        assert not (tmp_path / "kubernetes-deployment-troubleshooting").exists()
+
+    def test_intentional_overlap_requires_reason(self, tmp_path):
+        with _skill_dir(tmp_path), patch(
+            "tools.skill_manager_tool._skill_creation_overlap_enabled", return_value=True
+        ):
+            _create_skill("kubernetes-deployment-ops", OVERLAP_EXISTING_CONTENT)
+            result = _create_skill(
+                "kubernetes-deployment-troubleshooting",
+                OVERLAP_PROPOSED_CONTENT,
+                allow_overlap=True,
+            )
+
+        assert result["success"] is False
+        assert "overlap_reason" in result["error"]
+        assert not (tmp_path / "kubernetes-deployment-troubleshooting").exists()
+
+    def test_intentional_overlap_override_is_auditable(self, tmp_path):
+        reason = "Troubleshooting companion with a narrower incident-response boundary."
+        with _skill_dir(tmp_path), patch(
+            "tools.skill_manager_tool._skill_creation_overlap_enabled", return_value=True
+        ):
+            _create_skill("kubernetes-deployment-ops", OVERLAP_EXISTING_CONTENT)
+            result = _create_skill(
+                "kubernetes-deployment-troubleshooting",
+                OVERLAP_PROPOSED_CONTENT,
+                allow_overlap=True,
+                overlap_reason=f"  {reason}  ",
+            )
+
+        assert result["success"] is True
+        assert result["overlap_override"] == {"reason": reason}
+        assert (tmp_path / "kubernetes-deployment-troubleshooting" / "SKILL.md").exists()
+
+    def test_unrelated_skill_is_not_blocked(self, tmp_path):
+        with _skill_dir(tmp_path), patch(
+            "tools.skill_manager_tool._skill_creation_overlap_enabled", return_value=True
+        ):
+            _create_skill("kubernetes-deployment-ops", OVERLAP_EXISTING_CONTENT)
+            result = _create_skill("family-photo-editing", UNRELATED_CONTENT)
+
+        assert result["success"] is True
+        assert "overlap_candidates" not in result
+
+    def test_archived_skill_is_excluded_from_overlap_candidates(self, tmp_path):
+        archived = tmp_path / ".archive" / "kubernetes-deployment-ops"
+        archived.mkdir(parents=True)
+        (archived / "SKILL.md").write_text(OVERLAP_EXISTING_CONTENT, encoding="utf-8")
+
+        with _skill_dir(tmp_path), patch(
+            "tools.skill_manager_tool._skill_creation_overlap_enabled", return_value=True
+        ):
+            result = _create_skill(
+                "kubernetes-deployment-troubleshooting", OVERLAP_PROPOSED_CONTENT
+            )
+
+        assert result["success"] is True
+        assert "overlap_candidates" not in result
+
+    def test_overlap_fields_are_forwarded_through_write_gate(self, tmp_path):
+        with patch(
+            "tools.skill_manager_tool._apply_skill_write_gate",
+            return_value=json.dumps({"success": True, "staged": True}),
+        ) as gate:
+            result = skill_manage(
+                action="create",
+                name="companion-skill",
+                content=VALID_SKILL_CONTENT,
+                allow_overlap=True,
+                overlap_reason="Intentional companion boundary.",
+            )
+
+        assert json.loads(result)["staged"] is True
+        assert gate.call_args.kwargs["allow_overlap"] is True
+        assert gate.call_args.kwargs["overlap_reason"] == "Intentional companion boundary."
 
     def test_create_rejects_category_traversal(self, tmp_path):
         skills_dir = tmp_path / "skills"

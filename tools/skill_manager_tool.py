@@ -38,7 +38,7 @@ import re
 import shutil
 import contextvars as _ctxvars
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home, display_hermes_home
 from utils import atomic_write_text, is_truthy_value
@@ -905,7 +905,201 @@ def _add_description_prompt_preview(result: Dict[str, Any], content: str) -> Non
         )
 
 
-def _create_skill(name: str, content: str, category: str = None) -> Dict[str, Any]:
+# Creation-time overlap checking is intentionally local and deterministic. It
+# must stay cheap enough for the default skills tool path and must not make a
+# network or model call while the agent is trying to write procedural memory.
+_CREATION_OVERLAP_BODY_CHARS = 6_000
+_CREATION_OVERLAP_REPORT_SCORE = 0.18
+_CREATION_OVERLAP_GENERIC_TOKENS = frozenset({
+    "a", "after", "agent", "all", "also", "an", "and", "any", "are", "as",
+    "be", "before", "best", "but", "by", "can", "common", "config",
+    "configuration", "data", "during", "each", "first", "for", "from",
+    "general", "guide", "handle", "helper", "how", "if", "in", "into",
+    "is", "manage", "management", "may", "more", "must", "new", "not",
+    "of", "on", "one", "only", "operation", "operations", "ops", "or",
+    "process", "service", "setup", "should", "skill", "support", "task",
+    "tasks", "that", "the", "then", "these", "this", "those", "to", "tool",
+    "tools", "use", "used", "using", "via", "when", "where", "will", "with",
+    "without", "work", "workflow", "working", "you", "your",
+})
+
+
+def _skill_creation_overlap_enabled() -> bool:
+    """Return whether high-confidence overlap blocks skill creation."""
+    try:
+        from hermes_cli.config import load_config
+
+        return is_truthy_value(
+            cfg_get(load_config(), "skills", "creation_requires_approval"),
+            default=False,
+        )
+    except Exception:
+        # A malformed or unavailable config must not make skill creation fail.
+        return False
+
+
+def _overlap_tokens(text: str) -> Set[str]:
+    """Return comparable, non-generic lexical tokens from skill text."""
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", str(text).casefold())
+        if len(token) > 2 and token not in _CREATION_OVERLAP_GENERIC_TOKENS
+    }
+
+
+def _overlap_jaccard(left: Set[str], right: Set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def _skill_overlap_document(name: str, content: str) -> Dict[str, Any]:
+    """Extract the bounded lexical fields used by the overlap checker."""
+    frontmatter, body = _parse_frontmatter(content)
+    if not isinstance(frontmatter, dict):
+        frontmatter = {}
+    body = str(body or "")
+    description = str(frontmatter.get("description") or "")
+    frontmatter_name = str(frontmatter.get("name") or "")
+    headings = " ".join(
+        match.group(1)
+        for match in re.finditer(r"(?m)^\\s*#{1,6}\\s+(.+?)\\s*$", body)
+    )
+    body_without_headings = re.sub(
+        r"(?m)^\\s*#{1,6}\\s+.+?\\s*$", " ", body
+    )
+    return {
+        "name": frontmatter_name or name,
+        "name_tokens": _overlap_tokens(f"{name} {frontmatter_name}"),
+        "description_tokens": _overlap_tokens(description),
+        "heading_tokens": _overlap_tokens(headings),
+        "body_tokens": _overlap_tokens(body_without_headings[:_CREATION_OVERLAP_BODY_CHARS]),
+    }
+
+
+def _skill_creation_overlap_candidates(name: str, content: str) -> List[Dict[str, Any]]:
+    """Return up to three active skills that lexically overlap a new skill."""
+    from agent.skill_utils import get_all_skills_dirs, iter_skill_index_files
+
+    proposed = _skill_overlap_document(name, content)
+    candidates: List[Dict[str, Any]] = []
+    seen_paths: Set[Path] = set()
+
+    for skills_dir in get_all_skills_dirs():
+        skills_dir = Path(skills_dir)
+        try:
+            skill_paths = iter_skill_index_files(skills_dir, "SKILL.md")
+            for skill_md in skill_paths:
+                try:
+                    resolved = skill_md.resolve()
+                except OSError:
+                    resolved = skill_md
+                if resolved in seen_paths:
+                    continue
+                seen_paths.add(resolved)
+
+                try:
+                    candidate_content = skill_md.read_text(encoding="utf-8")
+                    candidate = _skill_overlap_document(skill_md.parent.name, candidate_content)
+                except Exception:
+                    logger.debug("Skipping unreadable skill overlap candidate %s", skill_md, exc_info=True)
+                    continue
+
+                # Exact directory-name collisions are handled by _find_skill;
+                # do not report the same failure as a semantic overlap.
+                if skill_md.parent.name == name:
+                    continue
+
+                name_score = _overlap_jaccard(proposed["name_tokens"], candidate["name_tokens"])
+                description_score = _overlap_jaccard(
+                    proposed["description_tokens"], candidate["description_tokens"]
+                )
+                heading_score = _overlap_jaccard(
+                    proposed["heading_tokens"], candidate["heading_tokens"]
+                )
+                body_score = _overlap_jaccard(
+                    proposed["body_tokens"], candidate["body_tokens"]
+                )
+                score = (
+                    0.45 * name_score
+                    + 0.30 * description_score
+                    + 0.15 * heading_score
+                    + 0.10 * body_score
+                )
+                shared_name_terms = (
+                    proposed["name_tokens"] & candidate["name_tokens"]
+                )
+                distinctive_name_terms = shared_name_terms - _CREATION_OVERLAP_GENERIC_TOKENS
+                content_signal = (
+                    description_score >= 0.18
+                    or heading_score >= 0.20
+                    or body_score >= 0.12
+                )
+                high_confidence = score >= 0.24 and (
+                    (
+                        bool(distinctive_name_terms)
+                        and name_score >= 0.30
+                        and content_signal
+                    )
+                    or (
+                        bool(distinctive_name_terms)
+                        and name_score >= 0.55
+                        and description_score >= 0.10
+                    )
+                    or (
+                        description_score >= 0.45
+                        and (heading_score >= 0.20 or body_score >= 0.12)
+                    )
+                )
+                if score < _CREATION_OVERLAP_REPORT_SCORE:
+                    continue
+
+                signals = []
+                for field, overlap in (
+                    ("name", name_score),
+                    ("description", description_score),
+                    ("headings", heading_score),
+                    ("body", body_score),
+                ):
+                    if overlap <= 0:
+                        continue
+                    field_terms = sorted(
+                        proposed[f"{field}_tokens"] & candidate[f"{field}_tokens"]
+                    )
+                    signals.append({
+                        "field": field,
+                        "overlap": round(overlap, 3),
+                        "terms": field_terms[:12],
+                    })
+
+                try:
+                    relative = skill_md.parent.relative_to(skills_dir)
+                    category = relative.parts[0] if len(relative.parts) > 1 else None
+                except ValueError:
+                    category = None
+
+                candidates.append({
+                    "name": candidate["name"],
+                    "path": str(skill_md.parent),
+                    "category": category,
+                    "score": round(score, 3),
+                    "high_confidence": high_confidence,
+                    "signals": signals,
+                })
+        except (OSError, RuntimeError):
+            logger.debug("Could not scan skill root %s for overlap", skills_dir, exc_info=True)
+
+    candidates.sort(key=lambda item: (-item["score"], item["name"], item["path"]))
+    return candidates[:3]
+
+
+def _create_skill(
+    name: str,
+    content: str,
+    category: str = None,
+    allow_overlap: bool = False,
+    overlap_reason: Optional[str] = None,
+) -> Dict[str, Any]:
     """Create a new user skill with SKILL.md content."""
     # Validate name
     err = _validate_name(name)
@@ -932,6 +1126,44 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
             "success": False,
             "error": f"A skill named '{name}' already exists at {existing['path']}."
         }
+
+    overlap_reason = overlap_reason.strip() if isinstance(overlap_reason, str) else overlap_reason
+    if allow_overlap and not overlap_reason:
+        return {
+            "success": False,
+            "error": (
+                "allow_overlap=true requires a non-empty overlap_reason explaining "
+                "why this skill is an intentional companion."
+            ),
+        }
+    if overlap_reason and not allow_overlap:
+        return {
+            "success": False,
+            "error": "overlap_reason is only valid when allow_overlap=true.",
+        }
+
+    overlap_candidates: List[Dict[str, Any]] = []
+    if _skill_creation_overlap_enabled():
+        overlap_candidates = _skill_creation_overlap_candidates(name, content)
+        blocking_candidates = [
+            candidate for candidate in overlap_candidates
+            if candidate["high_confidence"]
+        ]
+        if blocking_candidates and not allow_overlap:
+            names = ", ".join(
+                f"{candidate['name']} ({candidate['score']:.3f})"
+                for candidate in blocking_candidates
+            )
+            return {
+                "success": False,
+                "error": (
+                    f"Skill creation blocked: '{name}' overlaps existing skill(s): {names}. "
+                    "Inspect the closest candidate and patch it when it owns this workflow. "
+                    "If this is an intentional companion, retry with "
+                    "allow_overlap=true and a non-empty overlap_reason."
+                ),
+                "overlap_candidates": overlap_candidates,
+            }
 
     # Create the skill directory
     skill_dir = _resolve_skill_dir(name, category)
@@ -966,6 +1198,10 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     }
     if category:
         result["category"] = category
+    if overlap_candidates:
+        result["overlap_candidates"] = overlap_candidates
+    if allow_overlap:
+        result["overlap_override"] = {"reason": overlap_reason}
     result["hint"] = (
         "To add reference files, templates, or scripts, use "
         "skill_manage(action='write_file', name='{}', file_path='references/example.md', file_content='...')".format(name)
@@ -1455,6 +1691,8 @@ def apply_skill_pending(payload: Dict[str, Any]) -> str:
             new_string=payload.get("new_string"),
             replace_all=payload.get("replace_all", False),
             absorbed_into=payload.get("absorbed_into"),
+            allow_overlap=payload.get("allow_overlap", False),
+            overlap_reason=payload.get("overlap_reason"),
         )
     finally:
         _skill_gate_bypass.reset(token)
@@ -1521,6 +1759,8 @@ def skill_manage(
     new_string: str = None,
     replace_all: bool = False,
     absorbed_into: str = None,
+    allow_overlap: bool = False,
+    overlap_reason: Optional[str] = None,
     task_id: str = None,
     session_id: str = None,
 ) -> str:
@@ -1542,6 +1782,7 @@ def skill_manage(
         file_path=file_path, file_content=file_content,
         old_string=old_string, new_string=new_string,
         replace_all=replace_all, absorbed_into=absorbed_into,
+        allow_overlap=allow_overlap, overlap_reason=overlap_reason,
     )
     if gate_result is not None:
         return gate_result
@@ -1549,7 +1790,13 @@ def skill_manage(
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
-        result = _create_skill(name, content, category)
+        result = _create_skill(
+            name,
+            content,
+            category,
+            allow_overlap=allow_overlap,
+            overlap_reason=overlap_reason,
+        )
 
     elif action == "edit":
         if not content:
@@ -1658,6 +1905,10 @@ SKILL_MANAGE_SCHEMA = {
         "Create when: complex task succeeded (5+ calls), errors overcome, "
         "user-corrected approach worked, non-trivial workflow discovered, "
         "or user asks you to remember a procedure.\n"
+        "When `skills.creation_requires_approval` is true, inspect the returned "
+        "overlap candidates and patch the closest existing skill instead of "
+        "creating a duplicate. For an intentional companion, pass "
+        "`allow_overlap=true` and a non-empty `overlap_reason`.\n"
         "Update when: instructions stale/wrong, OS-specific failures, "
         "missing steps or pitfalls found during use. "
         "If you used a skill and hit issues not covered by it, patch it immediately.\n\n"
@@ -1724,6 +1975,21 @@ SKILL_MANAGE_SCHEMA = {
                     "Only used with 'create'."
                 )
             },
+            "allow_overlap": {
+                "type": "boolean",
+                "description": (
+                    "For 'create' only — explicitly allow a detected overlap when "
+                    "this is an intentional companion skill. Requires a non-empty "
+                    "overlap_reason."
+                )
+            },
+            "overlap_reason": {
+                "type": "string",
+                "description": (
+                    "For 'create' only — explain the boundary that makes an "
+                    "overlapping skill intentional. Required with allow_overlap=true."
+                )
+            },
             "file_path": {
                 "type": "string",
                 "description": (
@@ -1775,6 +2041,8 @@ registry.register(
         new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False),
         absorbed_into=args.get("absorbed_into"),
+        allow_overlap=args.get("allow_overlap", False),
+        overlap_reason=args.get("overlap_reason"),
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id")),
     emoji="📝",

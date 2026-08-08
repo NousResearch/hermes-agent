@@ -380,6 +380,77 @@ class TestDmClassification:
         assert CHANNEL not in a._channel_state
         assert a._may_reclassify_as_dm(CHANNEL) is False
 
+    @pytest.mark.asyncio
+    async def test_channel_type_metadata_confirms_dm_without_message_ptags(self):
+        """Current Buzz relay messages carry only h-tags in DMs, so the
+        adapter must use the metadata t=dm marker exposed by channels search
+        when dms list is empty."""
+        a = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("dms", "list", [])
+        cli.script("channels", "list", [
+            {"channel_id": DM_CHANNEL, "name": "DM", "description": "", "created_at": 1},
+        ])
+        cli.script("channels", "search", [
+            {"channel_id": DM_CHANNEL, "name": "DM", "channel_type": "dm"},
+        ])
+        a._run_cli = cli
+
+        await a._discover_dms(seed=False)
+
+        assert a._channel_state[DM_CHANNEL]["chat_type"] == "dm"
+
+    @pytest.mark.asyncio
+    async def test_channel_type_metadata_upgrades_preseeded_group_to_dm(self):
+        """Startup seeds listed channels as groups before DM discovery; exact
+        t=dm metadata must upgrade that state without losing its high-water mark."""
+        a = _make_adapter()
+        seen = {"seed-event": None}
+        a._channel_state[DM_CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 42,
+            "seen": seen,
+        }
+        cli = _ScriptedCli()
+        cli.script("dms", "list", [])
+        cli.script("channels", "list", [
+            {"channel_id": DM_CHANNEL, "name": "DM", "description": "", "created_at": 1},
+        ])
+        cli.script("channels", "search", [
+            {"channel_id": DM_CHANNEL, "name": "DM", "channel_type": "dm"},
+        ])
+        a._run_cli = cli
+
+        await a._discover_dms(seed=True)
+
+        assert a._channel_state[DM_CHANNEL] == {
+            "chat_type": "dm",
+            "last_ts": 42,
+            "seen": seen,
+        }
+
+    @pytest.mark.asyncio
+    async def test_dms_list_upgrades_preseeded_group_when_search_is_unsupported(self):
+        """An older CLI may support dms list but not channels search; the
+        authoritative DM list must still upgrade startup's preseeded state."""
+        a = _make_adapter()
+        a._channel_state[DM_CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 42,
+            "seen": {},
+        }
+        cli = _ScriptedCli()
+        cli.script("dms", "list", [{"dm_id": DM_CHANNEL, "participants": [SELF_PUBKEY]}])
+        cli.script("channels", "search", "", code=2, stderr="unsupported command")
+        cli.script("channels", "list", [
+            {"channel_id": DM_CHANNEL, "name": "DM", "description": "", "created_at": 1},
+        ])
+        a._run_cli = cli
+
+        await a._discover_dms(seed=True)
+
+        assert a._channel_state[DM_CHANNEL]["chat_type"] == "dm"
+
 
 # ── Sending ───────────────────────────────────────────────────────────────
 

@@ -962,13 +962,34 @@ class BuzzAdapter(BasePlatformAdapter):
         if code == 0:
             for dm in _parse_json_list(out):
                 dm_id = str(dm.get("dm_id") or "")
-                if not dm_id or dm_id in self._channel_state:
+                if not dm_id:
                     continue
-                if seed:
+                existing_state = self._channel_state.get(dm_id)
+                if existing_state is not None:
+                    existing_state["chat_type"] = "dm"
+                elif seed:
                     await self._seed_channel(dm_id, chat_type="dm")
                 else:
                     self._channel_state[dm_id] = {"chat_type": "dm", "last_ts": 0, "seen": OrderedDict()}
                 self._channel_names.setdefault(dm_id, "DM")
+
+        # `channels list` omits the metadata `t` tag, while current Buzz
+        # relays may also omit recipient p-tags from kind-9 DM messages.  Ask
+        # the richer search projection for exact `t=dm` confirmation so those
+        # conversations can bypass the channel mention gate safely.  Older
+        # CLI builds without `channels search` simply fall back to the existing
+        # p-tag latch below.
+        confirmed_dm_ids: set[str] = set()
+        search_code, search_out, _search_err = await self._run_cli(
+            ["channels", "search", "--query", "DM", "--exact", "--include-archived"]
+        )
+        if search_code == 0:
+            confirmed_dm_ids = {
+                str(item.get("channel_id"))
+                for item in _parse_json_list(search_out)
+                if item.get("channel_id")
+                and str(item.get("channel_type") or "").strip().lower() == "dm"
+            }
 
         code, out, _err = await self._run_cli(["channels", "list"])
         if code != 0:
@@ -979,12 +1000,22 @@ class BuzzAdapter(BasePlatformAdapter):
                 continue
             self._channel_meta[ch_id] = ch
             self._channel_names.setdefault(ch_id, str(ch.get("name") or ch_id))
-            if ch_id in self._channel_state or not self._may_reclassify_as_dm(ch_id):
+            if not self._may_reclassify_as_dm(ch_id):
                 continue
+            existing_state = self._channel_state.get(ch_id)
+            if existing_state is not None:
+                if ch_id in confirmed_dm_ids:
+                    existing_state["chat_type"] = "dm"
+                continue
+            chat_type = "dm" if ch_id in confirmed_dm_ids else "group"
             if seed:
-                await self._seed_channel(ch_id, chat_type="group")
+                await self._seed_channel(ch_id, chat_type=chat_type)
             else:
-                self._channel_state[ch_id] = {"chat_type": "group", "last_ts": 0, "seen": OrderedDict()}
+                self._channel_state[ch_id] = {
+                    "chat_type": chat_type,
+                    "last_ts": 0,
+                    "seen": OrderedDict(),
+                }
 
     async def _poll_channel(self, channel_id: str) -> None:
         state = self._channel_state.get(channel_id)

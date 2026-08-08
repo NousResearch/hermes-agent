@@ -64,12 +64,14 @@ import {
   localProfileEntry,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
+  normalizeRemoteHeaders,
   normalizeSshConfig,
   normAuthMode,
   pathWithGlobalRemoteProfile,
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
+  remoteRequestMatchesBaseUrl,
   resolveAuthMode,
   resolveProfileBackendRoute,
   resolveTestWsUrl,
@@ -1116,6 +1118,8 @@ let bootstrapRepairAttempt = 0
 const MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS = 3
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
+let remoteHeaderRulesInstalled = false
+const remoteWsHeadersByUrl = new Map<string, Record<string, string>>()
 const hermesLog = []
 const previewWatchers = new Map()
 let previewShortcutActive = false
@@ -4263,6 +4267,8 @@ function fetchJson(url, token, options: any = {}) {
       {
         method: options.method || 'GET',
         headers: {
+          ...headersForRemoteRequest(url),
+          ...(options.headers || {}),
           'Content-Type': contentType,
           'X-Hermes-Session-Token': token,
           // RFC 8252 native flow authenticates the gated gateway with a bearer
@@ -4365,6 +4371,8 @@ function fetchPublicJson(url, options: any = {}) {
       {
         method: options.method || 'GET',
         headers: {
+          ...headersForRemoteRequest(url),
+          ...(options.headers || {}),
           'Content-Type': 'application/json',
           ...(body ? { 'Content-Length': String(body.length) } : {})
         }
@@ -5047,6 +5055,16 @@ function closePreviewWatchers() {
   }
 }
 
+function requestOptionsWithHeaders(options: any = {}, headers = {}) {
+  return {
+    ...options,
+    headers: {
+      ...headers,
+      ...(options.headers || {})
+    }
+  }
+}
+
 /** Watch a DIRECTORY for entry churn (folders appearing/vanishing) — the
  *  disk-plugin door's "new plugin folder" signal, replacing the renderer's 5s
  *  readdir poll. Same registry + change channel as the preview file watchers
@@ -5093,7 +5111,7 @@ function watchDirectory(rawDir) {
 // strict guard — backends predating /api/auth/providers are unaffected.
 const gatewayAuthProvidersCache = new Map<string, any[]>()
 
-async function gatewayAuthProviders(baseUrl) {
+async function gatewayAuthProviders(baseUrl, headers = {}) {
   const cached = gatewayAuthProvidersCache.get(baseUrl)
 
   if (cached) {
@@ -5103,7 +5121,10 @@ async function gatewayAuthProviders(baseUrl) {
   let providers = []
 
   try {
-    const body = (await fetchPublicJson(`${baseUrl}/api/auth/providers`, { timeoutMs: 8_000 })) as any
+    const body = (await fetchPublicJson(
+      `${baseUrl}/api/auth/providers`,
+      requestOptionsWithHeaders({ timeoutMs: 8_000 }, headers)
+    )) as any
 
     if (Array.isArray(body?.providers)) {
       providers = body.providers
@@ -5111,11 +5132,11 @@ async function gatewayAuthProviders(baseUrl) {
         .map(p => ({ name: String(p.name || ''), supportsPassword: Boolean(p.supports_password) }))
         .filter(p => p.name)
     }
+
+    gatewayAuthProvidersCache.set(baseUrl, providers)
   } catch {
     // Optional metadata — an unreadable list keeps the strict guard.
   }
-
-  gatewayAuthProvidersCache.set(baseUrl, providers)
 
   return providers
 }
@@ -5157,15 +5178,17 @@ async function buildReadinessHealthProbe(baseUrl, authMode, token) {
   return { probeHealth: fetchPublicJson, probeIsCredentialed: false }
 }
 
-async function waitForHermes(baseUrl, token, signal?, authMode?) {
+async function waitForHermes(baseUrl, token, signal?, authMode?, headers = {}) {
   const { probeHealth, probeIsCredentialed } = await buildReadinessHealthProbe(baseUrl, authMode, token)
 
   return waitForHermesReady(baseUrl, {
     token,
     signal,
     fetchPublicJson,
-    fetchJson: probeIsCredentialed ? (url, _token, options) => probeHealth(url, options) : fetchJson,
-    probeHealth,
+    fetchJson: probeIsCredentialed
+      ? (url, _token, options = {}) => probeHealth(url, requestOptionsWithHeaders(options, headers))
+      : fetchJson,
+    probeHealth: (url, options = {}) => probeHealth(url, requestOptionsWithHeaders(options, headers)),
     probeIsCredentialed
   })
 }
@@ -6198,6 +6221,10 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
 
     setJsonRequestHeaders(request)
 
+    for (const [name, value] of Object.entries({ ...headersForRemoteRequest(url), ...(options.headers || {}) })) {
+      request.setHeader(name, String(value))
+    }
+
     let timedOut = false
 
     const timer = setTimeout(() => {
@@ -6408,7 +6435,7 @@ async function ensureNativeAccessToken(baseUrl: string): Promise<string | null> 
 // falling back to the OAuth cookie partition otherwise.
 // Throws (with statusCode 401) if the session cookie is missing/expired —
 // callers treat that as "needs re-login".
-async function mintGatewayWsTicket(baseUrl) {
+async function mintGatewayWsTicket(baseUrl, headers = {}) {
   // Native flow: mint the ticket with the bearer token, no cookie involved.
   const nativeAt = await ensureNativeAccessToken(baseUrl).catch(() => null)
 
@@ -6416,7 +6443,8 @@ async function mintGatewayWsTicket(baseUrl) {
     const body = (await fetchJson(`${baseUrl}/api/auth/ws-ticket`, null, {
       method: 'POST',
       timeoutMs: 8_000,
-      bearer: nativeAt
+      bearer: nativeAt,
+      headers
     })) as any
 
     const ticket = body?.ticket
@@ -6430,7 +6458,8 @@ async function mintGatewayWsTicket(baseUrl) {
 
   const body = (await fetchJsonViaOauthSession(`${baseUrl}/api/auth/ws-ticket`, {
     method: 'POST',
-    timeoutMs: 8_000
+    timeoutMs: 8_000,
+    headers
   })) as any
 
   const ticket = body?.ticket
@@ -6458,12 +6487,17 @@ async function freshGatewayWsUrl(profile) {
   const connection = await ensureBackend(profile)
 
   if (connection.authMode === 'oauth') {
-    const ticket = await mintGatewayWsTicket(connection.baseUrl)
+    const ticket = await mintGatewayWsTicket(connection.baseUrl, connection.headers)
+    const wsUrl = buildGatewayWsUrlWithTicket(connection.baseUrl, ticket)
 
-    return buildGatewayWsUrlWithTicket(connection.baseUrl, ticket)
+    rememberRemoteWsHeaders(wsUrl, connection.headers)
+
+    return wsUrl
   }
 
   // Local/token: the cached wsUrl already carries the (long-lived) token.
+  rememberRemoteWsHeaders(connection.wsUrl, connection.headers)
+
   return connection.wsUrl
 }
 
@@ -6799,6 +6833,78 @@ function decryptDesktopSecret(secret) {
   return value
 }
 
+function decryptRemoteHeaders(headers) {
+  const normalized = normalizeRemoteHeaders(headers)
+  const out = {}
+
+  for (const [name, secret] of Object.entries(normalized)) {
+    const value = decryptDesktopSecret(secret)
+
+    if (value) {
+      out[name] = value
+    }
+  }
+
+  return out
+}
+
+function rememberRemoteWsHeaders(wsUrl, headers = {}) {
+  if (!wsUrl || Object.keys(headers).length === 0) {
+    return
+  }
+
+  remoteWsHeadersByUrl.set(String(wsUrl), headers as Record<string, string>)
+
+  while (remoteWsHeadersByUrl.size > 100) {
+    const oldest = remoteWsHeadersByUrl.keys().next().value
+
+    if (!oldest) {
+      break
+    }
+
+    remoteWsHeadersByUrl.delete(oldest)
+  }
+}
+
+function headersForRemoteRequest(requestUrl) {
+  const exactWsHeaders = remoteWsHeadersByUrl.get(String(requestUrl))
+
+  if (exactWsHeaders && Object.keys(exactWsHeaders).length > 0) {
+    return exactWsHeaders
+  }
+
+  const config = readDesktopConnectionConfig()
+
+  if (modeIsRemoteLike(config.mode) && config.remote?.url) {
+    const headers = decryptRemoteHeaders(config.remote.headers)
+
+    if (Object.keys(headers).length > 0 && remoteRequestMatchesBaseUrl(requestUrl, config.remote.url)) {
+      return headers
+    }
+  }
+
+  return {}
+}
+
+function installRemoteHeaderRules() {
+  if (remoteHeaderRulesInstalled) {
+    return
+  }
+
+  remoteHeaderRulesInstalled = true
+  session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
+    const headers = headersForRemoteRequest(details.url)
+
+    if (Object.keys(headers).length === 0) {
+      callback({})
+
+      return
+    }
+
+    callback({ requestHeaders: { ...details.requestHeaders, ...headers } })
+  })
+}
+
 // Validate + normalize the per-profile remote overrides map read from disk.
 // Drops malformed names/entries and keeps only the recognized fields so a
 // hand-edited or stale connection.json can't inject junk into resolution.
@@ -6837,6 +6943,7 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
       url?: string
       authMode?: string
       token?: object
+      headers?: object
       org?: string
       savedSsh?: object
     } = {
@@ -6861,6 +6968,12 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
 
     if ((entry as any).token && typeof entry.token === 'object') {
       cleaned.token = entry.token
+    }
+
+    const headers = normalizeRemoteHeaders((entry as any).headers)
+
+    if (Object.keys(headers).length > 0) {
+      cleaned.headers = headers
     }
 
     // Preserve the Hermes Cloud org tag on cloud-mode entries so Settings can
@@ -7031,15 +7144,21 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
 // `org` (optional) is the Hermes Cloud org slug/id the instance was discovered
 // under — persisted so Settings can reopen into the same org; omitted from the
 // block when empty so plain remote connections stay unchanged.
-function buildRemoteBlock(remoteUrl, authMode, token, org?: string) {
+function buildRemoteBlock(remoteUrl, authMode, token, org?: string, headers?: object) {
   if (authMode !== 'oauth' && !decryptDesktopSecret(token)) {
     throw new Error('Remote gateway session token is required.')
   }
 
-  const block: { url: string; authMode: string; token: object; org?: string } = {
+  const block: { url: string; authMode: string; token: object; headers?: object; org?: string } = {
     url: normalizeRemoteBaseUrl(remoteUrl),
     authMode,
     token
+  }
+
+  const remoteHeaders = normalizeRemoteHeaders(headers)
+
+  if (Object.keys(remoteHeaders).length > 0) {
+    block.headers = remoteHeaders
   }
 
   const orgValue = typeof org === 'string' ? org.trim() : ''
@@ -7081,6 +7200,9 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   const cloudOrg = mode === 'cloud' ? String(input.cloudOrg ?? existingBlock.org ?? '').trim() : ''
   const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
 
+  const remoteHeaders =
+    input.remoteHeaders && typeof input.remoteHeaders === 'object' ? input.remoteHeaders : existingBlock.headers
+
   const nextToken = incomingToken
     ? persistToken
       ? encryptDesktopSecret(incomingToken)
@@ -7110,7 +7232,10 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
     const profiles = { ...(existing.profiles || {}) }
 
     if (remoteLike) {
-      profiles[key] = { mode, ...buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg) }
+      profiles[key] = {
+        mode,
+        ...buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders)
+      }
     } else {
       const localEntry = localProfileEntry(rawExistingBlock)
 
@@ -7129,7 +7254,7 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   }
 
   const nextRemote = remoteLike
-    ? buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg)
+    ? buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders)
     : existingMode === 'ssh'
       ? rawExistingBlock
       : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }
@@ -7180,9 +7305,11 @@ async function buildRemoteConnection(
   source,
   remoteHost?,
   remoteKind = 'url',
-  remoteIdentity?
+  remoteIdentity?,
+  headers?
 ) {
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  const remoteHeaders = decryptRemoteHeaders(headers)
   // For token/oauth remotes the meaningful host is the real backend URL; for
   // SSH remotes the caller passes the entered/resolved host explicitly (the
   // baseUrl is a 127.0.0.1 tunnel and would be useless in the pill).
@@ -7206,7 +7333,7 @@ async function buildRemoteConnection(
     // the stored bearer.
     if (
       !oauthSessionIsLive(hasNativeSession(baseUrl), await hasLiveOauthSession(baseUrl)) &&
-      oauthGuardMayHardFail(await gatewayAuthProviders(baseUrl))
+      oauthGuardMayHardFail(await gatewayAuthProviders(baseUrl, remoteHeaders))
     ) {
       const err = new Error(
         'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
@@ -7220,7 +7347,7 @@ async function buildRemoteConnection(
     let ticket
 
     try {
-      ticket = await mintGatewayWsTicket(baseUrl)
+      ticket = await mintGatewayWsTicket(baseUrl, remoteHeaders)
     } catch (error) {
       throw gatewayTicketFailure(
         error,
@@ -7228,6 +7355,10 @@ async function buildRemoteConnection(
         'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.'
       )
     }
+
+    const wsUrl = buildGatewayWsUrlWithTicket(baseUrl, ticket)
+
+    rememberRemoteWsHeaders(wsUrl, remoteHeaders)
 
     return {
       baseUrl,
@@ -7237,9 +7368,10 @@ async function buildRemoteConnection(
       remoteHost: host || undefined,
       remoteIdentity,
       remoteKind,
+      headers: remoteHeaders,
       // No static token in OAuth mode; REST is cookie-authed via the partition.
       token: null,
-      wsUrl: buildGatewayWsUrlWithTicket(baseUrl, ticket)
+      wsUrl
     }
   }
 
@@ -7250,6 +7382,10 @@ async function buildRemoteConnection(
     )
   }
 
+  const wsUrl = buildGatewayWsUrl(baseUrl, token)
+
+  rememberRemoteWsHeaders(wsUrl, remoteHeaders)
+
   return {
     baseUrl,
     mode: 'remote',
@@ -7258,8 +7394,9 @@ async function buildRemoteConnection(
     remoteHost: host || undefined,
     remoteIdentity,
     remoteKind,
+    headers: remoteHeaders,
     token,
-    wsUrl: buildGatewayWsUrl(baseUrl, token)
+    wsUrl
   }
 }
 
@@ -7569,7 +7706,9 @@ async function resolveRemoteBackend(profile) {
       token,
       'profile',
       undefined,
-      config.profiles?.[connectionScopeKey(profile)]?.mode === 'cloud' ? 'cloud' : 'url'
+      config.profiles?.[connectionScopeKey(profile)]?.mode === 'cloud' ? 'cloud' : 'url',
+      undefined,
+      override.headers
     )
   }
 
@@ -7615,7 +7754,9 @@ async function resolveRemoteBackend(profile) {
     token,
     'settings',
     undefined,
-    config.mode === 'cloud' ? 'cloud' : 'url'
+    config.mode === 'cloud' ? 'cloud' : 'url',
+    undefined,
+    config.remote?.headers
   )
 }
 
@@ -7674,13 +7815,13 @@ async function requestJsonForProfile(profile: string, path: string, method: stri
     const nativeAt = await ensureNativeAccessToken(conn.baseUrl).catch(() => null)
 
     if (nativeAt) {
-      return fetchJson(url, null, { ...opts, bearer: nativeAt })
+      return fetchJson(url, null, { ...opts, bearer: nativeAt, headers: conn.headers })
     }
 
-    return fetchJsonViaOauthSession(url, opts)
+    return fetchJsonViaOauthSession(url, { ...opts, headers: conn.headers })
   }
 
-  return fetchJson(url, conn.token, opts)
+  return fetchJson(url, conn.token, { ...opts, headers: conn.headers })
 }
 
 async function probeRemoteAuthMode(rawUrl) {
@@ -8143,7 +8284,7 @@ async function spawnPoolBackend(profile, entry) {
   const remote = await resolveRemoteBackend(profile)
 
   if (remote) {
-    await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode)
+    await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
 
     // Recorded on the entry so revalidation can probe this descriptor without
     // awaiting connectionPromise, which may still be pending for a sibling.
@@ -8404,7 +8545,7 @@ async function startHermes() {
   const connectionPromise = (async () => {
     const connectRemote = async remote => {
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
-      await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode)
+      await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
       updateBootProgress({
         phase: 'backend.ready',
         message: 'Remote Hermes backend is ready',
@@ -11851,6 +11992,7 @@ app.whenReady().then(() => {
   installMediaPermissions()
   registerMediaProtocol()
   installEmbedReferer()
+  installRemoteHeaderRules()
   registerDeepLinkProtocol()
   ensureWslWindowsFonts()
   configureSpellChecker()

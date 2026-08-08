@@ -868,12 +868,18 @@ def _camofox(func_name: str, *args):
     return getattr(importlib.import_module("tools.browser_camofox"), func_name)(*args)
 
 
-def _guarded_action(task_id: Optional[str], action: str, command: str, args: list, ok: Dict[str, Any], err: str) -> str:
-    """Input action on the task's current page, refused when the SSRF guard flags the page."""
+def _guarded_action(task_id: Optional[str], action: str, command: str, args: list, ok: Dict[str, Any], err: str,
+                   *, scroll_into_view: bool = False) -> str:
+    """Input action on the task's current page, refused when the SSRF guard flags the page.
+    ``scroll_into_view``: agent-browser clicks at the element's current coordinates without
+    scrolling, so a below-the-fold target gets a silent no-op click that still reports success.
+    Scroll it in first; a failed scroll is ignored (the action still runs, as before)."""
     effective_task_id = _last_session_key(task_id or "default")
     blocked = _blocked_private_page_action(effective_task_id, action)
     if blocked is not None:
         return blocked
+    if scroll_into_view:
+        _session._run_browser_command(effective_task_id, "scrollintoview", args[:1])
     return _tool_response(_session._run_browser_command(effective_task_id, command, args), ok, err)
 
 
@@ -886,7 +892,8 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     if _is_camofox_mode():
         return _camofox("camofox_click", ref, task_id)
     ref = _at_ref(ref)
-    return _guarded_action(task_id, "click", "click", [ref], {"clicked": ref}, f"Failed to click {ref}")
+    return _guarded_action(task_id, "click", "click", [ref], {"clicked": ref}, f"Failed to click {ref}",
+                           scroll_into_view=True)
 
 
 def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:

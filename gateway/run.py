@@ -1813,6 +1813,11 @@ def _clear_planned_restart_notification() -> None:
     _planned_restart_notification_path().unlink(missing_ok=True)
 
 
+def _shutdown_notified_path() -> Path:
+    """Marker persisting which chats received the plain-shutdown notice."""
+    return _hermes_home / ".shutdown_notified.json"
+
+
 # Mark this process as a gateway so cli.py's module-level load_cli_config()
 # knows not to clobber TERMINAL_CWD if lazily imported.
 os.environ["_HERMES_GATEWAY"] = "1"
@@ -9528,6 +9533,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "Home-channel shutdown broadcast suppressed by drain marker "
                     "(suppress_notification=true)"
                 )
+                self._persist_shutdown_notified_targets(notified)
                 return
         except Exception as e:
             # Never let the suppression check block the shutdown broadcast —
@@ -9589,6 +9595,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     home.chat_id,
                     e,
                 )
+
+        self._persist_shutdown_notified_targets(notified)
+
+    def _persist_shutdown_notified_targets(
+        self, notified: set[tuple[str, str, Optional[str]]]
+    ) -> None:
+        """Persist plain-shutdown notification targets for a back-online ping.
+
+        Restart flows already announce their comeback (.restart_notify.json
+        for chat-originated /restart, .restart_pending.json for planned
+        service restarts), so only non-restart shutdowns are recorded here.
+        Startup reads the marker and pings the same chats once adapters are
+        connected again (_send_shutdown_recovery_notifications).
+        """
+        if self._restart_requested or not notified:
+            return
+        try:
+            atomic_json_write(
+                _shutdown_notified_path(),
+                {
+                    "written_at": time.time(),
+                    "targets": [
+                        {"platform": platform_str, "chat_id": chat_id, "thread_id": thread_id}
+                        for platform_str, chat_id, thread_id in notified
+                    ],
+                },
+                indent=None,
+            )
+        except Exception as e:
+            logger.debug("Failed to persist shutdown notification targets: %s", e)
 
     async def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():
@@ -11605,7 +11641,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # of a restart cycle (see _is_stale_restart_redelivery).
         if chat_restart_notification_pending:
             self._booted_from_restart = True
-        await self._send_restart_notification()
+        startup_notified: set[tuple[str, str, Optional[str]]] = set()
+        restart_target = await self._send_restart_notification()
+        if restart_target is not None:
+            startup_notified.add(restart_target)
 
         # Broadcast a lightweight "gateway is back" message to configured home
         # channels only for non-chat planned restarts (terminal/SIGUSR1/service
@@ -11614,11 +11653,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # chat/topic instead of also leaking it to the configured home channel.
         if planned_restart_notification_pending:
             try:
-                await self._send_home_channel_startup_notifications(
+                startup_notified |= await self._send_home_channel_startup_notifications(
                     skip_targets=None,
                 )
             finally:
                 _clear_planned_restart_notification()
+
+        # Chats that saw the plain-shutdown "Gateway shutting down" notice get
+        # a matching back-online ping; their targets were persisted at shutdown
+        # by _notify_active_sessions_of_shutdown. Restart flows are excluded at
+        # write time, so this never double-pings the paths handled above.
+        await self._send_shutdown_recovery_notifications(skip_targets=startup_notified)
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
@@ -21765,6 +21810,108 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
         return delivered
+
+    async def _send_shutdown_recovery_notifications(
+        self,
+        *,
+        skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None,
+    ) -> None:
+        """Send a back-online ping to chats that saw the shutdown notice.
+
+        ``_notify_active_sessions_of_shutdown`` persists its delivery targets
+        for plain (non-restart) shutdowns; without this pass those chats see
+        "⚠️ Gateway shutting down" and then silence when the gateway returns
+        (service-managed restarts, machine reboots, manual starts). Restart
+        flows are excluded at write time — they already notify on comeback via
+        .restart_notify.json / .restart_pending.json. Best-effort: failures
+        are logged and never block startup.
+        """
+        marker = _shutdown_notified_path()
+        if not marker.exists():
+            return
+
+        targets: list = []
+        try:
+            data = json.loads(marker.read_text(encoding="utf-8"))
+            raw_targets = data.get("targets")
+            if isinstance(raw_targets, list):
+                targets = raw_targets
+        except Exception as e:
+            logger.debug("Failed to read shutdown-notified marker: %s", e)
+        finally:
+            marker.unlink(missing_ok=True)
+
+        skipped = skip_targets or set()
+        delivered: set[tuple[str, str, Optional[str]]] = set()
+        message = "♻️ Gateway online — Hermes is back and ready."
+
+        for entry in targets:
+            if not isinstance(entry, dict):
+                continue
+            platform_str = entry.get("platform")
+            chat_id = entry.get("chat_id")
+            thread_id = entry.get("thread_id")
+            if not platform_str or not chat_id:
+                continue
+            target = (str(platform_str), str(chat_id), str(thread_id) if thread_id else None)
+            if target in skipped or target in delivered:
+                continue
+
+            try:
+                platform = Platform(str(platform_str))
+            except ValueError:
+                continue
+
+            transport = resolve_delivery_transport(platform, self.config, self.adapters)
+            if transport is None:
+                continue
+
+            platform_cfg = self.config.platforms.get(platform)
+            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+                logger.info(
+                    "Back-online notification suppressed: %s has gateway_restart_notification=false",
+                    platform.value,
+                )
+                continue
+
+            try:
+                metadata = self._thread_metadata_for_target(
+                    platform,
+                    target[1],
+                    target[2],
+                    adapter=transport.adapter,
+                )
+                send_metadata = _non_conversational_metadata(metadata, platform=platform)
+                if send_metadata is not None or transport.is_relay:
+                    result = await transport.send(
+                        platform,
+                        target[1],
+                        message,
+                        metadata=send_metadata,
+                    )
+                else:
+                    result = await transport.adapter.send(target[1], message)
+                if result is not None and getattr(result, "success", True) is False:
+                    logger.warning(
+                        "Back-online notification to %s:%s was not delivered: %s",
+                        platform.value,
+                        target[1],
+                        getattr(result, "error", "send returned success=False"),
+                    )
+                    continue
+                delivered.add(target)
+                logger.info(
+                    "Sent back-online notification to %s:%s",
+                    platform.value,
+                    target[1],
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Back-online notification failed for %s:%s: %s",
+                    platform.value,
+                    target[1],
+                    exc,
+                )
 
     def _set_session_env(self, context: SessionContext) -> list:
         """Set session context variables for the current async task.

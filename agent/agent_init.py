@@ -2615,19 +2615,8 @@ def init_agent(
             for t in agent.tools
             if isinstance(t, dict)
         }
-        from agent.memory_manager import normalize_tool_schema as _normalize_tool_schema
-        for _raw_schema in agent.context_compressor.get_tool_schemas():
-            _schema = _normalize_tool_schema(_raw_schema)
-            if _schema is None:
-                # A schema with no resolvable name (e.g. an already-wrapped
-                # entry) would append a nameless tool that strict providers
-                # 400 on, disabling the whole toolset (#47707). Skip it.
-                _ra().logger.warning(
-                    "Context engine returned a tool schema with no resolvable "
-                    "name; skipping to avoid poisoning the request (%r)",
-                    _raw_schema,
-                )
-                continue
+        from agent.context_engine import collect_engine_tool_schemas
+        for _schema in collect_engine_tool_schemas(agent.context_compressor):
             _tname = _schema["name"]
             if _tname in _existing_tool_names:
                 continue  # already registered via plugin/cache path

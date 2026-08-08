@@ -7249,11 +7249,10 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
         enabled = getattr(agent, "enabled_toolsets", None)
         context_engine_allowed = enabled is None or "context_engine" in enabled
         compressor = getattr(agent, "context_compressor", None)
-        get_schemas = getattr(compressor, "get_tool_schemas", None) if compressor else None
-        if context_engine_allowed and callable(get_schemas):
-            for schema in get_schemas():
-                if not isinstance(schema, dict):
-                    continue
+        if context_engine_allowed and compressor is not None:
+            from agent.context_engine import collect_engine_tool_schemas
+
+            for schema in collect_engine_tool_schemas(compressor):
                 name = schema.get("name", "")
                 # Only claim the routing name when WE appended the schema, so a
                 # name already owned by a registry/plugin tool keeps its own

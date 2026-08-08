@@ -26,9 +26,13 @@ Lifecycle:
 """
 
 from abc import ABC, abstractmethod
+import logging
 from typing import Any, Dict, List, Optional
 
 from agent.redact import redact_sensitive_text
+
+
+logger = logging.getLogger(__name__)
 
 
 MEMORY_CONTEXT_MAX_CHARS = 6_000
@@ -84,6 +88,74 @@ def automatic_compaction_status_message(
         return None
     message = str(message).strip()
     return message or None
+
+
+def collect_engine_tool_schemas(engine: Any) -> List[Dict[str, Any]]:
+    """Return an engine's tool schemas, normalized and safe to register.
+
+    Single entry point for the two host sites that publish
+    ``ContextEngine.get_tool_schemas()`` into the model's tool surface
+    (``agent.agent_init`` at agent build, ``tools.mcp_tool`` on snapshot
+    rebuild). Applies the same three guards the sibling memory-provider
+    registry already applies to the identical contract
+    (``agent.memory_manager``):
+
+    * the engine call is untrusted — an exception degrades to "no engine
+      tools" with a warning, it never propagates into agent construction;
+    * each schema is passed through ``normalize_tool_schema`` so an
+      already-wrapped OpenAI tool entry cannot become a nameless tool that
+      strict providers 400 on (#47707);
+    * reserved core tool names are refused. ``agent.tool_executor``
+      dispatches the built-in ``if/elif`` branches BEFORE consulting
+      ``agent._context_engine_tool_names``, so a shadowing engine tool is
+      registered-but-unroutable — the same reason ``memory_manager`` refuses
+      it at the door (#40466).
+
+    Returns bare function schemas (``{"name", "description", "parameters"}``);
+    callers wrap them as ``{"type": "function", "function": schema}``.
+    """
+    getter = getattr(engine, "get_tool_schemas", None)
+    if not callable(getter):
+        return []
+    try:
+        raw_schemas = list(getter() or [])
+    except Exception as exc:
+        logger.warning(
+            "Context engine get_tool_schemas() failed; continuing without "
+            "engine tools: %s",
+            exc,
+        )
+        return []
+
+    from agent.memory_manager import normalize_tool_schema
+    from toolsets import _HERMES_CORE_TOOLS
+
+    core_tool_names = set(_HERMES_CORE_TOOLS)
+    resolved: List[Dict[str, Any]] = []
+    seen: set = set()
+    for raw_schema in raw_schemas:
+        schema = normalize_tool_schema(raw_schema)
+        if schema is None:
+            logger.warning(
+                "Context engine returned a tool schema with no resolvable "
+                "name; skipping to avoid poisoning the request (%r)",
+                raw_schema,
+            )
+            continue
+        name = schema["name"]
+        if name in core_tool_names:
+            logger.warning(
+                "Context engine tool '%s' shadows a reserved core tool name; "
+                "registration ignored. Core tools always win — rename the "
+                "engine's tool to something unique.",
+                name,
+            )
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        resolved.append(schema)
+    return resolved
 
 
 class ContextEngine(ABC):

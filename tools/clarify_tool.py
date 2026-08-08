@@ -136,7 +136,10 @@ def clarify_tool(
     Returns:
         JSON string with the user's response.
     """
-    if not question or not question.strip():
+    # Strict providers may send int/list fillers; bare ``.strip()`` after a
+    # truthiness check AttributeErrors (null/"" already fail the ``not question``
+    # short-circuit). Require a real non-empty string — do not str()-coerce.
+    if not isinstance(question, str) or not question.strip():
         return tool_error("Question text is required.")
 
     question = question.strip()

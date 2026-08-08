@@ -35,6 +35,24 @@ class TestClarifyToolBasics:
         assert "error" in result
         assert "not available" in result["error"].lower()
 
+    def test_non_string_question_returns_error_not_attribute_error(self):
+        """Int/list question must not AttributeError on ``.strip()``."""
+        def mock_callback(question: str, choices: Optional[List[str]]) -> str:
+            raise AssertionError("callback must not run for invalid question")
+
+        for bad in (42, ["pick one"], {"q": "y"}):
+            result = json.loads(clarify_tool(question=bad, callback=mock_callback))
+            assert "error" in result, bad
+            assert "required" in result["error"].lower()
+
+    def test_null_and_blank_question_still_rejected(self):
+        result_null = json.loads(clarify_tool(question=None, callback=lambda *a, **k: "x"))
+        result_blank = json.loads(clarify_tool(question="   ", callback=lambda *a, **k: "x"))
+        assert "error" in result_null
+        assert "error" in result_blank
+        assert "required" in result_null["error"].lower()
+        assert "required" in result_blank["error"].lower()
+
 
 class TestClarifyToolChoicesValidation:
     """Tests for choices parameter validation."""

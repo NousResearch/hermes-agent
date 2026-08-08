@@ -6,7 +6,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask, _register_server_tools
+from tools.mcp_tool import (
+    MCPServerTask,
+    _canonical_profile_home,
+    _register_server_tools,
+)
 from tools.registry import ToolRegistry
 
 
@@ -46,7 +50,8 @@ class TestRefreshTools:
     @pytest.mark.asyncio
     async def test_nuke_and_repave(self, mock_registry):
         """Old tools are removed and new tools registered on refresh."""
-        server = MCPServerTask("live_srv")
+        profile_home = _canonical_profile_home()
+        server = MCPServerTask("live_srv", profile_home=profile_home)
         server._refresh_lock = asyncio.Lock()
         server._config = {}
         from toolsets import resolve_toolset
@@ -55,7 +60,7 @@ class TestRefreshTools:
         mock_registry.register(
             name="mcp__live_srv__old_tool", toolset="mcp-live_srv", schema={},
             handler=lambda x: x, check_fn=lambda: True, is_async=False,
-            description="", emoji="",
+            description="", emoji="", profile_home=profile_home,
         )
         server._registered_tool_names = ["mcp__live_srv__old_tool"]
 

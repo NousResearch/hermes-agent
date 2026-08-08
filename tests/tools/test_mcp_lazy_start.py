@@ -152,8 +152,10 @@ class TestLazyFirstUseConnect:
 
         connected = self._connected_server()
 
-        def _connect(name):
-            mcp._servers["playwright"] = connected
+        server_key = mcp._server_key("playwright")
+
+        def _connect(key):
+            mcp._servers[key] = connected
             return True
 
         with patch.object(mcp, "_ensure_lazy_server_connected", side_effect=_connect) as mock_connect, \
@@ -161,7 +163,7 @@ class TestLazyFirstUseConnect:
             handler = mcp._make_tool_handler("playwright", "browser_navigate", 5)
             out = handler({}, task_id="t1")
 
-        mock_connect.assert_called_once_with("playwright")
+        mock_connect.assert_called_once_with(server_key)
         payload = json.loads(out)
         assert "error" not in payload
         assert payload.get("result") == ""
@@ -176,8 +178,10 @@ class TestLazyFirstUseConnect:
         connected = self._connected_server()
         connected.session.list_resources = AsyncMock()
 
-        def _connect(name):
-            mcp._servers["playwright"] = connected
+        server_key = mcp._server_key("playwright")
+
+        def _connect(key):
+            mcp._servers[key] = connected
             return True
 
         async def _fake_paginate(list_method, items_attr, server_name):
@@ -189,7 +193,7 @@ class TestLazyFirstUseConnect:
             handler = mcp._make_list_resources_handler("playwright", 5)
             out = handler({})
 
-        mock_connect.assert_called_once_with("playwright")
+        mock_connect.assert_called_once_with(server_key)
         payload = json.loads(out)
         assert "error" not in payload
         assert payload["resources"][0]["uri"] == "file:///a"
@@ -203,8 +207,10 @@ class TestLazyFirstUseConnect:
             return_value=SimpleNamespace(messages=[])
         )
 
-        def _connect(name):
-            mcp._servers["playwright"] = connected
+        server_key = mcp._server_key("playwright")
+
+        def _connect(key):
+            mcp._servers[key] = connected
             return True
 
         with patch.object(mcp, "_ensure_lazy_server_connected", side_effect=_connect) as mock_connect, \
@@ -212,7 +218,7 @@ class TestLazyFirstUseConnect:
             handler = mcp._make_get_prompt_handler("playwright", 5)
             out = handler({"name": "greeting"})
 
-        mock_connect.assert_called_once_with("playwright")
+        mock_connect.assert_called_once_with(server_key)
         payload = json.loads(out)
         assert "error" not in payload
 
@@ -285,7 +291,10 @@ class TestLazyFirstUseConnect:
              patch.object(registry, "deregister") as mock_dereg:
             assert mcp._ensure_lazy_server_connected("playwright") is True
 
-        mock_dereg.assert_called_once_with("mcp_playwright_tool_x")
+        mock_dereg.assert_called_once_with(
+            "mcp_playwright_tool_x",
+            profile_home=mcp._server_key("playwright")[0],
+        )
 
     def test_lazy_connect_failure_records_cooldown(self):
         mcp._lazy_server_configs["playwright"] = {"command": "npx", "lazy": True}
@@ -300,7 +309,7 @@ class TestLazyFirstUseConnect:
              patch.object(mcp, "_record_connect_failure") as mock_record:
             assert mcp._ensure_lazy_server_connected("playwright") is False
 
-        mock_record.assert_called_once_with("playwright")
+        mock_record.assert_called_once_with(mcp._server_key("playwright"))
         # Config retained so a later call can retry after cooldown.
         assert "playwright" in mcp._lazy_server_configs
 

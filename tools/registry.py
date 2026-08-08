@@ -68,6 +68,57 @@ def _bound_json_error_result(result: str) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
+# ``None`` continues to mean a process-global registration.  A non-empty
+# canonical Hermes home is an owner only for dynamic MCP registrations.  The
+# sentinel lets lookups distinguish an unresolved multiplex profile from a
+# normal global-only snapshot without exposing that implementation detail in
+# the public API.
+_PROFILE_HOME_UNSET = object()
+_PROFILE_SCOPE_UNRESOLVED = object()
+
+
+def _canonical_profile_home(profile_home) -> Optional[str]:
+    """Return the stable absolute key for a profile home, or ``None``."""
+    if profile_home is None:
+        return None
+    value = str(profile_home).strip()
+    if not value:
+        return None
+    try:
+        return str(Path(value).expanduser().resolve())
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _current_profile_home():
+    """Resolve the current profile owner, failing closed in multiplex mode."""
+    try:
+        from agent.secret_scope import is_multiplex_active
+
+        if is_multiplex_active():
+            from hermes_constants import get_hermes_home_override
+
+            override = get_hermes_home_override()
+            if not override:
+                return _PROFILE_SCOPE_UNRESOLVED
+
+        from hermes_constants import get_hermes_home
+
+        return _canonical_profile_home(get_hermes_home())
+    except Exception:
+        # Registry is imported very early.  If the profile context cannot be
+        # resolved, expose only process-global entries rather than risking a
+        # lookup against another profile's MCP handler.
+        return _PROFILE_SCOPE_UNRESOLVED
+
+
+def _resolve_profile_home(profile_home=_PROFILE_HOME_UNSET):
+    """Resolve an explicit or context-local owner for registry operations."""
+    if profile_home is not _PROFILE_HOME_UNSET and profile_home is not None:
+        return _canonical_profile_home(profile_home)
+    return _current_profile_home()
+
+
 def _is_registry_register_call(node: ast.AST) -> bool:
     """Return True when *node* is a ``registry.register(...)`` call expression."""
     if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
@@ -204,12 +255,13 @@ class ToolEntry:
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
-        "max_result_size_chars", "dynamic_schema_overrides",
+        "max_result_size_chars", "dynamic_schema_overrides", "profile_home",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 profile_home=None):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -228,6 +280,10 @@ class ToolEntry:
         # on every get_definitions() call; results are merged shallow on top
         # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
+        # Optional provenance for dynamic tools (currently MCP). Built-in and
+        # plugin registrations leave this unset; callers that own a profile
+        # pass a canonical absolute path captured at registration time.
+        self.profile_home = str(profile_home) if profile_home is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +471,12 @@ class ToolRegistry:
     """Singleton registry that collects tool schemas + handlers from tool files."""
 
     def __init__(self):
+        # Built-in and plugin tools retain the historical process-global map.
+        # MCP entries live in a second dimension keyed by canonical profile
+        # home so identical public names can coexist without replacing one
+        # another's handler or schema.
         self._tools: Dict[str, ToolEntry] = {}
+        self._profile_tools: Dict[str, Dict[str, ToolEntry]] = {}
         # Durable map: plugin module namespace (handler.__globals__["__name__"])
         # -> operator opt-in for built-in override. Populated at plugin load and
         # never cleared, so a plugin's override authorization is bound to the
@@ -423,7 +484,9 @@ class ToolRegistry:
         # happens (sync during load, or a delayed/threaded callback afterwards).
         self._plugin_override_policy: Dict[str, bool] = {}
         self._toolset_checks: Dict[str, Callable] = {}
+        self._profile_toolset_checks: Dict[tuple[str, str], Callable] = {}
         self._toolset_aliases: Dict[str, str] = {}
+        self._profile_toolset_aliases: Dict[str, Dict[str, str]] = {}
         # MCP dynamic refresh can mutate the registry while other threads are
         # reading tool metadata, so keep mutations serialized and readers on
         # stable snapshots.
@@ -435,14 +498,39 @@ class ToolRegistry:
         # long as the generation hasn't changed.
         self._generation: int = 0
 
-    def _snapshot_state(self) -> tuple[List[ToolEntry], Dict[str, Callable]]:
+    def _snapshot_state(
+        self, profile_home=_PROFILE_HOME_UNSET
+    ) -> tuple[List[ToolEntry], Dict[str, Callable]]:
         """Return a coherent snapshot of registry entries and toolset checks."""
         with self._lock:
-            return list(self._tools.values()), dict(self._toolset_checks)
+            entries = list(self._tools.values())
+            toolset_checks = dict(self._toolset_checks)
+            scope = _resolve_profile_home(profile_home)
+            if scope is not _PROFILE_SCOPE_UNRESOLVED and scope is not None:
+                entries.extend(self._profile_tools.get(scope, {}).values())
+                for (home, toolset), check_fn in self._profile_toolset_checks.items():
+                    if home == scope:
+                        toolset_checks.setdefault(toolset, check_fn)
+            return entries, toolset_checks
 
-    def _snapshot_entries(self) -> List[ToolEntry]:
+    def _snapshot_entries(self, profile_home=_PROFILE_HOME_UNSET) -> List[ToolEntry]:
         """Return a stable snapshot of registered tool entries."""
-        return self._snapshot_state()[0]
+        if profile_home is _PROFILE_HOME_UNSET:
+            return self._snapshot_state()[0]
+        return self._snapshot_state(profile_home)[0]
+
+    def _entry_for_name_locked(self, name: str, profile_home=_PROFILE_HOME_UNSET):
+        """Return the selected profile entry, falling back to global tools."""
+        scope = _resolve_profile_home(profile_home)
+        if scope is not _PROFILE_SCOPE_UNRESOLVED and scope is not None:
+            entry = self._profile_tools.get(scope, {}).get(name)
+            if entry is not None:
+                return entry
+        return self._tools.get(name)
+
+    def _profile_entry_exists_locked(self, name: str) -> bool:
+        """Return whether any profile owns *name* (for global collision checks)."""
+        return any(name in entries for entries in self._profile_tools.values())
 
     def _toolset_has_exposable_tools(
         self,
@@ -468,42 +556,91 @@ class ToolRegistry:
                 return True
         return False
 
-    def get_entry(self, name: str) -> Optional[ToolEntry]:
-        """Return a registered tool entry by name, or None."""
+    def get_entry(
+        self, name: str, *, profile_home=_PROFILE_HOME_UNSET
+    ) -> Optional[ToolEntry]:
+        """Return a global or current-profile entry by public name.
+
+        Passing ``profile_home`` explicitly is required by background MCP
+        work that runs outside the profile context.  In a multiplex process,
+        an omitted/implicit profile with no Hermes-home override selects only
+        global entries; it never guesses an MCP owner.
+        """
         with self._lock:
-            return self._tools.get(name)
+            return self._entry_for_name_locked(name, profile_home)
 
-    def get_registered_toolset_names(self) -> List[str]:
+    def get_registered_toolset_names(self, *, profile_home=_PROFILE_HOME_UNSET) -> List[str]:
         """Return sorted unique toolset names present in the registry."""
-        return sorted({entry.toolset for entry in self._snapshot_entries()})
+        return sorted({entry.toolset for entry in self._snapshot_entries(profile_home)})
 
-    def get_tool_names_for_toolset(self, toolset: str) -> List[str]:
+    def get_tool_names_for_toolset(
+        self, toolset: str, *, profile_home=_PROFILE_HOME_UNSET
+    ) -> List[str]:
         """Return sorted tool names registered under a given toolset."""
         return sorted(
-            entry.name for entry in self._snapshot_entries()
+            entry.name for entry in self._snapshot_entries(profile_home)
             if entry.toolset == toolset
         )
 
-    def register_toolset_alias(self, alias: str, toolset: str) -> None:
-        """Register an explicit alias for a canonical toolset name."""
+    def register_toolset_alias(
+        self, alias: str, toolset: str, *, profile_home=_PROFILE_HOME_UNSET
+    ) -> None:
+        """Register an explicit global or profile-scoped toolset alias."""
         with self._lock:
-            existing = self._toolset_aliases.get(alias)
+            scope = _resolve_profile_home(profile_home)
+            if scope is _PROFILE_SCOPE_UNRESOLVED:
+                logger.error(
+                    "Toolset alias registration REJECTED: profile scope for %r "
+                    "is unresolved in multiplex mode",
+                    alias,
+                )
+                return
+            explicit_profile = (
+                profile_home is not _PROFILE_HOME_UNSET
+                and _canonical_profile_home(profile_home) is not None
+            )
+            if scope is not None:
+                profile_entries = self._profile_tools.get(scope, {}).values()
+                profile_owns_toolset = any(
+                    entry.toolset == toolset for entry in profile_entries
+                )
+            else:
+                profile_owns_toolset = False
+            aliases = (
+                self._profile_toolset_aliases.setdefault(scope, {})
+                if scope is not None and (explicit_profile or profile_owns_toolset)
+                else self._toolset_aliases
+            )
+            existing = aliases.get(alias)
             if existing and existing != toolset:
                 logger.warning(
                     "Toolset alias collision: '%s' (%s) overwritten by %s",
                     alias, existing, toolset,
                 )
-            self._toolset_aliases[alias] = toolset
+            aliases[alias] = toolset
             self._generation += 1
 
-    def get_registered_toolset_aliases(self) -> Dict[str, str]:
+    def get_registered_toolset_aliases(
+        self, *, profile_home=_PROFILE_HOME_UNSET
+    ) -> Dict[str, str]:
         """Return a snapshot of ``{alias: canonical_toolset}`` mappings."""
         with self._lock:
-            return dict(self._toolset_aliases)
+            aliases = dict(self._toolset_aliases)
+            scope = _resolve_profile_home(profile_home)
+            if scope is not _PROFILE_SCOPE_UNRESOLVED and scope is not None:
+                aliases.update(self._profile_toolset_aliases.get(scope, {}))
+            return aliases
 
-    def get_toolset_alias_target(self, alias: str) -> Optional[str]:
+    def get_toolset_alias_target(
+        self, alias: str, *, profile_home=_PROFILE_HOME_UNSET
+    ) -> Optional[str]:
         """Return the canonical toolset name for an alias, or None."""
         with self._lock:
+            scope = _resolve_profile_home(profile_home)
+            if scope is not _PROFILE_SCOPE_UNRESOLVED and scope is not None:
+                target = self._profile_toolset_aliases.get(scope, {}).get(alias)
+                if target is not None:
+                    return target
             return self._toolset_aliases.get(alias)
 
     # ------------------------------------------------------------------
@@ -573,6 +710,7 @@ class ToolRegistry:
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
         override: bool = False,
+        profile_home: Optional[str] = None,
     ):
         """Register a tool.  Called at module-import time by each tool file.
 
@@ -583,7 +721,56 @@ class ToolRegistry:
         toolset are rejected to prevent accidental overwrites.
         """
         with self._lock:
-            existing = self._tools.get(name)
+            requested_home = _canonical_profile_home(profile_home)
+            # ``profile_home`` is an MCP ownership marker.  Do not let a
+            # built-in/plugin registration accidentally become profile-scoped
+            # merely because a caller forwarded unrelated context metadata.
+            owner_home = (
+                requested_home if requested_home and toolset.startswith("mcp-") else None
+            )
+
+            if owner_home is not None:
+                # A dynamic MCP entry must never shadow a global built-in or
+                # plugin entry.  Allowing both would make the public name
+                # ambiguous for global callers and could route to the wrong
+                # handler during a profile switch.
+                if name in self._tools:
+                    logger.error(
+                        "Tool registration REJECTED: profile-scoped MCP tool %r "
+                        "would shadow global toolset %r",
+                        name,
+                        self._tools[name].toolset,
+                    )
+                    return
+                target_tools = self._profile_tools.setdefault(owner_home, {})
+                existing = target_tools.get(name)
+            else:
+                # Preserve global built-in/plugin behavior and prevent a
+                # global late registration from hiding an already-live MCP
+                # owner under the same public name.
+                if self._profile_entry_exists_locked(name):
+                    logger.error(
+                        "Tool registration REJECTED: global tool %r would "
+                        "shadow a profile-scoped MCP entry",
+                        name,
+                    )
+                    return
+                target_tools = self._tools
+                existing = target_tools.get(name)
+
+            if owner_home is not None and existing and existing.toolset != toolset:
+                # Dynamic MCP ownership is intentionally stricter than the
+                # global plugin override path: two toolsets under one profile
+                # and public name are always ambiguous, even when a caller
+                # passes ``override=True``.
+                logger.error(
+                    "Tool registration REJECTED: '%s' (toolset '%s') would "
+                    "shadow existing profile tool from toolset '%s'",
+                    name,
+                    toolset,
+                    existing.toolset,
+                )
+                return
             if existing and existing.toolset != toolset:
                 if override:
                     _owner = self._plugin_owner_of(handler)
@@ -620,7 +807,7 @@ class ToolRegistry:
                         name, toolset, existing.toolset,
                     )
                     return
-            self._tools[name] = ToolEntry(
+            target_tools[name] = ToolEntry(
                 name=name,
                 toolset=toolset,
                 schema=schema,
@@ -632,6 +819,7 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                profile_home=owner_home,
             )
             # Availability is now derived per-tool (_toolset_has_exposable_tools),
             # so this map no longer gates a toolset. It is still consumed by
@@ -639,11 +827,16 @@ class ToolRegistry:
             # banner.py reads (presence only, never called) to classify an
             # already-unavailable toolset as lazy-init vs disabled. Keep the
             # write path for that classification.
-            if check_fn and toolset not in self._toolset_checks:
-                self._toolset_checks[toolset] = check_fn
+            if check_fn:
+                if owner_home is not None:
+                    self._profile_toolset_checks.setdefault(
+                        (owner_home, toolset), check_fn
+                    )
+                elif toolset not in self._toolset_checks:
+                    self._toolset_checks[toolset] = check_fn
             self._generation += 1
 
-    def deregister(self, name: str) -> None:
+    def deregister(self, name: str, *, profile_home=_PROFILE_HOME_UNSET) -> None:
         """Remove a tool from the registry.
 
         Also cleans up the toolset check if no other tools remain in the
@@ -660,7 +853,37 @@ class ToolRegistry:
         every refresh and has no plugin-override concept.
         """
         with self._lock:
-            entry = self._tools.get(name)
+            explicit_profile = (
+                profile_home is not _PROFILE_HOME_UNSET
+                and _canonical_profile_home(profile_home) is not None
+            )
+            scope = _resolve_profile_home(profile_home)
+            if explicit_profile:
+                # An owner-scoped teardown may remove only that owner's MCP
+                # entry.  It must never fall back to a global or other-profile
+                # entry when its own slot is absent.
+                owner_home = _canonical_profile_home(profile_home)
+                if owner_home is None:  # narrowed by explicit_profile; defensive
+                    return
+                owner_tools = self._profile_tools.get(owner_home, {})
+                entry = owner_tools.get(name)
+                target_tools = owner_tools
+                if entry is None:
+                    return
+            elif scope is not _PROFILE_SCOPE_UNRESOLVED and scope is not None:
+                owner_home = scope
+                owner_tools = self._profile_tools.get(owner_home, {})
+                entry = owner_tools.get(name)
+                if entry is not None:
+                    target_tools = owner_tools
+                else:
+                    owner_home = None
+                    target_tools = self._tools
+                    entry = target_tools.get(name)
+            else:
+                owner_home = None
+                target_tools = self._tools
+                entry = target_tools.get(name)
             if entry is None:
                 return
             if not entry.toolset.startswith("mcp-"):
@@ -694,19 +917,36 @@ class ToolRegistry:
                         f"{name!r} (toolset {entry.toolset!r}) without operator "
                         f"opt-in (allow_tool_override)."
                     )
-            del self._tools[name]
+            del target_tools[name]
             # Drop the toolset check and aliases if this was the last tool in
-            # that toolset.
+            # that owner/toolset.  Profile cleanup is deliberately scoped to
+            # one home; another profile may still expose the same toolset.
             toolset_still_exists = any(
-                e.toolset == entry.toolset for e in self._tools.values()
+                e.toolset == entry.toolset for e in target_tools.values()
             )
             if not toolset_still_exists:
-                self._toolset_checks.pop(entry.toolset, None)
-                self._toolset_aliases = {
-                    alias: target
-                    for alias, target in self._toolset_aliases.items()
-                    if target != entry.toolset
-                }
+                if owner_home is not None:
+                    self._profile_toolset_checks.pop(
+                        (owner_home, entry.toolset), None
+                    )
+                    profile_aliases = self._profile_toolset_aliases.get(owner_home)
+                    if profile_aliases is not None:
+                        self._profile_toolset_aliases[owner_home] = {
+                            alias: target
+                            for alias, target in profile_aliases.items()
+                            if target != entry.toolset
+                        }
+                        if not self._profile_toolset_aliases[owner_home]:
+                            self._profile_toolset_aliases.pop(owner_home, None)
+                    if not target_tools:
+                        self._profile_tools.pop(owner_home, None)
+                else:
+                    self._toolset_checks.pop(entry.toolset, None)
+                    self._toolset_aliases = {
+                        alias: target
+                        for alias, target in self._toolset_aliases.items()
+                        if target != entry.toolset
+                    }
             self._generation += 1
         logger.debug("Deregistered tool: %s", name)
 
@@ -714,7 +954,13 @@ class ToolRegistry:
     # Schema retrieval
     # ------------------------------------------------------------------
 
-    def get_definitions(self, tool_names: Set[str], quiet: bool = False) -> List[dict]:
+    def get_definitions(
+        self,
+        tool_names: Set[str],
+        quiet: bool = False,
+        *,
+        profile_home=_PROFILE_HOME_UNSET,
+    ) -> List[dict]:
         """Return OpenAI-format tool schemas for the requested tool names.
 
         Only tools whose ``check_fn()`` returns True (or have no check_fn)
@@ -730,7 +976,9 @@ class ToolRegistry:
         # same check_fn within one definitions pass without re-reading the
         # TTL clock.
         check_results: Dict[Callable, bool] = {}
-        entries_by_name = {entry.name: entry for entry in self._snapshot_entries()}
+        entries_by_name = {
+            entry.name: entry for entry in self._snapshot_entries(profile_home)
+        }
         for name in sorted(tool_names):
             entry = entries_by_name.get(name)
             if not entry:
@@ -798,7 +1046,14 @@ class ToolRegistry:
             result_type=result_type,
         )
 
-    def dispatch(self, name: str, args: dict, **kwargs) -> str | dict:
+    def dispatch(
+        self,
+        name: str,
+        args: dict,
+        *,
+        profile_home=_PROFILE_HOME_UNSET,
+        **kwargs,
+    ) -> str | dict:
         """Execute a tool handler by name.
 
         * Async handlers are bridged automatically via ``_run_async()``.
@@ -807,7 +1062,7 @@ class ToolRegistry:
         * All exceptions are caught and returned as ``{"error": "..."}``
           for consistent error format.
         """
-        entry = self.get_entry(name)
+        entry = self.get_entry(name, profile_home=profile_home)
         if not entry:
             return tool_error(f"Unknown tool: {name}")
         try:
@@ -837,9 +1092,15 @@ class ToolRegistry:
     # Query helpers  (replace redundant dicts in model_tools.py)
     # ------------------------------------------------------------------
 
-    def get_max_result_size(self, name: str, default: int | float | None = None) -> int | float:
+    def get_max_result_size(
+        self,
+        name: str,
+        default: int | float | None = None,
+        *,
+        profile_home=_PROFILE_HOME_UNSET,
+    ) -> int | float:
         """Return per-tool max result size, or *default* (or global default)."""
-        entry = self.get_entry(name)
+        entry = self.get_entry(name, profile_home=profile_home)
         if entry and entry.max_result_size_chars is not None:
             return entry.max_result_size_chars
         if default is not None:
@@ -847,55 +1108,91 @@ class ToolRegistry:
         from tools.budget_config import DEFAULT_RESULT_SIZE_CHARS
         return DEFAULT_RESULT_SIZE_CHARS
 
-    def get_all_tool_names(self) -> List[str]:
+    def get_all_tool_names(self, *, profile_home=_PROFILE_HOME_UNSET) -> List[str]:
         """Return sorted list of all registered tool names."""
-        return sorted(entry.name for entry in self._snapshot_entries())
+        return sorted(entry.name for entry in self._snapshot_entries(profile_home))
 
-    def get_schema(self, name: str) -> Optional[dict]:
+    def get_schema(self, name: str, *, profile_home=_PROFILE_HOME_UNSET) -> Optional[dict]:
         """Return a tool's raw schema dict, bypassing check_fn filtering.
 
         Useful for token estimation and introspection where availability
         doesn't matter — only the schema content does.
         """
-        entry = self.get_entry(name)
+        entry = self.get_entry(name, profile_home=profile_home)
         return entry.schema if entry else None
 
-    def get_toolset_for_tool(self, name: str) -> Optional[str]:
+    def get_toolset_for_tool(
+        self, name: str, *, profile_home=_PROFILE_HOME_UNSET
+    ) -> Optional[str]:
         """Return the toolset a tool belongs to, or None."""
-        entry = self.get_entry(name)
+        entry = self.get_entry(name, profile_home=profile_home)
         return entry.toolset if entry else None
 
-    def get_emoji(self, name: str, default: str = "⚡") -> str:
+    def get_profile_home_for_tool(
+        self, name: str, *, profile_home=_PROFILE_HOME_UNSET
+    ) -> Optional[str]:
+        """Return the captured profile home for a dynamic tool, if any.
+
+        Registry entries own this provenance. Reading it never consults the
+        mutable Hermes-home context, so a later profile switch cannot make a
+        previously registered tool appear to belong to another profile.
+        """
+        entry = self.get_entry(name, profile_home=profile_home)
+        return entry.profile_home if entry else None
+
+    def get_emoji(
+        self, name: str, default: str = "⚡", *, profile_home=_PROFILE_HOME_UNSET
+    ) -> str:
         """Return the emoji for a tool, or *default* if unset."""
-        entry = self.get_entry(name)
+        entry = self.get_entry(name, profile_home=profile_home)
         return (entry.emoji if entry and entry.emoji else default)
 
-    def get_tool_to_toolset_map(self) -> Dict[str, str]:
+    def get_tool_to_toolset_map(
+        self, *, profile_home=_PROFILE_HOME_UNSET
+    ) -> Dict[str, str]:
         """Return ``{tool_name: toolset_name}`` for every registered tool."""
-        return {entry.name: entry.toolset for entry in self._snapshot_entries()}
+        return {
+            entry.name: entry.toolset
+            for entry in self._snapshot_entries(profile_home)
+        }
 
-    def is_toolset_available(self, toolset: str) -> bool:
+    def is_toolset_available(
+        self, toolset: str, *, profile_home=_PROFILE_HOME_UNSET
+    ) -> bool:
         """Check if a toolset has at least one exposable tool.
 
         Returns False (rather than crashing) when a per-tool check raises
         an unexpected exception (e.g. network error, missing import, bad config).
         """
-        entries, _ = self._snapshot_state()
+        if profile_home is _PROFILE_HOME_UNSET:
+            entries, _ = self._snapshot_state()
+        else:
+            entries, _ = self._snapshot_state(profile_home)
         return self._toolset_has_exposable_tools(toolset, entries)
 
-    def check_toolset_requirements(self) -> Dict[str, bool]:
+    def check_toolset_requirements(
+        self, *, profile_home=_PROFILE_HOME_UNSET
+    ) -> Dict[str, bool]:
         """Return ``{toolset: available_bool}`` for every toolset."""
-        entries, _ = self._snapshot_state()
+        if profile_home is _PROFILE_HOME_UNSET:
+            entries, _ = self._snapshot_state()
+        else:
+            entries, _ = self._snapshot_state(profile_home)
         toolsets = sorted({entry.toolset for entry in entries})
         return {
             toolset: self._toolset_has_exposable_tools(toolset, entries)
             for toolset in toolsets
         }
 
-    def get_available_toolsets(self) -> Dict[str, dict]:
+    def get_available_toolsets(
+        self, *, profile_home=_PROFILE_HOME_UNSET
+    ) -> Dict[str, dict]:
         """Return toolset metadata for UI display."""
         toolsets: Dict[str, dict] = {}
-        entries, _ = self._snapshot_state()
+        if profile_home is _PROFILE_HOME_UNSET:
+            entries, _ = self._snapshot_state()
+        else:
+            entries, _ = self._snapshot_state(profile_home)
         for entry in entries:
             ts = entry.toolset
             if ts not in toolsets:
@@ -912,10 +1209,15 @@ class ToolRegistry:
                         toolsets[ts]["requirements"].append(env)
         return toolsets
 
-    def get_toolset_requirements(self) -> Dict[str, dict]:
+    def get_toolset_requirements(
+        self, *, profile_home=_PROFILE_HOME_UNSET
+    ) -> Dict[str, dict]:
         """Build a TOOLSET_REQUIREMENTS-compatible dict for backward compat."""
         result: Dict[str, dict] = {}
-        entries, toolset_checks = self._snapshot_state()
+        if profile_home is _PROFILE_HOME_UNSET:
+            entries, toolset_checks = self._snapshot_state()
+        else:
+            entries, toolset_checks = self._snapshot_state(profile_home)
         for entry in entries:
             ts = entry.toolset
             if ts not in result:
@@ -933,11 +1235,16 @@ class ToolRegistry:
                     result[ts]["env_vars"].append(env)
         return result
 
-    def check_tool_availability(self, quiet: bool = False):
+    def check_tool_availability(
+        self, quiet: bool = False, *, profile_home=_PROFILE_HOME_UNSET
+    ):
         """Return (available_toolsets, unavailable_info) like the old function."""
         available = []
         unavailable = []
-        entries, _ = self._snapshot_state()
+        if profile_home is _PROFILE_HOME_UNSET:
+            entries, _ = self._snapshot_state()
+        else:
+            entries, _ = self._snapshot_state(profile_home)
         for ts in sorted({entry.toolset for entry in entries}):
             ts_entries = [entry for entry in entries if entry.toolset == ts]
             if self._toolset_has_exposable_tools(ts, entries):

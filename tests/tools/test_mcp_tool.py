@@ -10,6 +10,7 @@ import os
 import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -299,6 +300,78 @@ class TestMCPStatus:
         assert statuses["failed"]["error"] == "Connection closed"
         assert statuses["disabled"]["status"] == "disabled"
         assert statuses["disabled"]["disabled"] is True
+        from hermes_constants import get_hermes_home
+
+        assert {
+            entry["profile_home"]
+            for entry in statuses.values()
+        } == {str(Path(get_hermes_home()).expanduser().resolve())}
+
+    def test_connected_status_is_scoped_to_owner_profile(self, tmp_path, monkeypatch):
+        import tools.mcp_tool as mcp_tool
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        first_home = (tmp_path / "first").resolve()
+        second_home = (tmp_path / "second").resolve()
+        server = mcp_tool.MCPServerTask("connected")
+        server.profile_home = str(first_home)
+        server.session = object()
+        server._tools = []
+
+        monkeypatch.setattr(
+            mcp_tool,
+            "_load_mcp_config",
+            lambda: {"connected": {"command": "mock"}},
+        )
+        with mcp_tool._lock:
+            saved_servers = dict(mcp_tool._servers)
+            mcp_tool._servers.clear()
+            mcp_tool._servers[
+                mcp_tool._server_key("connected", str(first_home))
+            ] = server
+        try:
+            first_token = set_hermes_home_override(first_home)
+            try:
+                first_status = mcp_tool.get_mcp_status()
+            finally:
+                reset_hermes_home_override(first_token)
+
+            second_token = set_hermes_home_override(second_home)
+            try:
+                second_status = mcp_tool.get_mcp_status()
+            finally:
+                reset_hermes_home_override(second_token)
+        finally:
+            with mcp_tool._lock:
+                mcp_tool._servers.clear()
+                mcp_tool._servers.update(saved_servers)
+
+        assert first_status[0]["profile_home"] == str(first_home)
+        assert first_status[0]["status"] == "connected"
+        assert second_status[0]["profile_home"] == str(second_home)
+        assert second_status[0]["status"] == "configured"
+
+    def test_unscoped_multiplex_runtime_queries_fail_closed(self, monkeypatch):
+        import tools.mcp_tool as mcp_tool
+
+        monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
+        monkeypatch.setattr(
+            "hermes_constants.get_hermes_home_override",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            mcp_tool,
+            "_load_mcp_config",
+            lambda: (_ for _ in ()).throw(
+                AssertionError("unscoped status must not read profile config")
+            ),
+        )
+
+        assert mcp_tool.get_mcp_status() == []
+        assert mcp_tool.has_registered_mcp_tools() is False
+        assert mcp_tool.get_registered_mcp_server_names() == set()
+        assert mcp_tool.is_mcp_tool_parallel_safe("mcp__shared__echo") is False
+        assert mcp_tool.reconnect_mcp_server("shared") is False
 
 
 class TestLifecycleConfig:
@@ -736,6 +809,268 @@ class TestDiscoverAndRegister:
 
         _servers.pop("fs", None)
 
+    def test_eager_registration_captures_profile_home(self, tmp_path):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from tools.registry import ToolRegistry
+        import tools.mcp_tool as mcp_tool
+        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+
+        mock_registry = ToolRegistry()
+        mock_tools = [_make_mcp_tool("read_file", "Read a file")]
+        mock_session = MagicMock()
+        profile_home = (tmp_path / "eager").resolve()
+
+        async def fake_connect(name, config):
+            server = MCPServerTask(name)
+            server.session = mock_session
+            server._tools = mock_tools
+            return server
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+                 patch("tools.registry.registry", mock_registry):
+                registered = asyncio.run(
+                    _discover_and_register_server(
+                        "eager",
+                        {
+                            "command": "mock",
+                            "tools": {"resources": False, "prompts": False},
+                        },
+                    )
+                )
+        finally:
+            reset_hermes_home_override(token)
+
+        try:
+            assert registered == ["mcp__eager__read_file"]
+            assert mock_registry.get_profile_home_for_tool(
+                registered[0], profile_home=str(profile_home)
+            ) == str(profile_home)
+        finally:
+            _servers.pop("eager", None)
+
+    def test_dynamic_refresh_keeps_original_profile_home(self, tmp_path):
+        import tools.mcp_tool as mcp_tool
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from tools.registry import ToolRegistry
+
+        first_home = (tmp_path / "first").resolve()
+        second_home = (tmp_path / "second").resolve()
+        config = {"tools": {"resources": False, "prompts": False}}
+        mock_registry = ToolRegistry()
+
+        first_token = set_hermes_home_override(first_home)
+        try:
+            # The server is created in profile A; registration happens after
+            # switching to profile B, like a list_changed refresh on the
+            # shared MCP loop.
+            server = mcp_tool.MCPServerTask(
+                "refresh", profile_home=mcp_tool._canonical_profile_home()
+            )
+            server.session = MagicMock()
+            server._tools = [_make_mcp_tool("read_file", "Read a file")]
+        finally:
+            reset_hermes_home_override(first_token)
+
+        second_token = set_hermes_home_override(second_home)
+        try:
+            with patch("tools.registry.registry", mock_registry):
+                registered = mcp_tool._register_server_tools("refresh", server, config)
+        finally:
+            reset_hermes_home_override(second_token)
+
+        assert registered == ["mcp__refresh__read_file"]
+        assert mock_registry.get_profile_home_for_tool(
+            registered[0], profile_home=str(first_home)
+        ) == str(first_home)
+
+    def test_lazy_registration_captures_profile_home(self, tmp_path):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from tools.registry import ToolRegistry
+        import tools.mcp_tool as mcp_tool
+
+        mock_registry = ToolRegistry()
+        profile_home = (tmp_path / "lazy").resolve()
+        config = {"command": "mock", "args": [], "lazy": True}
+        entry = {
+            "fingerprint": "unused",
+            "tools": [{
+                "name": "read_file",
+                "description": "Read a file",
+                "inputSchema": {"type": "object", "properties": {}},
+            }],
+            "utility_tools": [],
+        }
+        with mcp_tool._lock:
+            saved_configs = dict(mcp_tool._lazy_server_configs)
+            saved_fingerprints = dict(mcp_tool._lazy_server_fingerprints)
+            saved_names = dict(mcp_tool._lazy_server_tool_names)
+            mcp_tool._lazy_server_configs.clear()
+            mcp_tool._lazy_server_fingerprints.clear()
+            mcp_tool._lazy_server_tool_names.clear()
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            with patch("tools.registry.registry", mock_registry):
+                registered = mcp_tool._register_from_cache_sync("lazy", config, entry)
+        finally:
+            reset_hermes_home_override(token)
+
+        try:
+            assert registered == ["mcp__lazy__read_file"]
+            assert mock_registry.get_profile_home_for_tool(
+                registered[0], profile_home=str(profile_home)
+            ) == str(profile_home)
+        finally:
+            with mcp_tool._lock:
+                mcp_tool._lazy_server_configs.clear()
+                mcp_tool._lazy_server_configs.update(saved_configs)
+                mcp_tool._lazy_server_fingerprints.clear()
+                mcp_tool._lazy_server_fingerprints.update(saved_fingerprints)
+                mcp_tool._lazy_server_tool_names.clear()
+                mcp_tool._lazy_server_tool_names.update(saved_names)
+
+    def test_same_named_server_isolated_across_profiles_and_reloads(self, tmp_path):
+        import tools.mcp_tool as mcp_tool
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from tools.registry import ToolRegistry
+
+        home_a = (tmp_path / "profile-a").resolve()
+        home_b = (tmp_path / "profile-b").resolve()
+        registry = ToolRegistry()
+        sessions = {}
+
+        async def fake_connect(name, config):
+            owner = mcp_tool._canonical_profile_home()
+            label = "a" if owner == str(home_a) else "b"
+            session = MagicMock()
+            session.call_tool = AsyncMock(return_value=SimpleNamespace(
+                isError=False,
+                content=[SimpleNamespace(text=label)],
+                structuredContent=None,
+            ))
+            server = mcp_tool.MCPServerTask(name, profile_home=owner)
+            server.session = session
+            server._tools = [_make_mcp_tool("echo", f"profile {label}")]
+            sessions[label] = session
+            return server
+
+        config = {
+            "command": "mock",
+            "tools": {"resources": False, "prompts": False},
+        }
+        tool_name = "mcp__shared__echo"
+        keys = {
+            mcp_tool._server_key("shared", str(home_a)),
+            mcp_tool._server_key("shared", str(home_b)),
+        }
+
+        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), patch(
+            "tools.registry.registry", registry
+        ), patch(
+            "tools.mcp_tool._load_mcp_config", return_value={"shared": config}
+        ), patch(
+            "tools.mcp_tool._run_on_mcp_loop",
+            side_effect=lambda coroutine_factory, timeout=None: asyncio.run(
+                coroutine_factory()
+            ),
+        ):
+            for home in (home_a, home_b):
+                token = set_hermes_home_override(home)
+                try:
+                    assert asyncio.run(
+                        mcp_tool._discover_and_register_server("shared", config)
+                    ) == [tool_name]
+                finally:
+                    reset_hermes_home_override(token)
+
+            try:
+                assert keys.issubset(mcp_tool._servers)
+                for home, label in ((home_a, "a"), (home_b, "b"), (home_a, "a")):
+                    token = set_hermes_home_override(home)
+                    try:
+                        status = mcp_tool.get_mcp_status()
+                        assert status == [{
+                            "name": "shared",
+                            "transport": "stdio",
+                            "tools": 1,
+                            "connected": True,
+                            "disabled": False,
+                            "status": "connected",
+                            "profile_home": str(home),
+                        }]
+                        assert registry.get_schema(tool_name)["description"] == f"profile {label}"
+                        assert json.loads(registry.dispatch(tool_name, {})) == {
+                            "result": label
+                        }
+                    finally:
+                        reset_hermes_home_override(token)
+                sessions["a"].call_tool.assert_awaited_with("echo", arguments={})
+                sessions["b"].call_tool.assert_awaited_once_with("echo", arguments={})
+            finally:
+                with mcp_tool._lock:
+                    for key in keys:
+                        mcp_tool._servers.pop(key, None)
+                        mcp_tool._server_connect_errors.pop(key, None)
+
+    def test_same_named_server_trust_gate_isolated_across_profiles(self, tmp_path):
+        import tools.mcp_tool as mcp_tool
+        from tools.registry import ToolRegistry
+
+        home_a = str((tmp_path / "profile-a").resolve())
+        home_b = str((tmp_path / "profile-b").resolve())
+        registry = ToolRegistry()
+        tool_name = "mcp__shared__write"
+
+        def server_for(home):
+            server = mcp_tool.MCPServerTask("shared", profile_home=home)
+            server._tools = [_make_mcp_tool("write", "write data")]
+            return server
+
+        with patch.dict(mcp_tool._server_trust_levels, {}, clear=True), patch.dict(
+            mcp_tool._tool_read_only_hints, {}, clear=True
+        ), patch.dict(mcp_tool._servers, {}, clear=True), patch.dict(
+            mcp_tool._lazy_server_configs, {}, clear=True
+        ), patch.dict(mcp_tool._server_error_counts, {}, clear=True), patch.dict(
+            mcp_tool._server_breaker_opened_at, {}, clear=True
+        ), patch("tools.registry.registry", registry), patch(
+            "tools.mcp_tool._track_mcp_tool_server"
+        ):
+            assert mcp_tool._register_server_tools(
+                "shared",
+                server_for(home_a),
+                {
+                    "trust": "full",
+                    "tools": {"resources": False, "prompts": False},
+                },
+            ) == [tool_name]
+            assert mcp_tool._register_server_tools(
+                "shared",
+                server_for(home_b),
+                {
+                    "trust": "untrusted",
+                    "tools": {"resources": False, "prompts": False},
+                },
+            ) == [tool_name]
+            handler_a = registry.get_entry(
+                tool_name, profile_home=home_a
+            ).handler
+            handler_b = registry.get_entry(
+                tool_name, profile_home=home_b
+            ).handler
+
+            with patch(
+                "tools.approval.request_elicitation_consent",
+                return_value="decline",
+            ) as consent:
+                result_a = json.loads(handler_a({}))
+                result_b = json.loads(handler_b({}))
+
+            assert "not connected" in result_a["error"]
+            assert "did not approve" in result_b["error"]
+            consent.assert_called_once()
+
 
     def test_same_server_normalization_collision_skips_all_ambiguous_tools(self, caplog):
         from tools.mcp_tool import _register_server_tools
@@ -1073,8 +1408,13 @@ class TestShutdown:
                 "parameters": {"type": "object", "properties": {}},
             },
             handler=lambda *_args, **_kwargs: "{}",
+            profile_home=mcp_mod._canonical_profile_home(),
         )
-        registry.register_toolset_alias("test", "mcp-test")
+        registry.register_toolset_alias(
+            "test",
+            "mcp-test",
+            profile_home=mcp_mod._canonical_profile_home(),
+        )
 
         server = MCPServerTask("test")
         server._registered_tool_names = ["mcp__test__ping"]

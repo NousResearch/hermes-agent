@@ -40,6 +40,49 @@ class TestRegisterAndDispatch:
         result = json.loads(reg.dispatch("alpha", {}))
         assert result == {"ok": True}
 
+    def test_builtin_registration_has_no_profile_home_provenance(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="alpha", toolset="core", schema=_make_schema("alpha"),
+            handler=_dummy_handler,
+        )
+
+        assert reg.get_profile_home_for_tool("alpha") is None
+
+    def test_reregister_updates_profile_home_provenance(self, tmp_path):
+        reg = ToolRegistry()
+        first_home = str((tmp_path / "first").resolve())
+        second_home = str((tmp_path / "second").resolve())
+
+        reg.register(
+            name="mcp__shared__search",
+            toolset="mcp-shared",
+            schema=_make_schema("mcp__shared__search"),
+            handler=_dummy_handler,
+            profile_home=first_home,
+        )
+        assert (
+            reg.get_profile_home_for_tool(
+                "mcp__shared__search", profile_home=first_home
+            )
+            == first_home
+        )
+
+        reg.register(
+            name="mcp__shared__search",
+            toolset="mcp-shared",
+            schema=_make_schema("mcp__shared__search"),
+            handler=_dummy_handler,
+            profile_home=second_home,
+        )
+
+        assert (
+            reg.get_profile_home_for_tool(
+                "mcp__shared__search", profile_home=second_home
+            )
+            == second_home
+        )
+
 
     def test_cross_mcp_toolsets_do_not_overwrite_atomically(self, caplog):
         """Parallel MCP registrations with one name leave exactly one owner."""
@@ -91,6 +134,168 @@ class TestRegisterAndDispatch:
             and "mcp__foo_bar__search" in record.message
             for record in caplog.records
         )
+
+    def test_mcp_same_public_name_is_scoped_by_profile(self, tmp_path):
+        reg = ToolRegistry()
+        home_a = str((tmp_path / "profile-a").resolve())
+        home_b = str((tmp_path / "profile-b").resolve())
+        name = "mcp__shared__echo"
+
+        def handler_a(args, **kwargs):
+            return json.dumps({"owner": "a"})
+
+        def handler_b(args, **kwargs):
+            return json.dumps({"owner": "b"})
+
+        reg.register(
+            name=name,
+            toolset="mcp-shared",
+            schema=_make_schema(name),
+            handler=handler_a,
+            profile_home=home_a,
+        )
+        reg.register(
+            name=name,
+            toolset="mcp-shared",
+            schema={**_make_schema(name), "description": "profile b"},
+            handler=handler_b,
+            profile_home=home_b,
+        )
+
+        entry_a = reg.get_entry(name, profile_home=home_a)
+        entry_b = reg.get_entry(name, profile_home=home_b)
+        assert entry_a is not None and entry_a.profile_home == home_a
+        assert entry_b is not None and entry_b.profile_home == home_b
+        assert reg.get_schema(name, profile_home=home_a)["description"] == f"A {name}"
+        assert reg.get_schema(name, profile_home=home_b)["description"] == "profile b"
+        assert json.loads(reg.dispatch(name, {}, profile_home=home_a))["owner"] == "a"
+        assert json.loads(reg.dispatch(name, {}, profile_home=home_b))["owner"] == "b"
+
+        defs_a = reg.get_definitions({name}, profile_home=home_a)
+        defs_b = reg.get_definitions({name}, profile_home=home_b)
+        assert [item["function"]["name"] for item in defs_a] == [name]
+        assert [item["function"]["name"] for item in defs_b] == [name]
+        assert defs_a[0]["function"]["description"] == f"A {name}"
+        assert defs_b[0]["function"]["description"] == "profile b"
+
+    def test_mcp_same_profile_cross_toolset_collision_fails_closed(self, tmp_path):
+        reg = ToolRegistry()
+        home = str((tmp_path / "profile").resolve())
+        name = "mcp__shared__echo"
+
+        def first(args, **kwargs):
+            return json.dumps({"owner": "first"})
+
+        def second(args, **kwargs):
+            return json.dumps({"owner": "second"})
+
+        reg.register(
+            name=name,
+            toolset="mcp-first",
+            schema=_make_schema(name),
+            handler=first,
+            profile_home=home,
+        )
+        reg.register(
+            name=name,
+            toolset="mcp-second",
+            schema=_make_schema(name),
+            handler=second,
+            profile_home=home,
+        )
+
+        assert reg.get_toolset_for_tool(name, profile_home=home) == "mcp-first"
+        assert json.loads(reg.dispatch(name, {}, profile_home=home))["owner"] == "first"
+
+    def test_mcp_deregister_is_scoped_to_one_profile(self, tmp_path):
+        reg = ToolRegistry()
+        home_a = str((tmp_path / "profile-a").resolve())
+        home_b = str((tmp_path / "profile-b").resolve())
+        name = "mcp__shared__echo"
+
+        reg.register(
+            name=name,
+            toolset="mcp-shared",
+            schema=_make_schema(name),
+            handler=lambda args, **kwargs: json.dumps({"owner": "a"}),
+            profile_home=home_a,
+        )
+        reg.register(
+            name=name,
+            toolset="mcp-shared",
+            schema=_make_schema(name),
+            handler=lambda args, **kwargs: json.dumps({"owner": "b"}),
+            profile_home=home_b,
+        )
+
+        reg.deregister(name, profile_home=home_a)
+
+        assert reg.get_entry(name, profile_home=home_a) is None
+        assert json.loads(reg.dispatch(name, {}, profile_home=home_b))["owner"] == "b"
+        assert reg.get_definitions({name}, profile_home=home_a) == []
+        assert len(reg.get_definitions({name}, profile_home=home_b)) == 1
+
+    def test_mcp_unscoped_lookup_uses_current_canonical_profile(self, tmp_path):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        reg = ToolRegistry()
+        home_a = (tmp_path / "profile-a").resolve()
+        home_b = (tmp_path / "profile-b").resolve()
+        name = "mcp__shared__echo"
+        reg.register(
+            name=name,
+            toolset="mcp-shared",
+            schema=_make_schema(name),
+            handler=lambda args, **kwargs: json.dumps({"owner": "a"}),
+            profile_home=home_a,
+        )
+        reg.register(
+            name=name,
+            toolset="mcp-shared",
+            schema=_make_schema(name),
+            handler=lambda args, **kwargs: json.dumps({"owner": "b"}),
+            profile_home=home_b,
+        )
+
+        token = set_hermes_home_override(home_a)
+        try:
+            assert json.loads(reg.dispatch(name, {}))["owner"] == "a"
+            assert reg.get_profile_home_for_tool(name) == str(home_a)
+        finally:
+            reset_hermes_home_override(token)
+
+        token = set_hermes_home_override(home_b)
+        try:
+            assert json.loads(reg.dispatch(name, {}))["owner"] == "b"
+            assert reg.get_profile_home_for_tool(name) == str(home_b)
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_mcp_unscoped_lookup_fails_closed_in_multiplex_without_override(
+        self, tmp_path
+    ):
+        reg = ToolRegistry()
+        name = "mcp__shared__echo"
+        for profile in ("profile-a", "profile-b"):
+            home = str((tmp_path / profile).resolve())
+            reg.register(
+                name=name,
+                toolset="mcp-shared",
+                schema=_make_schema(name),
+                handler=lambda args, profile=profile, **kwargs: json.dumps(
+                    {"owner": profile}
+                ),
+                profile_home=home,
+            )
+
+        with patch("agent.secret_scope.is_multiplex_active", return_value=True), patch(
+            "hermes_constants.get_hermes_home_override", return_value=None
+        ):
+            assert reg.get_entry(name) is None
+            assert reg.get_schema(name) is None
+            assert reg.get_toolset_for_tool(name) is None
+            assert reg.get_definitions({name}) == []
+            assert "Unknown tool" in reg.dispatch(name, {})
 
 class TestGetDefinitions:
     def test_returns_openai_format(self):

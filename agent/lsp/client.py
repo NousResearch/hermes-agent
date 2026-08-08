@@ -50,6 +50,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shlex
+import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -282,11 +284,83 @@ class LSPClient:
 
     @staticmethod
     def _win_wrap_cmd(cmd: List[str]) -> List[str]:
-        """On Windows, wrap .cmd/.bat shims so CreateProcess can run them."""
+        """On Windows, wrap .cmd/.bat shims and Unix shell scripts so
+        CreateProcess can run them.
+
+        npm/npx-installed LSP servers often place a Unix shell script
+        (no .exe/.cmd/.bat extension, '#!/bin/sh' shebang) as the launcher
+        -- e.g. pyright-langserver under ~/.hermes/lsp/bin/. CreateProcess
+        cannot execute these directly and fails with WinError 193
+        ("%1 is not a valid Win32 application") (issue #49470).
+        """
         exe = cmd[0]
-        if exe.lower().endswith((".cmd", ".bat")):
+        lower = exe.lower()
+        if lower.endswith((".cmd", ".bat")):
             return ["cmd.exe", "/c", *cmd]
-        return cmd
+        if lower.endswith((".exe", ".com", ".msi", ".ps1")):
+            return cmd
+        # Heuristic: any other extensionless/unknown-extension executable on
+        # Windows is most likely a Unix shell script shim (or has no
+        # extension at all). Try to detect a shebang to avoid wrapping a
+        # genuine native binary that just lacks a recognized suffix.
+        try:
+            with open(exe, "rb") as f:
+                # A shebang line can legitimately be much longer than 2
+                # bytes (e.g. "#!/usr/bin/env node"); read enough to parse
+                # the interpreter, not just the "#!" marker.
+                head_line = f.readline(512)
+            if not head_line.startswith(b"#!"):
+                return cmd
+        except OSError:
+            return cmd
+
+        # Parse the interpreter the shebang actually names. A shebang can
+        # name Node, Python, Perl, or any other interpreter -- not just a
+        # shell -- and routing those through `bash -c` is wrong: bash would
+        # try to execute the target's source as shell script under the
+        # wrong interpreter and fail (or worse, partially "succeed" on
+        # lines that happen to parse as valid shell).
+        try:
+            shebang_text = head_line[2:].decode("utf-8", errors="replace").strip()
+        except Exception:
+            shebang_text = ""
+        shebang_parts = shebang_text.split()
+        # "#!/usr/bin/env node" -> interpreter is the env argument, not env
+        # itself. "#!/bin/sh" -> interpreter is the direct path.
+        if shebang_parts and Path(shebang_parts[0]).stem.lower() == "env" and len(shebang_parts) > 1:
+            interpreter_name = Path(shebang_parts[1]).stem.lower()
+        elif shebang_parts:
+            interpreter_name = Path(shebang_parts[0]).stem.lower()
+        else:
+            interpreter_name = ""
+
+        _SHELL_INTERPRETER_NAMES = {"sh", "bash", "dash", "zsh", "ash", "ksh"}
+        if interpreter_name and interpreter_name not in _SHELL_INTERPRETER_NAMES:
+            # A real, non-shell interpreter (node, python3, perl, ...) --
+            # spawn the script through that interpreter directly rather
+            # than bash. Resolve it via PATH the same way a Unix shell
+            # would when honoring the shebang.
+            resolved_interpreter = shutil.which(interpreter_name)
+            if resolved_interpreter:
+                return [resolved_interpreter, *cmd]
+            logger.warning(
+                "[lsp] '%s' has a non-shell shebang naming '%s', but that "
+                "interpreter is not on PATH; spawn will likely fail with "
+                "WinError 193.",
+                exe, interpreter_name,
+            )
+            return cmd
+
+        bash = shutil.which("bash")
+        if not bash:
+            logger.warning(
+                "[lsp] '%s' looks like a Unix shell script but 'bash' is not "
+                "on PATH; spawn will likely fail with WinError 193. Install "
+                "Git for Windows (provides Git Bash) to run this LSP server.",
+                exe,
+            )
+            return cmd
+        return [bash, "-c", " ".join(shlex.quote(a) for a in cmd)]
 
     async def _spawn(self) -> None:
         env = dict(os.environ)

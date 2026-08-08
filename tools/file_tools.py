@@ -1049,6 +1049,64 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     )
 
 
+def _check_worktree_git_path(resolved: str) -> str | None:
+    """Return an error message when *resolved* (an absolute path) touches a
+    ``.git`` component that is a git worktree (or submodule) link file.
+
+    In a git worktree, ``.git`` is a regular FILE containing a single line
+    like ``gitdir: /path/to/bare`` — not a directory (#78565).  ``write_file``
+    and ``patch`` auto-create parent directories and atomically move content
+    into place, so a write whose path touches that file (``<worktree>/.git``
+    itself, ``<worktree>/.git/objects/...``, etc.) replaces the link file and
+    destroys the worktree checkout.  Such writes are refused here.
+
+    Reads (``read_file``/``search_files``) are deliberately unaffected, and
+    the ``terminal`` tool is untouched, so git itself can still manage
+    ``.git`` contents.
+
+    Returns ``None`` when the path is safe: no ``.git`` component, the
+    component is a real directory (normal repo), or the link file is not
+    present on disk.
+    """
+    try:
+        p = Path(os.path.abspath(resolved))
+    except Exception:
+        return None
+    for candidate in (p, *p.parents):
+        if candidate.name != ".git":
+            continue
+        try:
+            if not candidate.is_file():
+                continue
+            with open(candidate, "r", encoding="utf-8", errors="replace") as fh:
+                first_line = fh.readline()
+        except OSError:
+            continue
+        if first_line.lstrip().startswith("gitdir:"):
+            return (
+                f"Refusing to write to '{resolved}': the path touches the .git "
+                f"link file of a git worktree ({candidate}). In a git worktree "
+                f".git is a FILE pointing at the repository (gitdir: ...), not a "
+                f"directory — write_file/patch parent-directory creation would "
+                f"replace it and destroy the worktree checkout. Manage .git "
+                f"contents with git commands via the terminal tool, and use "
+                f"read_file or search_files to inspect them."
+            )
+    return None
+
+
+def _check_worktree_git_path_for_target(target: str, task_id: str = "default") -> str | None:
+    """Best-effort absolute resolution of *target*, then run the worktree
+    ``.git`` guard.  Falls back to ``abspath`` when task resolution fails so
+    the guard still fires on relative paths the shell layer would act on.
+    """
+    try:
+        resolved = str(_resolve_path_for_task(target, task_id))
+    except Exception:
+        resolved = os.path.abspath(os.path.expanduser(_expand_tilde(target)))
+    return _check_worktree_git_path(resolved)
+
+
 def _is_expected_write_exception(exc: Exception) -> bool:
     """Return True for expected write denials that should not hit error logs."""
     if isinstance(exc, PermissionError):
@@ -2043,6 +2101,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         cross_warning = _check_cross_profile_path(path, task_id)
         if cross_warning:
             return tool_error(cross_warning)
+    worktree_err = _check_worktree_git_path_for_target(path, task_id)
+    if worktree_err:
+        return tool_error(worktree_err)
     if _is_internal_file_tool_content(content):
         return tool_error(
             "Refusing to write internal read_file display text as file content. "
@@ -2171,6 +2232,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             cross_warning = _check_cross_profile_path(_p, task_id)
             if cross_warning:
                 return tool_error(cross_warning)
+        worktree_err = _check_worktree_git_path_for_target(_p, task_id)
+        if worktree_err:
+            return tool_error(worktree_err)
     # One approval prompt for the whole patch: a single protected file gates
     # the ENTIRE patch (deny applies nothing — see the helper's docstring).
     protected_err = _check_protected_instruction_write(_paths_to_check, task_id)

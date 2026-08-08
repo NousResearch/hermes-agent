@@ -1303,6 +1303,25 @@ def _trim_error(msg: str) -> str:
     return msg
 
 
+def _first_nested_error(value):
+    """Return the first meaningful nested error marker in decoded JSON."""
+    if isinstance(value, dict):
+        for key in ("error", "failed"):
+            marker = value.get(key)
+            if marker not in (None, False, "", 0, [], {}):
+                return marker
+        for child in value.values():
+            marker = _first_nested_error(child)
+            if marker is not None:
+                return marker
+    elif isinstance(value, list):
+        for child in value:
+            marker = _first_nested_error(child)
+            if marker is not None:
+                return marker
+    return None
+
+
 def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
     """Inspect a tool result string for signs of failure.
 
@@ -1341,7 +1360,15 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
         if err and (data.get("success") is False or "error" in data):
             return True, f" [{_trim_error(str(err))}]"
 
-    # Generic heuristic for non-terminal tools
+    # Decoded JSON can contain per-item ``error: null`` fields on success
+    # (notably web_extract). Inspect values rather than flagging the mere key.
+    if isinstance(data, (dict, list)):
+        nested_error = _first_nested_error(data)
+        if nested_error is not None:
+            return True, f" [{_trim_error(str(nested_error))}]"
+        return False, ""
+
+    # Generic heuristic for non-JSON, non-terminal tool results.
     # Multimodal tool results (dicts with _multimodal=True) are not strings —
     # treat them as successes since failures would be JSON-encoded strings.
     if not isinstance(result, str):

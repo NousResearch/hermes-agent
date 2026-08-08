@@ -303,6 +303,11 @@ def _get_capability_backend(capability: str) -> str:
     """
     cfg = _load_web_config()
     specific = (cfg.get(f"{capability}_backend") or "").lower().strip()
+    if specific and specific not in _LEGACY_WEB_BACKENDS:
+        # User plugins are registered lazily. A fresh standalone tool process
+        # can reach backend selection before the normal agent startup discovery;
+        # probe only after giving the configured plugin a chance to register.
+        _ensure_web_plugins_loaded()
     if specific and _is_backend_available(specific):
         return specific
     return _get_backend()

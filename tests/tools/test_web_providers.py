@@ -99,6 +99,40 @@ class TestPerCapabilityBackendSelection:
         assert web_tools._get_search_backend() == "tavily"
         assert web_tools._get_extract_backend() == "tavily"
 
+    def test_custom_extract_backend_loads_plugins_before_availability_probe(
+        self, monkeypatch
+    ):
+        """Fresh standalone dispatch must discover user plugins before resolving.
+
+        Without this ordering, an extract-only user plugin configured via
+        ``web.extract_backend`` appears unavailable in a fresh process and the
+        selector falls back to a search-only shared backend such as ``ddgs``.
+        """
+        from tools import web_tools
+
+        state = {"plugins_loaded": False}
+        monkeypatch.setattr(
+            web_tools,
+            "_load_web_config",
+            lambda: {
+                "backend": "ddgs",
+                "extract_backend": "custom-extract",
+            },
+        )
+        monkeypatch.setattr(
+            web_tools,
+            "_ensure_web_plugins_loaded",
+            lambda: state.__setitem__("plugins_loaded", True),
+        )
+        monkeypatch.setattr(
+            web_tools,
+            "_is_backend_available",
+            lambda backend: state["plugins_loaded"] and backend == "custom-extract",
+        )
+        monkeypatch.setattr(web_tools, "_get_backend", lambda: "ddgs")
+
+        assert web_tools._get_extract_backend() == "custom-extract"
+
 
 # ---------------------------------------------------------------------------
 # Config key presence in DEFAULT_CONFIG

@@ -224,18 +224,22 @@ def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):
 class TestDoctorMemoryProviderSection:
     """The ◆ Memory Provider section should respect memory.provider config."""
 
-    def _make_hermes_home(self, tmp_path, provider=""):
+    def _make_hermes_home(self, tmp_path, provider="", mem0_config=None):
         """Create a minimal HERMES_HOME with config.yaml."""
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)
+        import json
         import yaml
         config = {"memory": {"provider": provider}} if provider else {"memory": {}}
         (home / "config.yaml").write_text(yaml.dump(config))
+        if mem0_config is not None:
+            (home / "mem0.json").write_text(json.dumps(mem0_config))
         return home
 
-    def _run_doctor_and_capture(self, monkeypatch, tmp_path, provider=""):
+    def _run_doctor_and_capture(self, monkeypatch, tmp_path, provider="", mem0_config=None):
         """Run doctor and capture stdout."""
-        home = self._make_hermes_home(tmp_path, provider)
+        home = self._make_hermes_home(tmp_path, provider, mem0_config)
+        monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
         monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
         monkeypatch.setattr(doctor_mod, "_DHH", str(home))
@@ -278,6 +282,36 @@ class TestDoctorMemoryProviderSection:
         out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0")
         assert "Memory Provider" in out
         assert "Built-in memory active" not in out
+
+    def test_mem0_oss_provider_does_not_require_api_key(self, monkeypatch, tmp_path):
+        out = self._run_doctor_and_capture(
+            monkeypatch,
+            tmp_path,
+            provider="mem0",
+            mem0_config={
+                "mode": "oss",
+                "oss": {
+                    "llm": {"provider": "ollama"},
+                    "embedder": {"provider": "ollama"},
+                    "vector_store": {"provider": "qdrant"},
+                },
+            },
+        )
+        assert "Mem0 OSS configured" in out
+        assert "Mem0 API key not set" not in out
+
+    def test_invalid_mem0_oss_config_is_reported(self, monkeypatch, tmp_path):
+        out = self._run_doctor_and_capture(
+            monkeypatch,
+            tmp_path,
+            provider="mem0",
+            mem0_config={
+                "mode": "oss",
+                "oss": {"vector_store": {"provider": "qdrant"}},
+            },
+        )
+        assert "Mem0 OSS configuration invalid" in out
+        assert "Missing required section: llm" in out
 
 
 def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkeypatch, tmp_path):

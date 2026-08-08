@@ -498,6 +498,18 @@ class TestFindAliasForProfile:
         create_wrapper_script("steve")
         assert find_alias_for_profile("steve") == "steve"
 
+    def test_handles_shell_quoted_profile_target(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import _get_wrapper_dir, find_alias_for_profile
+
+        wrapper_dir = _get_wrapper_dir()
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        (wrapper_dir / "research").write_text(
+            '#!/bin/sh\nexec hermes -p "research" "$@"\n',
+            encoding="utf-8",
+        )
+        assert find_alias_for_profile("research") == "research"
+
 
     def test_ignores_unrelated_files(self, profile_env, monkeypatch):
         # ~/.local/bin commonly holds unrelated binaries; they must not match.

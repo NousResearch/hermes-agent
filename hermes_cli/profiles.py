@@ -569,6 +569,19 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
 _WRAPPER_READ_LIMIT = 8192
 
 
+def _profile_from_wrapper(content: str) -> Optional[str]:
+    """Return the canonical profile targeted by a Hermes wrapper."""
+    try:
+        tokens = shlex.split(content, comments=True, posix=True)
+    except ValueError:
+        return None
+    for index, token in enumerate(tokens[:-2]):
+        command = token.replace("\\", "/").rsplit("/", 1)[-1]
+        if command in {"hermes", "hermes.exe"} and tokens[index + 1] == "-p":
+            return normalize_profile_name(tokens[index + 2])
+    return None
+
+
 def build_alias_map() -> dict[str, str]:
     """Single-pass reverse map ``{canonical_profile -> alias_name}``.
 
@@ -583,8 +596,6 @@ def build_alias_map() -> dict[str, str]:
     if not wrapper_dir.is_dir():
         return result
     is_windows = sys.platform == "win32"
-    prefix = "hermes -p "
-
     for entry in sorted(wrapper_dir.iterdir()):
         if not entry.is_file():
             continue
@@ -599,15 +610,9 @@ def build_alias_map() -> dict[str, str]:
         except (OSError, UnicodeDecodeError):
             # UnicodeDecodeError = a binary on PATH (ffmpeg etc.) — not a wrapper.
             continue
-        idx = content.find(prefix)
-        if idx == -1:
-            continue
-        rest = content[idx + len(prefix):]
-        # Profile id is the first whitespace-delimited token after the flag.
-        canon = rest.split(None, 1)[0].strip() if rest.strip() else ""
+        canon = _profile_from_wrapper(content)
         if not canon:
             continue
-        canon = normalize_profile_name(canon)
         alias = entry.stem if is_windows else entry.name
         # Custom alias (name != profile) preferred; otherwise keep the
         # profile-named wrapper. Don't overwrite a custom alias already found.

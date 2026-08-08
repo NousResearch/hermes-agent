@@ -2888,17 +2888,41 @@ def run_doctor(args):
             check_warn("Honcho check failed", str(_e))
     elif _active_memory_provider == "mem0":
         try:
-            from plugins.memory.mem0 import _load_config as _load_mem0_config
+            from plugins.memory.mem0 import Mem0MemoryProvider, _load_config as _load_mem0_config
             mem0_cfg = _load_mem0_config()
-            mem0_key = mem0_cfg.get("api_key", "")
-            if mem0_key:
-                check_ok("Mem0 API key configured")
+            mem0_provider = Mem0MemoryProvider()
+            mem0_mode = mem0_cfg.get("mode", "platform")
+            if mem0_mode == "oss":
+                from plugins.memory.mem0._oss_providers import validate_oss_config
+
+                oss_config = mem0_cfg.get("oss", {})
+                config_errors = validate_oss_config(oss_config)
+                if config_errors:
+                    _fail_and_issue(
+                        "Mem0 OSS configuration invalid",
+                        "; ".join(config_errors),
+                        "Mem0 is set as memory provider but its OSS configuration is invalid",
+                        issues,
+                    )
+                else:
+                    vector_store = oss_config["vector_store"]
+                    check_ok(
+                        "Mem0 OSS configured",
+                        f"vector_store={vector_store.get('provider', 'configured')}",
+                    )
+                    check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
+            elif mem0_provider.is_available():
+                if mem0_cfg.get("host"):
+                    check_ok("Mem0 self-hosted configured", f"host={mem0_cfg['host']}")
+                else:
+                    check_ok("Mem0 API key configured")
                 check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
             else:
+                requirement = "OSS vector store" if mem0_mode == "oss" else "API key or self-hosted URL"
                 _fail_and_issue(
-                    "Mem0 API key not set",
-                    "(set MEM0_API_KEY in .env or run hermes memory setup)",
-                    "Mem0 is set as memory provider but API key is missing",
+                    f"Mem0 {requirement} not set",
+                    "(run hermes memory setup)",
+                    f"Mem0 is set as memory provider but its {requirement} is missing",
                     issues,
                 )
         except ImportError:
@@ -2925,8 +2949,12 @@ def run_doctor(args):
             check_warn(f"{_active_memory_provider} check failed", str(_e))
 
     try:
-        from hermes_cli.profiles import list_profiles, _get_wrapper_dir, profile_exists
-        import re as _re
+        from hermes_cli.profiles import (
+            _get_wrapper_dir,
+            _profile_from_wrapper,
+            list_profiles,
+            profile_exists,
+        )
 
         named_profiles = [p for p in list_profiles() if not p.is_default]
         if named_profiles:
@@ -2956,10 +2984,9 @@ def run_doctor(args):
                         continue
                     try:
                         content = wrapper.read_text(encoding="utf-8")
-                        if "hermes -p" in content:
-                            _m = _re.search(r"hermes -p (\S+)", content)
-                            if _m and not profile_exists(_m.group(1)):
-                                check_warn(f"Orphan alias: {wrapper.name} → profile '{_m.group(1)}' no longer exists")
+                        alias_profile = _profile_from_wrapper(content)
+                        if alias_profile and not profile_exists(alias_profile):
+                            check_warn(f"Orphan alias: {wrapper.name} → profile '{alias_profile}' no longer exists")
                     except Exception:
                         pass
     except ImportError:

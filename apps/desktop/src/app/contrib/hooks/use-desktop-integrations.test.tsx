@@ -149,6 +149,40 @@ describe('useDesktopIntegrations', () => {
       expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
     })
 
+    it('preserves remembered New Chat instead of restoring a stale session', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/')
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'remembered-session')
+
+      const sessions = [session({ id: 'remembered-session', profile: 'default' })]
+
+      render({ profileReady: true, sessions })
+
+      expect(navigate).not.toHaveBeenCalled()
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBeNull()
+    })
+
+    it('preserves remembered New Chat after waiting for sessions to load', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/')
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'remembered-session')
+
+      const result = render({ profileReady: true, sessions: [] })
+
+      expect(navigate).not.toHaveBeenCalled()
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('remembered-session')
+
+      result.rerender({
+        activeProfile: 'default',
+        locationPathname: '/',
+        profileReady: true,
+        resumeExhaustedSessionId: null,
+        routedSessionId: null,
+        sessions: [session({ id: 'remembered-session', profile: 'default' })]
+      })
+
+      expect(navigate).not.toHaveBeenCalled()
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBeNull()
+    })
+
     it('waits for sessions before validating a remembered session route', () => {
       window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
 

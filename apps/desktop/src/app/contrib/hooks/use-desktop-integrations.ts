@@ -107,9 +107,16 @@ export function useDesktopIntegrations({
 
         restoredRef.current = true
 
+        if (route === NEW_CHAT_ROUTE) {
+          if (last) {
+            setRememberedSessionId(null, activeProfile)
+          }
+
+          return
+        }
+
         if (
           route &&
-          route !== NEW_CHAT_ROUTE &&
           !isOverlayView(appViewForPath(route)) &&
           (!routeSession || sessionBelongsToProfile(sessions, routeSession, activeProfile))
         ) {

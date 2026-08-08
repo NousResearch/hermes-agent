@@ -130,10 +130,11 @@ import {
   StartWorkButton,
   useRepoWorktreeMap
 } from './projects'
-import { WorktreeDialog } from './projects/worktree-dialog'
 import { SidebarBlankState, SidebarPinnedEmptyState, SidebarSessionSkeletons } from './section-states'
 import { buildSessionByAnyId } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
+import { WorktreeDialog } from './projects/worktree-dialog'
+import { SidebarFoldersSection } from './folders-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 
 // Non-session groups (messaging platforms) stay compact: show a few rows up
@@ -292,6 +293,7 @@ export function ChatSidebar({
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
   const cronOpen = useStore($sidebarCronOpen)
+  const [foldersOpen, setFoldersOpen] = useState(true)
   // The sidebar highlight tracks the FOCUSED session — the interacted tile's
   // tab, else the main selection — so it stays 1:1 with whatever tab is active.
   const selectedSessionId = useStore($focusedStoredSessionId)
@@ -1309,6 +1311,22 @@ export function ChatSidebar({
               />
             )}
 
+            {!trimmedQuery && !showAllProfiles && (
+              <SidebarFoldersSection
+                label={s.row.folders ?? 'Folders'}
+                onArchiveSession={onArchiveSession}
+                onDeleteSession={onDeleteSession}
+                onResumeSession={onResumeSession}
+                onToggle={() => setFoldersOpen(!foldersOpen)}
+                onTogglePin={pinSession}
+                open={foldersOpen}
+                profile={profileScope}
+              />
+            )}
+
+      {/* One mount for the whole app. The header of WorktreeDialog tells why. */}
+      <WorktreeDialog />
+
             {!trimmedQuery && (
               <SidebarSessionsSection
                 activeProjectId={activeProjectId}
@@ -1355,7 +1373,9 @@ export function ChatSidebar({
                 headerAction={
                   inProject && enteredProject ? (
                     <div className="group/workspace flex shrink-0 items-center gap-0.5">
-                      {enteredProject.path && <StartWorkButton repoPath={enteredProject.path} />}
+                      {enteredProject.path && (
+                        <StartWorkButton repoPath={enteredProject.path} />
+                      )}
                       {/* Home has no folder and no record to rename, theme, or delete. */}
                       {!enteredProject.isNoProject && (
                         <ProjectMenu
@@ -1538,8 +1558,6 @@ export function ChatSidebar({
         </div>
       </SidebarContent>
       <ProjectDialog />
-      {/* One mount for the whole app. The header of WorktreeDialog tells why. */}
-      <WorktreeDialog />
     </Sidebar>
   )
 }

@@ -262,6 +262,21 @@ CREATE TABLE IF NOT EXISTS sessions (
     FOREIGN KEY (system_prompt_hash) REFERENCES system_prompts(hash)
 );
 
+CREATE TABLE IF NOT EXISTS session_folders (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS session_folder_members (
+    folder_id   TEXT NOT NULL REFERENCES session_folders(id) ON DELETE CASCADE,
+    session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    added_at    REAL NOT NULL,
+    PRIMARY KEY (folder_id, session_id)
+);
+
+
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL REFERENCES sessions(id),

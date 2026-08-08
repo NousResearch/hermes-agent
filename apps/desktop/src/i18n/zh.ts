@@ -2156,7 +2156,17 @@ export const zh: Translations = {
       ageNow: '刚刚',
       ageDay: '天',
       ageHour: '时',
-      ageMin: '分'
+      ageMin: '分',
+      folders: '文件夹',
+      createFolder: '新建文件夹…',
+      renameFolder: '重命名文件夹',
+      deleteFolder: '删除文件夹',
+      deleteFolderConfirm: '删除“{name}”？其中的会话不会被删除。',
+      moveToFolder: '移动到文件夹',
+      removeFromFolder: '从文件夹移除',
+      addToFolder: '添加到文件夹',
+      noFolders: '暂无文件夹'
+
     },
     dateDivider: {
       today: '今天早些时候',

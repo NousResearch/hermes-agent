@@ -466,16 +466,19 @@ export interface SidebarSessionSlice {
 
 /** Which profiles filled their per-profile window in a returned page. The
  *  legacy per-slice endpoint doesn't report this, so derive it from the rows:
- *  a profile at (or over) the cap still has more on disk. Pinned rows are
- *  discounted — they're back-filled past the LIMIT, so counting them fakes a
- *  full page and leaves a "Load more" that can never resolve. */
+ *  a profile at (or over) the cap still has more on disk. Pinned rows count
+ *  toward the window like any other row — they occupy in-window LIMIT slots
+ *  on the backend, so discounting them would under-report a full page (e.g.
+ *  47 unpinned + 3 pinned in a cap-50 page) and hide the load-more row,
+ *  stranding older sessions behind an unreachable page. Back-filled pins past
+ *  the LIMIT only cost an extra click that resolves to an empty page. */
 function profilesTruncatedFrom(sessions: SessionInfo[], cap: number): Record<string, boolean> {
   const counts = new Map<string, number>()
 
   for (const session of sessions) {
     const key = session.profile || 'default'
 
-    counts.set(key, (counts.get(key) ?? 0) + (session.pinned ? 0 : 1))
+    counts.set(key, (counts.get(key) ?? 0) + 1)
   }
 
   return Object.fromEntries([...counts].map(([name, count]) => [name, count >= cap]))

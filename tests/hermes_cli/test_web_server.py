@@ -476,6 +476,44 @@ class TestWebServerEndpoints:
             "sidebar-stale"
         ]
 
+    def test_profiles_sidebar_truncated_when_pinned_rows_fill_window(self):
+        """Pinned sessions occupying in-window LIMIT slots must still mark the
+        sidebar window truncated (#81484).
+
+        Regression: recents_truncated discounted pinned rows
+        (``unpinned_count >= cap``). With 47 unpinned + 3 pinned rows in a
+        cap-50 page, that computed False — the desktop hid its load-more
+        affordance and every older session became unreachable from the list,
+        even though the window was genuinely full.
+        """
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db_path = get_hermes_home() / "state.db"
+        seed = SessionDB(db_path=db_path)
+        try:
+            for i in range(47):
+                seed.create_session(f"unpinned-{i:02d}", source="cli")
+                seed.append_message(
+                    session_id=f"unpinned-{i:02d}", role="user", content=f"hi {i}"
+                )
+            for i in range(3):
+                seed.create_session(f"pinned-{i:02d}", source="cli")
+                seed.append_message(
+                    session_id=f"pinned-{i:02d}", role="user", content=f"pinned {i}"
+                )
+                seed.set_session_pinned(f"pinned-{i:02d}", True)
+        finally:
+            seed.close()
+
+        response = self.client.get("/api/profiles/sessions/sidebar?recents_limit=50")
+
+        assert response.status_code == 200
+        payload = response.json()
+        recents = payload["recents"]
+        assert len(recents["sessions"]) == 50
+        assert recents["profiles_truncated"] == {"default": True}
+
     def test_heal_gives_up_when_reconcile_cannot_fix_the_store(self, monkeypatch):
         """A probe failure reconciliation can't cure must not retry forever.
 

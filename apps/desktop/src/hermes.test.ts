@@ -167,6 +167,47 @@ describe('Hermes REST helpers', () => {
     expect(paths).toContainEqual(expect.stringContaining('exclude_sources=cron%2Ctool'))
   })
 
+  it('reports truncated in the legacy path when pinned rows occupy in-window slots', async () => {
+    // Regression: 50 rows back against a cap-50 window, 3 of them pinned.
+    // Pinned conversations consume LIMIT slots like any other recent row, so
+    // the window is full and older sessions exist beyond it — the legacy path
+    // must report truncated or the load-more row never renders.
+    const row = (id: string, pinned: boolean) => ({ id, title: id, profile: 'default', pinned })
+
+    const recents = [
+      ...Array.from({ length: 47 }, (_, i) => row(`recent-${i}`, false)),
+      ...Array.from({ length: 3 }, (_, i) => row(`pinned-${i}`, true))
+    ]
+
+    api.mockImplementation(({ path }: { path: string }) => {
+      if (path.startsWith('/api/profiles/sessions/sidebar')) {
+        return Promise.reject(new Error('404: {"detail":"No such API endpoint: /api/profiles/sessions/sidebar"}'))
+      }
+
+      if (path.includes('source=cron')) {
+        return Promise.resolve({ ...emptySessionsResponse, sessions: [], total: 0 })
+      }
+
+      if (path.includes('exclude_sources=cron%2Cdesktop')) {
+        return Promise.resolve({ ...emptySessionsResponse, sessions: [], total: 0 })
+      }
+
+      return Promise.resolve({ ...emptySessionsResponse, sessions: recents, total: recents.length })
+    })
+
+    const result = await listSidebarSessions({
+      recentsProfile: 'default',
+      recentsLimit: 50,
+      recentsExclude: ['cron'],
+      cronLimit: 50,
+      messagingLimit: 100,
+      messagingExclude: []
+    })
+
+    expect(result.recents.sessions).toHaveLength(50)
+    expect(result.recents.profiles_truncated).toEqual({ default: true })
+  })
+
   it('remembers endpoint-missing and skips re-probing the batched route on later refreshes', async () => {
     api.mockImplementation(({ path }: { path: string }) =>
       path.startsWith('/api/profiles/sessions/sidebar')

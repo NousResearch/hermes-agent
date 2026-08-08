@@ -329,10 +329,15 @@ def get_profiles_sessions_sidebar(
                 # A full window means more rows remain on disk. That is all the
                 # sidebar's "load more" needs, and unlike an exact COUNT(*) per
                 # profile per refresh it costs nothing beyond the rows already
-                # read. Discount pinned back-fills — they arrive past the LIMIT
-                # and would otherwise fake a full page on a short list.
-                unpinned_count = sum(1 for s in profile_rows if not s.get("pinned"))
-                recents_truncated[name] = unpinned_count >= recents_cap
+                # read. Count ALL rows in the window, pinned included: pinned
+                # conversations occupy in-window LIMIT slots like any other
+                # recent row, so discounting them would under-report a full
+                # window (e.g. 47 unpinned + 3 pinned in a cap-50 page) and
+                # silently hide the load-more affordance — stranding every
+                # older session behind an unreachable page. (Back-filled pins
+                # past the LIMIT inflate the count slightly; the only cost is
+                # an extra click that resolves to an empty page.)
+                recents_truncated[name] = len(profile_rows) >= recents_cap
                 recents_rows.extend(_tag(profile_rows, name))
             cron_rows.extend(_tag(_slice(db, source="cron", cap=cron_cap), name))
             messaging_rows.extend(

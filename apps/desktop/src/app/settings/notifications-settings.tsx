@@ -6,9 +6,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useI18n } from '@/i18n'
 import { COMPLETION_SOUND_VARIANTS, previewCompletionSound } from '@/lib/completion-sound'
 import { triggerHaptic } from '@/lib/haptics'
-import { Bell, Play } from '@/lib/icons'
+import { Bell, Play, Volume2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $completionSoundVariantId, setCompletionSoundVariantId } from '@/store/completion-sound'
+import { $completionSoundVariantId, $completionSoundVolume, setCompletionSoundVariantId, setCompletionSoundVolume } from '@/store/completion-sound'
 import {
   $nativeNotifyPrefs,
   NATIVE_NOTIFICATION_KINDS,
@@ -31,6 +31,7 @@ export function NotificationsSettings() {
   const { t } = useI18n()
   const prefs = useStore($nativeNotifyPrefs)
   const completionSoundVariantId = useStore($completionSoundVariantId)
+  const volume = useStore($completionSoundVolume)
   const copy = t.settings.notifications
 
   const runTest = async () => {
@@ -101,6 +102,28 @@ export function NotificationsSettings() {
               <Play className="size-3.5" />
               {copy.completionSoundPreview}
             </Button>
+          </div>
+        }
+        below={
+          <div className="mt-2 flex items-center gap-3">
+            <Volume2 className="size-4 shrink-0 text-(--ui-text-tertiary)" />
+            <input
+              aria-label={copy.completionSoundVolumeTitle}
+              className="h-1 w-40 cursor-pointer appearance-none rounded-full bg-(--ui-stroke-tertiary)"
+              max={3}
+              min={0}
+              onChange={event => {
+                triggerHaptic('selection')
+                setCompletionSoundVolume(Number(event.target.value))
+              }}
+              step={0.1}
+              style={{ accentColor: 'var(--dt-primary)' }}
+              type="range"
+              value={volume}
+            />
+            <span className="w-11 text-right text-[length:var(--conversation-caption-font-size)] tabular-nums text-(--ui-text-tertiary)">
+              {volume.toFixed(1)}×
+            </span>
           </div>
         }
         description={copy.completionSoundDesc}

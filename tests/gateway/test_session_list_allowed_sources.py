@@ -69,3 +69,28 @@ def test_session_list_surfaces_all_user_facing_sources(monkeypatch):
     assert "tool-1" not in ids
 
 
+
+
+def test_session_list_denies_cron_and_subagent(monkeypatch):
+    """cron jobs and subagent delegates are machine runs, hidden like tool.
+
+    The TUI resume picker now shares the AUTOMATION_SOURCES denylist with the
+    CLI picker and gateway /sessions, so machine sources are hidden while
+    user-facing surfaces (acp, webhook, custom) stay visible.
+    """
+    rows = [
+        {"id": "acp-1", "source": "acp", "started_at": 6},
+        {"id": "cron-1", "source": "cron", "started_at": 5},
+        {"id": "sub-1", "source": "subagent", "started_at": 4},
+        {"id": "tool-1", "source": "tool", "started_at": 3},
+    ]
+    db = _StubDB(rows)
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+
+    resp = _call(limit=10)
+    ids = [s["id"] for s in resp["result"]["sessions"]]
+
+    assert "acp-1" in ids
+    assert "cron-1" not in ids
+    assert "sub-1" not in ids
+    assert "tool-1" not in ids

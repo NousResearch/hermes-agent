@@ -7907,20 +7907,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         print()
     
     def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Return recent CLI sessions for in-chat browsing/resume affordances."""
+        """Return recent human sessions for in chat browsing/resume affordances."""
         if not self._session_db:
             return []
         try:
-            from hermes_cli.session_listing import query_session_listing
+            from hermes_cli.session_listing import (
+                AUTOMATION_SOURCES,
+                query_session_listing,
+            )
 
+            # Show every human conversation session (cli, tui/webui, gateway
+            # platforms), hiding only automation/internal sources via the
+            # shared denylist. Previously source="cli" hid TUI and webui
+            # sessions from /resume (#47214).
             return query_session_listing(
                 self._session_db,
-                source="cli",
+                source=None,
                 current_session_id=self.session_id,
-                include_all_sources=False,
+                include_all_sources=True,
                 include_unnamed=True,
                 limit=limit,
-                exclude_sources=["kanban", "tool"],
+                exclude_sources=sorted(AUTOMATION_SOURCES),
             )
         except Exception:
             return []

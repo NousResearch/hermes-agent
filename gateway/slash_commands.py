@@ -4678,6 +4678,7 @@ class GatewaySlashCommandsMixin:
             return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
 
         from hermes_cli.session_listing import (
+            AUTOMATION_SOURCES,
             format_gateway_session_listing,
             parse_session_listing_args,
             query_session_listing,
@@ -4722,7 +4723,9 @@ class GatewaySlashCommandsMixin:
             # Search filters at SQL level, so over-fetch before the visibility
             # cut: origin-invisible matches would otherwise consume the page.
             limit=50 if search_query else 10,
-            exclude_sources=["tool"],
+            # Same policy as the CLI /resume picker: hide automation/internal
+            # sources, keep every human conversation surface visible.
+            exclude_sources=sorted(AUTOMATION_SOURCES),
         )
         if not cross_origin:
             # Scope the listing to the caller's own origin on every adapter so

@@ -768,3 +768,47 @@ class TestSameMatrixRoomThreadScoping:
         assert runner._same_matrix_room(caller, victim_origin) is False
 
 
+
+
+class TestSessionsSharedDenylist:
+    """The gateway /sessions handler applies the shared AUTOMATION_SOURCES
+    denylist. On an admin cross-origin listing, human surfaces (including
+    acp/webhook/custom) stay visible while machine sources (cron/tool/
+    kanban/subagent) stay hidden (#47214).
+
+    The denylist is only observable on the cross-origin path: for a regular
+    caller, origin scoping already restricts rows to the caller's own
+    platform, so the deny-list never gets a chance to differ.
+    """
+
+    @pytest.mark.asyncio
+    async def test_sessions_admin_all_hides_automation_keeps_human(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(text="/sessions all")
+        visible = [
+            ("tg_named", "telegram", "Telegram Work"),
+            ("acp_named", "acp", "ACP Work"),
+            ("hook_named", "webhook", "Webhook Work"),
+            ("custom_named", "custom", "Custom Work"),
+        ]
+        hidden = [
+            ("cron_named", "cron", "Cron Work"),
+            ("tool_named", "tool", "Tool Work"),
+            ("kanban_named", "kanban", "Kanban Work"),
+            ("sub_named", "subagent", "Subagent Work"),
+        ]
+        for sid, src, title in visible + hidden:
+            db.create_session(sid, src)
+            db.set_session_title(sid, title)
+
+        runner = _make_runner(session_db=db, event=event)
+        runner._resume_caller_is_admin = lambda _source: True
+        result = await runner._handle_sessions_command(event)
+
+        for _sid, _src, title in visible:
+            assert title in result, f"{title} should be visible"
+        for _sid, _src, title in hidden:
+            assert title not in result, f"{title} should be hidden"
+        db.close()

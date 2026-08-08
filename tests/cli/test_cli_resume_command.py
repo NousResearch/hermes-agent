@@ -2,6 +2,8 @@ import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from cli import HermesCLI
 
 
@@ -264,3 +266,75 @@ class TestResumeFlushesBeforeEndSession:
             conversation_history=[{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}],
         )
         cli_obj._session_db.end_session.assert_called_once()
+
+
+class TestListRecentSessionsSources:
+    """The /resume picker lists every human surface and denies automation (#47214).
+
+    Drives the real ``_list_recent_sessions`` -> ``query_session_listing`` ->
+    ``list_sessions_rich`` path against a real SessionDB so the denylist
+    wiring in cli.py is exercised end to end, not just at the policy layer.
+    """
+
+    @pytest.fixture
+    def db(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "picker.db")
+        # Human surfaces, each must be visible (the bug hid tui/webui).
+        # ACP, webhook, and custom sources are user-facing per the shared
+        # contract (methods_session.py) and must stay visible too.
+        for sid, src in [
+            ("h_cli", "cli"),
+            ("h_tui", "tui"),
+            ("h_webui", "webui"),
+            ("h_telegram", "telegram"),
+            ("h_acp", "acp"),
+            ("h_webhook", "webhook"),
+            ("h_custom", "custom"),
+        ]:
+            db.create_session(sid, src)
+            db.set_session_title(sid, f"Title {sid}")
+        # Automation/internal sources must stay hidden.
+        for sid, src in [
+            ("a_cron", "cron"),
+            ("a_tool", "tool"),
+            ("a_kanban", "kanban"),
+            ("a_sub", "subagent"),
+        ]:
+            db.create_session(sid, src)
+            db.set_session_title(sid, f"Title {sid}")
+        # The current chat + an unnamed human session: current excluded, unnamed kept.
+        db.create_session("current_sess", "cli")
+        db.set_session_title("current_sess", "Current")
+        db.create_session("unnamed_cli", "cli")  # deliberately untitled
+        yield db
+        db.close()
+
+    def _picker(self, db):
+        cli_obj = HermesCLI.__new__(HermesCLI)
+        cli_obj._session_db = db
+        cli_obj.session_id = "current_sess"
+        return cli_obj
+
+    def test_picker_lists_all_human_surfaces(self, db):
+        ids = {r["id"] for r in self._picker(db)._list_recent_sessions(limit=20)}
+        assert {
+            "h_cli", "h_tui", "h_webui", "h_telegram",
+            "h_acp", "h_webhook", "h_custom",
+        } <= ids
+
+    def test_picker_hides_automation_sources(self, db):
+        ids = {r["id"] for r in self._picker(db)._list_recent_sessions(limit=20)}
+        assert ids.isdisjoint(
+            {"a_cron", "a_tool", "a_kanban", "a_sub"}
+        )
+
+    def test_picker_excludes_current_session(self, db):
+        ids = {r["id"] for r in self._picker(db)._list_recent_sessions(limit=20)}
+        assert "current_sess" not in ids
+
+    def test_picker_keeps_unnamed_human_sessions(self, db):
+        # include_unnamed=True is preserved (unnamed session handling).
+        ids = {r["id"] for r in self._picker(db)._list_recent_sessions(limit=20)}
+        assert "unnamed_cli" in ids

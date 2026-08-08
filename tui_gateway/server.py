@@ -32,6 +32,7 @@ from hermes_constants import (
     set_hermes_home_override,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.session_listing import AUTOMATION_SOURCES
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history

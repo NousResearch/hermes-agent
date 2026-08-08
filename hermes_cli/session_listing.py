@@ -5,6 +5,23 @@ from __future__ import annotations
 from typing import Any
 
 
+# Internal/automation session sources that must never surface in interactive
+# resume pickers. Human conversation sessions (cli, tui, webui, ACP adapter
+# sessions, webhook sessions, custom HERMES_SESSION_SOURCE values, and every
+# gateway platform) stay visible so a chat started on any surface can be
+# resumed from any other. This is a denylist, not a human whitelist, so a
+# newly added gateway platform appears in the pickers automatically, no edit
+# needed here. The desktop/TUI surfaces already took this direction
+# (#15745. ``tui_gateway/server.py::_PROJECT_TREE_EXCLUDED_SOURCES``).
+#
+# ``tool`` sub-runs, ``kanban`` workers, ``cron`` jobs, and ``subagent``
+# delegates are machine driven, not conversations a person picks up mid
+# stream, so they are excluded even though
+# ``list_sessions_rich(include_children=False)`` already hides most
+# delegate/compression children.
+AUTOMATION_SOURCES = frozenset({"cron", "tool", "kanban", "subagent"})
+
+
 def parse_session_listing_args(raw_args: str) -> tuple[bool, bool, str, str | None]:
     """Parse `/sessions`-style args into listing flags, a resume target, and a search query.
 

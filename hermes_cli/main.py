@@ -1343,27 +1343,41 @@ def _resolve_workspace_key() -> Optional[str]:
         return None
 
 
-def _resolve_last_session(source: str = "cli") -> Optional[str]:
-    """Look up the most recently-used session ID for a source.
+def _resolve_last_session(source: str | tuple[str, ...] = "cli") -> Optional[str]:
+    """Look up the most recently used session ID for a source (or sources).
 
     Scoped to the current workspace first (git repo root, else cwd) so
     ``hermes -c`` from repo A continues repo A's last session rather than the
     global MRU. Falls back to the unscoped MRU when no session matches the
     current workspace, preserving the old behaviour for fresh directories.
+
+    ``source`` may be a single source tag or a tuple of tags tried in order:
+    the first source with any session wins (interface preference), then we
+    fall back across the local interactive family (cli/webui/tui). Webui
+    sessions were tagged ``tui`` in older builds and ``webui`` in newer ones,
+    so callers pass both. Gateway and automation sessions are never picked
+    here. Use the ``/resume`` picker for those. Workspace scoping applies to
+    every source tried, so each lookup stays workspace first, then global.
     """
+    sources = (source,) if isinstance(source, str) else source
     db = None
     try:
         from hermes_state import SessionDB
 
         db = SessionDB()
         ws_key = _resolve_workspace_key()
-        if ws_key:
-            sessions = db.search_sessions(source=source, limit=1, workspace_key=ws_key)
+        for src in sources:
+            if ws_key:
+                sessions = db.search_sessions(
+                    source=src, limit=1, workspace_key=ws_key
+                )
+                if sessions:
+                    return sessions[0]["id"]
+            # Fallback: global MRU for this source.
+            sessions = db.search_sessions(source=src, limit=1)
             if sessions:
                 return sessions[0]["id"]
-        # Fallback: global MRU for this source.
-        sessions = db.search_sessions(source=source, limit=1)
-        return sessions[0]["id"] if sessions else None
+        return None
     except Exception:
         pass
     finally:
@@ -2582,11 +2596,13 @@ def cmd_chat(args):
                 print("Use 'hermes sessions list' to see available sessions.")
                 sys.exit(1)
         else:
-            # -c with no argument — continue the most recent session
-            source = "tui" if use_tui else "cli"
-            last_id = _resolve_last_session(source=source)
-            if not last_id and source == "tui":
-                last_id = _resolve_last_session(source="cli")
+            # -c with no argument: continue the most recent local interactive
+            # session. Prefer the launching interface, then fall back across
+            # the local family (cli/webui/tui) so a chat started in the webui
+            # or desktop TUI is continuable from the CLI. Gateway/automation
+            # sessions are never picked automatically (#47214).
+            sources = ("tui", "webui", "cli") if use_tui else ("cli", "webui", "tui")
+            last_id = _resolve_last_session(source=sources)
             if last_id:
                 args.resume = last_id
             else:

@@ -14311,14 +14311,40 @@ def _aux_task_summary(aux_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return result
 
 
+def _timezone_offset_seconds() -> float:
+    """Return the UTC offset in seconds for the user-configured timezone.
+
+    Uses ``hermes_time.get_timezone()`` which reads ``timezone`` from
+    config.yaml / ``HERMES_TIMEZONE`` env var / server-local fallback.
+    Returns 0.0 when no timezone is configured so the SQL grouping stays UTC
+    rather than raising. See issue #23982.
+    """
+    try:
+        from hermes_time import get_timezone
+
+        tz = get_timezone()
+        if tz is None:
+            return 0.0
+        now = datetime.now(tz)
+        # astimezone() with no target arg converts to server local time;
+        # the difference is the DST-aware offset.
+        offset = now.astimezone().utcoffset()
+        return float(offset.total_seconds()) if offset else 0.0
+    except Exception:
+        return 0.0
+
+
 def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
     from agent.insights import InsightsEngine
 
     db = _open_session_db_for_profile(profile, read_only=True)
     try:
         cutoff = time.time() - (days * 86400)
+        # Apply the user-configured timezone offset so the daily grouping uses
+        # local wall-clock dates instead of UTC. See issue #23982.
+        tz_offset = _timezone_offset_seconds()
         cur = db._conn.execute("""
-            SELECT date(started_at, 'unixepoch') as day,
+            SELECT date(started_at + ?, 'unixepoch') as day,
                    SUM(input_tokens) as input_tokens,
                    SUM(output_tokens) as output_tokens,
                    SUM(cache_read_tokens) as cache_read_tokens,
@@ -14329,7 +14355,7 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
                    SUM(COALESCE(api_call_count, 0)) as api_calls
             FROM sessions WHERE started_at > ?
             GROUP BY day ORDER BY day
-        """, (cutoff,))
+        """, (tz_offset, cutoff))
         daily = [dict(r) for r in cur.fetchall()]
 
         cur2 = db._conn.execute("""

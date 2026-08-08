@@ -1970,46 +1970,24 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         try:
                             send_result = future.result(timeout=60)
                         except TimeoutError:
-                            # #38922: a slow confirmation does NOT necessarily
-                            # mean the send failed — but we must distinguish two
-                            # cases via future.cancel()'s return value:
-                            #
-                            #   cancel() == False -> the coroutine was already
-                            #     running on the gateway loop when the timeout
-                            #     fired; the request is in flight on the wire and
-                            #     cannot be un-sent.  Re-sending via standalone
-                            #     would be a guaranteed DUPLICATE, so treat it as
-                            #     delivered (assume-delivered).
-                            #
-                            #   cancel() == True -> the scheduled callback never
-                            #     started executing (loop wedged/backlogged for
-                            #     the full 60s), so nothing was sent.  We MUST
-                            #     fall through to the standalone path or the
-                            #     message is silently dropped (worse than a
-                            #     duplicate).
-                            cancelled = future.cancel()
-                            if cancelled:
-                                msg = (
-                                    f"live adapter send to {platform_name}:{chat_id} "
-                                    "timed out before the coroutine was dispatched"
-                                )
-                                logger.warning(
-                                    "Job '%s': %s, falling back to standalone",
-                                    job["id"], msg,
-                                )
-                                target_errors.append(msg)
-                                adapter_ok = False  # fall through to standalone path
-                                timeout_handled = True
-                            else:
-                                timed_out = True
-                                timeout_handled = True
-                                logger.warning(
-                                    "Job '%s': live adapter send to %s:%s timed out "
-                                    "after 60s; already dispatched (in flight), "
-                                    "assuming delivered (skipping standalone fallback "
-                                    "to avoid duplicate)",
-                                    job["id"], platform_name, chat_id,
-                                )
+                            # #38922: once the live send has been accepted by
+                            # run_coroutine_threadsafe(), a confirmation timeout
+                            # does not reveal whether the coroutine or transport
+                            # side effect started.  Future.cancel() only controls
+                            # the wrapper's cancellation state; its return value
+                            # is not a dispatch or delivery receipt.  Retrying via
+                            # standalone could therefore duplicate an in-flight
+                            # request, so preserve the ambiguity and do not retry.
+                            future.cancel()
+                            timed_out = True
+                            timeout_handled = True
+                            msg = (
+                                f"live adapter send to {platform_name}:{chat_id} "
+                                "timed out after 60s; delivery status unknown "
+                                "(skipping standalone fallback to avoid duplicate)"
+                            )
+                            logger.warning("Job '%s': %s", job["id"], msg)
+                            delivery_errors.append(msg)
                         except Exception as ex:
                             # A real send error (not a slow confirmation) — fall
                             # through to the standalone path so the message is
@@ -2018,10 +1996,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             raise
 
                         if timeout_handled:
-                            # The timeout branch above already decided the
-                            # outcome (assume-delivered if in flight, or
-                            # adapter_ok=False to fall through if never
-                            # dispatched).  send_result is None, so skip the
+                            # The timeout branch above already recorded an
+                            # ambiguous outcome.  send_result is None, so skip
                             # confirmation/thread-fallback inspection below.
                             pass
                         else:
@@ -2081,9 +2057,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # the General lane for private DM topics).  Skip on an in-flight
                 # confirmation timeout: the gateway loop is contended, so each
                 # media send would also block its 30s budget, and the text
-                # payload is already assumed delivered (#38922).  Record the
-                # skipped attachments so the drop is visible rather than silently
-                # lost.
+                # outcome is ambiguous (#38922).  Record the skipped attachments
+                # so the drop is visible rather than silently lost.
                 if adapter_ok and not timed_out and media_files:
                     routed_media_metadata = dict(media_metadata or {})
                     if transport is not None and transport.is_relay:
@@ -2110,6 +2085,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     )
                     logger.warning("Job '%s': %s", job["id"], msg)
                     delivery_errors.append(msg)
+
+                if timed_out:
+                    # The live Future was scheduled, but no transport receipt
+                    # arrived.  Do not seed/mirror a delivery that is not
+                    # confirmed, and do not enter the standalone retry path.
+                    continue
 
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)

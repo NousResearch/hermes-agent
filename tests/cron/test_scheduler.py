@@ -1339,53 +1339,67 @@ class TestParallelTick:
 
 
 class TestDeliverResultTimeoutCancelsFuture:
-    """When future.result(timeout=60) raises TimeoutError in the live adapter
-    delivery path, the outcome depends on whether the coroutine was already
-    running.  future.cancel() returning False means it is in flight on the wire
-    (cannot be un-sent) → treat as DELIVERED and skip the standalone fallback to
-    avoid a duplicate (#38922).  future.cancel() returning True means it never
-    started (wedged loop) → nothing was sent, so fall through to standalone or
-    the message is silently dropped.  Regression for #38922.
-    """
+    """A live-adapter confirmation timeout is ambiguous, never a retry signal."""
 
-    def test_live_adapter_timeout_assumes_delivered_no_duplicate(self):
-        """End-to-end: live adapter confirmation times out past the 60s budget.
-        The fix (#38922) treats the send as already-dispatched/delivered and
-        does NOT run the standalone fallback — otherwise the message is sent
-        twice."""
+    def test_live_adapter_timeout_is_unknown_without_duplicate(self):
+        """Use a real loop/Future so cancel() cannot be mistaken for dispatch state."""
+        import asyncio
+        import threading
+
         from gateway.config import Platform
-        from concurrent.futures import Future
+        from agent.async_utils import safe_schedule_threadsafe as real_schedule
 
-        # Live adapter whose send() coroutine never resolves within the budget
-        adapter = AsyncMock()
-        adapter.send.return_value = MagicMock(success=True)
+        entered = threading.Event()
+        stopped = threading.Event()
+        loop = asyncio.new_event_loop()
+        loop_ready = threading.Event()
+
+        async def blocked_send(*_args, **_kwargs):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=blocked_send)
 
         pconfig = MagicMock()
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
 
-        loop = MagicMock()
-        loop.is_running.return_value = True
+        captured_future = None
+        cancel_returns = []
 
-        # A real concurrent.futures.Future, but we override .result() to raise
-        # TimeoutError exactly like the 60s wait firing in production.  We make
-        # .cancel() return False to simulate the coroutine being ALREADY RUNNING
-        # on the gateway loop (in flight on the wire) — the case where the send
-        # cannot be un-sent and a standalone resend would be a duplicate.
-        captured_future = Future()
-        cancel_calls = []
+        def schedule_with_short_test_timeout(coro, target_loop):
+            nonlocal captured_future
+            future = real_schedule(coro, target_loop)
+            assert future is not None
+            captured_future = future
+            original_result = future.result
+            original_cancel = future.cancel
 
-        def in_flight_cancel():
-            cancel_calls.append(True)
-            return False  # already running — cannot be cancelled
+            def result_with_short_timeout(*, timeout):
+                return original_result(timeout=0.05)
 
-        captured_future.cancel = in_flight_cancel
-        captured_future.result = MagicMock(side_effect=TimeoutError("timed out"))
+            def tracking_cancel():
+                result = original_cancel()
+                cancel_returns.append(result)
+                return result
 
-        def fake_run_coro(coro, _loop):
-            coro.close()
-            return captured_future
+            setattr(future, "result", result_with_short_timeout)
+            setattr(future, "cancel", tracking_cancel)
+            return future
+
+        def run_loop():
+            asyncio.set_event_loop(loop)
+            loop_ready.set()
+            loop.run_forever()
+
+        loop_thread = threading.Thread(target=run_loop, daemon=True)
+        loop_thread.start()
+        assert loop_ready.wait(timeout=1), "event loop did not start"
 
         job = {
             "id": "timeout-job",
@@ -1397,7 +1411,57 @@ class TestDeliverResultTimeoutCancelsFuture:
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("agent.async_utils.safe_schedule_threadsafe", side_effect=schedule_with_short_test_timeout), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            try:
+                result = _deliver_result(
+                    job,
+                    "Hello world",
+                    adapters={Platform.TELEGRAM: adapter},
+                    loop=loop,
+                )
+            finally:
+                assert stopped.wait(timeout=1), "cancelled delivery did not drain"
+                loop.call_soon_threadsafe(loop.stop)
+                loop_thread.join(timeout=1)
+                loop.close()
+
+        assert entered.is_set(), "the real delivery coroutine never entered"
+        assert captured_future is not None
+        # The first call is scheduler-owned; asyncio may call cancel() again
+        # while propagating cancellation from the wrapper to the Task.
+        assert cancel_returns and cancel_returns[0] is True
+        assert captured_future.cancelled(), "timeout should cancel the real Future"
+        assert result is not None
+        assert "delivery status unknown" in result
+        standalone_send.assert_not_awaited()
+
+    def test_live_adapter_scheduling_failure_uses_standalone(self):
+        """A Future that was never created remains eligible for fallback."""
+        from gateway.config import Platform
+
+        adapter = MagicMock()
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fail_schedule(coro, _loop):
+            coro.close()
+            return None
+
+        standalone_send = AsyncMock(return_value={"success": True})
+        job = {
+            "id": "schedule-failure-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("agent.async_utils.safe_schedule_threadsafe", side_effect=fail_schedule), \
              patch("tools.send_message_tool._send_to_platform", new=standalone_send):
             result = _deliver_result(
                 job,
@@ -1406,13 +1470,8 @@ class TestDeliverResultTimeoutCancelsFuture:
                 loop=loop,
             )
 
-        # 1. cancel() was attempted (returned False = in flight).
-        assert cancel_calls == [True], "future.cancel() should be attempted on TimeoutError"
-        # 2. Delivery is reported successful (no error string returned).
-        assert result is None, f"expected successful delivery, got error: {result!r}"
-        # 3. The standalone fallback must NOT run — that is the #38922 fix:
-        #    an in-flight confirmation timeout is assume-delivered, not a resend.
-        standalone_send.assert_not_awaited()
+        assert result is None
+        standalone_send.assert_awaited_once()
 
 
 class TestDeliverResultLiveAdapterUnconfirmed:
@@ -1974,5 +2033,3 @@ class TestSetCronSessionTitle:
         out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
         assert out == "Nightly Synthesis #2"
         db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
-
-

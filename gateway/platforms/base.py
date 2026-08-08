@@ -5884,6 +5884,13 @@ class BasePlatformAdapter(ABC):
                     session_key,
                 )
                 response = None
+            if _is_telegram_guest_query and (
+                response is None or not str(response).strip()
+            ):
+                response = (
+                    "I couldn't produce a response for this Telegram Guest Query. "
+                    "Please try again."
+                )
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:

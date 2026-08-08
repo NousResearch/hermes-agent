@@ -143,6 +143,23 @@ class TestTelegramGuestFinalDelivery:
             message_id="m1",
         )
 
+    @pytest.mark.parametrize("response", [None, "", "   "])
+    @pytest.mark.asyncio
+    async def test_empty_agent_response_becomes_one_terminal_answer(self, response):
+        adapter = _DummyAdapter(Platform.TELEGRAM)
+        adapter._keep_typing = AsyncMock()
+        adapter.set_message_handler(AsyncMock(return_value=response))
+
+        event = self._guest_event()
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert len(adapter.sent) == 1
+        delivered = adapter.sent[0]
+        assert "couldn't produce a response" in delivered["content"].lower()
+        assert delivered["metadata"]["telegram_guest_query_id"] == "query-1"
+        assert delivered["metadata"]["notify"] is True
+        adapter._keep_typing.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_attachment_only_response_becomes_one_text_answer(
         self, monkeypatch

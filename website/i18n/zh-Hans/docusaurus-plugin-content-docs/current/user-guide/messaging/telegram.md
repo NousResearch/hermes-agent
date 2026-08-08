@@ -989,6 +989,28 @@ TELEGRAM_GUEST_MODE=true
 
 私聊和白名单群组的行为与之前完全相同。
 
+### Bot API 访客查询（`allow_guest_queries`）
+
+Telegram Bot API 访客查询允许用户在机器人可能不是成员的聊天中调用机器人。它与上面的 `guest_mode` @mention 绕过是不同的功能和信任边界。即使已安装的 `python-telegram-bot` 版本支持访客查询，该功能也**默认关闭**。
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        allow_guest_queries: true
+        guest_query_rate_limit_per_minute: 5
+```
+
+启用后：
+
+- 访客查询仍须通过已配置的 Telegram 用户授权以及聊天、主题、自身消息和触发条件关卡。
+- 默认情况下，每个发送者/聊天组合每分钟最多接受 5 个查询（可配置为 1–60）。内存状态有界，并会去重重复的 `guest_query_id`。
+- 每个查询使用隔离的一次性会话通道，并只通过 `answerGuestQuery` 返回一个文本答案。流式输出、输入状态、进度更新、媒体/文件传送和 TTS 均被禁用；空响应和不受支持的媒体/位置查询会收到一个明确的终止文本答复。
+- **工具信任不变：**通过授权的访客查询使用与普通 Telegram 回合相同的代理和工具集。会话隔离并不等于低权限工具沙箱；仅应为你信任其使用当前工具及其副作用的用户和聊天范围启用此功能。
+
+等效启用环境变量：`TELEGRAM_ALLOW_GUEST_QUERIES=true`。现有 `guest_mode` 不会启用 Bot API 访客查询。
+
 ## 斜杠命令访问控制
 
 默认情况下，每个允许的用户都可以运行每个斜杠命令。要将你的白名单分为**管理员**（完整斜杠命令访问）和**普通用户**（仅你明确启用的命令），请在平台的 `extra` 块中添加 `allow_admin_from` 和 `user_allowed_commands`：

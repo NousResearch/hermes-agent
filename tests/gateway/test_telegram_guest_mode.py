@@ -5,9 +5,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageType, _thread_metadata_for_source, utf16_len
 from gateway.run import GatewayRunner
+from hermes_cli.config_defaults import DEFAULT_CONFIG
 from plugins.platforms.telegram.adapter import ParseMode, TelegramAdapter
 
 
@@ -29,9 +30,75 @@ class _RecordingApp:
 def _adapter() -> TelegramAdapter:
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
+    adapter.config = PlatformConfig(
+        extra={
+            "allow_guest_queries": True,
+            "guest_query_rate_limit_per_minute": 5,
+        }
+    )
     adapter._bot = MagicMock()
+    adapter._bot.id = 999
+    adapter._bot.username = "hermes_bot"
+    adapter._bot_username_observed = None
+    adapter._mention_patterns = []
     adapter._send_path_degraded = False
     return adapter
+
+
+def _guest_message(
+    *, user_id=111, chat_id=-1001, chat_type="supergroup", text="@hermes_bot help"
+):
+    return SimpleNamespace(
+        text=text,
+        caption=None,
+        guest_query_id="guest-query-1",
+        from_user=SimpleNamespace(id=user_id, username=f"user{user_id}", is_bot=False),
+        sender_chat=None,
+        chat=SimpleNamespace(id=chat_id, type=chat_type, is_forum=False),
+        message_thread_id=None,
+        is_topic_message=False,
+        entities=[],
+        caption_entities=[],
+        reply_to_message=None,
+    )
+
+
+def test_guest_queries_are_disabled_in_config_defaults():
+    telegram = DEFAULT_CONFIG["telegram"]
+
+    assert telegram["allow_guest_queries"] is False
+    assert telegram["guest_query_rate_limit_per_minute"] == 5
+
+
+def test_guest_query_env_opt_in_overrides_config_default(monkeypatch):
+    adapter = _adapter()
+    adapter.config.extra["allow_guest_queries"] = False
+    monkeypatch.setenv("TELEGRAM_ALLOW_GUEST_QUERIES", "true")
+
+    assert adapter._telegram_allow_guest_queries() is True
+
+
+def test_guest_query_yaml_config_reaches_platform_extra(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "gateway:\n"
+        "  platforms:\n"
+        "    telegram:\n"
+        "      extra:\n"
+        "        allow_guest_queries: true\n"
+        "        guest_query_rate_limit_per_minute: 7\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TELEGRAM_ALLOW_GUEST_QUERIES", raising=False)
+
+    from gateway.config import load_gateway_config
+
+    telegram = load_gateway_config().platforms[Platform.TELEGRAM]
+
+    assert telegram.extra["allow_guest_queries"] is True
+    assert telegram.extra["guest_query_rate_limit_per_minute"] == 7
 
 
 def test_guest_source_metadata_routes_to_answer_guest_query():
@@ -53,15 +120,14 @@ async def test_guest_message_enters_normal_agent_queue_once():
     adapter = _adapter()
     event = SimpleNamespace(
         source=SimpleNamespace(thread_id=None, chat_topic=None),
-        text="@darrenslavebot are you there?",
+        text="@hermes_bot are you there?",
     )
     adapter._build_message_event = MagicMock(return_value=event)
+    adapter._should_process_guest_query = MagicMock(return_value=True)
     adapter._clean_bot_trigger_text = MagicMock(return_value="are you there?")
     adapter._enqueue_text_event = MagicMock()
-    message = SimpleNamespace(
-        text="@darrenslavebot are you there?",
-        guest_query_id="5323706597129951744",
-    )
+    message = _guest_message(text="@hermes_bot are you there?")
+    message.guest_query_id = "5323706597129951744"
     update = SimpleNamespace(update_id=91, guest_message=message)
 
     await adapter._handle_guest_message(update, None)
@@ -76,19 +142,173 @@ async def test_guest_message_enters_normal_agent_queue_once():
 
 
 @pytest.mark.asyncio
-async def test_unauthorized_guest_message_is_rejected():
+async def test_guest_message_from_non_allowlisted_user_is_rejected(monkeypatch):
     adapter = _adapter()
-    adapter._is_user_authorized_from_message = MagicMock(return_value=False)
     adapter._build_message_event = MagicMock()
     adapter._enqueue_text_event = MagicMock()
-    message = SimpleNamespace(text="summon", guest_query_id="guest-query-1")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111")
+    message = _guest_message(user_id=222)
     update = SimpleNamespace(update_id=92, guest_message=message)
 
     await adapter._handle_guest_message(update, None)
 
-    adapter._is_user_authorized_from_message.assert_called_once_with(message)
     adapter._build_message_event.assert_not_called()
     adapter._enqueue_text_event.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_guest_message_from_non_allowlisted_sender_chat_is_rejected():
+    adapter = _adapter()
+    adapter.config.extra.update(
+        {"allowed_chats": ["-1001"], "guest_mode": True, "require_mention": False}
+    )
+    adapter._build_message_event = MagicMock()
+    adapter._enqueue_text_event = MagicMock()
+    # PTB represents Bot API Guest Query chats with the special ``sender``
+    # type. Existing guest_mode mention bypasses must not widen this separate
+    # trust boundary beyond the configured chat allowlist.
+    message = _guest_message(chat_id=-2002, chat_type="sender")
+
+    await adapter._handle_guest_message(
+        SimpleNamespace(update_id=93, guest_message=message), None
+    )
+
+    adapter._build_message_event.assert_not_called()
+    adapter._enqueue_text_event.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_guest_message_from_bot_itself_is_rejected():
+    adapter = _adapter()
+    adapter._build_message_event = MagicMock()
+    adapter._enqueue_text_event = MagicMock()
+    message = _guest_message(user_id=999, chat_type="sender")
+
+    await adapter._handle_guest_message(
+        SimpleNamespace(update_id=94, guest_message=message), None
+    )
+
+    adapter._build_message_event.assert_not_called()
+    adapter._enqueue_text_event.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_guest_message_from_non_allowlisted_topic_is_rejected():
+    adapter = _adapter()
+    adapter.config.extra["allowed_topics"] = ["7"]
+    adapter._build_message_event = MagicMock()
+    adapter._enqueue_text_event = MagicMock()
+    message = _guest_message(chat_type="sender")
+    message.message_thread_id = 8
+    message.is_topic_message = True
+
+    await adapter._handle_guest_message(
+        SimpleNamespace(update_id=95, guest_message=message), None
+    )
+
+    adapter._build_message_event.assert_not_called()
+    adapter._enqueue_text_event.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sender_guest_message_without_required_trigger_is_rejected():
+    adapter = _adapter()
+    adapter.config.extra["require_mention"] = True
+    adapter._build_message_event = MagicMock()
+    adapter._enqueue_text_event = MagicMock()
+    message = _guest_message(text="help", chat_type="sender")
+
+    await adapter._handle_guest_message(
+        SimpleNamespace(update_id=951, guest_message=message), None
+    )
+
+    adapter._build_message_event.assert_not_called()
+    adapter._enqueue_text_event.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sender_guest_message_from_ignored_thread_is_rejected():
+    adapter = _adapter()
+    adapter.config.extra.update({"require_mention": False, "ignored_threads": [8]})
+    adapter._build_message_event = MagicMock()
+    adapter._enqueue_text_event = MagicMock()
+    message = _guest_message(chat_type="sender")
+    message.message_thread_id = 8
+    message.is_topic_message = True
+
+    await adapter._handle_guest_message(
+        SimpleNamespace(update_id=952, guest_message=message), None
+    )
+
+    adapter._build_message_event.assert_not_called()
+    adapter._enqueue_text_event.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sender_guest_message_for_foreign_bot_is_rejected():
+    adapter = _adapter()
+    adapter.config.extra.update(
+        {"exclusive_bot_mentions": True, "require_mention": False}
+    )
+    adapter._build_message_event = MagicMock()
+    adapter._enqueue_text_event = MagicMock()
+    message = _guest_message(text="@other_bot help", chat_type="sender")
+
+    await adapter._handle_guest_message(
+        SimpleNamespace(update_id=954, guest_message=message), None
+    )
+
+    adapter._build_message_event.assert_not_called()
+    adapter._enqueue_text_event.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_guest_query_intake_is_rate_limited_per_sender_and_chat(monkeypatch):
+    adapter = _adapter()
+    adapter._is_user_authorized_from_message = MagicMock(return_value=True)
+    adapter._should_process_guest_query = MagicMock(return_value=True)
+    adapter._build_message_event = MagicMock(
+        side_effect=lambda *_args, **_kwargs: SimpleNamespace(
+            source=SimpleNamespace(thread_id=None, chat_topic=None),
+            text="@hermes_bot help",
+        )
+    )
+    adapter._clean_bot_trigger_text = MagicMock(return_value="help")
+    adapter._enqueue_text_event = MagicMock()
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.time.monotonic", lambda: 100.0)
+    message = _guest_message()
+
+    for update_id in range(6):
+        message.guest_query_id = f"guest-query-{update_id}"
+        await adapter._handle_guest_message(
+            SimpleNamespace(update_id=update_id, guest_message=message), None
+        )
+
+    assert adapter._enqueue_text_event.call_count == 5
+
+
+@pytest.mark.asyncio
+async def test_duplicate_guest_query_id_is_enqueued_once(monkeypatch):
+    adapter = _adapter()
+    adapter._is_user_authorized_from_message = MagicMock(return_value=True)
+    adapter._should_process_guest_query = MagicMock(return_value=True)
+    adapter._build_message_event = MagicMock(
+        side_effect=lambda *_args, **_kwargs: SimpleNamespace(
+            source=SimpleNamespace(thread_id=None, chat_topic=None),
+            text="@hermes_bot help",
+        )
+    )
+    adapter._clean_bot_trigger_text = MagicMock(return_value="help")
+    adapter._enqueue_text_event = MagicMock()
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.time.monotonic", lambda: 100.0)
+    message = _guest_message()
+
+    for update_id in (1, 2):
+        await adapter._handle_guest_message(
+            SimpleNamespace(update_id=update_id, guest_message=message), None
+        )
+
+    assert adapter._enqueue_text_event.call_count == 1
 
 
 @pytest.mark.asyncio
@@ -97,7 +317,9 @@ async def test_generic_text_handler_ignores_guest_message():
     adapter._effective_update_message = MagicMock()
     adapter._enqueue_text_event = MagicMock()
     update = SimpleNamespace(
-        guest_message=SimpleNamespace(text="guest summon"),
+        guest_message=SimpleNamespace(
+            text="guest summon", guest_query_id="guest-query-text-1"
+        ),
         effective_message=SimpleNamespace(text="guest summon"),
     )
 
@@ -124,6 +346,45 @@ async def test_generic_command_handler_ignores_guest_message():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("caption", ["@hermes_bot describe this", None])
+async def test_guest_media_or_location_gets_one_clear_text_only_answer(caption):
+    adapter = _adapter()
+    adapter._is_user_authorized_from_message = MagicMock(return_value=True)
+    adapter._should_process_guest_query = MagicMock(return_value=True)
+    adapter._allow_guest_query_intake = MagicMock(return_value=True)
+    adapter._build_message_event = MagicMock()
+    adapter._enqueue_text_event = MagicMock()
+    adapter.send = AsyncMock()
+    message = _guest_message(text=None)
+    message.caption = caption
+    message.photo = [object()] if caption else None
+    message.location = None if caption else SimpleNamespace(latitude=1.0, longitude=2.0)
+
+    await adapter._handle_guest_message(
+        SimpleNamespace(update_id=95, guest_message=message), None
+    )
+
+    adapter.send.assert_awaited_once_with(
+        "-1001",
+        "Telegram Guest Queries currently support text only; media, captions, and locations are not available.",
+        metadata={"telegram_guest_query_id": "guest-query-1", "notify": True},
+    )
+    adapter._build_message_event.assert_not_called()
+    adapter._enqueue_text_event.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_generic_location_handler_ignores_guest_message():
+    adapter = _adapter()
+    adapter._effective_update_message = MagicMock()
+    update = SimpleNamespace(guest_message=_guest_message(text=None))
+
+    await adapter._handle_location_message(update, None)
+
+    adapter._effective_update_message.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_intermediate_guest_send_is_suppressed():
     adapter = _adapter()
     adapter._bot.answer_guest_query = AsyncMock()
@@ -132,6 +393,39 @@ async def test_intermediate_guest_send_is_suppressed():
         "1482299073",
         "Working…",
         metadata={"telegram_guest_query_id": "5323706597129951744"},
+    )
+
+    assert result.success is True
+    assert result.message_id is None
+    adapter._bot.answer_guest_query.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_degraded_final_guest_send_does_not_burn_one_shot():
+    adapter = _adapter()
+    adapter._send_path_degraded = True
+    adapter._bot.answer_guest_query = AsyncMock()
+
+    result = await adapter.send(
+        "1482299073",
+        "Final answer",
+        metadata={"telegram_guest_query_id": "query-1", "notify": True},
+    )
+
+    assert result.success is False
+    assert result.retryable is True
+    adapter._bot.answer_guest_query.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_whitespace_final_guest_send_does_not_burn_one_shot():
+    adapter = _adapter()
+    adapter._bot.answer_guest_query = AsyncMock()
+
+    result = await adapter.send(
+        "1482299073",
+        "  \n ",
+        metadata={"telegram_guest_query_id": "query-1", "notify": True},
     )
 
     assert result.success is True
@@ -164,7 +458,7 @@ async def test_final_guest_send_uses_answer_guest_query_once(monkeypatch):
     )
 
     assert result.success is True
-    assert result.message_id is None
+    assert result.message_id == "guest-inline-777"
     adapter._bot.answer_guest_query.assert_awaited_once()
     query_id, article = adapter._bot.answer_guest_query.await_args.args
     assert query_id == "5323706597129951744"
@@ -363,6 +657,17 @@ def test_no_guest_handler_registered_without_guest_symbols(monkeypatch):
     assert _group_for_callback(app.handlers, adapter._handle_text_message) == [0]
     assert _group_for_callback(app.handlers, adapter._handle_command) == [0]
     # …and no catch-all is added when Guest Mode is unavailable.
+    assert _group_for_callback(app.handlers, adapter._handle_guest_message) == []
+
+
+def test_no_guest_handler_registered_without_explicit_opt_in(monkeypatch):
+    adapter = _adapter()
+    adapter.config.extra["allow_guest_queries"] = False
+    _install_recording_handlers(monkeypatch, guest_symbols=True)
+    app = _RecordingApp()
+
+    adapter._register_handlers(app)
+
     assert _group_for_callback(app.handlers, adapter._handle_guest_message) == []
 
 

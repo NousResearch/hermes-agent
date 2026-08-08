@@ -1070,6 +1070,34 @@ With `guest_mode: true`, a message from a non-allowlisted group is processed **o
 
 DMs and allowlisted groups behave exactly as before.
 
+### Bot API Guest Queries (`allow_guest_queries`)
+
+Telegram Bot API Guest Queries let a user summon a bot from a chat where the bot may not be a member. This is a separate feature and trust boundary from the `guest_mode` @mention bypass above. It is **disabled by default**, even when the installed `python-telegram-bot` version supports Guest Queries.
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        allow_guest_queries: true
+        guest_query_rate_limit_per_minute: 5
+```
+
+Env equivalent for the opt-in:
+
+```bash
+TELEGRAM_ALLOW_GUEST_QUERIES=true
+```
+
+When enabled:
+
+- Guest Queries must still pass the configured Telegram user authorization and the normal chat, topic, own-message, and trigger gates. Enabling this setting does not make an unauthorized sender trusted.
+- Each sender/chat pair is limited to 5 accepted queries per minute by default (configurable from 1 to 60). Intake tracking is bounded in memory, and repeated deliveries of the same `guest_query_id` are deduplicated.
+- Each query gets an isolated, one-shot session lane and exactly one text answer. Streaming, typing, progress updates, media/file delivery, and TTS are suppressed. Media, captions, and locations receive one clear text-only unsupported response instead of a normal chat send.
+- **Tool trust is unchanged:** an accepted Guest Query runs the same configured agent and toolset as any other authorized Telegram turn. Guest Query sessions cannot read an owner's conversation lane, but they are not a reduced-permission tool sandbox. Only enable this for authorization and chat scopes whose members you trust with the active tools and their side effects.
+
+Use `guest_mode` only for the existing non-allowlisted-group @mention behavior; it does not enable Bot API Guest Query intake.
+
 ## Slash Command Access Control
 
 By default, every allowed user can run every slash command. To split your allowlist into **admins** (full slash command access) and **regular users** (only commands you explicitly enable), add `allow_admin_from` and `user_allowed_commands` to the platform's `extra` block:

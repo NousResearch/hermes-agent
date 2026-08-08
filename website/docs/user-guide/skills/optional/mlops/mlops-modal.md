@@ -31,7 +31,7 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # Modal Serverless GPU
 
-Comprehensive guide to running ML workloads on Modal's serverless GPU cloud platform.
+Guide to running ML workloads on Modal's serverless GPU cloud platform.
 
 ## When to use Modal
 

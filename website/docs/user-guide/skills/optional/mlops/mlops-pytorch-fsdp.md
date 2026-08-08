@@ -31,7 +31,7 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # Pytorch-Fsdp Skill
 
-Comprehensive assistance with pytorch-fsdp development, generated from official documentation.
+Assistance with pytorch-fsdp development, generated from official documentation.
 
 ## When to Use This Skill
 

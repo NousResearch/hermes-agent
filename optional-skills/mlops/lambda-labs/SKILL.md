@@ -14,7 +14,7 @@ metadata:
 
 # Lambda Labs GPU Cloud
 
-Comprehensive guide to running ML workloads on Lambda Labs GPU cloud with on-demand instances and 1-Click Clusters.
+Guide to running ML workloads on Lambda Labs GPU cloud with on-demand instances and 1-Click Clusters.
 
 ## When to use Lambda Labs
 
@@ -286,7 +286,7 @@ Filesystems must be attached at instance launch time:
   └── outputs/
 
 # Local SSD (faster, ephemeral)
-/home/ubuntu/
+~/ (instance home)
   └── working/  # Temporary files
 ```
 

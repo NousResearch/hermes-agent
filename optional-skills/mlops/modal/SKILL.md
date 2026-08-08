@@ -14,7 +14,7 @@ metadata:
 
 # Modal Serverless GPU
 
-Comprehensive guide to running ML workloads on Modal's serverless GPU cloud platform.
+Guide to running ML workloads on Modal's serverless GPU cloud platform.
 
 ## When to use Modal
 

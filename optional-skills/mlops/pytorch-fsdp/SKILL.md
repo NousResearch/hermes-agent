@@ -14,7 +14,7 @@ metadata:
 
 # Pytorch-Fsdp Skill
 
-Comprehensive assistance with pytorch-fsdp development, generated from official documentation.
+Assistance with pytorch-fsdp development, generated from official documentation.
 
 ## When to Use This Skill
 

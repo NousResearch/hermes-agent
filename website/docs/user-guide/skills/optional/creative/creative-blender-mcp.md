@@ -18,6 +18,7 @@ Drive Blender via the catalog blender MCP, with bpy recipes.
 | Path | `optional-skills/creative/blender-mcp` |
 | Version | `2.1.0` |
 | Author | alireza78a + kshitijk4poor + Hermes Agent |
+| License | MIT |
 | Platforms | linux, macos, windows |
 
 ## Reference: full SKILL.md

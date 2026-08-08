@@ -4096,15 +4096,17 @@ def _synthesize_ended_run(
 
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """Return True when ``task_id`` is sticky-blocked by an explicit
-    worker/operator ``kanban_block`` call (#28712).
+    worker/operator action (#28712).
 
     A ``blocked`` status can come from two very different sources:
 
-    * **Worker- or operator-initiated** — a worker called
+    * **Worker- or operator-initiated** — a task was created with
+      ``initial_status="blocked"``, a worker called
       ``kanban_block(reason="review-required: ...")`` (or somebody ran
       ``hermes kanban block <id>``).  This is a deliberate handoff that
-      should stay blocked until an operator unblocks it.  The block tool
-      emits a ``"blocked"`` event row in ``task_events``.
+      should stay blocked until an operator unblocks or manually promotes it.
+      Creation records ``status="blocked"`` in the ``"created"`` event;
+      the block tool emits a ``"blocked"`` event.
 
     * **Circuit-breaker** — ``_record_task_failure`` tripped after
       repeated crashes / spawn failures / timeouts.  This emits
@@ -4113,10 +4115,10 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
       finish, transient infra error clears).
 
     The cheapest signal that distinguishes the two is the most recent
-    ``"blocked"`` / ``"unblocked"`` event for the task.  If the most
-    recent one is ``"blocked"`` (or there is a ``"blocked"`` event and
-    no ``"unblocked"`` event has fired since), the task is sticky and
-    ``recompute_ready`` must *not* auto-promote it.
+    provenance event. ``"blocked"`` and a creation-time blocked status set
+    the sticky state; ``"unblocked"`` and ``"promoted_manual"`` explicitly
+    clear it. Automatic ``"promoted"`` and circuit-breaker ``"gave_up"``
+    events deliberately do neither.
 
     Returns ``False`` when there is no such event at all (e.g. the task
     was set to ``status='blocked'`` by the circuit breaker or by direct
@@ -4124,12 +4126,35 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     for that path.
     """
     row = conn.execute(
-        "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "SELECT kind, payload FROM task_events "
+        "WHERE task_id = ? "
+        "AND kind IN ('created', 'blocked', 'unblocked', 'promoted_manual') "
         "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    if not row:
+        return False
+    if row["kind"] == "blocked":
+        return True
+    if row["kind"] != "created":
+        return False
+    raw_payload = row["payload"]
+    if not isinstance(raw_payload, str) or not raw_payload.strip():
+        return True
+    try:
+        payload = json.loads(raw_payload)
+    except (TypeError, ValueError, RecursionError):
+        # Provenance corruption must not crash the whole dispatcher or turn a
+        # human-held blocked card into runnable work.  The caller only asks
+        # about tasks whose current status is already ``blocked``, so preserve
+        # that safe state when the creation record cannot be interpreted.
+        return True
+    if not isinstance(payload, dict):
+        return True
+    created_status = payload.get("status")
+    if not isinstance(created_status, str) or created_status not in VALID_STATUSES:
+        return True
+    return created_status == "blocked"
 
 
 def recompute_ready(

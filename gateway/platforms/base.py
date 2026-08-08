@@ -5564,6 +5564,15 @@ class BasePlatformAdapter(ABC):
 
         await self._drain_pending_after_session_command(session_key, command_guard)
 
+    def is_ingress_event_current(self, event: MessageEvent) -> bool:
+        """Return whether a delayed inbound event still belongs to its session.
+
+        Platforms without async ingress buffering accept every event. Adapters
+        with generation-aware downloads/batches can override this hook; it is
+        checked after topic recovery at the final pre-dispatch seam.
+        """
+        return True
+
     async def handle_message(self, event: MessageEvent) -> None:
         """
         Process an incoming message.
@@ -5587,6 +5596,15 @@ class BasePlatformAdapter(ABC):
         )
         if needs_topic_recovery:
             await asyncio.to_thread(self._apply_topic_recovery, event)
+
+        if not self.is_ingress_event_current(event):
+            logger.info(
+                "[%s] Dropping stale ingress event after topic recovery: update=%s message=%s",
+                self.name,
+                event.platform_update_id,
+                event.message_id,
+            )
+            return
 
         profile = event.source.profile or getattr(self, "_gateway_profile_name", None)
         if profile and not event.source.profile:

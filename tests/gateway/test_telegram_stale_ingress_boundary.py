@@ -95,6 +95,21 @@ async def test_late_photo_completion_after_invalidate_is_dropped_not_enqueued():
 
 
 @pytest.mark.asyncio
+async def test_text_stamped_before_boundary_is_not_enqueued_afterward():
+    source = _source()
+    session_key = build_session_key(source)
+    adapter = _adapter()
+    event = MessageEvent(text="old text", message_type=MessageType.TEXT, source=source)
+    adapter._stamp_ingress_generation(event)
+    adapter.invalidate_session_ingress(session_key)
+
+    adapter._enqueue_text_event(event)
+
+    assert adapter._pending_text_batches == {}
+    assert adapter._pending_text_batch_tasks == {}
+
+
+@pytest.mark.asyncio
 async def test_new_events_after_invalidate_are_accepted():
     source = _source()
     session_key = build_session_key(source)
@@ -106,6 +121,89 @@ async def test_new_events_after_invalidate_are_accepted():
     adapter._enqueue_photo_event(f"{session_key}:photo-burst", event)
 
     assert f"{session_key}:photo-burst" in adapter._pending_photo_batches
+
+
+@pytest.mark.asyncio
+async def test_old_download_finally_does_not_decrement_new_epoch_counter():
+    source = _source()
+    session_key = build_session_key(source)
+    adapter = _adapter()
+
+    old_event = _photo_event(source)
+    old_token = adapter._track_media_download_start(old_event)
+    adapter.invalidate_session_ingress(session_key)
+    assert old_token not in adapter._media_downloads_in_progress_by_token
+    new_event = _photo_event(source)
+    new_token = adapter._track_media_download_start(new_event)
+
+    adapter._track_media_download_done(old_token)
+
+    assert old_token != new_token
+    assert adapter._media_downloads_in_progress_by_session[session_key] == 1
+    assert adapter.has_startup_media_pending(session_key) is True
+
+
+@pytest.mark.asyncio
+async def test_teardown_keeps_epochs_monotonic_against_old_finally():
+    source = _source()
+    session_key = build_session_key(source)
+    adapter = _adapter()
+    old_token = adapter._track_media_download_start(_photo_event(source))
+
+    await adapter._cancel_pending_delivery_tasks()
+    new_token = adapter._track_media_download_start(_photo_event(source))
+    adapter._track_media_download_done(old_token)
+
+    assert old_token != new_token
+    assert new_token == (session_key, old_token[1] + 1)
+    assert adapter._media_downloads_in_progress_by_session[session_key] == 1
+
+
+def test_stale_media_group_event_is_not_enqueued():
+    source = _source()
+    session_key = build_session_key(source)
+    adapter = _adapter()
+    event = _photo_event(source)
+    adapter._stamp_ingress_generation(event)
+    adapter.invalidate_session_ingress(session_key)
+
+    asyncio.run(adapter._queue_media_group_event("stale-album", event))
+
+    assert adapter._media_group_events == {}
+    assert adapter._media_group_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_boundary_during_startup_grace_aborts_old_token_merge(monkeypatch):
+    source = _source()
+    session_key = build_session_key(source)
+    adapter = _adapter()
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._profile_adapters = {}
+    runner._adapter_for_source = lambda _source: adapter
+    monkeypatch.setattr(runner, "_startup_media_grace_seconds", lambda: 0.2)
+
+    old_event = _photo_event(source)
+    adapter._track_media_download_start(old_event)
+
+    async def cross_boundary():
+        await asyncio.sleep(0.02)
+        adapter.invalidate_session_ingress(session_key)
+        fresh = _photo_event(source)
+        adapter.queue_startup_batch_event(session_key, fresh)
+
+    boundary = asyncio.create_task(cross_boundary())
+    event = await runner._merge_startup_media_followups(
+        MessageEvent(text="ordinary", message_type=MessageType.TEXT, source=source),
+        source,
+        session_key,
+    )
+    await boundary
+
+    assert event.message_type is MessageType.TEXT
+    assert event.media_urls == []
+    assert adapter.pop_startup_media_event(session_key) is not None
 
 
 @pytest.mark.asyncio
@@ -123,7 +221,20 @@ async def test_stop_boundary_invalidates_telegram_ingress():
     runner._profile_adapters = {}
     runner._adapter_for_source = lambda _source: adapter
     runner._peek_session_state = lambda _key: None
-    runner._invalidate_session_run_generation = lambda _key, reason="": 1
+    order = []
+    real_invalidate = adapter.invalidate_session_ingress
+
+    def invalidate_ingress(key):
+        order.append("ingress")
+        real_invalidate(key)
+
+    adapter.invalidate_session_ingress = invalidate_ingress
+
+    def invalidate_run(_key, reason=""):
+        order.append("run")
+        return 1
+
+    runner._invalidate_session_run_generation = invalidate_run
     runner._release_running_agent_state = lambda _key: None
     runner._evict_cached_agent = lambda _key: None
     runner._thread_metadata_for_source = lambda _source: {}
@@ -132,5 +243,6 @@ async def test_stop_boundary_invalidates_telegram_ingress():
         session_key, source, interrupt_reason="/stop", invalidation_reason="stop"
     )
 
+    assert order[:2] == ["ingress", "run"]
     assert adapter._startup_batch_events == {}
     assert adapter.has_startup_media_pending(session_key) is False

@@ -778,8 +778,12 @@ class TelegramAdapter(BasePlatformAdapter):
         self._media_group_events: Dict[str, MessageEvent] = {}
         self._media_group_tasks: Dict[str, asyncio.Task] = {}
         self._media_downloads_in_progress_by_session: Dict[str, int] = {}
+        self._media_downloads_in_progress_by_token: Dict[tuple[str, int], int] = {}
         # Dedicated startup coalescing slot, separate from the normal FIFO.
         self._startup_batch_events: Dict[str, MessageEvent] = {}
+        # Monotonic per-session ingress epoch. Boundaries increment it so late
+        # async completions from an old conversation can never re-enter buffers.
+        self._session_ingress_generations: Dict[str, int] = {}
         # Buffer rapid text messages so Telegram client-side splits of long
         # messages are aggregated into a single MessageEvent.  Lower defaults
         # (0.3s / 1.0s instead of 0.6s / 2.0s) let short replies stream
@@ -4321,8 +4325,17 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_photo_batches.clear()
         self._pending_text_batch_tasks.clear()
         self._pending_text_batches.clear()
-        getattr(self, "_startup_batch_events", {}).clear()
-        getattr(self, "_media_downloads_in_progress_by_session", {}).clear()
+        startup_events = getattr(self, "_startup_batch_events", {})
+        session_counts = getattr(self, "_media_downloads_in_progress_by_session", {})
+        token_counts = getattr(self, "_media_downloads_in_progress_by_token", {})
+        generations = getattr(self, "_session_ingress_generations", {})
+        affected_sessions = set(startup_events) | set(session_counts)
+        affected_sessions.update(token[0] for token in token_counts)
+        for session_key in affected_sessions:
+            generations[session_key] = generations.get(session_key, 0) + 1
+        startup_events.clear()
+        session_counts.clear()
+        token_counts.clear()
         if getattr(self, "_polling_error_task", None) is not current_task:
             self._polling_error_task = None
         if getattr(self, "_polling_progress_verifier_task", None) is not current_task:
@@ -8696,6 +8709,13 @@ class TelegramAdapter(BasePlatformAdapter):
         and failed — never a silent empty turn. No new event fields (the
         structured-event refactor is out of scope per #23045).
         """
+        if self._ingress_generation_stale(event):
+            logger.info(
+                "[Telegram] Suppressing stale media failure notice message=%s update=%s",
+                event.message_id,
+                event.platform_update_id,
+            )
+            return
         named = f" ({display_name})" if display_name else ""
         try:
             await msg.reply_text(
@@ -8921,9 +8941,10 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
             return
-        await self._ensure_forum_commands(update.message)
-
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
+        self._stamp_ingress_generation(event)
+        await self._ensure_forum_commands(msg)
+
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
@@ -9062,22 +9083,105 @@ class TelegramAdapter(BasePlatformAdapter):
             profile=profile,
         )
 
-    def _track_media_download_start(self, event: MessageEvent) -> str:
-        session_key = self._event_session_key(event)
-        counts = self._media_downloads_in_progress_by_session
-        counts[session_key] = counts.get(session_key, 0) + 1
-        return session_key
+    def _session_ingress_generation(self, session_key: Optional[str]) -> int:
+        generations = getattr(self, "_session_ingress_generations", None)
+        if not isinstance(generations, dict):
+            generations = {}
+            self._session_ingress_generations = generations
+        return generations.get(session_key or "", 0)
 
-    def _track_media_download_done(self, session_key: Optional[str]) -> None:
+    def _stamp_ingress_generation(self, event: MessageEvent) -> tuple[str, int]:
+        session_key = self._event_session_key(event)
+        epoch = self._session_ingress_generation(session_key)
+        setattr(event, "_hermes_ingress_session_key", session_key)
+        setattr(event, "_hermes_ingress_generation", epoch)
+        return session_key, epoch
+
+    def _ingress_generation_stale(self, event: Optional[MessageEvent]) -> bool:
+        if event is None:
+            return False
+        epoch = getattr(event, "_hermes_ingress_generation", None)
+        if epoch is None:
+            return False
+        session_key = getattr(event, "_hermes_ingress_session_key", None)
         if not session_key:
+            session_key = self._event_session_key(event)
+        return int(epoch) != self._session_ingress_generation(session_key)
+
+    def _track_media_download_start(self, event: MessageEvent) -> tuple[str, int]:
+        token = self._stamp_ingress_generation(event)
+        token_counts = getattr(self, "_media_downloads_in_progress_by_token", None)
+        if not isinstance(token_counts, dict):
+            token_counts = {}
+            self._media_downloads_in_progress_by_token = token_counts
+        token_counts[token] = token_counts.get(token, 0) + 1
+        session_key = token[0]
+        session_counts = self._media_downloads_in_progress_by_session
+        session_counts[session_key] = session_counts.get(session_key, 0) + 1
+        return token
+
+    def _track_media_download_done(self, token: Optional[tuple[str, int]]) -> None:
+        if not token:
             return
-        remaining = self._media_downloads_in_progress_by_session.get(session_key, 0) - 1
+        token_counts = getattr(self, "_media_downloads_in_progress_by_token", {})
+        remaining = token_counts.get(token, 0) - 1
         if remaining > 0:
-            self._media_downloads_in_progress_by_session[session_key] = remaining
+            token_counts[token] = remaining
+        else:
+            token_counts.pop(token, None)
+        session_key = token[0]
+        if token[1] != self._session_ingress_generation(session_key):
+            return
+        current = self._media_downloads_in_progress_by_session.get(session_key, 0) - 1
+        if current > 0:
+            self._media_downloads_in_progress_by_session[session_key] = current
         else:
             self._media_downloads_in_progress_by_session.pop(session_key, None)
 
+    def invalidate_session_ingress(self, session_key: str) -> None:
+        if not session_key:
+            return
+        self._session_ingress_generations[session_key] = (
+            self._session_ingress_generations.get(session_key, 0) + 1
+        )
+        self._startup_batch_events.pop(session_key, None)
+        text_task = self._pending_text_batch_tasks.pop(session_key, None)
+        if text_task is not None and not text_task.done():
+            text_task.cancel()
+        self._pending_text_batches.pop(session_key, None)
+        self._media_downloads_in_progress_by_session.pop(session_key, None)
+        token_counts = getattr(self, "_media_downloads_in_progress_by_token", {})
+        for token in [token for token in token_counts if token[0] == session_key]:
+            token_counts.pop(token, None)
+        photo_keys = [
+            key for key in list(self._pending_photo_batches)
+            if key == f"{session_key}:photo-burst" or key.startswith(f"{session_key}:album:")
+        ]
+        for key in photo_keys:
+            self._pending_photo_batches.pop(key, None)
+            task = self._pending_photo_batch_tasks.pop(key, None)
+            if task is not None and not task.done():
+                task.cancel()
+        group_ids = [
+            group_id for group_id, event in list(self._media_group_events.items())
+            if self._event_session_key(event) == session_key
+        ]
+        for group_id in group_ids:
+            self._media_group_events.pop(group_id, None)
+            task = self._media_group_tasks.pop(group_id, None)
+            if task is not None and not task.done():
+                task.cancel()
+        logger.info(
+            "[Telegram] Invalidated ingress for %s (generation=%d)",
+            session_key,
+            self._session_ingress_generations[session_key],
+        )
+
     def queue_startup_batch_event(self, session_key: str, event: MessageEvent) -> None:
+        if getattr(event, "_hermes_ingress_generation", None) is None:
+            self._stamp_ingress_generation(event)
+        if self._ingress_generation_stale(event):
+            return
         event = self._event_with_inline_forward_context(event)
         merge_pending_message_event(
             self._startup_batch_events,
@@ -9086,12 +9190,32 @@ class TelegramAdapter(BasePlatformAdapter):
             merge_text=(event.message_type == MessageType.TEXT),
         )
 
-    def has_startup_media_pending(self, session_key: str) -> bool:
+    def current_ingress_token(self, session_key: str) -> tuple[str, int]:
+        return session_key, self._session_ingress_generation(session_key)
+
+    def is_ingress_event_current(self, event: MessageEvent) -> bool:
+        return not self._ingress_generation_stale(event)
+
+    def has_startup_media_pending(
+        self,
+        session_key: str,
+        *,
+        token: Optional[tuple[str, int]] = None,
+    ) -> bool:
         if not session_key:
+            return False
+        if token is not None and token != self.current_ingress_token(session_key):
             return False
         if session_key in self._startup_batch_events:
             return True
-        if self._media_downloads_in_progress_by_session.get(session_key, 0) > 0:
+        current_token = (session_key, self._session_ingress_generation(session_key))
+        token_counts = getattr(self, "_media_downloads_in_progress_by_token", {})
+        if token_counts.get(current_token, 0) > 0:
+            return True
+        # Backward-compatible fallback for existing adapters/tests that only
+        # expose the legacy aggregate counter and have not begun a tokenized
+        # download yet.
+        if not token_counts and self._media_downloads_in_progress_by_session.get(session_key, 0) > 0:
             return True
         prefix = f"{session_key}:"
         if any(
@@ -9111,12 +9235,19 @@ class TelegramAdapter(BasePlatformAdapter):
             and (forwarded_text.text or "").lstrip().startswith("[Forwarded message |")
         )
 
-    def pop_startup_media_event(self, session_key: str) -> Optional[MessageEvent]:
+    def pop_startup_media_event(
+        self,
+        session_key: str,
+        *,
+        token: Optional[tuple[str, int]] = None,
+    ) -> Optional[MessageEvent]:
         if not session_key:
+            return None
+        if token is not None and token != self.current_ingress_token(session_key):
             return None
         merged: Dict[str, MessageEvent] = {}
         startup_event = self._startup_batch_events.pop(session_key, None)
-        if startup_event is not None:
+        if startup_event is not None and not self._ingress_generation_stale(startup_event):
             merge_pending_message_event(
                 merged,
                 session_key,
@@ -9124,7 +9255,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 merge_text=(startup_event.message_type == MessageType.TEXT),
             )
         text_event = self._pending_text_batches.get(session_key)
-        if text_event and (text_event.text or "").lstrip().startswith("[Forwarded message |"):
+        if (
+            text_event
+            and not self._ingress_generation_stale(text_event)
+            and (text_event.text or "").lstrip().startswith("[Forwarded message |")
+        ):
             text_event = self._pending_text_batches.pop(session_key, None)
             task = self._pending_text_batch_tasks.pop(session_key, None)
             if task is not None and not task.done():
@@ -9140,7 +9275,7 @@ class TelegramAdapter(BasePlatformAdapter):
             task = self._pending_photo_batch_tasks.pop(key, None)
             if task is not None and not task.done():
                 task.cancel()
-            if event is not None and event.media_urls:
+            if event is not None and event.media_urls and not self._ingress_generation_stale(event):
                 merge_pending_message_event(merged, session_key, event)
         group_ids = []
         for group_id, event in list(self._media_group_events.items()):
@@ -9154,7 +9289,7 @@ class TelegramAdapter(BasePlatformAdapter):
             task = self._media_group_tasks.pop(group_id, None)
             if task is not None and not task.done():
                 task.cancel()
-            if event is not None and event.media_urls:
+            if event is not None and event.media_urls and not self._ingress_generation_stale(event):
                 merge_pending_message_event(merged, session_key, event)
         return merged.get(session_key)
 
@@ -9175,6 +9310,11 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         event = self._event_with_inline_forward_context(event)
+        if getattr(event, "_hermes_ingress_generation", None) is None:
+            self._stamp_ingress_generation(event)
+        if self._ingress_generation_stale(event):
+            logger.info("[Telegram] Dropping stale text enqueue")
+            return
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
         chunk_len = len(event.text or "")
@@ -9237,6 +9377,9 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._should_drop_delayed_delivery():
                 logger.debug("[Telegram] Dropping text batch flush after disconnect started")
                 return
+            if self._ingress_generation_stale(event):
+                logger.info("[Telegram] Dropping stale text batch for %s", key)
+                return
             logger.info(
                 "[Telegram] Flushing text batch %s (%d chars)",
                 key, len(event.text or ""),
@@ -9269,6 +9412,9 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._should_drop_delayed_delivery():
                 logger.debug("[Telegram] Dropping photo batch flush after disconnect started")
                 return
+            if self._ingress_generation_stale(event):
+                logger.info("[Telegram] Dropping stale photo batch flush %s", batch_key)
+                return
             logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(event.media_urls))
             await self.handle_message(event)
         finally:
@@ -9279,6 +9425,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """Merge photo events into a pending batch and schedule flush."""
         if self._should_drop_delayed_delivery():
             logger.debug("[Telegram] Dropping photo batch enqueue after disconnect started")
+            return
+        if self._ingress_generation_stale(event):
+            logger.info("[Telegram] Dropping stale photo batch %s", batch_key)
             return
 
         existing = self._pending_photo_batches.get(batch_key)
@@ -9296,6 +9445,18 @@ class TelegramAdapter(BasePlatformAdapter):
             prior_task.cancel()
 
         self._pending_photo_batch_tasks[batch_key] = asyncio.create_task(self._flush_photo_batch(batch_key))
+
+    async def _dispatch_media_event_if_current(self, event: MessageEvent) -> bool:
+        """Dispatch media unless its download belongs to an invalidated epoch."""
+        if self._ingress_generation_stale(event):
+            logger.info(
+                "[Telegram] Dropping stale media delivery message=%s update=%s",
+                event.message_id,
+                event.platform_update_id,
+            )
+            return False
+        await self.handle_message(event)
+        return True
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
@@ -9559,7 +9720,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             f"Image document '{original_filename or doc_mime or ext or 'unknown'}' "
                             "could not be read as an image."
                         )
-                        await self.handle_message(event)
+                        await self._dispatch_media_event_if_current(event)
                         return
 
                     event.message_type = MessageType.PHOTO
@@ -9595,7 +9756,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     event.media_types = [SUPPORTED_VIDEO_TYPES[ext]]
                     event.message_type = MessageType.VIDEO
                     logger.info("[Telegram] Cached user video document at %s", cached_path)
-                    await self.handle_message(event)
+                    await self._dispatch_media_event_if_current(event)
                     return
 
                 # NOTE: image-document handling is performed earlier in this
@@ -9623,7 +9784,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         f"Document '{original_filename or doc_mime or ext or 'unknown'}' "
                         "could not be cached."
                     )
-                    await self.handle_message(event)
+                    await self._dispatch_media_event_if_current(event)
                     return
                 event.media_urls = [cached.path]
                 event.media_types = [cached.media_type]
@@ -9679,7 +9840,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._queue_media_group_event(str(media_group_id), event)
                 return
 
-            await self.handle_message(event)
+            await self._dispatch_media_event_if_current(event)
         finally:
             self._track_media_download_done(dispatch_download_session_key)
 
@@ -9693,6 +9854,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if self._should_drop_delayed_delivery():
             logger.debug("[Telegram] Dropping media group enqueue after disconnect started")
+            return
+        if self._ingress_generation_stale(event):
+            logger.info("[Telegram] Dropping stale media group %s", media_group_id)
             return
 
         event = self._event_with_inline_forward_context(event)
@@ -9734,6 +9898,9 @@ class TelegramAdapter(BasePlatformAdapter):
             if event is not None:
                 if self._should_drop_delayed_delivery():
                     logger.debug("[Telegram] Dropping media group flush after disconnect started")
+                    return
+                if self._ingress_generation_stale(event):
+                    logger.info("[Telegram] Dropping stale media group flush %s", media_group_id)
                     return
                 await self.handle_message(event)
         except asyncio.CancelledError:

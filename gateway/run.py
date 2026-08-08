@@ -8875,6 +8875,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return event
         pop_media = self._adapter_declared_method(adapter, "pop_startup_media_event")
         has_pending = self._adapter_declared_method(adapter, "has_startup_media_pending")
+        current_token = self._adapter_declared_method(adapter, "current_ingress_token")
+        ingress_token = current_token(session_key) if current_token is not None else None
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._startup_media_grace_seconds()
         merged_attachments = 0
@@ -8884,7 +8886,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             incoming = None
             if pop_media is not None:
                 try:
-                    incoming = pop_media(session_key)
+                    incoming = (
+                        pop_media(session_key, token=ingress_token)
+                        if ingress_token is not None
+                        else pop_media(session_key)
+                    )
                 except Exception:
                     logger.debug("Telegram startup media pop failed", exc_info=True)
                     incoming = None
@@ -8902,7 +8908,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             pending = False
             if has_pending is not None:
                 try:
-                    pending = bool(has_pending(session_key))
+                    pending = bool(
+                        has_pending(session_key, token=ingress_token)
+                        if ingress_token is not None
+                        else has_pending(session_key)
+                    )
                 except Exception:
                     logger.debug("Telegram startup pending check failed", exc_info=True)
             if not pending or loop.time() >= deadline:
@@ -14578,8 +14588,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             invalidation_reason="new_command",
         )
         # Clean up the running agent entry so the reset handler
-        # doesn't think an agent is still active.
-        return await self._handle_reset_command(event)
+        # doesn't think an agent is still active. Ingress was already fenced
+        # before the interrupt; avoid a second bump after long reset cleanup.
+        return await self._handle_reset_command(
+            event,
+            ingress_already_invalidated=True,
+        )
 
     async def _busy_queue_command(self, event: MessageEvent, quick_key: str, source):
         # /queue <prompt> — queue without interrupting.
@@ -23410,7 +23424,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("Failed to rebind turn lease", exc_info=True)
             return False
 
-    def _clear_conversation_scope(self, session_key: str, *, reason: str) -> None:
+    def _clear_conversation_scope(
+        self,
+        session_key: str,
+        *,
+        reason: str,
+        invalidate_ingress: bool = True,
+    ) -> None:
         """Clear ALL conversation-scoped per-session state for ``session_key``.
 
         THE single conversation-boundary funnel. Call this — and nothing
@@ -23452,7 +23472,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Drop adapter-side buffered ingress fragments so stale Telegram
         # batches (text debounce / photo burst / media group / startup slot)
         # cannot merge into the new conversation (#stale-ingress-boundary).
-        self._invalidate_adapter_ingress(session_key)
+        # Busy /new already installed this fence before long reset cleanup;
+        # don't bump twice and discard post-fence racing input.
+        if invalidate_ingress:
+            self._invalidate_adapter_ingress(session_key)
         # Legacy plain-dict stores still registered in
         # _CONVERSATION_SCOPED_STATE (not yet folded into SessionState),
         # e.g. _pending_model_notes.  SessionState-backed names resolve to
@@ -23605,6 +23628,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Interrupt the current run and clear queued session state consistently."""
         if not session_key:
             return
+        # Advance adapter ingress first. A media download may complete at any
+        # await/thread boundary; installing this epoch fence before the agent
+        # generation/interrupt work closes the window where old bytes could
+        # repopulate startup buffers during command handling.
+        self._invalidate_adapter_ingress(session_key)
         _iac_state = self._peek_session_state(session_key)
         running_agent = _iac_state.turn.agent if _iac_state else None
         _process_task_id = ""
@@ -23641,10 +23669,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 daemon=True,
             ).start()
         adapter = self._adapter_for_source(source)
-        # Drop buffered ingress fragments for this conversation so a late
-        # async download/batch from the interrupted turn cannot merge into
-        # the next user message (production: stale forward merged after /stop).
-        self._invalidate_adapter_ingress(session_key)
         interrupt_session_activity = getattr(
             type(adapter), "interrupt_session_activity", None
         )

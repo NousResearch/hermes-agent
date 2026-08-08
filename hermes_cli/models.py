@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 from hermes_cli import __version__ as _HERMES_VERSION
 from hermes_cli.urllib_security import open_credentialed_url
+from utils import pricing_currency_is_usd_or_unspecified
 
 logger = logging.getLogger(__name__)
 
@@ -1852,9 +1853,15 @@ def fetch_models_with_pricing(
 
     result: dict[str, dict[str, Any]] = {}
     for item in payload.get("data", []):
+        if not isinstance(item, dict):
+            continue
         mid = item.get("id")
         pricing = item.get("pricing")
-        if mid and isinstance(pricing, dict):
+        if (
+            mid
+            and isinstance(pricing, dict)
+            and pricing_currency_is_usd_or_unspecified(pricing, item)
+        ):
             entry: dict[str, Any] = {
                 "prompt": str(pricing.get("prompt", "")),
                 "completion": str(pricing.get("completion", "")),
@@ -2121,6 +2128,8 @@ def _fetch_novita_pricing(
         inp = item.get("input_token_price_per_m")
         out = item.get("output_token_price_per_m")
         if inp is None and out is None:
+            continue
+        if not pricing_currency_is_usd_or_unspecified(item):
             continue
         result[str(mid)] = {
             "prompt": str(float(inp or 0) / 10_000 / 1_000_000),
@@ -4587,6 +4596,8 @@ def _fetch_deepinfra_pricing(
         metadata = item.get("metadata") or {}
         pricing = metadata.get("pricing") if isinstance(metadata, dict) else None
         if not isinstance(pricing, dict):
+            continue
+        if not pricing_currency_is_usd_or_unspecified(pricing, metadata, item):
             continue
         entry: dict[str, str] = {}
         inp = pricing.get("input_tokens")

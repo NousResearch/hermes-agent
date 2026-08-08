@@ -1,0 +1,2 @@
+chalkers
+# PR #61287 (OpenAI-compatible image provider)

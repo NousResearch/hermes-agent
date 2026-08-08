@@ -191,6 +191,19 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
     return results
 
 
+def normalize_memory_provider_name(name: object) -> str:
+    """Map config aliases for the built-in MEMORY.md store to empty string.
+
+    ``builtin`` / ``built-in`` / ``none`` (any case, stripped) are not plugin
+    names — they mean "no external memory.provider" (#49513, #75647). Shared by
+    doctor, agent init, and the dashboard so diagnostics match runtime.
+    """
+    provider = str(name or "").strip()
+    if provider.lower() in {"built-in", "builtin", "none"}:
+        return ""
+    return provider
+
+
 def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
     """Load and return a MemoryProvider instance by name.
 

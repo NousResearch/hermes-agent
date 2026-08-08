@@ -398,7 +398,7 @@ def register(ctx):
 | `subagent_stop` | 观察者 | 子 agent 退出；忽略返回值。 | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary 和已脱敏 tool-history metadata 仍可能暴露项目结构。 |
 | `pre_gateway_dispatch` | 指令/控制 | 非 internal 入站消息在 auth/pairing/dispatch 前；第一个有效 `skip`、`rewrite` 或 `allow` 控制流程。 | `event`, `gateway`, `session_store` | 极高权限的进程内对象会暴露入站用户/routing 数据和 host handle。 |
 | `pre_approval_request` | 观察者 | Prompted 或 smart approval 前；忽略返回值。 | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id` | 命令可能含 secret；smart observer preparation 会强制脱敏，但各 surface 并非完全相同。 |
-| `post_approval_response` | 观察者 | 决策或 timeout 后；忽略返回值。 | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id`, `choice`；smart 路径可增加 `decided_by` | 同样的命令敏感性，加决策 metadata。 |
+| `post_approval_response` | 观察者 | 决策、timeout 或 gateway 通知失败后；忽略返回值。 | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id`, `choice`；smart 路径可增加 `decided_by` | 同样的命令敏感性，加决策 metadata。 |
 | `kanban_task_claimed` | 观察者 | Claim commit 后，在 dispatcher 进程 spawn worker 前；忽略返回值。 | `task_id`, `profile_name`, `board`, `assignee`, `run_id` | Board/task/profile/assignee 标识。 |
 | `kanban_task_completed` | 观察者 | Completion 和 cleanup 后，通常在 worker 进程；忽略返回值。 | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `summary` | Summary 可能含项目/用户内容。 |
 | `kanban_task_blocked` | 观察者 | Blocked transition 后；dependency-wait 路径在 transaction 退出前触发。忽略返回值。 | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `reason` | Reason 可能含项目/用户内容。 |
@@ -773,7 +773,7 @@ def register(ctx):
 
 ### `on_session_finalize`
 
-当 CLI 或 gateway **销毁**活跃会话时触发——例如用户执行 `/new`、gateway GC 了空闲会话，或 CLI 在 agent 活跃时退出。这是在会话身份消失前刷新与该会话绑定状态的最后机会。
+当 CLI 或 gateway **销毁**活跃会话时触发——例如用户执行 `/new`、gateway GC 了空闲会话，或 CLI 在 agent 活跃时退出。可用它刷新与旧 session ID 绑定的状态。Gateway reset 时，替代会话会先创建并持久化，然后才调用此回调。
 
 **回调签名：**
 
@@ -812,7 +812,7 @@ def my_callback(session_id: str, platform: str, **kwargs):
 | `old_session_id` | `str`，可选 | 仅 gateway，旧 session ID。 |
 | `new_session_id` | `str`，可选 | 仅 gateway，新 session ID。 |
 
-**触发位置：** CLI 提供 `session_id`、`platform`、`reason`；TUI 提供 `session_id`、`platform`；gateway 在分配新 key 后另加 `reason`、`old_session_id`、`new_session_id`。Gateway reset 顺序为：`on_session_finalize(old_id)` → 切换 → `on_session_reset(new_id)` → 第一条入站消息时的 `on_session_start(new_id)`。
+**触发位置：** CLI 提供 `session_id`、`platform`、`reason`；TUI 提供 `session_id`、`platform`；gateway 在分配新 key 后另加 `reason`、`old_session_id`、`new_session_id`。Gateway reset 顺序为：创建并持久化替代会话 → `on_session_finalize(old_id)` → `on_session_reset(new_id)` → 第一条入站消息时的 `on_session_start(new_id)`。
 
 **返回值：** 忽略。
 
@@ -988,7 +988,7 @@ def register(ctx):
 
 ### `post_approval_response`
 
-在用户响应审批提示（或提示超时）**之后**触发。
+在用户响应审批提示、提示超时，或 gateway 无法发送审批通知**之后**触发。通知失败会在尚无审批决定时以 `choice="notify_failed"` 触发。
 
 **回调签名：**
 

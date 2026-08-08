@@ -425,3 +425,206 @@ class TestCmdlineCapture:
         live = self._live()
         monkeypatch.setattr(live.sys, "platform", "win32")
         assert live._dashboard_cmdline_for_pid(123) is None
+
+
+class TestShellSupervisorDetection:
+    """``_is_shell_supervisor_command`` recognises respawn-loop wrappers.
+
+    A supervisor such as ``bash -lc 'while true; do hermes dashboard …'``
+    contains the dashboard invocation only as text inside a ``-c`` script.
+    The dashboard process itself is never a shell ``-c`` invocation, so it is
+    still matched by the scan (#73379).
+    """
+
+    def _fn(self):
+        import importlib
+
+        live = sys.modules.get("hermes_cli.main") or importlib.import_module("hermes_cli.main")
+        return live._is_shell_supervisor_command
+
+    def test_bash_lc_while_loop_is_supervisor(self):
+        is_sup = self._fn()
+        assert is_sup(
+            "bash -lc 'while true; do hermes dashboard --host 127.0.0.1 "
+            "--port 9119 --no-open --skip-build; echo restarting; sleep 3; done'"
+        )
+
+    def test_sh_c_until_loop_is_supervisor(self):
+        is_sup = self._fn()
+        assert is_sup("sh -c 'until false; do hermes serve --port 9000; sleep 5; done'")
+
+    def test_zsh_for_loop_is_supervisor(self):
+        is_sup = self._fn()
+        assert is_sup("zsh -c 'for i in {1..100}; do hermes dashboard; sleep 2; done'")
+
+    def test_direct_python_dashboard_not_supervisor(self):
+        is_sup = self._fn()
+        assert not is_sup("python3 -m hermes_cli.main dashboard --port 9119")
+
+    def test_direct_hermes_serve_not_supervisor(self):
+        is_sup = self._fn()
+        assert not is_sup("/opt/hermes/bin/hermes serve --port 9119")
+
+    def test_interactive_shell_not_supervisor(self):
+        is_sup = self._fn()
+        assert not is_sup("/bin/bash")
+
+    def test_one_shot_bash_c_without_loop_not_supervisor(self):
+        """A one-shot ``bash -c "hermes dashboard …"`` (no loop) is a rare but
+        legitimate direct invocation — it must still be detected."""
+        is_sup = self._fn()
+        assert not is_sup("bash -c 'hermes dashboard --port 9119'")
+
+    def test_shell_running_script_file_not_supervisor(self):
+        """``bash some-script.sh`` runs a file, not a ``-c`` script string."""
+        is_sup = self._fn()
+        assert not is_sup("bash /home/user/run-dashboard.sh")
+
+
+class TestScanExcludesSupervisorWrappers:
+    """The ps/wmic scan must not return respawn-loop supervisor wrappers,
+    only the real dashboard leaf (#73379 Layer 1)."""
+
+    def test_wrapper_and_leaf_only_leaf_returned(self):
+        wrapper = (
+            "bash -lc 'while true; do hermes dashboard --host 127.0.0.1 "
+            "--port 9119 --no-open --skip-build; sleep 3; done'"
+        )
+        leaf = "python3 -m hermes_cli.main dashboard --host 127.0.0.1 --port 9119 --no-open --skip-build"
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(4241, wrapper),
+                    _ps_line(4242, leaf),
+                ]) + "\n",
+                stderr="",
+            )
+            pids = _find_stale_dashboard_pids()
+        # Only the leaf (4242) — the supervisor wrapper (4241) is excluded.
+        assert pids == [4242]
+
+    def test_serve_wrapper_excluded(self):
+        wrapper = "sh -c 'while true; do hermes serve --port 9000; sleep 2; done'"
+        leaf = "hermes serve --port 9000 --no-open"
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([_ps_line(5001, wrapper), _ps_line(5002, leaf)]) + "\n",
+                stderr="",
+            )
+            pids = _find_stale_dashboard_pids()
+        assert pids == [5002]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill semantics")
+class TestSupervisedLeafRespawnGuard:
+    """A dashboard leaf whose parent is a live respawn-loop supervisor must
+    NOT be detached-respawned — the supervisor restarts it in-session
+    (#73379 Layer 3). Without this guard, a detached orphan reclaims the
+    dashboard port and the supervisor crash-loops on "address already in use".
+    """
+
+    def test_supervised_leaf_left_to_supervisor_not_respawned(self, capsys):
+        LEAF = 4242
+        SUP = 4241
+        leaf_cmd = ["python3", "-m", "hermes_cli.main", "dashboard",
+                    "--host", "127.0.0.1", "--port", "9119", "--no-open"]
+        sup_cmd = ["bash", "-lc",
+                   "while true; do hermes dashboard --host 127.0.0.1 "
+                   "--port 9119 --no-open; sleep 3; done"]
+
+        def cmdline_side(pid):
+            return {LEAF: leaf_cmd, SUP: sup_cmd}.get(pid)
+
+        respawned: list[list[str]] = []
+
+        def fake_kill(pid, sig):
+            # Leaf is already gone after SIGTERM → counted as killed, no poll.
+            raise ProcessLookupError
+
+        with patch("hermes_cli.main._restart_managed_dashboard_service",
+                   return_value=False), \
+             patch("hermes_cli.main._find_stale_dashboard_pids",
+                   return_value=[LEAF]), \
+             patch("hermes_cli.main._get_pid_cgroup_path", return_value=None), \
+             patch("hermes_cli.main._get_systemd_service_for_pid",
+                   return_value=None), \
+             patch("hermes_cli.main._dashboard_cmdline_for_pid",
+                   side_effect=cmdline_side), \
+             patch("hermes_cli.main._parent_pid_for_pid", return_value=SUP), \
+             patch("hermes_cli.main._respawn_dashboard_processes",
+                   side_effect=lambda cmds: (respawned.extend(cmds) or [])), \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            _kill_stale_dashboard_processes(restart_managed=True)
+
+        # The supervised leaf must not be detached-respawned.
+        assert respawned == []
+        out = capsys.readouterr().out
+        assert "supervisor" in out.lower()
+
+    def test_orphaned_leaf_still_respawned(self, capsys):
+        """A genuinely orphaned leaf (PPID 1 / no supervisor) keeps the
+        existing detached-respawn behaviour — the fix must not regress the
+        common manual-restart path (#40449)."""
+        LEAF = 4242
+        leaf_cmd = ["python3", "-m", "hermes_cli.main", "dashboard", "--port", "9119"]
+
+        respawned: list[list[str]] = []
+
+        def fake_kill(pid, sig):
+            raise ProcessLookupError
+
+        with patch("hermes_cli.main._restart_managed_dashboard_service",
+                   return_value=False), \
+             patch("hermes_cli.main._find_stale_dashboard_pids",
+                   return_value=[LEAF]), \
+             patch("hermes_cli.main._get_pid_cgroup_path", return_value=None), \
+             patch("hermes_cli.main._get_systemd_service_for_pid",
+                   return_value=None), \
+             patch("hermes_cli.main._dashboard_cmdline_for_pid",
+                   return_value=leaf_cmd), \
+             patch("hermes_cli.main._parent_pid_for_pid", return_value=1), \
+             patch("hermes_cli.main._respawn_dashboard_processes",
+                   side_effect=lambda cmds: (respawned.extend(cmds) or [])), \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            _kill_stale_dashboard_processes(restart_managed=True)
+
+        assert respawned == [leaf_cmd]
+
+    def test_terminal_parent_not_treated_as_supervisor(self, capsys):
+        """A leaf whose parent is an ordinary interactive shell (not a respawn
+        loop) is still detached-respawned — the guard only fires for actual
+        supervisor loops."""
+        LEAF = 4242
+        SHELL = 4241
+        leaf_cmd = ["python3", "-m", "hermes_cli.main", "dashboard", "--port", "9119"]
+        shell_cmd = ["/bin/bash"]  # interactive shell, no -c loop
+
+        def cmdline_side(pid):
+            return {LEAF: leaf_cmd, SHELL: shell_cmd}.get(pid)
+
+        respawned: list[list[str]] = []
+
+        def fake_kill(pid, sig):
+            raise ProcessLookupError
+
+        with patch("hermes_cli.main._restart_managed_dashboard_service",
+                   return_value=False), \
+             patch("hermes_cli.main._find_stale_dashboard_pids",
+                   return_value=[LEAF]), \
+             patch("hermes_cli.main._get_pid_cgroup_path", return_value=None), \
+             patch("hermes_cli.main._get_systemd_service_for_pid",
+                   return_value=None), \
+             patch("hermes_cli.main._dashboard_cmdline_for_pid",
+                   side_effect=cmdline_side), \
+             patch("hermes_cli.main._parent_pid_for_pid", return_value=SHELL), \
+             patch("hermes_cli.main._respawn_dashboard_processes",
+                   side_effect=lambda cmds: (respawned.extend(cmds) or [])), \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            _kill_stale_dashboard_processes(restart_managed=True)
+
+        assert respawned == [leaf_cmd]

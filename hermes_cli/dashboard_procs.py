@@ -13,6 +13,7 @@ patches on ``hermes_cli.main`` resolve unchanged.
 """
 
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +24,103 @@ def _m():
     from hermes_cli import main
 
     return main
+
+
+# Shells that supervisors (tmux/respawn loops, supervisord-style wrappers) use
+# to run a respawn script via ``-c``. The dashboard leaf is always
+# ``python``/``hermes`` itself, never one of these.
+_SHELL_INTERPRETERS = frozenset(
+    {"bash", "sh", "zsh", "dash", "ksh", "ash", "fish", "tcsh", "csh", "mksh"}
+)
+
+
+def _is_shell_supervisor_command(command: str) -> bool:
+    """Return ``True`` when *command* is a shell interpreter running a respawn loop.
+
+    Supervisor wrappers — e.g.
+    ``bash -lc 'while true; do hermes dashboard …; sleep 3; done'`` running
+    inside a tmux pane — contain the dashboard invocation only as text inside
+    a ``-c`` script string. They are *not* the dashboard process itself.
+    Matching them makes ``hermes update`` kill the supervisor and then
+    detached-respawn the backend, orphaning it on the dashboard port while the
+    supervisor crash-loops on "address already in use" (#73379).
+
+    A real dashboard leaf (``python …/hermes dashboard``) is never a shell
+    ``-c`` invocation, so it is still detected normally. A one-shot
+    ``bash -c "hermes dashboard …"`` with no loop is intentionally still
+    matched — it is a rare but legitimate direct invocation.
+    """
+    tokens = command.split()
+    if len(tokens) < 2:
+        return False
+    if os.path.basename(tokens[0]).lower() not in _SHELL_INTERPRETERS:
+        return False
+    # The script lives in a -c / --command argument (also combined short flags
+    # such as ``-lc`` / ``-ic``).
+    has_command_flag = any(
+        tok in ("-c", "--command")
+        or (
+            tok.startswith("-")
+            and not tok.startswith("--")
+            and len(tok) <= 4
+            and "c" in tok
+        )
+        for tok in tokens[1:]
+    )
+    if not has_command_flag:
+        return False
+    lowered = command.lower()
+    # Only treat as a supervisor when the wrapper actually runs a respawn loop
+    # — the marker of the orphan-on-restart bug class.
+    return any(kw in lowered for kw in ("while", "until", "for ", ";do", "; do"))
+
+
+def _parent_pid_for_pid(pid: int) -> int | None:
+    """Best-effort parent-PID lookup for *pid* (Linux ``/proc`` / macOS ``ps``).
+
+    Used to decide whether a killed dashboard leaf was supervised: a live
+    respawn-loop parent will restart it in-session, so we must not also
+    detached-respawn it (#73379).
+    """
+    try:
+        status_path = f"/proc/{pid}/status"
+        if os.path.exists(status_path):
+            with open(status_path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if line.startswith("PPid:"):
+                        try:
+                            return int(line.split(":")[1].strip())
+                        except (ValueError, IndexError):
+                            return None
+            return None
+        # macOS (no /proc): best-effort via ps.
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "ppid="],
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        ppid = (result.stdout or "").strip()
+        return int(ppid) if ppid.isdigit() else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def _parent_is_supervisor(ppid: int) -> bool:
+    """Return ``True`` if *ppid* is a live respawn-loop supervisor process.
+
+    Reads the parent's argv; if it is a shell ``-c`` respawn loop, the killed
+    dashboard child will be restarted by that supervisor, so detachedly
+    respawning it here would orphan the backend on the dashboard port
+    (#73379). A missing/unreadable parent (already reaped) returns ``False``
+    so the caller falls back to the existing detached-respawn path.
+    """
+    parent_argv = _m()._dashboard_cmdline_for_pid(ppid)
+    if not parent_argv:
+        return False
+    return _is_shell_supervisor_command(shlex.join(parent_argv))
 
 
 def _scan_dashboard_processes(
@@ -102,6 +200,7 @@ def _scan_dashboard_processes(
                     if (
                         any(p in current_cmd for p in patterns)
                         and int(pid_str) != self_pid
+                        and not _is_shell_supervisor_command(current_cmd)
                     ):
                         try:
                             dashboard_processes.append((int(pid_str), current_cmd))
@@ -133,7 +232,11 @@ def _scan_dashboard_processes(
                     except ValueError:
                         continue
                     command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
+                    if (
+                        any(p in command for p in patterns)
+                        and pid != self_pid
+                        and not _is_shell_supervisor_command(command)
+                    ):
                         dashboard_processes.append((pid, command))
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []
@@ -210,6 +313,7 @@ def _kill_stale_dashboard_processes(
     pid_cgroup: dict[int, str | None] = {}
     pid_service: dict[int, str | None] = {}
     pid_cmdline: dict[int, list[str]] = {}
+    pid_ppid: dict[int, int | None] = {}
     if restart_managed and sys.platform != "win32":
         for pid in pids:
             cg_path = _m()._get_pid_cgroup_path(pid)
@@ -217,10 +321,13 @@ def _kill_stale_dashboard_processes(
             pid_service[pid] = _m()._get_systemd_service_for_pid(pid)
             if not pid_service[pid]:
                 # Manually-started process: preserve its exact argv so we
-                # can respawn it after the update (#40449, #68934).
+                # can respawn it after the update (#40449, #68934).  Also
+                # remember its parent PID so the respawn step can tell a
+                # supervised leaf from a genuine orphan (#73379).
                 cmdline = _m()._dashboard_cmdline_for_pid(pid)
                 if cmdline:
                     pid_cmdline[pid] = cmdline
+                    pid_ppid[pid] = _m()._parent_pid_for_pid(pid)
 
     killed: list[int] = []
     failed: list[tuple[int, str]] = []
@@ -300,6 +407,7 @@ def _kill_stale_dashboard_processes(
         failed_restarts: list[tuple[str, str]] = []
         seen_services: set[str] = set()
         respawn_cmds: list[list[str]] = []
+        supervised_restart: list[tuple[int, int]] = []
         for pid in killed:
             svc_name = pid_service.get(pid)
             if svc_name:
@@ -312,7 +420,18 @@ def _kill_stale_dashboard_processes(
                     failed_restarts.append((svc_name, "systemctl restart returned non-zero"))
                     unrecovered.append(pid)
             elif pid in pid_cmdline:
-                respawn_cmds.append(pid_cmdline[pid])
+                # Before detached-respawning a manually-started leaf, check
+                # whether its parent is a live respawn-loop supervisor. If so,
+                # the supervisor will restart the leaf in-session; respawning
+                # detached here would orphan the backend on the dashboard port
+                # while the supervisor crash-loops on "address already in use"
+                # (#73379). Genuine orphans (PPID 1 / nohup) and interactive
+                # shells keep the existing detached-respawn behaviour.
+                parent = pid_ppid.get(pid)
+                if parent and parent != 1 and _parent_is_supervisor(parent):
+                    supervised_restart.append((pid, parent))
+                else:
+                    respawn_cmds.append(pid_cmdline[pid])
             else:
                 unrecovered.append(pid)
 
@@ -320,6 +439,11 @@ def _kill_stale_dashboard_processes(
             print(f"    ✓ restarted systemd service {svc}")
         for svc, err in failed_restarts:
             print(f"    ⚠ {svc}: {err}")
+        for pid, parent in supervised_restart:
+            print(
+                f"    ↻ leaving PID {pid} to its supervisor (PID {parent}) — "
+                f"it will restart the dashboard"
+            )
 
         if respawn_cmds:
             failed_cmds = _m()._respawn_dashboard_processes(respawn_cmds)

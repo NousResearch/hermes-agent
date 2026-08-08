@@ -7299,7 +7299,10 @@ def cmd_gui(args: argparse.Namespace):
 # monkeypatches on hermes_cli.main.<name> keep resolving unchanged.
 from hermes_cli.dashboard_procs import (  # noqa: F401
     _detect_concurrent_hermes_instances,
+    _is_shell_supervisor_command,
     _kill_stale_dashboard_processes,
+    _parent_is_supervisor,
+    _parent_pid_for_pid,
     _scan_dashboard_processes,
 )
 

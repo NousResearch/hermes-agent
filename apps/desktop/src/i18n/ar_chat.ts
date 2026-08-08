@@ -391,6 +391,8 @@ export const arChat = {
       'كانت هذه النافذة متأخرة عن عرض آخر لنفس المحادثة. تم تحميل أحدث الرسائل. أعد الإرسال إذا كنت لا تزال تريد ذلك.',
     providerCredentialRequired: 'مطلوب اعتماد المزود',
     emptySlashCommand: 'أمر slash فارغ',
+    slashCommandIgnoredTitle: 'لم يتم إرسال الأمر',
+    slashCommandIgnoredBody: 'لا يمكن دمج أوامر slash مع المرفقات. أزل المرفق أو أرسل الأمر بشكل منفصل.',
     desktopCommands: 'أوامر سطح المكتب',
     skillCommandsAvailable: count => `${count} أمر مهارة متاح`,
     warningLine: message => `تحذير: ${message}`,

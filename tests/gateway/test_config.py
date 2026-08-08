@@ -241,6 +241,43 @@ class TestGatewayConfigRoundtrip:
         )
 
 
+    def test_agent_executor_workers_defaults_to_ten(self):
+        config = GatewayConfig.from_dict({})
+
+        assert config.agent_executor_workers == 10
+
+    def test_agent_executor_workers_from_top_level_key(self):
+        config = GatewayConfig.from_dict({"agent_executor_workers": 24})
+
+        assert config.agent_executor_workers == 24
+
+    def test_agent_executor_workers_from_nested_gateway_key(self):
+        config = GatewayConfig.from_dict(
+            {"gateway": {"agent_executor_workers": 16}}
+        )
+
+        assert config.agent_executor_workers == 16
+
+    def test_agent_executor_workers_ignores_invalid_values(self, caplog):
+        caplog.set_level(logging.WARNING, logger="gateway.config")
+
+        for raw in ("lots", True, 0, -4, 1.5):
+            config = GatewayConfig.from_dict({"agent_executor_workers": raw})
+            assert config.agent_executor_workers == 10
+
+        assert any(
+            "Ignoring invalid agent_executor_workers" in record.message
+            for record in caplog.records
+        )
+
+    def test_agent_executor_workers_roundtrips_through_to_dict(self):
+        config = GatewayConfig(agent_executor_workers=32)
+
+        restored = GatewayConfig.from_dict(config.to_dict())
+
+        assert restored.agent_executor_workers == 32
+
+
     def test_roundtrip_preserves_unauthorized_dm_behavior(self):
         config = GatewayConfig(
             unauthorized_dm_behavior="ignore",

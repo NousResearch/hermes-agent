@@ -148,14 +148,19 @@ class ImageGenProvider(abc.ABC):
             {
                 "modalities": ["text", "image"],   # which inputs the backend accepts
                 "max_reference_images": 9,          # cap for reference_image_urls
+                "supported_controls": [             # optional per-call tool controls
+                    "size", "quality", "n", "output_format",
+                ],
             }
 
         ``modalities`` declares whether the active backend/model supports
         text-to-image (``"text"``), image-to-image / editing (``"image"``),
-        or both. The tool layer surfaces this in the dynamic schema so the
-        model knows when ``image_url`` is honored. Used by ``hermes tools``
-        for the picker too. Default: text-only (backward compatible — a
-        provider that doesn't override this advertises text-to-image only).
+        or both. ``supported_controls`` is an optional whitelist for extra
+        per-call image parameters exposed only when the active backend can
+        honor them. The tool layer surfaces both in the dynamic schema so the
+        model never receives controls that another provider would reject.
+        Used by ``hermes tools`` for the picker too. Default: text-only with
+        no optional controls (backward compatible).
         """
         return {
             "modalities": ["text"],

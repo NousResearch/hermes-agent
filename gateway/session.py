@@ -3620,12 +3620,21 @@ class SessionStore:
             logger.debug("Failed to rewrite transcript in DB: %s", e)
             return False
 
-    def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
+    def load_transcript(
+        self,
+        session_id: str,
+        *,
+        repair_alternation: bool = True,
+    ) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript.
 
         state.db is the canonical store. The legacy JSONL fallback was removed
         in spec 002 — pre-DB sessions on existing disks have already been
         migrated (their DB row holds the full message history).
+
+        Gateway callers that carry structurally hidden rows (for example
+        Telegram ``observed=True`` context) may request the raw sequence and
+        partition those rows before repairing provider-role alternation.
         """
         if not self._db:
             return []
@@ -3635,7 +3644,8 @@ class SessionStore:
             # would otherwise re-trigger the pre-request repair on every
             # request forever — heal it once at the restore boundary.
             return self._db.get_messages_as_conversation(
-                session_id, repair_alternation=True
+                session_id,
+                repair_alternation=repair_alternation,
             )
         except Exception as e:
             logger.debug("Could not load messages from DB: %s", e)

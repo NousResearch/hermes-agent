@@ -1319,6 +1319,147 @@ def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
     return bool(mt)
 
 
+def _is_addressed_gateway_user_row(message: Dict[str, Any]) -> bool:
+    """Return whether a transcript user row proves an addressed gateway turn.
+
+    Platform message identity is the primary boundary. The provider sidecar is
+    a fallback for gateway turns restored from stores that omit that identity.
+    Ambiguous synthetic/legacy user rows deliberately do not consume pending
+    observations: retaining extra context is safer than silently losing real
+    group conversation.
+    """
+
+    return bool(
+        message.get("platform_message_id")
+        or message.get("message_id")
+        or message.get("api_content") is not None
+    )
+
+
+def _merge_gateway_adjacent_user_sidecars(messages: List[Dict[str, Any]]) -> int:
+    """Merge adjacent text user turns without discarding provider sidecars.
+
+    Generic alternation repair intentionally drops ``api_content`` after a
+    content merge. Gateway replay cannot do that when the sidecar is the exact
+    observed-context wrapper already sent for an addressed turn. Merge those
+    effective provider bytes first; the generic repair can then handle the
+    remaining ordinary adjacency safely.
+    """
+
+    merged: List[Dict[str, Any]] = []
+    repairs = 0
+    for message in messages:
+        if (
+            merged
+            and message.get("role") == "user"
+            and merged[-1].get("role") == "user"
+            and (
+                merged[-1].get("api_content") is not None
+                or message.get("api_content") is not None
+            )
+        ):
+            previous = merged[-1]
+            previous_content = previous.get("content", "")
+            current_content = message.get("content", "")
+            previous_api = previous.get("api_content", previous_content)
+            current_api = message.get("api_content", current_content)
+            if all(
+                isinstance(value, str)
+                for value in (
+                    previous_content,
+                    current_content,
+                    previous_api,
+                    current_api,
+                )
+            ):
+                previous["content"] = (
+                    f"{previous_content}\n\n{current_content}"
+                    if previous_content and current_content
+                    else previous_content or current_content
+                )
+                previous["api_content"] = (
+                    f"{previous_api}\n\n{current_api}"
+                    if previous_api and current_api
+                    else previous_api or current_api
+                )
+                repairs += 1
+                continue
+        merged.append(message)
+
+    if repairs:
+        messages[:] = merged
+    return repairs
+
+
+def _api_content_text_parts(api_content: Any) -> List[str]:
+    if isinstance(api_content, str):
+        return [api_content]
+    if isinstance(api_content, list):
+        return [
+            str(part.get("text", ""))
+            for part in api_content
+            if isinstance(part, dict) and part.get("type") == "text"
+        ]
+    return []
+
+
+def _sidecar_commits_observed_values(
+    api_content: Any,
+    observed_values: List[str],
+) -> bool:
+    """Match historical values while ignoring timestamp presentation changes."""
+
+    from gateway.message_timestamps import strip_leading_message_timestamps
+
+    header = f"{_OBSERVED_GROUP_CONTEXT_HEADER}\n"
+    committed_suffix = f"\n\n{_CURRENT_ADDRESSED_MESSAGE_HEADER}\n"
+    for text in _api_content_text_parts(api_content):
+        if not text.startswith(header):
+            continue
+        remainder = text[len(header):]
+        for index, raw_value in enumerate(observed_values):
+            if remainder.startswith(raw_value):
+                remainder = remainder[len(raw_value):]
+            else:
+                clean_remainder, _ = strip_leading_message_timestamps(remainder)
+                if clean_remainder == remainder or not clean_remainder.startswith(raw_value):
+                    break
+                remainder = clean_remainder[len(raw_value):]
+
+            if index == len(observed_values) - 1:
+                if remainder.startswith(committed_suffix):
+                    return True
+                break
+            if not remainder.startswith("\n"):
+                break
+            remainder = remainder[1:]
+    return False
+
+
+def _committed_observed_version_count(
+    versions: List[tuple[tuple[str, str], str]],
+    api_content: Any,
+) -> int:
+    """Return the historical-version prefix committed by ``api_content``.
+
+    Each candidate cut is projected to the latest value per Telegram message id
+    as it existed at that point. This keeps later human edits pending without
+    letting them obscure an earlier provider snapshot.
+    """
+
+    projection: Dict[tuple[str, str], str] = {}
+    last_matching_index = 0
+    for index, (key, raw_value) in enumerate(versions, start=1):
+        projection.pop(key, None)
+        projection[key] = raw_value
+        if _sidecar_commits_observed_values(
+            api_content,
+            list(projection.values()),
+        ):
+            last_matching_index = index
+    return last_matching_index
+
+
 def _build_gateway_agent_history(
     history: List[Dict[str, Any]],
     *,
@@ -1345,7 +1486,17 @@ def _build_gateway_agent_history(
 
     _msg_tz = _get_msg_tz()
     agent_history: List[Dict[str, Any]] = []
-    observed_group_context: List[str] = []
+    # Observed rows are assigned to the *next* addressed turn.  Earlier rows
+    # already live exactly once in that turn's api_content sidecar and must not
+    # be selected again. Dict insertion order deduplicates Telegram message
+    # ids and keeps the newest human edit available before assignment. Bot
+    # edits are rejected at Telegram ingress while authoritative sender/edit
+    # metadata is still available. Rows without a platform id stay fail-open
+    # and independent.
+    pending_observed: Dict[tuple[str, str], str] = {}
+    pending_observed_versions: List[tuple[tuple[str, str], str, str]] = []
+    observed_content_by_id: Dict[str, str] = {}
+    unkeyed_observed_seq = 0
     separate_observed_context = _uses_telegram_observed_group_context(channel_prompt)
 
     for msg in history or []:
@@ -1362,12 +1513,81 @@ def _build_gateway_agent_history(
         if role == "system":
             continue
 
-        content = msg.get("content")
+        raw_content = msg.get("content")
+        content = raw_content
         if inject_timestamps and role == "user" and isinstance(content, str):
             content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
-        if separate_observed_context and msg.get("observed") and role == "user" and content:
-            observed_group_context.append(str(content).strip())
+        if separate_observed_context and msg.get("observed") and role == "user":
+            if not content:
+                # Empty synthetic rows carry no model context.  Dropping the
+                # entire row also avoids leaking a bare Telegram message id.
+                continue
+            normalized_content = str(content).strip()
+            normalized_raw_content = str(raw_content).strip()
+            message_id = str(msg.get("message_id") or "").strip()
+            if message_id:
+                # Telegram retransmits and restored adapter caches may append
+                # the same passive row again after an addressed boundary. Keep
+                # genuine human corrections (same id, different raw content),
+                # but never redeliver an identical id/content pair. Timestamp
+                # rendering is presentation and must not change this identity.
+                if observed_content_by_id.get(message_id) == normalized_raw_content:
+                    continue
+                observed_content_by_id[message_id] = normalized_raw_content
+                key = ("message", message_id)
+            else:
+                unkeyed_observed_seq += 1
+                key = ("row", str(unkeyed_observed_seq))
+            # Telegram human edits reuse message_id. Keep only the latest
+            # version available at this addressed-turn boundary.
+            pending_observed.pop(key, None)
+            pending_observed[key] = normalized_content
+            pending_observed_versions.append(
+                (key, normalized_raw_content, normalized_content)
+            )
             continue
+
+        if (
+            separate_observed_context
+            and role == "user"
+            and _is_addressed_gateway_user_row(msg)
+        ):
+            # A proven gateway user row is an addressed turn. Consume only the
+            # pending prefix whose exact observed wrapper was durably persisted
+            # on this row. Passive rows may have arrived after the provider
+            # snapshot but before this user row's crash-safe write; transcript
+            # position alone must not assign those later observations backward.
+            committed_count = _committed_observed_version_count(
+                [(key, raw) for key, raw, _ in pending_observed_versions],
+                msg.get("api_content"),
+            )
+            if committed_count:
+                committed_projection: Dict[tuple[str, str], str] = {}
+                for key, raw, _ in pending_observed_versions[:committed_count]:
+                    committed_projection.pop(key, None)
+                    committed_projection[key] = raw
+                del pending_observed_versions[:committed_count]
+
+                suffix_projection: Dict[tuple[str, str], str] = {}
+                for key, raw, _ in pending_observed_versions:
+                    suffix_projection.pop(key, None)
+                    suffix_projection[key] = raw
+                reverted_keys = {
+                    key
+                    for key, raw in suffix_projection.items()
+                    if committed_projection.get(key) == raw
+                }
+                if reverted_keys:
+                    pending_observed_versions[:] = [
+                        version
+                        for version in pending_observed_versions
+                        if version[0] not in reverted_keys
+                    ]
+
+                pending_observed.clear()
+                for key, _, rendered in pending_observed_versions:
+                    pending_observed.pop(key, None)
+                    pending_observed[key] = rendered
 
         # Rich agent messages (tool_calls, tool results) must be passed through
         # intact so the API sees valid assistant→tool sequences.
@@ -1400,6 +1620,19 @@ def _build_gateway_agent_history(
             entry = _build_replay_entry(role, content, msg, preserve_timestamp=(role == "user"))
             agent_history.append(entry)
 
+    # Repair provider role alternation only after structurally hidden observed
+    # rows have been removed.  Repairing the raw transcript first can merge
+    # passive chatter into an addressed/API-wrapped user turn.
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    repair_count = _merge_gateway_adjacent_user_sidecars(agent_history)
+    repair_count += repair_message_sequence(None, agent_history)
+    if repair_count:
+        logger.info(
+            "Repaired %d gateway message-alternation violation(s) after context partitioning",
+            repair_count,
+        )
+
     # Strip interrupted tool-call tails so the LLM doesn't re-execute
     # tools that were killed mid-flight.
     agent_history = strip_interrupted_tool_tails(agent_history)
@@ -1420,29 +1653,56 @@ def _build_gateway_agent_history(
         agent_history, now=time.time()
     )
 
-    observed_context = "\n".join(observed_group_context).strip() or None
+    observed_context = "\n".join(pending_observed.values()).strip() or None
     return agent_history, observed_context
+
+
+def _build_gateway_hygiene_history(
+    history: List[Dict[str, Any]],
+    *,
+    channel_prompt: Optional[str] = None,
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], bool]:
+    """Build safe replay and token-estimate inputs for pre-turn hygiene.
+
+    Passive Telegram observations must not be compressed as ordinary durable
+    user turns.  The estimate includes their once-only pending text so hygiene
+    does not undercount, while the replay list remains safe to compress.  A
+    pending flag lets the caller defer pre-turn compression until the live turn
+    can attach that text without dropping or duplicating it.
+    """
+
+    replay, pending = _build_gateway_agent_history(
+        history,
+        channel_prompt=channel_prompt,
+    )
+    estimate = list(replay)
+    if pending:
+        estimate.append({"role": "user", "content": pending})
+    return replay, estimate, pending is not None
 
 
 def _select_cached_agent_history(
     persisted_history: List[Dict[str, Any]],
     live_history: Any,
 ) -> List[Dict[str, Any]]:
-    """Prefer a cached agent's live in-memory transcript over a shorter
-    persisted one.
+    """Prefer a genuinely longer canonical live transcript.
 
-    Guards the FTS write-corruption case (#50502): when message writes fail
-    silently through corrupt FTS triggers, the next turn reloads a stale/empty
-    ``conversation_history`` from disk even though the same cached ``AIAgent``
-    still holds the full live ``_session_messages``. Replacing the live
-    transcript with that shorter persisted copy causes immediate same-session
-    amnesia. When the live transcript is strictly longer, keep it.
-
-    Returns ``persisted_history`` unchanged unless the live copy is a longer
-    list, in which case a copy of the live transcript is returned.
+    The cached agent keeps provider-facing messages, while the persisted path
+    has already passed through structural filtering and role-alternation repair.
+    Normalize a deep copy of the live list before comparing lengths; otherwise
+    adjacent user rows (including formerly observed wrappers) make memory look
+    newer solely because it is malformed and bypass the cleaned projection.
     """
-    if isinstance(live_history, list) and len(live_history) > len(persisted_history):
-        return list(live_history)
+    if not isinstance(live_history, list):
+        return persisted_history
+
+    from copy import deepcopy
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    canonical_live = deepcopy(live_history)
+    repair_message_sequence(None, canonical_live)
+    if len(canonical_live) > len(persisted_history):
+        return canonical_live
     return persisted_history
 
 
@@ -16942,7 +17202,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         await self._mark_durable_active_turn(event, session_entry.session_key)
 
         # Load conversation history from transcript
-        history = await self.async_session_store.load_transcript(session_entry.session_id)
+        # Keep structurally hidden rows intact until
+        # _build_gateway_agent_history() partitions them.  Generic user-role
+        # repair before that boundary can merge observed Telegram chatter into
+        # an addressed/API-wrapped turn.
+        history = await self.async_session_store.load_transcript(
+            session_entry.session_id,
+            repair_alternation=False,
+        )
+        hygiene_replay_history, hygiene_estimate_history, hygiene_has_pending = (
+            _build_gateway_hygiene_history(
+                history,
+                channel_prompt=event.channel_prompt,
+            )
+        )
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
@@ -16959,7 +17232,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         #    by 30-50% on code/JSON-heavy sessions, but that just
         #    means hygiene fires a bit early — safe and harmless.
         # -----------------------------------------------------------------
-        if history and len(history) >= 4:
+        if hygiene_estimate_history and len(hygiene_estimate_history) >= 4:
             from agent.model_metadata import (
                 estimate_messages_tokens_rough,
                 get_model_context_length_async,
@@ -17127,7 +17400,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 _warn_token_threshold = int(_hyg_context_length * 0.95)
 
-                _msg_count = len(history)
+                _msg_count = len(hygiene_estimate_history)
 
                 # Prefer actual API-reported tokens from the last turn
                 # (stored in session entry) over the rough char-based estimate.
@@ -17136,7 +17409,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _approx_tokens = _stored_tokens
                     _token_source = "actual"
                 else:
-                    _approx_tokens = estimate_messages_tokens_rough(history)
+                    _approx_tokens = estimate_messages_tokens_rough(
+                        hygiene_estimate_history
+                    )
                     _token_source = "estimated"
                     # Note: rough estimates overestimate by 30-50% for code/JSON-heavy
                     # sessions, but that just means hygiene fires a bit early — which
@@ -17163,6 +17438,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _approx_tokens >= _compress_token_threshold
                     or _msg_count >= _HARD_MSG_LIMIT
                 )
+
+                if _needs_compress and hygiene_has_pending:
+                    # The pending observed block belongs exactly once to the
+                    # current addressed turn. Pre-turn in-place hygiene cannot
+                    # commit it without either dropping it or materializing it as
+                    # an ordinary user row, so let the normal agent preflight see
+                    # and compress the fully wrapped current request instead.
+                    logger.info(
+                        "Session hygiene: deferring pre-turn compression for %s; "
+                        "Telegram observed context is pending assignment",
+                        session_entry.session_id,
+                    )
+                    _needs_compress = False
 
                 if _needs_compress:
                     # Use the persistent DB-backed cooldown (same as the
@@ -17220,7 +17508,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             # its full message list to _compress_context — the
                             # gateway now matches.
                             _hyg_msgs = [
-                                m for m in history
+                                m for m in hygiene_replay_history
                                 if m.get("role") in {"user", "assistant", "tool"}
                             ]
 

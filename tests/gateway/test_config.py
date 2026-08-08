@@ -331,6 +331,28 @@ class TestLoadGatewayConfig:
         assert config.default_reset_policy.mode == "idle"
         assert config.default_reset_policy.idle_minutes == 30
 
+    def test_telegram_observed_exclude_patterns_bridge_to_platform_extra(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "telegram:\n"
+            "  observe_unmentioned_group_messages: true\n"
+            "  observe_unmentioned_group_exclude_patterns:\n"
+            "    - '^summary:'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        telegram = config.platforms[Platform.TELEGRAM]
+        assert telegram.extra["observe_unmentioned_group_messages"] is True
+        assert telegram.extra["observe_unmentioned_group_exclude_patterns"] == [
+            "^summary:"
+        ]
+
 
     def test_slack_ignored_channels_config_sets_env_bridge(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

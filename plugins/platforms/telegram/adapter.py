@@ -7890,6 +7890,56 @@ class TelegramAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES", "false").lower() in {"true", "1", "yes", "on"}
 
+    def _telegram_observed_exclude_patterns(self) -> List[str]:
+        """Return operator-configured regexes for passive group observations."""
+
+        configured = self.config.extra.get(
+            "observe_unmentioned_group_exclude_patterns",
+            [],
+        )
+        if isinstance(configured, str):
+            configured = [configured]
+        if not isinstance(configured, (list, tuple)):
+            return []
+        return [str(pattern) for pattern in configured if str(pattern)]
+
+    def _telegram_should_exclude_observed_event(self, event: MessageEvent) -> bool:
+        """Match passive content filters, failing open on invalid regexes.
+
+        Patterns only apply to transport-verified bot authors and run against
+        the original message text before sender attribution. Human observations
+        always survive. A match drops the whole synthetic observed row, so no
+        empty message-id metadata remains. Invalid operator patterns retain
+        content rather than risking silent loss of real conversation.
+        """
+
+        if not getattr(event.source, "is_bot", False):
+            return False
+
+        text = str(event.text or "")
+        for pattern in self._telegram_observed_exclude_patterns():
+            try:
+                if re.search(pattern, text):
+                    return True
+            except re.error as exc:
+                logger.warning(
+                    "[%s] Invalid Telegram observed-context exclude regex %r; "
+                    "keeping message: %s",
+                    getattr(self, "name", "telegram"),
+                    pattern,
+                    exc,
+                )
+        return False
+
+    @staticmethod
+    def _telegram_update_is_edit(update: Update) -> bool:
+        """Return whether Telegram delivered an edited message update."""
+
+        return bool(
+            getattr(update, "edited_message", None)
+            or getattr(update, "edited_channel_post", None)
+        )
+
     def _telegram_guest_mode(self) -> bool:
         """Return whether non-allowlisted groups may trigger via direct @mention."""
         configured = self.config.extra.get("guest_mode")
@@ -8698,6 +8748,7 @@ class TelegramAdapter(BasePlatformAdapter):
         msg_type: MessageType,
         update_id: Optional[int] = None,
         event: Optional[MessageEvent] = None,
+        edited: bool = False,
     ) -> None:
         """Append skipped group chatter to the target session without dispatching."""
         store = getattr(self, "_session_store", None)
@@ -8705,6 +8756,28 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         try:
             event = event or self._build_message_event(message, msg_type, update_id=update_id)
+            if edited and event.source.is_bot:
+                logger.info(
+                    "[%s] Ignoring edited bot message in Telegram observed context: "
+                    "chat=%s message_id=%s",
+                    getattr(self, "name", "telegram"),
+                    getattr(getattr(message, "chat", None), "id", "unknown"),
+                    event.message_id or "unknown",
+                )
+                return
+            if self._telegram_should_exclude_observed_event(event):
+                original_text = str(event.text or "")
+                logger.info(
+                    "[%s] Filtered passive Telegram bot observation: "
+                    "chat=%s message_id=%s from=%s original_text=%r truncated=%s",
+                    getattr(self, "name", "telegram"),
+                    getattr(getattr(message, "chat", None), "id", "unknown"),
+                    event.message_id or "unknown",
+                    getattr(event.source, "user_id", None) or "unknown",
+                    original_text[:1000],
+                    len(original_text) > 1000,
+                )
+                return
             shared_source = self._telegram_group_observe_shared_source(event.source)
             session_entry = store.get_or_create_session(shared_source)
             entry = {
@@ -8896,7 +8969,12 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
-                self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
+                self._observe_unmentioned_group_message(
+                    msg,
+                    MessageType.TEXT,
+                    update_id=update.update_id,
+                    edited=self._telegram_update_is_edit(update),
+                )
             return
         await self._ensure_forum_commands(update.message)
 
@@ -8954,7 +9032,12 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
-                self._observe_unmentioned_group_message(msg, MessageType.LOCATION, update_id=update.update_id)
+                self._observe_unmentioned_group_message(
+                    msg,
+                    MessageType.LOCATION,
+                    update_id=update.update_id,
+                    edited=self._telegram_update_is_edit(update),
+                )
             return
 
         venue = getattr(msg, "venue", None)
@@ -9147,29 +9230,44 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
-        if not update.message:
+        msg = self._effective_update_message(update)
+        if not msg:
             return
-        if not self._is_user_authorized_from_message(update.message):
+        if not self._is_user_authorized_from_message(msg):
             logger.info(
                 "[Telegram] Blocked media from unauthorized user %s in chat %s",
-                getattr(getattr(update.message, "from_user", None), "id", None),
-                getattr(getattr(update.message, "chat", None), "id", None),
+                getattr(getattr(msg, "from_user", None), "id", None),
+                getattr(getattr(msg, "chat", None), "id", None),
             )
             return
-        if not self._should_process_message(update.message):
-            if self._should_observe_unmentioned_group_message(update.message):
-                _m = update.message
+        if not self._should_process_message(msg):
+            if self._should_observe_unmentioned_group_message(msg):
+                _m = msg
                 _observe_type = self._media_message_type(_m)
                 _event = self._build_message_event(_m, _observe_type, update_id=update.update_id)
                 if _m.caption:
                     _event.text = self._clean_bot_trigger_text(_m.caption)
+                _edited = self._telegram_update_is_edit(update)
+                if _edited and _event.source.is_bot:
+                    # Let the common ingress guard log and reject this before
+                    # downloading/caching cumulative bot progress media.
+                    self._observe_unmentioned_group_message(
+                        _m,
+                        _event.message_type,
+                        update_id=update.update_id,
+                        event=_event,
+                        edited=True,
+                    )
+                    return
                 await self._cache_observed_media(_m, _event)
                 self._observe_unmentioned_group_message(
-                    _m, _event.message_type, update_id=update.update_id, event=_event
+                    _m,
+                    _event.message_type,
+                    update_id=update.update_id,
+                    event=_event,
+                    edited=_edited,
                 )
             return
-
-        msg = update.message
 
         msg_type = self._media_message_type(msg)
 

@@ -143,9 +143,14 @@ telegram:
     - "-1001234567890"
   require_mention: true
   observe_unmentioned_group_messages: true
+  # Optional: drop whole bot-authored passive rows whose original text matches.
+  observe_unmentioned_group_exclude_patterns:
+    - '^✓ Context compaction complete'
 ```
 
-With this mode enabled, unmentioned group messages from explicitly allowlisted chats/topics are appended to the shared chat/topic session transcript as observed context, but they do not dispatch the agent. `allowed_chats` gates where the bot responds; `group_allowed_chats` authorizes the shared group session used for observed context, so use the same chat IDs for this mode. A later `@botname` mention, reply to the bot, or configured mention pattern in that same allowlisted chat/topic can use that observed context. The triggered message is also tagged with `[nickname|user_id]` and gets a per-turn safety prompt so the model treats prior observed lines as context, not instructions addressed to the bot.
+With this mode enabled, unmentioned group messages from explicitly allowlisted chats/topics are appended to the shared chat/topic session transcript as observed context, but they do not dispatch the agent. `allowed_chats` gates where the bot responds; `group_allowed_chats` authorizes the shared group session used for observed context, so use the same chat IDs for this mode. A later `@botname` mention, reply to the bot, or configured mention pattern in that same allowlisted chat/topic can use that observed context. Each observed message is assigned exactly once to the next addressed turn. Human edits keep the newest version available before assignment. Edited messages authored by bots are dropped before persistence so cumulative progress UI cannot inflate later prompts; normal bot messages and final replies with their own message IDs remain available. The triggered message is also tagged with `[nickname|user_id]` and gets a per-turn safety prompt so the model treats prior observed lines as context, not instructions addressed to the bot.
+
+`observe_unmentioned_group_exclude_patterns` is optional and only applies to transport-verified bot authors. Each regex matches against the original message text before sender attribution; human-authored observations are always retained. A match drops the whole synthetic observation, including its metadata, and emits a bounded local INFO audit entry with the source message ID and original-text preview. Invalid regexes fail open and keep the message; use narrow patterns because real conversational bot content should be retained when in doubt.
 
 Equivalent environment variable:
 

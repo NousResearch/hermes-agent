@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -22,6 +23,7 @@ def _make_adapter(
     group_allowed_chats=None,
     guest_mode=None,
     observe_unmentioned_group_messages=None,
+    observe_unmentioned_group_exclude_patterns=None,
     bot_username="hermes_bot",
 ):
     from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -65,6 +67,10 @@ def _make_adapter(
         extra["guest_mode"] = guest_mode
     if observe_unmentioned_group_messages is not None:
         extra["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
+    if observe_unmentioned_group_exclude_patterns is not None:
+        extra["observe_unmentioned_group_exclude_patterns"] = (
+            observe_unmentioned_group_exclude_patterns
+        )
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -99,6 +105,7 @@ def _group_message(
     entities=None,
     caption=None,
     caption_entities=None,
+    from_user_is_bot=False,
 ):
     reply_to_message = None
     if reply_to_bot:
@@ -112,7 +119,12 @@ def _group_message(
         message_thread_id=thread_id,
         is_topic_message=thread_id is not None,
         chat=SimpleNamespace(id=chat_id, type="group", title="Test Group", is_forum=thread_id is not None),
-        from_user=SimpleNamespace(id=from_user_id, full_name=from_user_name, first_name=from_user_name.split()[0]),
+        from_user=SimpleNamespace(
+            id=from_user_id,
+            full_name=from_user_name,
+            first_name=from_user_name.split()[0],
+            is_bot=from_user_is_bot,
+        ),
         reply_to_message=reply_to_message,
         date=None,
     )
@@ -184,6 +196,212 @@ def test_unmentioned_group_messages_can_be_observed_without_dispatching():
         assert store.sources[0].chat_type == "group"
         assert store.sources[0].user_id is None
         assert store.sources[0].user_name is None
+
+    asyncio.run(_run())
+
+
+def test_observed_bot_edit_is_ignored_before_persistence():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=True,
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        edited_message = _group_message(
+            "progress step 1 + step 2",
+            from_user_id=222,
+            from_user_name="Helper Bot",
+            from_user_is_bot=True,
+        )
+        update = SimpleNamespace(
+            update_id=1002,
+            message=None,
+            edited_message=edited_message,
+            edited_channel_post=None,
+            effective_message=edited_message,
+        )
+
+        await adapter._handle_text_message(update, SimpleNamespace())
+
+        assert store.messages == []
+
+    asyncio.run(_run())
+
+
+def test_observed_human_edit_is_kept_as_real_content():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=True,
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        edited_message = _group_message(
+            "corrected human content",
+            from_user_id=222,
+            from_user_name="Alice",
+        )
+        update = SimpleNamespace(
+            update_id=1003,
+            message=None,
+            edited_message=edited_message,
+            edited_channel_post=None,
+            effective_message=edited_message,
+        )
+
+        await adapter._handle_text_message(update, SimpleNamespace())
+
+        assert len(store.messages) == 1
+        assert "corrected human content" in store.messages[0][1]["content"]
+
+    asyncio.run(_run())
+
+
+def test_observed_human_media_edit_is_retained_from_effective_message():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=True,
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        adapter._cache_observed_media = AsyncMock()
+        edited_message = _group_photo_message(caption="corrected human caption")
+        edited_message.from_user.is_bot = False
+        update = SimpleNamespace(
+            update_id=1006,
+            message=None,
+            edited_message=edited_message,
+            edited_channel_post=None,
+            effective_message=edited_message,
+        )
+
+        await adapter._handle_media_message(update, SimpleNamespace())
+
+        adapter._cache_observed_media.assert_awaited_once()
+        assert len(store.messages) == 1
+        assert "corrected human caption" in store.messages[0][1]["content"]
+
+    asyncio.run(_run())
+
+
+def test_observed_bot_media_edit_is_dropped_before_caching():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=True,
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        adapter._cache_observed_media = AsyncMock()
+        edited_message = _group_photo_message(caption="cumulative bot progress")
+        edited_message.from_user.is_bot = True
+        update = SimpleNamespace(
+            update_id=1007,
+            message=None,
+            edited_message=edited_message,
+            edited_channel_post=None,
+            effective_message=edited_message,
+        )
+
+        await adapter._handle_media_message(update, SimpleNamespace())
+
+        adapter._cache_observed_media.assert_not_awaited()
+        assert store.messages == []
+
+    asyncio.run(_run())
+
+
+def test_observed_exclude_pattern_drops_the_whole_bot_synthetic_row(caplog):
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=True,
+            observe_unmentioned_group_exclude_patterns=[
+                r"^✓ Context compaction complete",
+            ],
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        update = SimpleNamespace(
+            update_id=1003,
+            message=_group_message(
+                "✓ Context compaction complete — continuing turn...",
+                from_user_id=222,
+                from_user_name="Helper Bot",
+                from_user_is_bot=True,
+            ),
+            effective_message=None,
+        )
+
+        with caplog.at_level(logging.INFO):
+            await adapter._handle_text_message(update, SimpleNamespace())
+
+        assert store.messages == []
+        assert "Filtered passive Telegram bot observation" in caplog.text
+        assert "message_id=42" in caplog.text
+        assert "✓ Context compaction complete — continuing turn..." in caplog.text
+
+    asyncio.run(_run())
+
+
+def test_observed_exclude_pattern_never_drops_human_content():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=True,
+            observe_unmentioned_group_exclude_patterns=[r"^🔎 "],
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        update = SimpleNamespace(
+            update_id=1008,
+            message=_group_message("🔎 menschlicher Lupenbericht"),
+            effective_message=None,
+        )
+
+        await adapter._handle_text_message(update, SimpleNamespace())
+
+        assert len(store.messages) == 1
+        assert "🔎 menschlicher Lupenbericht" in store.messages[0][1]["content"]
+
+    asyncio.run(_run())
+
+
+def test_invalid_observed_exclude_pattern_fails_open_and_keeps_content():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=True,
+            observe_unmentioned_group_exclude_patterns=["[invalid"],
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        update = SimpleNamespace(
+            update_id=1004,
+            message=_group_message("real human content"),
+            effective_message=None,
+        )
+
+        await adapter._handle_text_message(update, SimpleNamespace())
+
+        assert len(store.messages) == 1
+        assert "real human content" in store.messages[0][1]["content"]
 
     asyncio.run(_run())
 

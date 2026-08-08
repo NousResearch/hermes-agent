@@ -1566,6 +1566,10 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["exclusive_bot_mentions"] = platform_cfg["exclusive_bot_mentions"]
                 if plat == Platform.TELEGRAM and "observe_unmentioned_group_messages" in platform_cfg:
                     bridged["observe_unmentioned_group_messages"] = platform_cfg["observe_unmentioned_group_messages"]
+                if plat == Platform.TELEGRAM and "observe_unmentioned_group_exclude_patterns" in platform_cfg:
+                    bridged["observe_unmentioned_group_exclude_patterns"] = platform_cfg[
+                        "observe_unmentioned_group_exclude_patterns"
+                    ]
                 if "dm_policy" in platform_cfg:
                     bridged["dm_policy"] = platform_cfg["dm_policy"]
                 if "allow_from" in platform_cfg:

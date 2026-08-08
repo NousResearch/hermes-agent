@@ -243,6 +243,14 @@ function updateAtom<T>(store: AppAtom<T>, next: Updater<T>) {
 export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id'>): string =>
   session._lineage_root_id ?? session.id
 
+/** Stable conversation family id for read/unread state. A user reads one row,
+ *  but the finished-turn marker may belong to a branch child or a compressed
+ *  continuation of that same conversation. Group by the durable family root so
+ *  reading any row in the family clears the whole family. */
+export const sessionReadFamilyId = (
+  session: Pick<SessionInfo, '_lineage_root_id' | 'id' | 'parent_session_id'>
+): string => session._lineage_root_id ?? session.parent_session_id ?? session.id
+
 /** True when a stored/lineage id resolves to this session — it matches either
  *  the live id or the stable lineage root (see sessionPinId). The one place the
  *  "same conversation across compression" test lives. */
@@ -565,14 +573,52 @@ export const setActiveSessionStoredIdRotation = (next: Updater<ActiveSessionStor
 // Written by session-states.ts (handleTransition), cleared here on session open.
 export const $unreadFinishedSessionIds = atom<string[]>([])
 
+// Last time the user actually viewed a session. A finished turn should only
+// re-arm the unread marker if it settles AFTER this baseline; otherwise an
+// already-viewed completion keeps re-lighting the row.
+export const $lastReadAtBySessionId = atom<Record<string, number>>({})
+
+export const markSessionRead = (storedSessionId: string | null | undefined) => {
+  if (!storedSessionId) {
+    return
+  }
+
+  const sessions = $sessions.get()
+  const familyIds = new Set<string>([storedSessionId])
+
+  for (const session of sessions) {
+    if (session.id === storedSessionId || sessionMatchesStoredId(session, storedSessionId)) {
+      familyIds.add(session.id)
+      familyIds.add(sessionReadFamilyId(session))
+
+      if (session.parent_session_id) {
+        familyIds.add(session.parent_session_id)
+      }
+    }
+  }
+
+  for (const session of sessions) {
+    if (familyIds.has(sessionReadFamilyId(session)) || (session.parent_session_id && familyIds.has(session.parent_session_id))) {
+      familyIds.add(session.id)
+      familyIds.add(sessionReadFamilyId(session))
+    }
+  }
+
+  const lastReadAt = Date.now()
+  const nextReadMap = { ...$lastReadAtBySessionId.get() }
+
+  for (const id of familyIds) {
+    nextReadMap[id] = lastReadAt
+  }
+
+  $lastReadAtBySessionId.set(nextReadMap)
+  $unreadFinishedSessionIds.set($unreadFinishedSessionIds.get().filter(id => !familyIds.has(id)))
+}
+
 export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
   updateAtom($selectedStoredSessionId, next)
   // Opening a session clears its unread state — the user is now looking at it.
-  const id = $selectedStoredSessionId.get()
-
-  if (id && $unreadFinishedSessionIds.get().includes(id)) {
-    $unreadFinishedSessionIds.set($unreadFinishedSessionIds.get().filter(x => x !== id))
-  }
+  markSessionRead($selectedStoredSessionId.get())
 }
 
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)

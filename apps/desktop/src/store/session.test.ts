@@ -15,6 +15,7 @@ import {
   applyConfiguredDefaultProjectDir,
   getRememberedRoute,
   getRememberedSessionId,
+  markSessionRead,
   mergeSessionPage,
   rememberedSessionProfile,
   resolveComposerSessionKey,
@@ -497,6 +498,123 @@ describe('unread finished sessions', () => {
 
     setSelectedStoredSessionId('s1')
     expect($unreadFinishedSessionIds.get()).toEqual([])
+  })
+
+  it('does not re-mark unread for a completion that settles before the latest read baseline', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000)
+
+    $selectedStoredSessionId.set('other')
+
+    const working = makeState({ busy: true, storedSessionId: 's1' })
+    publishSessionState('rt1', working)
+
+    vi.setSystemTime(1_100)
+    markSessionRead('s1')
+
+    vi.setSystemTime(1_050)
+    const idle = { ...working, busy: false }
+    publishSessionState('rt1', idle)
+
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+    vi.useRealTimers()
+  })
+
+  it('reading a parent session clears unread for a branch child settle', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(2_000)
+
+    $selectedStoredSessionId.set('other')
+    $sessions.set([
+      {
+        archived: false,
+        cwd: null,
+        ended_at: null,
+        id: 'parent',
+        input_tokens: 0,
+        is_active: false,
+        last_active: 0,
+        message_count: 0,
+        model: null,
+        output_tokens: 0,
+        preview: null,
+        source: 'desktop',
+        started_at: 0,
+        title: 'parent',
+        tool_call_count: 0
+      },
+      {
+        archived: false,
+        cwd: null,
+        ended_at: null,
+        id: 'child',
+        input_tokens: 0,
+        is_active: false,
+        last_active: 0,
+        message_count: 0,
+        model: null,
+        output_tokens: 0,
+        parent_session_id: 'parent',
+        preview: null,
+        source: 'desktop',
+        started_at: 0,
+        title: 'child',
+        tool_call_count: 0
+      }
+    ])
+
+    const working = makeState({ busy: true, storedSessionId: 'child' })
+    publishSessionState('rt1', working)
+
+    vi.setSystemTime(2_100)
+    publishSessionState('rt1', { ...working, busy: false })
+    expect($unreadFinishedSessionIds.get()).toEqual(['child'])
+
+    vi.setSystemTime(2_200)
+    markSessionRead('parent')
+
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+    vi.useRealTimers()
+  })
+
+  it('reading a lineage root clears unread for a compressed continuation settle', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(3_000)
+
+    $selectedStoredSessionId.set('other')
+    $sessions.set([
+      {
+        archived: false,
+        cwd: null,
+        ended_at: null,
+        id: 'tip',
+        input_tokens: 0,
+        is_active: false,
+        last_active: 0,
+        message_count: 0,
+        model: null,
+        output_tokens: 0,
+        preview: null,
+        source: 'desktop',
+        started_at: 0,
+        title: 'tip',
+        tool_call_count: 0,
+        _lineage_root_id: 'root'
+      }
+    ])
+
+    const working = makeState({ busy: true, storedSessionId: 'tip' })
+    publishSessionState('rt1', working)
+
+    vi.setSystemTime(3_100)
+    publishSessionState('rt1', { ...working, busy: false })
+    expect($unreadFinishedSessionIds.get()).toEqual(['tip'])
+
+    vi.setSystemTime(3_200)
+    markSessionRead('root')
+
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+    vi.useRealTimers()
   })
 })
 

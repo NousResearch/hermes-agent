@@ -32,6 +32,7 @@ import {
   $newChatWorkspaceTarget,
   $sessions,
   $yoloActive,
+  markSessionRead,
   type NewChatWorkspaceTarget,
   resolveComposerSessionKey,
   sessionPinId,
@@ -584,6 +585,7 @@ export function useSessionActions({
       setFreshDraftReady(false)
       clearNotifications()
       resetViewSync()
+      markSessionRead(storedSessionId)
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
 

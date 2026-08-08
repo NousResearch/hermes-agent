@@ -1608,6 +1608,80 @@ function Update-ProcessPathForPackages {
     $env:Path = [string]::Join(';', $ordered)
 }
 
+function Invoke-ProcessWithWallClockTimeout {
+    # Launch $FilePath as a genuine child process (NOT wrapped in a
+    # PowerShell background job) and enforce a hard wall-clock timeout,
+    # killing the whole process tree if it doesn't finish in time. Mirrors
+    # the bash installer's run_with_timeout so a stalled installer step
+    # (e.g. winget waiting on a source update, a stuck download, or a UAC
+    # prompt that never gets answered when invoked non-interactively via
+    # `irm | iex`) can't hang the installer indefinitely (see #78085).
+    #
+    # This intentionally does NOT use Start-Job/Wait-Job/Stop-Job: a
+    # background job's Stop-Job only tears down the job's own runspace, it
+    # does not recursively kill native child processes the script block
+    # spawned (verified directly -- a process started inside a job via
+    # Start-Process is still alive after Stop-Job + Remove-Job -Force).
+    # For winget specifically that would leave the real winget.exe (and
+    # anything IT spawns, e.g. an elevated installer or msiexec) orphaned
+    # and running in the background instead of actually terminated, and
+    # able to collide with the next package's winget invocation via
+    # winget's own single-instance lock. Launching the real process
+    # ourselves gives us its PID so we can kill the whole tree on timeout.
+    #
+    # Returns a hashtable:
+    #   TimedOut -- $true if the timeout fired before the process exited
+    #   ExitCode -- the process's exit code, or $null if it timed out
+    param(
+        [Parameter(Mandatory=$true)] [string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [Parameter(Mandatory=$true)] [int]$TimeoutSec,
+        [string]$RedirectStandardOutput,
+        [string]$RedirectStandardError
+    )
+    $startArgs = @{
+        FilePath     = $FilePath
+        ArgumentList = $ArgumentList
+        PassThru     = $true
+        NoNewWindow  = $true
+    }
+    if ($RedirectStandardOutput) { $startArgs.RedirectStandardOutput = $RedirectStandardOutput }
+    if ($RedirectStandardError) { $startArgs.RedirectStandardError = $RedirectStandardError }
+    $proc = Start-Process @startArgs
+    # Force the process handle to be opened IMMEDIATELY. On Windows
+    # PowerShell 5.1 (and pwsh 7.4.0 on Windows; fixed upstream in 7.4.1),
+    # Start-Process -NoNewWindow -PassThru returns a Process object whose
+    # handle was never acquired, so WaitForExit()/ExitCode silently read as
+    # $null (PowerShell issues #20400 / #5421). Touching .Handle forces the
+    # underlying handle open, which is what WaitForExit() and .ExitCode
+    # need to work. Harmless no-op on hosts without the bug.
+    try { $null = $proc.Handle } catch { }
+    $exited = $proc.WaitForExit($TimeoutSec * 1000)
+    if (-not $exited) {
+        # Kill the whole tree rooted at $proc, not just $proc itself.
+        # Process.Kill(bool) with recursive-tree support needs .NET Core 3+
+        # (pwsh 6+); Windows PowerShell 5.1 runs on .NET Framework and lacks
+        # that overload, so fall back to `taskkill /T` there -- both paths
+        # are Windows-only anyway (WinPS 5.1 never runs elsewhere).
+        if ($PSVersionTable.PSVersion.Major -ge 6) {
+            try { $proc.Kill($true) } catch { }
+        } else {
+            & taskkill /PID $proc.Id /T /F 2>&1 | Out-Null
+        }
+        # Give the OS a bounded window to finish tearing down the tree so
+        # file handles and winget's single-instance lock are released before
+        # the caller reads the redirect files or launches the next package.
+        try { $null = $proc.WaitForExit(5000) } catch { }
+        return @{ TimedOut = $true; ExitCode = $null; ProcessId = $proc.Id }
+    }
+    # WaitForExit(ms) returning $true only means the process exited; with
+    # redirected output the background stream readers may still be flushing
+    # the files. The parameterless overload waits for those too, so the
+    # caller's Get-Content sees complete output.
+    try { $proc.WaitForExit() } catch { }
+    return @{ TimedOut = $false; ExitCode = $proc.ExitCode; ProcessId = $proc.Id }
+}
+
 function Install-SystemPackages {
     $script:HasRipgrep = $false
     $script:HasFfmpeg = $false
@@ -1668,36 +1742,67 @@ function Install-SystemPackages {
         foreach ($pkg in $wingetPkgs) {
             $log = "$env:TEMP\hermes-winget-$($pkg -replace '[^A-Za-z0-9]','_')-$(Get-Random).log"
             $pkgLogs[$pkg] = $log
+            $stdOutPath = "$log.stdout.tmp"
+            $stdErrPath = "$log.stderr.tmp"
             # --source winget pins us to the github-backed source.  Without this,
             # a broken msstore source (cert validation failures like 0x8a15005e
             # are common on Windows-on-ARM and some corporate networks) makes
             # winget bail with "please specify --source" *before* attempting any
             # install -- and it exits 0, so the surrounding try/catch never fires.
             # We don't ship anything from msstore, so pinning is safe.
+            #
+            # Run through Invoke-ProcessWithWallClockTimeout: winget can hang
+            # indefinitely (a stalled source update, a stuck download, or a
+            # UAC prompt that never gets answered when the installer is
+            # invoked non-interactively via `irm | iex`), which previously
+            # froze the whole installer on "Installing ripgrep ... via
+            # winget..." forever (#78085). 600s mirrors the bash installer's
+            # NODE_DEPS_TIMEOUT default and the Playwright install guard --
+            # generous enough for a large ffmpeg download on a slow link, but
+            # it bounds the hang so the choco/scoop fallback (or the manual
+            # instructions below) actually runs instead of blocking forever.
+            $commonArgs = @("install", "--exact", "--id", $pkg, "--source", "winget", "--silent")
+            $agreementArgs = @("--accept-package-agreements", "--accept-source-agreements")
             try {
-                $output = winget install --exact --id $pkg --source winget --silent `
-                    --accept-package-agreements --accept-source-agreements 2>&1
-                $code = $LASTEXITCODE
-                $output | Out-File -FilePath $log -Encoding utf8
-                "winget exit: $code" | Out-File -FilePath $log -Encoding utf8 -Append
-                # 0x8A15002B (-1978335189) = APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE.
-                # winget treats `install` on a package it already has registered as
-                # an *upgrade*, finds no newer version, and bails with this code --
-                # even when the binary is gone from disk/PATH (stale registration,
-                # files removed outside winget, or a missing alias shim). We KNOW the
-                # command was missing (that's why we're here), so a plain install
-                # dead-ends forever. Force a reinstall to repair the registration so
-                # the shim reappears.
-                if ($code -eq -1978335189) {
-                    "-> already-installed/no-upgrade; retrying with --force" | Out-File -FilePath $log -Encoding utf8 -Append
-                    $output = winget install --exact --id $pkg --source winget --silent --force `
-                        --accept-package-agreements --accept-source-agreements 2>&1
-                    $output | Out-File -FilePath $log -Encoding utf8 -Append
-                    "winget exit (force): $LASTEXITCODE" | Out-File -FilePath $log -Encoding utf8 -Append
+                $wingetResult = Invoke-ProcessWithWallClockTimeout -FilePath "winget" `
+                    -ArgumentList ($commonArgs + $agreementArgs) -TimeoutSec 600 `
+                    -RedirectStandardOutput $stdOutPath -RedirectStandardError $stdErrPath
+                Get-Content -Path $stdOutPath, $stdErrPath -ErrorAction SilentlyContinue |
+                    Out-File -FilePath $log -Encoding utf8
+                Remove-Item -Path $stdOutPath, $stdErrPath -ErrorAction SilentlyContinue
+                if ($wingetResult.TimedOut) {
+                    "winget exit: <timed out after 600s>" | Out-File -FilePath $log -Encoding utf8 -Append
+                } else {
+                    $code = $wingetResult.ExitCode
+                    "winget exit: $code" | Out-File -FilePath $log -Encoding utf8 -Append
+                    # 0x8A15002B (-1978335189) = APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE.
+                    # winget treats `install` on a package it already has registered as
+                    # an *upgrade*, finds no newer version, and bails with this code --
+                    # even when the binary is gone from disk/PATH (stale registration,
+                    # files removed outside winget, or a missing alias shim). We KNOW the
+                    # command was missing (that's why we're here), so a plain install
+                    # dead-ends forever. Force a reinstall to repair the registration so
+                    # the shim reappears.
+                    if ($code -eq -1978335189) {
+                        "-> already-installed/no-upgrade; retrying with --force" | Out-File -FilePath $log -Encoding utf8 -Append
+                        $forceResult = Invoke-ProcessWithWallClockTimeout -FilePath "winget" `
+                            -ArgumentList ($commonArgs + @("--force") + $agreementArgs) -TimeoutSec 600 `
+                            -RedirectStandardOutput $stdOutPath -RedirectStandardError $stdErrPath
+                        Get-Content -Path $stdOutPath, $stdErrPath -ErrorAction SilentlyContinue |
+                            Out-File -FilePath $log -Encoding utf8 -Append
+                        Remove-Item -Path $stdOutPath, $stdErrPath -ErrorAction SilentlyContinue
+                        if ($forceResult.TimedOut) {
+                            "winget exit (force): <timed out after 600s>" | Out-File -FilePath $log -Encoding utf8 -Append
+                        } else {
+                            "winget exit (force): $($forceResult.ExitCode)" | Out-File -FilePath $log -Encoding utf8 -Append
+                        }
+                    }
                 }
             } catch {
                 $_ | Out-File -FilePath $log -Encoding utf8 -Append
                 "winget exit: <exception>" | Out-File -FilePath $log -Encoding utf8 -Append
+            } finally {
+                Remove-Item -Path $stdOutPath, $stdErrPath -ErrorAction SilentlyContinue
             }
         }
         # Refresh PATH so packages winget exposed via "command line aliases" in

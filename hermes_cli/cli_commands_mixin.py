@@ -778,6 +778,22 @@ class CLICommandsMixin:
         print(f"  Home:    {display}")
         print()
 
+    def _handle_whoami_command(self):
+        """Show the local operator's slash-command access on this CLI.
+
+        The classic CLI runs on the operator's own machine, so the operator is
+        the local admin (unrestricted) — mirroring the gateway's
+        ``unrestricted`` tier when no admin list is configured for a scope.
+        """
+        import getpass
+
+        print()
+        print(f"  You — local CLI (this machine)")
+        print(f"  User: {getpass.getuser()}")
+        print(f"  Tier: admin (local operator)")
+        print(f"  Slash commands: all available")
+        print()
+
     def _handle_handoff_command(self, cmd_original: str) -> bool:
         """Handle ``/handoff <platform>`` — transfer this CLI session to a gateway platform.
 

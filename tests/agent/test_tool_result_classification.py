@@ -4,6 +4,7 @@ import json
 
 from agent.tool_result_classification import (
     file_mutation_result_landed,
+    file_mutation_validation_failed,
 )
 
 
@@ -14,6 +15,17 @@ def test_write_file_with_nested_lint_error_counts_as_landed():
     })
 
     assert file_mutation_result_landed("write_file", result) is True
+
+
+def test_validation_failure_is_landed_but_requires_repair():
+    result = json.dumps({
+        "error": "VALIDATION FAILED AFTER EDIT",
+        "applied": True,
+        "validated": False,
+    })
+
+    assert file_mutation_result_landed("patch", result) is True
+    assert file_mutation_validation_failed("patch", result) is True
 
 
 

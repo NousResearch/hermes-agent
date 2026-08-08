@@ -163,7 +163,7 @@ class TestRecordFileMutationResult:
 
         assert paths == ["/tmp/project/src/app.py"]
 
-    def test_write_file_with_lint_error_counts_as_landed(self):
+    def test_write_file_validation_failure_is_landed_but_remains_unresolved(self):
         agent = _bare_agent()
         agent._record_file_mutation_result(
             "write_file",
@@ -175,6 +175,9 @@ class TestRecordFileMutationResult:
 
         result = json.dumps({
             "bytes_written": 24,
+            "applied": True,
+            "validated": False,
+            "error": "VALIDATION FAILED AFTER EDIT",
             "lint": {"status": "error", "output": "SyntaxError: invalid syntax"},
         })
 
@@ -185,7 +188,8 @@ class TestRecordFileMutationResult:
             is_error=True,
         )
 
-        assert agent._turn_failed_file_mutations == {}
+        assert "/tmp/a.py" in agent._turn_failed_file_mutations
+        assert agent._turn_failed_file_mutations["/tmp/a.py"]["applied"] is True
 
     def test_patch_with_lsp_diagnostics_counts_as_landed(self):
         agent = _bare_agent()
@@ -244,10 +248,10 @@ class TestFormatFooter:
         out = AIAgent._format_file_mutation_failure_footer(
             {"/tmp/a.md": {"tool": "patch", "error_preview": "Could not find old_string"}},
         )
-        assert "1 file(s) were NOT modified" in out
+        assert "1 file mutation(s) need attention" in out
         assert "/tmp/a.md" in out
         assert "Could not find old_string" in out
-        assert "git status" in out  # user-actionable hint
+        assert "git diff" in out  # user-actionable hint
 
     def test_truncation_at_10_entries(self):
         failed = {
@@ -255,7 +259,7 @@ class TestFormatFooter:
             for i in range(15)
         }
         out = AIAgent._format_file_mutation_failure_footer(failed)
-        assert "15 file(s) were NOT modified" in out
+        assert "15 file mutation(s) need attention" in out
         assert "… and 5 more" in out
         # Ten file bullets + header + "and X more" line
         lines = out.split("\n")

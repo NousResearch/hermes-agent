@@ -31,10 +31,32 @@ def file_mutation_result_landed(tool_name: str, result: Any) -> bool:
         data = json.loads(result.strip())
     except Exception:
         return False
-    if not isinstance(data, dict) or data.get("error"):
+    if not isinstance(data, dict):
+        return False
+    # Validation failures deliberately carry a top-level error to force the
+    # agent to repair the file, but they can still have changed it.
+    if data.get("applied") is True:
+        return True
+    if data.get("error"):
         return False
     if tool_name == "write_file":
         return "bytes_written" in data
     if tool_name == "patch":
         return data.get("success") is True
     return False
+
+
+def file_mutation_validation_failed(tool_name: str, result: Any) -> bool:
+    """Return whether a mutation landed but requires validation repair."""
+    if tool_name not in FILE_MUTATING_TOOL_NAMES or not isinstance(result, str):
+        return False
+    try:
+        data = json.loads(result.strip())
+    except Exception:
+        return False
+    return (
+        isinstance(data, dict)
+        and data.get("applied") is True
+        and data.get("validated") is False
+        and bool(data.get("error"))
+    )

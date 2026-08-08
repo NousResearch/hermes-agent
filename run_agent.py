@@ -202,6 +202,7 @@ from agent.tool_guardrails import (
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
     file_mutation_result_landed,
+    file_mutation_validation_failed,
 )
 from agent.trajectory import (
     convert_scratchpad_to_think,
@@ -3435,22 +3436,24 @@ class AIAgent:
         if not targets:
             return
         landed = file_mutation_result_landed(tool_name, result)
+        validation_failed = file_mutation_validation_failed(tool_name, result)
         if landed:
             changed = getattr(self, "_turn_file_mutation_paths", None)
             if changed is not None:
                 changed.update(_extract_landed_file_mutation_paths(tool_name, args, result))
-        if is_error and not landed:
+        if (is_error and not landed) or validation_failed:
             preview = _extract_error_preview(result)
             for path in targets:
-                # Keep the FIRST error we saw for a given path unless we
-                # later see success.  A repeated failure with a different
-                # message shouldn't silently overwrite the original.
-                if path not in state:
+                # Keep the first ordinary failure, but replace it when a
+                # later edit actually landed and failed validation: that
+                # state is more urgent and materially different.
+                if path not in state or validation_failed:
                     state[path] = {
                         "tool": tool_name,
                         "error_preview": preview,
+                        "applied": landed,
                     }
-        else:
+        elif not validation_failed:
             for path in targets:
                 state.pop(path, None)
 
@@ -3528,9 +3531,8 @@ class AIAgent:
             return ""
         lines = [
             "⚠️ File-mutation verifier: "
-            f"{len(failed)} file(s) were NOT modified this turn despite any "
-            "wording above that may suggest otherwise. Run `git status` or "
-            "`read_file` to confirm."
+            f"{len(failed)} file mutation(s) need attention before this turn is complete. "
+            "Run `read_file` or `git diff` and repair any validation failures."
         ]
         shown = 0
         for path, info in failed.items():
@@ -3539,9 +3541,11 @@ class AIAgent:
             preview = (info.get("error_preview") or "").strip()
             tool = info.get("tool") or "patch"
             if preview:
-                lines.append(f"  • `{path}` — [{tool}] {preview}")
+                state_note = "modified; validation failed" if info.get("applied") else "not modified"
+                lines.append(f"  • `{path}` — [{tool}; {state_note}] {preview}")
             else:
-                lines.append(f"  • `{path}` — [{tool}] failed")
+                state_note = "modified; validation failed" if info.get("applied") else "not modified"
+                lines.append(f"  • `{path}` — [{tool}; {state_note}] failed")
             shown += 1
         remaining = len(failed) - shown
         if remaining > 0:

@@ -3649,6 +3649,56 @@ class TestRunConversation:
         )
         assert correction["content"] == "Use the corrected approach."
 
+    def test_legacy_interrupt_scaffold_ghost_dropped_from_api_replay(self, agent):
+        """Pre-#81841 hidden assistant rows with the interrupt scaffold must
+        not be replayed to the provider — that is what made the model echo
+        them into a self-replicating ghost loop."""
+        self._setup_agent(agent)
+        scaffold = "[This response was interrupted by a user correction.]"
+        history = [
+            {"role": "user", "content": "first"},
+            {
+                "role": "assistant",
+                "content": scaffold,
+                "api_content": scaffold,
+                "display_kind": "hidden",
+            },
+            {"role": "user", "content": "real follow-up"},
+            {"role": "assistant", "content": "ok"},
+        ]
+        requests = []
+
+        def _fake_api_call(api_kwargs):
+            requests.append(api_kwargs)
+            return _mock_response(content="done", finish_reason="stop")
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "next turn", conversation_history=history
+            )
+
+        assert result["completed"] is True
+        assert len(requests) == 1
+        replayed = requests[0]["messages"]
+        assert not any(
+            isinstance(m.get("content"), str) and m["content"].strip() == scaffold
+            for m in replayed
+            if m.get("role") == "assistant"
+        )
+        # Real history around the ghost still reaches the provider.
+        assert any(
+            m.get("role") == "user" and m.get("content") == "real follow-up"
+            for m in replayed
+        )
+        assert any(
+            m.get("role") == "assistant" and m.get("content") == "ok"
+            for m in replayed
+        )
 
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)

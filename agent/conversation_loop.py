@@ -1799,7 +1799,33 @@ def run_conversation(
             )
 
         api_messages = []
+        _interrupt_scaffold = (
+            "[This response was interrupted by a user correction.]"
+        )
         for idx, msg in enumerate(messages):
+            # Legacy ghost rows from the incomplete #73146 else branch: a
+            # hidden assistant placeholder whose content/api_content is the
+            # raw interrupt scaffold. Replaying that as an assistant message
+            # makes the model echo it and self-replicate (#81841). Drop them
+            # so pre-fix session history cannot keep poisoning new turns.
+            _ghost_content = msg.get("content")
+            _ghost_api = msg.get("api_content")
+            if (
+                msg.get("display_kind") == "hidden"
+                and msg.get("role") == "assistant"
+                and (
+                    (
+                        isinstance(_ghost_content, str)
+                        and _ghost_content.strip() == _interrupt_scaffold
+                    )
+                    or (
+                        isinstance(_ghost_api, str)
+                        and _ghost_api.strip() == _interrupt_scaffold
+                    )
+                )
+            ):
+                continue
+
             # Structural clone, NOT msg.copy(): every in-place transform
             # below (canonicalize/repair, surrogate + non-ASCII sanitizers,
             # cache decoration) must be unable to reach the persisted

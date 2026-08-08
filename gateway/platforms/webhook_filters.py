@@ -1,4 +1,4 @@
-"""Route-local filters and script transforms for the webhook adapter."""
+"""Route-local filters and lifecycle scripts for the webhook adapter."""
 
 from __future__ import annotations
 
@@ -92,7 +92,7 @@ def _load_filter_file_values(path_value: Any) -> list[Any]:
 
 
 class WebhookRouteProcessor:
-    """Evaluate declarative filters and optional script transforms."""
+    """Evaluate route filters and run optional lifecycle scripts."""
 
     def __init__(
         self,
@@ -225,12 +225,26 @@ class WebhookRouteProcessor:
             for spec in filters
         )
 
-    def run_route_script(self, script_value: Any, payload: dict) -> tuple[bool, Optional[dict]]:
-        """Run a route script and return (should_continue, transformed_payload)."""
+    @staticmethod
+    def snapshot_script_value(script_value: Any) -> Any:
+        """Snapshot environment expansion without resolving the profile-relative path."""
+        if not isinstance(script_value, str):
+            return script_value
+        return os.path.expandvars(script_value.strip())
+
+    def _run_script(
+        self,
+        script_value: Any,
+        payload: dict,
+        *,
+        purpose: str,
+        capture_output: bool = True,
+    ) -> tuple[Optional[int], str, str, Optional[Path]]:
+        """Run a confined webhook script and return its sanitized result."""
         path, error = _resolve_script_path(script_value)
         if error or path is None:
-            logger.warning("[webhook] script ignored webhook: %s", error)
-            return False, None
+            logger.warning("[webhook] %s script unavailable: %s", purpose, error)
+            return None, "", "", path
 
         suffix = path.suffix.lower()
         if suffix in {".sh", ".bash"}:
@@ -238,8 +252,8 @@ class WebhookRouteProcessor:
                 "/bin/bash" if os.path.isfile("/bin/bash") else None
             )
             if bash is None:
-                logger.warning("[webhook] script ignored webhook: bash not found")
-                return False, None
+                logger.warning("[webhook] %s script unavailable: bash not found", purpose)
+                return None, "", "", path
             argv = [bash, str(path)]
         else:
             argv = [sys.executable, str(path)]
@@ -251,7 +265,8 @@ class WebhookRouteProcessor:
             result = subprocess.run(
                 argv,
                 input=json.dumps(payload),
-                capture_output=True,
+                stdout=subprocess.PIPE if capture_output else subprocess.DEVNULL,
+                stderr=subprocess.PIPE if capture_output else subprocess.DEVNULL,
                 text=True, encoding="utf-8", errors="replace",
                 timeout=self.script_timeout_seconds,
                 cwd=str(path.parent),
@@ -259,12 +274,14 @@ class WebhookRouteProcessor:
                 **popen_kwargs,
             )
         except subprocess.TimeoutExpired:
-            logger.warning("[webhook] script timed out: %s", path)
-            return False, None
+            logger.warning("[webhook] %s script timed out: %s", purpose, path.name)
+            return None, "", "", path
         except Exception as exc:
-            logger.warning("[webhook] script execution failed: %s", exc)
-            return False, None
+            logger.warning("[webhook] %s script execution failed: %s", purpose, exc)
+            return None, "", "", path
 
+        if not capture_output:
+            return result.returncode, "", "", path
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
         try:
@@ -273,14 +290,23 @@ class WebhookRouteProcessor:
             stdout = redact_sensitive_text(stdout)
             stderr = redact_sensitive_text(stderr)
         except Exception as exc:
-            logger.warning("[webhook] Failed to redact script output: %s", exc)
+            logger.warning("[webhook] Failed to redact %s script output: %s", purpose, exc)
             stdout = "[REDACTED - redaction failed]"
             stderr = "[REDACTED - redaction failed]"
-        if result.returncode != 0:
+        return result.returncode, stdout, stderr, path
+
+    def run_route_script(self, script_value: Any, payload: dict) -> tuple[bool, Optional[dict]]:
+        """Run a route script and return (should_continue, transformed_payload)."""
+        returncode, stdout, stderr, path = self._run_script(
+            script_value, payload, purpose="route"
+        )
+        if returncode is None or path is None:
+            return False, None
+        if returncode != 0:
             logger.info(
                 "[webhook] script ignored webhook path=%s code=%s stderr=%s",
                 path.name,
-                result.returncode,
+                returncode,
                 stderr[:200],
             )
             return False, None
@@ -300,3 +326,22 @@ class WebhookRouteProcessor:
         ):
             return False, None
         return True, transformed
+
+    def run_completion_script(self, script_value: Any, envelope: dict) -> bool:
+        """Run a best-effort route completion script."""
+        returncode, _stdout, _stderr, path = self._run_script(
+            script_value,
+            envelope,
+            purpose="completion",
+            capture_output=False,
+        )
+        if returncode is None or path is None:
+            return False
+        if returncode != 0:
+            logger.warning(
+                "[webhook] completion script failed path=%s code=%s",
+                path.name,
+                returncode,
+            )
+            return False
+        return True

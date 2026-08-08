@@ -391,6 +391,12 @@ def _handle_send(args):
                 f"Try using a numeric channel ID instead."
             )
 
+    if target_ref is not None and not chat_id:
+        return tool_error(
+            f"Could not resolve '{target_ref}' on {platform_name} to a chat ID. "
+            f"Use send_message(action='list') to see available targets."
+        )
+
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return tool_error("Interrupted")

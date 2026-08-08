@@ -49,7 +49,7 @@ from agent.prompt_builder import (
     drain_truncation_warnings,
 )
 from agent.runtime_cwd import resolve_context_cwd
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -416,11 +416,19 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             "you to."
         )
     else:
+        # A non-default name is only ever returned when get_hermes_home() has
+        # ALREADY resolved to <root>/profiles/<name> — that is exactly how
+        # _resolve_active_profile_name() derives it. So the profile home is
+        # the session home itself; appending /profiles/<name> again doubled
+        # it. The default profile's data sits at the root, which in profile
+        # mode is get_hermes_home()'s grandparent, not get_hermes_home().
+        profile_home = get_hermes_home()
+        default_root = get_default_hermes_root()
         post_workspace_parts.append(
             f"Active Hermes profile: {active_profile}. This session reads "
-            f"and writes {get_hermes_home()}/profiles/{active_profile}/. The default "
-            f"profile's data lives at {get_hermes_home()}/skills/, {get_hermes_home()}/plugins/, "
-            f"{get_hermes_home()}/cron/, {get_hermes_home()}/memories/ — those belong to a "
+            f"and writes {profile_home}/. The default "
+            f"profile's data lives at {default_root}/skills/, {default_root}/plugins/, "
+            f"{default_root}/cron/, {default_root}/memories/ — those belong to a "
             f"different session run from a different shell. Do NOT modify "
             f"another profile's skills/plugins/cron/memories unless the user "
             f"explicitly directs you to. The cross-profile write guard will "

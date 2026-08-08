@@ -2834,6 +2834,7 @@ _PORT_BINDING_PLATFORM_PORTS: Dict[str, Tuple[str, int]] = {
     "sms": ("webhook_port", 8080),
     "whatsapp_cloud": ("webhook_port", 8090),
     "line": ("port", 8646),
+    "zalo": ("webhook_port", 8790),
 }
 
 # Platform states that mean the adapter is NOT serving its port right now.

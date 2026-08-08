@@ -246,6 +246,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # defusedxml only; aiohttp/httpx are core dependencies of every messaging
     # adapter and ship via `platform.discord` / `platform.slack` / etc.
     "platform.wecom_callback": ("defusedxml==0.7.1",),
+    # Polling uses core httpx. Only webhook mode needs aiohttp.
+    "platform.zalo": (
+        "aiohttp==3.14.1",  # keep in sync with the pyproject `zalo` extra
+    ),
     # Microsoft Teams adapter — microsoft-teams-apps pulls a heavy tree
     # (microsoft-teams-api/cards/common, dependency-injector, msal). Lazy-
     # installed on demand like every other messaging platform; also exposed

@@ -254,7 +254,7 @@ export function useMessageStream({
     // ADAPTIVE: the floor scales with what the last flush actually cost.
     // With several sessions streaming at once (split tiles), one flush carries
     // every stream's commit + markdown re-parse; when that work approaches or
-    // exceeds the fixed 33ms budget, back-to-back flushes leave the main
+    // exceeds the fixed flush budget, back-to-back flushes leave the main
     // thread no idle frames and every interaction (typing, resize, hover)
     // stutters even though no render is wasted. Yielding 3x the measured cost
     // keeps the thread ~75% idle for input at any load: cheap flushes stay at

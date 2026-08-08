@@ -11852,7 +11852,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         sees the updated tools on the next turn.
         """
         try:
-            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
+            from tools.mcp_tool import (
+                shutdown_mcp_servers, discover_mcp_tools, classify_reload_diff,
+                _servers, _lock,
+            )
 
             # Capture old server names
             with _lock:
@@ -11871,9 +11874,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             with _lock:
                 connected_servers = set(_servers.keys())
 
-            added = connected_servers - old_servers
-            removed = old_servers - connected_servers
-            reconnected = connected_servers & old_servers
+            # "Removed" must mean "gone from config", not "not connected right
+            # now" — a server still reconnecting at this instant is neither.
+            _diff = classify_reload_diff(old_servers, connected_servers)
+            added = _diff["added"]
+            removed = _diff["removed"]
+            reconnected = _diff["reconnected"]
+            not_connected = _diff["not_connected"]
 
             if reconnected:
                 print(f"  ♻️  Reconnected: {', '.join(sorted(reconnected))}")
@@ -11881,6 +11888,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 print(f"  ➕ Added: {', '.join(sorted(added))}")
             if removed:
                 print(f"  ➖ Removed: {', '.join(sorted(removed))}")
+            if not_connected:
+                print(f"  ⏳ Still configured, not connected: {', '.join(sorted(not_connected))}")
             if not connected_servers:
                 print("  No MCP servers connected.")
             else:

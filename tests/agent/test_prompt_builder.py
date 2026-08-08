@@ -31,6 +31,7 @@ from agent.prompt_builder import (
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
+    KANBAN_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
 )
@@ -53,6 +54,19 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_kanban_review_handoff_completes_builder_instead_of_blocking_graph(self):
+        assert 'kanban_block(reason="review-required' not in KANBAN_GUIDANCE
+        assert "CLAIM/REVIEW_REQUIRED" in KANBAN_GUIDANCE
+        assert "kanban_complete" in KANBAN_GUIDANCE
+        assert "reviewer child" in KANBAN_GUIDANCE
+        assert "Block only for a genuine inability to continue" in KANBAN_GUIDANCE
+
+    def test_kanban_guidance_does_not_reask_for_bounded_local_implementation_details(self):
+        assert "Do not re-ask for authorization" in KANBAN_GUIDANCE
+        assert "previously unnamed local file" in KANBAN_GUIDANCE
+        assert "explicit denylist" in KANBAN_GUIDANCE
+        assert "protected or irreversible boundary" in KANBAN_GUIDANCE
 
 
 # =========================================================================

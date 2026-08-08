@@ -231,6 +231,158 @@ class TestBackup:
 
 
 # ---------------------------------------------------------------------------
+# _prune_run_backups tests
+# ---------------------------------------------------------------------------
+
+class TestPruneRunBackups:
+    """Tests for ``_prune_run_backups`` — the function that prevents the
+    hermes-backup-*.zip disk leak (157 files / 14G observed in production)."""
+
+    def test_prunes_oldest_beyond_keep(self, tmp_path):
+        """5 files, keep=3 → 2 oldest deleted, 3 newest kept."""
+        from hermes_cli.backup import _prune_run_backups
+        stamps = [f"hermes-backup-2026-08-08-{h:02d}0000" for h in range(5)]
+        for s in stamps:
+            (tmp_path / f"{s}.zip").write_bytes(b"x")
+
+        deleted = _prune_run_backups(tmp_path, keep=3)
+
+        assert deleted == 2
+        remaining = sorted(p.name for p in tmp_path.glob("hermes-backup-*.zip"))
+        assert remaining == [f"{s}.zip" for s in stamps[2:]]
+
+    def test_keep_all_when_under_limit(self, tmp_path):
+        """2 files, keep=3 → nothing deleted."""
+        from hermes_cli.backup import _prune_run_backups
+        for h in range(2):
+            (tmp_path / f"hermes-backup-2026-08-08-{h:02d}0000.zip").write_bytes(b"x")
+
+        deleted = _prune_run_backups(tmp_path, keep=3)
+
+        assert deleted == 0
+        assert len(list(tmp_path.glob("hermes-backup-*.zip"))) == 2
+
+    def test_keep_one_floors_to_one(self, tmp_path):
+        """keep=0 floors to 1 — the just-created backup is never deleted."""
+        from hermes_cli.backup import _prune_run_backups
+        for h in range(3):
+            (tmp_path / f"hermes-backup-2026-08-08-{h:02d}0000.zip").write_bytes(b"x")
+
+        deleted = _prune_run_backups(tmp_path, keep=0)
+
+        assert deleted == 2
+        remaining = list(tmp_path.glob("hermes-backup-*.zip"))
+        assert len(remaining) == 1
+        assert remaining[0].name == "hermes-backup-2026-08-08-020000.zip"
+
+    def test_does_not_touch_unrelated_zips(self, tmp_path):
+        """Non-matching zips (pre-update-*, pre-migration-*, random.zip) untouched."""
+        from hermes_cli.backup import _prune_run_backups
+        (tmp_path / "hermes-backup-2026-08-08-000000.zip").write_bytes(b"x")
+        (tmp_path / "hermes-backup-2026-08-08-010000.zip").write_bytes(b"x")
+        (tmp_path / "pre-update-2026-08-08-000000.zip").write_bytes(b"x")
+        (tmp_path / "pre-migration-2026-08-08-000000.zip").write_bytes(b"x")
+        (tmp_path / "random.zip").write_bytes(b"x")
+
+        _prune_run_backups(tmp_path, keep=1)
+
+        assert (tmp_path / "pre-update-2026-08-08-000000.zip").exists()
+        assert (tmp_path / "pre-migration-2026-08-08-000000.zip").exists()
+        assert (tmp_path / "random.zip").exists()
+        assert len(list(tmp_path.glob("hermes-backup-*.zip"))) == 1
+
+    def test_empty_dir_returns_zero(self, tmp_path):
+        """No files → 0 deleted, no crash."""
+        from hermes_cli.backup import _prune_run_backups
+        assert _prune_run_backups(tmp_path, keep=3) == 0
+
+    def test_nonexistent_dir_returns_zero(self, tmp_path):
+        """Missing directory → 0 deleted, no crash."""
+        from hermes_cli.backup import _prune_run_backups
+        assert _prune_run_backups(tmp_path / "nope", keep=3) == 0
+
+    def test_run_backup_prunes_after_creating(self, tmp_path, monkeypatch):
+        """run_backup() prunes old zips after creating a new one (default keep=3)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        # Pre-create 4 old backups — after run_backup, only 3 should remain
+        for h in range(4):
+            (out_dir / f"hermes-backup-2026-08-08-{h:02d}0000.zip").write_bytes(b"x")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        args = Namespace(output=str(out_dir), keep=None)
+
+        from hermes_cli.backup import run_backup
+        run_backup(args)
+
+        remaining = sorted(p.name for p in out_dir.glob("hermes-backup-*.zip"))
+        assert len(remaining) == 3
+        # The oldest (00:00:00) should be gone; the newest (just-created) present
+        assert all("hermes-backup-2026-08-08-000000" not in r for r in remaining)
+
+    def test_run_backup_respects_keep_arg(self, tmp_path, monkeypatch):
+        """``--keep 2`` overrides config/default."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        for h in range(5):
+            (out_dir / f"hermes-backup-2026-08-08-{h:02d}0000.zip").write_bytes(b"x")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        args = Namespace(output=str(out_dir), keep=2)
+
+        from hermes_cli.backup import run_backup
+        run_backup(args)
+
+        remaining = list(out_dir.glob("hermes-backup-*.zip"))
+        assert len(remaining) == 2
+
+
+class TestGetRunBackupKeep:
+    """Tests for ``_get_run_backup_keep`` config reader."""
+
+    def test_default_when_config_unreadable(self, monkeypatch):
+        from hermes_cli import backup as backup_mod
+        import hermes_cli.backup
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: (_ for _ in ()).throw(RuntimeError("no config")),
+        )
+        assert hermes_cli.backup._get_run_backup_keep() == backup_mod._RUN_BACKUP_KEEP_DEFAULT
+
+    def test_reads_from_config(self, monkeypatch):
+        import hermes_cli.backup
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"backup": {"run_backup_keep": 5}},
+        )
+        assert hermes_cli.backup._get_run_backup_keep() == 5
+
+    def test_floors_invalid_to_default(self, monkeypatch):
+        import hermes_cli.backup
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"backup": {"run_backup_keep": "bogus"}},
+        )
+        assert hermes_cli.backup._get_run_backup_keep() == 3
+
+    def test_floors_below_one_to_one(self, monkeypatch):
+        import hermes_cli.backup
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"backup": {"run_backup_keep": 0}},
+        )
+        assert hermes_cli.backup._get_run_backup_keep() == 1
+
+
+# ---------------------------------------------------------------------------
 # _validate_backup_zip tests
 # ---------------------------------------------------------------------------
 

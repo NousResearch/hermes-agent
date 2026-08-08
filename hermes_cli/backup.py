@@ -790,8 +790,70 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
         if len(errors) > 10:
             print(f"  ... and {len(errors) - 10} more")
 
+    # Prune old run-backups (hermes-backup-*.zip) from the output directory.
+    keep = getattr(args, "keep", None) or _get_run_backup_keep()
+    pruned = _prune_run_backups(out_path.parent, keep=keep)
+    if pruned:
+        print(f"\n  Pruned {pruned} old backup(s) (keeping last {keep}).")
+
     if not errors:
         print(f"\nRestore with: hermes import {out_path.name}")
+
+
+# ---------------------------------------------------------------------------
+# Run-backup pruning (hermes-backup-*.zip in the output directory)
+# ---------------------------------------------------------------------------
+
+_RUN_BACKUP_KEEP_DEFAULT = 3
+_RUN_BACKUP_PREFIX = "hermes-backup-"
+
+
+def _get_run_backup_keep() -> int:
+    """Read ``backup.run_backup_keep`` from config, default 3."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception:
+        return _RUN_BACKUP_KEEP_DEFAULT
+    if not isinstance(cfg, dict):
+        return _RUN_BACKUP_KEEP_DEFAULT
+    backup_cfg = cfg.get("backup") or {}
+    if not isinstance(backup_cfg, dict):
+        return _RUN_BACKUP_KEEP_DEFAULT
+    try:
+        n = int(backup_cfg.get("run_backup_keep", _RUN_BACKUP_KEEP_DEFAULT))
+    except (TypeError, ValueError):
+        n = _RUN_BACKUP_KEEP_DEFAULT
+    return max(1, n)
+
+
+def _prune_run_backups(backup_dir: Path, keep: int = _RUN_BACKUP_KEEP_DEFAULT) -> int:
+    """Remove oldest ``hermes-backup-*.zip`` files beyond the keep limit.
+
+    Only touches files matching ``hermes-backup-*.zip`` so other zips in the
+    same directory are never touched.  Returns the number of files deleted.
+    """
+    keep = max(keep, 1)
+    if not backup_dir.exists():
+        return 0
+
+    backups = sorted(
+        (p for p in backup_dir.iterdir()
+         if p.is_file() and p.name.startswith(_RUN_BACKUP_PREFIX)
+         and p.suffix.lower() == ".zip"),
+        key=lambda p: p.name,
+        reverse=True,
+    )
+
+    deleted = 0
+    for p in backups[keep:]:
+        try:
+            p.unlink()
+            deleted += 1
+        except OSError as exc:
+            logger.warning("Failed to prune backup %s: %s", p.name, exc)
+
+    return deleted
 
 
 # ---------------------------------------------------------------------------

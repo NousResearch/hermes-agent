@@ -2823,6 +2823,15 @@ DEFAULT_CONFIG = {
         "live_probe_timeout": 10,
     },
 
+    # ``hermes backup`` (run-backup) pruning.
+    "backup": {
+        # Number of hermes-backup-*.zip files to keep in the output directory
+        # after each ``hermes backup`` run.  Older zips are deleted automatically.
+        # Values below 1 are floored to 1 (the backup just created is always
+        # preserved).  Override per-run with ``hermes backup --keep N``.
+        "run_backup_keep": 3,
+    },
+
     # ``hermes update`` behaviour.
     "updates": {
         # Pre-update safety backup — ONE consolidated mechanism, three modes:

@@ -161,6 +161,24 @@ describe('click-to-edit user message', () => {
     expect((await screen.findByRole('textbox', { name: 'Edit message' })).textContent).toBe(editedText)
   })
 
+  it('does not submit the edit when Enter confirms an IME composition', async () => {
+    const onEdit = vi.fn(async () => {})
+    const { container } = render(<IncrementalHarness onEdit={onEdit} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+    const editor = await screen.findByRole('textbox', { name: 'Edit message' })
+
+    fireEvent.compositionStart(editor)
+    editor.textContent = '日本語'
+    fireEvent.input(editor)
+    fireEvent.keyDown(editor, { key: 'Enter', isComposing: true })
+
+    expect(onEdit).not.toHaveBeenCalled()
+    expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeTruthy()
+
+    fireEvent.compositionEnd(editor)
+  })
+
   it('still cancels an untouched inline edit when focus leaves the composer', async () => {
     const { container } = render(<IncrementalHarness onEdit={async () => {}} />)
 

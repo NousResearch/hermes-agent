@@ -37,6 +37,7 @@ import {
 import { chipTypedPathOnSpace, pathifyRefs } from '@/app/chat/composer/path-refs'
 import {
   composerPlainText,
+  beginComposerComposition,
   insertComposerContentsAtCaret,
   placeCaretEnd,
   refChipElement,
@@ -90,6 +91,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const draft = useAuiState(s => s.composer.text)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)
+  const composingRef = useRef(false) // true during IME composition (CJK input)
   // Capture the original draft immediately before the first edit. The runtime
   // may hydrate composer.text after this component's first render, so taking a
   // mount-time snapshot can incorrectly classify every later blur as dirty.
@@ -520,6 +522,12 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const handleInput = (event: FormEvent<HTMLDivElement>) => {
     const editor = event.currentTarget
 
+    // Preedit input is not committed text. Let compositionend perform the
+    // final sync so an IME's Enter key cannot race the edit submission path.
+    if (composingRef.current) {
+      return
+    }
+
     if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
       editor.replaceChildren()
     }
@@ -535,7 +543,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const handleBeforeInput = (event: FormEvent<HTMLDivElement>) => {
     const inputType = (event.nativeEvent as InputEvent).inputType
 
-    if (inputType === 'historyUndo' || inputType === 'historyRedo') {
+    if (inputType === 'historyUndo' || inputType === 'historyRedo' || composingRef.current) {
       return
     }
 
@@ -634,6 +642,13 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   )
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // Enter confirms the current IME candidate; it must not submit the edited
+    // message. Check both the tracked composition state and Chromium's native
+    // flag because some platforms emit the key event with only one of them.
+    if (composingRef.current || event.nativeEvent.isComposing) {
+      return
+    }
+
     if (trigger && triggerItems.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
@@ -781,6 +796,16 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               data-slot={RICH_INPUT_SLOT}
               onBeforeInput={handleBeforeInput}
               onBlur={() => window.setTimeout(closeTrigger, 80)}
+              onCompositionEnd={event => {
+                composingRef.current = false
+                rememberInitialDraft()
+                syncDraftFromEditor(event.currentTarget)
+                window.setTimeout(refreshTrigger, 0)
+              }}
+              onCompositionStart={event => {
+                composingRef.current = true
+                beginComposerComposition(event.currentTarget)
+              }}
               onDragOver={handleDragOver}
               onDrop={handleDrop}
               onFocus={() => markActiveComposer('edit')}

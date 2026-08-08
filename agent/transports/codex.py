@@ -271,6 +271,11 @@ class ResponsesApiTransport(ProviderTransport):
         replay_encrypted_reasoning = bool(
             params.get("replay_encrypted_reasoning", True)
         )
+        # Native server-side compaction (gpt-5.6 on direct OpenAI/Codex routes
+        # only). The caller resolves eligibility via
+        # agent.native_compaction.native_compaction_context_management();
+        # None means the field is never added to the request.
+        context_management = params.get("context_management")
 
         # Resolve the issuing endpoint for this call. Stashed on the
         # transport so normalize_response can stamp it onto reasoning
@@ -367,6 +372,8 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs["tools"] = response_tools
             kwargs["tool_choice"] = "auto"
             kwargs["parallel_tool_calls"] = True
+        if isinstance(context_management, list) and context_management:
+            kwargs["context_management"] = context_management
 
         session_id = params.get("session_id")
         # prompt_cache_key is content-addressed from the static prefix

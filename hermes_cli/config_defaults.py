@@ -743,6 +743,16 @@ DEFAULT_CONFIG = {
                                       # Hermes' compression threshold triggers
                                       # thread/compact/start; off = never auto-trigger
                                       # (codex may still compact natively).
+        "codex_responses_native": False,  # Opt in to OpenAI's server-side compaction
+                                      # on the Responses API. Engages ONLY for
+                                      # gpt-5.6-family models on api.openai.com or
+                                      # the ChatGPT Codex backend; every other
+                                      # route/model is unaffected. Hermes' local
+                                      # compression stays armed as the fallback.
+        "codex_responses_compact_threshold": 200000,  # Server-side compaction trigger
+                                      # (input tokens). Clamped below the local
+                                      # compression threshold at request time so
+                                      # the server compacts before Hermes does.
         "in_place": True,             # When True, compaction rewrites the message
                                       # list and rebuilds the system prompt WITHOUT
                                       # rotating the session id — the conversation

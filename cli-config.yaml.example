@@ -502,6 +502,18 @@ compression:
   #   off    = Hermes will not auto-trigger compaction; Codex may still compact natively
   codex_app_server_auto: native
 
+  # Native OpenAI Responses server-side compaction (default: false). When true,
+  # gpt-5.6-family models on the DIRECT OpenAI API (api.openai.com) or a ChatGPT
+  # Codex subscription compact server-side: OpenAI prunes older context into an
+  # encrypted checkpoint that Hermes replays on later turns. No other provider,
+  # route, or model is affected. Hermes' local compression stays armed as the
+  # fallback and still handles every non-eligible session.
+  codex_responses_native: false
+
+  # Server-side compaction trigger in input tokens. Clamped below the local
+  # compression threshold at request time so the server compacts first.
+  codex_responses_compact_threshold: 200000
+
   # Number of non-system messages to protect at the head of the transcript, in
   # ADDITION to the system prompt (which is always implicitly protected).
   # Head messages are NEVER summarized — they survive every compression

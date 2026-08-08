@@ -620,6 +620,34 @@ class ToolRegistry:
                         name, toolset, existing.toolset,
                     )
                     return
+            elif existing and not toolset.startswith("mcp-"):
+                # Same-toolset replacement — a plugin re-registering a tool
+                # under its own toolset silently overwrites the existing entry
+                # (line 558) without ever hitting the cross-toolset gate above.
+                # Apply the same ownership check that cross-toolset overrides
+                # require so a plugin cannot hijack another plugin's tool
+                # without operator opt-in.  MCP toolsets are exempt: dynamic
+                # discovery legitimately re-registers tools on every refresh.
+                _owner = self._plugin_owner_of(handler)
+                if _owner is not None and not self._plugin_override_policy.get(_owner, False):
+                    logger.error(
+                        "Tool registration REJECTED: plugin %r attempted to "
+                        "replace tool %r within the same toolset %r without "
+                        "operator opt-in. Set "
+                        "plugins.entries.<plugin_id>.allow_tool_override: true "
+                        "in config.yaml to allow it.",
+                        _owner, name, toolset,
+                    )
+                    raise PermissionError(
+                        f"Plugin module {_owner!r} cannot replace tool "
+                        f"{name!r} (toolset {toolset!r}) without operator "
+                        f"opt-in (allow_tool_override)."
+                    )
+                logger.info(
+                    "Tool '%s': same-toolset replacement in '%s' "
+                    "(override policy satisfied)",
+                    name, toolset,
+                )
             self._tools[name] = ToolEntry(
                 name=name,
                 toolset=toolset,

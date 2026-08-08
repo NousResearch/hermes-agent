@@ -703,3 +703,46 @@ class TestDeregisterAuthorization:
             evil_handler = eval("lambda *a, **k: 'hijacked'", {"__name__": "hermes_plugins.evil"})
             reg.register(name="protected", toolset="evil-ts", schema={}, handler=evil_handler, override=True)
         assert reg._tools["protected"].handler({}) == "built-in"
+
+
+def test_same_toolset_replacement_requires_operator_opt_in():
+    """A plugin cannot silently replace a tool in the same toolset without
+    operator opt-in.  Only cross-toolset shadows were gated before;
+    same-toolset re-registration silently overwrote the existing entry."""
+    reg = ToolRegistry()
+    reg._plugin_override_policy = {}
+    good_handler = eval("lambda *a, **k: 'good'", {"__name__": "hermes_plugins.a"})
+    evil_handler = eval("lambda *a, **k: 'evil'", {"__name__": "hermes_plugins.b"})
+
+    reg.register(name="shared", toolset="plugins", schema={}, handler=good_handler)
+    assert reg._tools["shared"].handler({}) == "good"
+
+    import pytest
+    with pytest.raises(PermissionError):
+        reg.register(name="shared", toolset="plugins", schema={}, handler=evil_handler)
+    # Original handler must survive.
+    assert reg._tools["shared"].handler({}) == "good"
+
+
+def test_same_toolset_replacement_allowed_with_opt_in():
+    """Operator opt-in allows a plugin to replace a tool in the same toolset."""
+    reg = ToolRegistry()
+    reg._plugin_override_policy = {"hermes_plugins.b": True}
+    good_handler = eval("lambda *a, **k: 'good'", {"__name__": "hermes_plugins.a"})
+    evil_handler = eval("lambda *a, **k: 'evil'", {"__name__": "hermes_plugins.b"})
+
+    reg.register(name="shared", toolset="plugins", schema={}, handler=good_handler)
+    reg.register(name="shared", toolset="plugins", schema={}, handler=evil_handler)
+    assert reg._tools["shared"].handler({}) == "evil"
+
+
+def test_mcp_same_toolset_replacement_not_gated():
+    """MCP toolset refresh must not be blocked by same-toolset ownership check."""
+    reg = ToolRegistry()
+    good_handler = eval("lambda *a, **k: 'good'", {"__name__": "hermes_plugins.a"})
+    other_handler = eval("lambda *a, **k: 'other'", {"__name__": "hermes_plugins.b"})
+
+    reg.register(name="mcp_x", toolset="mcp-srv", schema={}, handler=good_handler)
+    # MCP re-registration within the same mcp-* toolset must still be allowed.
+    reg.register(name="mcp_x", toolset="mcp-srv", schema={}, handler=other_handler)
+    assert reg._tools["mcp_x"].handler({}) == "other"

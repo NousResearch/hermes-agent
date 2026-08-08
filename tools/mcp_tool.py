@@ -345,6 +345,13 @@ _MAX_BACKOFF_SECONDS = 60
 # server is unrevivable: its tools are out of the registry, so no tool call
 # can ever reach the circuit-breaker half-open probe or _signal_reconnect.
 _PARKED_RETRY_INTERVAL = 300     # seconds between parked self-probes
+# Consecutive failed parked self-probes after which a chronically dead
+# server is retired (#71948): deregistered and its task stopped, instead of
+# self-probing every _PARKED_RETRY_INTERVAL forever. With the default 300s
+# interval, 3 failed probes = ~15 minutes of tolerance for transient
+# outages; an explicit reconnect (OAuth recovery, /mcp refresh) or a fresh
+# registration (new ACP session) revives the server with a new task.
+_PARKED_PROBE_RETIRE_LIMIT = 3
 _RECYCLED_RECONNECT_TIMEOUT = 15.0
 # Jitter applied to reconnect backoff sleeps. Without it, every server that
 # lost the same backend retries in lockstep (thundering herd) and log lines
@@ -1920,6 +1927,7 @@ class MCPServerTask:
         "_idle_timeout_seconds", "_max_lifetime_seconds", "_recycled_reason",
         "initialize_result", "_ping_unsupported",
         "_reconnect_retries", "_session_proven", "_was_parked",
+        "_parked_probe_failures",
     )
 
     def __init__(self, name: str):
@@ -1954,6 +1962,13 @@ class MCPServerTask:
         # until the session proves healthy again — used to log the
         # parked→revived transition exactly once.
         self._was_parked: bool = False
+        # Consecutive failed self-probes while parked. A parked server wakes
+        # every _PARKED_RETRY_INTERVAL and probes once; a probe that fails
+        # lands back in the park. After _PARKED_PROBE_RETIRE_LIMIT failed
+        # probes the server is retired (#71948) instead of probing forever.
+        # Reset by any successful transport return, an explicit reconnect
+        # request, or _mark_session_proven.
+        self._parked_probe_failures: int = 0
         self._auth_type: str = ""
         self._refresh_lock = asyncio.Lock()
         # MCP stdio sessions are a single JSON-RPC stream. Some servers emit
@@ -2298,6 +2313,7 @@ class MCPServerTask:
         if not self._session_proven:
             self._session_proven = True
             self._reconnect_retries = 0
+            self._parked_probe_failures = 0
             if self._was_parked:
                 self._was_parked = False
                 logger.warning(
@@ -2428,10 +2444,14 @@ class MCPServerTask:
 
         Returns:
             ``"shutdown"`` if the server should exit the run loop entirely,
-            ``"reconnect"`` if it should rebuild the transport (explicit
-            request or self-probe timeout). The reconnect event is cleared
-            before returning so the next park cycle starts from a fresh
-            signal. Shutdown takes precedence.
+            ``"reconnect"`` if it should rebuild the transport because an
+            EXPLICIT reconnect was requested (event set — OAuth recovery,
+            manual ``/mcp`` refresh), or ``"probe"`` when the wait timed out
+            (a scheduled self-probe wake, used to bound how many failed
+            self-probes a parked server is allowed before it retires —
+            #71948). The reconnect event is cleared before returning so the
+            next park cycle starts from a fresh signal. Shutdown takes
+            precedence.
         """
         shutdown_task = asyncio.ensure_future(self._shutdown_event.wait())
         reconnect_task = asyncio.ensure_future(self._reconnect_event.wait())
@@ -2451,8 +2471,11 @@ class MCPServerTask:
                         pass
         if self._shutdown_event.is_set():
             return "shutdown"
+        if self._reconnect_event.is_set():
+            self._reconnect_event.clear()
+            return "reconnect"
         self._reconnect_event.clear()
-        return "reconnect"
+        return "probe"
 
     async def _run_stdio(self, config: dict):
         """Run the server using stdio transport."""
@@ -3243,6 +3266,9 @@ class MCPServerTask:
                         self.name, self._recycled_reason,
                     )
                     self.session = None
+                    # The transport was healthy enough to recycle — the
+                    # parked-probe budget does not apply to this server.
+                    self._parked_probe_failures = 0
                     await self._wait_for_lazy_reconnect()
                     if self._shutdown_event.is_set():
                         break
@@ -3258,8 +3284,12 @@ class MCPServerTask:
                 )
                 # A clean transport return means a session was established and
                 # then asked to rebuild (auth recovery / manual refresh /
-                # keepalive failure / transport TaskGroup drop). That alone is
-                # NOT proof of health: a flapping transport handshakes fine and
+                # keepalive failure / transport TaskGroup drop). The transport
+                # demonstrably works — reset the parked-probe budget so a
+                # later park starts from a fresh count (#71948).
+                self._parked_probe_failures = 0
+                # That alone is NOT proof of health: a flapping transport
+                # handshakes fine and
                 # drops moments later, and resetting the budget here let such
                 # servers respawn forever (#62212 — 6212 spawns in 63h).
                 # Only clear the consecutive-failure budget once the session
@@ -3289,6 +3319,17 @@ class MCPServerTask:
                         )
                         if parked == "shutdown":
                             break
+                        if parked == "probe":
+                            # Scheduled self-probe: count it. A chronically
+                            # dead server retires after the limit instead of
+                            # probing forever (#71948).
+                            if self._note_parked_probe():
+                                await self._retire_server()
+                                return
+                        else:
+                            # Explicit reconnect request (OAuth recovery,
+                            # /mcp refresh): fresh parked-probe budget.
+                            self._parked_probe_failures = 0
                         logger.debug(
                             "MCP server '%s': attempting revival from parked "
                             "state (self-probe or explicit reconnect request); "
@@ -3381,6 +3422,17 @@ class MCPServerTask:
                         )
                         if parked == "shutdown":
                             return
+                        if parked == "probe":
+                            # Scheduled self-probe: count it. A chronically
+                            # dead server retires after the limit instead of
+                            # probing forever (#71948).
+                            if self._note_parked_probe():
+                                await self._retire_server()
+                                return
+                        else:
+                            # Explicit reconnect request (OAuth recovery,
+                            # /mcp refresh): fresh parked-probe budget.
+                            self._parked_probe_failures = 0
                         logger.debug(
                             "MCP server '%s': attempting revival after "
                             "permanent initial failure (self-probe or explicit "
@@ -3413,6 +3465,17 @@ class MCPServerTask:
                         )
                         if parked == "shutdown":
                             return
+                        if parked == "probe":
+                            # Scheduled self-probe: count it. A chronically
+                            # dead server retires after the limit instead of
+                            # probing forever (#71948).
+                            if self._note_parked_probe():
+                                await self._retire_server()
+                                return
+                        else:
+                            # Explicit reconnect request (OAuth recovery,
+                            # /mcp refresh): fresh parked-probe budget.
+                            self._parked_probe_failures = 0
                         logger.debug(
                             "MCP server '%s': attempting revival after initial "
                             "connection failures (self-probe or explicit "
@@ -3471,6 +3534,17 @@ class MCPServerTask:
                     )
                     if parked == "shutdown":
                         return
+                    if parked == "probe":
+                        # Scheduled self-probe: count it. A chronically
+                        # dead server retires after the limit instead of
+                        # probing forever (#71948).
+                        if self._note_parked_probe():
+                            await self._retire_server()
+                            return
+                    else:
+                        # Explicit reconnect request (OAuth recovery,
+                        # /mcp refresh): fresh parked-probe budget.
+                        self._parked_probe_failures = 0
                     logger.debug(
                         "MCP server '%s': attempting revival from parked state "
                         "(permanent error; self-probe or explicit reconnect "
@@ -3510,6 +3584,17 @@ class MCPServerTask:
                     )
                     if parked == "shutdown":
                         return
+                    if parked == "probe":
+                        # Scheduled self-probe: count it. A chronically
+                        # dead server retires after the limit instead of
+                        # probing forever (#71948).
+                        if self._note_parked_probe():
+                            await self._retire_server()
+                            return
+                    else:
+                        # Explicit reconnect request (OAuth recovery,
+                        # /mcp refresh): fresh parked-probe budget.
+                        self._parked_probe_failures = 0
                     logger.debug(
                         "MCP server '%s': attempting revival from parked state "
                         "(self-probe or explicit reconnect request); "
@@ -3605,6 +3690,71 @@ class MCPServerTask:
             registry.deregister(tool_name)
             _forget_mcp_tool_server(tool_name)
         self._registered_tool_names = []
+
+    def _note_parked_probe(self) -> bool:
+        """Account for a failed parked self-probe wake.
+
+        Called when ``_wait_for_reconnect_or_shutdown`` returns ``"probe"``:
+        the previous probe cycle failed (that is why the task is parked) and
+        the timeout wake is another scheduled self-probe. Returns True once
+        ``_PARKED_PROBE_RETIRE_LIMIT`` consecutive probes have FAILED, so the
+        caller should retire the server instead of probing again.
+
+        Counter semantics: the counter increments on a probe wake and the
+        probe attempt happens after the check, so with the ``> limit`` test
+        the server gets exactly ``_PARKED_PROBE_RETIRE_LIMIT`` genuine probe
+        attempts (wakes 1..limit) and retires on the (limit+1)-th wake, when
+        all of them failed.
+        """
+        self._parked_probe_failures += 1
+        if self._parked_probe_failures > _PARKED_PROBE_RETIRE_LIMIT:
+            logger.warning(
+                "MCP server '%s': %d consecutive failed self-probes while "
+                "parked (limit %d), retiring until an explicit reconnect or "
+                "re-registration (state: parked → retired)",
+                self.name, self._parked_probe_failures,
+                _PARKED_PROBE_RETIRE_LIMIT,
+            )
+            return True
+        return False
+
+    async def _retire_server(self) -> None:
+        """Permanently stop a chronically dead parked server.
+
+        Deregisters its tools and removes it from the module-global
+        ``_servers`` registry and all per-server tracking maps, then the run
+        loop exits. A later explicit registration (new ACP session, ``/mcp``
+        refresh, discovery pass) creates a fresh task, which is the intended
+        revive path — clearing the cooldown maps here is what lets that
+        re-registration proceed immediately instead of inheriting stale
+        backoff.
+
+        Removing the server from ``_servers`` first is what makes exiting
+        safe — the #16788 wedge (a returned task still owned by ``_servers``
+        with no reconnect listener) does not apply once the name is gone.
+
+        Note: ``_deregister_tools`` must stay OUTSIDE the ``_lock`` block —
+        it acquires ``_lock`` itself (via ``_forget_mcp_tool_server``) and
+        ``_lock`` is a non-reentrant ``threading.Lock``.
+        """
+        self._deregister_tools()
+        # All map mutations are scoped to the identity guard: if a same-name
+        # server was re-registered while this task was retiring, it owns the
+        # name now and its fresh state must not be wiped by the stale instance.
+        with _lock:
+            if _servers.get(self.name) is self:
+                _servers.pop(self.name, None)
+                _server_connect_errors.pop(self.name, None)
+                _server_connecting.discard(self.name)
+                _server_connect_retry_after.pop(self.name, None)
+                _server_connect_failures.pop(self.name, None)
+                _parallel_safe_servers.discard(self.name)
+                # Lazy-registration state would otherwise make
+                # register_mcp_servers skip a re-registration of this name
+                # (#56832 lazy skip check), blocking the revive path.
+                _lazy_server_configs.pop(self.name, None)
+                _lazy_server_fingerprints.pop(self.name, None)
+                _lazy_server_tool_names.pop(self.name, None)
 
     async def _wait_for_lazy_reconnect(self) -> None:
         """Wait while an intentionally recycled stdio server is dormant."""
@@ -6068,7 +6218,11 @@ def _select_utility_schemas(server_name: str, server: MCPServerTask, config: dic
 def _existing_tool_names() -> List[str]:
     """Return tool names for all currently connected servers."""
     names: List[str] = []
-    for _sname, server in _servers.items():
+    # Snapshot under the lock: a parked server can retire itself (removing
+    # its entry) from the MCP loop thread while this iterates (#71948).
+    with _lock:
+        servers_snapshot = list(_servers.items())
+    for _sname, server in servers_snapshot:
         if hasattr(server, "_registered_tool_names"):
             names.extend(server._registered_tool_names)
             continue

@@ -1104,16 +1104,34 @@ class TestImageBase64Decoding:
         assert isinstance(img_block["source"]["bytes"], bytes)
         assert img_block["source"]["bytes"] == raw_png
 
-    def test_invalid_base64_falls_back_to_encode(self):
+    def test_invalid_base64_skipped(self):
         from agent.bedrock_adapter import _convert_content_to_converse
 
+        # Malformed base64 (chars outside the alphabet) must be skipped, not
+        # forwarded as raw string-bytes — Bedrock rejects junk bytes with
+        # ValidationException. Skipping degrades gracefully (drop the image)
+        # instead of failing the whole request.
         data_url = "data:image/jpeg;base64,NOT_VALID_BASE64!!!"
         content = [{"type": "image_url", "image_url": {"url": data_url}}]
         blocks = _convert_content_to_converse(content)
 
-        # Should not crash — falls back to encoding the string as bytes
-        assert len(blocks) == 1
-        assert isinstance(blocks[0]["image"]["source"]["bytes"], bytes)
+        # Malformed image is dropped — no image block produced.
+        assert all("image" not in b for b in blocks)
+
+    def test_valid_image_survives_alongside_invalid(self):
+        from agent.bedrock_adapter import _convert_content_to_converse
+
+        good = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+        bad = "data:image/jpeg;base64,NOT_VALID_BASE64!!!"
+        content = [
+            {"type": "image_url", "image_url": {"url": good}},
+            {"type": "image_url", "image_url": {"url": bad}},
+        ]
+        blocks = _convert_content_to_converse(content)
+        image_blocks = [b for b in blocks if "image" in b]
+        # Exactly the one valid image survives.
+        assert len(image_blocks) == 1
+        assert isinstance(image_blocks[0]["image"]["source"]["bytes"], bytes)
 
 
 class TestBearerTokenRoutesToConverse:
@@ -1157,3 +1175,50 @@ class TestBearerTokenRoutesToConverse:
         runtime = self._resolve(monkeypatch, bearer=False)
         assert runtime["api_mode"] == "anthropic_messages"
         assert runtime.get("bedrock_anthropic") is True
+
+
+class TestBearerTokenAuxRoutesToConverse:
+    """The AUXILIARY client (vision/summarization) must also route bearer-token
+    Claude models through the boto3 Converse shim (BedrockAuxiliaryClient), not
+    the AnthropicBedrock SDK — which raises ``RuntimeError: could not resolve
+    credentials from session`` on bearer tokens. This mirrors the main-loop
+    routing tested in TestBearerTokenRoutesToConverse. Ref: #28085.
+    """
+
+    def _resolve_aux(self, monkeypatch, model):
+        import agent.auxiliary_client as ac
+
+        # bedrock is auth_type=aws_sdk in the real PROVIDER_REGISTRY, and with
+        # the bearer env set has_aws_credentials() is True — no registry mock
+        # needed. Guard build_anthropic_bedrock_client so a regression that
+        # routes bearer-token Claude back to the AnthropicBedrock SDK fails loud.
+        monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bearer-token-123")
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+
+        from agent import anthropic_adapter
+        def _boom(*a, **k):
+            raise AssertionError(
+                "build_anthropic_bedrock_client called on bearer-token path — "
+                "should route to Converse instead"
+            )
+        monkeypatch.setattr(anthropic_adapter, "build_anthropic_bedrock_client", _boom, raising=False)
+
+        return ac.resolve_provider_client(provider="bedrock", model=model)
+
+    def test_bearer_claude_aux_uses_converse_client(self, monkeypatch):
+        from agent.auxiliary_client import BedrockAuxiliaryClient, AnthropicAuxiliaryClient
+
+        client, final_model = self._resolve_aux(
+            monkeypatch, "anthropic.claude-opus-4-20250514-v1:0"
+        )
+        # Claude + bearer token → Converse shim, NOT AnthropicAuxiliaryClient.
+        assert isinstance(client, BedrockAuxiliaryClient)
+        assert not isinstance(client, AnthropicAuxiliaryClient)
+
+    def test_bearer_nonclaude_aux_uses_converse_client(self, monkeypatch):
+        from agent.auxiliary_client import BedrockAuxiliaryClient
+
+        client, final_model = self._resolve_aux(
+            monkeypatch, "amazon.nova-pro-v1:0"
+        )
+        assert isinstance(client, BedrockAuxiliaryClient)

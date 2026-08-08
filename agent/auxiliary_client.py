@@ -3965,6 +3965,13 @@ def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
         "unrecognized request argument",
         "unrecognized parameter",
         "invalid parameter",
+        # AWS Bedrock Converse phrasing for newer Anthropic models
+        # ("`temperature` is deprecated for this model.") — without this the
+        # reactive-retry branch never fires and the boto3 ValidationException
+        # is swallowed by downstream wrappers, surfacing as an empty
+        # ChatCompletion with all-None fields. Ref: aux vision broken on
+        # Bedrock Opus 4.7 / Sonnet 4.5 when temperature is passed.
+        "is deprecated",
     ))
 
 
@@ -6452,12 +6459,28 @@ def resolve_provider_client(
                 else (client, final_model))
 
     elif pconfig.auth_type == "aws_sdk":
-        # AWS SDK providers (Bedrock) — Claude models use the Anthropic Bedrock
-        # SDK (prompt caching, thinking); non-Claude models use Converse API.
+        # AWS SDK providers (Bedrock).  Two auth paths:
+        #
+        #   1. AWS_BEARER_TOKEN_BEDROCK → boto3 Converse API via
+        #      BedrockAuxiliaryClient, for BOTH Claude and non-Claude models.
+        #      The ``anthropic.AnthropicBedrock`` SDK does NOT support bearer
+        #      tokens — it raises ``RuntimeError: could not resolve credentials
+        #      from session`` because its auth helper only consults the boto3
+        #      credential chain for IAM keys, not bearer tokens.  boto3's
+        #      Converse call DOES pick up the bearer token natively, and
+        #      Converse supports every Bedrock model including Claude, so we
+        #      route Claude through it too here.  This mirrors the dual-path
+        #      routing in ``hermes_cli.runtime_provider`` for the main loop.
+        #
+        #   2. IAM credentials (env vars / SSO / instance profile) → Claude
+        #      models use the AnthropicBedrock SDK for full feature parity
+        #      (prompt caching, thinking budgets); non-Claude models use the
+        #      Converse shim.
         try:
             from agent.bedrock_adapter import (
                 has_aws_credentials,
                 is_anthropic_bedrock_model,
+                resolve_aws_auth_env_var,
                 resolve_bedrock_region,
             )
             from agent.anthropic_adapter import build_anthropic_bedrock_client
@@ -6473,8 +6496,19 @@ def resolve_provider_client(
 
         region = resolve_bedrock_region()
         default_model = "anthropic.claude-haiku-4-5-20251001-v1:0"
-        final_model = _normalize_resolved_model(model or default_model, provider)
+        final_model = _normalize_resolved_model(model or default_model, provider) or default_model
         base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
+
+        # Bearer-token path: route everything (Claude included) through the
+        # boto3 Converse shim, which is the only path that can use the token.
+        if resolve_aws_auth_env_var() == "AWS_BEARER_TOKEN_BEDROCK":
+            client = BedrockAuxiliaryClient(region, final_model)
+            logger.debug(
+                "resolve_provider_client: bedrock converse (%s, %s, bearer-token)",
+                final_model, region,
+            )
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                    else (client, final_model))
 
         if is_anthropic_bedrock_model(final_model):
             try:

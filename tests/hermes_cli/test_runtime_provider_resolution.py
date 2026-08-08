@@ -1383,6 +1383,12 @@ def _patch_bedrock(monkeypatch, config_default=""):
     monkeypatch.setattr(ba, "has_aws_credentials", lambda: True)
     monkeypatch.setattr(ba, "resolve_aws_auth_env_var", lambda: "AWS_PROFILE")
     monkeypatch.setattr(ba, "resolve_bedrock_region", lambda: "eu-north-1")
+    # resolve_runtime_provider reads AWS_BEARER_TOKEN_BEDROCK from os.environ
+    # DIRECTLY (not via the mocked resolve_aws_auth_env_var), so an ambient
+    # bearer token — present in this repo's own dev environment — would force
+    # the Converse path and break the IAM/SSO dual-path assertions below.
+    # Delete it here so the helper models a pure IAM/SSO setup.
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
 
 
 def test_resolve_runtime_provider_bedrock_claude_target_model_uses_anthropic_messages(monkeypatch):

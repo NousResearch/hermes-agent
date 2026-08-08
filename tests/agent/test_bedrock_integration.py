@@ -370,9 +370,13 @@ class TestAuxiliaryClientBedrockResolution:
 
     def test_bedrock_returns_client_with_credentials(self, monkeypatch):
         """With valid AWS credentials, Bedrock should return a usable client."""
-        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIO...MPLE")
         monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
         monkeypatch.setenv("AWS_REGION", "us-west-2")
+        # Isolate the pure-IAM path: a bearer token in the ambient environment
+        # (this repo's own dev setup uses one) would otherwise correctly route
+        # Claude through the Converse shim instead of the AnthropicBedrock SDK.
+        monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
 
         mock_anthropic_bedrock = MagicMock()
         with patch("agent.anthropic_adapter.build_anthropic_bedrock_client",

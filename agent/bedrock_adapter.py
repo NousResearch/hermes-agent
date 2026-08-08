@@ -579,11 +579,21 @@ def _convert_content_to_converse(content) -> List[Dict]:
                     # wire layer, so passing the base64 string directly
                     # results in double-encoding and Bedrock rejects it with
                     # "Failed to sanitize image".  Ref: #33317.
+                    #
+                    # ``validate=True`` makes b64decode reject payloads with
+                    # characters outside the base64 alphabet instead of
+                    # silently discarding them and returning junk bytes.  On a
+                    # malformed data URL we skip the image rather than sending
+                    # the raw base64 string as bytes (which Bedrock rejects
+                    # with ValidationException) or blowing up the whole request.
                     import base64
+                    import binascii
                     try:
-                        raw_bytes = base64.b64decode(data)
-                    except Exception:
-                        raw_bytes = data.encode("utf-8")
+                        raw_bytes = base64.b64decode(data, validate=True)
+                    except (binascii.Error, ValueError):
+                        continue
+                    if not raw_bytes:
+                        continue
                     blocks.append({
                         "image": {
                             "format": media_type.split("/")[-1] if "/" in media_type else "jpeg",

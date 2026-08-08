@@ -11,11 +11,16 @@ Config (``~/.hermes/config.yaml``)::
         enabled: true                       # off by default
         fields: [model, context_pct, cwd]   # order shown; drop any to hide
 
-Available fields:
-    model        — bare model id, vendor prefix dropped (``gpt-5.4``)
-    context_pct  — last-call context occupancy as a percent (``5%``)
-    latency      — wall-clock duration of the turn (``22s``, ``1m05s``)
-    cwd          — home-relative working dir (``~``)
+Available fields (the default set is unchanged — ``model``, ``context_pct``,
+``cwd`` — so an existing footer renders byte-identically; the new fields are
+opt-in via ``fields``):
+    model           — bare model id, vendor prefix dropped (``claude-opus-4-8``)
+    provider_model  — ``provider/model`` (``claude-bridge-f3/claude-opus-4-8``)
+    context_pct     — last-call occupancy as a percent (``5%``)
+    context_full    — ``used/window (pct)``, both humanized (``50.2k/1M (5%)``)
+    reasoning       — model reasoning-effort level, ``r:<level>`` (``r:xhigh``)
+    latency         — wall-clock duration of the turn (``22s``, ``1m05s``)
+    cwd             — home-relative working dir (``~``)
 
 ``latency`` is opt-in: it is NOT in the default field set, so a footer whose
 ``fields`` are unset renders exactly as before.
@@ -60,6 +65,42 @@ def _model_short(model: Optional[str]) -> str:
     if not model:
         return ""
     return model.rsplit("/", 1)[-1]
+
+
+def _split_provider_model(
+    provider: Optional[str], model: Optional[str]
+) -> tuple[str, str]:
+    """Resolve a clean ``(provider, model)`` pair.
+
+    When ``provider`` is unset but ``model`` carries a ``provider/model``
+    prefix, split it so the footer reads cleanly (``provider/model``, not
+    ``unset/a/b``).
+
+    When the ``model`` ALREADY carries a ``provider/`` prefix, that embedded
+    prefix wins and any separately-supplied ``provider`` is ignored — this
+    avoids an ugly triple like ``openai-codex/claude-app/claude-opus-4-8`` when
+    a caller passes both a provider and a prefixed model. The model's own
+    prefix is the more specific source.
+    """
+    prov = (provider or "").strip()
+    mdl = (model or "").strip()
+    if "/" in mdl:
+        # The model carries its own provider prefix — it's authoritative.
+        prov, _, mdl = mdl.partition("/")
+    return prov, mdl
+
+
+def _humanize_tok(n: Any) -> str:
+    """Token count -> compact string (``50k``, ``1.5k``, ``1M``, ``1.0M``)."""
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if abs(n) >= 1_000_000:
+        return f"{n // 1_000_000}M" if n % 1_000_000 == 0 else f"{n / 1_000_000:.1f}M"
+    if abs(n) >= 1000:
+        return f"{n // 1000}k" if n % 1000 == 0 else f"{n / 1000:.1f}k"
+    return str(n)
 
 
 def resolve_footer_config(
@@ -115,6 +156,8 @@ def format_runtime_footer(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     turn_seconds: Optional[float] = None,
+    provider: Optional[str] = None,
+    reasoning: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
@@ -128,10 +171,30 @@ def format_runtime_footer(
             m = _model_short(model)
             if m:
                 parts.append(m)
+        elif field == "provider_model":
+            prov, mdl = _split_provider_model(provider, model)
+            if prov and mdl:
+                parts.append(f"{prov}/{mdl}")
+            elif mdl:
+                parts.append(mdl)
         elif field == "context_pct":
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
                 parts.append(f"{pct}%")
+        elif field == "context_full":
+            # Both used and window humanized (50.2k/1M); pct from raw values.
+            if context_length and context_length > 0 and context_tokens >= 0:
+                pct = max(0, min(100, round((context_tokens / context_length) * 100)))
+                parts.append(
+                    f"{_humanize_tok(context_tokens)}/{_humanize_tok(context_length)} ({pct}%)"
+                )
+            elif context_tokens and context_tokens > 0:
+                parts.append(_humanize_tok(context_tokens))
+        elif field == "reasoning":
+            # Model reasoning-effort level (none/minimal/low/medium/high/xhigh).
+            r = (reasoning or "").strip()
+            if r:
+                parts.append(f"r:{r}")
         elif field == "latency":
             # Wall-clock turn duration. Skipped when the caller supplied no
             # timing (call sites that don't measure) or the value is negative.
@@ -148,6 +211,46 @@ def format_runtime_footer(
     return _SEP.join(parts)
 
 
+def _reasoning_label(reasoning_config: Any) -> str:
+    """Render a parsed reasoning-config dict as a footer label.
+
+    Accepts the dict shape produced by
+    :func:`hermes_constants.parse_reasoning_effort` — ``{"enabled": True,
+    "effort": "<level>"}`` or ``{"enabled": False}``.  Returns the bare level
+    (``xhigh``), ``none`` when thinking is explicitly disabled, or ``""`` when
+    unset (caller drops the field).
+    """
+    if not isinstance(reasoning_config, dict):
+        return ""
+    if not reasoning_config.get("enabled", True):
+        return "none"
+    return str(reasoning_config.get("effort", "") or "").strip()
+
+
+def _reasoning_from_config(
+    user_config: dict[str, Any] | None, model: Optional[str] = None
+) -> str:
+    """Resolve the effective reasoning level for *model* from *user_config*.
+
+    Routes through the shared chokepoint
+    :func:`hermes_constants.resolve_reasoning_config` so the footer honors
+    per-model overrides (``agent.reasoning_overrides``) and the YAML-boolean
+    "disabled" spelling exactly as the agent does, rather than re-reading
+    ``agent.reasoning_effort`` raw.
+
+    Session-scoped ``/reasoning`` overrides are resolved by the CALLER (they
+    always win) and passed to :func:`build_footer_line` as ``reasoning_config``.
+    """
+    try:
+        from hermes_constants import resolve_reasoning_config
+
+        return _reasoning_label(
+            resolve_reasoning_config(user_config or {}, model or "")
+        )
+    except Exception:
+        return ""
+
+
 def build_footer_line(
     *,
     user_config: dict[str, Any] | None,
@@ -157,6 +260,9 @@ def build_footer_line(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     turn_seconds: Optional[float] = None,
+    provider: Optional[str] = None,
+    reasoning: Optional[str] = None,
+    reasoning_config: Any = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -167,15 +273,31 @@ def build_footer_line(
     ``turn_seconds`` is the wall-clock duration of the agent run, measured by
     the caller with ``time.monotonic()``.  Callers that don't measure it leave
     it ``None`` and the ``latency`` field is skipped.
+
+    ``reasoning_config`` is the caller's ALREADY-RESOLVED reasoning config for
+    this session (gateway/run.py's ``_resolve_session_reasoning_config``, which
+    honors a session-scoped ``/reasoning <level>``).  Passing it keeps the
+    footer in step with what the session actually runs; without it the footer
+    falls back to the config-level resolution, which can be stale for a session
+    that set a session-scoped override.
     """
     cfg = resolve_footer_config(user_config, platform_key)
     if not cfg.get("enabled"):
         return ""
+    # Reasoning: prefer an explicit label, then the caller's session-resolved
+    # config, then config-level resolution for this model.
+    if reasoning is None:
+        if reasoning_config is not None:
+            reasoning = _reasoning_label(reasoning_config)
+        else:
+            reasoning = _reasoning_from_config(user_config, model)
     return format_runtime_footer(
         model=model,
         context_tokens=context_tokens,
         context_length=context_length,
         cwd=cwd,
         turn_seconds=turn_seconds,
+        provider=provider,
+        reasoning=reasoning,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
     )

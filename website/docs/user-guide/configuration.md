@@ -1816,11 +1816,14 @@ Supported fields:
 | Field | Renders | Example |
 | --- | --- | --- |
 | `model` | Bare model id, vendor prefix dropped | `gpt-5.4` |
+| `provider_model` | `provider/model` — useful behind bridges/proxies/failover, where the same model is served by different providers | `claude-bridge-f3/claude-opus-4-8` |
 | `context_pct` | Last-call context occupancy as a percent | `5%` |
+| `context_full` | `used/window (pct)`, both humanized | `50.2k/1M (5%)` |
+| `reasoning` | Effective reasoning-effort level, `r:<level>` (honors a session-scoped `/reasoning`) | `r:xhigh` |
 | `latency` | Wall-clock duration of the turn | `22s`, `1m05s` |
 | `cwd` | Home-relative working directory | `~` |
 
-The default field set is `["model", "context_pct", "cwd"]`. `latency` is opt-in — add it to `fields` to use it. Fields whose data is unavailable are skipped silently rather than rendering an empty slot.
+The default field set is `["model", "context_pct", "cwd"]`. The other fields are opt-in — add them to `fields` to use them. Fields whose data is unavailable are skipped silently rather than rendering an empty slot.
 
 The `/footer` slash command toggles this at runtime in any session.
 

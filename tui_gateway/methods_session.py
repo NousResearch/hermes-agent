@@ -2707,7 +2707,8 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5011, f"failed to create save directory {saved_dir}: {e}")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = saved_dir / f"hermes_conversation_{timestamp}.json"
+    # Unique suffix keeps same-second saves distinct.
+    path = saved_dir / f"hermes_conversation_{timestamp}_{uuid.uuid4().hex[:8]}.json"
 
     with session["history_lock"]:
         messages = list(session.get("history", []))

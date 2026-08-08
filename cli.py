@@ -8401,7 +8401,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception as e:
             print(f"(x_x) Failed to create save directory {saved_dir}: {e}")
             return
-        path = saved_dir / f"hermes_conversation_{timestamp}.json"
+        # Unique suffix keeps same-second saves distinct.
+        path = saved_dir / f"hermes_conversation_{timestamp}_{uuid.uuid4().hex[:8]}.json"
 
         try:
             with open(path, "w", encoding="utf-8") as f:

@@ -331,7 +331,6 @@ class TestCreateAudioRecorder:
 class TestTermuxAudioRecorder:
     def test_start_and_stop_use_termux_microphone_commands(self, monkeypatch, temp_voice_dir):
         command_calls = []
-        output_path = Path(temp_voice_dir) / "recording_20260409_120000.aac"
 
         def fake_run(cmd, **kwargs):
             command_calls.append(cmd)
@@ -352,16 +351,21 @@ class TestTermuxAudioRecorder:
         recorder._start_time = time.monotonic() - 1.0
         result = recorder.stop()
 
-        assert result == str(output_path)
+        # Filename is the timestamp plus a unique suffix.
+        assert result == command_calls[0][2]
+        assert Path(result).name.startswith("recording_20260409_120000_")
+        assert Path(result).suffix == ".aac"
         assert command_calls[0][:2] == ["/data/data/com.termux/files/usr/bin/termux-microphone-record", "-f"]
         assert command_calls[1] == ["/data/data/com.termux/files/usr/bin/termux-microphone-record", "-q"]
 
     def test_cancel_removes_partial_termux_recording(self, monkeypatch, temp_voice_dir):
-        output_path = Path(temp_voice_dir) / "recording_20260409_120000.aac"
+        created = []
 
         def fake_run(cmd, **kwargs):
             if cmd[1] == "-f":
-                Path(cmd[2]).write_bytes(b"aac-bytes")
+                path = Path(cmd[2])
+                path.write_bytes(b"aac-bytes")
+                created.append(path)
             return MagicMock(returncode=0, stdout="", stderr="")
 
         monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
@@ -376,7 +380,7 @@ class TestTermuxAudioRecorder:
         recorder.start()
         recorder.cancel()
 
-        assert output_path.exists() is False
+        assert created and created[0].exists() is False
         assert recorder.is_recording is False
 
 

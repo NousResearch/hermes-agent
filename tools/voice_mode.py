@@ -23,6 +23,7 @@ from pathlib import Path
 import tempfile
 import threading
 import time
+import uuid
 import wave
 from typing import Any, Callable, Dict, List, Optional
 
@@ -727,7 +728,10 @@ class TermuxAudioRecorder:
                 return
             os.makedirs(_TEMP_DIR, exist_ok=True)
             timestamp = time.strftime("%Y%m%d_%H%M%S")
-            self._recording_path = os.path.join(_TEMP_DIR, f"recording_{timestamp}.aac")
+            # Unique suffix keeps same-second recordings distinct.
+            self._recording_path = os.path.join(
+                _TEMP_DIR, f"recording_{timestamp}_{uuid.uuid4().hex[:8]}.aac"
+            )
 
         command = [
             mic_cmd,
@@ -1184,8 +1188,11 @@ class AudioRecorder:
         Returns the file path.
         """
         os.makedirs(_TEMP_DIR, exist_ok=True)
+        # Unique suffix keeps same-second recordings distinct.
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        wav_path = os.path.join(_TEMP_DIR, f"recording_{timestamp}.wav")
+        wav_path = os.path.join(
+            _TEMP_DIR, f"recording_{timestamp}_{uuid.uuid4().hex[:8]}.wav"
+        )
 
         with wave.open(wav_path, "wb") as wf:
             wf.setnchannels(CHANNELS)

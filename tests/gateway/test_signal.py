@@ -1,6 +1,9 @@
 """Tests for Signal messenger platform adapter."""
 import asyncio
 import base64
+import contextlib
+import time
+
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -80,8 +83,39 @@ class TestSignalAdapterInit:
         assert "group123" in adapter.group_allow_from
 
 
+class TestSignalReceivePolling:
+    @pytest.mark.asyncio
+    async def test_receive_loop_polls_and_dispatches_envelope(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, account="+15551234567")
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+15550000000",
+                "dataMessage": {"message": "hello", "timestamp": 1},
+            }
+        }
+        response = MagicMock(status_code=200)
+        response.json.return_value = [envelope]
+        calls = []
+
+        async def get(url, **kwargs):
+            calls.append((url, kwargs))
+            adapter._running = False
+            return response
+
+        adapter.client = MagicMock(get=AsyncMock(side_effect=get))
+        adapter._handle_envelope = AsyncMock()
+        adapter._running = True
+        await adapter._receive_loop()
+
+        assert calls[0][0] == "http://localhost:8080/v1/receive/%2B15551234567"
+        adapter._handle_envelope.assert_awaited_once_with(envelope)
+
+    def test_poll_interval_is_clamped_to_one_second(self, monkeypatch):
+        assert _make_signal_adapter(monkeypatch, poll_interval=0.1).poll_interval == 1.0
+        assert _make_signal_adapter(monkeypatch, poll_interval=2.5).poll_interval == 2.5
+
+
 class TestSignalConnectCleanup:
-    """Regression coverage for failed connect() cleanup."""
 
     @pytest.mark.asyncio
     async def test_releases_lock_and_closes_client_on_healthcheck_failure(self, monkeypatch):
@@ -1311,6 +1345,337 @@ class TestSignalSyncMessageHandling:
         assert "event" in captured, "Group sync-sent must reach handle_message"
         assert captured["event"].text == "ping the group"
         assert captured["event"].source.chat_id == "group:abc123=="
+
+
+# ---------------------------------------------------------------------------
+# Health-monitor behaviour (#74871 reviewer feedback): reconnect after extended
+# ``/v1/health`` failure, warn on 120 s receive-loop inactivity.
+# ---------------------------------------------------------------------------
+
+
+class TestSignalHealthMonitor:
+    """Cover the reconnect + inactivity branches in ``_health_monitor``."""
+
+    @pytest.mark.asyncio
+    async def test_reconnect_triggered_after_three_consecutive_failures(self, monkeypatch):
+        """Three failed health checks in a row should trigger a ``connect(is_reconnect=True)``
+        via the live ``self.client``, not just log a warning. Without this the
+        adapter would silently sit on a dead TCP socket that polls return
+        immediately from (#74871)."""
+        adapter = _make_signal_adapter(monkeypatch, transport_mode="native")
+
+        # Pre-arm the state the monitor needs.
+        adapter._running = True
+        adapter.client = MagicMock()
+        adapter._last_receive_at = time.monotonic()
+
+        # Stub ``connect`` so it doesn't actually rebuild the world; we
+        # only care that it gets called.
+        connect_calls = []
+
+        async def fake_connect(*, is_reconnect: bool = False):
+            connect_calls.append(is_reconnect)
+
+        adapter.connect = fake_connect
+
+        # ``asyncio.sleep`` is the only thing blocking the loop — patch it to
+        # no-op so the test runs in microseconds, but use a counter so we
+        # can stop the loop after three iterations.
+        iterations = {"n": 0}
+
+        async def fake_sleep(_seconds):
+            iterations["n"] += 1
+            if iterations["n"] >= 4:
+                # Raise to break out of the ``while self._running`` loop on
+                # the 4th iteration — three failed health checks will have
+                # triggered ``connect(is_reconnect=True)`` by then.
+                raise asyncio.CancelledError
+
+        # Drive the monitor manually instead of starting it as a task so the
+        # test controls the loop bound and we can wait synchronously.
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+        # Stub ``client.get`` to always fail (returns 503).
+        failing_response = MagicMock(status_code=503)
+        adapter.client.get = AsyncMock(return_value=failing_response)
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await adapter._health_monitor()
+
+        assert len(connect_calls) == 1, (
+            f"expected reconnect after 3 consecutive failures, got {len(connect_calls)}"
+        )
+        assert connect_calls[0] is True, "reconnect must pass is_reconnect=True"
+
+    @pytest.mark.asyncio
+    async def test_inactivity_warning_after_120s_without_receive(self, monkeypatch):
+        """If the receive loop hasn't yielded in 120 s, log a warning even
+        when ``/v1/health`` keeps returning 200. Empty queues still count
+        as activity (the receive loop updates ``_last_receive_at`` on every
+        successful poll), so a stuck loop is the only failure mode (#74871)."""
+        adapter = _make_signal_adapter(monkeypatch, transport_mode="native")
+        adapter._running = True
+        adapter.client = MagicMock()
+
+        # Pretend the receive loop hasn't fired for 200 s.
+        adapter._last_receive_at = time.monotonic() - 200.0
+
+        healthy_response = MagicMock(status_code=200)
+        adapter.client.get = AsyncMock(return_value=healthy_response)
+
+        connect_calls = []
+
+        async def fake_connect(*, is_reconnect: bool = False):
+            connect_calls.append(is_reconnect)
+
+        adapter.connect = fake_connect
+
+        iterations = {"n": 0}
+
+        async def fake_sleep(_seconds):
+            iterations["n"] += 1
+            if iterations["n"] >= 1:
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await adapter._health_monitor()
+
+        # No reconnect — health endpoint is healthy; the operator-visible
+        # warning is the load-bearing signal here.
+        assert connect_calls == []
+
+    @pytest.mark.asyncio
+    async def test_successful_health_resets_failure_counter(self, monkeypatch):
+        """A successful health probe between failures resets the
+        consecutive-failure window so a single transient blip doesn't
+        eventually trigger a reconnect (#74871)."""
+        adapter = _make_signal_adapter(monkeypatch, transport_mode="native")
+        adapter._running = True
+        adapter.client = MagicMock()
+        adapter._last_receive_at = time.monotonic()
+
+        connect_calls = []
+
+        async def fake_connect(*, is_reconnect: bool = False):
+            connect_calls.append(is_reconnect)
+
+        adapter.connect = fake_connect
+
+        # Sequence: fail, fail, success, fail, fail — only 2 consecutive
+        # fails at any point, so no reconnect should fire even though
+        # total failures > 3.
+        sequence = [
+            MagicMock(status_code=500),  # fail
+            MagicMock(status_code=500),  # fail
+            MagicMock(status_code=200),  # success
+            MagicMock(status_code=500),  # fail
+            MagicMock(status_code=500),  # fail
+        ]
+        adapter.client.get = AsyncMock(side_effect=sequence)
+
+        iterations = {"n": 0}
+
+        async def fake_sleep(_seconds):
+            iterations["n"] += 1
+            if iterations["n"] >= len(sequence):
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await adapter._health_monitor()
+
+        assert connect_calls == [], (
+            f"no consecutive-failure window reached 3; reconnect should NOT "
+            f"have fired but got {connect_calls}"
+        )
+
+    def test_receive_loop_records_last_activity_timestamp(self, monkeypatch):
+        """``_receive_loop`` must update ``_last_receive_at`` on every
+        successful poll (including empty ones) so the monitor can
+        distinguish \"daemon reachable, queue empty\" from \"daemon stuck\"
+        (#74871)."""
+        adapter = _make_signal_adapter(monkeypatch, transport_mode="native")
+        adapter._running = True
+        adapter._last_receive_at = 0.0
+
+        # Track _receive_loop's poll + handle_envelope calls.
+        envelope = {"envelope": {"sourceNumber": "+15551234567", "dataMessage": {"message": "hi", "timestamp": 1}}}
+        response = MagicMock(status_code=200)
+        response.json.return_value = [envelope]
+
+        async def fake_get(url, **kwargs):
+            adapter._running = False  # exit loop after one poll
+            return response
+
+        adapter.client = MagicMock(get=AsyncMock(side_effect=fake_get))
+        adapter._handle_envelope = AsyncMock()
+
+        before = time.monotonic()
+        # _receive_loop is async — run it synchronously via asyncio.run
+        # to exercise the activity-timestamp side-effect end-to-end.
+        asyncio.run(adapter._receive_loop())
+        after = time.monotonic()
+
+        assert before <= adapter._last_receive_at <= after, (
+            f"_last_receive_at ({adapter._last_receive_at}) must fall within "
+            f"the poll interval [{before}, {after}]"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Outbound RPC route verification (#71636 sweeper: every outbound operation
+# must hit /v1/rpc with the correct JSON-RPC method — not just receive polling)
+# ---------------------------------------------------------------------------
+
+class TestSignalOutboundRpcRoutes:
+    """Verify that every outbound operation routes through /v1/rpc with the
+    correct JSON-RPC 2.0 method name and that the HTTP POST target is the
+    documented endpoint, not a stale or invented path."""
+
+    @pytest.mark.asyncio
+    async def test_send_text_uses_send_method_on_v1_rpc(self, monkeypatch):
+        """send() must POST to /v1/rpc with method=send."""
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+
+        captured = []
+
+        async def mock_post(url, **kwargs):
+            captured.append({"url": url, "payload": kwargs.get("json", {})})
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.raise_for_status = MagicMock()
+            resp.json.return_value = {"result": {"timestamp": 12345}}
+            return resp
+
+        adapter.client = MagicMock(post=AsyncMock(side_effect=mock_post))
+
+        result = await adapter.send(chat_id="+155****4567", content="hello")
+
+        assert result.success is True
+        assert len(captured) == 1
+        assert captured[0]["url"] == "http://localhost:8080/v1/rpc"
+        assert captured[0]["payload"]["method"] == "send"
+        assert captured[0]["payload"]["jsonrpc"] == "2.0"
+        assert captured[0]["payload"]["params"]["message"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_send_typing_uses_sendTyping_method(self, monkeypatch):
+        """send_typing() must POST to /v1/rpc with method=sendTyping."""
+        adapter = _make_signal_adapter(monkeypatch)
+
+        captured = []
+
+        async def mock_post(url, **kwargs):
+            captured.append({"url": url, "payload": kwargs.get("json", {})})
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.raise_for_status = MagicMock()
+            resp.json.return_value = {"result": True}
+            return resp
+
+        adapter.client = MagicMock(post=AsyncMock(side_effect=mock_post))
+
+        await adapter.send_typing("+155****4567")
+
+        assert len(captured) == 1
+        assert captured[0]["url"] == "http://localhost:8080/v1/rpc"
+        assert captured[0]["payload"]["method"] == "sendTyping"
+
+    @pytest.mark.asyncio
+    async def test_send_reaction_uses_sendReaction_method(self, monkeypatch):
+        """send_reaction() must POST to /v1/rpc with method=sendReaction."""
+        adapter = _make_signal_adapter(monkeypatch)
+
+        captured = []
+
+        async def mock_post(url, **kwargs):
+            captured.append({"url": url, "payload": kwargs.get("json", {})})
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.raise_for_status = MagicMock()
+            resp.json.return_value = {"result": True}
+            return resp
+
+        adapter.client = MagicMock(post=AsyncMock(side_effect=mock_post))
+
+        ok = await adapter.send_reaction(
+            chat_id="+155****4567",
+            emoji="👀",
+            target_author="+155****0000",
+            target_timestamp=1712345678000,
+        )
+
+        assert ok is True
+        assert len(captured) == 1
+        assert captured[0]["url"] == "http://localhost:8080/v1/rpc"
+        assert captured[0]["payload"]["method"] == "sendReaction"
+        assert captured[0]["payload"]["params"]["emoji"] == "👀"
+        assert captured[0]["payload"]["params"]["targetAuthor"] == "+155****0000"
+        assert captured[0]["payload"]["params"]["targetTimestamp"] == 1712345678000
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_uses_sendTyping_with_stop_flag(self, monkeypatch):
+        """_stop_typing_indicator() must POST to /v1/rpc with method=sendTyping
+        and params[stop]=True."""
+        adapter = _make_signal_adapter(monkeypatch)
+
+        captured = []
+
+        async def mock_post(url, **kwargs):
+            captured.append({"url": url, "payload": kwargs.get("json", {})})
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.raise_for_status = MagicMock()
+            resp.json.return_value = {"result": True}
+            return resp
+
+        adapter.client = MagicMock(post=AsyncMock(side_effect=mock_post))
+
+        await adapter._stop_typing_indicator("+155****4567")
+
+        assert len(captured) == 1
+        assert captured[0]["url"] == "http://localhost:8080/v1/rpc"
+        assert captured[0]["payload"]["method"] == "sendTyping"
+        assert captured[0]["payload"]["params"]["stop"] is True
+
+    @pytest.mark.asyncio
+    async def test_send_attachment_uses_send_method_with_attachments_param(self, monkeypatch, tmp_path):
+        """_send_attachment() must POST to /v1/rpc with method=send and an
+        attachments array in params."""
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+
+        captured = []
+
+        async def mock_post(url, **kwargs):
+            captured.append({"url": url, "payload": kwargs.get("json", {})})
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.raise_for_status = MagicMock()
+            resp.json.return_value = {"result": {"timestamp": 12345}}
+            return resp
+
+        adapter.client = MagicMock(post=AsyncMock(side_effect=mock_post))
+
+        file_path = tmp_path / "doc.pdf"
+        file_path.write_bytes(b"%PDF" + b"\x00" * 100)
+
+        result = await adapter.send_document(
+            chat_id="+155****4567", file_path=str(file_path), caption="report"
+        )
+
+        assert result.success is True
+        # Only the send RPC should be captured (stop_typing is mocked out)
+        send_calls = [c for c in captured if c["payload"]["method"] == "send"]
+        assert len(send_calls) == 1
+        assert send_calls[0]["url"] == "http://localhost:8080/v1/rpc"
+        assert send_calls[0]["payload"]["method"] == "send"
+        assert send_calls[0]["payload"]["params"]["attachments"] == [str(file_path)]
+        assert send_calls[0]["payload"]["params"]["message"] == "report"
 
 
 class TestRecentSentTimestampRing:

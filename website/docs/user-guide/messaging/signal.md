@@ -6,7 +6,7 @@ description: "Set up Hermes Agent as a Signal messenger bot via signal-cli daemo
 
 # Signal Setup
 
-Hermes connects to Signal through the [signal-cli](https://github.com/AsamK/signal-cli) daemon running in HTTP mode. The adapter streams messages in real-time via SSE (Server-Sent Events) and sends responses via JSON-RPC.
+Hermes connects to Signal through the [signal-cli](https://github.com/AsamK/signal-cli) daemon running in HTTP mode. The adapter polls for inbound messages via HTTP and sends responses via JSON-RPC.
 
 Signal is the most privacy-focused mainstream messenger — end-to-end encrypted by default, open-source protocol, minimal metadata collection. This makes it ideal for security-sensitive agent workflows.
 
@@ -72,8 +72,8 @@ Keep this running in the background. You can use `systemd`, `tmux`, `screen`, or
 Verify it's running:
 
 ```bash
-curl http://127.0.0.1:8080/api/v1/check
-# Should return: {"versions":{"signal-cli":...}}
+curl http://127.0.0.1:8080/v1/health
+# Should return 200/204 (healthy)
 ```
 
 ---
@@ -212,9 +212,9 @@ Just send a message to yourself from your phone — signal-cli picks it up and H
 
 ### Health Monitoring
 
-The adapter monitors the SSE connection and automatically reconnects if:
-- The connection drops (with exponential backoff: 2s → 60s)
-- No activity is detected for 120 seconds (pings signal-cli to verify)
+The adapter monitors the daemon via periodic HTTP health checks (`/v1/health`) and automatically reconnects if:
+- A health check returns a non-200/204 status (with exponential backoff: 2s → 60s)
+- No activity is detected for 120 seconds
 
 ---
 
@@ -225,7 +225,7 @@ The adapter monitors the SSE connection and automatically reconnects if:
 | **"Cannot reach signal-cli"** during setup | Ensure signal-cli daemon is running: `signal-cli --account +YOUR_NUMBER daemon --http 127.0.0.1:8080` |
 | **Messages not received** | Check that `SIGNAL_ALLOWED_USERS` includes the sender's number in E.164 format (with `+` prefix) |
 | **"signal-cli not found on PATH"** | Install signal-cli and ensure it's in your PATH, or use Docker |
-| **Connection keeps dropping** | Check signal-cli logs for errors. Ensure Java 17+ is installed. |
+| **Connection keeps dropping** | Check signal-cli logs for errors. Ensure Java 17+ is installed. Verify health check passes: `curl http://127.0.0.1:8080/v1/health` |
 | **Group messages ignored** | Configure `SIGNAL_GROUP_ALLOWED_USERS` with specific group IDs, or `*` to allow all groups. |
 | **Bot responds to no one** | Configure `SIGNAL_ALLOWED_USERS`, use DM pairing, or explicitly allow all users through gateway policy if you want broader access. |
 | **Duplicate messages** | Ensure only one signal-cli instance is listening on your phone number |

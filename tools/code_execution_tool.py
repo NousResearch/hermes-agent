@@ -1452,12 +1452,21 @@ def execute_code(
         # repo-root modules are available to child scripts.  We also prepend
         # the staging tmpdir so ``from hermes_tools import ...`` resolves even
         # when the subprocess CWD is not tmpdir (project mode).
+        #
+        # NB: we deliberately *do not* append any inherited ``PYTHONPATH``.
+        # The PR strips PYTHONPATH upstream so ``tools/environments/local.py``
+        # spawn paths (subprocess, hermes_subprocess_env, _make_run_env) all
+        # boot children without an inherited PYTHONPATH, but ``execute_code``
+        # here lets PYTHONPATH through ``_SAFE_ENV_PREFIXES`` and would
+        # otherwise re-introduce the cross-project clobber that ``#74817``
+        # fixed: a child Python started with a PYTHONPATH that points at a
+        # *different* venv's site-packages can crash on C-extension import
+        # (PIL in production) or, worse, silently run that venv's tools.
+        # Strip it before composing the sandbox PYTHONPATH so the child only
+        # sees the controlled ``tmpdir`` + ``_hermes_root`` entries below.
         _hermes_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        _existing_pp = child_env.get("PYTHONPATH", "")
-        _pp_parts = [tmpdir, _hermes_root]
-        if _existing_pp:
-            _pp_parts.append(_existing_pp)
-        child_env["PYTHONPATH"] = os.pathsep.join(_pp_parts)
+        child_env.pop("PYTHONPATH", None)
+        child_env["PYTHONPATH"] = os.pathsep.join([tmpdir, _hermes_root])
         # Inject user's configured timezone so datetime.now() in sandboxed
         # code reflects the correct wall-clock time.  Only TZ is set —
         # HERMES_TIMEZONE is an internal Hermes setting and must not leak

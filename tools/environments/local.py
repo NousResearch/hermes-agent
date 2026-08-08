@@ -346,7 +346,26 @@ _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 # to a different Python version overwrites it and breaks the gateway). The
 # Hermes venv stays reachable via PATH (its bin dir is first), so stripping
 # these markers is safe and only prevents the cross-project clobber (#23473).
-_ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX")
+_ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONPATH")
+
+
+def _strip_active_venv_markers(env: dict) -> None:
+    """Strip env vars that would mark a different venv as "active" for a child.
+
+    ``VIRTUAL_ENV`` / ``CONDA_PREFIX`` cause tools like ``uv`` / ``poetry`` to
+    treat the inherited value as the active environment and mutate that other
+    project (cross-project clobber, #23473). ``PYTHONPATH`` is the Python
+    analog: it points at the Hermes bundled venv's site-packages and would
+    override / break a child that runs its own Python with a different
+    interpreter or third-party extensions (PIL C-extension import crash in
+    production, #74817). The Hermes venv stays reachable via PATH (its bin
+    dir is first), so stripping these markers is safe and only prevents the
+    cross-project crash. Called from every spawn path (``_make_run_env``,
+    ``_sanitize_subprocess_env``, ``hermes_subprocess_env``) so the fix is
+    uniform regardless of which surface spawned the child.
+    """
+    for _marker in _ACTIVE_VENV_MARKER_VARS:
+        env.pop(_marker, None)
 
 
 def _is_hermes_internal_secret(key: str) -> bool:
@@ -503,8 +522,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     # spawn path (process_registry.spawn_local builds env via this function).
     _inject_session_context_env(sanitized)
 
-    for _marker in _ACTIVE_VENV_MARKER_VARS:
-        sanitized.pop(_marker, None)
+    _strip_active_venv_markers(sanitized)
 
     _apply_windows_msys_bash_env_defaults(sanitized)
 
@@ -631,9 +649,7 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(env)
 
-    # Active-venv markers must not clobber another project's environment.
-    for _marker in _ACTIVE_VENV_MARKER_VARS:
-        env.pop(_marker, None)
+    _strip_active_venv_markers(env)
 
     _apply_windows_msys_bash_env_defaults(env)
 
@@ -1318,8 +1334,7 @@ def _make_run_env(env: dict) -> dict:
     # engaged so a sibling session's os.environ mirror can't leak in).
     _inject_session_context_env(run_env)
 
-    for _marker in _ACTIVE_VENV_MARKER_VARS:
-        run_env.pop(_marker, None)
+    _strip_active_venv_markers(run_env)
 
     _apply_windows_msys_bash_env_defaults(run_env)
 

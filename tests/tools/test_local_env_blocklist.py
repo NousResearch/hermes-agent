@@ -311,6 +311,36 @@ class TestActiveVenvMarkerStripping:
         from tools.environments.local import _ACTIVE_VENV_MARKER_VARS
         assert "VIRTUAL_ENV" in _ACTIVE_VENV_MARKER_VARS
         assert "CONDA_PREFIX" in _ACTIVE_VENV_MARKER_VARS
+        assert "PYTHONPATH" in _ACTIVE_VENV_MARKER_VARS  # #74817
+
+    def test_pythonpath_marker_stripped_end_to_end(self):
+        """PYTHONPATH from the Hermes venv must not leak (#74817).
+
+        Repro: the gateway process has ``PYTHONPATH`` pointing at the Hermes
+        venv's ``site-packages``. A subprocess that runs its own Python (e.g.
+        ComfyUI Desktop's bundled Python 3.13) inherits it and tries to import
+        Hermes' Python 3.11 compiled extensions (PIL) — crash-loops the child.
+        The end-to-end path mirrors what the agent sees via the terminal tool.
+        """
+        result_env = _run_with_env(extra_os_env={
+            "PYTHONPATH": "/home/user/.hermes/hermes-agent:/home/user/.hermes/hermes-agent/venv/lib/python3.11/site-packages",
+        })
+        assert "PYTHONPATH" not in result_env
+
+    def test_make_run_env_strips_pythonpath(self):
+        """``_make_run_env`` (terminal/execute_code path) must strip PYTHONPATH."""
+        from tools.environments.local import _make_run_env
+        poison = {"PYTHONPATH": "/hermes/venv/site-packages", "PATH": "/usr/bin"}
+        with patch.dict(os.environ, poison, clear=True):
+            result = _make_run_env({})
+        assert "PYTHONPATH" not in result
+
+    def test_hermes_subprocess_env_strips_pythonpath(self):
+        """``hermes_subprocess_env`` (non-terminal spawn surface) must strip PYTHONPATH."""
+        from tools.environments.local import hermes_subprocess_env
+        with patch.dict(os.environ, {"PYTHONPATH": "/hermes/venv/site-packages"}, clear=True):
+            result = hermes_subprocess_env()
+        assert "PYTHONPATH" not in result
 
 
 class TestProfileScopedPassthrough:

@@ -303,7 +303,9 @@ class TestShellFileOpsHelpers:
 
         def side_effect(command, **kwargs):
             commands.append(command)
-            if command.startswith("wc -c"):
+            # The size probe gates `wc -c` behind `[ -f ]` so a FIFO or device
+            # cannot block the read; it still reports a plain byte count.
+            if command.startswith("if [ -f ") or command.startswith("wc -c"):
                 return {"output": "5\n", "returncode": 0}
             if command.startswith("head -c") and "| base64" in command:
                 import base64 as b64
@@ -321,7 +323,13 @@ class TestShellFileOpsHelpers:
         result = ops.read_file(r"C:\Users\alice\notes.txt")
 
         assert result.error is None
-        assert commands[0] == "wc -c < '/c/Users/alice/notes.txt' 2>/dev/null"
+        assert commands[0] == (
+            "if [ -f '/c/Users/alice/notes.txt' ]; "
+            "then wc -c < '/c/Users/alice/notes.txt' 2>/dev/null; "
+            "elif [ -e '/c/Users/alice/notes.txt' ]; "
+            "then echo __hermes_not_regular__; "
+            "else exit 1; fi"
+        )
         assert commands[1] == "head -c 1000 '/c/Users/alice/notes.txt' 2>/dev/null | base64"
         assert commands[2] == "sed -n '1,2000p' '/c/Users/alice/notes.txt'"
         assert commands[3] == "wc -l < '/c/Users/alice/notes.txt'"

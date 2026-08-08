@@ -86,6 +86,161 @@ class TestRunConversationCodexPath:
         assert result["codex_thread_id"] == "thread-stub-1"
         assert result["codex_turn_id"] == "turn-stub-1"
 
+    def test_gateway_approval_callback_reaches_shared_queue(self, monkeypatch):
+        from agent.codex_runtime import _resolve_codex_approval_callback
+        from tools.approval import (
+            register_gateway_notify,
+            reset_current_session_key,
+            resolve_gateway_approval,
+            set_current_session_key,
+            unregister_gateway_notify,
+        )
+
+        session_key = "test-codex-gateway-approval"
+        seen = {}
+
+        token_value = "gho_1234567890abcdefghijklmnopqrstuv"
+        redaction_calls = []
+        from agent import redact as redact_module
+
+        original_redact = redact_module.redact_sensitive_text
+
+        def recording_redact(text, **kwargs):
+            redaction_calls.append(kwargs)
+            return original_redact(text, **kwargs)
+
+        monkeypatch.setattr(redact_module, "redact_sensitive_text", recording_redact)
+
+        def notify(data):
+            seen.update(data)
+            resolve_gateway_approval(session_key, "once")
+
+        monkeypatch.setattr("tools.approval._get_approval_mode", lambda: "manual")
+        token = set_current_session_key(session_key)
+        register_gateway_notify(session_key, notify)
+        try:
+            callback = _resolve_codex_approval_callback()
+            assert callback is not None
+            assert callback(
+                f"printf 'token={token_value}'",
+                "Codex requests exec",
+                allow_permanent=False,
+            ) == "once"
+            assert token_value not in seen["command"]
+            assert seen["description"] == "Codex requests exec"
+            assert len(redaction_calls) == 2
+            assert all(call.get("force") is True for call in redaction_calls)
+        finally:
+            unregister_gateway_notify(session_key)
+            reset_current_session_key(token)
+
+    def test_gateway_approval_honors_smart_and_hardline_policy(self, monkeypatch):
+        from agent.codex_runtime import _resolve_codex_approval_callback
+        from tools import approval as approval_module
+        from tools.approval import (
+            register_gateway_notify,
+            reset_current_session_key,
+            set_current_session_key,
+            unregister_gateway_notify,
+        )
+
+        session_key = "test-codex-gateway-smart"
+        prompted = []
+        token = set_current_session_key(session_key)
+        register_gateway_notify(session_key, lambda data: prompted.append(data))
+        try:
+            monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "smart")
+            monkeypatch.setattr(approval_module, "_smart_approve", lambda *_: "approve")
+            callback = _resolve_codex_approval_callback()
+            assert callback is not None
+            assert callback("git status", "read-only inspection") == "once"
+            assert prompted == []
+
+            assert callback("rm -rf /", "destructive command") == "deny"
+            assert prompted == []
+        finally:
+            unregister_gateway_notify(session_key)
+            reset_current_session_key(token)
+
+    def test_gateway_approval_without_notifier_fails_closed(self, monkeypatch):
+        from agent.codex_runtime import _resolve_codex_approval_callback
+        from tools import approval as approval_module
+
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        callback = _resolve_codex_approval_callback()
+        assert callback is None
+
+    def test_gateway_session_approval_persists_through_full_turn_construction(
+        self, monkeypatch
+    ):
+        """Lifecycle coverage (not just the resolver in isolation): drive a
+        REAL run_conversation() turn so agent_codex_runtime constructs an
+        actual CodexAppServerSession with the gateway-resolved
+        approval_callback wired in exactly as production does, simulate a
+        mid-turn Codex exec-approval request through that stored callback,
+        and prove a "session" choice is persisted — a second request for the
+        same pattern must NOT re-prompt the notifier.
+        """
+        from tools.approval import (
+            register_gateway_notify,
+            reset_current_session_key,
+            resolve_gateway_approval,
+            set_current_session_key,
+            unregister_gateway_notify,
+        )
+
+        session_key = "test-codex-gateway-session-persist"
+        notify_calls = []
+
+        def notify(data):
+            notify_calls.append(data)
+            resolve_gateway_approval(session_key, "session")
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            # Simulate Codex asking for exec approval mid-turn, exactly as
+            # codex_app_server_session._decide_exec_approval would via
+            # self._approval_callback — using the REAL callback the real
+            # constructor stored, not a hand-built stand-in.
+            first = self._approval_callback(
+                "git status", "Codex requests exec", allow_permanent=False
+            )
+            second = self._approval_callback(
+                "git status", "Codex requests exec", allow_permanent=False
+            )
+            return TurnResult(
+                final_text=f"first={first} second={second}",
+                projected_messages=[
+                    {"role": "assistant", "content": f"first={first} second={second}"}
+                ],
+                tool_iterations=1,
+                interrupted=False,
+                error=None,
+                turn_id="turn-persist-1",
+                thread_id="thread-persist-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-persist-1"
+        )
+        monkeypatch.setattr("tools.approval._get_approval_mode", lambda: "manual")
+
+        token = set_current_session_key(session_key)
+        register_gateway_notify(session_key, notify)
+        try:
+            agent = _make_codex_agent()
+            with patch.object(agent, "_spawn_background_review", return_value=None):
+                result = agent.run_conversation("check status")
+            assert agent._codex_session._approval_callback is not None
+            assert result["final_response"] == "first=session second=session"
+            # The notifier must have fired exactly once — the second request
+            # for the same pattern_key was resolved from persisted state
+            # (is_approved), not re-prompted.
+            assert len(notify_calls) == 1
+        finally:
+            unregister_gateway_notify(session_key)
+            reset_current_session_key(token)
+
     def test_codex_app_server_token_usage_updates_session_accounting(self, monkeypatch):
         def fake_run_turn(self, user_input: str, **kwargs):
             return TurnResult(

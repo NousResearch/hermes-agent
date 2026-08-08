@@ -284,6 +284,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/bundled/research/research-arxiv',
                     'user-guide/skills/bundled/research/research-blogwatcher',
+                    'user-guide/skills/bundled/research/research-competitor-news-monitor',
                     'user-guide/skills/bundled/research/research-grounded-citations',
                     'user-guide/skills/bundled/research/research-llm-wiki',
                     'user-guide/skills/bundled/research/research-research-paper-writing',

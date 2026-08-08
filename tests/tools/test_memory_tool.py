@@ -262,7 +262,7 @@ class TestMemoryStorePersistence:
         monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
         # Write file with duplicates
         mem_file = tmp_path / "MEMORY.md"
-        mem_file.write_text("duplicate entry\n§\nduplicate entry\n§\nunique entry")
+        mem_file.write_text("duplicate entry\n§\nduplicate entry\n§\nunique entry", encoding="utf-8")
 
         store = MemoryStore()
         store.load_from_disk()
@@ -306,9 +306,96 @@ class TestMemoryToolDispatcher:
         assert "content is required" in result["error"]
         assert "current_entries" not in result
 
+    # ── #72036: null/omitted action must not dead-end in "Unknown action" ──
+
+    def test_null_action_with_content_recovers_as_add(self, store):
+        # Strict providers fill optional schema fields with JSON null. A
+        # single-op call with action=null + content is unambiguously an add;
+        # dead-ending in "Unknown action 'None'" made the model tell the user
+        # the fact was saved when nothing was written (#72036).
+        result = json.loads(
+            memory_tool(action=None, target="memory", content="pineapple123", store=store)
+        )
+        assert result["success"] is True
+        assert "pineapple123" in store.memory_entries
+
+    def test_omitted_action_with_content_recovers_as_add(self, store):
+        # The registered handler defaults a missing action to "" — same class
+        # as null: recover the unambiguous add instead of dead-ending.
+        result = json.loads(
+            memory_tool(action="", target="memory", content="pineapple123", store=store)
+        )
+        assert result["success"] is True
+        assert "pineapple123" in store.memory_entries
+
+    def test_null_action_with_old_text_and_content_recovers_as_replace(self, store):
+        store.add("memory", "user likes tea")
+        result = json.loads(
+            memory_tool(
+                action=None,
+                target="memory",
+                old_text="likes tea",
+                content="user likes coffee",
+                store=store,
+            )
+        )
+        assert result["success"] is True
+        assert store.memory_entries == ["user likes coffee"]
+
+    def test_null_action_with_only_old_text_never_guesses_remove(self, store):
+        # old_text alone is ambiguous (remove, or replace missing content).
+        # Guessing the destructive op is off the table — return the inventory
+        # + explicit retry instruction instead.
+        store.add("memory", "fact A")
+        result = json.loads(
+            memory_tool(action=None, target="memory", old_text="fact A", store=store)
+        )
+        assert result["success"] is False
+        assert "action" in result["error"]
+        assert result["current_entries"] == ["fact A"]
+        assert store.memory_entries == ["fact A"]  # nothing removed
+
+    def test_null_action_with_no_arguments_returns_usage_error(self, store):
+        result = json.loads(memory_tool(action=None, target="memory", store=store))
+        assert result["success"] is False
+        assert "Unknown action" not in result["error"]
+        assert "add" in result["error"]  # error teaches the valid shapes
+
+    def test_explicit_unknown_action_still_rejected(self, store):
+        # The recovery only applies to null/empty — a wrong action string is
+        # still an explicit model error and must not be silently rewritten.
+        result = json.loads(
+            memory_tool(action="save", target="memory", content="x", store=store)
+        )
+        assert result["success"] is False
+        assert "Unknown action" in result["error"]
+
 
 class TestMemoryBatch:
     """The 'operations' batch shape: atomic, all-or-nothing, final-budget."""
+
+    def test_empty_operations_list_reports_empty_batch_not_unknown_action(self, store):
+        # operations=[] is falsy, so it used to fall through to the single-op
+        # dispatcher and dead-end in "Unknown action ''" (#72036).
+        result = json.loads(memory_tool(target="memory", operations=[], store=store))
+        assert result["success"] is False
+        assert "Unknown action" not in result["error"]
+        assert "operations list is empty" in result["error"]
+
+    def test_empty_operations_alongside_single_op_shape_still_executes(self, store):
+        # Strict providers can fill the optional operations field with []
+        # while the call carries a valid single-op shape — the single op wins.
+        result = json.loads(
+            memory_tool(
+                action="add",
+                target="memory",
+                content="kept single-op",
+                operations=[],
+                store=store,
+            )
+        )
+        assert result["success"] is True
+        assert "kept single-op" in store.memory_entries
 
     def test_batch_add_and_remove_atomic(self, store):
         store.add("memory", "stale one")
@@ -398,7 +485,7 @@ class TestExternalDriftGuard:
         assert "drift_backup" in result
         # On-disk file is UNTOUCHED — that's the point.
         assert path.stat().st_size == original_size
-        assert "Vendor Master" in path.read_text()
+        assert "Vendor Master" in path.read_text(encoding="utf-8")
         # Backup exists with the drifted content.
         bak = result["drift_backup"]
         assert Path(bak).exists()
@@ -433,6 +520,16 @@ class TestExternalDriftGuard:
         assert "New entry under drift." in updated
         assert "extra content no delimiter" in updated
 
+    def test_remove_refuses_on_drift(self, store):
+        store.add("memory", "Target entry to remove.")
+        path = self._plant_drift(store)
+        original = path.read_text(encoding="utf-8")
+
+        result = store.remove("memory", "Target entry")
+
+        assert result["success"] is False
+        assert "drift_backup" in result
+        assert path.read_text(encoding="utf-8") == original  # untouched
 
     def test_clean_file_does_not_trigger_drift(self, store):
         """A normally-written file (just below char_limit, §-delimited) is fine."""

@@ -1075,16 +1075,68 @@ def memory_tool(
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
 
     # --- Batch path -------------------------------------------------------
-    if operations:
+    if operations is not None:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
-        gate_result = _apply_batch_write_gate(target, operations)
-        if gate_result is not None:
-            return gate_result
-        result = store.apply_batch(target, operations)
-        return json.dumps(result, ensure_ascii=False)
+        if operations:
+            gate_result = _apply_batch_write_gate(target, operations)
+            if gate_result is not None:
+                return gate_result
+            result = store.apply_batch(target, operations)
+            return json.dumps(result, ensure_ascii=False)
+        # Empty list: it is falsy, so `if operations:` used to fall through to
+        # the single-op dispatcher and dead-end in "Unknown action ''" —
+        # misreporting a batch-shaped call as an action problem (#72036). Only
+        # report the empty batch when the call carries no single-op arguments;
+        # strict providers can fill the optional field with [] alongside a
+        # perfectly valid single-op shape.
+        if not (action or content or old_text):
+            return tool_error(
+                "operations list is empty. Provide at least one "
+                "{action, content?, old_text?} operation, or use the single-op "
+                "shape (action + content/old_text).",
+                success=False,
+            )
 
     # --- Single-op path ---------------------------------------------------
+    # ``action`` is schema-optional (the batch shape has no top-level action,
+    # and it can't be made conditionally required without a top-level
+    # combinator the Codex backend rejects). Strict providers fill optional
+    # fields with JSON null — same normalization as ``target`` above. When
+    # the action is missing but the argument shape is unambiguous, recover
+    # the intent instead of dead-ending in "Unknown action 'None'": the model
+    # tends to trust the tool indicator and tell the user the fact was saved
+    # when it wasn't (#72036).
+    if not action:
+        if content and not old_text:
+            action = "add"
+        elif content and old_text:
+            action = "replace"
+        elif old_text:
+            # old_text alone is ambiguous — remove or a replace missing its
+            # content. Never guess a destructive op; return the inventory +
+            # retry instruction (same recovery shape as #43412/#49466).
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": (
+                        "No action was provided and only old_text was given — "
+                        "this could mean 'remove' or an incomplete 'replace'. "
+                        "Reissue the call with action set explicitly "
+                        "('remove', or 'replace' with content)."
+                    ),
+                    "current_entries": store._entries_for(target),
+                },
+                ensure_ascii=False,
+            )
+        else:
+            return tool_error(
+                "No action or operations provided. Use action 'add' (with "
+                "content), 'replace'/'remove' (with old_text), or an "
+                "'operations' array for batch changes.",
+                success=False,
+            )
+
     # Validate required params BEFORE the gate so an invalid write is rejected
     # immediately instead of being staged and only failing at approve time.
     if action == "add" and not content:

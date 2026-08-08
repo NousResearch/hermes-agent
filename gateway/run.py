@@ -124,6 +124,8 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
     r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
     r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
+    # #79424 — iteration-budget-exhausted diagnostic must not leak to chat platforms
+    r"|iteration\s+budget\s+exhausted"
     r")",
     re.IGNORECASE | re.DOTALL,
 )

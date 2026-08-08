@@ -1,0 +1,14 @@
+{
+  "name": "agent-roster",
+  "label": "Agent Roster",
+  "description": "Read-only overview of Hermes profiles, role metadata, Kanban drift, reviewer gates, and policy audit state.",
+  "icon": "Users",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/agent-roster",
+    "position": "after:kanban"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

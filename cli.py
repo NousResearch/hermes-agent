@@ -2836,6 +2836,8 @@ _ACCENT = _SkinAwareAnsi("response_border", "#FFD700", bold=True)
 # (dark goldenrod) become invisible against light cream backgrounds.
 _DIM = "\x1b[2;3m"
 
+_REASONING_CLAMP_LINES = 10
+
 
 def _b(s: str) -> str:
     """Bold if stdout is a real TTY; plain text otherwise (slash-worker safe)."""
@@ -6601,26 +6603,53 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             r_label = " Reasoning "
             r_fill = w - 2 - len(r_label)
             _cprint(f"\n{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}")
+            self._reasoning_logical_lines = 0
+            self._reasoning_partial_line_flushed = False
 
         self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
+        max_display_lines = _REASONING_CLAMP_LINES
+        clamp_active = not getattr(self, "reasoning_full", False)
 
-        # Emit complete lines, and force-flush long partial lines so
-        # reasoning is visible in real-time even without newlines.
+        # Emit complete lines; stop printing after max_display_lines when clamped.
         while "\n" in self._reasoning_buf:
             line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
-            _cprint(f"{_DIM}{line}{_RST}")
+            if not clamp_active or self._reasoning_logical_lines < max_display_lines:
+                _cprint(f"{_DIM}{line}{_RST}")
+            self._reasoning_logical_lines += 1
+            self._reasoning_partial_line_flushed = False
+
+        # Force-flush long partial lines for real-time visibility without
+        # counting each rendered chunk as a separate logical line.
         if len(self._reasoning_buf) > 80:
-            _cprint(f"{_DIM}{self._reasoning_buf}{_RST}")
+            if not clamp_active or self._reasoning_logical_lines < max_display_lines:
+                _cprint(f"{_DIM}{self._reasoning_buf}{_RST}")
+            self._reasoning_partial_line_flushed = True
             self._reasoning_buf = ""
 
     def _close_reasoning_box(self) -> None:
         """Close the live reasoning box if it's open."""
         if getattr(self, "_reasoning_box_opened", False):
-            # Flush remaining reasoning buffer
             buf = getattr(self, "_reasoning_buf", "")
+            clamp_active = not getattr(self, "reasoning_full", False)
+            logical_lines = getattr(self, "_reasoning_logical_lines", 0)
+            max_display_lines = _REASONING_CLAMP_LINES
+            has_partial_line = bool(buf) or getattr(
+                self, "_reasoning_partial_line_flushed", False
+            )
+
             if buf:
-                _cprint(f"{_DIM}{buf}{_RST}")
-                self._reasoning_buf = ""
+                if not clamp_active or logical_lines < max_display_lines:
+                    _cprint(f"{_DIM}{buf}{_RST}")
+            if has_partial_line:
+                logical_lines += 1
+            self._reasoning_buf = ""
+            self._reasoning_partial_line_flushed = False
+            self._reasoning_logical_lines = logical_lines
+
+            hidden = logical_lines - max_display_lines
+            if clamp_active and hidden > 0:
+                _cprint(f"{_DIM}  ... ({hidden} more lines — /reasoning full to show){_RST}")
+
             w = self._scrollback_box_width()
             _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
             self._reasoning_box_opened = False
@@ -6962,6 +6991,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._stream_last_was_newline = True
         self._reasoning_box_opened = False
         self._reasoning_buf = ""
+        self._reasoning_logical_lines = 0
+        self._reasoning_partial_line_flushed = False
         self._reasoning_preview_buf = ""
         self._deferred_content = ""
         self._stream_table_buf = []
@@ -14431,9 +14462,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # Collapse long reasoning to the first 10 lines unless the
                     # user opted into full display via /reasoning full.
                     lines = reasoning.strip().splitlines()
-                    if len(lines) > 10 and not getattr(self, "reasoning_full", False):
-                        display_reasoning = "\n".join(lines[:10])
-                        display_reasoning += f"\n{_DIM}  ... ({len(lines) - 10} more lines — /reasoning full to show){_RST}"
+                    if len(lines) > _REASONING_CLAMP_LINES and not getattr(self, "reasoning_full", False):
+                        display_reasoning = "\n".join(lines[:_REASONING_CLAMP_LINES])
+                        display_reasoning += f"\n{_DIM}  ... ({len(lines) - _REASONING_CLAMP_LINES} more lines — /reasoning full to show){_RST}"
                     else:
                         display_reasoning = reasoning.strip()
                     _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")

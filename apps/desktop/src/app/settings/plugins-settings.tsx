@@ -39,8 +39,7 @@ const SOURCE_ORDER: Record<string, number> = { user: 0, git: 0, project: 1, entr
 // the user-facing control for any of them, so listing them here is noise.
 const HIDDEN_KEY_PREFIXES = ['dashboard_auth/', 'model-providers/', 'platforms/']
 
-const isDesktopRelevant = (row: AgentPluginRow) =>
-  !HIDDEN_KEY_PREFIXES.some(prefix => row.key.startsWith(prefix))
+const isDesktopRelevant = (row: AgentPluginRow) => !HIDDEN_KEY_PREFIXES.some(prefix => row.key.startsWith(prefix))
 
 function reveal(file: string) {
   void window.hermesDesktop?.revealPath?.(file)?.catch(() => undefined)
@@ -187,7 +186,11 @@ function AgentPluginsSection() {
     .sort((a, b) => (SOURCE_ORDER[a.source] ?? 9) - (SOURCE_ORDER[b.source] ?? 9) || a.name.localeCompare(b.name))
 
   return (
-    <SettingsSection icon={Package} meta={status === 'ready' ? p.count(sorted.length) : undefined} title={p.agent.title}>
+    <SettingsSection
+      icon={Package}
+      meta={status === 'ready' ? p.count(sorted.length) : undefined}
+      title={p.agent.title}
+    >
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
         {p.agent.blurb}
       </p>

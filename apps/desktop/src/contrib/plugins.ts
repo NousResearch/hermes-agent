@@ -46,6 +46,7 @@ export function discoverBundledPlugins(): void {
       description: plugin.description,
       kind: 'bundled' as const
     }
+
     let disposers: (() => void)[] = []
 
     const activate = () => {

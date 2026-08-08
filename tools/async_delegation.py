@@ -206,7 +206,13 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         owner_started_at = None
     task_payload = {
         key: record.get(key)
-        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch")
+        for key in (
+            "goal", "goals", "context", "toolsets", "role", "model", "is_batch",
+            # Reply anchor — no dedicated column, so it rides along in
+            # task_json purely to survive into recover_abandoned_delegations()
+            # if the owning process dies before a normal completion.
+            "origin_thread_id", "origin_message_id",
+        )
         if key in record
     }
     with _DB_LOCK, _transaction() as conn:
@@ -326,6 +332,8 @@ def recover_abandoned_delegations() -> int:
                 "goals": task.get("goals"), "context": task.get("context"),
                 "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
+                "thread_id": task.get("origin_thread_id", ""),
+                "message_id": task.get("origin_message_id", ""),
                 "status": "unknown", "summary": None,
                 "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
                 "dispatched_at": dispatched_at, "completed_at": now,
@@ -734,6 +742,21 @@ def dispatch_async_delegation(
     """
     delegation_id = _new_delegation_id()
     dispatched_at = time.time()
+    # Captured on the parent thread BEFORE dispatch — the daemon worker won't
+    # carry the contextvar (same reasoning as session_key above). Without
+    # this, the completion notification that re-enters the chat when the
+    # child finishes has no anchor to the originating message/thread and
+    # platforms with per-message reply semantics (e.g. Buzz's Nostr "e" tags)
+    # start a brand-new disconnected thread instead of continuing the one the
+    # delegation was dispatched from. Mirrors terminal_tool.py's
+    # notify_on_complete/watch_patterns capture of the same two vars.
+    try:
+        from gateway.session_context import get_session_env as _gse
+        _origin_thread_id = _gse("HERMES_SESSION_THREAD_ID", "")
+        _origin_message_id = _gse("HERMES_SESSION_MESSAGE_ID", "")
+    except Exception:
+        _origin_thread_id = ""
+        _origin_message_id = ""
     record: Dict[str, Any] = {
         "delegation_id": delegation_id,
         "goal": goal,
@@ -745,6 +768,8 @@ def dispatch_async_delegation(
         "origin_ui_session_id": origin_ui_session_id,
         "origin_session_id": origin_session_id,
         "parent_session_id": parent_session_id,
+        "origin_thread_id": _origin_thread_id,
+        "origin_message_id": _origin_message_id,
         "status": "running",
         "dispatched_at": dispatched_at,
         "completed_at": None,
@@ -892,6 +917,13 @@ def _push_completion_event(
         "origin_ui_session_id": record.get("origin_ui_session_id", ""),
         "origin_session_id": record.get("origin_session_id", ""),
         "parent_session_id": record.get("parent_session_id"),
+        # Reply anchor captured at dispatch time (see dispatch_async_delegation) —
+        # lets _inject_watch_notification stamp the synthetic re-entry message
+        # with the same id the originating turn was replying to, so per-message
+        # reply platforms (Buzz) chain into the existing thread instead of
+        # starting a new one.
+        "thread_id": record.get("origin_thread_id", ""),
+        "message_id": record.get("origin_message_id", ""),
         "goal": record.get("goal", ""),
         "context": record.get("context"),
         "toolsets": record.get("toolsets"),
@@ -973,6 +1005,15 @@ def dispatch_async_delegation_batch(
     combined_goal = (
         goals[0] if n == 1 else f"{n} parallel subagents: " + "; ".join(g[:40] for g in goals)
     )
+    # Captured on the parent thread BEFORE dispatch — see the identical
+    # capture (and its rationale) in dispatch_async_delegation above.
+    try:
+        from gateway.session_context import get_session_env as _gse
+        _origin_thread_id = _gse("HERMES_SESSION_THREAD_ID", "")
+        _origin_message_id = _gse("HERMES_SESSION_MESSAGE_ID", "")
+    except Exception:
+        _origin_thread_id = ""
+        _origin_message_id = ""
     record: Dict[str, Any] = {
         "delegation_id": delegation_id,
         "goal": combined_goal,
@@ -985,6 +1026,8 @@ def dispatch_async_delegation_batch(
         "origin_ui_session_id": origin_ui_session_id,
         "origin_session_id": origin_session_id,
         "parent_session_id": parent_session_id,
+        "origin_thread_id": _origin_thread_id,
+        "origin_message_id": _origin_message_id,
         "status": "running",
         "dispatched_at": dispatched_at,
         "completed_at": None,
@@ -1097,6 +1140,10 @@ def _push_batch_completion_event(
         "origin_ui_session_id": event_record.get("origin_ui_session_id", ""),
         "origin_session_id": event_record.get("origin_session_id", ""),
         "parent_session_id": event_record.get("parent_session_id"),
+        # See _push_completion_event — same reply-anchor plumbing for the
+        # batch completion path.
+        "thread_id": event_record.get("origin_thread_id", ""),
+        "message_id": event_record.get("origin_message_id", ""),
         "goal": event_record.get("goal", ""),
         "goals": event_record.get("goals"),
         "context": event_record.get("context"),

@@ -25171,32 +25171,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             and not source.thread_id
             else None
         )
-        _progress_metadata = (
-            self._thread_metadata_for_source(source, event_message_id)
-            if _progress_thread_id == source.thread_id
-            else self._thread_metadata_for_target(
-                source.platform,
-                source.chat_id,
-                _progress_thread_id,
-                chat_type=getattr(source, "chat_type", None),
-                reply_to_message_id=event_message_id,
+        if source.platform == Platform("buzz") and event_message_id:
+            # Buzz has no channel-level thread_id — every reply is anchored
+            # per-message via a Nostr "e" reply tag (mirrors the
+            # _status_thread_metadata buzz branch further below). Without
+            # this, the progress heartbeat ("Working — N min") posted flat/
+            # top-level while only the final answer threaded correctly.
+            _progress_metadata = {"thread_id": event_message_id}
+            _progress_reply_to = event_message_id
+        else:
+            _progress_metadata = (
+                self._thread_metadata_for_source(source, event_message_id)
+                if _progress_thread_id == source.thread_id
+                else self._thread_metadata_for_target(
+                    source.platform,
+                    source.chat_id,
+                    _progress_thread_id,
+                    chat_type=getattr(source, "chat_type", None),
+                    reply_to_message_id=event_message_id,
+                )
+            ) if _progress_thread_id else None
+            if _progress_metadata is None and _relay_prospective_thread_id:
+                # No real thread yet, but the connector will auto-thread on the
+                # reply anchor; carry it so progress joins that thread.
+                _progress_metadata = {"reply_to_message_id": event_message_id}
+            _progress_metadata = _non_conversational_metadata(_progress_metadata, platform=source.platform)
+            _progress_reply_to = (
+                event_message_id
+                if (
+                    source.platform in (Platform.FEISHU, Platform.MATTERMOST)
+                    and source.thread_id
+                    and event_message_id
+                )
+                or _relay_prospective_thread_id
+                else None
             )
-        ) if _progress_thread_id else None
-        if _progress_metadata is None and _relay_prospective_thread_id:
-            # No real thread yet, but the connector will auto-thread on the
-            # reply anchor; carry it so progress joins that thread.
-            _progress_metadata = {"reply_to_message_id": event_message_id}
-        _progress_metadata = _non_conversational_metadata(_progress_metadata, platform=source.platform)
-        _progress_reply_to = (
-            event_message_id
-            if (
-                source.platform in (Platform.FEISHU, Platform.MATTERMOST)
-                and source.thread_id
-                and event_message_id
-            )
-            or _relay_prospective_thread_id
-            else None
-        )
 
         async def write_tool_log():
             """Drain log_queue and append tool-call lines to tool_calls.log.
@@ -25303,6 +25312,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "thread_id": _progress_thread_id,
                 "reply_to_message_id": event_message_id,
             }
+        elif source.platform == Platform("buzz") and event_message_id:
+            # Buzz has no channel-level thread_id concept — every reply is
+            # anchored per-message via a Nostr "e" reply tag. Without this,
+            # interim/progress bubbles carry no reply_to at all and post as
+            # new top-level messages while only the final answer threads
+            # correctly (the adapter's send() reads metadata["thread_id"]
+            # as its reply-to fallback — see plugins/platforms/buzz/adapter.py).
+            _status_thread_metadata = {"thread_id": event_message_id}
         else:
             _status_thread_metadata = (
                 self._thread_metadata_for_source(source, event_message_id)

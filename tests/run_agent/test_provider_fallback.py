@@ -146,6 +146,34 @@ class TestFallbackChainAdvancement:
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
 
 
+    def test_explicit_fallback_transport_overrides_heuristics(self):
+        """Per-entry api_mode/transport must win over fallback inference."""
+        fbs = [
+            {
+                "provider": "custom",
+                "model": "fallback-model",
+                "base_url": "https://gateway.example/v1",
+                "transport": "codex_responses",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(base_url="https://gateway.example/v1"),
+                    "fallback-model",
+                ),
+            ),
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.api_mode == "codex_responses"
+
     def test_nous_anthropic_fallback_uses_the_messages_wire(self):
         """Portal Claude fallbacks must not stay on chat_completions.
 

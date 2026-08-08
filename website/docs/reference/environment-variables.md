@@ -336,6 +336,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `DISCORD_IGNORED_CHANNELS` | Comma-separated channel IDs where the bot never responds |
 | `DISCORD_NO_THREAD_CHANNELS` | Comma-separated channel IDs where bot responds without auto-threading |
 | `DISCORD_REPLY_TO_MODE` | Reply-reference behavior: `off`, `first` (default), or `all` |
+| `DISCORD_VOICE_MESSAGE_WAVEFORM` | Render real audio loudness in Discord voice-message bubbles (default: `true`). Set to `false` to skip the ffmpeg + numpy work and ship a flat waveform. |
 | `DISCORD_ALLOW_MENTION_EVERYONE` | Allow the bot to ping `@everyone`/`@here` (default: `false`). See [Mention Control](../user-guide/messaging/discord.md#mention-control). |
 | `DISCORD_ALLOW_MENTION_ROLES` | Allow the bot to ping `@role` mentions (default: `false`). |
 | `DISCORD_ALLOW_MENTION_USERS` | Allow the bot to ping individual `@user` mentions (default: `true`). |

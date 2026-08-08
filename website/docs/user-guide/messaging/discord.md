@@ -309,6 +309,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_HISTORY_BACKFILL` | No | `true` | When `true`, prepend recent channel scrollback (since the bot's last response) to the user message when the bot is mentioned. Recovers context the bot would otherwise miss with `require_mention`. Skipped in DMs and free-response channels. Set to `false` to disable. |
 | `DISCORD_HISTORY_BACKFILL_LIMIT` | No | `50` | Maximum number of messages to scan backwards when assembling the backfill block. In practice the scan usually stops earlier — at the bot's own last message in the channel. |
 | `DISCORD_REPLY_TO_MODE` | No | `"first"` | Controls reply-reference behavior: `"off"` — never reply to the original message, `"first"` — reply-reference on the first message chunk only (default), `"all"` — reply-reference on every chunk. |
+| `DISCORD_VOICE_MESSAGE_WAVEFORM` | No | `true` | When `true` (default), voice-message bubbles get a real loudness waveform computed via ffmpeg + numpy (decoded in a worker thread). Set to `false` to skip the work and ship a flat waveform instead — saves cycles if you send lots of voice messages or your host doesn't have ffmpeg. |
 | `DISCORD_ALLOW_MENTION_EVERYONE` | No | `false` | When `false` (default), the bot cannot ping `@everyone` or `@here` even if its response contains those tokens. Set to `true` to opt back in. See [Mention Control](#mention-control) below. |
 | `DISCORD_ALLOW_MENTION_ROLES` | No | `false` | When `false` (default), the bot cannot ping `@role` mentions. Set to `true` to allow. |
 | `DISCORD_ALLOW_MENTION_USERS` | No | `true` | When `true` (default), the bot can ping individual users by ID. |
@@ -339,6 +340,7 @@ discord:
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
+  voice_message_waveform: true    # false = flat 128 waveform, skip ffmpeg/numpy
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
   missed_message_backfill:        # Replay messages missed while disconnected (opt-in)

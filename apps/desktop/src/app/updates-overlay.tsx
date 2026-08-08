@@ -20,6 +20,7 @@ import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
 import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
 import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
 import { cn } from '@/lib/utils'
+import { $desktopBoot } from '@/store/boot'
 import {
   $backendUpdateApply,
   $backendUpdateChecking,
@@ -45,6 +46,7 @@ function totalItems(groups: readonly CommitGroup[]) {
 export function UpdatesOverlay() {
   const open = useStore($updateOverlayOpen)
   const target = useStore($updateOverlayTarget)
+  const boot = useStore($desktopBoot)
 
   const clientStatus = useStore($updateStatus)
   const clientChecking = useStore($updateChecking)
@@ -59,12 +61,23 @@ export function UpdatesOverlay() {
   const apply = isBackend ? backendApply : clientApply
   const check = isBackend ? checkBackendUpdates : checkUpdates
   const install = isBackend ? applyBackendUpdate : applyUpdates
+  const bootFailureOwnsScreen = Boolean(boot.error) && !boot.running
+
+  // A hard boot failure owns the recovery surface. Merely drawing that surface
+  // above this dialog is insufficient: Radix's modal still disables pointer
+  // events and traps focus everywhere outside its content. Close the lower
+  // modal while leaving the update action itself free to finish in the store.
+  useEffect(() => {
+    if (open && bootFailureOwnsScreen) {
+      setUpdateOverlayOpen(false)
+    }
+  }, [bootFailureOwnsScreen, open])
 
   useEffect(() => {
-    if (open && !status && !checking) {
+    if (open && !bootFailureOwnsScreen && !status && !checking) {
       void check()
     }
-  }, [check, checking, open, status])
+  }, [bootFailureOwnsScreen, check, checking, open, status])
 
   const behind = status?.behind ?? 0
   const updateAvailable = status?.updateAvailable || behind > 0
@@ -100,7 +113,7 @@ export function UpdatesOverlay() {
   }
 
   return (
-    <Dialog onOpenChange={handleClose} open={open}>
+    <Dialog onOpenChange={handleClose} open={open && !bootFailureOwnsScreen}>
       {/* This dialog has no inputs, so Radix's default autofocus would land on
           the close button and trigger its tooltip immediately on open. */}
       <DialogContent

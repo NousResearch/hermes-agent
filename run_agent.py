@@ -221,6 +221,8 @@ from agent.tool_dispatch_helpers import (
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens
+from plugins.agent.mixins.model_routing_mixin import ModelRoutingMixin
+from plugins.agent.mixins.retry_status_mixin import RetryStatusMixin
 
 
 # Internal flags that mark a message as ephemeral empty-response/prefill
@@ -409,7 +411,7 @@ class _StreamErrorEvent(Exception):
         }
 
 
-class AIAgent:
+class AIAgent(ModelRoutingMixin, RetryStatusMixin):
     """
     AI Agent with tool calling capabilities.
 
@@ -1088,110 +1090,6 @@ class AIAgent:
             except Exception:
                 logger.debug("thinking_callback error in _emit_wait_notice", exc_info=True)
 
-    # ── Buffered retry/fallback status ────────────────────────────────────
-    # Retry and fallback chains were flooding the CLI/gateway with status
-    # noise that users found confusing: a single transient 429 could produce
-    # 10+ "Provider/Endpoint/Retrying in 5s..." lines before the request
-    # eventually succeeded.  The buffered helpers below capture these
-    # status messages instead of emitting them immediately.  They are
-    # flushed (shown to the user) ONLY when every retry and fallback has
-    # been exhausted; on success they are silently dropped.  Backend logs
-    # (agent.log) are unaffected — every individual emission site still
-    # writes to ``logger.warning`` / ``logger.info`` for diagnosis.
-
-    def _buffer_status(self, message: str) -> None:
-        """Buffer a retry/fallback status message.
-
-        Stored as a (kind, text) tuple where ``kind`` is one of:
-        - ``"status"``  -> replays via ``_emit_status``
-        - ``"vprint"``  -> replays via ``_vprint(force=True)``
-        - ``"warn"``    -> replays via ``_emit_warning``
-        Used to defer noisy retry chatter until we know whether the
-        turn ultimately recovered or failed.
-        """
-        try:
-            buf = getattr(self, "_retry_status_buffer", None)
-            if buf is None:
-                buf = []
-                self._retry_status_buffer = buf
-            buf.append(("status", message))
-        except Exception:
-            # Never break the retry loop on a buffer hiccup.
-            pass
-
-    def _buffer_vprint(self, message: str) -> None:
-        """Buffer a vprint(force=True) retry/fallback line."""
-        try:
-            buf = getattr(self, "_retry_status_buffer", None)
-            if buf is None:
-                buf = []
-                self._retry_status_buffer = buf
-            buf.append(("vprint", message))
-        except Exception:
-            pass
-
-    def _clear_status_buffer(self) -> None:
-        """Drop buffered retry messages — call on successful recovery."""
-        try:
-            buf = getattr(self, "_retry_status_buffer", None)
-            if buf:
-                buf.clear()
-        except Exception:
-            pass
-
-    def _emit_pending_fallback_notice(self) -> None:
-        """Surface the one-shot fallback-switch notice on successful recovery.
-
-        A provider/model switch is a durable state change operators must see,
-        unlike transient retry chatter that ``_clear_status_buffer`` drops.
-        ``try_activate_fallback`` records the switch in
-        ``self._pending_fallback_notice``; this emits it exactly once via
-        ``_emit_status`` and then clears it, so a successful fallback still
-        produces one visible notice.  On terminal failure the buffered switch
-        line is flushed instead (and this notice discarded) — see
-        ``_flush_status_buffer`` — so the user always sees the switch once.
-        """
-        try:
-            notice = getattr(self, "_pending_fallback_notice", None)
-            if notice:
-                # Clear before emitting so a (swallowed) callback error can't
-                # leave the notice set for a stale re-emit on a later turn.
-                self._pending_fallback_notice = None
-                self._emit_status(notice)
-        except Exception:
-            # Never break the conversation loop on a notice hiccup.
-            pass
-
-    def _flush_status_buffer(self) -> None:
-        """Emit buffered retry messages — call on terminal failure.
-
-        Surfaces the full retry/fallback trace so the user can see what
-        was tried before the turn gave up.
-        """
-        try:
-            # The buffered trace already carries the fallback switch line, so
-            # drop any one-shot fallback notice to avoid a stale duplicate
-            # leaking into a later successful turn.
-            self._pending_fallback_notice = None
-            buf = getattr(self, "_retry_status_buffer", None)
-            if not buf:
-                return
-            # Drain first so a callback exception doesn't double-emit.
-            messages = list(buf)
-            buf.clear()
-            for kind, msg in messages:
-                try:
-                    if kind == "status":
-                        self._emit_status(msg)
-                    elif kind == "warn":
-                        self._emit_warning(msg)
-                    else:
-                        self._vprint(f"{self.log_prefix}{msg}", force=True)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
     def _disable_codex_reasoning_replay(
         self,
         messages: Optional[List[Dict[str, Any]]] = None,
@@ -1331,44 +1229,6 @@ class AIAgent:
         from agent.conversation_compression import replay_compression_warning
         replay_compression_warning(self)
 
-    def _is_direct_openai_url(self, base_url: str = None) -> bool:
-        """Return True when a base URL targets OpenAI's native API."""
-        if base_url is not None:
-            hostname = base_url_hostname(base_url)
-        else:
-            hostname = getattr(self, "_base_url_hostname", "") or base_url_hostname(
-                getattr(self, "_base_url_lower", "")
-            )
-        return hostname == "api.openai.com"
-
-    def _is_azure_openai_url(self, base_url: str = None) -> bool:
-        """Return True when a base URL targets Azure OpenAI.
-
-        Azure OpenAI exposes an OpenAI-compatible endpoint at
-        ``{resource}.openai.azure.com/openai/v1`` that accepts the
-        standard ``openai`` Python client.  Unlike api.openai.com it
-        does NOT support the Responses API — gpt-5.x models are served
-        on the regular ``/chat/completions`` path — so routing decisions
-        must treat Azure separately from direct OpenAI.
-        """
-        if base_url is not None:
-            url = str(base_url).lower()
-        else:
-            url = getattr(self, "_base_url_lower", "") or ""
-        return "openai.azure.com" in url
-
-    def _is_github_copilot_url(self, base_url: str = None) -> bool:
-        """Return True when a base URL targets GitHub Copilot's OpenAI-compatible API."""
-        if base_url is not None:
-            hostname = base_url_hostname(base_url)
-        else:
-            hostname = getattr(self, "_base_url_hostname", "") or base_url_hostname(
-                getattr(self, "_base_url_lower", "")
-            )
-        if not hostname:
-            return False
-        return hostname == "api.githubcopilot.com" or hostname.endswith(".githubcopilot.com")
-
     def _resolved_api_call_timeout(self) -> float:
         """Resolve the effective per-call request timeout in seconds.
 
@@ -1501,41 +1361,6 @@ class AIAgent:
             "or switch to a different model/provider in your fallback chain. "
             "Some ChatGPT Codex accounts do not support `gpt-5.4-codex`. "
             "See hermes-agent#21444 for symptom history."
-        )
-
-    def _is_openrouter_url(self) -> bool:
-        """Return True when the base URL targets OpenRouter."""
-        return base_url_host_matches(self._base_url_lower, "openrouter.ai")
-
-    def _is_copilot_url(self) -> bool:
-        """Return True when the base URL targets GitHub Copilot or GitHub Models."""
-        return (
-            "api.githubcopilot.com" in self._base_url_lower
-            or "models.github.ai" in self._base_url_lower
-        )
-
-    def _is_copilot_provider(self) -> bool:
-        """True when the active provider is GitHub Copilot, however spelled.
-
-        ``self.provider`` is not always the normalized slug: ``/model`` and
-        profile configs can leave the alias ``github-copilot`` (or ``github``)
-        in place — a single session log can show both ``provider=copilot`` and
-        ``provider=github-copilot`` for the same account. A bare
-        ``provider == "copilot"`` gate silently skips credential recovery for
-        the alias spellings, so this is the single owner of the check; the
-        Copilot base URL is accepted as a fallback signal.
-        """
-        if (self.provider or "").strip().lower() in {"copilot", "github-copilot", "github"}:
-            return True
-        return self._is_copilot_url()
-
-    def _is_codex_backend(self) -> bool:
-        """Return True for the ChatGPT OAuth Codex Responses backend."""
-        return (
-            getattr(self, "api_mode", None) == "codex_responses"
-            and getattr(self, "_base_url_hostname", "") == "chatgpt.com"
-            and "/backend-api/codex"
-            in (getattr(self, "_base_url_lower", "") or "")
         )
 
     def _anthropic_prompt_cache_policy(

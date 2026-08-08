@@ -236,8 +236,15 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
   })
 }
 
-export function openUpdatesWindow(): void {
-  openUpdateOverlayFor(isRemoteMode() ? 'backend' : 'client')
+/**
+ * Open the updates overlay for the active target (auto-selected from the
+ * connection mode) and kick off its check. When `target` is passed explicitly
+ * it overrides the auto-select. Callers that know which component they want
+ * (e.g. the About panel, whose status is always the client's) should pass the
+ * target so the user action matches the displayed state.
+ */
+export function openUpdatesWindow(target?: UpdateTarget): void {
+  openUpdateOverlayFor(target ?? (isRemoteMode() ? 'backend' : 'client'))
 }
 
 /**
@@ -246,12 +253,18 @@ export function openUpdatesWindow(): void {
  * renders ApplyingView once `applying` flips true), then kicks off the install.
  * Used by the "Update now" affordance on the About panel, which would otherwise
  * only be able to open the changelog overlay.
+ *
+ * When `target` is passed explicitly it overrides the remote-mode auto-select.
+ * Callers that know which component they want (e.g. the About panel always
+ * wants the client) should pass the target so the user action matches the
+ * displayed state.
  */
-export function startActiveUpdate(): void {
-  const target: UpdateTarget = isRemoteMode() ? 'backend' : 'client'
-  $updateOverlayTarget.set(target)
+export function startActiveUpdate(target?: UpdateTarget): void {
+  const effectiveTarget: UpdateTarget =
+    target ?? (isRemoteMode() ? 'backend' : 'client')
+  $updateOverlayTarget.set(effectiveTarget)
   $updateOverlayOpen.set(true)
-  void (target === 'backend' ? applyBackendUpdate() : applyUpdates())
+  void (effectiveTarget === 'backend' ? applyBackendUpdate() : applyUpdates())
 }
 
 /**

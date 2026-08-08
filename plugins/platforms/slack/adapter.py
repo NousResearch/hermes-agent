@@ -6661,6 +6661,24 @@ class SlackAdapter(BasePlatformAdapter):
         if not normalized_user_id:
             return False
 
+        chat_type = "dm" if str(channel_id or "").startswith("D") else "group"
+
+        # The authorization callback ``GatewayRunner`` injects at adapter-connect
+        # time (``set_authorization_check``) is the authoritative chain: env
+        # allowlists, config allowlists, group allowlists, pairing store, and
+        # allow-all flags, all resolved under THIS adapter's profile. It is
+        # registered for primary and multiplexed adapters alike, so prefer it
+        # over the ``__self__`` introspection below — which resolves to nothing
+        # on a multiplexed profile, whose message handler is the closure built
+        # by ``GatewayRunner._make_profile_message_handler`` (no ``__self__``).
+        injected = self._is_sender_authorized(
+            normalized_user_id, chat_type, str(channel_id or "")
+        )
+        if injected is not None:
+            return injected
+
+        # Legacy resolution for adapters wired without the injected check
+        # (bare-adapter embedding, existing tests).
         runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
         auth_fn = getattr(runner, "_is_user_authorized", None)
         if callable(auth_fn):
@@ -6670,7 +6688,7 @@ class SlackAdapter(BasePlatformAdapter):
                 source = SessionSource(
                     platform=Platform.SLACK,
                     chat_id=str(channel_id or normalized_user_id),
-                    chat_type="dm" if str(channel_id or "").startswith("D") else "group",
+                    chat_type=chat_type,
                     user_id=normalized_user_id,
                     user_name=str(user_name).strip() if user_name else None,
                     scope_id=str(team_id) if team_id else None,
@@ -6683,20 +6701,39 @@ class SlackAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
 
-        if os.getenv("SLACK_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
-            return True
-
         def _env(name: str) -> str:
-            # Multiplex: profile .env is in secret_scope, not process environ.
-            try:
-                from agent.secret_scope import get_secret
+            """Read an authz env var, honoring the active profile secret scope.
 
-                val = get_secret(name)
-                if val is not None and str(val).strip():
-                    return str(val).strip()
+            Under multiplexing a scope miss must NOT fall through to
+            ``os.environ``: that holds the DEFAULT profile's values, so falling
+            through lets one profile's allowlist / allow-all flag authorize
+            callers on another profile's bot. ``agent.secret_scope`` already
+            refuses that read (returning the default, or raising
+            ``UnscopedSecretError`` when no scope is installed); this helper
+            must not undo it. Fail closed instead, and keep the plain
+            ``os.environ`` read for single-profile deployments, where there is
+            no other profile to leak from.
+            """
+            try:
+                from agent.secret_scope import get_secret, is_multiplex_active
             except Exception:
-                pass
+                return (os.getenv(name) or "").strip()
+
+            try:
+                val = get_secret(name)
+            except Exception:
+                # UnscopedSecretError under multiplex is the deliberate
+                # fail-closed signal — never downgrade it to an os.environ read.
+                return "" if is_multiplex_active() else (os.getenv(name) or "").strip()
+
+            if val is not None and str(val).strip():
+                return str(val).strip()
+            if is_multiplex_active():
+                return ""
             return (os.getenv(name) or "").strip()
+
+        if _env("SLACK_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}:
+            return True
 
         allowed_ids = set()
         platform_allowlist = _env("SLACK_ALLOWED_USERS")
@@ -6709,8 +6746,6 @@ class SlackAdapter(BasePlatformAdapter):
         if allowed_ids:
             return "*" in allowed_ids or normalized_user_id in allowed_ids
 
-        if _env("SLACK_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}:
-            return True
         return _env("GATEWAY_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}
 
     async def _handle_slash_confirm_action(self, ack, body, action) -> None:

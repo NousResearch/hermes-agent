@@ -415,6 +415,7 @@ def _run_agent(
     # raises on a provider/config error. The one-shot exit path hard-exits via
     # os._exit and skips finalizers, so an un-closed connection here would leak.
     agent = None
+    relay_session_id = None
     try:
         # Read the effective fallback chain from profile config so oneshot
         # workers honour the same merge semantics as interactive CLI and
@@ -454,6 +455,10 @@ def _run_agent(
         agent.stream_delta_callback = None
         agent.tool_gen_callback = None
 
+        # Relay keys its root conversation to the session id at turn entry.
+        # Compression may rotate ``agent.session_id`` during the turn without
+        # acquiring a second Relay root, so retain the id that owns the lease.
+        relay_session_id = getattr(agent, "session_id", None)
         result = agent.run_conversation(prompt)
         return (result.get("final_response") or "", result)
     finally:
@@ -461,6 +466,20 @@ def _run_agent(
         # NOT cli.py:_run_cleanup — oneshot has no _active_agent_ref and must
         # close the agent explicitly because the hard-exit path skips finalizers.
         if agent is not None:
+            # ``run_conversation`` ends the Relay turn but intentionally keeps
+            # the root conversation resumable. One-shot has no later turn, and
+            # os._exit skips atexit, so close that root before tearing down the
+            # agent resources that own its remaining lifecycle work.
+            try:
+                from hermes_cli.lifecycle import finalize_session
+
+                finalize_session(
+                    session_id=relay_session_id,
+                    platform=getattr(agent, "platform", None) or "cli",
+                    reason="shutdown",
+                )
+            except Exception:
+                logging.debug("oneshot session finalization failed", exc_info=True)
             try:
                 session_messages = getattr(agent, "_session_messages", None)
                 if isinstance(session_messages, list):

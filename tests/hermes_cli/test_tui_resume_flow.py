@@ -216,6 +216,110 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
     assert captured["prompt"] == "recall this"
 
 
+@pytest.mark.parametrize("run_fails", [False, True], ids=["success", "failure"])
+def test_oneshot_finalizes_relay_session_before_resource_cleanup(monkeypatch, run_fails):
+    """One-shot must close its Relay root before the hard-exit cleanup path."""
+    from hermes_cli import (
+        config,
+        lifecycle,
+        mcp_startup,
+        models,
+        oneshot,
+        runtime_provider,
+        tools_config,
+    )
+
+    events = []
+    finalize_calls = []
+
+    class FakeAgent:
+        def __init__(self, **_kwargs):
+            self.session_id = "oneshot-session"
+            self.platform = "cli"
+            self.suppress_status_output = False
+            self.stream_delta_callback = object()
+            self.tool_gen_callback = object()
+            self._session_messages = []
+
+        def run_conversation(self, _prompt):
+            events.append("run")
+            # Compression rotates the DB session id, but the Relay root remains
+            # keyed to the id captured when the turn started.
+            self.session_id = "compression-child"
+            if run_fails:
+                raise RuntimeError("agent failed")
+            return {"final_response": "ok", "failed": False, "partial": False}
+
+        def shutdown_memory_provider(self, _messages=None):
+            events.append("memory")
+
+        def close(self):
+            events.append("agent_close")
+
+    class FakeSessionDB:
+        def close(self):
+            events.append("db_close")
+
+    def fake_finalize_session(**kwargs):
+        finalize_calls.append(kwargs)
+        events.append("finalize")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "run_agent",
+        types.SimpleNamespace(AIAgent=FakeAgent),
+    )
+    monkeypatch.setattr(lifecycle, "finalize_session", fake_finalize_session)
+    monkeypatch.setattr(oneshot, "_create_session_db_for_oneshot", FakeSessionDB)
+    monkeypatch.setattr(
+        config,
+        "load_config",
+        lambda: {"model": {"default": "m"}},
+    )
+    monkeypatch.setattr(
+        models,
+        "detect_provider_for_model",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        runtime_provider,
+        "resolve_runtime_provider",
+        lambda **_kwargs: {
+            "api_key": "k",
+            "base_url": "u",
+            "provider": "p",
+            "api_mode": "chat_completions",
+            "credential_pool": None,
+        },
+    )
+    monkeypatch.setattr(
+        tools_config,
+        "_get_platform_tools",
+        lambda *_args, **_kwargs: set(),
+    )
+    monkeypatch.setattr(
+        mcp_startup,
+        "ensure_mcp_discovery_before_agent_build",
+        lambda **_kwargs: None,
+    )
+
+    if run_fails:
+        with pytest.raises(RuntimeError, match="agent failed"):
+            oneshot._run_agent("finish this")
+    else:
+        text, result = oneshot._run_agent("finish this")
+        assert text == "ok"
+        assert not result.get("failed")
+    assert finalize_calls == [
+        {
+            "session_id": "oneshot-session",
+            "platform": "cli",
+            "reason": "shutdown",
+        }
+    ]
+    assert events == ["run", "finalize", "memory", "agent_close", "db_close"]
+
+
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     captured = {}
     active_path_during_call = None
@@ -282,7 +386,6 @@ def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path)
     assert argv == [str(tsx), "src/entry.tsx"]
     assert cwd == tui_dir
     assert calls == [(["/usr/bin/npm", "run", "build"], str(ink_dir))]
-
 
 
 

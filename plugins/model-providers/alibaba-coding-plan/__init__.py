@@ -15,6 +15,7 @@ alibaba_coding_plan = ProviderProfile(
     signup_url="https://help.aliyun.com/zh/model-studio/",
     env_vars=("ALIBABA_CODING_PLAN_API_KEY", "DASHSCOPE_API_KEY", "ALIBABA_CODING_PLAN_BASE_URL"),
     base_url="https://coding-intl.dashscope.aliyuncs.com/v1",
+    models_url="https://coding-intl.dashscope.aliyuncs.com/compatible-mode/v1/models",
     auth_type="api_key",
 )
 

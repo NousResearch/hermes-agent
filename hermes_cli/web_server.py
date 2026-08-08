@@ -6130,28 +6130,35 @@ async def update_memory_provider_config(
 
     def _run():
         with _profile_scope(profile):
-            if surface == "declared":
-                declared = get_provider_config_schema(name)
-                if declared is None:
-                    raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
-                _update_memory_provider_config(declared, _stringify_submitted_values(values))
-                _invalidate_plugins_hub_cache()
-                return {"ok": True}
+            # Runs off-loop via asyncio.to_thread, and both branches mutate
+            # config.yaml: the declared branch through
+            # _update_memory_provider_config, the provider branch through
+            # _write_memory_provider_config_values plus its own
+            # load->mutate->save of memory.provider. Without the mutation lock
+            # a concurrent update interleaves and one side's write is lost.
+            with _CONFIG_MUTATION_LOCK:
+                if surface == "declared":
+                    declared = get_provider_config_schema(name)
+                    if declared is None:
+                        raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
+                    _update_memory_provider_config(declared, _stringify_submitted_values(values))
+                    _invalidate_plugins_hub_cache()
+                    return {"ok": True}
 
-            provider = _load_memory_provider(name)
-            if provider is None:
-                raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
-            _write_memory_provider_config_values(name, provider, values)
-            _require_memory_provider_ready(name)
-            config = load_config()
-            memory_config = config.get("memory")
-            if not isinstance(memory_config, dict):
-                memory_config = {}
-                config["memory"] = memory_config
-            memory_config["provider"] = name
-            save_config(config)
-            _invalidate_plugins_hub_cache()
-            return {"ok": True, "active": name}
+                provider = _load_memory_provider(name)
+                if provider is None:
+                    raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
+                _write_memory_provider_config_values(name, provider, values)
+                _require_memory_provider_ready(name)
+                config = load_config()
+                memory_config = config.get("memory")
+                if not isinstance(memory_config, dict):
+                    memory_config = {}
+                    config["memory"] = memory_config
+                memory_config["provider"] = name
+                save_config(config)
+                _invalidate_plugins_hub_cache()
+                return {"ok": True, "active": name}
 
     try:
         return await asyncio.to_thread(_run)

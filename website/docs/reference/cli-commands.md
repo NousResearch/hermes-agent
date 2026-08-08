@@ -241,7 +241,7 @@ Subcommands:
 | `run` | Run the gateway in the foreground. Recommended for WSL, Docker, and Termux. |
 | `start` | Start the installed systemd/launchd background service. |
 | `stop` | Stop the service (or foreground process). |
-| `restart` | Restart the service. |
+| `restart` | Restart the service. Drains in-flight agent runs first (SIGUSR1; waits for active turns plus the drain budget, plus headroom), falling back to a forced restart if the drain does not complete. |
 | `status` | Show service status. |
 | `list` | List **all profiles** and whether each profile's gateway is currently running (with PID where available). Handy when you run multiple profiles side-by-side and want a single overview. |
 | `install` | Install as a systemd (Linux) or launchd (macOS) background service. |

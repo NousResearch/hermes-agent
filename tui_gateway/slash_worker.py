@@ -125,6 +125,30 @@ def _run(cli: HermesCLI, command: str) -> str:
     return strip_ansi(buf.getvalue().rstrip())
 
 
+_BG_EVENT_LOCK = threading.Lock()
+
+
+def _emit_background_event(task_id: str, text: str, stream=None) -> None:
+    """Emit a ``background.complete`` JSON frame on the worker's stdout.
+
+    The worker's stdout is the JSON-lines protocol channel to the gateway.
+    A ``/background`` task finishes AFTER the ``slash.exec`` response was
+    already returned, so the only way to surface the result is an extra,
+    unsolicited event frame. The gateway splits these frames into an event
+    queue and emits ``background.complete`` to the connected client (see
+    ``tui_gateway/server.py`` SlashWorker). ``stream`` is injectable for
+    tests; it defaults to the worker's real stdout.
+    """
+    frame = json.dumps(
+        {"event": "background.complete", "task_id": task_id, "text": text},
+        ensure_ascii=False,
+    )
+    out = stream if stream is not None else sys.stdout
+    with _BG_EVENT_LOCK:
+        out.write(frame + "\n")
+        out.flush()
+
+
 def main():
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--session-key", required=True)
@@ -142,6 +166,13 @@ def main():
 
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         cli = HermesCLI(model=args.model or None, compact=True, resume=args.session_key, verbose=False)
+
+    # Deliver /background results as JSON event frames instead of the console
+    # print (which lands in a buffer nobody reads in the TUI/Desktop route).
+    # The gateway routes these into an event queue and emits them to the
+    # connected client; the classic CLI keeps the console behaviour because
+    # the hook is None there.
+    cli._background_complete_callback = _emit_background_event
 
     # Spurious stdin-EOF recovery (same O_NONBLOCK shared file-description
     # issue as the gateway entry point — any child inheriting fd 0 can flip

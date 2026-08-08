@@ -337,6 +337,10 @@ class _SlashWorker:
         self._seq = 0
         self.stderr_tail: list[str] = []
         self.stdout_queue: queue.Queue[dict | None] = queue.Queue()
+        # Unsolicited event frames (e.g. background.complete) sent by the
+        # worker outside the request/response protocol. Kept separate so
+        # run() never has to skip over them while waiting for its own reply.
+        self.event_queue: queue.Queue[dict] = queue.Queue()
 
         argv = [
             sys.executable,
@@ -398,10 +402,26 @@ class _SlashWorker:
     def _drain_stdout(self):
         for line in self.proc.stdout or []:
             try:
-                self.stdout_queue.put(json.loads(line))
+                msg = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if isinstance(msg, dict) and msg.get("event"):
+                self.event_queue.put(msg)
+            else:
+                self.stdout_queue.put(msg)
         self.stdout_queue.put(None)
+
+    def poll_events(self) -> list[dict]:
+        """Drain unsolicited event frames sent by the worker (e.g. the
+        ``background.complete`` frame emitted when a ``/background`` task
+        finishes after its ``slash.exec`` response was already returned)."""
+        events: list[dict] = []
+        while True:
+            try:
+                events.append(self.event_queue.get_nowait())
+            except queue.Empty:
+                break
+        return events
 
     def _drain_stderr(self):
         for line in self.proc.stderr or []:
@@ -877,8 +897,37 @@ def _attach_worker(sid: str, session: dict, worker) -> None:
     with _sessions_lock:
         if _sessions.get(sid) is session:
             session["slash_worker"] = worker
+        else:
+            worker.close()
             return
-    worker.close()
+
+    # Forward unsolicited worker event frames (background.complete from a
+    # finished /background task) to the connected client. The task runs to
+    # completion after the slash.exec response was already returned, so no
+    # single RPC call can carry it; this drain thread bridges that gap. It
+    # exits when the worker is detached from the session or its process dies.
+    def _drain_worker_events() -> None:
+        while True:
+            try:
+                ev = worker.event_queue.get(timeout=1.0)
+            except queue.Empty:
+                if session.get("slash_worker") is not worker or worker.proc.poll() is not None:
+                    return
+                continue
+            try:
+                _emit(
+                    "background.complete",
+                    sid,
+                    {"task_id": ev.get("task_id", ""), "text": ev.get("text", "")},
+                )
+            except Exception:
+                pass
+
+    threading.Thread(
+        target=_drain_worker_events,
+        daemon=True,
+        name=f"slash-bg-events-{sid[:8]}",
+    ).start()
 
 
 def _pop_session_by_id(sid: str) -> dict | None:

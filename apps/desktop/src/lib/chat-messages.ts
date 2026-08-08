@@ -37,6 +37,8 @@ export type GatewayEventPayload = {
   status?: string
   message?: string
   id?: string
+  /** task_id of a finished /background task (background.complete event). */
+  task_id?: string
   name?: string
   tool_id?: string
   tool_call_id?: string

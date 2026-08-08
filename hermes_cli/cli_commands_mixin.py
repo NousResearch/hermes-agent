@@ -1968,6 +1968,13 @@ class CLICommandsMixin:
         task_num = self._background_task_counter
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
 
+        # Optional delivery hook: the TUI slash-worker sets this to stream the
+        # final response back to the client as a JSON event frame. The console
+        # prints below are only visible in a classic terminal; in the
+        # TUI/Desktop route they land in a buffer nobody reads. Best-effort:
+        # a failing hook must never kill the background thread.
+        bg_callback = getattr(self, "_background_complete_callback", None)
+
         # Make sure we have valid credentials
         if not self._ensure_runtime_credentials():
             _cprint("  (>_<) Cannot start background task: no valid credentials.")
@@ -2036,6 +2043,12 @@ class CLICommandsMixin:
                 if not response and result and result.get("error"):
                     response = f"Error: {result['error']}"
 
+                if bg_callback is not None:
+                    try:
+                        bg_callback(task_id, response)
+                    except Exception:
+                        pass
+
                 # Display result in the CLI (thread-safe via patch_stdout).
                 # Force a TUI refresh first so spinner/status bar don't overlap
                 # with the output (fixes #2718).
@@ -2085,6 +2098,11 @@ class CLICommandsMixin:
                     time.sleep(0.05)
                 print()
                 _cprint(f"  ❌ Background task #{task_num} failed: {e}")
+                if bg_callback is not None:
+                    try:
+                        bg_callback(task_id, f"Error: {e}")
+                    except Exception:
+                        pass
             finally:
                 try:
                     set_sudo_password_callback(None)

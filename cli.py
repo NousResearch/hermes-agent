@@ -4773,6 +4773,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
+        # Optional delivery hook set by the TUI slash-worker so a finished
+        # /background task can stream its result back to the client as a JSON
+        # event frame (see tui_gateway/slash_worker.py). None in the classic
+        # CLI, where the console print remains the only delivery path.
+        self._background_complete_callback = None
 
     def _claim_active_session(self, surface: str = "cli", *, stderr: bool = False) -> bool:
         """Claim a global active-session slot for this CLI process."""

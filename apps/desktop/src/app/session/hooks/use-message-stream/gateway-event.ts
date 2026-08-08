@@ -1201,6 +1201,32 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             ]
           }))
         }
+      } else if (event.type === 'background.complete') {
+        // A /background task finished after its slash.exec response was
+        // already returned, so the result arrives as an unsolicited event
+        // (tui_gateway/server.py _attach_worker drains it from the worker's
+        // stdout). Surface it as a persistent system message — same pattern
+        // as the review summary above. Deliberately NOT written to the
+        // backend history, so the active session's prompt cache and role
+        // alternation stay untouched.
+        const text = coerceGatewayText(payload?.text).trim()
+        const taskId = payload?.task_id
+
+        if (text && sessionId) {
+          flushQueuedDeltas(sessionId)
+          updateSessionState(sessionId, state => ({
+            ...state,
+            messages: [
+              ...state.messages,
+              {
+                id: `background-complete-${taskId ?? Date.now()}`,
+                role: 'system',
+                parts: [textPart(`✅ Background task complete${taskId ? ` (${taskId})` : ''}\n\n${text}`)],
+                timestamp: Math.floor(Date.now() / 1000)
+              }
+            ]
+          }))
+        }
       } else if (event.type === 'notification.show') {
         // Driver-agnostic agent notice (credits usage/grant/depleted/restored
         // from `agent/credits_tracker.py`). The Ink TUI renders these in its

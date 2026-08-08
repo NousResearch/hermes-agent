@@ -7050,11 +7050,11 @@ def has_registered_mcp_tools() -> bool:
     """True if any MCP server has actually registered tools into the registry.
 
     Cheap — checks the global MCP-tool→server name map under ``_lock``, no
-    registry walk.  Used by the per-turn refresh hook so a session with no MCP
-    tools (the common case, and also a connected-but-zero-tool/prompt-only
-    server) skips the ``get_tool_definitions`` rebuild entirely.  Checks
-    registered TOOLS, not connected servers, so a server that registers no tools
-    doesn't keep the hook firing every turn.
+    registry walk. Used by the per-turn refresh hook together with the registry
+    generation: connected catalogs still re-evaluate availability filters each
+    turn, while an empty, already-synchronized catalog skips rebuilding. Checks
+    registered TOOLS, not connected servers, so a zero-tool/prompt-only server
+    does not keep the hook firing every turn.
     """
     with _lock:
         return bool(_mcp_tool_server_names)
@@ -7074,6 +7074,25 @@ def get_registered_mcp_server_names() -> set:
         return set(_mcp_tool_server_names.values())
 
 
+def _queue_mcp_catalog_notice(agent, *, bridge_active: bool) -> None:
+    """Queue a cache-safe one-shot note for the agent's next real user turn.
+
+    ``agent.turn_context`` folds this note into the API copy of that turn's
+    user message while preserving the clean persisted content. It must never be
+    appended as a standalone synthetic user message: that would break strict
+    role alternation when a reload happens between turns.
+    """
+    if bridge_active:
+        notice = (
+            "[TOOL CATALOG UPDATED: Available MCP/plugin tools may have changed. "
+            "Re-run tool_search before deciding that a capability is unavailable.]"
+        )
+    else:
+        notice = (
+            "[TOOL CATALOG UPDATED: The directly exposed MCP tool schemas "
+            "for this conversation have been refreshed.]"
+        )
+    agent._pending_mcp_catalog_notice = notice
 
 def refresh_agent_mcp_tools(
     agent,
@@ -7094,9 +7113,11 @@ def refresh_agent_mcp_tools(
     apart again.
 
     The rebuild respects the agent's own ``enabled_toolsets`` /
-    ``disabled_toolsets`` (the same filtering it was built with) and diffs by
-    tool **name** (not count — a count compare misses an equal-size add/remove
-    swap).
+    ``disabled_toolsets`` (the same filtering it was built with). In stable
+    Tool Search bridge mode, catalog edits intentionally leave ``agent.tools``
+    untouched because search/describe/call read the live registry. In direct
+    mode (Tool Search off), the full assembled schemas are compared so a
+    same-name description/parameter change is still published.
 
     Crucially it is **additive-preserving**: ``get_tool_definitions`` returns
     only the registry-derived tools, but ``agent_init`` appends two further
@@ -7109,12 +7130,11 @@ def refresh_agent_mcp_tools(
     under ``_agent_tools_lock`` so a concurrent reader never sees a
     cross-attribute half-swap.
 
-    Returns the set of newly-added tool names (empty when nothing changed), so
+    Returns the set of newly-added *model-facing* tool names (empty when only a
+    deferred catalog changed behind the stable bridge), so
     callers can decide whether to notify the user / re-emit session info.  The
-    caller owns the prompt-cache contract: this helper does NOT check turn state,
-    because each caller has a different policy (``/reload-mcp`` rebuilds after
-    explicit user consent; the late-binding and between-turns paths only rebuild
-    at a turn boundary, before that turn's ``tools=`` prefix is assembled).
+    helper enforces the stable-bridge/direct-schema cache contract but does not
+    check turn state. Each caller still owns when a refresh may run.
     """
     from model_tools import get_tool_definitions
     from tools.registry import registry
@@ -7123,14 +7143,17 @@ def refresh_agent_mcp_tools(
     # the user just ENABLED in config is picked up; the agent's stored selection
     # is then updated to match. The automatic paths (between-turns, late-binding)
     # pass nothing and reuse the agent's build-time selection unchanged.
+    old_enabled = getattr(agent, "enabled_toolsets", None)
+    old_disabled = getattr(agent, "disabled_toolsets", None)
     if enabled_override is not None or disabled_override is not None:
         enabled = enabled_override if enabled_override is not None else getattr(agent, "enabled_toolsets", None)
         disabled = disabled_override if disabled_override is not None else getattr(agent, "disabled_toolsets", None)
         agent.enabled_toolsets = enabled
         agent.disabled_toolsets = disabled
     else:
-        enabled = getattr(agent, "enabled_toolsets", None)
-        disabled = getattr(agent, "disabled_toolsets", None)
+        enabled = old_enabled
+        disabled = old_disabled
+    scope_changed = enabled != old_enabled or disabled != old_disabled
 
     # Capture the registry generation this rebuild is derived from BEFORE the
     # (potentially slow) get_tool_definitions call. Used at publish time to
@@ -7177,14 +7200,27 @@ def refresh_agent_mcp_tools(
         if snapshot_generation < published_gen:
             # A newer snapshot already won; our set is stale — drop it.
             return set()
+        current_defs = getattr(agent, "tools", None) or []
         current = {
             t["function"]["name"]
-            for t in (getattr(agent, "tools", None) or [])
+            for t in current_defs
         }
-        if new_names == current:
-            # No change → leave the live snapshot untouched (no churn), but
-            # record the generation so an in-flight older caller can't clobber.
+        catalog_changed = scope_changed or (
+            published_gen >= 0 and snapshot_generation > published_gen
+        )
+        try:
+            from tools.tool_search import BRIDGE_TOOL_NAMES
+            bridge_active = BRIDGE_TOOL_NAMES.issubset(new_names)
+        except Exception:
+            bridge_active = False
+
+        if new_defs == current_defs:
+            # Stable bridge mode normally lands here: the registry generation
+            # changed but the model-facing schemas did not. Keep the exact list
+            # object so the provider's cached tools= prefix stays byte-stable.
             agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
+            if catalog_changed:
+                _queue_mcp_catalog_notice(agent, bridge_active=bridge_active)
             return set()
         agent.tools = new_defs
         agent.valid_tool_names = new_names
@@ -7194,6 +7230,9 @@ def refresh_agent_mcp_tools(
             engine_names.clear()
             engine_names.update(staged_engine_names)
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
+        # A published direct-schema change is itself user-visible even when it
+        # came from config/check_fn drift rather than a registry generation.
+        _queue_mcp_catalog_notice(agent, bridge_active=bridge_active)
         return new_names - current
 
 

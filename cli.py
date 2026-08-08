@@ -11550,14 +11550,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
           auto-triggers ``_reload_mcp()`` and informs the user — legacy
           behaviour from #1474.
         * When opted out (``mcp.auto_reload_on_config_change: false``) it
-          does NOT reload.  Instead it notifies the user that the config
-          changed and that they can apply it with ``/reload-mcp`` — while
-          warning that ``/reload-mcp`` rebuilds the tool surface and
-          **invalidates the provider prompt cache** (the next message
-          re-sends the full input prefix, expensive on long-context /
-          high-reasoning models).  This stops silent cache-breaking reloads
-          when config.yaml is rewritten frequently by external tooling or
-          other Hermes instances.
+          does NOT reload. Instead it notifies the user that the config changed
+          and that they can apply it with ``/reload-mcp``. A cache warning is
+          only needed when Tool Search is explicitly disabled and MCP schemas
+          are exposed directly.
         """
 
         import yaml as _yaml
@@ -11605,10 +11601,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         # Detected a change in the mcp_servers section.  By default we
         # auto-reload (legacy behaviour), but if the user has opted out we
-        # notify instead of reloading — because every reload rebuilds the
-        # agent tool surface and INVALIDATES the provider prompt cache (the
-        # next message re-sends the full input prefix, which is expensive on
-        # long-context / high-reasoning models).
+        # notify instead of reloading.
         #
         # The toggle is the top-level ``mcp.auto_reload_on_config_change``
         # key (see DEFAULT_CONFIG).  Read it from the config we just parsed
@@ -11626,13 +11619,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if not _auto:
             # Notify the user that the config changed but do NOT auto-reload.
             # They can apply the new settings on their own terms with
-            # /reload-mcp — which we explicitly warn may invalidate the cache.
+            # /reload-mcp. Direct-schema mode gets an additional cache warning.
             print()
             print("🔄 MCP server config changed — reload skipped (auto-reload disabled).")
             print("   New settings are NOT applied yet. To apply them now, run:")
             print("     /reload-mcp")
-            print("   ⚠️  Note: /reload-mcp rebuilds the tool set and invalidates the")
-            print("   provider prompt cache (next message re-sends full input tokens).")
+            from tools.tool_search import is_enabled_in_config as _tool_search_enabled
+            if not _tool_search_enabled(new_cfg):
+                print("   ⚠️  Tool Search is off, so reloading changes the directly exposed")
+                print("   schemas and invalidates the provider prompt cache.")
             return
 
         # Notify user and reload.  Run in a separate thread with a hard
@@ -11778,10 +11773,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def _confirm_and_reload_mcp(self, cmd_original: str = "") -> None:
         """Interactive /reload-mcp — confirm with the user, then reload.
 
-        Reloading MCP tools invalidates the provider prompt cache for the
-        active session (tool schemas are baked into the system prompt).
-        The next message re-sends full input tokens — can be expensive on
-        long-context or high-reasoning models.
+        The default stable Tool Search bridge reloads without a cache warning.
+        Confirmation is retained only for ``tools.tool_search.enabled: off``,
+        where MCP schemas are exposed directly and a reload changes ``tools=``.
 
         Three options: Approve Once, Always Approve (persists
         ``approvals.mcp_reload_confirm: false`` so future reloads run
@@ -11791,6 +11785,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Gate check — respects prior "Always Approve" clicks.
         try:
             cfg = load_cli_config()
+            from tools.tool_search import is_enabled_in_config as _tool_search_enabled
+            if _tool_search_enabled(cfg):
+                with self._busy_command(self._slow_command_status(cmd_original)):
+                    self._reload_mcp()
+                return
             approvals = cfg.get("approvals") if isinstance(cfg, dict) else None
             confirm_required = True
             if isinstance(approvals, dict):
@@ -11913,9 +11912,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 if enabled_override is not None:
                     self.enabled_toolsets = enabled_override
 
-            # Inject a message at the END of conversation history so the
-            # model knows tools changed.  Appended after all existing
-            # messages to preserve prompt-cache for the prefix.
+            # Queue a note for the next real user turn instead of appending a
+            # standalone synthetic user message (which would break strict role
+            # alternation). The stable Tool Search bridge itself is unchanged.
             change_parts = []
             if added:
                 change_parts.append(f"Added servers: {', '.join(sorted(added))}")
@@ -11925,10 +11924,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 change_parts.append(f"Reconnected servers: {', '.join(sorted(reconnected))}")
             tool_summary = f"{len(new_tools)} MCP tool(s) now available" if new_tools else "No MCP tools available"
             change_detail = ". ".join(change_parts) + ". " if change_parts else ""
-            self.conversation_history.append({
-                "role": "user",
-                "content": f"[IMPORTANT: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
-            })
+            if self.agent is not None:
+                if "tool_search" in getattr(self.agent, "valid_tool_names", set()):
+                    action = "Re-run tool_search before deciding a capability is unavailable."
+                else:
+                    action = "The directly exposed MCP tool schemas have been refreshed."
+                self.agent._pending_mcp_catalog_notice = (
+                    f"[USER INITIATED MCP RELOAD: {change_detail}{tool_summary}. {action}]"
+                )
 
             # Persist session immediately so the session log reflects the
             # updated tools list (self.agent.tools was refreshed above).

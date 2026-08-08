@@ -1,5 +1,6 @@
 """Tests for the Hermes plugin system (hermes_cli.plugins)."""
 
+import json
 import logging
 import json
 import sys
@@ -916,11 +917,8 @@ class TestPluginToolVisibility:
     def test_plugin_tools_in_definitions(self, tmp_path, monkeypatch):
         """Plugin tools are reachable when their toolset is in enabled_toolsets.
 
-        Under tiered disclosure (any MCP/plugin tool defers behind the
-        tool_search bridge), a plugin tool no longer appears as a direct
-        schema — it is deferred and surfaced via the bridge's catalog
-        listing. 'Reachable' therefore means: present directly OR listed
-        in the tool_search bridge description.
+        Plugin schemas stay behind the stable bridge, and the live search path
+        must honor the session's enabled-toolset scope.
         """
         import hermes_cli.plugins as plugins_mod
 
@@ -947,28 +945,31 @@ class TestPluginToolVisibility:
         mgr.discover_and_load()
         monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
 
-        from model_tools import get_tool_definitions
+        from model_tools import get_tool_definitions, handle_function_call
 
-        def _reachable(tools):
-            names = [t["function"]["name"] for t in tools]
-            if "vis_tool" in names:
-                return True  # tool_search inactive → direct schema
-            search = next((t for t in tools
-                           if t["function"]["name"] == "tool_search"), None)
-            return bool(search and "vis_tool" in search["function"]["description"])
+        def _reachable(enabled_toolsets=None):
+            parsed = json.loads(handle_function_call(
+                function_name="tool_search",
+                function_args={"query": "vis_tool"},
+                enabled_toolsets=enabled_toolsets,
+            ))
+            return any(m["name"] == "vis_tool" for m in parsed["matches"])
 
         # Reachable when its toolset is explicitly enabled
         tools = get_tool_definitions(enabled_toolsets=["terminal", "plugin_vis_plugin"], quiet_mode=True)
-        assert _reachable(tools)
+        names = {t["function"]["name"] for t in tools}
+        assert "tool_search" in names and "vis_tool" not in names
+        assert _reachable(["terminal", "plugin_vis_plugin"])
 
-        # Excluded entirely when only other toolsets are enabled — not
-        # direct, not in the deferred listing.
+        # Excluded entirely when only other toolsets are enabled.
         tools2 = get_tool_definitions(enabled_toolsets=["terminal"], quiet_mode=True)
-        assert not _reachable(tools2)
+        names2 = {t["function"]["name"] for t in tools2}
+        assert "tool_search" in names2 and "vis_tool" not in names2
+        assert not _reachable(["terminal"])
 
         # Reachable when no toolset filter is active (all enabled)
-        tools3 = get_tool_definitions(quiet_mode=True)
-        assert _reachable(tools3)
+        get_tool_definitions(quiet_mode=True)
+        assert _reachable()
 
 
 # ── TestPluginManagerList ──────────────────────────────────────────────────

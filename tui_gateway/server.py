@@ -6312,12 +6312,11 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
     the agent's callable tools and the banner count catch up — the same
     rebuild ``/reload-mcp`` performs, but automatic.
 
-    Cache safety: the rebuild only runs while the session is still pre-first-
-    turn (no API call made yet → nothing cached to invalidate). If the user
-    has already sent a message, we leave the snapshot frozen rather than
-    invalidate the prompt cache mid-conversation — those late tools then
-    require an explicit ``/reload-mcp`` (which gates on user consent), exactly
-    as today. No-op when discovery already finished before the agent build.
+    Cache safety: a session using the stable Tool Search bridge may refresh
+    after its first turn because its model-facing schemas stay byte-identical.
+    Direct-schema mode keeps the historical pre-first-turn guard because a
+    rebuild there changes ``tools=``. No-op when discovery already finished
+    before the agent build.
     """
     try:
         from tui_gateway.entry import mcp_discovery_in_flight, join_mcp_discovery
@@ -6336,12 +6335,22 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
             # Session may have been closed/reset while we waited.
             if session is None or session.get("agent") is not agent:
                 return
-            # Cache safety: never rebuild the tool list once the conversation
-            # has started — that would invalidate the cached prompt prefix.
-            if (
+            # Cache safety: after a conversation starts, only the byte-stable
+            # bridge may observe late catalog changes automatically. Direct
+            # schemas still require an explicit user-approved reload.
+            _started = (
                 int(getattr(agent, "_user_turn_count", 0) or 0) > 0
                 or int(getattr(agent, "_api_call_count", 0) or 0) > 0
-            ):
+            )
+            try:
+                from tools.tool_search import BRIDGE_TOOL_NAMES
+
+                _stable_bridge = BRIDGE_TOOL_NAMES.issubset(
+                    set(getattr(agent, "valid_tool_names", set()) or set())
+                )
+            except Exception:
+                _stable_bridge = False
+            if _started and not _stable_bridge:
                 return
             try:
                 from tools.mcp_tool import refresh_agent_mcp_tools

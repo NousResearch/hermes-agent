@@ -1,11 +1,9 @@
 """Tests for the approvals.mcp_reload_confirm config gate.
 
-When the user runs /reload-mcp, the MCP tool set is rebuilt which
-invalidates the provider prompt cache for the active session.  That's
-expensive on long-context / high-reasoning models.  The config gate
-adds a three-option confirmation (Approve Once / Always Approve /
-Cancel); "Always Approve" flips this key to false so subsequent reloads
-run silently.
+When Tool Search is off, /reload-mcp rebuilds directly exposed MCP schemas and
+invalidates the provider prompt cache. The config gate adds a three-option
+confirmation (Approve Once / Always Approve / Cancel); stable bridge mode
+bypasses it because the model-facing schemas do not change.
 """
 
 from __future__ import annotations

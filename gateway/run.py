@@ -20854,9 +20854,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Refresh cached agents so existing sessions see new MCP tools on
             # their next turn — without this, the user has to `/new` (which
             # discards conversation history) to pick up tools from a server
-            # that was just added or reconnected. The user has already
-            # consented to the prompt-cache invalidation via the slash-confirm
-            # gate in _handle_reload_mcp_command before we reach this point.
+            # that was just added or reconnected. Stable-bridge agents keep the
+            # exact same model-facing schemas; direct-schema agents rebuild.
             try:
                 from tools.mcp_tool import refresh_agent_mcp_tools
                 _cache = getattr(self, "_agent_cache", None)
@@ -20886,30 +20885,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _exc,
                 )
 
-            # Inject a message at the END of the session history so the
-            # model knows tools changed on its next turn.  Appended after
-            # all existing messages to preserve prompt-cache for the prefix.
-            change_parts = []
-            if added:
-                change_parts.append(f"Added servers: {', '.join(sorted(added))}")
-            if removed:
-                change_parts.append(f"Removed servers: {', '.join(sorted(removed))}")
-            if reconnected:
-                change_parts.append(f"Reconnected servers: {', '.join(sorted(reconnected))}")
-            tool_summary = f"{len(new_tools)} MCP tool(s) now available" if new_tools else "No MCP tools available"
-            change_detail = ". ".join(change_parts) + ". " if change_parts else ""
-            reload_msg = {
-                "role": "user",
-                "content": f"[IMPORTANT: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
-            }
-            try:
-                session_entry = await self.async_session_store.get_or_create_session(event.source)
-                await self.async_session_store.append_to_transcript(
-                    session_entry.session_id, reload_msg
-                )
-            except Exception:
-                pass  # Best-effort; don't fail the reload over a transcript write
-
             return "\n".join(lines)
 
         except Exception as e:
@@ -20921,9 +20896,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # ------------------------------------------------------------------
     # Slash-command confirmation primitive (generic)
     # ------------------------------------------------------------------
-    # Used by slash commands that have a non-destructive but expensive
-    # side effect worth an explicit user confirmation (currently only
-    # /reload-mcp, which invalidates the prompt cache).  Two delivery
+    # Used by slash commands that have a non-destructive but potentially
+    # expensive side effect worth an explicit user confirmation. Two delivery
     # paths:
     #   1. Button UI — adapters that override ``send_slash_confirm``
     #      (Telegram, Discord, Slack, Matrix, Feishu) render three

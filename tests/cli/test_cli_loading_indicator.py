@@ -49,10 +49,9 @@ class TestCLILoadingIndicator:
             seen["status"] = cli_obj._command_status
             print("reload done")
 
-        # /reload-mcp now wraps the actual reload in a prompt-cache-invalidation
-        # confirmation prompt (commit 4d7fc0f37).  This test exercises the
-        # loading-indicator path, not the confirmation UX, so pre-approve the
-        # reload via config so the handler goes straight into _reload_mcp().
+        # Direct-schema /reload-mcp wraps the reload in a cache-invalidation
+        # confirmation prompt. This test exercises the loading-indicator path,
+        # so use the default stable bridge and go straight into _reload_mcp().
         fake_cfg = {"approvals": {"mcp_reload_confirm": False}}
 
         with patch.object(cli_obj, "_reload_mcp", side_effect=fake_reload), \

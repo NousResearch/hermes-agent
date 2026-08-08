@@ -4,29 +4,20 @@ When enabled, MCP and non-core plugin tools are replaced in the model-visible
 tools array by three bridge tools — ``tool_search``, ``tool_describe``,
 ``tool_call`` — and surfaced on demand. Core Hermes tools never defer.
 
-Design constraints this module is built around (see ``openclaw-tool-search-report``
-for the full rationale):
+Design constraints this module is built around:
 
 * Core tools defined in ``toolsets._HERMES_CORE_TOOLS`` are *never* deferred.
   Always-load means always-load. No exceptions.
-* Tiered disclosure (July 2026 plan): the moment ANY deferrable (MCP/plugin)
-  tools are present, they hide behind the bridge. What scales with catalog
-  size is the *listing*, not the activation decision:
-    - Tier 0 — no MCP/plugin tools: pure passthrough, everything eager.
-    - Tier 1 — deferred tools whose catalog listing fits the listing budget
-      (``min(threshold_pct`` of context — default 5% — ``, listing_max_tokens)``):
-      bridge + skills-style listing (name + short description per tool),
-      degrading to a names-only listing when the full form is over budget.
-    - Tier 2 — per-tool listing over budget even names-only (e.g.
-      Cloudflare's flat API surface, ~3,300 tools whose names alone are
-      ~32K tokens): bare bridge + a one-line-per-server summary (server
-      name + tool count) so the model still knows WHICH domains are
-      reachable; individual tools are discoverable only via ``tool_search``.
-* The catalog is stateless across turns and tools-array assemblies. It is
-  rebuilt from the current tool-defs list every time. This is the lesson
-  from OpenClaw's cron regression (openclaw/openclaw#84141): a session-keyed
-  catalog that drifts out of sync with the live tool registry produces
-  silent tool dropouts.
+* The three bridge schemas are byte-stable and present whenever Tool Search is
+  enabled, including when the current catalog is empty. MCP/plugin additions,
+  removals, and schema edits therefore never mutate the model-facing ``tools=``
+  prefix or invalidate its provider prompt cache.
+* The catalog is resolved from the current session-scoped live registry on
+  every search/describe/call. There is no catalog embedded in the bridge
+  description and no session-keyed catalog that can drift out of sync. A
+  compact fingerprinted manifest rides on the first real user turn and again
+  after changes, preserving both capability discoverability and the cached
+  ``tools=`` prefix.
 * Bridge tools route through ``model_tools.handle_function_call`` exactly
   like a direct call, so guardrails, plugin pre/post hooks, approval flows,
   and tool-result truncation all fire identically.
@@ -37,6 +28,7 @@ for the full rationale):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -58,12 +50,10 @@ TOOL_CALL_NAME = "tool_call"
 
 BRIDGE_TOOL_NAMES = frozenset({TOOL_SEARCH_NAME, TOOL_DESCRIBE_NAME, TOOL_CALL_NAME})
 
-# When estimating tokens from char count without a real tokenizer, this is
-# the cheap rule of thumb that's stable across providers. Roughly 4 chars
-# per token for English+JSON. Underestimating leads to false negatives
-# (tool search not activated when it should); overestimating leads to false
-# positives (activated when not needed). 4.0 errs slightly toward
-# underestimating, which is the safer default.
+# When reporting the schema tokens saved by progressive disclosure, use the
+# cheap rule of thumb that's stable across providers: roughly 4 chars per
+# token for English+JSON. This is observability only; it does not decide
+# whether the stable bridge is present.
 CHARS_PER_TOKEN = 4.0
 
 
@@ -77,24 +67,15 @@ class ToolSearchConfig:
     """Resolved, validated tool-search configuration for a single assembly."""
 
     enabled: str  # "auto" | "on" | "off"
-    # Listing budget as a percentage of the model's context window. Under
-    # tiered disclosure this no longer gates *activation* (any deferrable
-    # tool activates the bridge) — it bounds how much context the embedded
-    # catalog listing may consume before disclosure degrades:
-    # full listing -> names-only -> bare bridge (tier 2).
-    threshold_pct: float  # 0..100
     search_default_limit: int
     max_search_limit: int
-    # Catalog listing ("skills-style" progressive disclosure): when active,
-    # a grouped name + short-description manifest of every deferred tool is
-    # embedded in the tool_search bridge description, so capabilities stay
-    # DISCOVERABLE (like the skills listing in the system prompt) while full
-    # schemas stay deferred.  "auto" = include when it fits the listing
-    # budget (falls back to names-only, then to none = bare bridge);
-    # "on" = same rendering, explicit intent; "off" = always bare bridge.
+    # The catalog manifest is delivered on a real user turn, never embedded in
+    # the bridge schema. This preserves the listing-mode discoverability win
+    # without making ``tools=`` dynamic.
     listing: str = "auto"  # "auto" | "on" | "off"
-    # Absolute cap on the embedded listing, regardless of context size.
-    # Effective budget = min(listing_max_tokens, threshold_pct% of context).
+    threshold_pct: float = 5.0
+    # Absolute cap on the user-turn catalog snapshot. Effective budget is the
+    # smaller of this value and ``threshold_pct`` of the context window.
     listing_max_tokens: int = 4000
 
     @classmethod
@@ -108,14 +89,11 @@ class ToolSearchConfig:
         break the agent.
         """
         if raw is True:
-            return cls(enabled="auto", threshold_pct=5.0,
-                       search_default_limit=5, max_search_limit=20)
+            return cls(enabled="auto", search_default_limit=5, max_search_limit=20)
         if raw is False:
-            return cls(enabled="off", threshold_pct=5.0,
-                       search_default_limit=5, max_search_limit=20)
+            return cls(enabled="off", search_default_limit=5, max_search_limit=20)
         if not isinstance(raw, dict):
-            return cls(enabled="auto", threshold_pct=5.0,
-                       search_default_limit=5, max_search_limit=20)
+            return cls(enabled="auto", search_default_limit=5, max_search_limit=20)
 
         enabled_raw = str(raw.get("enabled", "auto")).strip().lower()
         if enabled_raw in ("true", "1", "yes"):
@@ -126,9 +104,6 @@ class ToolSearchConfig:
             enabled = enabled_raw
         else:
             enabled = "auto"
-
-        threshold_pct = _safe_float(raw.get("threshold_pct"), 5.0)
-        threshold_pct = max(0.0, min(100.0, threshold_pct))
 
         max_search_limit = max(1, min(50, _safe_int(raw.get("max_search_limit"), 20)))
         search_default_limit = max(1, min(max_search_limit,
@@ -143,14 +118,19 @@ class ToolSearchConfig:
             listing = listing_raw
         else:
             listing = "auto"
-        listing_max_tokens = max(200, min(60000, _safe_int(raw.get("listing_max_tokens"), 4000)))
+        threshold_pct = max(
+            0.0, min(100.0, _safe_float(raw.get("threshold_pct"), 5.0))
+        )
+        listing_max_tokens = max(
+            200, min(60000, _safe_int(raw.get("listing_max_tokens"), 4000))
+        )
 
         return cls(
             enabled=enabled,
-            threshold_pct=threshold_pct,
             search_default_limit=search_default_limit,
             max_search_limit=max_search_limit,
             listing=listing,
+            threshold_pct=threshold_pct,
             listing_max_tokens=listing_max_tokens,
         )
 
@@ -181,6 +161,13 @@ def load_config() -> ToolSearchConfig:
     except Exception as e:
         logger.debug("Failed to load tool-search config: %s", e)
         return ToolSearchConfig.from_raw(None)
+
+
+def is_enabled_in_config(config: Any) -> bool:
+    """Return whether a full Hermes config selects the stable bridge mode."""
+    tools_cfg = config.get("tools") if isinstance(config, dict) else None
+    raw = tools_cfg.get("tool_search") if isinstance(tools_cfg, dict) else None
+    return ToolSearchConfig.from_raw(raw).enabled != "off"
 
 
 # ---------------------------------------------------------------------------
@@ -251,17 +238,15 @@ def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
-# Token estimation and threshold gate
+# Token estimation and activation
 # ---------------------------------------------------------------------------
 
 
 def estimate_tokens_from_schemas(tool_defs: Iterable[Dict[str, Any]]) -> int:
     """Estimate the token cost of a tool-defs list via the chars/4 rule.
 
-    Cheap and stable across providers. The number doesn't need to be exact —
-    it gates the activate/skip decision, and a typical 200K context with a
-    10% threshold means the decision flips around 20K tokens of schema.
-    Order-of-magnitude precision is fine.
+    Cheap and stable across providers. This value is used only for logs and
+    assembly metadata, so order-of-magnitude precision is sufficient.
     """
     total_chars = 0
     for td in tool_defs:
@@ -279,31 +264,23 @@ def should_activate(
 ) -> bool:
     """Decide whether tool search should activate for the current assembly.
 
-    ``"off"`` skips unconditionally. ``"on"`` and ``"auto"`` activate whenever
-    at least one deferrable tool exists (there's no point swapping a no-op).
-
-    Tiered-disclosure semantics (July 2026): the presence of ANY MCP/plugin
-    tool activates the bridge — schemas always defer. What the threshold now
-    controls is the *listing budget* (see :func:`listing_token_budget`), not
-    activation. ``context_length`` is retained in the signature for
-    backward compatibility with existing callers.
+    ``"off"`` skips unconditionally. ``"on"`` and ``"auto"`` keep the stable
+    bridge present even when the live catalog is empty. This avoids a cache
+    boundary when the first MCP/plugin tool arrives or the last one disappears.
+    The unused numeric arguments remain for compatibility with existing callers.
     """
-    if config.enabled == "off":
-        return False
-    if deferrable_tokens <= 0:
-        return False
-    return True
+    del deferrable_tokens, context_length
+    return config.enabled != "off"
 
 
 def listing_token_budget(
     config: ToolSearchConfig,
     context_length: Optional[int],
 ) -> int:
-    """Effective token budget for the embedded catalog listing.
+    """Return the budget for the user-turn catalog manifest.
 
-    ``min(listing_max_tokens, threshold_pct% of context)``. Without a known
-    context size, the percentage leg falls back to a fixed 10K cutoff
-    (5% of a typical 200K window).
+    The manifest uses the former tiered-listing budget, but its bytes now live
+    at the append-only edge of the conversation instead of inside ``tools=``.
     """
     if context_length and context_length > 0:
         pct_leg = int(context_length * (config.threshold_pct / 100.0))
@@ -473,26 +450,35 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5) -> L
 
 
 # ---------------------------------------------------------------------------
-# Bridge tool schemas
+# User-turn catalog manifest
 # ---------------------------------------------------------------------------
 
 
 _SENTENCE_END_RE = re.compile(r"[.!?\n]")
+_CATALOG_SNAPSHOT_RE = re.compile(
+    r"\[HERMES TOOL CATALOG SNAPSHOT id=([0-9a-f]{16})\b"
+)
+
+
+@dataclass(frozen=True)
+class CatalogSnapshot:
+    """A deterministic, session-scoped catalog snapshot for one user turn."""
+
+    snapshot_id: str
+    count: int
+    pending_mcp_servers: Tuple[str, ...]
+    listing_form: str
+    notice: str
 
 
 def _short_desc(description: str, max_chars: int = 60) -> str:
-    """First sentence of a tool description, clipped to ``max_chars``.
-
-    Mirrors the skills-listing convention: one terse line per capability.
-    Whitespace is collapsed; a hard clip never cuts mid-word unless the
-    first word itself exceeds the budget.
-    """
+    """Return the first sentence of a tool description, clipped tersely."""
     text = " ".join((description or "").split())
     if not text:
         return ""
-    m = _SENTENCE_END_RE.search(text)
-    if m:
-        text = text[:m.start() + (1 if text[m.start()] == "." else 0)]
+    match = _SENTENCE_END_RE.search(text)
+    if match:
+        text = text[:match.start() + (1 if text[match.start()] == "." else 0)]
     if len(text) <= max_chars:
         return text
     clipped = text[:max_chars]
@@ -502,11 +488,8 @@ def _short_desc(description: str, max_chars: int = 60) -> str:
 
 
 def _listing_group_label(source_name: str) -> str:
-    """Human-facing group heading for a toolset, e.g. ``mcp-github`` -> ``github``."""
     label = source_name or "other"
-    if label.startswith("mcp-"):
-        label = label[4:]
-    return label
+    return label[4:] if label.startswith("mcp-") else label
 
 
 def build_catalog_listing(
@@ -547,133 +530,237 @@ def build_catalog_listing_with_form(
     *,
     max_tokens: int = 4000,
 ) -> Tuple[Optional[str], str]:
-    """Like :func:`build_catalog_listing` but also reports the form used.
+    """Render a deterministic, budgeted catalog manifest.
 
-    Returns ``(text, form)`` where ``form`` is ``"full"`` (names + short
-    descriptions), ``"names"`` (names-only fallback), ``"mixed"`` (per-server
-    degradation: small servers keep per-tool lines, oversized servers
-    collapse to a name + tool-count summary line), ``"groups"`` (every
-    server summarized), or ``"none"`` (over budget in every form).
-
-    Degradation is PER SERVER, not global: one huge server (Cloudflare's
-    3,320 flat tools) must not cost a small co-attached server (Linear's 24)
-    its listing. Greedy fit, smallest rendered group first, is deterministic
-    for a given catalog — byte-stable across assemblies, cache-safe.
+    The fallback order is full descriptions, names only, then per-server
+    summaries. Degradation is per server so one huge MCP surface cannot hide
+    the names of a small co-attached server.
     """
     if not deferrable:
         return None, "none"
 
     groups: Dict[str, List[Tuple[str, str]]] = {}
-    for td in deferrable:
-        fn = td.get("function") or {}
+    for tool_def in deferrable:
+        fn = tool_def.get("function") or {}
         name = fn.get("name", "")
         if not name:
             continue
         source, source_name = _classify_source(name)
-        label = _listing_group_label(source_name if source != "other" else "other")
-        groups.setdefault(label, []).append((name, _short_desc(fn.get("description", ""))))
+        label = _listing_group_label(
+            source_name if source != "other" else "other"
+        )
+        groups.setdefault(label, []).append(
+            (name, _short_desc(fn.get("description", "")))
+        )
 
     if not groups:
         return None, "none"
 
     def render_group(label: str, mode: str) -> str:
-        """Render one server's block. mode: 'full' | 'names' | 'summary'."""
         tools = sorted(groups[label])
         if mode == "summary":
-            return (f"{label} ({len(tools)} tools — names not listed; "
-                    f"discover via `{TOOL_SEARCH_NAME}`)")
+            return (
+                f"{label} ({len(tools)} tools — names not listed; "
+                f"discover via `{TOOL_SEARCH_NAME}`)"
+            )
         lines = [f"{label} tools ({len(tools)}):"]
         if mode == "full":
-            for name, desc in tools:
-                lines.append(f"- {name}: {desc}" if desc else f"- {name}")
+            lines.extend(
+                f"- {name}: {desc}" if desc else f"- {name}"
+                for name, desc in tools
+            )
         else:
             lines.append(", ".join(name for name, _ in tools))
         return "\n".join(lines)
 
-    header = ("Deferred tool catalog (call schemas via "
-              f"`{TOOL_DESCRIBE_NAME}`, invoke via `{TOOL_CALL_NAME}`):")
-
     def assemble(modes: Dict[str, str]) -> str:
-        return "\n".join([header] + [render_group(lbl, modes[lbl])
-                                     for lbl in sorted(groups)])
+        return "\n".join(
+            render_group(label, modes[label]) for label in sorted(groups)
+        )
 
     def fits(text: str) -> bool:
         return math.ceil(len(text) / CHARS_PER_TOKEN) <= max_tokens
 
-    # 1. Everything full.
-    modes = {lbl: "full" for lbl in groups}
-    if fits(assemble(modes)):
-        return assemble(modes), "full"
+    modes = {label: "full" for label in groups}
+    rendered = assemble(modes)
+    if fits(rendered):
+        return rendered, "full"
 
-    # 2. Everything names-only.
-    modes = {lbl: "names" for lbl in groups}
-    if fits(assemble(modes)):
-        return assemble(modes), "names"
+    modes = {label: "names" for label in groups}
+    rendered = assemble(modes)
+    if fits(rendered):
+        return rendered, "names"
 
-    # 3. Per-server degradation: collapse the LARGEST rendered groups to
-    #    summary lines first, keeping per-tool names for small servers.
-    #    Deterministic: size then label. One oversized server (Cloudflare)
-    #    must not cost a small co-attached server (Linear) its listing.
-    by_size = sorted(groups, key=lambda lbl: (-len(render_group(lbl, "names")), lbl))
-    for lbl in by_size:
-        modes[lbl] = "summary"
-        if fits(assemble(modes)):
-            form = "groups" if all(m == "summary" for m in modes.values()) else "mixed"
-            return assemble(modes), form
+    by_size = sorted(
+        groups,
+        key=lambda label: (-len(render_group(label, "names")), label),
+    )
+    for label in by_size:
+        modes[label] = "summary"
+        rendered = assemble(modes)
+        if fits(rendered):
+            form = (
+                "groups"
+                if all(mode == "summary" for mode in modes.values())
+                else "mixed"
+            )
+            return rendered, form
 
-    # 4. Even the all-summary form is over budget.
     return None, "none"
 
 
-def bridge_tool_schemas(
-    deferred_count: int,
-    listing: Optional[str] = None,
-    listing_form: str = "",
-) -> List[Dict[str, Any]]:
+def _catalog_snapshot_id(
+    deferrable: List[Dict[str, Any]],
+    listing: Optional[str],
+    listing_form: str,
+    pending_mcp_servers: Tuple[str, ...],
+) -> str:
+    """Fingerprint full schemas and their rendered manifest representation."""
+    ordered = sorted(
+        deferrable,
+        key=lambda tool_def: (tool_def.get("function") or {}).get("name", ""),
+    )
+    try:
+        payload = json.dumps(
+            {
+                "schemas": ordered,
+                "listing": listing,
+                "listing_form": listing_form,
+                "pending_mcp_servers": pending_mcp_servers,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError):
+        payload = repr((ordered, listing, listing_form, pending_mcp_servers))
+    return hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def build_catalog_snapshot(
+    current_tool_defs: List[Dict[str, Any]],
+    *,
+    max_tokens: int = 4000,
+    pending_mcp_servers: Iterable[str] = (),
+) -> CatalogSnapshot:
+    """Build the API-only catalog snapshot attached to a real user turn.
+
+    Full schemas remain behind ``tool_describe``. The compact name/description
+    manifest restores capability discoverability while keeping all dynamic
+    catalog bytes out of the provider's model-facing ``tools=`` prefix.
+    """
+    _, deferrable = classify_tools(current_tool_defs)
+    pending_servers = tuple(
+        sorted(
+            {
+                str(server_name).strip()
+                for server_name in pending_mcp_servers
+                if str(server_name).strip()
+            }
+        )
+    )
+    # Reserve room for the framing and instructions around the manifest.
+    listing, listing_form = build_catalog_listing_with_form(
+        deferrable,
+        max_tokens=max(0, max_tokens - 220),
+    )
+    snapshot_id = _catalog_snapshot_id(
+        deferrable,
+        listing,
+        listing_form,
+        pending_servers,
+    )
+
+    lines = [
+        f"[HERMES TOOL CATALOG SNAPSHOT id={snapshot_id} "
+        f"count={len(deferrable)} pending_servers={len(pending_servers)}",
+        "Runtime metadata; this is not part of the user's request. This snapshot "
+        "supersedes every earlier tool-catalog snapshot in the conversation.",
+    ]
+    if not deferrable:
+        lines.append(
+            "No deferred MCP/plugin tools are currently ready. The stable bridge "
+            "remains present so later catalog changes do not alter tools=."
+        )
+    elif listing is None:
+        lines.append(
+            f"{len(deferrable)} deferred tools are available, but their manifest "
+            f"does not fit the listing budget. Use `{TOOL_SEARCH_NAME}` before "
+            "deciding that a capability is unavailable."
+        )
+    else:
+        lines.append(
+            "The deferred capabilities below are available. When an exact tool "
+            f"name is visible, load its current schema with `{TOOL_DESCRIBE_NAME}`; "
+            f"use `{TOOL_SEARCH_NAME}` for summarized servers or uncertain matches."
+        )
+        if listing_form == "mixed":
+            lines.append(
+                "Servers marked 'names not listed' also have available tools; "
+                "search them before substituting terminal/browser or declaring "
+                "the capability unavailable."
+            )
+        lines.append(listing)
+    if pending_servers:
+        rendered_servers = ", ".join(f"`{name.replace('`', '')}`" for name in pending_servers)
+        lines.append(
+            f"MCP servers still initializing ({len(pending_servers)}): "
+            f"{rendered_servers}. Their tools are not included in the ready "
+            "catalog yet. The live catalog may expand during this turn; use or "
+            f"re-run `{TOOL_SEARCH_NAME}` before concluding that one of these "
+            "capabilities is unavailable."
+        )
+    lines.append("END HERMES TOOL CATALOG SNAPSHOT]")
+    return CatalogSnapshot(
+        snapshot_id=snapshot_id,
+        count=len(deferrable),
+        pending_mcp_servers=pending_servers,
+        listing_form=listing_form,
+        notice="\n".join(lines),
+    )
+
+
+def catalog_snapshot_id_from_text(content: Any) -> Optional[str]:
+    """Extract a Hermes-emitted snapshot id from a prior API message copy."""
+    if isinstance(content, list):
+        for part in reversed(content):
+            if not isinstance(part, dict) or part.get("type") != "text":
+                continue
+            snapshot_id = catalog_snapshot_id_from_text(part.get("text"))
+            if snapshot_id:
+                return snapshot_id
+        return None
+    if not isinstance(content, str):
+        return None
+    match = _CATALOG_SNAPSHOT_RE.search(content)
+    return match.group(1) if match else None
+
+
+# ---------------------------------------------------------------------------
+# Bridge tool schemas
+# ---------------------------------------------------------------------------
+
+
+def bridge_tool_schemas() -> List[Dict[str, Any]]:
     """Build the bridge tool schemas to inject in place of deferred tools.
 
     The schemas are intentionally short — every byte added here is a byte
     the user pays on every turn. Descriptions are tuned to be unambiguous
     about the call sequence the model should follow.
 
-    When ``listing`` is provided (see :func:`build_catalog_listing`), it is
-    embedded in the ``tool_search`` description so every deferred capability
-    stays *visible* by name — the skills-listing pattern — closing the
-    "model doesn't know what it doesn't know" gap while full parameter
-    schemas remain deferred. ``listing_form`` selects the framing: per-tool
-    forms ("full"/"names") tell the model it may skip the search when it
-    sees the exact name; the server-summary form ("groups") tells it which
-    DOMAINS are reachable and that search is mandatory for tool discovery.
+    They deliberately contain no catalog count, server list, tool name, or
+    dynamic description. Discovery happens against the live registry when the
+    model calls the bridge, so this return value must remain byte-identical as
+    MCP/plugin tools change during a conversation.
     """
     desc_search = (
-        f"Search {deferred_count} additional tools that are loaded on demand. "
-        "Returns up to ``limit`` matches with name and description. Follow "
+        "Search MCP and plugin tools that are discovered from the live catalog "
+        "on demand. Returns up to ``limit`` matches with name and description. Follow "
         f"with `{TOOL_DESCRIBE_NAME}` to load a tool's full parameter schema, "
-        f"then `{TOOL_CALL_NAME}` to invoke it. Tools listed at the top of this "
-        "system prompt are already available and do not need to be searched."
+        f"then `{TOOL_CALL_NAME}` to invoke it. Tools exposed alongside this "
+        "bridge are already available and do not need to be searched. "
+        "Re-run this search after a tool-catalog update."
     )
-    if listing and listing_form == "groups":
-        desc_search += (
-            "\n\nThe servers below are connected and their tools ARE available "
-            "through this bridge. For any request in these domains, search "
-            "here FIRST — do not claim the capability is unavailable and do "
-            "not substitute a generic tool (terminal/browser) without "
-            "searching.\n\n" + listing
-        )
-    elif listing:
-        desc_search += (
-            "\n\nEvery deferred capability is listed below. If a tool name "
-            "appears here, do NOT claim it is unavailable — load it with "
-            f"`{TOOL_DESCRIBE_NAME}` (skip `{TOOL_SEARCH_NAME}` when you "
-            "already see the exact name)."
-        )
-        if listing_form == "mixed":
-            desc_search += (
-                " For servers marked 'names not listed', the tools exist "
-                f"too — find them with `{TOOL_SEARCH_NAME}` before "
-                "concluding anything is missing."
-            )
-        desc_search += "\n\n" + listing
     desc_describe = (
         f"Load the full JSON schema for one tool returned by `{TOOL_SEARCH_NAME}`. "
         f"Required before `{TOOL_CALL_NAME}` if the tool's parameters are unknown."
@@ -761,12 +848,10 @@ class AssemblyResult:
     deferred_count: int = 0
     deferred_tokens: int = 0
     threshold_tokens: int = 0
-    # Disclosure tier actually applied:
-    #   0 = passthrough (no deferrable tools, or tool_search off)
-    #   1 = bridge + catalog listing (full or names-only)
-    #   2 = bare bridge — catalog too large for any listing form
+    # Kept for compatibility with telemetry/tests from the tiered-listing
+    # implementation. Stable live discovery is always the search-only tier.
     tier: int = 0
-    listing_form: str = "none"  # "full" | "names" | "none"
+    listing_form: str = "none"
 
 
 def assemble_tool_defs(
@@ -777,10 +862,11 @@ def assemble_tool_defs(
 ) -> AssemblyResult:
     """Return the tool-defs list the model should actually see.
 
-    When tool search is inactive (off, no deferrable tools, or below
-    threshold), this is a passthrough. When active, MCP and plugin tools
-    are stripped from the visible list and replaced with the three bridge
-    tools. Core tools are *never* deferred regardless of config.
+    When Tool Search is off, this is a passthrough. Otherwise MCP and plugin
+    tools are stripped from the visible list and replaced with the same three
+    byte-stable bridge tools. The bridge remains present for an empty catalog,
+    preventing a 0→N or N→0 MCP change from mutating the request prefix. Core
+    tools are *never* deferred regardless of config.
 
     Idempotent: calling with bridge tools already in the input is a no-op
     (they classify as non-core/non-deferrable but their names are reserved,
@@ -795,9 +881,6 @@ def assemble_tool_defs(
                 if (td.get("function") or {}).get("name") not in BRIDGE_TOOL_NAMES]
 
     visible, deferrable = classify_tools(incoming)
-    if not deferrable:
-        return AssemblyResult(tool_defs=incoming, activated=False)
-
     deferrable_tokens = estimate_tokens_from_schemas(deferrable)
     if not should_activate(config, deferrable_tokens, context_length):
         return AssemblyResult(
@@ -805,30 +888,15 @@ def assemble_tool_defs(
             activated=False,
             deferred_count=len(deferrable),
             deferred_tokens=deferrable_tokens,
-            threshold_tokens=int((context_length or 0) * (config.threshold_pct / 100.0)),
             tier=0,
         )
 
-    listing = None
-    listing_form = "none"
-    listing_budget = listing_token_budget(config, context_length)
-    if config.listing != "off":
-        listing, listing_form = build_catalog_listing_with_form(
-            deferrable, max_tokens=listing_budget)
-    bridge = bridge_tool_schemas(len(deferrable), listing=listing,
-                                 listing_form=listing_form)
-    result = visible + bridge
-    # Tier 1 = per-tool listing for at least part of the catalog (full,
-    # names, or mixed). Tier 2 = search-only discovery; the server-level
-    # "groups" summary keeps domains visible but individual tools are only
-    # reachable via tool_search.
-    tier = 1 if listing_form in ("full", "names", "mixed") else 2
+    result = visible + bridge_tool_schemas()
 
     logger.info(
-        "tool_search activated (tier %d): %d core/visible tools kept, %d deferred "
-        "(~%d tokens), listing %s (budget ~%d tokens)",
-        tier, len(visible), len(deferrable), deferrable_tokens,
-        listing_form, listing_budget,
+        "tool_search active with stable bridge: %d core/visible tools kept, "
+        "%d deferred (~%d tokens)",
+        len(visible), len(deferrable), deferrable_tokens,
     )
 
     return AssemblyResult(
@@ -836,9 +904,8 @@ def assemble_tool_defs(
         activated=True,
         deferred_count=len(deferrable),
         deferred_tokens=deferrable_tokens,
-        threshold_tokens=listing_budget,
-        tier=tier,
-        listing_form=listing_form,
+        tier=2,
+        listing_form="none",
     )
 
 
@@ -1056,17 +1123,21 @@ __all__ = [
     "BRIDGE_TOOL_NAMES",
     "ToolSearchConfig",
     "CatalogEntry",
+    "CatalogSnapshot",
     "AssemblyResult",
     "load_config",
+    "is_enabled_in_config",
     "is_deferrable_tool_name",
     "classify_tools",
     "estimate_tokens_from_schemas",
     "should_activate",
+    "listing_token_budget",
     "build_catalog",
+    "search_catalog",
     "build_catalog_listing",
     "build_catalog_listing_with_form",
-    "listing_token_budget",
-    "search_catalog",
+    "build_catalog_snapshot",
+    "catalog_snapshot_id_from_text",
     "bridge_tool_schemas",
     "assemble_tool_defs",
     "is_bridge_tool",

@@ -191,6 +191,74 @@ class TestFlushAfterCompression:
                 "final answer",
             ]
 
+    def test_compression_persists_reanchored_tool_catalog_sidecar_in_both_modes(self):
+        """Same-turn in-place and rotation compaction must retain Tool Search."""
+        from agent.conversation_compression import compress_context
+        from hermes_state import SessionDB
+        from tools.tool_search import build_catalog_snapshot
+
+        class SuccessCompressor:
+            _last_compress_aborted = False
+            _last_summary_error = None
+            _last_compression_made_progress = True
+            _last_summary_fallback_used = False
+            compression_count = 1
+            last_compression_rough_tokens = 0
+            last_prompt_tokens = 0
+            last_completion_tokens = 0
+            awaiting_real_usage_after_compression = False
+
+            def compress(self, _messages, **_kwargs):
+                return [
+                    {
+                        "role": "assistant",
+                        "content": "Earlier catalog-bearing turns were summarized.",
+                        "_compressed_summary": True,
+                    },
+                    {
+                        "role": "user",
+                        "content": "current request",
+                        "api_content": "current request\n\nPLUGIN-CTX",
+                    },
+                ]
+
+        for in_place in (True, False):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                db = SessionDB(db_path=Path(tmpdir) / "test.db")
+                agent = self._make_agent(db)
+                agent.compression_in_place = in_place
+                agent._ensure_db_session()
+                snapshot = build_catalog_snapshot([])
+                agent._tool_catalog_snapshot_id = snapshot.snapshot_id
+                agent._tool_catalog_snapshot_notice = snapshot.notice
+                agent.context_compressor = SuccessCompressor()
+
+                compressed, _ = compress_context(
+                    agent,
+                    [
+                        {
+                            "role": "user",
+                            "content": "old request",
+                            "api_content": snapshot.notice + "\n\nold request",
+                        },
+                        {"role": "assistant", "content": "old answer"},
+                        {"role": "user", "content": "current request"},
+                    ],
+                    "system",
+                    approx_tokens=100_000,
+                )
+
+                expected_api_content = (
+                    snapshot.notice + "\n\ncurrent request\n\nPLUGIN-CTX"
+                )
+                assert compressed[-1]["content"] == "current request"
+                assert compressed[-1]["api_content"] == expected_api_content
+
+                resumed = db.get_messages_as_conversation(agent.session_id)
+                assert resumed[-1]["content"] == "current request"
+                assert resumed[-1]["api_content"] == expected_api_content
+                db.close()
+
     def test_abort_after_in_place_compaction_preserves_flush_baseline(self):
         """An aborted retry must survive flush, restart, and resume."""
         from agent.conversation_compression import (

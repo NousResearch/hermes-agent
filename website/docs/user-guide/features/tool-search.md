@@ -10,10 +10,10 @@ session, their JSON schemas can consume a substantial fraction of the
 context window on every turn — even when only a few of them are relevant
 to what the user actually asked for.
 
-**Tool Search** is Hermes' opt-in progressive-disclosure layer for that
-problem. When activated, MCP and plugin tools are replaced in the
-model-visible tools array by three bridge tools, and the model loads each
-specific tool's schema on demand.
+**Tool Search** is Hermes' progressive-disclosure layer for that problem.
+MCP and plugin schemas stay out of the model-visible tools array; three small,
+byte-stable bridge tools discover the current catalog and load specific schemas
+on demand.
 
 :::info Built-in Hermes tools never defer
 The tools that make up Hermes' core capability set (`terminal`,
@@ -26,8 +26,8 @@ non-core plugin tools are eligible for deferral.
 
 ## How it works
 
-When Tool Search activates for a turn, the model sees three new tools in
-place of the deferred ones:
+While Tool Search is enabled, the model always sees the same three bridge tools
+in place of deferred schemas—even when no MCP server is currently connected:
 
 ```
 tool_search(query, limit?)     — search the deferred-tool catalog
@@ -53,22 +53,35 @@ post-tool-call hooks all run against the real tool name — not against
 `tool_call`. The activity feed in the CLI and gateway also unwraps so you
 see the underlying tool, not the bridge.
 
-## When does it activate?
+## Stable bridge and live discovery
 
-Tool Search uses **tiered disclosure**: the presence of *any* deferrable
-(MCP/plugin) tool activates the bridge; what scales with catalog size is
-how much of the catalog stays visible, not whether schemas defer.
+The bridge descriptions do not contain a tool count, server summary, or catalog
+listing. Every `tool_search`, `tool_describe`, and `tool_call` invocation resolves
+the current live registry, filtered to the session's enabled/disabled toolsets.
 
-| Tier | Condition | What the model sees |
-| --- | --- | --- |
-| **0** | No MCP/plugin tools | Every tool eager, no bridge. Pass-through. |
-| **1** | Deferred catalog's listing fits the budget | Bridge + a skills-style manifest of every deferred tool (name + short description, degrading to names-only when over budget). Degradation is **per server**: when one oversized server (Cloudflare) is attached alongside small ones (Linear), the small servers keep their per-tool listings and only the oversized server collapses to a summary line. |
-| **2** | Per-tool listing exceeds the budget even names-only for every server (e.g. Cloudflare's flat API surface alone: ~3,300 tools whose names are ~32K tokens) | Bare bridge + a one-line-per-server summary (server name + tool count), so the model knows which domains are reachable; individual tools are discoverable only through `tool_search`. |
+Keeping the bridge present from the start makes the model-facing `tools=` prefix
+identical across MCP additions, removals, equal-count swaps, and schema edits.
 
-The listing budget is `min(threshold_pct% of context, listing_max_tokens)`.
-The decision is re-evaluated every time the tools array is built, so
-adding or removing MCP servers mid-session moves the session between
-tiers on the next assembly.
+The model still needs to know which deferred capabilities exist. Hermes attaches
+a compact, skills-style catalog snapshot to the API copy of the first real user
+turn. The stored user text stays clean, and the exact API copy is retained for
+byte-identical cache replay. Building the snapshot does **not** wait for every
+MCP server: it lists the tools currently ready plus the names of in-scope
+servers still initializing. On surfaces that start discovery in the background,
+those pending names keep unavailable-yet domains discoverable without putting
+MCP startup latency back on the chat critical path.
+
+A full-schema fingerprint identifies the snapshot. When membership,
+descriptions, parameter schemas, or pending-server state changes, Hermes
+attaches a new snapshot to the next real user turn and explicitly supersedes
+older ones. The rendered manifest form is part of the identifier too, so a
+budget change that exposes a richer or more compact listing is also announced.
+Hermes never inserts a standalone synthetic user message, so strict role
+alternation is preserved.
+
+The snapshot uses the same size fallbacks as the earlier embedded listing:
+names plus short descriptions, names only, then per-server summaries. The live
+registry remains authoritative for search, schema loading, and invocation.
 
 ## Configuration
 
@@ -76,21 +89,21 @@ tiers on the next assembly.
 tools:
   tool_search:
     enabled: auto       # auto (default), on, or off
-    threshold_pct: 5    # listing budget as a percentage of context
     search_default_limit: 5
     max_search_limit: 20
-    listing: auto       # embed a grouped name+description catalog manifest
+    listing: auto       # catalog snapshot on a real user turn
+    threshold_pct: 5    # snapshot budget as a percentage of context
     listing_max_tokens: 4000
 ```
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `enabled` | `auto` | `auto`/`on` activate whenever at least one deferrable tool exists; `off` disables entirely (everything stays eager). |
-| `threshold_pct` | `5` | Listing budget as a percentage of the active model's context length. Range 0–100. |
+| `enabled` | `auto` | `auto`/`on` keep the stable bridge enabled; `off` exposes eligible schemas directly. |
 | `search_default_limit` | `5` | Hits returned when the model calls `tool_search` without a `limit`. |
 | `max_search_limit` | `20` | Hard upper bound the model can request via `limit`. Range 1–50. |
-| `listing` | `auto` | Embed a skills-style manifest of every deferred tool (name + first sentence of its description, ≤60 chars, grouped by MCP server) in the `tool_search` bridge description. `auto` includes it when it fits the budget (falling back to names-only, then to the tier-2 server summary); `on`/`off` force either way. |
-| `listing_max_tokens` | `4000` | Absolute cap on the embedded listing, regardless of context size. Range 200–60000. Large catalogs degrade to names-only or per-server summaries, keeping full schemas available through search. |
+| `listing` | `auto` | `auto`/`on` attach a catalog snapshot to the first real user turn and again when its full-schema fingerprint changes; `off` uses a bare stable bridge. The listing is never embedded in a tool schema. |
+| `threshold_pct` | `5` | Snapshot budget as a percentage of the active model's context length. Range 0–100. |
+| `listing_max_tokens` | `4000` | Absolute cap on the snapshot manifest. Range 200–60000. Large catalogs degrade to names-only or per-server summaries, keeping full schemas available through search. |
 
 ### Why the listing exists
 
@@ -112,13 +125,10 @@ tools:
 
 ## When NOT to use it
 
-Tool Search trades a fixed per-turn token cost (the three bridge tool
-schemas plus the catalog listing) and at least one extra round trip on
-cold tools (describe → call) for the savings on the deferred schemas.
-At tier 1 the listing keeps every capability visible, so the discovery
-round trip usually disappears — the model goes straight to
-`tool_describe`. Live benchmarking showed the listing mode matching
-eager loading's task success while costing less than the bare bridge.
+Tool Search trades a fixed per-turn token cost (the three small bridge schemas),
+an append-only catalog snapshot on first use/change, and at least one extra round
+trip on cold tools (describe → call when the name is listed; otherwise search →
+describe → call) for the savings and cache stability of deferred schemas.
 
 If you want the old always-eager behavior for a small toolset, set
 `enabled: off`.
@@ -141,10 +151,9 @@ to any progressive-disclosure design, not specific to this implementation:
   less well; the published Anthropic numbers (49% → 74% on Opus 4 with
   vs. without tool search) show the upside but also that ~26 points of
   accuracy is still retrieval failure.
-- **Toolset edits invalidate cache.** Adding or removing a tool mid-
-  session changes the bridge tools' descriptions (which include the
-  count of deferred tools) and the catalog, so the prompt cache is
-  invalidated. This is the same trade-off as any toolset edit.
+- **Direct mode still invalidates cache.** With `enabled: off`, MCP/plugin
+  schemas are exposed directly. Adding, removing, or editing one changes the
+  model-facing `tools=` prefix and invalidates the provider prompt cache.
 
 ## Implementation details
 
@@ -153,10 +162,27 @@ to any progressive-disclosure design, not specific to this implementation:
   BM25 returns no positive-score hits, which protects against
   zero-IDF degenerate cases (e.g. searching `"github"` against a
   catalog where every tool name contains "github").
-- **Catalog is stateless across turns.** It rebuilds from the current
-  tool-defs list every assembly — no session-keyed `Map`. This avoids
-  the class of bug where a stored catalog drifts out of sync with the
-  live tool registry.
+- **Catalog is live, not embedded.** Each bridge invocation rebuilds its
+  session-scoped view from the current registry. Tool changes therefore take
+  effect immediately without replacing the model-facing bridge schemas.
+- **Catalog hints are append-only.** Snapshot metadata rides on a real user
+  turn and is fingerprinted from the full scoped schemas, rendered manifest,
+  and pending MCP server names. A resumed agent reads the prior `api_content`
+  sidecar and does not repeat an unchanged snapshot. If the supplied history no
+  longer contains the current snapshot, Hermes attaches it again at the
+  append-only edge.
+- **Compression re-anchors the current snapshot.** A turn can compress after
+  its prologue has already decided that an older catalog snapshot is present.
+  Before the compressed transcript is committed or the model is called again,
+  Hermes attaches the current snapshot to the newest surviving user message's
+  API sidecar (or a text part for multimodal content). This introduces no
+  synthetic turn and prevents same-turn compaction from erasing tool discovery
+  context.
+- **Slow MCP startup does not gate the snapshot.** The first snapshot reflects
+  the catalog ready when the user turn is assembled and marks slower in-scope
+  servers as initializing. When they finish, the next real user turn carries a
+  superseding snapshot; bridge calls always consult the live registry in the
+  meantime.
 - **The catalog is scoped to the session's toolsets.** `tool_search`,
   `tool_describe`, and `tool_call` only ever see and invoke tools the
   session was actually granted. A subagent, kanban worker, or gateway
@@ -173,5 +199,3 @@ to any progressive-disclosure design, not specific to this implementation:
 
 - `tools/tool_search.py` — the implementation
 - `tests/tools/test_tool_search.py` — the regression suite
-- The `openclaw-tool-search-report` PDF in the original implementation
-  PR for the research that shaped the design

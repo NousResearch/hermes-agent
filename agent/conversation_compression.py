@@ -1957,6 +1957,124 @@ def _is_real_user_message(message: Any) -> bool:
     return not ContextCompressor._is_synthetic_compression_user_turn(message)
 
 
+def _prepend_runtime_note(content: Any, note: str) -> Any:
+    """Prepend runtime metadata without mutating nested multimodal parts."""
+    if isinstance(content, str):
+        return f"{note}\n\n{content}" if content else note
+    if isinstance(content, list):
+        parts = list(content)
+        for index, part in enumerate(parts):
+            if isinstance(part, dict) and part.get("type") == "text":
+                merged = dict(part)
+                text = merged.get("text", "")
+                merged["text"] = f"{note}\n\n{text}" if text else note
+                parts[index] = merged
+                return parts
+        return [{"type": "text", "text": note}, *parts]
+    return content
+
+
+def _content_contains_runtime_note(content: Any, note: str) -> bool:
+    """Return whether an API-facing content value already carries *note*."""
+    if isinstance(content, str):
+        return note in content
+    if isinstance(content, list):
+        return any(
+            isinstance(part, dict)
+            and part.get("type") == "text"
+            and note in str(part.get("text") or "")
+            for part in content
+        )
+    return False
+
+
+def _reanchor_tool_catalog_snapshot_after_compression(
+    agent: Any,
+    compressed: List[Dict[str, Any]],
+) -> bool:
+    """Keep the current Tool Search catalog visible across a compression boundary.
+
+    ``build_tool_catalog_turn_note()`` runs before turn-start compression. If
+    the prior snapshot is still in history at that point, the current real user
+    turn receives no duplicate. Compression can then discard the older user
+    row and continue to another API call in the same turn, so waiting until the
+    next turn to re-announce would leave the model without discovery context.
+
+    Re-anchor the already-published snapshot on the newest genuine user turn's
+    API sidecar before the compressed transcript is committed. A synthetic
+    user scaffold is used only as a fallback when no genuine user row survives;
+    no new message or role transition is introduced.
+    """
+    snapshot_id = getattr(agent, "_tool_catalog_snapshot_id", None)
+    notice = getattr(agent, "_tool_catalog_snapshot_notice", None)
+    if not isinstance(snapshot_id, str) or not snapshot_id:
+        return False
+    if not isinstance(notice, str) or not notice:
+        return False
+
+    try:
+        from tools.tool_search import catalog_snapshot_id_from_text
+
+        if catalog_snapshot_id_from_text(notice) != snapshot_id:
+            logger.warning(
+                "Skipping post-compression tool catalog re-anchor: cached "
+                "snapshot id does not match its notice"
+            )
+            return False
+    except Exception:
+        logger.debug(
+            "post-compression tool catalog snapshot validation failed",
+            exc_info=True,
+        )
+        return False
+
+    target = next(
+        (
+            message
+            for message in reversed(compressed)
+            if _is_real_user_message(message)
+        ),
+        None,
+    )
+    if target is None:
+        target = next(
+            (
+                message
+                for message in reversed(compressed)
+                if isinstance(message, dict) and message.get("role") == "user"
+            ),
+            None,
+        )
+    if target is None:
+        return False
+
+    if _content_contains_runtime_note(target.get("api_content"), notice):
+        return False
+    if _content_contains_runtime_note(target.get("content"), notice):
+        return False
+
+    api_content = target.get("api_content")
+    if isinstance(api_content, str) and api_content:
+        target["api_content"] = _prepend_runtime_note(api_content, notice)
+    else:
+        content = target.get("content")
+        if isinstance(content, str):
+            target["api_content"] = _prepend_runtime_note(content, notice)
+        elif isinstance(content, list):
+            # ``api_content`` is a string-only persistence sidecar. Preserve
+            # multimodal content by adding a text part, matching the normal
+            # real-turn catalog injection path.
+            target["content"] = _prepend_runtime_note(content, notice)
+        else:
+            return False
+
+    logger.debug(
+        "Re-anchored Tool Search catalog snapshot %s after compression",
+        snapshot_id,
+    )
+    return True
+
+
 def _strip_stale_todo_snapshot(content: Any) -> Any:
     """Remove a previously merged todo-snapshot block from message content.
 
@@ -3146,6 +3264,7 @@ def compress_context(
                     "_todo_snapshot_synthetic": True,
                 })
         _ensure_compressed_has_user_turn(messages, compressed)
+        _reanchor_tool_catalog_snapshot_after_compression(agent, compressed)
 
         cached_system_prompt = agent._cached_system_prompt
         agent._invalidate_system_prompt()

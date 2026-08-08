@@ -1011,6 +1011,10 @@ def init_agent(
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = None
     agent._persist_user_message_timestamp = None
+    agent._pending_mcp_catalog_notice = None
+    agent._tool_catalog_snapshot_id = None
+    agent._tool_catalog_snapshot_notice = None
+    agent._tool_catalog_snapshot_source_key = None
 
     # Cache anthropic image-to-text fallbacks per image payload/URL so a
     # single tool loop does not repeatedly re-run auxiliary vision on the

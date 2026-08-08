@@ -63,6 +63,40 @@ def test_success_reports_loaded_rev(reload_env):
     assert srv._mcp_reload_gen == 1
 
 
+def test_stable_bridge_reload_skips_cache_confirmation(reload_env, monkeypatch):
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: {
+            "approvals": {"mcp_reload_confirm": True},
+            "tools": {"tool_search": {"enabled": "auto"}},
+        },
+    )
+
+    envelope = srv._methods["reload.mcp"](1, {"session_id": "no-such-session"})
+
+    assert envelope["result"]["status"] == "reloaded"
+
+
+def test_direct_schema_reload_still_requires_confirmation(reload_env, monkeypatch):
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: {
+            "approvals": {"mcp_reload_confirm": True},
+            "tools": {"tool_search": {"enabled": "off"}},
+        },
+    )
+
+    envelope = srv._methods["reload.mcp"](1, {"session_id": "no-such-session"})
+
+    assert envelope["result"]["status"] == "confirm_required"
+
+
 def test_failed_reload_is_an_error_and_no_generation_advance(reload_env, monkeypatch):
     """The exact client-facing contract: a failure must NOT look like an ack.
     quietRpc on the TUI side collapses this error to null and keeps the

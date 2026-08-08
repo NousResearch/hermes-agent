@@ -68,9 +68,6 @@ class TestMCPConfigWatch:
         mcp_servers section must NOT trigger an automatic reload — but the
         change is still detected and the user is told how to apply it.
 
-        This protects the provider prompt cache: every automatic reload
-        rebuilds the agent tool surface and invalidates cached prefixes.
-
         The toggle is the top-level ``mcp:`` section in config.yaml, and the
         watcher reads it from the same freshly-parsed file it diffs — so
         flipping the toggle and editing mcp_servers in one edit behaves
@@ -97,7 +94,22 @@ class TestMCPConfigWatch:
         out = capsys.readouterr().out
         assert "reload skipped" in out
         assert "/reload-mcp" in out
-        assert "prompt cache" in out
+        assert "prompt cache" not in out  # stable bridge mode is cache-safe
+
+    def test_optout_warns_about_cache_only_when_tool_search_is_off(self, tmp_path, capsys):
+        import yaml
+        obj, cfg_file = _make_cli(tmp_path, mcp_servers={})
+        cfg_file.write_text(yaml.dump({
+            "mcp": {"auto_reload_on_config_change": False},
+            "mcp_servers": {"github": {"url": "https://mcp.github.com"}},
+            "tools": {"tool_search": {"enabled": "off"}},
+        }))
+        obj._config_mtime = 0.0
+
+        with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
+            obj._check_config_mcp_changes()
+
+        assert "prompt cache" in capsys.readouterr().out
 
     def test_optout_updates_snapshot_so_reload_mcp_applies_cleanly(self, tmp_path):
         """After an opted-out change, the watcher must not re-notify every

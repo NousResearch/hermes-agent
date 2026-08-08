@@ -25,11 +25,13 @@ move-and-name refactor with no semantic change.
 from __future__ import annotations
 
 import logging
+import os
+import sys
 import threading
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agent.conversation_compression import (
     IDLE_COMPACTION_STATUS_TEMPLATE,
@@ -48,6 +50,217 @@ from agent.model_metadata import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def prepend_user_note(content: Any, note: str) -> Any:
+    """Prepend an API-only note to string or multimodal user content.
+
+    The caller preserves the original content separately for persistence. This
+    keeps message alternation intact and avoids an out-of-band synthetic user
+    turn while still notifying the model at the next real turn boundary.
+    """
+    note = str(note or "").strip()
+    if not note:
+        return content
+    if isinstance(content, str):
+        return f"{note}\n\n{content}" if content else note
+    if isinstance(content, list):
+        parts = list(content)
+        for index, part in enumerate(parts):
+            if isinstance(part, dict) and part.get("type") == "text":
+                merged = dict(part)
+                text = merged.get("text", "")
+                merged["text"] = f"{note}\n\n{text}" if text else note
+                parts[index] = merged
+                return parts
+        return [{"type": "text", "text": note}, *parts]
+    return content
+
+
+def _pending_mcp_server_names(
+    enabled_toolsets: Optional[List[str]],
+    disabled_toolsets: Optional[List[str]],
+) -> Tuple[str, ...]:
+    """Return in-scope MCP servers that have not finished discovery.
+
+    This must stay non-blocking: it reads config directly and only consults
+    ``tools.mcp_tool`` when that module is already present in ``sys.modules``.
+    If the background discovery thread is still importing the MCP stack, all
+    configured/in-scope servers are conservatively reported as pending.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        raw_servers = (read_raw_config() or {}).get("mcp_servers")
+    except Exception:
+        return ()
+    if not isinstance(raw_servers, dict) or not raw_servers:
+        return ()
+
+    enabled_scope = (
+        {str(name) for name in enabled_toolsets}
+        if enabled_toolsets is not None
+        else None
+    )
+    disabled_scope = {str(name) for name in disabled_toolsets or []}
+
+    status_by_name: Dict[str, str] = {}
+    mcp_module = sys.modules.get("tools.mcp_tool")
+    status_getter = getattr(mcp_module, "get_mcp_status", None)
+    if callable(status_getter):
+        try:
+            status_by_name = {
+                str(row.get("name")): str(row.get("status") or "")
+                for row in status_getter() or []
+                if isinstance(row, dict) and row.get("name")
+            }
+        except Exception:
+            logger.debug("MCP status probe for catalog snapshot failed", exc_info=True)
+
+    pending = []
+    for raw_name, raw_server_cfg in raw_servers.items():
+        name = str(raw_name)
+        server_cfg = raw_server_cfg if isinstance(raw_server_cfg, dict) else {}
+        enabled_raw = server_cfg.get("enabled", True)
+        if isinstance(enabled_raw, str):
+            server_enabled = enabled_raw.strip().lower() not in {
+                "0",
+                "false",
+                "no",
+                "off",
+            }
+        else:
+            server_enabled = bool(enabled_raw)
+        if not server_enabled:
+            continue
+
+        scope_aliases = {name, f"mcp-{name}"}
+        if scope_aliases & disabled_scope:
+            continue
+        if enabled_scope is not None and not scope_aliases & enabled_scope:
+            continue
+
+        status = status_by_name.get(name, "configured")
+        if status in {"configured", "connecting", "starting", "reconnecting"}:
+            pending.append(name)
+
+    return tuple(sorted(set(pending)))
+
+
+def build_tool_catalog_turn_note(
+    agent: Any,
+    conversation_history: Optional[List[Dict[str, Any]]],
+    pending_notice: Any,
+) -> str:
+    """Return cache-safe Tool Search metadata for the next real user turn.
+
+    The bridge schema stays byte-stable. A compact catalog snapshot is instead
+    appended at the conversation tail, where it preserves the provider's warm
+    prefix. Snapshot ids cover full schemas, and prior ``api_content`` sidecars
+    are inspected so resumed/rebuilt agents do not re-announce an unchanged
+    catalog on every turn.
+    """
+    pending = pending_notice if isinstance(pending_notice, str) else ""
+    try:
+        from tools.tool_search import (
+            BRIDGE_TOOL_NAMES,
+            build_catalog_snapshot,
+            catalog_snapshot_id_from_text,
+            listing_token_budget,
+            load_config as load_tool_search_config,
+        )
+
+        valid_names = getattr(agent, "valid_tool_names", set()) or set()
+        if not BRIDGE_TOOL_NAMES.issubset(valid_names):
+            return pending
+
+        config = load_tool_search_config()
+        if config.listing == "off":
+            return pending
+
+        previous_id = None
+        for message in reversed(conversation_history or []):
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            previous_id = catalog_snapshot_id_from_text(
+                message.get("api_content")
+            ) or catalog_snapshot_id_from_text(message.get("content"))
+            if previous_id:
+                break
+
+        # Avoid serializing a Cloudflare-scale raw catalog on every turn. The
+        # registry generation, session toolset scope, and config-file fingerprint
+        # are the inputs that can change the scoped definitions cache. A fresh
+        # agent still computes once so it can compare against persisted history.
+        from tools.registry import registry as tool_registry
+
+        try:
+            from hermes_cli.config import get_config_path
+
+            config_stat = get_config_path().stat()
+            config_fingerprint = (config_stat.st_mtime_ns, config_stat.st_size)
+        except (FileNotFoundError, OSError, ImportError):
+            config_fingerprint = None
+        enabled_toolsets = getattr(agent, "enabled_toolsets", None)
+        disabled_toolsets = getattr(agent, "disabled_toolsets", None)
+        pending_mcp_servers = _pending_mcp_server_names(
+            enabled_toolsets,
+            disabled_toolsets,
+        )
+        try:
+            from agent.delegation_context import is_delegated_child_context
+
+            delegated_child = is_delegated_child_context()
+        except Exception:
+            delegated_child = False
+        source_key = (
+            tool_registry._generation,
+            frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
+            frozenset(disabled_toolsets) if disabled_toolsets else None,
+            config_fingerprint,
+            bool(os.environ.get("HERMES_KANBAN_TASK")),
+            delegated_child,
+            pending_mcp_servers,
+        )
+        known_id = getattr(agent, "_tool_catalog_snapshot_id", None)
+        known_notice = getattr(agent, "_tool_catalog_snapshot_notice", None)
+        if (
+            known_id
+            and isinstance(known_notice, str)
+            and known_notice
+            and getattr(agent, "_tool_catalog_snapshot_source_key", None)
+            == source_key
+        ):
+            if previous_id == known_id:
+                return pending
+            return f"{pending}\n\n{known_notice}" if pending else known_notice
+
+        from model_tools import get_tool_definitions
+
+        current_defs = get_tool_definitions(
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        ) or []
+        context_length = getattr(
+            getattr(agent, "context_compressor", None), "context_length", None
+        )
+        snapshot = build_catalog_snapshot(
+            current_defs,
+            max_tokens=listing_token_budget(config, context_length),
+            pending_mcp_servers=pending_mcp_servers,
+        )
+
+        agent._tool_catalog_snapshot_id = snapshot.snapshot_id
+        agent._tool_catalog_snapshot_notice = snapshot.notice
+        agent._tool_catalog_snapshot_source_key = source_key
+        if previous_id == snapshot.snapshot_id:
+            return pending
+        return f"{pending}\n\n{snapshot.notice}" if pending else snapshot.notice
+    except Exception:
+        logger.debug("tool catalog turn snapshot skipped", exc_info=True)
+        return pending
 
 
 def compose_user_api_content(
@@ -412,15 +625,10 @@ def build_turn_context(
         pass
 
     # Between-turns MCP refresh: an MCP server that finished connecting since
-    # the previous turn (slow HTTP/OAuth servers routinely take 2-6s on a cold
-    # connect, missing the bounded startup wait) lands in THIS turn's tool
-    # snapshot.  This is cache-safe by construction: it runs in the per-turn
-    # prologue, before this turn's first API call assembles ``tools=``, so it
-    # only ever extends a fresh request prefix — it never mutates the cached
-    # prefix of an in-flight turn.  No-op when no MCP servers are registered
-    # (the common case, gated by the cheap ``has_registered_mcp_tools`` check)
-    # or when the tool set is unchanged (``refresh_agent_mcp_tools`` diffs by
-    # name and leaves the snapshot untouched on no-change).
+    # the previous turn lands in the live catalog for THIS turn. The stable
+    # Tool Search bridge remains byte-identical; direct-schema mode publishes
+    # a full-schema diff. Call even after the last MCP tool was removed so the
+    # removal generation is observed and a one-shot model note can be queued.
     try:
         if not getattr(agent, "_skip_mcp_refresh", False):
             # Import-cost gate: ``tools.mcp_tool`` pulls in the whole ``mcp``
@@ -433,11 +641,40 @@ def build_turn_context(
             # without changing behavior for MCP users.
             import sys as _sys
             if "tools.mcp_tool" in _sys.modules:
-                from tools.mcp_tool import has_registered_mcp_tools, refresh_agent_mcp_tools
-                if has_registered_mcp_tools():
+                from tools.mcp_tool import (
+                    has_registered_mcp_tools,
+                    refresh_agent_mcp_tools,
+                )
+                from tools.registry import registry as _tool_registry
+
+                _published_generation = getattr(
+                    agent, "_tool_snapshot_generation", -1
+                )
+                if (
+                    has_registered_mcp_tools()
+                    or _published_generation != _tool_registry._generation
+                ):
                     refresh_agent_mcp_tools(agent, quiet_mode=True)
     except Exception:
         logger.debug("between-turns MCP tool refresh skipped", exc_info=True)
+
+    # Keep dynamic catalog metadata out of tools=. The first scoped catalog
+    # snapshot, and each changed full-schema fingerprint, rides on the next
+    # real user turn. A refresh may add a terse reason prefix. The clean input
+    # remains the persistence override, exactly like model/skill reload notes.
+    pending_mcp_notice = getattr(agent, "_pending_mcp_catalog_notice", None)
+    tool_catalog_note = build_tool_catalog_turn_note(
+        agent, conversation_history, pending_mcp_notice
+    )
+    if tool_catalog_note:
+        clean_user_message = (
+            persist_user_message if persist_user_message is not None else user_message
+        )
+        user_message = prepend_user_note(user_message, tool_catalog_note)
+        if persist_user_message is None:
+            persist_user_message = clean_user_message
+    if pending_mcp_notice:
+        agent._pending_mcp_catalog_notice = None
 
     # Sanitize surrogate characters from user input.
     if isinstance(user_message, str):

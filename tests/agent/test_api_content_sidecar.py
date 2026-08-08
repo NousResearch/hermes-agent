@@ -546,6 +546,64 @@ class TestWireInvariant:
         current = _user_messages(_chat_requests(handler)[0])[-1]
         assert current["content"] == "second question\n\nPLUGIN-CTX"
 
+    def test_catalog_snapshot_is_cached_and_not_repeated_after_resume(self, wire_env):
+        """A catalog snapshot rides on the real user turn, persists only in
+        api_content, replays byte-for-byte, and is not re-emitted by a fresh
+        agent when the full-schema fingerprint is unchanged."""
+        from tools.registry import registry
+        from tools.tool_search import BRIDGE_TOOL_NAMES, ToolSearchConfig
+
+        make_agent, handler, db, sid = wire_env
+        agent1 = make_agent()
+        agent2 = make_agent()
+        for agent in (agent1, agent2):
+            agent._skip_mcp_refresh = True
+            agent.valid_tool_names = set(BRIDGE_TOOL_NAMES)
+
+        name = "mcp_wire_catalog_snapshot"
+        tool_def = {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": "Exercise the wire catalog snapshot.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        registry.register(
+            name=name,
+            handler=lambda args, **kw: "{}",
+            schema=tool_def["function"],
+            toolset="mcp-wire-catalog",
+        )
+        try:
+            config = ToolSearchConfig.from_raw({"listing": "auto"})
+            with patch("model_tools.get_tool_definitions", return_value=[tool_def]), patch(
+                "tools.tool_search.load_config", return_value=config
+            ):
+                agent1.run_conversation(
+                    "first question", conversation_history=[], task_id="catalog-1"
+                )
+
+                first_sent = _user_messages(_chat_requests(handler)[0])[0]["content"]
+                assert "[HERMES TOOL CATALOG SNAPSHOT" in first_sent
+                assert name in first_sent
+
+                history = db.get_messages_as_conversation(sid)
+                assert history[0]["content"] == "first question"
+                assert history[0]["api_content"] == first_sent
+
+                handler.captured_requests = []
+                agent2.run_conversation(
+                    "second question", conversation_history=history, task_id="catalog-2"
+                )
+
+            users = _user_messages(_chat_requests(handler)[0])
+            assert users[0]["content"] == first_sent
+            assert "[HERMES TOOL CATALOG SNAPSHOT" not in users[-1]["content"]
+            assert users[-1]["content"] == "second question\n\nPLUGIN-CTX"
+        finally:
+            registry.deregister(name)
+
 
 # ---------------------------------------------------------------------------
 # Review fixes: re-anchoring, MoA, in-place compaction backfill, override

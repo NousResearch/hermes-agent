@@ -85,23 +85,27 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
     try:
-        # Gate: /reload-mcp invalidates the prompt cache for this session.
-        # Respect the ``approvals.mcp_reload_confirm`` config toggle — if
-        # set (default true) AND the caller did not pass ``confirm=true``
-        # in params, surface a warning to the transcript instead of just
-        # reloading silently.  Users pass confirm=true either by
-        # re-invoking after reading the warning, or by setting the
-        # config key to false permanently.
+        # The stable Tool Search bridge is cache-safe and reloads immediately.
+        # Only direct-schema mode (Tool Search off) needs the historical prompt
+        # cache warning and ``approvals.mcp_reload_confirm`` gate.
         user_confirm = bool(params.get("confirm", False))
         if not user_confirm:
             try:
                 from hermes_cli.config import load_config as _load_config
+                from tools.tool_search import (
+                    is_enabled_in_config as _tool_search_enabled,
+                )
 
                 _cfg = _load_config()
-                _approvals = _cfg.get("approvals") if isinstance(_cfg, dict) else None
-                _confirm_required = True
-                if isinstance(_approvals, dict):
-                    _confirm_required = bool(_approvals.get("mcp_reload_confirm", True))
+                if _tool_search_enabled(_cfg):
+                    _confirm_required = False
+                else:
+                    _approvals = _cfg.get("approvals") if isinstance(_cfg, dict) else None
+                    _confirm_required = True
+                    if isinstance(_approvals, dict):
+                        _confirm_required = bool(
+                            _approvals.get("mcp_reload_confirm", True)
+                        )
             except Exception:
                 _confirm_required = True
             if _confirm_required:

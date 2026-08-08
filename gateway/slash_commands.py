@@ -5191,16 +5191,10 @@ class GatewaySlashCommandsMixin:
     async def _handle_reload_mcp_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /reload-mcp — reconnect MCP servers and rebuild the cached agent.
 
-        Reloading MCP tools invalidates the provider prompt cache for the
-        active session (tool schemas are baked into the system prompt).  The
-        next message re-sends full input tokens, which is expensive on
-        long-context or high-reasoning models.
-
-        To surface that cost, the command routes through the slash-confirm
-        primitive: users get an Approve Once / Always Approve / Cancel
-        prompt before the reload actually runs.  "Always Approve" persists
-        ``approvals.mcp_reload_confirm: false`` so the prompt is silenced
-        for subsequent reloads in any session.
+        Stable Tool Search mode reloads directly because its model-facing
+        bridge does not change. When Tool Search is off, direct MCP schemas do
+        change, so the command retains the Approve Once / Always / Cancel
+        prompt and ``approvals.mcp_reload_confirm`` gate.
 
         Users can also skip the confirm by flipping the config key directly.
         """
@@ -5210,6 +5204,9 @@ class GatewaySlashCommandsMixin:
         # Read the gate fresh from disk so a prior "always" click takes
         # effect on the next invocation without restarting the gateway.
         user_config = self._read_user_config()
+        from tools.tool_search import is_enabled_in_config as _tool_search_enabled
+        if _tool_search_enabled(user_config):
+            return await self._execute_mcp_reload(event)
         approvals = user_config.get("approvals") if isinstance(user_config, dict) else None
         confirm_required = True
         if isinstance(approvals, dict):

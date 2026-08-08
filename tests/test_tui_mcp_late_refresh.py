@@ -3,8 +3,9 @@
 When an MCP server connects slower than the bounded wait in ``_make_agent``,
 the agent is built without its tools and the banner/tool count is stale for the
 session. ``_schedule_mcp_late_refresh`` waits for discovery to land, then
-rebuilds the snapshot and re-emits ``session.info`` — but only while the
-session is still pre-first-turn, so it never invalidates a cached prompt.
+rebuilds the snapshot and re-emits ``session.info``. After the first turn it
+continues only for the byte-stable Tool Search bridge; direct-schema sessions
+retain the cache-safety freeze.
 """
 
 import threading
@@ -12,6 +13,7 @@ import time
 import types
 
 import model_tools
+import tools.mcp_tool as mcp_tool
 from tui_gateway import server
 from tui_gateway import entry
 
@@ -85,7 +87,7 @@ def test_no_refresh_when_discovery_not_in_flight(monkeypatch):
 
 
 def test_no_refresh_once_conversation_started(monkeypatch):
-    """Cache safety: never rebuild the tool list after the first turn."""
+    """Direct-schema mode stays frozen after the first turn."""
     base = [_tool("read_file")]
     full = base + [_tool("mcp__late__b")]
     agent = _make_fake_agent(base, user_turns=1)  # a turn already happened
@@ -98,6 +100,32 @@ def test_no_refresh_once_conversation_started(monkeypatch):
 
         # Snapshot frozen; no re-emit that would invalidate the prompt cache.
         assert len(agent.tools) == 1
+        assert emitted == []
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_stable_bridge_observes_late_catalog_after_first_turn(monkeypatch):
+    from tools.tool_search import bridge_tool_schemas
+
+    base = [_tool("read_file"), *bridge_tool_schemas()]
+    agent = _make_fake_agent(base, user_turns=1)
+    sid = "sess-late-stable"
+    server._sessions[sid] = {"agent": agent}
+    calls = []
+    try:
+        emitted = _install(monkeypatch, in_flight=True, join_result=True, new_defs=base)
+        monkeypatch.setattr(
+            mcp_tool,
+            "refresh_agent_mcp_tools",
+            lambda refreshed, quiet_mode=True: calls.append(refreshed) or set(),
+        )
+
+        server._schedule_mcp_late_refresh(sid, agent)
+        _drain_refresh_threads()
+
+        assert calls == [agent]
+        assert agent.tools == base
         assert emitted == []
     finally:
         server._sessions.pop(sid, None)

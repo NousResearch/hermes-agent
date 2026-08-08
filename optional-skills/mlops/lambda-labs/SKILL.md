@@ -1,5 +1,5 @@
 ---
-name: lambda-labs-gpu-cloud
+name: lambda-labs
 description: On-demand GPU cloud instances for ML training.
 version: 1.0.0
 author: Orchestra Research

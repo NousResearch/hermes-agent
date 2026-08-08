@@ -1,12 +1,12 @@
 ---
-title: "Modal Serverless Gpu — Serverless GPU cloud for ML jobs and model APIs"
-sidebar_label: "Modal Serverless Gpu"
+title: "Modal — Serverless GPU cloud for ML jobs and model APIs"
+sidebar_label: "Modal"
 description: "Serverless GPU cloud for ML jobs and model APIs"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
-# Modal Serverless Gpu
+# Modal
 
 Serverless GPU cloud for ML jobs and model APIs.
 

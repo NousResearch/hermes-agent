@@ -1,5 +1,5 @@
 ---
-name: slime-rl-training
+name: slime
 description: RL post-training for LLMs with Megatron and SGLang.
 version: 1.0.0
 author: Orchestra Research

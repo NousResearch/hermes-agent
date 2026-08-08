@@ -14,8 +14,8 @@ Run 150+ AI apps (image, video, LLM) via inference.sh CLI.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/devops/cli` |
-| Path | `optional-skills/devops/cli` |
+| Source | Optional — install with `hermes skills install official/devops/inference-sh-cli` |
+| Path | `optional-skills/devops/inference-sh-cli` |
 | Version | `1.0.0` |
 | Author | okaris |
 | License | MIT |

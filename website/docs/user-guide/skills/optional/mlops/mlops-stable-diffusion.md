@@ -1,12 +1,12 @@
 ---
-title: "Stable Diffusion Image Generation — Text-to-image generation, inpainting, and img2img"
-sidebar_label: "Stable Diffusion Image Generation"
+title: "Stable Diffusion — Text-to-image generation, inpainting, and img2img"
+sidebar_label: "Stable Diffusion"
 description: "Text-to-image generation, inpainting, and img2img"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
-# Stable Diffusion Image Generation
+# Stable Diffusion
 
 Text-to-image generation, inpainting, and img2img.
 

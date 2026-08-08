@@ -14,8 +14,8 @@ description: "通过 inference 运行 150+ AI 应用"
 
 | | |
 |---|---|
-| 来源 | 可选——使用 `hermes skills install official/devops/cli` 安装 |
-| 路径 | `optional-skills/devops/cli` |
+| 来源 | 可选——使用 `hermes skills install official/devops/inference-sh-cli` 安装 |
+| 路径 | `optional-skills/devops/inference-sh-cli` |
 | 版本 | `1.0.0` |
 | 作者 | okaris |
 | 许可证 | MIT |

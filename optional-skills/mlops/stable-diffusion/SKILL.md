@@ -1,5 +1,5 @@
 ---
-name: stable-diffusion-image-generation
+name: stable-diffusion
 description: Text-to-image generation, inpainting, and img2img.
 version: 1.0.0
 author: Orchestra Research

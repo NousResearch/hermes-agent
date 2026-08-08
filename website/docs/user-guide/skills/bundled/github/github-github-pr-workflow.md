@@ -121,11 +121,95 @@ Types: `feat`, `fix`, `refactor`, `docs`, `test`, `ci`, `chore`, `perf`
 
 ## 3. Pushing and Creating a PR
 
-### Push the Branch (same either way)
+### Preflight before any external write
+
+Before pushing or creating a PR, run the reusable preflight helper. It emits
+machine-readable JSON instead of making the agent infer push permissions from a
+failed command:
+
+```bash
+python scripts/github_pr_preflight.py --cwd . --remote origin
+```
+
+Key fields:
+
+```json
+{
+  "preflight": {
+    "repo": "OWNER/REPO",
+    "branch": "feat/example",
+    "viewer_permission": "READ|TRIAGE|WRITE|MAINTAIN|ADMIN|null",
+    "strategy": "direct_origin|fork_remote|blocked_auth|blocked_dirty_tree|unknown_permission",
+    "working_tree_clean": true,
+    "existing_pr": null
+  }
+}
+```
+
+Decision rule:
+
+- `direct_origin` — push to `origin`.
+- `fork_remote` — push to a fork remote and open a PR against upstream.
+- `blocked_auth` — authenticate GitHub first.
+- `blocked_dirty_tree` — clean, commit, or intentionally stash unrelated local changes first.
+- `unknown_permission` — do not push yet; inspect `gh repo view` / auth output because the upstream permission could not be determined.
+
+### Push the Branch (direct-origin path)
 
 ```bash
 git push -u origin HEAD
 ```
+
+### Fork fallback when upstream push is denied or preflight says `fork_remote`
+
+If preflight reports `viewer_permission: READ` or a direct push returns a GitHub
+403 such as `Permission to OWNER/REPO.git denied`, create or reuse a fork, add it
+as a separate remote, and open the PR against upstream:
+
+```bash
+# Create fork when it does not exist. Note: when a repository argument is provided,
+# gh does NOT support `--remote=false`; use `--clone=false` instead.
+gh repo fork OWNER/REPO --clone=false
+
+# Add/update explicit fork remote instead of replacing upstream origin.
+git remote add fork https://github.com/YOUR_USER/REPO.git 2>/dev/null || \
+  git remote set-url fork https://github.com/YOUR_USER/REPO.git
+
+git push -u fork HEAD
+
+gh pr create \
+  --repo OWNER/REPO \
+  --base main \
+  --head YOUR_USER:$(git branch --show-current) \
+  --title "..." \
+  --body-file /tmp/pr-body.md \
+  --draft
+```
+
+After creating the PR, emit a receipt and classify CI/check state:
+
+```bash
+python scripts/github_pr_preflight.py \
+  --cwd . \
+  --repo OWNER/REPO \
+  --pr PR_NUMBER \
+  --local-validation-json '{"tests":"passed","ruff":"passed"}'
+```
+
+If the upstream repository gates fork workflows, the receipt may report:
+
+```json
+{
+  "receipt": {
+    "ci_state": "action_required",
+    "blocked_by": "maintainer_workflow_approval",
+    "next_action": "Ask an upstream maintainer to approve fork workflow runs."
+  }
+}
+```
+
+Treat that as maintainer approval pending, not as a CI failure, and document the
+local validation in the PR body.
 
 ### Create the PR
 

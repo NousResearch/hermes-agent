@@ -8,7 +8,12 @@ tokenizer:
   # HuggingFace tokenizer name
   name: "moonshotai/Kimi-K2-Thinking"
   
-  # Trust remote code (required for some tokenizers)
+  # Trust remote code — required for some tokenizers (e.g. Kimi-K2).
+  # SECURITY: this makes HuggingFace EXECUTE arbitrary Python from the tokenizer
+  # repo at load time. Only enable it for a tokenizer name you fully trust, and
+  # never run a compression config you received from an untrusted source with
+  # this turned on. The code default is false; it is opted into here explicitly
+  # for the Kimi tokenizer above.
   trust_remote_code: true
 
 # Compression targets and behavior

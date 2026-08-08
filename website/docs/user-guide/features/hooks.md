@@ -390,7 +390,7 @@ def register(ctx):
 
 | Hook | Fires when | Returns |
 |------|-----------|---------|
-| [`pre_tool_call`](#pre_tool_call) | Before any tool executes | `{"action": "block", "message": str}` to veto the call |
+| [`pre_tool_call`](#pre_tool_call) | Before any tool executes | `{"action": "block", "message": str}` to veto, `{"action": "modify", "args": {…}}` to rewrite args |
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
@@ -434,9 +434,25 @@ def my_callback(tool_name: str, args: dict, task_id: str, **kwargs):
 return {"action": "block", "message": "Reason the tool call was blocked"}
 ```
 
-The agent short-circuits the tool with `message` as the error returned to the model. The first matching block directive wins (Python plugins registered first, then shell hooks). Any other return value is ignored, so existing observer-only callbacks keep working unchanged.
+The agent short-circuits the tool with `message` as the error returned to the model. The first valid block directive wins (Python plugins registered first, then shell hooks). Any other return value is ignored, so existing observer-only callbacks keep working unchanged.
 
-**Use cases:** Logging, audit trails, tool call counters, blocking dangerous operations, rate limiting, per-user policy enforcement.
+**Return value — rewrite the tool's arguments:**
+
+```python
+return {"action": "modify", "args": {"new_string": "fixed content"}}
+```
+
+The returned `args` dictionary is shallow-merged over the original tool arguments before the tool executes. Multiple `modify` hooks accumulate — each hook's keys are merged into one accumulated dict built from the original args, so hook A changing `path` and hook B changing `content` both survive. If two hooks modify the same key, the later hook wins.
+
+Shell hooks also accept the Claude Code-compatible format:
+
+```json
+{"decision": "modify", "tool_input": {"new_string": "fixed content"}}
+```
+
+Both formats are normalized internally to `{"action": "modify", "args": {...}}`.
+
+**Use cases:** Logging, audit trails, tool call counters, blocking dangerous operations, rate limiting, per-user policy enforcement, argument sanitization, path rewriting, injecting default parameters.
 
 **Example — tool call audit log:**
 
@@ -1305,7 +1321,7 @@ Declare shell-script hooks in your `~/.hermes/config.yaml` and Hermes will run t
 
 Use shell hooks when you want a drop-in, single-file script (Bash, Python, anything with a shebang) to:
 
-- **Block a tool call** — reject dangerous `terminal` commands, enforce per-directory policies, require approval for destructive `write_file` / `patch` operations.
+- **Block or modify a tool call** — reject dangerous `terminal` commands, enforce per-directory policies, require approval for destructive `write_file` / `patch` operations, or rewrite arguments (sanitize paths, inject defaults) before the tool runs.
 - **Run after a tool call** — auto-format Python or TypeScript files that the agent just wrote, log API calls, trigger a CI workflow.
 - **Inject context into the next LLM turn** — prepend `git status` output, the current weekday, or retrieved documents to the user message (see [`pre_llm_call`](#pre_llm_call)).
 - **Observe lifecycle events** — write a log line when a subagent completes (`subagent_stop`) or a session starts (`on_session_start`).
@@ -1367,6 +1383,10 @@ Each time the event fires, Hermes spawns a subprocess for every matching hook (m
 // Block a pre_tool_call (both shapes accepted; normalised internally):
 {"decision": "block", "reason":  "Forbidden: rm -rf"}   // Claude-Code style
 {"action":   "block", "message": "Forbidden: rm -rf"}   // Hermes-canonical
+
+// Modify a pre_tool_call — rewrite tool args before dispatch:
+{"action": "modify", "args": {"new_string": "fixed content"}}         // Hermes-canonical
+{"decision": "modify", "tool_input": {"new_string": "fixed content"}} // Claude-Code style
 
 // Inject context for pre_llm_call:
 {"context": "Today is Friday, 2026-04-17"}

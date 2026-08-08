@@ -5,14 +5,11 @@ import type { AppLayoutProgressProps } from '../app/interfaces.js'
 import { toggleTodoCollapsed, useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { blockRenders } from '../domain/blockLayout.js'
-import { appendToolShelfMessage } from '../lib/liveProgress.js'
+import { compactToolTimeline } from '../lib/liveProgress.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
 import { MessageLine } from './messageLine.js'
 import { TodoPanel } from './todoPanel.js'
-
-const groupedSegments = (segments: Msg[]): Msg[] =>
-  segments.reduce<Msg[]>((acc, msg) => appendToolShelfMessage(acc, msg), [])
 
 interface LiveBlock {
   isStreaming?: boolean
@@ -46,7 +43,8 @@ export const StreamingAssistant = memo(function StreamingAssistant({
   // back into settled history (prevMsg). Tracking the predecessor rather than
   // the live text is what keeps the streaming block from jumping when it
   // flushes into a settled segment.
-  const blocks: LiveBlock[] = groupedSegments(streamSegments).map((msg, i) => ({ key: `seg:${i}`, msg }))
+  const timeline = ui.interleaveThinking ? streamSegments : compactToolTimeline(streamSegments)
+  const blocks: LiveBlock[] = timeline.map((msg, i) => ({ key: `seg:${i}`, msg }))
 
   if (activeTools.length) {
     blocks.push({ key: 'active-tools', msg: { kind: 'trail', role: 'system', text: '' }, tools: activeTools })

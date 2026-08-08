@@ -19,6 +19,7 @@ const buildUiState = (): UiState => ({
   focusView: false,
   indicatorStyle: DEFAULT_INDICATOR_STYLE,
   info: null,
+  interleaveThinking: false,
   liveSessionCount: 0,
   inlineDiffs: true,
   mouseTracking: MOUSE_TRACKING,

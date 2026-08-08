@@ -277,6 +277,7 @@ export const applyDisplay = (
     detailsModeCommandOverride: false,
     focusView: !!d.focus_view,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
+    interleaveThinking: d.interleave_thinking === true,
     inlineDiffs: d.inline_diffs !== false,
     mouseTracking: normalizeMouseTracking(d),
     pasteCollapseLines: _pasteCollapseLinesFromConfig(cfg),

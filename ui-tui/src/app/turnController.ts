@@ -6,7 +6,12 @@ import {
   STREAM_TYPING_BATCH_MS
 } from '../config/timing.js'
 import type { SessionInterruptResponse, SubagentEventPayload } from '../gatewayTypes.js'
-import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
+import {
+  canHoldToolShelf,
+  compactToolTimeline,
+  isToolShelfMessage,
+  mergeToolShelfInto
+} from '../lib/liveProgress.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import {
   boundedLiveRenderText,
@@ -300,7 +305,9 @@ class TurnController {
 
     this.closeReasoningSegment()
 
-    const segments = this.segmentMessages
+    const segments = getUiState().interleaveThinking
+      ? this.segmentMessages
+      : compactToolTimeline(this.segmentMessages)
     const partial = this.bufRef.trimStart()
     const tools = this.pendingSegmentTools
 
@@ -392,7 +399,7 @@ class TurnController {
   }
 
   private pushSegment(msg: Msg) {
-    this.segmentMessages = appendToolShelfMessage(this.segmentMessages, msg)
+    this.segmentMessages = [...this.segmentMessages, msg]
   }
 
   flushStreamingSegment() {
@@ -456,18 +463,23 @@ class TurnController {
       return false
     }
 
-    const next = appendToolShelfMessage(this.segmentMessages, {
+    const pending: Msg = {
       kind: 'trail',
       role: 'system',
       text: '',
       tools: this.pendingSegmentTools
-    })
+    }
+    const lastIndex = this.segmentMessages.length - 1
+    const last = this.segmentMessages[lastIndex]
 
-    if (next.length === this.segmentMessages.length + 1) {
+    if (!canHoldToolShelf(last)) {
       return false
     }
 
-    this.segmentMessages = next
+    this.segmentMessages = [
+      ...this.segmentMessages.slice(0, -1),
+      mergeToolShelfInto(last!, pending)
+    ]
     this.pendingSegmentTools = []
     patchTurnState({ streamPendingTools: [], streamSegments: this.segmentMessages })
 
@@ -625,9 +637,12 @@ class TurnController {
 
     // Archive prepended so the trail msg anchors under the user prompt,
     // not between thinking/tools and final assistant text.
+    const displaySegments = getUiState().interleaveThinking
+      ? segments
+      : compactToolTimeline(segments)
     const finalMessages: Msg[] = [
       ...archiveDoneTodos(),
-      ...segments,
+      ...displaySegments,
       ...(hasDetails(finalDetails) ? [finalDetails] : [])
     ]
 

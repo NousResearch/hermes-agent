@@ -224,6 +224,7 @@ display:
   skin: default              # any built-in or custom skin
   personality: helpful
   details_mode: collapsed    # hidden | collapsed | expanded — global accordion default
+  interleave_thinking: false # show thinking and completed tools in chronological order
   sections:                  # optional: per-section overrides (any subset)
     thinking: expanded       # always open
     tools: expanded          # always open

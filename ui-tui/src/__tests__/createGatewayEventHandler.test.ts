@@ -330,6 +330,96 @@ describe('createGatewayEventHandler', () => {
     expect(toolTrails[0]?.tools?.[1]).toContain('Read File')
   })
 
+  it('keeps a completed tool with the reasoning segment that preceded it', () => {
+    turnController.recordReasoningDelta('inspect the repository')
+    turnController.recordToolStart('tool-1', 'search_files', 'alpha')
+    turnController.recordToolComplete('tool-1', 'search_files')
+    turnController.recordReasoningDelta('read the matching file')
+    turnController.recordToolStart('tool-2', 'read_file', 'beta')
+    turnController.recordToolComplete('tool-2', 'read_file')
+
+    expect(getTurnState().streamSegments).toMatchObject([
+      { kind: 'trail', thinking: 'inspect the repository', tools: [expect.stringContaining('Search Files')] },
+      { kind: 'trail', thinking: 'read the matching file', tools: [expect.stringContaining('Read File')] }
+    ])
+  })
+
+  it('only preserves chronological segments in the completed transcript when configured', () => {
+    const recordTimeline = () => {
+      turnController.recordReasoningDelta('inspect the repository')
+      turnController.recordToolStart('tool-1', 'search_files', 'alpha')
+      turnController.recordToolComplete('tool-1', 'search_files')
+      turnController.recordReasoningDelta('read the matching file')
+      turnController.recordToolStart('tool-2', 'read_file', 'beta')
+      turnController.recordToolComplete('tool-2', 'read_file')
+
+      return turnController
+        .recordMessageComplete({ text: '' })
+        .finalMessages.filter(msg => Boolean(msg.thinking?.trim() || msg.tools?.length))
+    }
+
+    const compact = recordTimeline()
+    expect(compact).toMatchObject([
+      {
+        thinking: 'inspect the repository',
+        tools: [expect.stringContaining('Search Files'), expect.stringContaining('Read File')]
+      },
+      { thinking: 'read the matching file' }
+    ])
+
+    turnController.fullReset()
+    patchUiState({ interleaveThinking: true })
+
+    expect(recordTimeline()).toMatchObject([
+      { thinking: 'inspect the repository', tools: [expect.stringContaining('Search Files')] },
+      { thinking: 'read the matching file', tools: [expect.stringContaining('Read File')] }
+    ])
+  })
+
+  it('uses the selected timeline layout when the turn is interrupted', () => {
+    vi.useFakeTimers()
+
+    try {
+      const interruptTimeline = () => {
+        const appended: Msg[] = []
+
+        turnController.recordReasoningDelta('inspect the repository')
+        turnController.recordToolStart('tool-1', 'search_files', 'alpha')
+        turnController.recordToolComplete('tool-1', 'search_files')
+        turnController.recordReasoningDelta('read the matching file')
+        turnController.recordToolStart('tool-2', 'read_file', 'beta')
+        turnController.recordToolComplete('tool-2', 'read_file')
+        turnController.interruptTurn({
+          appendMessage: msg => appended.push(msg),
+          gw: { request: vi.fn(async () => ({ status: 'interrupted' })) },
+          sid: 'sess-1',
+          sys: vi.fn()
+        })
+
+        return appended
+      }
+
+      expect(interruptTimeline()).toMatchObject([
+        {
+          thinking: 'inspect the repository',
+          tools: [expect.stringContaining('Search Files'), expect.stringContaining('Read File')]
+        },
+        { thinking: 'read the matching file' }
+      ])
+
+      turnController.fullReset()
+      patchUiState({ interleaveThinking: true })
+
+      expect(interruptTimeline()).toMatchObject([
+        { thinking: 'inspect the repository', tools: [expect.stringContaining('Search Files')] },
+        { thinking: 'read the matching file', tools: [expect.stringContaining('Read File')] }
+      ])
+    } finally {
+      vi.runAllTimers()
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps tool tokens across handler recreation mid-turn', () => {
     const appended: Msg[] = []
 

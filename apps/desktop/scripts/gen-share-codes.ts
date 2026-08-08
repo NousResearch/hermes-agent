@@ -2,9 +2,8 @@
 // (runs the actual encoder, so every string round-trips). Run with `npx tsx`.
 import { writeFileSync } from 'node:fs'
 
-import type { StarmapEdge, StarmapGraph, StarmapMemoryCard, StarmapNode } from '../src/types/hermes'
-
 import { decodeShareCode, encodeShareCode } from '../src/app/starmap/share-code'
+import type { StarmapEdge, StarmapGraph, StarmapMemoryCard, StarmapNode } from '../src/types/hermes'
 
 const DAY = 86_400
 const END = Math.floor(Date.UTC(2026, 5, 29) / 1000)
@@ -55,6 +54,7 @@ const card = (source: 'memory' | 'profile', title: string, body: string, ts: nul
 // ── 1. Tiny + quirky ──────────────────────────────────────────────────────────
 function tiny(): StarmapGraph {
   const r = rng(7)
+
   const nodes: StarmapNode[] = [
     skill('summon-coffee', 'Summon Coffee', END - 40 * DAY, r),
     skill('rubber-duck', 'Rubber-Duck Debugging', END - 22 * DAY, r),
@@ -62,10 +62,12 @@ function tiny(): StarmapGraph {
     memNode(0, 'profile', 'Prefers tabs, dies on this hill', END - 30 * DAY),
     memNode(1, 'memory', 'The prod incident of last Tuesday', END - 3 * DAY)
   ]
+
   const edges: StarmapEdge[] = [
     { source: 'memory:memory:1', target: 'git-blame-zen' },
     { source: 'rubber-duck', target: 'git-blame-zen' }
   ]
+
   const memory = [
     card('profile', 'Prefers tabs, dies on this hill', 'Tabs over spaces. Non-negotiable.', END - 30 * DAY),
     card('memory', 'The prod incident of last Tuesday', 'Never deploy on a Friday again.', END - 3 * DAY)
@@ -100,10 +102,12 @@ function mid(): StarmapGraph {
 // ── 3. Dense web, partly undated (ordinal fallback) ──────────────────────────
 function web(): StarmapGraph {
   const r = rng(1337)
+
   const nodes: StarmapNode[] = Array.from({ length: 22 }, (_, i) =>
     // Half the skills carry no timestamp → exercises the ordinal recency path.
     skill(`w${i}`, `Neuron ${String.fromCharCode(65 + (i % 26))}${i}`, i % 2 ? END - Math.floor(r() * 300) * DAY : (null as unknown as number), r)
   )
+
   const edges: StarmapEdge[] = []
 
   for (let i = 0; i < 44; i += 1) {

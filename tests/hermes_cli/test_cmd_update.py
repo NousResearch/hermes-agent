@@ -10,6 +10,16 @@ import pytest
 from hermes_cli.main import cmd_update, PROJECT_ROOT
 
 
+@pytest.fixture(autouse=True)
+def _treat_test_root_as_managed(monkeypatch):
+    """These tests exercise the update flow itself, not the dev-tree
+    guard (tests/hermes_cli/test_update_dev_tree_guard.py owns that).
+    The suite runs from an arbitrary checkout, so mark it managed."""
+    import hermes_cli.runtime_tree as runtime_tree
+
+    monkeypatch.setattr(runtime_tree, "is_managed_install_root", lambda p: True)
+
+
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
     """Build a side_effect function for subprocess.run that simulates git commands."""
 

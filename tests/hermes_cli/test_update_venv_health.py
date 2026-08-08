@@ -33,6 +33,16 @@ from hermes_cli import main as cli_main
 
 
 
+@pytest.fixture(autouse=True)
+def _treat_test_root_as_managed(monkeypatch):
+    """These tests exercise the update flow itself, not the dev-tree
+    guard (tests/hermes_cli/test_update_dev_tree_guard.py owns that).
+    The suite runs from an arbitrary checkout, so mark it managed."""
+    import hermes_cli.runtime_tree as runtime_tree
+
+    monkeypatch.setattr(runtime_tree, "is_managed_install_root", lambda p: True)
+
+
 def _fake_venv_python(tmp_path, *, windows: bool = False):
     bin_dir = tmp_path / "venv" / ("Scripts" if windows else "bin")
     bin_dir.mkdir(parents=True)

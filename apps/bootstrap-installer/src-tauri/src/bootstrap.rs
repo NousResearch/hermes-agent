@@ -98,7 +98,13 @@ pub async fn start_bootstrap(
 
     let app_for_task = app.clone();
     let state_for_task = state.inner().clone();
-    let args_for_task = args;
+    let mut args_for_task = args;
+    // A process-level `--pin-commit` (the resident-eject flow) beats both
+    // the frontend's null and the build-time pin: this Setup binary is the
+    // latest release, but the eject wants the ejecting app's own commit.
+    if let Some(pin) = state.pin_commit.as_ref() {
+        args_for_task.commit = Some(pin.clone());
+    }
     let cancel_rx = Arc::new(Mutex::new(Some(cancel_rx)));
 
     tokio::spawn(async move {

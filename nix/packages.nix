@@ -11,13 +11,23 @@
     let
 
       sandbox = pkgs.callPackage ./sandbox.nix { };
-
+      dirtyRevision = inputs.self.dirtyRev or null;
+      # inputs.self.sourceInfo is a string (store path) in current Nix, not a
+      # record. The metadata fields are available as top-level attributes on
+      # inputs.self directly. A flake URL's requested ref is intentionally not
+      # exposed as self.ref after Nix resolves it to an immutable source, so
+      # branch is normally null for remote flakes. Preserve null rather than
+      # inventing a sentinel that could be a real branch name.
+      rev = inputs.self.rev or (if dirtyRevision != null then builtins.substring 0 40 dirtyRevision else null);
+      revCount = inputs.self.revCount or null;
+      rawRef = inputs.self.ref or null;
+      branch = if rawRef != null then builtins.replaceStrings ["refs/heads/"] [""] rawRef else null;
+      dirty = dirtyRevision != null;
+      lastModified = inputs.self.lastModified or null;
       minimal = pkgs.callPackage ./hermes-agent.nix {
         inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
         npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
-        # Only embed clean revs — dirtyRev doesn't represent any upstream
-        # commit, so comparing it would always claim "update available".
-        rev = inputs.self.rev or null;
+        inherit rev revCount branch dirty lastModified;
       };
 
       # All platform-portable optional integrations pre-built.
@@ -68,6 +78,26 @@
         tui = full.hermesTui;
         web = full.hermesWeb;
         desktop = full.hermesDesktop;
+
+        # A self-contained builder for the bundled (embedded-runtime)
+        # desktop artifact. The derivation is pure — it only wraps the
+        # pinned toolchain around scripts/build-bundled-desktop.mjs. The
+        # WRAPPED SCRIPT runs impurely on a source tree: it downloads the
+        # payload node dist, CPython, and wheels, and electron-builder
+        # needs network and (on macOS) codesign access. Run it from a
+        # checkout at a release tag:
+        #   nix run .#build-desktop-app-bundle -- --tag=vX.Y.Z
+        build-desktop-app-bundle = pkgs.writeShellApplication {
+          name = "build-desktop-app-bundle";
+          runtimeInputs = [ pkgs.nodejs_26 pkgs.uv pkgs.git ];
+          text = ''
+            if [ ! -f scripts/build-bundled-desktop.mjs ]; then
+              echo "error: run from a hermes-agent checkout root" >&2
+              exit 1
+            fi
+            exec node scripts/build-bundled-desktop.mjs "$@"
+          '';
+        };
 
         update-npm-lockfile = full.hermesNpmLib.updateNpmLockfile;
       };

@@ -346,10 +346,23 @@ export interface HermesTerminalExit {
 
 export interface DesktopVersionInfo {
   appVersion: string
+  baseVersion?: string
+  branch?: string | null
+  commit?: string
+  distance?: number
+  dirty?: boolean
   electronVersion: string
   nodeVersion: string
   platform: string
   hermesRoot: string
+  distribution?: 'desktop-app' | 'docker' | 'nix'
+  source?: 'build' | 'ci' | 'docker' | 'fallback' | 'git' | 'local' | 'nix' | 'unknown'
+  /** What this build carries: an embedded runtime, or nothing (external). */
+  artifact?: 'embedded' | 'external'
+  /** The release the embedded payload was staged from (embedded only). */
+  payloadTag?: string | null
+  /** The backend this session actually spawned. Null before first spawn. */
+  runtime?: { label: string | null; embedded: boolean; root: string | null } | null
 }
 
 export type DesktopUninstallMode = 'full' | 'gui' | 'lite'
@@ -386,15 +399,25 @@ export interface DesktopUpdateCommit {
 export interface DesktopUpdateStatus {
   supported: boolean
   updateAvailable?: boolean
-  branch?: string
+  branch?: string | null
   currentBranch?: string
+  /**
+   * Which comparison produced this status. 'main' (or absent): commits
+   * behind the main branch. 'stable': releases behind the newest final
+   * release tag — behind is 0 or 1 and latestTag names the release.
+   */
+  channel?: 'stable' | 'main'
+  /** Stable channel: the newest final release tag (vX.Y.Z). */
+  latestTag?: string
+  /** App-updater path (bundled installs): feed metadata versions. */
+  mechanism?: 'app-updater'
+  currentVersion?: string
+  latestVersion?: string | null
   reason?: string
   message?: string
   error?: string
   behind?: number
   currentSha?: string
-  /** Backend only: the version string the backend reports for itself. */
-  currentVersion?: string
   targetSha?: string
   commits?: DesktopUpdateCommit[]
   dirty?: boolean

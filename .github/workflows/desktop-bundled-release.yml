@@ -1,0 +1,255 @@
+name: Desktop Bundled Release
+
+# This workflow builds the fully self-contained desktop installers for each
+# (os, arch) target. The agent payloads are baked in: the repo snapshot at
+# the release tag (with the prebuilt TUI/dashboard JS), uv plus CPython, a
+# ready site-packages tree, and node. The design is in
+# .hermes/plans/2026-08-07_resources-resident-bundled-runtime.md: the app
+# runs the backend directly out of its own resources; nothing installs on
+# the user machine.
+#
+# Payload staging stays dormant unless a build sets HERMES_DESKTOP_BUNDLED=1.
+# This workflow is the only place that sets it.
+#
+# Triggers:
+#   * A push of a final release tag (vX.Y.Z). This is the normal release path.
+#   * workflow_dispatch with an explicit tag, for re-runs and dry runs. The
+#     release upload is opt-in.
+#
+# Each runner installs site-packages, uv, python, and node natively. This is why the
+# workflow is a matrix: electron-builder needs per-OS runners for signing.
+# As a result, there are no cross-platform wheel-tag tables anywhere.
+#
+# Signing and notarization: if the APPLE_* and CSC_* secrets are absent,
+# notarize.mjs and electron-builder skip those steps. Thus this workflow
+# produces unsigned artifacts on forks. When the org secrets are set, it
+# produces signed artifacts.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to bundle (vX.Y.Z). Must exist on the repo.'
+        required: true
+        type: string
+      upload_release:
+        description: 'Attach artifacts to the GitHub release for the tag'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # for the release asset upload; read-only for all other content
+  id-token: write # for the OIDC federated login to Azure (Windows signing)
+
+concurrency:
+  group: desktop-bundled-release-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    # The signing secrets and variables live in this environment, not at
+    # repo level. Its deployment policy (main + v* tags) decides which
+    # refs may receive them. Refs outside the policy fail at job start,
+    # so a workflow_dispatch against a work branch cannot reach the
+    # secrets at all. On repos without the environment, GitHub treats it
+    # as unprotected-and-empty: jobs run, secrets resolve blank, and the
+    # build stays unsigned — the fork/dry-run behavior is unchanged.
+    environment: release-signing
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # electron-builder targets are chosen by the shared script from
+          # the runner platform: linux AppImage, mac dmg+zip, win nsis.
+          - label: linux-x64
+            runner: ubuntu-24.04
+          - label: linux-arm64
+            runner: ubuntu-24.04-arm
+          - label: darwin-arm64
+            runner: macos-15
+          - label: darwin-x64
+            runner: macos-15-intel
+          - label: win32-x64
+            runner: windows-2025
+          # windows-11-arm carries MSVC arm64 and Rust. The staging
+          # script builds the pinned packages that publish no win_arm64
+          # wheel (cryptography, httptools, ruamel-yaml-clib, pywinpty)
+          # from sdist on this runner; user machines never compile.
+          - label: win32-arm64
+            runner: windows-11-arm
+    env:
+      # This is the one switch that turns on the whole bundled stack.
+      HERMES_DESKTOP_BUNDLED: '1'
+      HERMES_PAYLOAD_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      HERMES_PAYLOAD_PYTHON: '3.11'
+    steps:
+      - name: Validate tag shape
+        shell: bash
+        run: |
+          case "$HERMES_PAYLOAD_TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) echo "tag: $HERMES_PAYLOAD_TAG" ;;
+            *) echo "::error::'$HERMES_PAYLOAD_TAG' is not a final release tag (vX.Y.Z)"; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.HERMES_PAYLOAD_TAG }}
+          # stage-agent-payloads clones the payload repo from this checkout
+          # at the tag. A depth-1 checkout at the tag is sufficient, but the
+          # tag ref must exist locally.
+          fetch-tags: true
+
+      # ── Node ──────────────────────────────────────────────────────────
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          # The build script embeds the EXACT host node version into the
+          # payload. 26 matches NODE_VERSION in scripts/install.sh, so an
+          # embedded install and a source install run the same node major.
+          node-version: 26
+          cache: npm
+
+      - name: grab npm 12
+        shell: bash
+        run: npm i -g npm@12
+
+      - uses: ./.github/actions/retry
+        with:
+          command: npm ci
+
+      # ── uv + Python (native to this runner) ───────────────────────────
+      # setup-python gives every OS a working `python3` on PATH. The desktop
+      # `npm run build` shells out to scripts/write_install_stamp.py, and the
+      # Windows runner image does not guarantee a python3 alias.
+      - uses: actions/setup-python@e348410e00f449ece8581cb8e88be8f0e7712da6 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          # 0.12+: `uv --version` prints the build triple, which the
+          # payload staging guard checks. Older uv prints only the
+          # version number and fails the guard.
+          version: '0.12.1'
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      # ── OpenSSL for the win32-arm64 source builds ──────────────────────
+      # cryptography publishes no win_arm64 wheel, so the staging script
+      # builds it from sdist, and its Rust core links OpenSSL. vcpkg is
+      # preinstalled on GitHub runners; the static triplet makes the wheel
+      # self-contained (the offline payload cannot ship loose DLLs). The
+      # cache saves the ~20 minute from-source OpenSSL build on later runs.
+      - name: Cache vcpkg OpenSSL (arm64)
+        if: matrix.label == 'win32-arm64'
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: C:\vcpkg\installed\arm64-windows-static-md
+          key: vcpkg-openssl-arm64-windows-static-md-${{ runner.os }}
+
+      - name: Install OpenSSL (arm64)
+        if: matrix.label == 'win32-arm64'
+        shell: bash
+        run: |
+          if [ ! -f "/c/vcpkg/installed/arm64-windows-static-md/lib/libcrypto.lib" ]; then
+            "$VCPKG_INSTALLATION_ROOT/vcpkg" install openssl:arm64-windows-static-md
+          fi
+          {
+            printf 'OPENSSL_DIR=C:\\vcpkg\\installed\\arm64-windows-static-md\n'
+            printf 'OPENSSL_STATIC=1\n'
+          } >> "$GITHUB_ENV"
+
+      # ── Azure OIDC login for Windows signing ───────────────────────────
+      # No client secret exists anywhere. GitHub mints an OIDC token for
+      # this job; Azure redeems it only when the token's subject matches
+      # the app registration's federated credential
+      # (repo:<owner>/<repo>:environment:release-signing). electron-
+      # builder's TrustedSigning module then picks the CLI credential up
+      # from the Azure credential chain. Skipped when the environment
+      # variables are absent (forks, dry runs) — the build stays unsigned.
+      - name: Azure login (OIDC)
+        if: startsWith(matrix.label, 'win32-') && vars.AZURE_CLIENT_ID != ''
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      # ── Build + package through the shared script ──────────────────────
+      # scripts/build-bundled-desktop.mjs owns the whole sequence: the root
+      # npm ci, the JS surface builds, the payload node dist, the bundled
+      # desktop build, and electron-builder. Run the same script locally to
+      # reproduce a CI build. The workflow adds only caching, signing, and
+      # upload. (The npm ci above only warms the cache for the retry
+      # wrapper; the script's own npm ci is the one that counts.)
+      - name: Build and package
+        shell: bash
+        env:
+          HERMES_BUNDLE_TAG: ${{ env.HERMES_PAYLOAD_TAG }}
+          # macOS signing and notarization. Forks do not have the secrets.
+          # notarize.mjs and electron-builder both skip without them.
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          # Windows signing with Azure Trusted Signing. The TrustedSigning
+          # module authenticates through the OIDC login above — no secret
+          # exists. These non-secret variables in the release-signing
+          # environment turn signing on; without them the build stays
+          # unsigned, so forks and dry runs continue to work.
+          AZURE_SIGN_ENDPOINT: ${{ vars.AZURE_SIGN_ENDPOINT }}
+          AZURE_SIGN_ACCOUNT: ${{ vars.AZURE_SIGN_ACCOUNT }}
+          AZURE_SIGN_PROFILE: ${{ vars.AZURE_SIGN_PROFILE }}
+          AZURE_SIGN_PUBLISHER: ${{ vars.AZURE_SIGN_PUBLISHER }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+        run: |
+          # Windows signing turns on inside run-electron-builder.mjs when the
+          # AZURE_SIGN_* variables above are present. It cannot ride through
+          # -c arguments: the publisherName contains spaces, which do not
+          # survive the cmd.exe hops on the Windows runners.
+          MATRIX_LABEL="${{ matrix.label }}"
+          if [[ "$MATRIX_LABEL" == win32-* ]] && [ -n "$AZURE_SIGN_ENDPOINT" ] && [ -n "$AZURE_CLIENT_ID" ]; then
+            echo "Windows signing: Azure Trusted Signing at $AZURE_SIGN_ENDPOINT"
+          fi
+          node scripts/build-bundled-desktop.mjs --tag="$HERMES_BUNDLE_TAG"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hermes-bundled-${{ matrix.label }}-${{ env.HERMES_PAYLOAD_TAG }}
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.AppImage
+            apps/desktop/release/*.blockmap
+            apps/desktop/release/latest*.yml
+          retention-days: 30
+          if-no-files-found: error
+
+      # ── Attach to the GitHub release (tag pushes and opt-in dispatch) ────
+      - name: Upload to GitHub release
+        if: github.event_name == 'push' || github.event.inputs.upload_release == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          files=(apps/desktop/release/*.dmg apps/desktop/release/*.zip \
+                 apps/desktop/release/*.exe apps/desktop/release/*.AppImage \
+                 apps/desktop/release/*.blockmap apps/desktop/release/latest*.yml)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::no release artifacts found"; exit 1
+          fi
+          gh release create "$HERMES_PAYLOAD_TAG" --verify-tag --draft --title "$HERMES_PAYLOAD_TAG" 2>/dev/null || true
+          gh release upload "$HERMES_PAYLOAD_TAG" "${files[@]}" --clobber

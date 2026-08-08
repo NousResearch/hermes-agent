@@ -64,6 +64,37 @@ where
         .any(|a| a.as_ref() == "--reinstall" || a.as_ref() == "--repair")
 }
 
+/// Extract a runtime commit pin from `--pin-commit <sha>`. The one caller
+/// today is `hermes update --eject` on a resident desktop bundle: it
+/// launches Hermes Setup pinned to the exact commit its own release was
+/// built from, so the ejected source checkout matches the code the user
+/// was running. A runtime pin beats the build-time `BUILD_PIN_COMMIT`
+/// because the downloaded Hermes-Setup binary is the LATEST build — its
+/// baked pin names a newer release than the app doing the eject. Only a
+/// full 40-char hex sha is accepted; anything else is ignored and the
+/// build-time pin applies.
+pub fn pin_commit_from_args<I, S>(args: I) -> Option<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut take_next = false;
+    for a in args {
+        let a = a.as_ref();
+        if take_next {
+            let sha = a.trim().to_ascii_lowercase();
+            if sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Some(sha);
+            }
+            return None;
+        }
+        if a == "--pin-commit" {
+            take_next = true;
+        }
+    }
+    None
+}
+
 /// Process-wide install state, shared across Tauri commands.
 ///
 /// The bootstrap is a one-shot, single-tenant process — we only need one
@@ -74,13 +105,17 @@ pub struct AppState {
     /// How this process was launched (install vs update). Immutable for the
     /// lifetime of the process; read by the `get_mode` command.
     pub mode: AppMode,
+    /// Runtime commit pin from `--pin-commit` (the resident-eject flow).
+    /// Overrides `BUILD_PIN_COMMIT` for every bootstrap this process runs.
+    pub pin_commit: Option<String>,
 }
 
 impl AppState {
-    fn new(mode: AppMode) -> Self {
+    fn new(mode: AppMode, pin_commit: Option<String>) -> Self {
         Self {
             bootstrap: Mutex::new(None),
             mode,
+            pin_commit,
         }
     }
 }
@@ -103,14 +138,15 @@ pub fn run() {
     // Hermes is already installed, so users can re-run setup to repair a broken
     // install instead of the launcher fast path silently relaunching the app.
     let force_setup = force_setup_from_args(std::env::args().skip(1));
-    tracing::info!(?mode, force_setup, "Hermes installer starting");
+    let pin_commit = pin_commit_from_args(std::env::args().skip(1));
+    tracing::info!(?mode, force_setup, ?pin_commit, "Hermes installer starting");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
-        .manage(Arc::new(AppState::new(mode)))
+        .manage(Arc::new(AppState::new(mode, pin_commit.clone())))
         .setup(move |app| {
             use tauri::Manager;
             // Launcher fast path (macOS only): a bare ("Install") launch when
@@ -129,7 +165,9 @@ pub fn run() {
             //
             // `--reinstall`/`--repair` opts out so a broken install can be
             // repaired by re-running setup instead of launching the bad app.
-            if cfg!(target_os = "macos") && mode == AppMode::Install && !force_setup {
+            // `--pin-commit` opts out too: that launch IS an install request
+            // (the resident-eject flow), never a launcher double-click.
+            if cfg!(target_os = "macos") && mode == AppMode::Install && !force_setup && pin_commit.is_none() {
                 let install_root = paths::hermes_home().join("hermes-agent");
                 if bootstrap::hermes_is_installed(&install_root) {
                     match bootstrap::spawn_installed_desktop(&install_root) {
@@ -187,7 +225,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{force_setup_from_args, AppMode};
+    use super::{force_setup_from_args, pin_commit_from_args, AppMode};
 
     #[test]
     fn bare_args_are_install() {
@@ -227,6 +265,32 @@ mod tests {
         assert_eq!(
             AppMode::from_args(["--update", "--reinstall"]),
             AppMode::Update
+        );
+    }
+
+    #[test]
+    fn pin_commit_takes_only_a_full_hex_sha() {
+        let sha = "a".repeat(40);
+        assert_eq!(
+            pin_commit_from_args(["--pin-commit", &sha]),
+            Some(sha.clone())
+        );
+        // Uppercase input normalizes to lowercase.
+        let upper = "ABCDEF0123456789ABCDEF0123456789ABCDEF01";
+        assert_eq!(
+            pin_commit_from_args(["--pin-commit", upper]),
+            Some(upper.to_ascii_lowercase())
+        );
+        // Tags, branches, short shas, and missing values are all rejected —
+        // the build-time pin applies instead.
+        assert_eq!(pin_commit_from_args(["--pin-commit", "v1.2.3"]), None);
+        assert_eq!(pin_commit_from_args(["--pin-commit", "deadbeef"]), None);
+        assert_eq!(pin_commit_from_args(["--pin-commit"]), None);
+        assert_eq!(pin_commit_from_args(Vec::<String>::new()), None);
+        // Position-independent among other flags.
+        assert_eq!(
+            pin_commit_from_args(["--update", "--pin-commit", &sha, "--foo"]),
+            Some(sha)
         );
     }
 }

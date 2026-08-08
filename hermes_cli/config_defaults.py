@@ -2446,6 +2446,18 @@ DEFAULT_CONFIG = {
         "backup_count": 3,     # Number of rotated backup files to keep
     },
 
+    # Settings for the update pipeline.
+    "update": {
+        # This setting selects the releases that `hermes update` tracks on
+        # git checkouts:
+        #   main   — git pull origin main (the default).
+        #   stable — check out the latest tagged release, not main.
+        #   auto   — same as main (kept for pre-existing configs).
+        # Sealed installs (the embedded desktop app, docker, nix) ignore
+        # this setting; their stewards own versioning.
+        "channel": "auto",
+    },
+
     # Remotely-hosted model catalog manifest.  When enabled, the CLI fetches
     # curated model lists for OpenRouter and Nous Portal from this URL,
     # falling back to the in-repo snapshot on network failure.  Lets us

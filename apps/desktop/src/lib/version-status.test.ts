@@ -13,11 +13,10 @@ const backend = (over: Partial<Parameters<typeof resolveVersionStatus>[0]> = {})
   resolveVersionStatus({ applying: false, copy, remote: true, restarting: false, target: 'backend', ...over })
 
 describe('resolveVersionStatus', () => {
-  it('labels a current local client with its version and sha detail', () => {
+  it('labels a current local client with its version', () => {
     const status = client({ sha: 'abc1234', version: '0.4.2' })
 
     expect(status.label).toBe('v0.4.2')
-    expect(status.detail).toBe('abc1234')
     expect(status.hasUpdate).toBe(false)
     expect(status.unknown).toBe(false)
   })
@@ -41,11 +40,10 @@ describe('resolveVersionStatus', () => {
     expect(client().unknown).toBe(true)
   })
 
-  it('drops the diff and the sha detail while an apply is in flight', () => {
+  it('drops the diff while an apply is in flight', () => {
     const applying = client({ applying: true, behind: 3, sha: 'abc1234', version: '0.4.2' })
 
     expect(applying.label).toBe('v0.4.2 · update')
-    expect(applying.detail).toBeUndefined()
     expect(applying.hasUpdate).toBe(false)
 
     expect(client({ applying: true, restarting: true, version: '0.4.2' }).label).toBe('v0.4.2 · restart')
@@ -53,10 +51,10 @@ describe('resolveVersionStatus', () => {
 
   it('leads the tooltip with the apply message while applying', () => {
     expect(client({ applyMessage: 'Pulling…', applying: true, version: '0.4.2' }).tooltip).toBe(
-      'Pulling… · Hermes Desktop v0.4.2'
+      'Pulling…\nHermes Desktop v0.4.2'
     )
     expect(client({ applying: true, version: '0.4.2' }).tooltip).toBe(
-      `${copy.updateInProgress} · Hermes Desktop v0.4.2`
+      `${copy.updateInProgress}\nHermes Desktop v0.4.2`
     )
   })
 
@@ -64,7 +62,6 @@ describe('resolveVersionStatus', () => {
     const status = backend({ sha: 'abc1234', version: '0.4.2' })
 
     expect(status.label).toBe('backend v0.4.2')
-    expect(status.detail).toBeUndefined()
     expect(status.tooltip).toBe('Backend v0.4.2')
   })
 
@@ -81,5 +78,37 @@ describe('resolveVersionStatus', () => {
 
   it('hides a backend row that has no version at all', () => {
     expect(backend().unknown).toBe(true)
+  })
+})
+
+describe('stable channel vocabulary', () => {
+  it('names the release, never a commit count', () => {
+    const status = client({ behind: 1, channel: 'stable', latestTag: 'v0.21.0', version: '0.20.0' })
+
+    expect(status.label).toBe('v0.20.0 (update)')
+    expect(status.label).not.toContain('+1')
+    expect(status.hasUpdate).toBe(true)
+    expect(status.tooltip).toContain('v0.21.0 is available')
+    expect(status.tooltip).not.toContain('behind')
+  })
+
+  it('omits branch vocabulary on the stable channel', () => {
+    const status = client({ branch: 'main', channel: 'stable', version: '0.20.0' })
+
+    expect(status.tooltip ?? '').not.toContain('branch')
+  })
+
+  it('falls back to the update word when the check found no tag name', () => {
+    const status = client({ channel: 'stable', updateAvailable: true, version: '0.20.0' })
+
+    expect(status.label).toBe('v0.20.0 (update)')
+    expect(status.hasUpdate).toBe(true)
+  })
+
+  it('main channel behavior is unchanged', () => {
+    const status = client({ behind: 12, branch: 'main', version: '0.4.2' })
+
+    expect(status.label).toBe('v0.4.2 (+12)')
+    expect(status.tooltip).toContain('12 commits behind main')
   })
 })

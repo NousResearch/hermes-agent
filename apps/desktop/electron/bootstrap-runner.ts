@@ -374,7 +374,7 @@ async function resolveInstallScript({
   } catch (err) {
     // The pinned commit may not be fetchable from GitHub -- most commonly a
     // locally-built desktop app stamped to an unpushed HEAD (see
-    // write-build-stamp.mjs fromLocalGit). Fall back to the installer that
+    // scripts/write_install_stamp.py). Fall back to the installer that
     // ships inside the already-installed agent checkout so dev/self-builds can
     // still bootstrap instead of dying with a fatal 404.
     const installed = installedAgentInstallScript(hermesHome)
@@ -999,7 +999,12 @@ async function runBootstrap(opts) {
 
     const markerPayload = {
       pinnedCommit,
-      pinnedBranch: installStamp ? installStamp.branch : null
+      pinnedBranch: installStamp ? installStamp.branch : null,
+      // Bundled builds: record the payload tag that this bootstrap
+      // materialized. At launch, main.ts compares this tag against the
+      // stamp tag, which can be newer. The comparison decides offline
+      // re-materialization after an app update.
+      pinnedTag: installStamp && (installStamp as any).payload === true ? (installStamp as any).tag || null : null
     }
 
     const marker = typeof writeMarker === 'function' ? writeMarker(markerPayload) : markerPayload

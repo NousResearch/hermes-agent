@@ -7,7 +7,8 @@ const copy = {
   availableBody: 'A new version of Hermes is ready to install.',
   availableTitleBackend: 'Backend update available',
   availableBodyBackend: 'A newer version of the connected Hermes backend is ready to install.',
-  availableBodyNoChangelog: 'A newer version is ready. Release notes aren’t available for this install type.'
+  availableBodyNoChangelog: 'A newer version is ready. Release notes aren’t available for this install type.',
+  availableBodyRelease: (tag: string) => `Hermes ${tag} is ready to install.`
 }
 
 describe('resolveUpdateCopy', () => {
@@ -34,5 +35,19 @@ describe('resolveUpdateCopy', () => {
     const r = resolveUpdateCopy({ target: 'client', shownItems: 0, copy })
     expect(r.title).toBe('New update available')
     expect(r.body).toBe(copy.availableBodyNoChangelog)
+  })
+
+  it('stable channel: names the release, never the no-changelog copy', () => {
+    const r = resolveUpdateCopy({ channel: 'stable', copy, latestTag: 'v0.21.0', shownItems: 0, target: 'client' })
+    expect(r.title).toBe('New update available')
+    expect(r.body).toContain('v0.21.0')
+    // The absence of commit rows is structural on a release feed, not a
+    // degraded install type — the "no release notes" copy must not appear.
+    expect(r.body).not.toBe(copy.availableBodyNoChangelog)
+  })
+
+  it('stable channel without a tag name: generic available body', () => {
+    const r = resolveUpdateCopy({ channel: 'stable', copy, shownItems: 0, target: 'client' })
+    expect(r.body).toBe(copy.availableBody)
   })
 })

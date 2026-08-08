@@ -56,7 +56,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from hermes_cli import __version__, __release_date__
+from hermes_cli import __version__
 from hermes_cli.config import (
     cfg_get,
     DEFAULT_CONFIG,
@@ -1029,6 +1029,11 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "prompt_caching": "agent",
     "goals": "agent",
     "updates": "general",
+    # `update.channel` is the only schema-surfaced field under `update` (the
+    # bundled-install release-channel selector) — fold it into general next
+    # to the sibling `updates` section rather than spawning a one-field
+    # orphan category.
+    "update": "general",
     # `onboarding.profile_build` is the only schema-surfaced onboarding field
     # (`onboarding.seen` is an internal latch dict, not a user setting), so fold
     # it into the agent tab rather than spawning a one-field orphan category.
@@ -3243,7 +3248,6 @@ async def get_status(profile: Optional[str] = None):
         # ``PUBLIC_API_PATHS`` documents this endpoint as serving.
         status = {
             "version": __version__,
-            "release_date": __release_date__,
             "config_version": current_ver,
             "latest_config_version": latest_ver,
             "can_update_hermes": not _dashboard_local_update_managed_externally(),

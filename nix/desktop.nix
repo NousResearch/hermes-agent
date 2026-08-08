@@ -15,9 +15,22 @@
   electron,
   hermesAgent,
   python3,
+  rev ? null,
+  branch ? null,
+  dirty ? false,
+  distance ? null,
+  displayVersion ? null,
   ...
 }:
 let
+  # The Electron manifest identifies the UI project, but Hermes's version is
+  # owned by the root Python package. Keep the Nix derivation and the manifest
+  # shipped to Electron aligned with that one canonical value.
+  # hermes-agent.nix computes distance and displayVersion once and passes
+  # them in — do not re-derive them here.
+  version = (fromTOML (builtins.readFile ../pyproject.toml)).project.version;
+  stampDisplayVersion = if displayVersion != null then displayVersion else version;
+
   electronHeaders = pkgs.fetchurl {
     url = "https://artifacts.electronjs.org/headers/dist/v${electron.version}/node-v${electron.version}-headers.tar.gz";
     sha256 = "sha256-f8bSbLRmtbP93CJAvEBs+sHWDZ1xP2bcpLhC1EnOmZU=";
@@ -56,6 +69,17 @@ let
       runHook preBuild
 
       mkdir -p apps/desktop/build
+
+      # Electron reads app.getVersion() from this manifest. The source
+      # manifest deliberately does not own the Hermes release version, so
+      # stamp the canonical package version into the Nix-built copy.
+      node -e '
+        const fs = require("fs")
+        const file = "apps/desktop/package.json"
+        const pkg = JSON.parse(fs.readFileSync(file, "utf8"))
+        pkg.version = process.argv[1]
+        fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n")
+      ' '${version}'
 
       patchShebangs .
 
@@ -126,7 +150,11 @@ let
       # before the cd.
       cp -rn apps/desktop/dist $out/
 
-      echo '{"schemaVersion":1,"commit":"nix-dummy-commit","branch":"nix","dirty":false,"source":"nix"}' > $out/install-stamp.json
+      cat > $out/install-stamp.json <<'EOF'
+      {"schemaVersion":2,"commit":${builtins.toJSON rev},"branch":${builtins.toJSON branch},"baseVersion":"${version}","displayVersion":"${stampDisplayVersion}","distance":${builtins.toJSON distance},"dirty":${
+        if dirty then "true" else "false"
+      },"source":"nix","distribution":"nix"}
+      EOF
 
       cp -n apps/desktop/package.json $out/
       runHook postInstall

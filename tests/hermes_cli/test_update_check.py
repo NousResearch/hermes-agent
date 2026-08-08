@@ -16,6 +16,7 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     """When cache is fresh, check_for_updates should return cached value without calling git."""
     from hermes_cli.banner import check_for_updates
     from hermes_cli import __version__
+    from pathlib import Path
 
     # Create a fake git repo and fresh cache
     repo_dir = tmp_path / "hermes-agent"
@@ -26,6 +27,10 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3, "ver": __version__}))
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # Ensure version_info doesn't find a stamp or git repo (so it doesn't
+    # call subprocess before the cache check).
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: None)
+    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: None)
     with patch("hermes_cli.banner.subprocess.run") as mock_run:
         result = check_for_updates()
 

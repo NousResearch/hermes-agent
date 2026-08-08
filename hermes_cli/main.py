@@ -4929,14 +4929,22 @@ def cmd_import(args):
 
 
 def _print_version_info(*, check_updates: bool = True) -> None:
-    from hermes_cli.config import detect_install_method
     from hermes_cli.slash_exec import CommandContext, execute_command
+    from hermes_cli.version_info import get_version_info
 
     # Core version line is registry-owned (shared with the gateway /version);
     # the install/python/SDK detail below is CLI-only decoration.
     print(execute_command("version", CommandContext(surface="cli")).text)
+    version_info = get_version_info()
+    if version_info.branch:
+        print(f"Branch: {version_info.branch}")
+    if version_info.commit:
+        print(f"Commit: {version_info.commit}")
+    print(f"Working tree: {'dirty' if version_info.dirty else 'clean'}")
+    print(f"Source: {version_info.source}")
+    if version_info.distribution:
+        print(f"Distribution: {version_info.distribution}")
     print(f"Install directory: {PROJECT_ROOT}")
-    print(f"Install method: {detect_install_method(PROJECT_ROOT)}")
 
     # Show Python version
     print(f"Python: {sys.version.split()[0]}")
@@ -5164,6 +5172,15 @@ def _sweep_stale_bytecode_if_checkout_changed() -> None:
     ``hermes`` entry point compares the checkout fingerprint (cheap file
     reads, no git subprocess) against the last-validated stamp and sweeps
     the bytecode cache once when they diverge.
+
+    Scope (two-axis model): the sweep runs wherever ``.git`` exists —
+    managed installs AND dev trees. Dev trees accept the tradeoff on
+    purpose: the sweep writes ``.bytecode-fingerprint`` (gitignored) into
+    the tree and deletes ``__pycache__`` dirs, and skipping dev trees
+    would reopen the stale-pyc hole for everyone who lives in a checkout.
+    Sealed trees (embedded desktop, docker, nix) are exempt by
+    construction: no ``.git`` means no fingerprint, and the embedded app
+    also points PYTHONPYCACHEPREFIX outside its sealed resources.
 
     Never raises — a failure here must not block launch.
     """
@@ -9134,6 +9151,25 @@ def cmd_update(args):
 
     if install_method in {"nix", "nixos"}:
         print(recommended_update_command_for_method(install_method))
+        sys.exit(1)
+
+    # --eject runs BEFORE the bundled-install refusal below. The eject
+    # operation is the one update operation that must work on a bundled
+    # install. It is the exit from desktop management. On source installs
+    # it only sets the channel or does nothing.
+    if getattr(args, "eject", False):
+        from hermes_cli.update_cmd import cmd_update_eject
+
+        sys.exit(cmd_update_eject(args))
+
+    # A tree without .git is sealed: a steward (the desktop app, docker,
+    # nix, a package manager) replaces it wholesale, and `hermes update`
+    # has nothing to update. Refuse and name the steward's mechanism.
+    from hermes_cli.runtime_tree import Sealed, runtime_tree, steward_update_message
+
+    tree = runtime_tree(PROJECT_ROOT)
+    if isinstance(tree, Sealed):
+        print(steward_update_message(tree.steward))
         sys.exit(1)
 
     if getattr(args, "check", False):

@@ -12091,6 +12091,7 @@ function handleDeepLink(url) {
   }
 
   // hermes://blueprint/<key>?slot=val  -> host="blueprint", path="/<key>"
+  // hermes://session/<id>              -> host="session",   path="/<id>"
   const kind = parsed.hostname || ''
   const name = decodeURIComponent((parsed.pathname || '').replace(/^\//, ''))
   const params = {}

@@ -187,10 +187,35 @@ export function useDesktopIntegrations({
     return () => unsubscribe?.()
   }, [])
 
-  // hermes:// deep links -> a reviewable /blueprint command in the composer.
+  // hermes:// deep links.
+  //
+  //   hermes://blueprint/<key>?slot=val  -> a reviewable /blueprint command
+  //   hermes://session/<id>              -> open that session
+  //
+  // The session form exists so another tool can hand a conversation back to
+  // Hermes. Without it, an external app that knows a session id can raise the
+  // window but not land anywhere useful — the id is right there and unusable.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onDeepLink?.(payload => {
-      if (!payload || payload.kind !== 'blueprint' || !payload.name) {
+      if (!payload || !payload.name) {
+        return
+      }
+
+      if (payload.kind === 'session') {
+        // `openSession`, not a bare `navigate`: it fronts an already-open tile
+        // or loads the session into main, and only routes when routing is what
+        // is actually needed. Navigating alone changes the address without
+        // selecting the session, which renders an empty pane until something
+        // else forces the selection.
+        //
+        // It ignores an empty id, and percent-encodes the one it routes with,
+        // so a malformed or hostile id cannot escape into the query or hash.
+        openSession(payload.name, navigate)
+
+        return
+      }
+
+      if (payload.kind !== 'blueprint') {
         return
       }
 
@@ -210,7 +235,10 @@ export function useDesktopIntegrations({
     void window.hermesDesktop?.signalDeepLinkReady?.()
 
     return () => unsubscribe?.()
-  }, [])
+    // Re-subscribing on a new `navigate` is safe: the main process nulls
+    // `_pendingDeepLink` before re-dispatching, so a queued link flushes
+    // exactly once however many times the renderer signals ready.
+  }, [navigate])
 
   // ⌘W via the macOS menu accelerator → close the focused tab; if nothing is
   // closeable, fall back to closing the window (so ⌘W still works as the

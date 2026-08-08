@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.nousresearch.com/schemas/hermes.eval-task.v1.schema.json",
+  "title": "Hermes Evaluation Task v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "id",
+    "status",
+    "instruction",
+    "source",
+    "environment",
+    "success",
+    "forbidden",
+    "skills"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"
+    },
+    "status": {
+      "enum": ["candidate", "approved", "retired"]
+    },
+    "instruction": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source": {
+      "type": "object",
+      "required": ["kind", "sanitized"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "sanitized": { "const": true },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "message_count": { "type": "integer", "minimum": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "session_trace" } } },
+          "then": { "required": ["digest", "message_count"] }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "environment": {
+      "type": "object",
+      "required": ["allowed_tools"],
+      "properties": {
+        "allowed_tools": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "success": {
+      "type": "object",
+      "required": ["deterministic", "judged"],
+      "properties": {
+        "deterministic": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": ["type", "name"],
+                "properties": {
+                  "type": { "enum": ["tool_called", "tool_succeeded"] },
+                  "name": { "type": "string", "minLength": 1 }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "required": ["type", "value"],
+                "properties": {
+                  "type": {
+                    "enum": ["final_response_contains", "final_response_excludes"]
+                  },
+                  "value": { "type": "string", "minLength": 1 }
+                },
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "judged": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "forbidden": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "skills": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "signals": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "provenance": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

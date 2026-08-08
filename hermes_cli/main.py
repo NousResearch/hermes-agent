@@ -437,6 +437,7 @@ from typing import Optional
 import functools as _functools
 
 from hermes_cli.sessions_cmd import cmd_sessions  # noqa: F401
+from hermes_cli.evals_cmd import cmd_evals
 from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_hooks_flag
 from hermes_cli.subcommands.cron import build_cron_parser
 from hermes_cli.subcommands.sync import build_sync_parser
@@ -478,6 +479,7 @@ from hermes_cli.subcommands.acp import build_acp_parser
 from hermes_cli.subcommands.tools import build_tools_parser
 from hermes_cli.subcommands.insights import build_insights_parser
 from hermes_cli.subcommands.monitoring import build_monitoring_parser
+from hermes_cli.subcommands.evals import build_evals_parser
 from hermes_cli.subcommands.skills import build_skills_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
@@ -12432,6 +12434,7 @@ def main():
     # =========================================================================
     build_insights_parser(subparsers, cmd_insights=cmd_insights)
     build_monitoring_parser(subparsers, cmd_monitoring=cmd_monitoring)
+    build_evals_parser(subparsers, cmd_evals=cmd_evals)
 
     # =========================================================================
     # claw command  (parser built in hermes_cli/subcommands/claw.py)

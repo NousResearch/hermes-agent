@@ -53,6 +53,22 @@ def test_reactions_enabled_when_set_true(monkeypatch):
     assert adapter._reactions_enabled() is True
 
 
+@pytest.mark.parametrize("val", ["false", "0", "no", "off", "FALSE", "Off"])
+def test_reactions_disabled_by_falsy_aliases(monkeypatch, val):
+    """All shared falsy aliases (including ``off``) must disable reactions."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", val)
+    adapter = _make_adapter()
+    assert adapter._reactions_enabled() is False
+
+
+@pytest.mark.parametrize("val", ["true", "1", "yes", "on", "TRUE", "On"])
+def test_reactions_enabled_by_truthy_aliases(monkeypatch, val):
+    """All shared truthy aliases must enable reactions."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", val)
+    adapter = _make_adapter()
+    assert adapter._reactions_enabled() is True
+
+
 # ── _set_reaction ────────────────────────────────────────────────────
 
 

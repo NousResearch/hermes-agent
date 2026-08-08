@@ -208,11 +208,27 @@ _USAGE_LIMIT_TRANSIENT_SIGNALS = [
     "try again",
     "retry",
     "resets at",
+    "resets in",  # (#63021) "Your limit resets in 4hr 5min"
     "reset in",
+    "reset after",
+    "available in",
+    "per minute",
+    "per second",
     "wait",
     "requests remaining",
     "periodic",
     "window",
+]
+
+# Explicit rate-limit wording that must always stay retryable rate_limit, even
+# when it co-occurs with a usage-limit phrase.  Without this guard, a broad
+# "limit exceeded" usage-limit pattern would capture ordinary "rate limit
+# exceeded" 429s and misclassify them as terminal billing. (#61123)
+_EXPLICIT_RATE_LIMIT_PATTERNS = [
+    "rate limit",
+    "rate-limit",
+    "rate_limit",
+    "ratelimit",
 ]
 
 # Payload-too-large patterns detected from message text (no status_code attr).
@@ -1148,6 +1164,34 @@ def _classify_by_status(
                 should_rotate_credential=False,
                 should_fallback=True,
                 error_context=ctx,
+            )
+        # Message-aware quota/billing detection on the remaining 429s.  A hard
+        # quota/usage-limit 429 (e.g. Z.AI "Usage limit reached for 5 hour") is
+        # terminal exhaustion of the current window — the credential is valid
+        # but cannot serve any request until the window resets, so retrying the
+        # same key only burns the turn and never recovers.  Classify it as
+        # billing so the configured fallback activates immediately instead of
+        # being gated behind pool-recovery. (#39441, #36276)
+        #
+        # Guard order matters:
+        #   1. Explicit rate-limit wording ("rate limit exceeded") stays
+        #      retryable rate_limit even if a broad usage-limit pattern also
+        #      matches — otherwise ordinary throttling would be promoted to
+        #      terminal billing. (#61123)
+        #   2. A usage-limit phrase with a transient signal ("try again",
+        #      "resets in") is a periodic quota that will lift, so keep it as
+        #      retryable rate_limit. (#63021)
+        #   3. A usage-limit phrase with no transient signal and no explicit
+        #      rate-limit wording is hard quota exhaustion → billing.
+        has_usage_limit = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
+        has_transient_signal = any(p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS)
+        has_explicit_rate_limit = any(p in error_msg for p in _EXPLICIT_RATE_LIMIT_PATTERNS)
+        if has_usage_limit and not has_transient_signal and not has_explicit_rate_limit:
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
             )
         return result_fn(
             FailoverReason.rate_limit,

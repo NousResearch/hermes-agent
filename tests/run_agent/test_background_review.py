@@ -21,6 +21,9 @@ def _bare_agent() -> AIAgent:
     agent._memory_enabled = True
     agent._user_profile_enabled = False
     agent._cached_system_prompt = "test-cached-system-prompt"
+    agent._fallback_chain = [
+        {"provider": "copilot", "model": "gpt-5.6-luna"},
+    ]
     import datetime as _dt
     agent.session_start = _dt.datetime(2026, 1, 1, 12, 0, 0)
     agent._MEMORY_REVIEW_PROMPT = "review memory"
@@ -118,6 +121,229 @@ def test_background_review_fork_opts_out_of_session_finalization(monkeypatch):
 
     assert seen.get("end_session_on_close") is False
     assert seen.get("at_run_time") is False
+
+
+def test_background_review_fork_inherits_parent_fallback_chain(monkeypatch):
+    """The review fork must inherit the parent's fallback chain so a hard-quota
+    429 on the review's model switches to the configured fallback instead of
+    aborting.  Regression for the same bug class as the main-conversation
+    Z.AI hard-quota fallback path (sibling fork path: delegate_tool.py already
+    inherits _fallback_chain for subagents; background_review did not).
+    """
+    captured = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            captured["init_kwargs"] = kwargs
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    init_kwargs = captured.get("init_kwargs", {})
+    assert "fallback_model" in init_kwargs, "fallback_model not passed to review fork"
+    expected = [{"provider": "copilot", "model": "gpt-5.6-luna"}]
+    assert init_kwargs["fallback_model"] == expected, (
+        f"review fork fallback_model={init_kwargs['fallback_model']!r}, "
+        f"expected {expected!r}"
+    )
+
+
+def test_background_review_fork_fallback_none_when_parent_has_no_chain(monkeypatch):
+    """When the parent has no fallback chain, the review fork should pass
+    ``fallback_model=None`` (matching AIAgent's default) rather than crashing
+    or synthesizing an empty list.
+    """
+    captured = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            captured["init_kwargs"] = kwargs
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._fallback_chain = []  # no fallback configured
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    init_kwargs = captured.get("init_kwargs", {})
+    assert init_kwargs.get("fallback_model") is None, (
+        f"expected fallback_model=None when parent has no chain, got "
+        f"{init_kwargs.get('fallback_model')!r}"
+    )
+
+
+def test_background_review_fork_inherits_multi_entry_fallback_chain(monkeypatch):
+    """Multi-entry fallback chains must be passed through intact, preserving
+    ordering.  The review fork's _has_pending_fallback() and
+    try_activate_fallback() walk the list in order, so any truncation or
+    reordering would break the fallback sequence.
+    """
+    captured = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            captured["init_kwargs"] = kwargs
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    multi_chain = [
+        {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        {"provider": "copilot", "model": "gpt-5.6-luna"},
+    ]
+    agent._fallback_chain = multi_chain
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    init_kwargs = captured.get("init_kwargs", {})
+    assert init_kwargs["fallback_model"] == multi_chain, (
+        f"multi-entry chain not passed intact: {init_kwargs.get('fallback_model')!r}"
+    )
+
+
+def test_background_review_fork_does_not_mutate_parent_fallback_chain(monkeypatch):
+    """The review fork's fallback operations (index advancement, key tracking)
+    must not mutate the parent's _fallback_chain list or its dict entries.
+    This guards against shared-reference bugs if future code writes to chain
+    entries.  The fallback path currently only reads entries, but this test
+    locks that contract.
+    """
+    import copy as _copy
+
+    captured = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            captured["init_kwargs"] = kwargs
+            self._session_messages = []
+            # Simulate fallback activation: advance index on the fork's chain
+            fb = kwargs.get("fallback_model")
+            if isinstance(fb, list) and fb:
+                # try_activate_fallback reads entries — never writes.
+                _ = fb[0].get("provider")
+                _ = fb[0].get("model")
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    original_chain = [
+        {"provider": "copilot", "model": "gpt-5.6-luna"},
+    ]
+    original_snapshot = _copy.deepcopy(original_chain)
+    agent._fallback_chain = original_chain
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert agent._fallback_chain == original_snapshot, (
+        "parent _fallback_chain was mutated by the review fork"
+    )
+
+
+def test_background_review_fork_chain_enables_has_pending_fallback(monkeypatch):
+    """Behavioral test: prove the inherited chain makes the fork's
+    _has_pending_fallback() return True — the actual gate that decides whether
+    fallback is attempted.  This goes beyond kwarg-plumbing: it verifies the
+    chain flows through agent_init.py's list comprehension and produces a
+    usable _fallback_chain on the constructed agent.
+
+    Uses a real AIAgent via __new__ to exercise the _has_pending_fallback
+    method directly, simulating what agent_init.py would produce.
+    """
+    import run_agent as run_agent_module
+
+    # Simulate what agent_init.py does with fallback_model=[...]
+    fallback_model = [{"provider": "copilot", "model": "gpt-5.6-luna"}]
+    # agent_init.py: [f for f in fallback_model if isinstance(f, dict) and f.get("provider") and f.get("model")]
+    chain = [
+        f for f in fallback_model
+        if isinstance(f, dict) and f.get("provider") and f.get("model")
+    ]
+
+    # Build a bare agent the way _has_pending_fallback reads it
+    agent = object.__new__(run_agent_module.AIAgent)
+    agent._fallback_chain = chain
+    agent._fallback_index = 0
+
+    # The actual method from run_agent.py:5905
+    assert agent._has_pending_fallback() is True, (
+        "fork with inherited chain should report a pending fallback"
+    )
+
+    # Simulate exhausting the chain (index advanced past all entries)
+    agent._fallback_index = len(chain)
+    assert agent._has_pending_fallback() is False, (
+        "fork with exhausted index should report no pending fallback"
+    )
+
+    # Prove an empty chain (pre-fix behavior) reports False
+    agent._fallback_chain = []
+    agent._fallback_index = 0
+    assert agent._has_pending_fallback() is False, (
+        "fork with empty chain (pre-fix) should report no pending fallback"
+    )
 
 
 

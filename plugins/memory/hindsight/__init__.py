@@ -65,6 +65,8 @@ _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # overwrites prior turns server-side, so we keep the per-process
 # unique document_id fallback for older APIs.
 _MIN_VERSION_FOR_UPDATE_MODE_APPEND = "0.5.0"
+_CIRCUIT_BREAKER_THRESHOLD = 3  # consecutive failures before opening circuit
+_CIRCUIT_BREAKER_COOLDOWN = 60.0  # seconds before half-open retry
 _VALID_BUDGETS = {"low", "mid", "high"}
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
@@ -747,6 +749,10 @@ class HindsightMemoryProvider(MemoryProvider):
         # Legacy alias — older tests/callers reference _sync_thread directly.
         # Points at _writer_thread once the writer is running.
         self._sync_thread = None
+        self._circuit_breaker_failures = 0
+        self._circuit_breaker_open_until = 0.0
+        self._circuit_breaker_half_open_probe = False
+        self._circuit_breaker_lock = threading.Lock()
         self._session_id = ""
         self._parent_session_id = ""
         self._document_id = ""
@@ -1155,18 +1161,85 @@ class HindsightMemoryProvider(MemoryProvider):
         """Schedule *coro* on the shared loop using the configured timeout."""
         return _run_sync(coro, timeout=self._timeout)
 
-    def _is_retriable_embedded_connection_error(self, exc: Exception) -> bool:
-        """Return True for stale embedded-daemon connection failures."""
-        if self._mode != "local_embedded":
-            return False
+    def _check_circuit_breaker(self) -> bool:
+        """Check the breaker and reserve the sole HALF-OPEN probe, if needed.
+
+        Returns whether this call owns a half-open probe.  Every compound state
+        transition is protected by ``_circuit_breaker_lock``; callers that do
+        not own the probe must fail fast while it is in flight.
+        """
+        now = time.monotonic()
+        with self._circuit_breaker_lock:
+            failures = self._circuit_breaker_failures
+            if failures < _CIRCUIT_BREAKER_THRESHOLD:
+                return False
+            if now < self._circuit_breaker_open_until:
+                raise RuntimeError(
+                    "Hindsight circuit breaker open: backend failed %d consecutive times; "
+                    "will retry after cooldown" % failures
+                )
+            if self._circuit_breaker_half_open_probe:
+                raise RuntimeError(
+                    "Hindsight circuit breaker half-open probe in flight; fast-failing"
+                )
+            self._circuit_breaker_half_open_probe = True
+            logger.info(
+                "[CB-HS] Hindsight circuit breaker HALF-OPEN: allowing one probe after cooldown"
+            )
+            return True
+
+    def _circuit_breaker_success(self, *, probe: bool) -> None:
+        with self._circuit_breaker_lock:
+            previous = self._circuit_breaker_failures
+            self._circuit_breaker_failures = 0
+            self._circuit_breaker_open_until = 0.0
+            if probe:
+                self._circuit_breaker_half_open_probe = False
+        if previous:
+            logger.info(
+                "[CB-HS] Hindsight circuit breaker CLOSED: operation succeeded, counter reset from %d",
+                previous,
+            )
+
+    def _circuit_breaker_failure(self, exc: Exception, *, probe: bool) -> None:
+        """Record only backend/connection/timeout failures."""
+        if not self._is_retriable_connection_error(exc):
+            if probe:
+                with self._circuit_breaker_lock:
+                    self._circuit_breaker_half_open_probe = False
+            return
+        with self._circuit_breaker_lock:
+            self._circuit_breaker_failures += 1
+            self._circuit_breaker_open_until = time.monotonic() + _CIRCUIT_BREAKER_COOLDOWN
+            failures = self._circuit_breaker_failures
+            if probe:
+                self._circuit_breaker_half_open_probe = False
+        if failures >= _CIRCUIT_BREAKER_THRESHOLD:
+            logger.warning(
+                "[CB-HS] Hindsight circuit breaker OPENED after %d consecutive failures; "
+                "fast-failing for %.0fs cooldown",
+                failures,
+                _CIRCUIT_BREAKER_COOLDOWN,
+            )
+
+    def _circuit_breaker_is_open(self) -> bool:
+        with self._circuit_breaker_lock:
+            return (
+                self._circuit_breaker_failures >= _CIRCUIT_BREAKER_THRESHOLD
+                and time.monotonic() < self._circuit_breaker_open_until
+            )
+
+    def _is_retriable_connection_error(self, exc: Exception) -> bool:
+        """Return True only for backend, connection, and timeout failures."""
+        if isinstance(exc, (ConnectionError, TimeoutError, asyncio.TimeoutError)):
+            return True
         text = f"{type(exc).__name__}: {exc}".lower()
         return any(
             marker in text
             for marker in (
-                "cannot connect to host",
-                "connection refused",
-                "connect call failed",
-                "clientconnectorerror",
+                "server disconnected", "connection reset", "timed out",
+                "connection refused", "cannot connect to host", "clientconnectorerror",
+                "failed to start daemon", "after it has been closed",
             )
         )
 
@@ -1401,21 +1474,46 @@ class HindsightMemoryProvider(MemoryProvider):
             logger.debug("Hindsight atexit shutdown failed: %s", exc)
 
     def _run_hindsight_operation(self, operation):
-        """Run an async Hindsight client operation, retrying once after idle shutdown."""
-        client = self._get_client()
+        """Run an operation with one backend retry and circuit protection."""
+        probe = self._check_circuit_breaker()
+        with self._circuit_breaker_lock:
+            failures = self._circuit_breaker_failures
+        logger.debug(
+            "[CB-HS] Hindsight operation starting (circuit failures: %d/%d)",
+            failures, _CIRCUIT_BREAKER_THRESHOLD,
+        )
+        failure_recorded = False
         try:
-            return self._run_sync(operation(client))
-        except Exception as exc:
-            if not self._is_retriable_embedded_connection_error(exc):
-                raise
-            logger.info(
-                "Hindsight embedded daemon appears unreachable; recreating client and retrying once: %s",
-                exc,
-            )
-            self._client = None
             client = self._get_client()
-            self._client = client
-            return self._run_sync(operation(client))
+            try:
+                result = self._run_sync(operation(client))
+            except Exception as exc:
+                if not self._is_retriable_connection_error(exc):
+                    self._circuit_breaker_failure(exc, probe=probe)
+                    failure_recorded = True
+                    raise
+                logger.info(
+                    "Hindsight backend appears unreachable; recreating client and retrying once: %s",
+                    exc,
+                )
+                self._client = None
+                client = self._get_client()
+                self._client = client
+                try:
+                    result = self._run_sync(operation(client))
+                except Exception as retry_exc:
+                    self._circuit_breaker_failure(retry_exc, probe=probe)
+                    failure_recorded = True
+                    raise
+            self._circuit_breaker_success(probe=probe)
+            return result
+        except Exception as exc:
+            # Client creation can itself fail before the operation coroutine is
+            # entered. It is a breaker failure only when classified as a
+            # backend/connection/timeout error; all other errors stay visible.
+            if not failure_recorded:
+                self._circuit_breaker_failure(exc, probe=probe)
+            raise
 
     def _probe_url(self) -> str:
         """Return the URL to probe /version on.
@@ -1872,6 +1970,9 @@ class HindsightMemoryProvider(MemoryProvider):
             return
         if self._shutting_down.is_set():
             logger.debug("sync_turn: skipped (shutting down)")
+            return
+        if self._circuit_breaker_is_open():
+            logger.debug("sync_turn: skipped (circuit breaker open)")
             return
 
         if session_id:

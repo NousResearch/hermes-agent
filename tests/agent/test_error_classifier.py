@@ -234,6 +234,27 @@ class TestClassifyApiError:
 
     # ── Rate limit ──
 
+    def test_429_usage_limit_transient_window_wording_stays_rate_limit(self):
+        """Periodic quota wording must not become terminal billing."""
+        messages = [
+            "Your API usage limit quota allows 60 requests per minute",
+            "Usage limit exceeded per minute quota",
+            "Quota available in 5 minutes",
+            "Requests per second limit exceeded",
+            "Usage limit will be reset after cooldown period",
+        ]
+        for message in messages:
+            result = classify_api_error(MockAPIError(message, status_code=429))
+            assert result.reason == FailoverReason.rate_limit, message
+            assert result.retryable is True, message
+
+    def test_429_underscore_rate_limit_stays_rate_limit(self):
+        result = classify_api_error(
+            MockAPIError("rate_limit exceeded", status_code=429)
+        )
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
     def test_429_rate_limit(self):
         e = MockAPIError("Too Many Requests", status_code=429)
         result = classify_api_error(e)
@@ -1080,6 +1101,100 @@ class TestExpandedOverflowPatterns:
         )
         result = classify_api_error(e, provider="openrouter", model="m")
         assert result.reason == FailoverReason.context_overflow
+
+
+# ── Test: Message-aware quota/billing classification for HTTP 429 ─────────
+# A hard quota/usage-limit 429 (e.g. Z.AI "Usage limit reached for 5 hour") is
+# terminal exhaustion of the current window — retrying the same key never
+# recovers.  Classify it as billing so the configured fallback activates
+# immediately instead of being gated behind pool-recovery. (#39441, #36276,
+# #61123, #63021)
+
+class TestQuotaBillingClassification:
+    """Message-aware 429 disambiguation: terminal quota vs transient rate limit."""
+
+    def test_zai_usage_limit_reached_is_billing_not_rate_limit(self):
+        """The exact production incident: Z.AI HTTP 429 with a hard 5-hour usage
+        limit.  Must classify as terminal billing (non-retryable, fallback
+        enabled) so the configured fallback chain activates immediately
+        instead of burning retries against an exhausted window."""
+        e = MockAPIError(
+            "Usage limit reached for 5 hour. "
+            "Your limit will reset at 2026-07-30 17:31:59",
+            status_code=429,
+        )
+        result = classify_api_error(e, provider="zai", model="glm-5.2")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+    def test_kimi_billing_cycle_quota_is_billing(self):
+        """Kimi-style monthly/billing-cycle quota exhaustion.  A hard plan
+        limit with no transient signal must be billing."""
+        e = MockAPIError(
+            "usage limit for this billing cycle has been reached",
+            status_code=429,
+        )
+        result = classify_api_error(e, provider="moonshot", model="kimi")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_transient_usage_limit_with_try_again_is_rate_limit(self):
+        """A usage-limit 429 with a transient signal ('try again') is a
+        periodic quota that will lift — keep it as retryable rate_limit."""
+        e = MockAPIError(
+            "usage limit reached, please try again in 60 seconds",
+            status_code=429,
+        )
+        result = classify_api_error(e, provider="zai")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_fallback is True
+
+    def test_transient_usage_limit_with_resets_in_is_rate_limit(self):
+        """'resets in' is a transient signal (#63021): 'Your limit resets in
+        4hr 5min' is a periodic quota, not terminal billing."""
+        e = MockAPIError(
+            "usage limit reached. your limit resets in 4hr 5min",
+            status_code=429,
+        )
+        result = classify_api_error(e, provider="zai")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    def test_ordinary_rate_limit_exceeded_stays_rate_limit(self):
+        """Guard (#61123): ordinary 'Rate limit exceeded' must stay retryable
+        rate_limit even though 'limit exceeded' matches a usage-limit pattern.
+        Without the explicit-rate-limit guard, this would regress to terminal
+        billing."""
+        e = MockAPIError(
+            "Rate limit exceeded: too many requests", status_code=429
+        )
+        result = classify_api_error(e, provider="zai")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_rotate_credential is True
+
+    def test_openrouter_upstream_429_unaffected_by_quota_logic(self):
+        """Guard: an OpenRouter upstream-model 429 must still classify as
+        upstream_rate_limit, not get captured by the new billing detection.
+        Proves the insertion ordering is correct — the OpenRouter branch runs
+        before the quota/billing branch."""
+        e = MockAPIError(
+            "Provider returned error: 429 rate_limit_error",
+            status_code=429,
+            body={
+                "error": {
+                    "message": "Provider returned error",
+                    "metadata": {"raw": {"provider_name": "DeepSeek"}},
+                }
+            },
+        )
+        result = classify_api_error(e, provider="openrouter", model="deepseek/deepseek-chat")
+        assert result.reason == FailoverReason.upstream_rate_limit
+        assert result.should_rotate_credential is False
 
 
 

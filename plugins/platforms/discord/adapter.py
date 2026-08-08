@@ -40,6 +40,29 @@ _DISCORD_MARKDOWN_LINK_LABEL_RE = re.compile(r"([\\\[\]])")
 _DISCORD_URL_LABEL_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
 
 
+# Bare URL ending in a common file extension, not inside a markdown link
+# or inline code, with following run-on text (letter or punctuation+letter)
+# that Discord's link parser would absorb into the URL.
+_BARE_URL_RUNON_RE = re.compile(
+    r"(?<![\(`])"                          # not inside markdown link or inline code
+    r"(https?://[^\s)<>`]+"               # URL without parens/brackets/backtick
+    r"\.(?:html|htm(?!l)|php|js(?!o)|json|xml|css|pdf|txt|md|aspx?|jsp|cgi|svg|png|jpe?g|gif|mp[34]|zip|tar|gz)"
+    r")([.,;:!?]*[A-Za-z])"              # extension + optional punctuation + letter
+)
+
+
+def _ensure_url_trailing_space(text: str) -> str:
+    """Insert a space after bare URLs that run directly into following text.
+
+    Discord's link parser absorbs trailing punctuation and text into the URL
+    (e.g. ``/index.htmlReview`` becomes one link).  A single trailing space
+    prevents this without altering the visible content (issue #78359).
+    Skips URLs inside markdown links ``[text](url)``, angle brackets ``<url>``,
+    and inline code.
+    """
+    return _BARE_URL_RUNON_RE.sub(r"\1 \2", text)
+
+
 def _format_discord_markdown_link(label: str, url: str) -> str:
     """Return a Discord Markdown link whose label is not itself a URL.
 
@@ -5369,10 +5392,13 @@ class DiscordAdapter(BasePlatformAdapter):
         """Format message for Discord.
 
         Converts GFM markdown tables to bullet-list groups since Discord
-        does not render pipe tables natively.
+        does not render pipe tables natively.  Also ensures bare URLs are
+        followed by a whitespace separator so Discord's link parser does
+        not absorb trailing text into the URL (issue #78359).
         """
         if not content:
             return content
+        content = _ensure_url_trailing_space(content)
         return convert_table_to_bullets(content)
 
     async def _run_simple_slash(

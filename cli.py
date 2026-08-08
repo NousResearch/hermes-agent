@@ -17308,7 +17308,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             key_bindings=kb,
             style=style,
             full_screen=False,
-            mouse_support=False,
+            # Mouse support (cursor positioning, text selection, scrolling) is
+            # enabled by default per the user-facing config toggle
+            # `display.mouse_support` (#4064 / PR #4077). Set
+            # `display.mouse_support: false` in config.yaml if your terminal
+            # mishandles mouse reports.
+            mouse_support=bool(CLI_CONFIG.get("display", {}).get("mouse_support", True)),
             **({"output": _cpr_disabled_output} if _cpr_disabled_output is not None else {}),
             # Read from display.cli_refresh_interval (default 0 = disabled).
             # When non-zero, prompt_toolkit redraws the UI on this cadence

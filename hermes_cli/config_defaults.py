@@ -1230,6 +1230,11 @@ DEFAULT_CONFIG = {
         # Set 0 to disable the background refresh if it fights terminal
         # auto-scroll in non-fullscreen mode on some emulators (#48309).
         "cli_refresh_interval": 1.0,
+        # Mouse support (cursor positioning, text selection, scrolling) for the
+        # classic prompt_toolkit CLI. Enabled by default (#4064 / PR #4077).
+        # Set `display.mouse_support: false` in config.yaml if your terminal
+        # mishandles mouse reports.
+        "mouse_support": True,
         "user_message_preview": {  # CLI: how many submitted user-message lines to echo back in scrollback
             "first_lines": 2,
             "last_lines": 2,

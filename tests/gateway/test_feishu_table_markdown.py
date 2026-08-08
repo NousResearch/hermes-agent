@@ -87,3 +87,81 @@ def test_markdown_table_uses_post_not_text():
     )
 
 
+def test_indented_code_block_does_not_swallow_trailing_content():
+    """Regression test: Feishu's ``md`` renderer swallows prose that follows a
+    4-space-indented code block when it lives inside one large markdown element.
+
+    ``_build_markdown_post_rows`` isolates indented code blocks into their own
+    post row (like fenced blocks already were), so content after the block —
+    commonly a ``xxx:`` line followed by an indented list — stays visible.
+    Indented segments are emitted as ``text`` rows so they survive the Feishu
+    renderer, while surrounding prose stays in ``md`` rows.
+    """
+    from plugins.platforms.feishu.adapter import _build_markdown_post_rows
+    content = (
+        "**加粗触发 post 渲染**\n"
+        "前文冒号：\n"
+        "\n"
+        "    配置项一  值一\n"
+        "    配置项二  值二\n"
+        "\n"
+        "冒号后的关键结论必须保留"
+    )
+    rows = _build_markdown_post_rows(content)
+    md_texts = [row[0]["text"] for row in rows if row]
+    assert len(md_texts) >= 3, (
+        f"indented code block must be isolated into its own row (>=3 rows), "
+        f"got {len(md_texts)}: {md_texts!r}"
+    )
+    joined = "\n".join(md_texts)
+    assert "冒号后的关键结论必须保留" in joined, (
+        "content after the indented code block was swallowed by the Feishu md "
+        "renderer; the isolation fix in _build_markdown_post_rows is missing"
+    )
+    assert "配置项一" in joined, "indented block content itself was lost"
+
+
+def test_indented_code_block_emitted_as_text_row_preserving_markdown() -> None:
+    """Regression test: a message carrying BOTH a markdown hint (e.g. ``**``)
+    and a 4-space-indented block must stay a ``post`` message — markdown
+    formatting for the non-indented part must NOT be sacrificed. The indented
+    block itself is emitted as a ``text`` row (Feishu renders those verbatim,
+    indentation preserved), and the rest keeps ``md`` rows.
+
+    This is the user-visible bug: a reply with ``**加粗**`` heading + indented
+    body arrived showing only the heading lines — every indented paragraph was
+    silently dropped by Feishu's post renderer. The fix must keep ``**``
+    rendering bold while making the indented body visible again.
+    """
+    content = (
+        "**⚠️ 出发前必办两件事**\n"
+        "\n"
+        "    1. 门票必须提前线上预约！\n"
+        "       暑期（7/23-8/31）景区只开网络预约。\n"
+        "\n"
+        "    2. 学生证必须带实体证件！\n"
+        "\n"
+        "结尾正常显示"
+    )
+    msg_type, payload_str = _call_build_outbound_payload(content)
+    assert msg_type == "post", (
+        f"expected 'post' (markdown preserved) for indented block + markdown, "
+        f"got {msg_type!r}"
+    )
+    payload = json.loads(payload_str)
+    rows = payload["zh_cn"]["content"]
+    tags = [row[0]["tag"] for row in rows if row]
+    assert "md" in tags, "markdown rows must still be emitted"
+    assert "text" in tags, "indented block must be emitted as a text row"
+    md_texts = [row[0]["text"] for row in rows if row and row[0]["tag"] == "md"]
+    text_rows = [row[0]["text"] for row in rows if row and row[0]["tag"] == "text"]
+    joined_md = "\n".join(md_texts)
+    assert "**⚠️ 出发前必办两件事**" in joined_md, (
+        "markdown hint must stay in an md row (so Feishu renders it bold)"
+    )
+    assert "结尾正常显示" in joined_md, "trailing prose must survive"
+    joined_text = "\n".join(text_rows)
+    assert "门票必须提前线上预约" in joined_text, "indented content must survive in text row"
+    assert "    " in joined_text, "indentation must be preserved in text row"
+
+

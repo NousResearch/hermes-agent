@@ -602,21 +602,25 @@ def _build_markdown_post_payload(content: str) -> str:
 
 
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
-    """Build Feishu post rows while isolating fenced code blocks.
+    """Build Feishu post rows while isolating fenced AND indented code blocks.
 
     Feishu's `md` renderer can swallow trailing content when a fenced code block
-    appears inside one large markdown element. Split the reply at real fence
-    lines so prose before/after the code block remains visible while code stays
-    in a dedicated row.
+    or a 4-space-indented code block appears inside one large markdown element,
+    and it renders 4-space-indented blocks as EMPTY. Split the reply at real
+    fence lines and at indented-code-block boundaries so prose before/after the
+    code block remains visible while code stays in a dedicated row. Indented
+    segments are emitted as ``text`` rows (rendered verbatim) so they survive;
+    everything else stays an ``md`` row so normal markdown still renders.
     """
     if not content:
         return [[{"tag": "md", "text": ""}]]
-    if "```" not in content:
+    if "```" not in content and not _has_indented_code_block(content):
         return [[{"tag": "md", "text": content}]]
 
     rows: List[List[Dict[str, str]]] = []
     current: List[str] = []
     in_code_block = False
+    in_indent_block = False
 
     def _flush_current() -> None:
         nonlocal current
@@ -624,7 +628,11 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
             return
         segment = "\n".join(current)
         if segment.strip():
-            rows.append([{"tag": "md", "text": segment}])
+            # Indented blocks go out as `text` rows: Feishu's md renderer
+            # drops 4-space-indented blocks (renders them EMPTY), but `text`
+            # rows are rendered verbatim, indentation preserved.
+            tag = "text" if in_indent_block else "md"
+            rows.append([{"tag": tag, "text": segment}])
         current = []
 
     for raw_line in content.splitlines():
@@ -644,10 +652,23 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
                 _flush_current()
             continue
 
+        # Indented code block: a line starting with 4+ spaces (and not empty).
+        # Toggle an isolation segment at the boundary so the Feishu md renderer
+        # cannot swallow prose that follows an indented block.
+        is_indented = bool(re.match(r"^ {4,}\S", raw_line))
+        if is_indented != in_indent_block:
+            _flush_current()
+            in_indent_block = is_indented
+
         current.append(raw_line)
 
     _flush_current()
     return rows or [[{"tag": "md", "text": content}]]
+
+
+def _has_indented_code_block(content: str) -> bool:
+    """True if any line starts with 4+ spaces (markdown indented code block)."""
+    return any(re.match(r"^ {4,}\S", line) for line in content.splitlines())
 
 
 def parse_feishu_post_payload(
@@ -4652,6 +4673,12 @@ class FeishuAdapter(BasePlatformAdapter):
         # MAX_MESSAGE_LENGTH, the per-chunk regex would otherwise
         # mis-classify a plain-prose chunk as ``text``. See #26841.
         if prefer_post or _MARKDOWN_HINT_RE.search(content):
+            # Feishu's post ``md`` renderer drops 4-space-indented blocks
+            # entirely (renders them as EMPTY). _build_markdown_post_rows
+            # isolates them into dedicated ``text`` rows, which Feishu renders
+            # verbatim (indentation preserved) while everything else stays an
+            # ``md`` row — so markdown formatting is NOT lost for the rest of
+            # the message.
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)

@@ -1297,6 +1297,35 @@ code_execution:
   max_tool_calls: 50   # Max RPC tool calls per execution (default: 50)
 
 # =============================================================================
+# Claude Code Profiles
+# =============================================================================
+# Hermes starts Claude Code as a child program for delegation, for the ACP
+# runtime, and for a `claude` command the agent writes into the terminal. Give
+# Hermes two or more Claude accounts, each on its own plan, and it moves to the
+# next account when one reaches its plan limit.
+#
+# The switcher stays OFF until you list two or more profiles below. With one
+# profile, or none, Hermes behaves exactly as it does today.
+#
+# A profile is one directory that holds one Claude Code login. Hermes sets
+# CLAUDE_CONFIG_DIR and CLAUDE_SECURESTORAGE_CONFIG_DIR on the child process
+# and nothing else. It stores no token. Sign each profile in by hand, once:
+#   CLAUDE_CONFIG_DIR=~/.claude-spare CLAUDE_SECURESTORAGE_CONFIG_DIR=~/.claude-spare \
+#     claude auth login
+#
+# Read the state at any time, with no model call:
+#   hermes auth status claude-profiles
+#
+# claude_cli_profiles:
+#   stop_at_percent: 95        # A usage window counts as full at or above this.
+#   profiles:
+#     - name: work             # A local nickname. Hermes never prints an address.
+#       config_dir: ~/.claude
+#     - name: spare
+#       config_dir: ~/.claude-spare
+#       # securestorage_dir: ~/.claude-spare   # Optional; defaults to config_dir.
+
+# =============================================================================
 # Subagent Delegation
 # =============================================================================
 # The delegate_task tool spawns child agents with isolated context.

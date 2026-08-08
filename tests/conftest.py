@@ -262,7 +262,15 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_SESSION_THREAD_ID",
     "HERMES_SESSION_SOURCE",
     "HERMES_SESSION_KEY",
+    "HERMES_SESSION_ID",
     "HERMES_GATEWAY_SESSION",
+    # Claude Code profile selection. A developer's shell often already names a
+    # profile (``claude-hermes`` exports both). Left in place, every test that
+    # touches the Claude switcher, the Anthropic credential readers, or any
+    # subprocess environment would read that profile instead of its own
+    # fixture — green here, different in CI.
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_SECURESTORAGE_CONFIG_DIR",
     "HERMES_CRON_SESSION",
     "_HERMES_GATEWAY",
     "HERMES_PLATFORM",

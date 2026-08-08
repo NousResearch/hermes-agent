@@ -11,6 +11,7 @@ Auth supports:
 """
 
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -951,14 +952,99 @@ def build_anthropic_bedrock_client(region: str):
     )
 
 
-def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
+# ---------------------------------------------------------------------------
+# Claude Code profile paths.
+#
+# Claude Code keeps one login per configuration directory. A person selects
+# that directory with ``CLAUDE_CONFIG_DIR`` and the matching secret store with
+# ``CLAUDE_SECURESTORAGE_CONFIG_DIR``. Both lookups below must follow those
+# variables. A fixed path or a fixed Keychain service name reads — and, worse,
+# writes — a different person's account than the one the process runs as.
+# ---------------------------------------------------------------------------
+
+# The generic-password service Claude Code uses for the default profile. For a
+# named profile it appends "-" plus the first 8 hexadecimal characters of the
+# SHA-256 digest of the configuration directory path.
+_CLAUDE_KEYCHAIN_BASE_SERVICE = "Claude Code-credentials"
+
+
+def _resolved_path(value: Any) -> str:
+    """Return *value* with "~" expanded, a trailing "/" removed, and absolute."""
+    text = os.path.expanduser(str(value))
+    return os.path.abspath(text.rstrip("/") or "/")
+
+
+def _default_claude_config_dir() -> str:
+    return str(Path.home() / ".claude")
+
+
+def claude_keychain_service_candidates(config_dir: Any = None) -> List[str]:
+    """Return the Keychain service names that may hold this profile's login.
+
+    Pass *config_dir* to ask about one specific profile. Pass nothing to ask
+    about the profile the current process would use.
+
+    Claude Code builds the service name from the configuration directory path,
+    and the exact spelling it hashes is not documented. So this returns one
+    candidate per plausible spelling, in the order to try them. The default
+    profile has one candidate: the unsuffixed base name.
+    """
+    raw = str(config_dir) if config_dir else os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    if not raw:
+        return [_CLAUDE_KEYCHAIN_BASE_SERVICE]
+
+    default_dir = _default_claude_config_dir()
+    if _resolved_path(raw) == _resolved_path(default_dir) or (
+        os.path.realpath(_resolved_path(raw)) == os.path.realpath(_resolved_path(default_dir))
+    ):
+        # An explicit variable that names the default location is still the
+        # default profile, and that profile keeps the unsuffixed name.
+        return [_CLAUDE_KEYCHAIN_BASE_SERVICE]
+
+    expanded = os.path.expanduser(raw)
+    spellings: List[str] = []
+    for value in (raw, expanded, expanded.rstrip("/"), _resolved_path(raw),
+                  os.path.realpath(_resolved_path(raw))):
+        if value and value not in spellings:
+            spellings.append(value)
+    return [
+        "%s-%s" % (
+            _CLAUDE_KEYCHAIN_BASE_SERVICE,
+            hashlib.sha256(value.encode("utf-8")).hexdigest()[:8],
+        )
+        for value in spellings
+    ]
+
+
+def claude_credentials_path(
+    config_dir: Any = None,
+    securestorage_dir: Any = None,
+) -> Path:
+    """Return the ``.credentials.json`` path of one Claude Code profile.
+
+    The secret store directory wins over the configuration directory, because
+    ``CLAUDE_SECURESTORAGE_CONFIG_DIR`` exists precisely to move the secret
+    away from the configuration. With no argument and no variable this is the
+    default profile at ``~/.claude/.credentials.json``.
+    """
+    for value in (securestorage_dir, config_dir):
+        if value:
+            return Path(os.path.expanduser(str(value))) / ".credentials.json"
+    for env_var in ("CLAUDE_SECURESTORAGE_CONFIG_DIR", "CLAUDE_CONFIG_DIR"):
+        raw = os.environ.get(env_var, "").strip()
+        if raw:
+            return Path(os.path.expanduser(raw)) / ".credentials.json"
+    return Path(_default_claude_config_dir()) / ".credentials.json"
+
+
+def _read_claude_code_credentials_from_keychain(
+    config_dir: Any = None,
+) -> Optional[Dict[str, Any]]:
     """Read Claude Code OAuth credentials from the macOS Keychain.
 
-    Claude Code >=2.1.114 stores credentials in the macOS Keychain under the
-    service name "Claude Code-credentials" rather than (or in addition to)
-    the JSON file at ~/.claude/.credentials.json.
-
-    The password field contains a JSON string with the same claudeAiOauth
+    Claude Code >=2.1.114 stores credentials in the macOS Keychain rather than
+    (or in addition to) the JSON file beside the configuration directory. The
+    password field contains a JSON string with the same claudeAiOauth
     structure as the JSON file.
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
@@ -966,26 +1052,30 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     if platform.system() != "Darwin":
         return None
 
-    try:
-        # Read the "Claude Code-credentials" generic password entry
-        result = subprocess.run(
-            ["security", "find-generic-password",
-             "-s", "Claude Code-credentials",
-             "-w"],
-            capture_output=True,
-            text=True, encoding='utf-8', errors='replace',
-            timeout=5,
-            stdin=subprocess.DEVNULL,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        logger.debug("Keychain: security command not available or timed out")
-        return None
+    # Where a refreshed token would be written back. The Keychain item is named
+    # after CLAUDE_CONFIG_DIR, but the file store follows
+    # CLAUDE_SECURESTORAGE_CONFIG_DIR when a person sets it. Record the write
+    # target, so a legitimate refresh on split directories is not refused.
+    origin = str(claude_credentials_path(config_dir).parent)
 
-    if result.returncode != 0:
-        logger.debug("Keychain: no entry found for 'Claude Code-credentials'")
-        return None
+    raw = ""
+    for service in claude_keychain_service_candidates(config_dir):
+        try:
+            result = subprocess.run(
+                ["security", "find-generic-password", "-s", service, "-w"],
+                capture_output=True,
+                text=True, encoding='utf-8', errors='replace',
+                timeout=5,
+                stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            logger.debug("Keychain: security command not available or timed out")
+            return None
+        if result.returncode == 0 and result.stdout.strip():
+            raw = result.stdout.strip()
+            break
+        logger.debug("Keychain: no entry found for %r", service)
 
-    raw = result.stdout.strip()
     if not raw:
         return None
 
@@ -1004,23 +1094,31 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
                 "refreshToken": oauth_data.get("refreshToken", ""),
                 "expiresAt": oauth_data.get("expiresAt", 0),
                 "source": "macos_keychain",
+                # Which profile this login belongs to. A refresh must go back
+                # to this profile and to no other.
+                "config_dir": origin,
             }
 
     return None
 
 
-def _read_claude_code_credentials_from_file() -> Optional[Dict[str, Any]]:
-    """Read Claude Code OAuth credentials from ~/.claude/.credentials.json.
+def _read_claude_code_credentials_from_file(
+    config_dir: Any = None,
+    securestorage_dir: Any = None,
+) -> Optional[Dict[str, Any]]:
+    """Read Claude Code OAuth credentials from one profile's file.
+
+    With no argument this reads the profile the current process would use.
 
     Returns dict with {accessToken, refreshToken?, expiresAt?, source} or None.
     """
-    cred_path = Path.home() / ".claude" / ".credentials.json"
+    cred_path = claude_credentials_path(config_dir, securestorage_dir)
     if not cred_path.exists():
         return None
     try:
         data = json.loads(cred_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError, IOError) as e:
-        logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
+        logger.debug("Failed to read Claude Code credentials file: %s", e)
         return None
 
     oauth_data = data.get("claudeAiOauth")
@@ -1034,6 +1132,9 @@ def _read_claude_code_credentials_from_file() -> Optional[Dict[str, Any]]:
         "refreshToken": oauth_data.get("refreshToken", ""),
         "expiresAt": oauth_data.get("expiresAt", 0),
         "source": "claude_code_credentials_file",
+        # Which profile this login belongs to. A refresh must go back to this
+        # profile and to no other.
+        "config_dir": str(cred_path.parent),
     }
 
 
@@ -1197,10 +1298,14 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
 
     try:
         refreshed = refresh_anthropic_oauth_pure(refresh_token, use_json=False)
+        # Name the profile this token was read from. The write refuses to land
+        # anywhere else, so a profile selected between the read and the
+        # refresh cannot receive another account's login.
         _write_claude_code_credentials(
             refreshed["access_token"],
             refreshed["refresh_token"],
             refreshed["expires_at_ms"],
+            origin_config_dir=(current or {}).get("config_dir") or creds.get("config_dir"),
         )
         logger.debug("Successfully refreshed Claude Code OAuth token")
         return refreshed["access_token"]
@@ -1215,15 +1320,37 @@ def _write_claude_code_credentials(
     expires_at_ms: int,
     *,
     scopes: Optional[list] = None,
+    origin_config_dir: Optional[str] = None,
 ) -> None:
-    """Write refreshed credentials back to ~/.claude/.credentials.json.
+    """Write refreshed credentials back to the active profile's file.
+
+    The path follows ``CLAUDE_SECURESTORAGE_CONFIG_DIR`` and then
+    ``CLAUDE_CONFIG_DIR``.
+
+    Pass *origin_config_dir* to name the profile the token was read from. The
+    write then happens only when that profile is also the profile the
+    environment names now. This matters because the read and the refresh are
+    not one step: Hermes can select a different profile in between, and the
+    refreshed token would then overwrite an unrelated account's login and sign
+    that person out. With no *origin_config_dir* the write proceeds as it
+    always has, which keeps a single-profile install unchanged.
 
     The optional *scopes* list (e.g. ``["user:inference", "user:profile", ...]``)
     is persisted so that Claude Code's own auth check recognises the credential
     as valid.  Claude Code >=2.1.81 gates on the presence of ``"user:inference"``
     in the stored scopes before it will use the token.
     """
-    cred_path = Path.home() / ".claude" / ".credentials.json"
+    cred_path = claude_credentials_path()
+    if origin_config_dir:
+        origin = _resolved_path(origin_config_dir)
+        target = _resolved_path(cred_path.parent)
+        if origin != target:
+            logger.warning(
+                "Refusing to write a refreshed Claude Code token: it belongs to "
+                "a different profile than the one this process is using. "
+                "Nothing was changed."
+            )
+            return
     try:
         # Read existing file to preserve other fields
         existing = {}

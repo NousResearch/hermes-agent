@@ -5,6 +5,17 @@ verbatim from hermes_cli/config.py. Must not import from hermes_cli.config.
 """
 
 DEFAULT_CONFIG = {
+    # Claude Code profile switching. Hermes starts Claude Code as a child
+    # program for delegation, for the ACP runtime, and for a `claude` command
+    # the agent writes into the terminal. List two or more accounts here and
+    # Hermes moves to the next one when a plan window fills. The switcher
+    # stays off while this list holds fewer than two entries, so the shipped
+    # default changes nothing.
+    "claude_cli_profiles": {
+        "profiles": [],
+        # A usage window counts as full at or above this percentage.
+        "stop_at_percent": 95,
+    },
     "model": "",
     "providers": {},
     "fallback_providers": [],

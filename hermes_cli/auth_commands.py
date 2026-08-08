@@ -499,7 +499,24 @@ def auth_remove_command(args) -> None:
         print(line)
 
 
+# Names a person may type for the Claude Code profile report.
+_CLAUDE_PROFILE_NAMES = {"claude-profiles", "claude-profile", "claude_profiles"}
+
+
 def auth_reset_command(args) -> None:
+    provider_raw = str(getattr(args, "provider", "") or "").strip().lower()
+    if provider_raw in _CLAUDE_PROFILE_NAMES:
+        # Forget which Claude Code account each job and each conversation runs
+        # on. This deletes no credential — Hermes stores none. The next job
+        # reads the accounts' usage again and chooses fresh.
+        from agent.claude_cli_profiles import clear_state
+
+        clear_state()
+        print(
+            "Claude Code profile state cleared. Every account selection and "
+            "every conversation pin is forgotten. No credential was touched."
+        )
+        return
     provider = _normalize_provider(getattr(args, "provider", ""))
     pool = load_pool(provider)
     count = pool.reset_statuses()
@@ -510,6 +527,15 @@ def auth_status_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", "") or "")
     if not provider:
         raise SystemExit("Provider is required. Example: `hermes auth status spotify`.")
+    if provider in _CLAUDE_PROFILE_NAMES:
+        # Which Claude Code account a job runs on, and when each account
+        # reopens. This reads local state and one usage endpoint. It starts no
+        # model and it never begins a login.
+        from agent.claude_cli_profiles import status_lines
+
+        for line in status_lines():
+            print(line)
+        return
     status = auth_mod.get_auth_status(provider)
     if not status.get("logged_in"):
         reason = status.get("error")

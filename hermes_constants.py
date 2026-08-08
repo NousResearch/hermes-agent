@@ -939,6 +939,56 @@ def apply_subprocess_home_env(env: dict[str, str]) -> None:
         env["HOME"] = home
 
 
+# Variables Claude Code prefers over the profile directory. When Hermes selects
+# a profile, all three must go, or the child authenticates some other way.
+CLAUDE_PROFILE_OVERRIDE_VARS = (
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+)
+
+
+def apply_claude_profile_env(
+    env: dict[str, str],
+    profile_env: dict[str, str] | None = None,
+) -> None:
+    """Point a child ``claude`` process at one Claude Code login, in-place.
+
+    Pass *profile_env* to name the profile a caller already selected. With no
+    argument this reads the profile Hermes recorded for the current work.
+
+    The function changes nothing at all unless a person configured two or more
+    profiles in ``config.yaml`` and Hermes recorded one of them. That keeps a
+    single-profile install exactly as it is today.
+
+    When it does apply a profile it also removes every variable that outranks
+    the profile directory inside Claude Code:
+
+    * ``CLAUDE_CODE_OAUTH_TOKEN`` — another subscription login.
+    * ``ANTHROPIC_API_KEY`` — a metered interface key.
+    * ``ANTHROPIC_AUTH_TOKEN`` — a metered bearer token.
+
+    Leaving any one of them in place sends the work somewhere the person did
+    not choose. The last two also bill by the token, so a job a person expects
+    to run on a subscription would quietly spend interface credit instead.
+    Hermes puts no token in their place: the ``claude`` program reads its own
+    secret from the directory this function names.
+    """
+    selected = profile_env
+    if selected is None:
+        try:
+            from agent.claude_cli_profiles import active_profile_env
+
+            selected = active_profile_env()
+        except Exception:
+            return
+    if not selected:
+        return
+    env.update(selected)
+    for outranking in CLAUDE_PROFILE_OVERRIDE_VARS:
+        env.pop(outranking, None)
+
+
 VALID_REASONING_EFFORTS = (
     "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 )

@@ -496,8 +496,12 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
 
     _inject_context_hermes_home(sanitized)
 
-    from hermes_constants import apply_subprocess_home_env
+    from hermes_constants import apply_claude_profile_env, apply_subprocess_home_env
     apply_subprocess_home_env(sanitized)
+    # A ``claude -p ...`` command the agent writes into the terminal, and any
+    # wrapper around it, must run on the same Claude Code account Hermes chose
+    # for this job. With fewer than two profiles configured this is a no-op.
+    apply_claude_profile_env(sanitized)
 
     # Same cross-session leak guard as _make_run_env, for the background/PTY
     # spawn path (process_registry.spawn_local builds env via this function).
@@ -628,8 +632,13 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     env.setdefault("PYTHONUTF8", "1")
 
     _inject_context_hermes_home(env)
-    from hermes_constants import apply_subprocess_home_env
+    from hermes_constants import apply_claude_profile_env, apply_subprocess_home_env
     apply_subprocess_home_env(env)
+    # Point a child Claude Code process at the account Hermes chose for this
+    # job. This covers the delegation path and the ACP path together, because
+    # both build their environment here. With fewer than two profiles
+    # configured this is a no-op.
+    apply_claude_profile_env(env)
 
     # Active-venv markers must not clobber another project's environment.
     for _marker in _ACTIVE_VENV_MARKER_VARS:

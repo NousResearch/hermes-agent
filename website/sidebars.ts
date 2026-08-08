@@ -692,6 +692,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/features/provider-routing',
         'user-guide/features/fallback-providers',
         'user-guide/features/credential-pools',
+        'user-guide/features/claude-cli-profiles',
       ],
     },
     {

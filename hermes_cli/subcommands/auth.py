@@ -59,13 +59,30 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
         "target", help="Credential index, entry id, or exact label"
     )
     auth_reset = auth_subparsers.add_parser(
-        "reset", help="Clear exhaustion status for all credentials for a provider"
+        "reset",
+        help=(
+            "Clear exhaustion status for all credentials for a provider, or "
+            "clear the Claude Code profile selections with 'claude-profiles'"
+        ),
     )
-    auth_reset.add_argument("provider", help="Provider id")
+    auth_reset.add_argument(
+        "provider",
+        help=(
+            "Provider id. Use 'claude-profiles' to forget which Claude Code "
+            "account each job and each conversation runs on. No credential is "
+            "deleted."
+        ),
+    )
     auth_status = auth_subparsers.add_parser(
         "status", help="Show auth status for a provider"
     )
-    auth_status.add_argument("provider", help="Provider id")
+    auth_status.add_argument(
+        "provider",
+        help=(
+            "Provider id. Use 'claude-profiles' to see which Claude Code "
+            "account each job runs on, and when each account reopens."
+        ),
+    )
     auth_logout = auth_subparsers.add_parser(
         "logout", help="Log out a provider and clear stored auth state"
     )

@@ -9,6 +9,7 @@ back into the minimal shape Hermes expects from an OpenAI client.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import re
@@ -29,6 +30,8 @@ from openai.types.chat.chat_completion_message_tool_call import (
 from agent.file_safety import get_read_block_error, get_write_denied_error
 from agent.redact import redact_sensitive_text
 from tools.environments.local import hermes_subprocess_env
+
+logger = logging.getLogger(__name__)
 
 ACP_MARKER_BASE_URL = "acp://copilot"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
@@ -99,16 +102,59 @@ def _resolve_home_dir() -> str:
     return "/tmp"
 
 
-def _build_subprocess_env() -> dict[str, str]:
+def _build_subprocess_env(profile_env: dict[str, str] | None = None) -> dict[str, str]:
     # Copilot ACP is a model-driving CLI executor: it legitimately needs LLM
     # provider credentials. Route through the central helper so Tier-1 secrets
     # (gateway bot tokens, GitHub auth, infra) are still stripped (#29157).
     env = hermes_subprocess_env(inherit_credentials=True)
     home = _resolve_home_dir()
     env["HOME"] = home
-    from hermes_constants import apply_subprocess_home_env
+    from hermes_constants import apply_claude_profile_env, apply_subprocess_home_env
     apply_subprocess_home_env(env)
+    # ``hermes_subprocess_env`` applies whichever profile this context names.
+    # When this run selected one explicitly, that choice wins, and applying it
+    # again also removes the variables that outrank a profile directory.
+    if profile_env:
+        apply_claude_profile_env(env, profile_env=profile_env)
     return env
+
+
+def is_claude_code_command(command: str | None) -> bool:
+    """True when *command* starts Claude Code, directly or through a wrapper.
+
+    A wrapper keeps the ``claude`` prefix — ``claude-hermes`` is one — so the
+    profile choice reaches a wrapped launcher as well as the plain binary.
+    """
+    name = os.path.basename(str(command or "").strip()).lower()
+    if not name:
+        return False
+    for suffix in (".cmd", ".exe", ".bat", ".ps1", ".sh"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+    return name == "claude" or name.startswith("claude-")
+
+
+def _select_claude_profile(command: str | None):
+    """Choose the Claude Code account this run uses. Returns a Selection.
+
+    The choice reads each configured account's five-hour and weekly usage
+    first. That read starts no model and spends no tokens. With fewer than two
+    profiles configured it changes nothing.
+    """
+    if not is_claude_code_command(command):
+        return None
+    try:
+        from agent.claude_cli_profiles import current_session_key, select_for_job
+
+        # The conversation key pins a resumed conversation to the account that
+        # started it. Claude Code keeps its conversation record inside the
+        # profile directory, so another account would lose that work. The
+        # helper covers a gateway chat and a command-line conversation alike.
+        return select_for_job(session_id=current_session_key())
+    except Exception:
+        logger.debug("Claude Code profile selection failed; keeping the inherited account",
+                     exc_info=True)
+        return None
 
 
 def _jsonrpc_error(message_id: Any, code: int, message: str) -> dict[str, Any]:
@@ -502,6 +548,33 @@ class CopilotACPClient:
         return completion
 
     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+        selection = _select_claude_profile(self._acp_command)
+        if selection is not None and not selection.available:
+            # Every account has reached its plan limit. Stop and say when each
+            # one reopens. Hermes never spends paid usage past a plan.
+            raise RuntimeError(selection.message)
+        profile_env = selection.env() if selection is not None else None
+        # Hold the account for the life of this child process, and only for
+        # it. Any terminal command this turn starts reads the same account;
+        # the next turn on this thread starts from a clean slate.
+        profile_token = None
+        if selection is not None and selection.profile is not None:
+            from agent.claude_cli_profiles import bind_selected_profile
+
+            profile_token = bind_selected_profile(selection.profile.name)
+        try:
+            return self._spawn_and_drive(
+                prompt_text, timeout_seconds=timeout_seconds, profile_env=profile_env
+            )
+        finally:
+            if profile_token is not None:
+                from agent.claude_cli_profiles import release_selected_profile
+
+                release_selected_profile(profile_token)
+
+    def _spawn_and_drive(
+        self, prompt_text: str, *, timeout_seconds: float, profile_env=None
+    ) -> tuple[str, str]:
         try:
             # Hide the console the CLI child would otherwise flash on Windows
             # (#56747). Hide-only — stdio pipes stay intact for the ACP wire.
@@ -515,7 +588,7 @@ class CopilotACPClient:
                 text=True, encoding='utf-8', errors='replace',
                 bufsize=1,
                 cwd=self._acp_cwd,
-                env=_build_subprocess_env(),
+                env=_build_subprocess_env(profile_env),
                 creationflags=windows_hide_flags(),
             )
         except FileNotFoundError as exc:

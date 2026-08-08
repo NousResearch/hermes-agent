@@ -852,6 +852,12 @@ def _timezone_options() -> List[str]:
 
 
 _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    "buzz.extra.require_mention": {
+        "description": "Require Mention",
+    },
+    "buzz.extra.thread_require_mention": {
+        "description": "Require Mention in Active Threads",
+    },
     "timezone": {
         "type": "select",
         "description": "IANA timezone (e.g. America/New_York). Blank uses the system timezone.",
@@ -1058,7 +1064,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
 _CATEGORY_ORDER = [
     "general", "agent", "terminal", "display", "delegation",
     "memory", "compression", "security", "browser", "voice",
-    "tts", "stt", "logging", "discord", "auxiliary",
+    "tts", "stt", "logging", "discord", "slack", "buzz", "auxiliary",
 ]
 
 

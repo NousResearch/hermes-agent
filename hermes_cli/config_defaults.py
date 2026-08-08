@@ -1948,6 +1948,15 @@ DEFAULT_CONFIG = {
         "channel_prompts": {},         # Per-channel ephemeral system prompts
     },
 
+    # Buzz platform settings (gateway mode). These live under ``extra``
+    # because the plugin adapter consumes PlatformConfig.extra.
+    "buzz": {
+        "extra": {
+            "require_mention": True,        # Require @mention in shared channels
+            "thread_require_mention": True,  # Preserve strict historical behavior by default
+        },
+    },
+
     # Discord platform settings (gateway mode)
     "discord": {
         "require_mention": True,       # Require @mention to respond in server channels

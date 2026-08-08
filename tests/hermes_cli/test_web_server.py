@@ -1963,6 +1963,21 @@ class TestBuildSchemaFromConfig:
         # Fallback path: never returns an empty list.
         assert len(_timezone_options()) >= 1
 
+    def test_buzz_mention_filters_are_exposed_with_strict_defaults(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+        from hermes_cli.web_server import CONFIG_SCHEMA, _CATEGORY_ORDER
+
+        assert DEFAULT_CONFIG["buzz"]["extra"]["require_mention"] is True
+        assert DEFAULT_CONFIG["buzz"]["extra"]["thread_require_mention"] is True
+        assert CONFIG_SCHEMA["buzz.extra.require_mention"]["type"] == "boolean"
+        assert CONFIG_SCHEMA["buzz.extra.thread_require_mention"]["type"] == "boolean"
+        assert CONFIG_SCHEMA["buzz.extra.require_mention"]["category"] == "buzz"
+        assert CONFIG_SCHEMA["buzz.extra.thread_require_mention"]["category"] == "buzz"
+        discord_index = _CATEGORY_ORDER.index("discord")
+        assert _CATEGORY_ORDER[discord_index:discord_index + 3] == [
+            "discord", "slack", "buzz",
+        ]
+
     def test_dynamic_merge_recomputes_memory_provider_options(self, monkeypatch):
         """The per-request schema merge re-discovers memory providers.
 

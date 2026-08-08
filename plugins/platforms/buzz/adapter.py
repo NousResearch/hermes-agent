@@ -107,6 +107,9 @@ _WS_MAX_MESSAGE_BYTES = 2_000_000
 _WS_MEMBERSHIP_KIND = 44100
 _WS_MEMBERSHIP_SUB_ID = "hermes-buzz-membership"
 
+_FALSE_VALUES = frozenset({"false", "0", "no", "off"})
+_YAML_BRIDGE_MARKER_PREFIX = "_HERMES_YAML_BRIDGED_"
+
 # Where to look for a credentials JSON (keys: nsec / private_key_hex) when
 # BUZZ_PRIVATE_KEY is not set.  Module-level so tests can point it at a tmpdir.
 _DEFAULT_CREDENTIALS_DIR = Path("~/.config/buzz").expanduser()
@@ -344,6 +347,41 @@ def _parse_json_list(stdout: str) -> List[dict]:
     return [item for item in data if isinstance(item, dict)]
 
 
+def _event_reply_target(event: dict) -> str:
+    """Return the thread anchor referenced by a Buzz chat event."""
+    tags = event.get("tags")
+    if not isinstance(tags, list):
+        return ""
+    root_target = ""
+    reply_target = ""
+    for tag in tags:
+        if not isinstance(tag, list) or len(tag) < 2 or tag[0] != "e":
+            continue
+        target = str(tag[1] or "")
+        marker = str(tag[3] or "") if len(tag) > 3 else ""
+        if marker == "root":
+            root_target = target
+        elif marker == "reply" or not marker:
+            reply_target = target
+    return root_target or reply_target
+
+
+def _config_bool(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().lower() not in _FALSE_VALUES
+
+
+def _bridge_yaml_env(env_name: str, value: Any) -> None:
+    """Seed an env var while retaining whether YAML, not the operator, owns it."""
+    marker = f"{_YAML_BRIDGE_MARKER_PREFIX}{env_name}"
+    current = os.getenv(env_name)
+    if current is None or os.getenv(marker) == current:
+        bridged = str(value).lower()
+        os.environ[env_name] = bridged
+        os.environ[marker] = bridged
+
+
 # ---------------------------------------------------------------------------
 # Buzz Adapter
 # ---------------------------------------------------------------------------
@@ -390,7 +428,18 @@ class BuzzAdapter(BasePlatformAdapter):
             _rm_cfg = extra.get("require_mention", True)
         else:
             _rm_cfg = _rm_raw
-        self.require_mention = str(_rm_cfg).strip().lower() not in ("false", "0", "no", "off")
+        self.require_mention = _config_bool(_rm_cfg)
+
+        # Keep the historical strict behavior by default: replies in shared
+        # channel threads must continue mentioning the agent. When disabled,
+        # a thread remains addressed after the agent has replied once.
+        _trm_raw = os.getenv("BUZZ_THREAD_REQUIRE_MENTION")
+        if _trm_raw is None:
+            _trm_cfg = extra.get("thread_require_mention", True)
+        else:
+            _trm_cfg = _trm_raw
+        self.thread_require_mention = _config_bool(_trm_cfg)
+        self._mention_config_signature: Optional[Tuple[int, int]] = None
 
         # Inbound transport: "auto" (WebSocket with poll fallback, default),
         # "websocket" (require WS; fail connect when it can't authenticate),
@@ -599,6 +648,83 @@ class BuzzAdapter(BasePlatformAdapter):
 
     # ── Sending ───────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _remember_agent_thread_ids(state: dict, *event_ids: str) -> None:
+        active = state.setdefault("agent_thread_ids", OrderedDict())
+        for event_id in event_ids:
+            if event_id:
+                active[str(event_id)] = None
+                active.move_to_end(str(event_id))
+        while len(active) > _SEEN_CAP:
+            active.popitem(last=False)
+
+    @staticmethod
+    def _remember_thread_root(state: dict, event_id: str, reply_target: str) -> None:
+        if not event_id or not reply_target:
+            return
+        roots = state.setdefault("thread_roots", OrderedDict())
+        root = reply_target
+        visited = set()
+        while root in roots and root not in visited:
+            visited.add(root)
+            root = roots[root]
+        roots[str(event_id)] = str(root)
+        roots.move_to_end(str(event_id))
+        while len(roots) > _SEEN_CAP:
+            roots.popitem(last=False)
+
+    @staticmethod
+    def _resolve_thread_root(state: dict, event_id: str) -> str:
+        roots = state.get("thread_roots", {})
+        root = str(event_id)
+        visited = set()
+        while root in roots and root not in visited:
+            visited.add(root)
+            root = str(roots[root])
+        return root
+
+    def _remember_event_thread_root(self, state: dict, event: dict) -> None:
+        self._remember_thread_root(
+            state,
+            str(event.get("id") or ""),
+            _event_reply_target(event),
+        )
+
+    def _remember_agent_thread_event(self, state: dict, event: dict) -> None:
+        if str(event.get("pubkey") or "").lower() != self._self_pubkey:
+            return
+        reply_target = _event_reply_target(event)
+        if not reply_target:
+            return
+        event_id = str(event.get("id") or "")
+        root = self._resolve_thread_root(state, reply_target)
+        self._remember_agent_thread_ids(state, root, event_id)
+
+    @staticmethod
+    def _remember_pending_thread_event(state: dict, event: dict) -> None:
+        event_id = str(event.get("id") or "")
+        if not event_id:
+            return
+        pending = state.setdefault("pending_thread_events", OrderedDict())
+        pending[event_id] = event
+        pending.move_to_end(event_id)
+        while len(pending) > _SEEN_CAP:
+            pending.popitem(last=False)
+
+    async def _retry_pending_thread_events(self, channel_id: str, state: dict) -> None:
+        pending = state.get("pending_thread_events", {})
+        active = state.get("agent_thread_ids", {})
+        for event_id, event in list(pending.items()):
+            reply_target = _event_reply_target(event)
+            if not reply_target:
+                pending.pop(event_id, None)
+                continue
+            root = self._resolve_thread_root(state, reply_target)
+            if root not in active:
+                continue
+            pending.pop(event_id, None)
+            state["seen"].pop(event_id, None)
+            await self._handle_event(channel_id, state, event)
     async def send(
         self,
         chat_id: str,
@@ -610,6 +736,9 @@ class BuzzAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
         reply_target = reply_to or (metadata or {}).get("thread_id")
+        state = self._channel_state.get(str(chat_id))
+        if reply_target and state is not None:
+            reply_target = self._resolve_thread_root(state, str(reply_target))
         if reply_target:
             args += ["--reply-to", str(reply_target)]
         code, out, err = await self._run_cli(args, input_text=content)
@@ -624,12 +753,18 @@ class BuzzAdapter(BasePlatformAdapter):
         except ValueError:
             data = {}
         event_id = data.get("event_id")
-        if event_id:
+        accepted = bool(data.get("accepted", True))
+        if event_id and accepted:
             # Belt-and-braces echo suppression: the poll loop already skips
             # our own pubkey, but marking the id seen makes de-dupe explicit.
             self._mark_seen(str(chat_id), str(event_id))
+            if reply_target and state is not None:
+                self._remember_thread_root(state, str(event_id), str(reply_target))
+                self._remember_agent_thread_ids(
+                    state, str(reply_target), str(event_id)
+                )
         return SendResult(
-            success=bool(data.get("accepted", True)),
+            success=accepted,
             message_id=str(event_id) if event_id else None,
             raw_response=data,
         )
@@ -681,8 +816,12 @@ class BuzzAdapter(BasePlatformAdapter):
                 "--file", str(local),
                 "--content", "-",
             ]
-            if reply_to:
-                args += ["--reply-to", str(reply_to)]
+            reply_target = reply_to or (metadata or {}).get("thread_id")
+            state = self._channel_state.get(str(chat_id))
+            if reply_target and state is not None:
+                reply_target = self._resolve_thread_root(state, str(reply_target))
+            if reply_target:
+                args += ["--reply-to", str(reply_target)]
             code, out, err = await self._run_cli(args, input_text=caption or "")
             if code != 0:
                 return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
@@ -691,10 +830,18 @@ class BuzzAdapter(BasePlatformAdapter):
             except ValueError:
                 data = {}
             event_id = data.get("event_id")
-            if event_id:
+            accepted = bool(data.get("accepted", True))
+            if event_id and accepted:
                 self._mark_seen(str(chat_id), str(event_id))
+                if reply_target and state is not None:
+                    self._remember_thread_root(
+                        state, str(event_id), str(reply_target)
+                    )
+                    self._remember_agent_thread_ids(
+                        state, str(reply_target), str(event_id)
+                    )
             return SendResult(
-                success=bool(data.get("accepted", True)),
+                success=accepted,
                 message_id=str(event_id) if event_id else None,
                 raw_response=data,
             )
@@ -943,6 +1090,8 @@ class BuzzAdapter(BasePlatformAdapter):
             # leaked in via ``channels list`` latches to chat_type="dm" here,
             # so it bypasses the mention gate from the very first poll.
             self._maybe_latch_dm(channel_id, state, event)
+            self._remember_event_thread_root(state, event)
+            self._remember_agent_thread_event(state, event)
         self._trim_seen(state)
 
     async def _discover_dms(self, *, seed: bool) -> None:
@@ -1007,6 +1156,7 @@ class BuzzAdapter(BasePlatformAdapter):
 
     async def _handle_event(self, channel_id: str, state: dict, event: dict) -> None:
         """De-dupe, filter, and dispatch a single ``messages get`` event."""
+        self._refresh_mention_policy()
         event_id = str(event.get("id") or "")
         created_at = int(event.get("created_at") or 0)
         if not event_id or event_id in state["seen"]:
@@ -1021,8 +1171,15 @@ class BuzzAdapter(BasePlatformAdapter):
         if not pubkey or not isinstance(content, str) or not content.strip():
             return
 
+        # Reconstruct active thread participation from echoed outbound events.
+        # This runs before self-echo suppression because those events are the
+        # durable source used to restore thread behavior after a restart.
+        self._remember_event_thread_root(state, event)
+        self._remember_agent_thread_event(state, event)
+
         # Suppress self-echo: never dispatch our own messages back to the agent.
         if pubkey == self._self_pubkey:
+            await self._retry_pending_thread_events(channel_id, state)
             return
 
         # Reclassify a leaked DM before gating so its first un-mentioned
@@ -1030,17 +1187,30 @@ class BuzzAdapter(BasePlatformAdapter):
         self._maybe_latch_dm(channel_id, state, event)
 
         is_dm = state["chat_type"] == "dm"
-        # In shared channels, respond only when addressed — unless
-        # require_mention is disabled, in which case respond to every message.
-        # DMs always dispatch.
-        if not is_dm and self.require_mention and not self._is_mentioned(content):
-            return
-
+        reply_target = _event_reply_target(event)
+        thread_root = (
+            self._resolve_thread_root(state, reply_target) if reply_target else ""
+        )
+        in_agent_thread = bool(
+            reply_target
+            and thread_root in state.get("agent_thread_ids", {})
+        )
         # Adapter-level allow-list (the gateway applies BUZZ_ALLOWED_USERS /
         # BUZZ_ALLOW_ALL_USERS centrally as well; empty list = no filter here).
         if self._allowed_pubkeys and pubkey not in self._allowed_pubkeys:
             logger.debug("Buzz: ignoring message from unauthorized pubkey %s…", pubkey[:8])
             return
+
+        # Top-level and thread mention gates are independent, matching Slack:
+        # thread_require_mention can keep replies gated even when top-level
+        # channel messages are free-response. DMs always dispatch.
+        if not is_dm and not self._is_mentioned(content):
+            if reply_target and self.thread_require_mention:
+                return
+            if self.require_mention and not in_agent_thread:
+                if reply_target:
+                    self._remember_pending_thread_event(state, event)
+                return
 
         # Strip a leading @mention so slash commands (@Chip /whoami ->
         # /whoami) and clean prompts are recognized. DM messages often still
@@ -1057,6 +1227,44 @@ class BuzzAdapter(BasePlatformAdapter):
             message_id=event_id,
             created_at=created_at,
         )
+
+    def _refresh_mention_policy(self) -> None:
+        """Apply saved Buzz mention settings without restarting the gateway."""
+        try:
+            from hermes_cli.config import get_config_path, read_user_config_raw
+
+            path = get_config_path()
+            stat = path.stat()
+            signature = (stat.st_mtime_ns, stat.st_size)
+            if signature == self._mention_config_signature:
+                return
+            raw = read_user_config_raw(path)
+            buzz = raw.get("buzz", {}) if isinstance(raw, dict) else {}
+            extra = buzz.get("extra", buzz) if isinstance(buzz, dict) else {}
+            if not isinstance(extra, dict):
+                extra = {}
+
+            for key, env_name, attr in (
+                ("require_mention", "BUZZ_REQUIRE_MENTION", "require_mention"),
+                (
+                    "thread_require_mention",
+                    "BUZZ_THREAD_REQUIRE_MENTION",
+                    "thread_require_mention",
+                ),
+            ):
+                marker = f"{_YAML_BRIDGE_MARKER_PREFIX}{env_name}"
+                explicit_env = os.getenv(env_name)
+                if explicit_env is not None and os.getenv(marker) != explicit_env:
+                    value = explicit_env
+                elif key in extra:
+                    value = extra[key]
+                    _bridge_yaml_env(env_name, value)
+                else:
+                    continue
+                setattr(self, attr, _config_bool(value))
+            self._mention_config_signature = signature
+        except Exception:
+            logger.debug("Buzz: could not refresh mention policy", exc_info=True)
 
     # ── DM classification (issue #68871) ──────────────────────────────────
     #
@@ -1314,8 +1522,12 @@ def _apply_yaml_config(yaml_cfg: dict, buzz_cfg: dict) -> Optional[dict]:
         os.environ["BUZZ_ALLOWED_USERS"] = str(allowed)
     if "allow_all_users" in extra and not os.getenv("BUZZ_ALLOW_ALL_USERS"):
         os.environ["BUZZ_ALLOW_ALL_USERS"] = str(extra["allow_all_users"]).lower()
-    if "require_mention" in extra and not os.getenv("BUZZ_REQUIRE_MENTION"):
-        os.environ["BUZZ_REQUIRE_MENTION"] = str(extra["require_mention"]).lower()
+    if "require_mention" in extra:
+        _bridge_yaml_env("BUZZ_REQUIRE_MENTION", extra["require_mention"])
+    if "thread_require_mention" in extra:
+        _bridge_yaml_env(
+            "BUZZ_THREAD_REQUIRE_MENTION", extra["thread_require_mention"]
+        )
     return None
 
 

@@ -1044,6 +1044,13 @@ platform_toolsets:
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
 
+# Buzz-specific settings (config.yaml top-level, not under platforms:):
+#
+# buzz:
+#   extra:
+#     require_mention: true          # Require @mention in shared channels (default: true)
+#     thread_require_mention: true   # Require @mention in active threads (default: true)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)
 #

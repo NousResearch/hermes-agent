@@ -11775,6 +11775,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         return choice
 
+    def _start_background_mcp_reload(self) -> bool:
+        """Start ``_reload_mcp`` on a daemon thread and return immediately.
+
+        Mirrors the config-watcher path above: the reload must never join the
+        caller, because ``_reload_mcp`` tears down and re-dials every MCP
+        server, so a hung or slow server would block the command processor
+        along with it and freeze input consumption.  The worker reports its
+        own start line and change summary via ``print()`` inside
+        ``_reload_mcp``.
+
+        Returns False (and starts nothing) when a reload worker this method
+        started is still alive — making the command path asynchronous removes
+        the implicit serialization the synchronous call used to provide.
+        """
+        prior = getattr(self, "_mcp_reload_thread", None)
+        if prior is not None and prior.is_alive():
+            print("🟡 An MCP reload is already running — skipping this one.")
+            return False
+        thread = threading.Thread(target=self._reload_mcp, daemon=True)
+        self._mcp_reload_thread = thread
+        thread.start()
+        return True
+
     def _confirm_and_reload_mcp(self, cmd_original: str = "") -> None:
         """Interactive /reload-mcp — confirm with the user, then reload.
 
@@ -11787,6 +11810,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         ``approvals.mcp_reload_confirm: false`` so future reloads run
         without this prompt), Cancel.  Gated by
         ``approvals.mcp_reload_confirm`` — default on.
+
+        Once approved, the reload itself is handed to a background daemon
+        thread via :meth:`_start_background_mcp_reload` so the command
+        processor stays responsive.  ``cmd_original`` is retained for the
+        slash-command dispatch signature.
         """
         # Gate check — respects prior "Always Approve" clicks.
         try:
@@ -11799,8 +11827,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             confirm_required = True
 
         if not confirm_required:
-            with self._busy_command(self._slow_command_status(cmd_original)):
-                self._reload_mcp()
+            self._start_background_mcp_reload()
             return
 
         # Render warning + prompt.  Use the same prompt_toolkit-native composer
@@ -11839,8 +11866,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             else:
                 print("⚠️  Couldn't persist opt-out — reloading once.")
 
-        with self._busy_command(self._slow_command_status(cmd_original)):
-            self._reload_mcp()
+        self._start_background_mcp_reload()
 
     def _reload_mcp(self):
         """Reload MCP servers: disconnect all, re-read config.yaml, reconnect.

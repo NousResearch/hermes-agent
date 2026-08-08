@@ -1119,6 +1119,14 @@ class GatewayStreamConsumer:
                     return
 
                 if commentary_text is not None:
+                    # Same #8124 hazard as the segment-break reset below: this
+                    # reset wipes _accumulated, so any text the send above
+                    # failed to make visible has to be delivered first. (The
+                    # second reset, after _send_commentary, needs no flush —
+                    # _accumulated is already empty by then.)
+                    await self._flush_undelivered_tail_before_reset(
+                        current_update_visible
+                    )
                     self._reset_segment_state()
                     await self._send_commentary(commentary_text)
                     self._last_edit_time = time.monotonic()
@@ -1139,21 +1147,18 @@ class GatewayStreamConsumer:
                 # a real string like "msg_1", not "__no_edit__", so that case
                 # still resets and creates a fresh segment as intended.)
                 if got_segment_break:
-                    # If the segment-break edit failed to deliver the
-                    # accumulated content (flood control that has not yet
-                    # promoted to fallback mode, or fallback mode itself),
-                    # _accumulated still holds pre-boundary text the user
-                    # never saw. Flush that tail as a continuation message
-                    # before the reset below wipes _accumulated — otherwise
-                    # text generated before the tool boundary is silently
-                    # dropped (issue #8124).
-                    if (
-                        self._accumulated
-                        and not current_update_visible
-                        and self._message_id
-                        and self._message_id != "__no_edit__"
-                    ):
-                        await self._flush_segment_tail_on_edit_failure()
+                    # If the send that should have shown this segment did not
+                    # deliver — a failed edit under flood control that has not
+                    # yet promoted to fallback mode, fallback mode itself, or a
+                    # failed *first* send after the previous boundary cleared
+                    # _message_id — _accumulated still holds pre-boundary text
+                    # the user never saw. Flush that tail as a continuation
+                    # message before the reset below wipes _accumulated —
+                    # otherwise text generated before the tool boundary is
+                    # silently dropped (issue #8124).
+                    await self._flush_undelivered_tail_before_reset(
+                        current_update_visible
+                    )
                     self._reset_segment_state(preserve_no_edit=True)
 
                 # Flush barrier satisfied: the buffered segment (if any) has now
@@ -1748,6 +1753,29 @@ class GatewayStreamConsumer:
         # Frame delivered.  Track text for parity with edit-based no-op skip.
         self._last_sent_text = text
         return True
+
+    async def _flush_undelivered_tail_before_reset(
+        self, current_update_visible: bool
+    ) -> None:
+        """Flush pre-boundary text the user never saw, before a segment reset.
+
+        ``_reset_segment_state`` wipes ``_accumulated``/``_stream_ledger``/
+        ``_last_sent_text``.  When the send that should have shown the current
+        segment never became visible, that buffer holds the only copy of the
+        text, so it must be delivered first (issue #8124).
+
+        Deliberately does NOT test ``_message_id`` for truthiness: a *first*
+        send that fails returns from ``_send_or_edit`` without ever assigning
+        it, leaving it ``None`` from the previous boundary's reset — which is
+        precisely the case that loses text.  The ``__no_edit__`` sentinel is
+        still excluded: the matching reset preserves state for
+        ``_send_fallback_final``, so flushing there would double-send.
+        """
+        if not self._accumulated or current_update_visible:
+            return
+        if self._message_id == "__no_edit__":
+            return
+        await self._flush_segment_tail_on_edit_failure()
 
     async def _flush_segment_tail_on_edit_failure(self) -> None:
         """Deliver un-sent tail content before a segment-break reset.

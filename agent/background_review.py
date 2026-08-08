@@ -684,6 +684,32 @@ def _run_review_in_thread(
 
     review_agent = None
     review_messages: List[Dict] = []
+
+    def _unregister_review_agent(agent_ref) -> None:
+        """Remove a completed/failed review fork from the parent's tracking.
+
+        Called on every exit path (success, tool-whitelist exception, and the
+        outer safety-net finally) so the parent's ``_active_children`` /
+        ``_background_review_agent`` never hold a stale reference to a
+        review that has already finished — that would make a later
+        interrupt() try to cancel an agent that's already closed, or make
+        the next turn wait on a review that no longer exists.
+        """
+        if agent_ref is None:
+            return
+        try:
+            with agent._background_review_lock:
+                if agent._background_review_agent is agent_ref:
+                    agent._background_review_agent = None
+        except Exception:
+            pass
+        try:
+            with agent._active_children_lock:
+                if agent_ref in agent._active_children:
+                    agent._active_children.remove(agent_ref)
+        except Exception:
+            pass
+
     try:
         # Silence stdout/stderr for THIS worker thread only.  A process-global
         # ``contextlib.redirect_stdout(devnull)`` here would also blank
@@ -880,6 +906,53 @@ def _run_review_in_thread(
             # agent.compression_enabled, so this short-circuits both paths.
             review_agent.compression_enabled = False
 
+            # Register this fork on the PARENT so (a) the parent's
+            # interrupt()/Ctrl+C can cancel a still-running review instead of
+            # being architecturally unable to reach it (the fork is a fully
+            # separate AIAgent with its own _interrupt_requested flag that
+            # nothing previously fanned out to), and (b) the NEXT live turn
+            # can proactively cancel a review that hasn't finished yet rather
+            # than letting the two race concurrently against the same
+            # session_id/credentials — the two together can produce doubled
+            # prompt-token accounting and a Ctrl+C-proof lockup.
+            # ``_active_children`` is the same list ``interrupt()`` already
+            # fans out to for real subagent delegation (tools/delegate_tool.py),
+            # so this reuses an existing, tested propagation path rather than
+            # adding a new one. Best-effort: an agent built without going
+            # through agent_init.py's setup (test stubs, older/foreign
+            # AIAgent construction paths) won't have these attributes yet —
+            # degrade to "no cross-cancellation" rather than aborting the
+            # whole review, matching this function's existing best-effort
+            # style everywhere else.
+            try:
+                _br_lock = getattr(agent, "_background_review_lock", None)
+                if _br_lock is not None:
+                    with _br_lock:
+                        agent._background_review_agent = review_agent
+                else:
+                    agent._background_review_agent = review_agent
+            except Exception:
+                logger.debug(
+                    "Could not register review fork for cross-turn "
+                    "cancellation (parent agent missing review-tracking "
+                    "state)", exc_info=True,
+                )
+            try:
+                _ac_lock = getattr(agent, "_active_children_lock", None)
+                _active_children = getattr(agent, "_active_children", None)
+                if _active_children is not None:
+                    if _ac_lock is not None:
+                        with _ac_lock:
+                            _active_children.append(review_agent)
+                    else:
+                        _active_children.append(review_agent)
+            except Exception:
+                logger.debug(
+                    "Could not register review fork on _active_children "
+                    "(parent agent missing subagent-tracking state)",
+                    exc_info=True,
+                )
+
             from model_tools import get_tool_definitions
             from hermes_cli.plugins import (
                 set_thread_tool_whitelist,
@@ -933,6 +1006,12 @@ def _run_review_in_thread(
                 )
             finally:
                 clear_thread_tool_whitelist()
+                # Unregister as soon as run_conversation() itself has
+                # returned — that's the only phase making outbound API
+                # calls, i.e. the only phase that can race the parent's
+                # next live turn. Runs on both the success and exception
+                # path (this whole block is inside the try/finally above).
+                _unregister_review_agent(review_agent)
 
             # Snapshot review actions before teardown. close() is allowed to
             # clean per-session state, but the user-visible self-improvement
@@ -1006,6 +1085,13 @@ def _run_review_in_thread(
         # thread-scoped silence here so teardown output (Honcho flush, Hindsight
         # sync, background thread joins) stays quiet even on the exception path,
         # without blanking other threads' streams.
+        # Also a safety-net unregister: covers exceptions raised during setup
+        # (between registration and the run_conversation try/finally above)
+        # that the primary _unregister_review_agent call site never reaches.
+        # _unregister_review_agent is idempotent (checks `is`/`in` membership),
+        # so calling it again here after the primary call site already ran is
+        # a harmless no-op.
+        _unregister_review_agent(review_agent)
         if review_agent is not None:
             try:
                 with thread_scoped_silence():

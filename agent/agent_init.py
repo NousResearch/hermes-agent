@@ -829,7 +829,17 @@ def init_agent(
     agent._delegate_depth = 0        # 0 = top-level agent, incremented for children
     agent._active_children = []      # Running child AIAgents (for interrupt propagation)
     agent._active_children_lock = threading.Lock()
-    
+
+    # Background memory/skill review state (agent/background_review.py). Holds
+    # the forked review AIAgent while its run_conversation() is in flight, so
+    # the NEXT live turn can proactively interrupt a still-running review
+    # instead of letting the two race concurrently against the same
+    # session_id/credentials (observed as doubled prompt-token counts and a
+    # Ctrl+C-proof lockup when a live turn started before a review fired at
+    # the end of the prior turn had finished).
+    agent._background_review_agent = None
+    agent._background_review_lock = threading.Lock()
+
     # Store OpenRouter provider preferences
     agent.providers_allowed = providers_allowed
     agent.providers_ignored = providers_ignored

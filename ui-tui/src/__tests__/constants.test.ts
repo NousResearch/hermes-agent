@@ -32,6 +32,13 @@ describe('constants', () => {
     expect(hotkey?.[1]).toBe('redraw / repaint')
   })
 
+  it('keeps macOS copy help explicit about terminal forwarding', () => {
+    const hotkey = HOTKEYS.find(([k]) => k === 'Cmd+C')
+    if (hotkey) {
+      expect(hotkey[1]).toContain('terminal forwards it')
+    }
+  })
+
   it('TOOL_VERBS maps known tools (verb-only, no emoji)', () => {
     expect(TOOL_VERBS.terminal).toBe('terminal')
     expect(TOOL_VERBS.read_file).toBe('reading')

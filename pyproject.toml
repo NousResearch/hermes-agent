@@ -368,8 +368,8 @@ override-dependencies = [
   # remove this when we update discord.py
   "pynacl>=1.6,<1.7",
 ]
-exclude-newer = "14 days"
-exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false }
+exclude-newer = "2026-07-22T00:00:00Z"
+exclude-newer-package = { vercel = false, nemo-relay = false, huggingface-hub = false, defusedxml = false, python-olm = false, unpaddedbase64 = false }
 
 [tool.setuptools]
 # Top-level single-file modules (not packages). Without this, uv2nix's

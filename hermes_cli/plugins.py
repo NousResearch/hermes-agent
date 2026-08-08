@@ -1390,20 +1390,14 @@ class PluginManager:
         Fail-open: never raise into discover_and_load.
         """
         try:
-            from agent.secret_sources.registry import (
-                BUILTIN_SOURCE_NAMES,
-                list_sources,
-            )
+            from agent.secret_sources.registry import list_plugin_sources
             from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
         except Exception:
             return
         try:
-            sources = list_sources()
+            plugin_sources = list_plugin_sources()
         except Exception:
             return
-        plugin_sources = [
-            s for s in sources if getattr(s, "name", "") not in BUILTIN_SOURCE_NAMES
-        ]
         if not plugin_sources:
             return
         # Load the secrets config once; hand each source its own section and

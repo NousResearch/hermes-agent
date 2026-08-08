@@ -1,9 +1,8 @@
 """Tests for plugin secret-source first-process re-pull (#64177)."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
-
-import pytest
 
 from agent.secret_sources.base import (
     SECRET_SOURCE_API_VERSION,
@@ -40,7 +39,7 @@ def test_refresh_secret_sources_noop_without_plugin_sources(monkeypatch):
 
     import agent.secret_sources.registry as reg
 
-    monkeypatch.setattr(reg, "list_sources", lambda: [])
+    monkeypatch.setattr(reg, "list_plugin_sources", lambda: [])
     monkeypatch.setattr(
         "hermes_cli.env_loader.reset_secret_source_cache",
         lambda: called.__setitem__("reset", called["reset"] + 1),
@@ -61,9 +60,8 @@ def test_refresh_secret_sources_noop_when_only_builtins(monkeypatch):
 
     import agent.secret_sources.registry as reg
 
-    monkeypatch.setattr(
-        reg, "list_sources", lambda: [_StubSource(name="bitwarden")]
-    )
+    reg._reset_registry_for_tests()
+    assert reg.list_plugin_sources() == []
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
         lambda: {"secrets": {"bitwarden": {"enabled": True}}},
@@ -87,7 +85,7 @@ def test_refresh_secret_sources_repulls_when_plugin_enabled(monkeypatch):
 
     import agent.secret_sources.registry as reg
 
-    monkeypatch.setattr(reg, "list_sources", lambda: [_StubSource()])
+    monkeypatch.setattr(reg, "list_plugin_sources", lambda: [_StubSource()])
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
         lambda: {"secrets": {"myvault": {"enabled": True}}},
@@ -112,7 +110,9 @@ def test_refresh_respects_custom_is_enabled(monkeypatch):
 
     import agent.secret_sources.registry as reg
 
-    monkeypatch.setattr(reg, "list_sources", lambda: [_CustomActivationSource()])
+    monkeypatch.setattr(
+        reg, "list_plugin_sources", lambda: [_CustomActivationSource()]
+    )
     # No `enabled` key at all — only the source's custom contract decides.
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
@@ -137,7 +137,9 @@ def test_refresh_skips_custom_source_when_not_activated(monkeypatch):
 
     import agent.secret_sources.registry as reg
 
-    monkeypatch.setattr(reg, "list_sources", lambda: [_CustomActivationSource()])
+    monkeypatch.setattr(
+        reg, "list_plugin_sources", lambda: [_CustomActivationSource()]
+    )
     # `enabled: true` but the custom contract ignores it and requires vault_id.
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
@@ -166,7 +168,7 @@ def test_refresh_skips_source_whose_is_enabled_raises(monkeypatch):
 
     import agent.secret_sources.registry as reg
 
-    monkeypatch.setattr(reg, "list_sources", lambda: [_Boom()])
+    monkeypatch.setattr(reg, "list_plugin_sources", lambda: [_Boom()])
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
         lambda: {"secrets": {"myvault": {"enabled": True}}},
@@ -198,34 +200,57 @@ def test_discover_and_load_invokes_refresh(monkeypatch):
 
 
 def test_real_plugin_source_discovery_applies_dotenv(monkeypatch, tmp_path):
-    """End-to-end: a real plugin source registered via discovery triggers a
-    re-pull that flows through the registry's is_enabled contract."""
+    """A cold process discovers a real plugin and applies its credential."""
     import agent.secret_sources.registry as reg
+    from hermes_cli import env_loader
 
     reg._reset_registry_for_tests()
-
-    # Register a real plugin source the way PluginContext.register_secret_source
-    # would (lands in registry.register_source).
-    plugin_source = _StubSource(name="tmpvault", scheme="tmpvault")
-    assert reg.register_source(plugin_source) is True
-    assert any(getattr(s, "name", "") == "tmpvault" for s in reg.list_sources())
-
-    applied = {"reset": 0, "load": 0}
-    monkeypatch.setattr(
-        "hermes_cli.env_loader.reset_secret_source_cache",
-        lambda: applied.__setitem__("reset", applied["reset"] + 1),
+    env_loader.reset_secret_source_cache()
+    home = tmp_path / ".hermes"
+    plugin_dir = home / "plugins" / "fixture-secret-source"
+    plugin_dir.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        "plugins:\n"
+        "  enabled: [fixture-secret-source]\n"
+        "secrets:\n"
+        "  fixturevault:\n"
+        "    enabled: true\n",
+        encoding="utf-8",
     )
-    monkeypatch.setattr(
-        "hermes_cli.env_loader.load_hermes_dotenv",
-        lambda **kw: applied.__setitem__("load", applied["load"] + 1),
+    (plugin_dir / "plugin.yaml").write_text(
+        "name: fixture-secret-source\nversion: 0.1.0\n",
+        encoding="utf-8",
     )
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config",
-        lambda: {"secrets": {"tmpvault": {"enabled": True}}},
+    (plugin_dir / "__init__.py").write_text(
+        "from pathlib import Path\n"
+        "from agent.secret_sources.base import (\n"
+        "    SECRET_SOURCE_API_VERSION, FetchResult, SecretSource,\n"
+        ")\n\n"
+        "class FixtureVault(SecretSource):\n"
+        "    name = 'fixturevault'\n"
+        "    label = 'Fixture vault'\n"
+        "    api_version = SECRET_SOURCE_API_VERSION\n"
+        "    shape = 'bulk'\n\n"
+        "    def fetch(self, cfg: dict, home_path: Path) -> FetchResult:\n"
+        "        return FetchResult(secrets={\n"
+        "            'HERMES_TEST_PLUGIN_BOOTSTRAP': 'from-plugin',\n"
+        "        })\n\n"
+        "def register(ctx):\n"
+        "    ctx.register_secret_source(FixtureVault())\n",
+        encoding="utf-8",
     )
 
-    mgr = PluginManager()
-    mgr._refresh_secret_sources_after_discovery()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_TEST_PLUGIN_BOOTSTRAP", raising=False)
 
-    assert applied == {"reset": 1, "load": 1}
-    reg._reset_registry_for_tests()
+    try:
+        PluginManager().discover_and_load()
+
+        assert os.environ["HERMES_TEST_PLUGIN_BOOTSTRAP"] == "from-plugin"
+        assert [source.name for source in reg.list_plugin_sources()] == [
+            "fixturevault"
+        ]
+    finally:
+        os.environ.pop("HERMES_TEST_PLUGIN_BOOTSTRAP", None)
+        reg._reset_registry_for_tests()
+        env_loader.reset_secret_source_cache()

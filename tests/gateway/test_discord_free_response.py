@@ -184,6 +184,22 @@ class FakeHistoryChannel(FakeTextChannel):
         return _iter()
 
 
+class FakeHistoryThread(FakeThread):
+    """Thread flavour of FakeHistoryChannel.
+
+    ``isinstance(channel, discord.Thread)`` drives the thread-specific
+    partition rule, and the ``adapter`` fixture patches ``discord.Thread``
+    to ``FakeThread`` — so backfill tests that need thread semantics must
+    inherit from it rather than from ``FakeTextChannel``.
+    """
+
+    def __init__(self, history_messages, **kwargs):
+        super().__init__(**kwargs)
+        self._history_messages = list(history_messages)
+
+    history = FakeHistoryChannel.history
+
+
 @pytest.mark.asyncio
 async def test_discord_free_response_in_server_channels(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
@@ -680,6 +696,69 @@ async def test_fetch_channel_context_ignores_stale_cache(adapter, monkeypatch):
     assert result == "[Recent channel messages]\n[Alice] hello"
     # Cache should have been ignored — after= should be None
     assert recorded_after["value"] is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_thread_keeps_humans_around_own_message(adapter, monkeypatch):
+    """Regression: in threads the scan must skip our own message, not break at it.
+
+    With ``thread_require_mention=false`` every thread message is processed, so
+    our replies sit between human turns.  Breaking at the first self-authored
+    message collects zero human context — and after a gateway restart the
+    session transcript is fresh, so nothing else supplies it either.
+    """
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+
+    channel = FakeHistoryThread(
+        [
+            make_history_message(author=human, content="earlier human turn", msg_id=1),
+            make_history_message(author=adapter._client.user, content="hermes reply", msg_id=2),
+            make_history_message(author=human, content="recent human turn", msg_id=3),
+        ],
+        channel_id=888,
+    )
+
+    result = await adapter._fetch_channel_context(
+        channel, before=make_message(channel=channel, content="trigger"),
+    )
+
+    # Both sides of our own message survive; our own reply is skipped, not kept.
+    assert "[Alice] earlier human turn" in result
+    assert "[Alice] recent human turn" in result
+    assert "hermes reply" not in result
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_regular_channel_still_partitions_at_own_message(adapter, monkeypatch):
+    """Control for the thread carve-out: normal channels must still break.
+
+    Outside threads the self-authored message remains the partition point —
+    everything before it is already in the session transcript.
+    """
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+
+    channel = FakeHistoryChannel(
+        [
+            make_history_message(author=human, content="earlier human turn", msg_id=1),
+            make_history_message(author=adapter._client.user, content="hermes reply", msg_id=2),
+            make_history_message(author=human, content="recent human turn", msg_id=3),
+        ],
+        channel_id=889,
+    )
+
+    result = await adapter._fetch_channel_context(
+        channel, before=make_message(channel=channel, content="trigger"),
+    )
+
+    assert "[Alice] recent human turn" in result
+    assert "[Alice] earlier human turn" not in result
+    assert "hermes reply" not in result
 
 
 @pytest.mark.asyncio

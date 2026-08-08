@@ -647,6 +647,48 @@ class TestPdfCoverageNote(unittest.TestCase):
         note.assert_not_called()
         self.assertEqual(text, "converted\n")
 
+    def test_bytes_path_prepends_note_with_display_path(self):
+        """Backend-transferred PDF bytes get the same warning, and the
+        recovery command names the backend-visible path, not the host
+        temp file the scan ran against."""
+        from tools import read_extract
+        fake_mod = mock.Mock()
+        fake_mod.to_markdown_bytes.return_value = "# Title\n\nBody"
+        seen = {}
+
+        def fake_note(path, display_path=None):
+            seen["scan_path"] = path
+            seen["display_path"] = display_path
+            return f"[EXTRACTION COVERAGE WARNING: test '{display_path}']\n"
+
+        with mock.patch.object(read_extract, "_anydoc",
+                               return_value=fake_mod), \
+             mock.patch.object(read_extract, "_pdf_coverage_note",
+                               side_effect=fake_note):
+            text = read_extract._extract_anydoc_bytes(
+                b"%PDF-1.4 fake", "/workspace/remote.pdf"
+            )
+        self.assertTrue(text.startswith("[EXTRACTION COVERAGE WARNING"))
+        self.assertIn("/workspace/remote.pdf", text)
+        self.assertEqual(seen["display_path"], "/workspace/remote.pdf")
+        # The scanned file is a host temp materialization, already removed.
+        self.assertNotEqual(seen["scan_path"], "/workspace/remote.pdf")
+        self.assertFalse(os.path.exists(seen["scan_path"]))
+
+    def test_bytes_path_no_note_for_non_pdf(self):
+        from tools import read_extract
+        fake_mod = mock.Mock()
+        fake_mod.to_markdown_bytes.return_value = "converted"
+        with mock.patch.object(read_extract, "_anydoc",
+                               return_value=fake_mod), \
+             mock.patch.object(read_extract,
+                               "_pdf_coverage_note_from_bytes") as note:
+            text = read_extract._extract_anydoc_bytes(
+                b"{\\rtf1 fake}", "/workspace/remote.rtf"
+            )
+        note.assert_not_called()
+        self.assertEqual(text, "converted\n")
+
 
 if __name__ == "__main__":
     unittest.main()

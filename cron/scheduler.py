@@ -100,6 +100,31 @@ def _set_cron_session_title(session_db, session_id, base_title):
         return deduped
 
 
+def _fallback_chain_phrase() -> str:
+    """Wording for the fallback-chain clause of a provider-failure message.
+
+    "Fallback chain was exhausted or unavailable." used to fire
+    unconditionally on every provider failure, which implies a fallback was
+    attempted and failed. Most installs have fallback_providers: [] (no
+    chain configured at all -- confirmed on both the root and cto profile
+    config.yaml as of 2026-08-08), so that wording was actively misleading:
+    it sent the operator looking for why a fallback "failed" when none was
+    ever attempted. Distinguish the two cases explicitly.
+
+    Fails open to the original ambiguous-but-safe wording if config can't be
+    read (e.g. mid-shutdown, permissions) -- never let a lookup error crash
+    failure-message generation itself.
+    """
+    try:
+        cfg = load_config() or {}
+        chain = get_fallback_chain(cfg)
+    except Exception:
+        return "Fallback chain was exhausted or unavailable."
+    if chain:
+        return "Fallback chain was exhausted or unavailable."
+    return "No fallback chain configured."
+
+
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """Return a compact one-line failure message for chat delivery.
 
@@ -120,14 +145,38 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
             reason = "quota limit"
         return (
             f"⚠️ Cron '{job_name}' failed: provider {reason}. "
-            "Fallback chain was exhausted or unavailable. "
+            f"{_fallback_chain_phrase()} "
             "Full details saved in cron output."
+        )
+
+    # The scheduler's own inactivity watchdog (see the TimeoutError raised
+    # above at "Cron job '{job_name}' idle for {secs}s (limit {limit}s) —
+    # last activity: {desc}") produces a message that contains the substring
+    # "timed out"/"timeout" nowhere, but DOES contain "idle for ... (limit
+    # ...)" — however older/other call sites can still phrase an inactivity
+    # abort using "timed out" wording, so match on the "idle for Ns (limit"
+    # shape specifically (case-insensitive) BEFORE the generic provider-
+    # timeout branch below. Without this, an inactivity timeout — the job's
+    # OWN tool call/turn going quiet, no provider or fallback chain ever
+    # involved — gets rewritten into a misleading "provider timeout /
+    # fallback chain exhausted" message, sending the operator to debug the
+    # wrong system entirely (confirmed 2026-08-08, Daily Repo Sweep: a stuck
+    # `terminal` tool call tripped the 600s inactivity limit and was reported
+    # as a provider/fallback failure). Mirrors the same reordering fix
+    # upstream issue #59549 applied for script timeouts vs provider timeouts
+    # — check the more specific, deterministic signature first.
+    if re.search(r"idle for \d+s\s*\(limit \d+s\)", lower):
+        return (
+            f"⚠️ Cron '{job_name}' failed: the job itself stalled — no tool/API "
+            "activity for the configured inactivity window. Not a provider or "
+            "fallback-chain issue; check what the job was doing when it went "
+            "quiet. Full details saved in cron output."
         )
 
     if "readtimeout" in lower or "timed out" in lower or "timeout" in lower:
         return (
             f"⚠️ Cron '{job_name}' failed: provider timeout. "
-            "Fallback chain was exhausted or unavailable. "
+            f"{_fallback_chain_phrase()} "
             "Full details saved in cron output."
         )
 

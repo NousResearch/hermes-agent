@@ -1435,6 +1435,15 @@ class ShellFileOperations(FileOperations):
             denied = get_write_denied_error(p, verb="Move")
             if denied:
                 return WriteResult(error=denied)
+        # When dst is an existing directory, mv writes into it as
+        # dst/basename(src) — check that resolved path too so a
+        # move into a denied directory is caught.
+        dst_path = Path(dst)
+        if dst_path.is_dir():
+            resolved_dst = str(dst_path / Path(src).name)
+            denied = get_write_denied_error(resolved_dst, verb="Move")
+            if denied:
+                return WriteResult(error=denied)
         result = self._exec(
             f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}"
         )

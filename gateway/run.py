@@ -63,7 +63,7 @@ from agent.interrupt_compat import request_hard_interrupt
 from agent.turn_context import (
     compression_made_progress,
 )
-from hermes_cli.config import cfg_get
+from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
 # --- Agent cache tuning ---------------------------------------------------
@@ -2129,7 +2129,6 @@ if _config_path.exists():
                     # to the Hermes host/container HOME (often /opt/data). Shared
                     # predicate with terminal_tool so the two sites can't drift.
                     if _cfg_key == "cwd" and isinstance(_val, str):
-                        from tools.terminal_tool import _is_ssh_remote_tilde_cwd
                         if not _is_ssh_remote_tilde_cwd(_terminal_backend, _val.strip()):
                             _val = os.path.expanduser(_val)
                     if isinstance(_val, (list, dict)):

@@ -4947,6 +4947,21 @@ def _guard_existing_gateway_process_conflict(replace: bool = False) -> None:
     """
     if replace or _running_under_gateway_supervisor():
         return
+    # PATCH 1 (2026-07-29): Non-TTY auto-replace.
+    # When running from a non-TTY context (tmux, background, cron),
+    # sys.stdin.isatty() returns False. The original code would then
+    # refuse to start if another gateway was running, returning False
+    # and causing the gateway to crash with exit_nonzero (exit code 1).
+    # This patch sets replace=True when stdin is not a TTY, so the
+    # guard skips the error and proceeds to start_gateway() with
+    # replace=True, which properly replaces the old gateway.
+    # See /home/rute/.hermes/patches/gateway_fixes.patch for full details.
+    try:
+        _is_tty = bool(sys.stdin and sys.stdin.isatty())
+    except (ValueError, OSError):
+        _is_tty = False
+    if not _is_tty:
+        replace = True
     try:
         from gateway.status import get_running_pid
 
@@ -5020,6 +5035,14 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         _stdin_is_tty = bool(sys.stdin and sys.stdin.isatty())
     except (ValueError, OSError):
         _stdin_is_tty = False
+
+    # PATCH 1 (2026-07-29): Second safety net — non-TTY auto-replace.
+    # This mirrors the guard above but applies at the start_gateway() call
+    # level. Even if the guard somehow passes, this ensures replace=True
+    # when running from tmux/background/cron, preventing exit_nonzero crashes.
+    # See /home/rute/.hermes/patches/gateway_fixes.patch for full details.
+    if not _stdin_is_tty:
+        replace = True
     _absorb_windows_console_controls = _windows_gateway_should_absorb_console_controls()
     if _absorb_windows_console_controls:
         try:

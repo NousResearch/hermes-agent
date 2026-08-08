@@ -51,6 +51,10 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from hermes_constants import get_hermes_home
 from agent.skill_utils import is_excluded_skill_path
 
+# Shared byte formatter; public name ``format_size`` is part of this module's
+# established surface, so alias rather than churn the callers.
+from hermes_cli.sizefmt import format_bytes as format_size
+
 logger = logging.getLogger(__name__)
 
 
@@ -732,13 +736,6 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
 # ---------------------------------------------------------------------------
 # Human-readable summary for CLI
 # ---------------------------------------------------------------------------
-
-def format_size(n: int) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024 or unit == "GB":
-            return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
-        n /= 1024
-    return f"{n:.1f} GB"
 
 
 def summarize_backups() -> str:

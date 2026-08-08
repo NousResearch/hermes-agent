@@ -27,17 +27,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+from hermes_cli.sizefmt import format_bytes
 
-def _fmt_bytes(n: int) -> str:
-    units = ("B", "KB", "MB", "GB", "TB")
-    size = float(n or 0)
-    for unit in units:
-        if size < 1024 or unit == units[-1]:
-            if unit == "B":
-                return f"{int(size)} {unit}"
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} TB"
+
+def _fmt_bytes(n: Optional[int]) -> str:
+    # Delegates to the shared formatter; ``or 0`` preserves this module's
+    # historical None/0 -> "0 B" display (the shared helper renders None
+    # as "?", which is wrong for a size total that is genuinely zero).
+    return format_bytes(n or 0)
 
 
 def _fmt_ts(ts: Any) -> str:

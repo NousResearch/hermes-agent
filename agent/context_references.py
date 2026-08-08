@@ -13,6 +13,7 @@ from typing import Awaitable, Callable
 
 from agent.model_metadata import estimate_tokens_rough
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
+from hermes_cli.sizefmt import format_bytes as _human_bytes
 
 _QUOTED_REFERENCE_VALUE = r'(?:`[^`\n]+`|"[^"\n]+"|\'[^\'\n]+\')'
 REFERENCE_PATTERN = re.compile(
@@ -552,15 +553,6 @@ def _rg_files(path: Path, cwd: Path, limit: int) -> list[Path] | None:
         return None
     files = [Path(line.strip()) for line in result.stdout.splitlines() if line.strip()]
     return files[:limit]
-
-
-def _human_bytes(n: int) -> str:
-    size = float(n)
-    for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024 or unit == "GB":
-            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} GB"
 
 
 def _binary_reference_block(ref: ContextReference, path: Path) -> str:

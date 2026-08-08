@@ -320,19 +320,9 @@ def check_info(text: str):
 STATE_DB_SIZE_WARN_BYTES = 1 * 1024 * 1024 * 1024   # 1 GiB logical size
 
 
-def _human_bytes(n) -> str:
-    """1234567 → '1.2 MB' (GB/MB/KB/B)."""
-    try:
-        n = int(n)
-    except (TypeError, ValueError):
-        return "?"
-    if n >= 1024 ** 3:
-        return f"{n / (1024 ** 3):.1f} GB"
-    if n >= 1024 ** 2:
-        return f"{n / (1024 ** 2):.1f} MB"
-    if n >= 1024:
-        return f"{n / 1024:.1f} KB"
-    return f"{n} B"
+# Shared byte formatter (private alias: this module's rendering helpers and
+# tests refer to ``_human_bytes``).
+from hermes_cli.sizefmt import format_bytes as _human_bytes
 
 
 def _render_state_db_stats(stats: dict, holders=None) -> list:

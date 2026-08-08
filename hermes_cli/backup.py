@@ -25,6 +25,10 @@ from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_default_hermes_root, get_hermes_home, display_hermes_home
 
+# Shared formatter; the private alias is kept because claw.py and the backup
+# tests import ``_format_size`` from this module.
+from hermes_cli.sizefmt import format_bytes as _format_size
+
 logger = logging.getLogger(__name__)
 
 
@@ -573,15 +577,6 @@ def copy_db_and_verify(src: Path, dst: Path) -> bool:
 # ---------------------------------------------------------------------------
 # Backup
 # ---------------------------------------------------------------------------
-
-def _format_size(nbytes: int) -> str:
-    """Human-readable file size."""
-    for unit in ("B", "KB", "MB", "GB"):
-        if nbytes < 1024:
-            return f"{nbytes:.1f} {unit}" if unit != "B" else f"{nbytes} {unit}"
-        nbytes /= 1024
-    return f"{nbytes:.1f} TB"
-
 
 def run_backup(args) -> None:
     """Create a zip backup of the Hermes home directory."""

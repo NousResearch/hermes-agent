@@ -355,6 +355,56 @@ class TestHermesConfigWriteProtection:
             assert dangerous is False, cmd
 
 
+class TestProfileConfigWriteProtection:
+    """Terminal-side pairing for the file_tools write_file/patch deny on
+    profile-mode configs (~/.hermes/profiles/<profile>/config.yaml, #79030).
+
+    In profile mode the active config realpath lives under
+    ``~/.hermes/profiles/<profile>/`` and patch/write_file already deny it,
+    but `sed -i` / `>` / `tee` / `cp` targeting the same file used to pass
+    the terminal guard unchecked — incident E16. Every write idiom must gate
+    the profiles/ tree exactly like the global ~/.hermes/config.yaml."""
+    def test_write_idioms_against_profile_config(self):
+        for command in (
+            "sed -i 's/provider: auto/provider: x/' ~/.hermes/profiles/prod/config.yaml",
+            "sed -i 's/provider: auto/provider: x/' $HOME/.hermes/profiles/prod/config.yaml",
+            "sed --in-place 's/provider: auto/provider: x/' ~/.hermes/profiles/prod/config.yaml",
+            "perl -i -pe 's/provider: auto/provider: x/' ~/.hermes/profiles/prod/config.yaml",
+            "echo 'approvals:' > ~/.hermes/profiles/prod/config.yaml",
+            "echo '  mode: off' >> ~/.hermes/profiles/prod/config.yaml",
+            "echo x | tee ~/.hermes/profiles/prod/config.yaml",
+            "cp /tmp/evil.yaml ~/.hermes/profiles/prod/config.yaml",
+            "mv /tmp/evil.yaml ~/.hermes/profiles/prod/config.yaml",
+        ):
+            dangerous, key, desc = detect_dangerous_command(command)
+            assert dangerous is True, command
+            assert key is not None, command
+
+    def test_write_idioms_against_profile_env(self):
+        for command in (
+            "sed -i 's/KEY=old/KEY=new/' ~/.hermes/profiles/prod/.env",
+            "echo 'KEY=new' > ~/.hermes/profiles/prod/.env",
+            "echo x | tee ~/.hermes/profiles/prod/.env",
+            "cp /tmp/evil.env ~/.hermes/profiles/prod/.env",
+        ):
+            dangerous, key, desc = detect_dangerous_command(command)
+            assert dangerous is True, command
+            assert key is not None, command
+
+    def test_profile_dir_non_security_writes_are_safe(self):
+        # Non-security files inside a profile dir (skills, memories, plugins)
+        # must stay writable, and config.yaml outside the Hermes tree is a
+        # project file, not Hermes policy.
+        for cmd in (
+            "sed -i 's/a/b/' ~/.hermes/profiles/prod/skills/foo.md",
+            "echo x > ~/.hermes/profiles/prod/memories/note.md",
+            "sed -i 's/a/b/' ~/.hermes/profiles/prod/skills/config.yaml",
+            "sed -i 's/a/b/' ~/notes/config.yaml",
+        ):
+            dangerous, key, desc = detect_dangerous_command(cmd)
+            assert dangerous is False, cmd
+
+
 class TestFindExecFullPathRm:
     """Detect find -exec with full-path rm bypasses."""
 

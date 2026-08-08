@@ -473,6 +473,51 @@ class TestSensitivePathCheck:
         # /etc (and its macOS /private/etc mirror) stay blocked.
         assert _check_sensitive_path("/private/etc/hosts") is not None
 
+    def test_profile_security_files_blocked(self, tmp_path, monkeypatch):
+        # #79030: the deny must be per-resource, not per-tool. Every
+        # ~/.hermes/profiles/<name>/config.yaml / .env carries security
+        # policy (approvals.mode, yolo, model keys) — including profiles that
+        # are NOT the currently active one (the active one is already caught
+        # by the _hermes_config_resolved check above).
+        profiles_root = tmp_path / "profiles"
+        (profiles_root / "prod").mkdir(parents=True)
+        monkeypatch.setattr("tools.file_tools._profiles_root_resolved", str(profiles_root))
+        monkeypatch.setattr("tools.file_tools._profiles_root_resolved_loaded", True)
+
+        from tools.file_tools import _check_sensitive_path
+        assert _check_sensitive_path(str(profiles_root / "prod" / "config.yaml")) is not None
+        assert _check_sensitive_path(str(profiles_root / "prod" / ".env")) is not None
+
+    def test_profile_config_blocked_for_write_file(self, tmp_path, monkeypatch):
+        profiles_root = tmp_path / "profiles"
+        (profiles_root / "prod").mkdir(parents=True)
+        monkeypatch.setattr("tools.file_tools._profiles_root_resolved", str(profiles_root))
+        monkeypatch.setattr("tools.file_tools._profiles_root_resolved_loaded", True)
+
+        from tools.file_tools import write_file_tool
+        result = json.loads(write_file_tool(
+            str(profiles_root / "prod" / "config.yaml"), "approvals:\n  mode: off\n"
+        ))
+        assert "error" in result
+        assert "profile security file" in result["error"]
+
+    def test_profile_non_security_files_allowed(self, tmp_path, monkeypatch):
+        profiles_root = tmp_path / "profiles"
+        (profiles_root / "prod" / "skills").mkdir(parents=True)
+        monkeypatch.setattr("tools.file_tools._profiles_root_resolved", str(profiles_root))
+        monkeypatch.setattr("tools.file_tools._profiles_root_resolved_loaded", True)
+        # Active-config check must stay out of the way (unrelated path).
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(tmp_path / "other" / "config.yaml"))
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+
+        from tools.file_tools import _check_sensitive_path
+        # Non-security files inside a profile dir stay writable.
+        assert _check_sensitive_path(str(profiles_root / "prod" / "skills" / "SKILL.md")) is None
+        assert _check_sensitive_path(str(profiles_root / "prod" / "memories" / "note.md")) is None
+        # config.yaml nested deeper (e.g. a service config under the profile)
+        # is out of scope for the Hermes-policy deny.
+        assert _check_sensitive_path(str(profiles_root / "prod" / "gateway" / "config.yaml")) is None
+
     @patch("tools.file_tools._get_file_ops")
     def test_normal_file_not_blocked(self, mock_get, monkeypatch):
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/home/user/.hermes/config.yaml")

@@ -10,6 +10,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { BarChart3, CreditCard, ExternalLink, Package, Wrench } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
+import { useNousPortalLogin } from '../../../hooks/use-nous-portal-login'
 import { useRouteEnumParam } from '../../hooks/use-route-enum-param'
 import {
   ListRow,
@@ -71,8 +72,19 @@ function SummaryCard({ label, value, tone }: { label: string; tone?: 'muted' | '
   )
 }
 
-function NoticeCard({ notice }: { notice: BillingNoticeView }) {
+function NoticeCard({
+  notice,
+  onNousPortalSignIn,
+  signingIn
+}: {
+  notice: BillingNoticeView
+  onNousPortalSignIn: () => void
+  signingIn: boolean
+}) {
   const warn = notice.tone === 'warn'
+  const action = notice.action
+  const usesNousOAuth = action?.kind === 'nous_oauth'
+  const onAction = usesNousOAuth ? onNousPortalSignIn : action ? () => openExternal(action.url) : undefined
 
   return (
     <div className={cn('mb-6 rounded-xl p-4', warn ? 'bg-(--ui-yellow)/10' : 'bg-(--ui-bg-quaternary)')}>
@@ -87,16 +99,17 @@ function NoticeCard({ notice }: { notice: BillingNoticeView }) {
       <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
         {notice.message}
       </div>
-      {notice.action && (
+      {action && (
         <Button
           className="mt-3"
-          onClick={() => openExternal(notice.action?.url)}
+          disabled={usesNousOAuth && signingIn}
+          onClick={onAction}
           size="sm"
           type="button"
           variant="outline"
         >
-          {notice.action.label}
-          <ExternalLink className="size-3.5" />
+          {usesNousOAuth && signingIn ? 'Opening sign-in…' : action.label}
+          {!usesNousOAuth && <ExternalLink className="size-3.5" />}
         </Button>
       )}
     </div>
@@ -456,6 +469,16 @@ function BillingSettingsContent({
   onFixtureChange?: (value: BillingFixtureSelection) => void
 }) {
   const [subView, setSubView] = useRouteEnumParam<BillingSubView>('bview', BILLING_VIEWS, 'overview')
+  const queryClient = useQueryClient()
+
+  const { signInToNousPortal, signingIn } = useNousPortalLogin({
+    failureMessage: 'Could not sign in to Nous Portal.',
+    onApproved: () => {
+      void queryClient.invalidateQueries({ queryKey: ['billing'] })
+    },
+    successMessage: 'Your Nous Portal account is connected.',
+    successTitle: 'Nous Portal connected'
+  })
 
   // Fixture mode flows through the SAME query path — the simulated api (supplied by
   // BillingApiProvider in the DEV wrapper) backs these fetches — so there is no
@@ -504,7 +527,13 @@ function BillingSettingsContent({
     <SettingsContent>
       <BillingHeader fixtureName={fixtureName} onFixtureChange={onFixtureChange} />
 
-      {view.notice && <NoticeCard notice={view.notice} />}
+      {view.notice && (
+        <NoticeCard
+          notice={view.notice}
+          onNousPortalSignIn={() => void signInToNousPortal()}
+          signingIn={signingIn}
+        />
+      )}
 
       <div className="@container mb-6">
         <div className="grid gap-3 @2xl:grid-cols-3">

@@ -9,14 +9,13 @@ import {
   getActionStatus,
   getToolsetConfig,
   getToolsetModels,
-  pollOAuthSession,
   revealEnvVar,
   runToolsetPostSetup,
   selectToolsetModel,
   selectToolsetProvider,
-  setEnvVar,
-  startOAuthLogin
+  setEnvVar
 } from '@/hermes'
+import { useNousPortalLogin } from '@/hooks/use-nous-portal-login'
 import { useI18n } from '@/i18n'
 import { Check, Loader2, Save, Terminal } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -500,17 +499,6 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
   // Default-provider selection and a user click race just after config arrives:
   // a stale initialization effect must never replace an explicit choice.
   const providerChoiceClaimedRef = useRef(false)
-  // Guard the Nous Portal sign-in poll loop against unmount/state updates.
-  const mountedRef = useRef(true)
-
-  // eslint-disable-next-line no-restricted-syntax -- mount flag guarding an async poll loop, not an atom mirror
-  useEffect(() => {
-    mountedRef.current = true
-
-    return () => {
-      mountedRef.current = false
-    }
-  }, [])
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -533,6 +521,15 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
       setLoading(false)
     }
   }, [copy.failedLoad, toolset])
+
+  const { signInToNousPortal } = useNousPortalLogin({
+    failureMessage: copy.nousAuthFailed,
+    onApproved: () => {
+      void refresh().then(() => onConfiguredChange?.())
+    },
+    successMessage: copy.nousAuthDoneMessage,
+    successTitle: copy.nousAuthDoneTitle
+  })
 
   useEffect(() => {
     void refresh()
@@ -611,61 +608,6 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     }
   }
 
-  // Drive the existing Nous Portal OAuth device-code flow (the same session
-  // machinery onboarding uses: start → open verification URL → poll), then
-  // refetch the toolset config so is_active / status flip once entitled.
-  async function signInToNousPortal() {
-    try {
-      const start = await startOAuthLogin('nous')
-
-      if (start.flow !== 'device_code') {
-        notifyError(new Error(`unexpected flow: ${start.flow}`), copy.nousAuthFailed)
-
-        return
-      }
-
-      const url = start.verification_url
-
-      if (window.hermesDesktop?.openExternal) {
-        try {
-          await window.hermesDesktop.openExternal(url)
-        } catch {
-          window.open(url, '_blank', 'noopener,noreferrer')
-        }
-      } else {
-        window.open(url, '_blank', 'noopener,noreferrer')
-      }
-
-      // Poll until the device-code session resolves (~5s cadence, bounded).
-      for (let attempt = 0; attempt < 120 && mountedRef.current; attempt += 1) {
-        await new Promise(resolve => window.setTimeout(resolve, 5000))
-
-        if (!mountedRef.current) {
-          return
-        }
-
-        const polled = await pollOAuthSession('nous', start.session_id)
-
-        if (polled.status === 'approved') {
-          notify({ kind: 'success', title: copy.nousAuthDoneTitle, message: copy.nousAuthDoneMessage })
-          await refresh()
-          onConfiguredChange?.()
-
-          return
-        }
-
-        if (polled.status !== 'pending') {
-          notifyError(new Error(polled.error_message || `Sign-in ${polled.status}`), copy.nousAuthFailed)
-
-          return
-        }
-      }
-    } catch (err) {
-      if (mountedRef.current) {
-        notifyError(err, copy.nousAuthFailed)
-      }
-    }
-  }
 
   function patchEnv(key: string, isSet: boolean) {
     setEnvState(c => ({ ...c, [key]: isSet }))

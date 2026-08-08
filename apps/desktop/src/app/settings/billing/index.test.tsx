@@ -31,6 +31,11 @@ const apiMocks = vi.hoisted(() => ({
   updateAutoReload: vi.fn()
 }))
 
+const oauthMocks = vi.hoisted(() => ({
+  signInToNousPortal: vi.fn(),
+  signingIn: false
+}))
+
 vi.mock('./api', () => ({
   // Pass-through provider — the mocked useBillingApi ignores any override anyway.
   BillingApiProvider: ({ children }: { children: ReactNode }) => children,
@@ -45,6 +50,10 @@ vi.mock('./api', () => ({
     stepUp: apiMocks.stepUp,
     updateAutoReload: apiMocks.updateAutoReload
   })
+}))
+
+vi.mock('@/hooks/use-nous-portal-login', () => ({
+  useNousPortalLogin: () => oauthMocks
 }))
 
 function renderBilling(initialEntries: string[] = ['/settings?tab=billing']) {
@@ -595,14 +604,17 @@ describe('BillingSettings', () => {
     await waitFor(() => expect(screen.getByText('$25 added. Balance is refreshing.')).toBeTruthy())
   })
 
-  it('renders logged-out as a connect card without normal account rows', async () => {
+  it('starts Nous OAuth from the logged-out connect card without normal account rows', async () => {
     apiMocks.fetchBillingState.mockResolvedValue(okBilling(loggedOutBillingState))
     apiMocks.fetchSubscriptionState.mockResolvedValue(okSubscription(loggedOutSubscriptionState))
 
     renderBilling()
 
     expect(await screen.findByText('Connect your Nous account')).toBeTruthy()
-    expect(screen.getByText('Run /portal in the TUI or open the Nous portal to connect your account.')).toBeTruthy()
+    expect(screen.getByText('Sign in to your Nous Portal account to manage your plan and usage.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in to Nous Portal' }))
+    expect(oauthMocks.signInToNousPortal).toHaveBeenCalledTimes(1)
+    expect(apiMocks.openExternal).not.toHaveBeenCalled()
     expect(screen.queryByText('Payment method')).toBeNull()
     expect(screen.queryByText('Usage')).toBeNull()
   })

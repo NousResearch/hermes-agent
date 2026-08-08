@@ -9,7 +9,6 @@ import type { BillingStateResponse, SubscriptionStateResponse, SubscriptionTierO
 
 export const EMPTY_BILLING_VALUE = '—'
 export const FALLBACK_PORTAL_BILLING_URL = 'https://portal.nousresearch.com/billing'
-export const FALLBACK_PORTAL_URL = 'https://portal.nousresearch.com'
 
 // The billing endpoint is the authoritative source of truth for balance / cap /
 // plan — the inference `x-nous-credits-*` headers are best-effort and can drift
@@ -36,10 +35,9 @@ export interface BillingSummaryItemView {
 }
 
 export interface BillingNoticeView {
-  action?: {
-    label: string
-    url: string
-  }
+  action?:
+    | { kind: 'external'; label: string; url: string }
+    | { kind: 'nous_oauth'; label: string }
   message: string
   title: string
   /** `warn` = an actionable blocker (e.g. no card); `info` = neutral guidance. */
@@ -199,8 +197,8 @@ export function deriveBillingView(
   if (!billing.logged_in || subscription?.logged_in === false) {
     return {
       notice: {
-        action: { label: 'Open portal ↗', url: billing.portal_url ?? subscription?.portal_url ?? FALLBACK_PORTAL_URL },
-        message: 'Run /portal in the TUI or open the Nous portal to connect your account.',
+        action: { kind: 'nous_oauth', label: 'Sign in to Nous Portal' },
+        message: 'Sign in to your Nous Portal account to manage your plan and usage.',
         title: 'Connect your Nous account'
       },
       status: 'logged_out',
@@ -302,7 +300,7 @@ function refusalNotice(refusal: BillingRefusal): BillingNoticeView {
   const portalUrl = resolved.action.type === 'portal' ? resolved.action.url : undefined
 
   return {
-    action: portalUrl ? { label: 'Open portal ↗', url: portalUrl } : undefined,
+    action: portalUrl ? { kind: 'external', label: 'Open portal ↗', url: portalUrl } : undefined,
     message: resolved.message,
     title: resolved.title,
     tone: 'warn'
@@ -318,7 +316,7 @@ function noCardNotice(billing: BillingStateResponse): BillingNoticeView | undefi
   }
 
   return {
-    action: { label: 'Add card ↗', url: billing.portal_url ?? FALLBACK_PORTAL_BILLING_URL },
+    action: { kind: 'external', label: 'Add card ↗', url: billing.portal_url ?? FALLBACK_PORTAL_BILLING_URL },
     message: 'Buying top-up credits and auto-refill stay disabled until a card is on file. Add one on the portal.',
     title: 'No payment method on file',
     tone: 'warn'

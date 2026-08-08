@@ -72,8 +72,7 @@ gateway:
       enabled: true
       extra:
         relay_url: https://mycommunity.communities.buzz.xyz
-        channels:                         # channel UUIDs to watch (empty = all joined)
-          - ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
+        channels: []                      # recommended: dynamically watch every joined channel
         home_channel: ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
         poll_interval: 4                  # seconds between inbound poll sweeps (default 4 — balances latency vs. relay load)
         cli_path: ""                      # buzz binary (default: PATH, then ~/bin/buzz)
@@ -97,7 +96,8 @@ gateway:
 
 ## Mentions, channels, and DMs
 
-- In shared channels the agent only responds when **addressed** — by `@name`, its npub, or its hex pubkey. Everything else is ignored.
+- Leave `channels` empty to watch every channel the Buzz identity has joined. Relay membership additions and removals update the running gateway automatically; no YAML duplication or restart is required.
+- In shared channels the agent only responds when **addressed**. Structured relay recipient (`p`) tags are authoritative. For legacy events without recipient tags, fallback requires an exact explicit `@DisplayName`; bare names, substrings, and prefix matches are ignored.
 - Direct messages always reach the agent, no mention needed.
 - The agent's own messages are never dispatched back to it (self-echo suppression by pubkey), and every event is de-duplicated by event id against a per-channel high-water mark.
 
@@ -117,7 +117,7 @@ Check status with `hermes gateway status` — Buzz connection state is reported 
 
 ## Notes and limitations
 
-- **Inbound is polled, not streamed.** The `buzz` CLI is request/response, so the adapter polls `buzz messages get` per watched channel every `poll_interval` seconds (default 4). Expect up to one interval of latency on inbound messages. A future optimization is a websocket transport (the Buzz repo ships `buzz-ws-client` for true streaming).
+- Inbound uses a NIP-42-authenticated WebSocket subscription by default. In `auto` mode, the adapter falls back to CLI polling if WebSocket authentication cannot be established; `poll_interval` controls that fallback cadence.
 - On (re)connect the adapter seeds its high-water mark from the newest events, so channel history is never replayed into the agent.
-- New DM conversations are discovered automatically (every few poll sweeps).
+- New joined channels and DM conversations are discovered automatically. Poll fallback reconciles joined-channel membership before reading messages.
 - The private key is passed to the CLI via the subprocess environment — it never appears in argv or logs.

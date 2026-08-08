@@ -6,6 +6,7 @@ import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
 import { readDesktopFileDataUrl, selectDesktopPaths } from '@/lib/desktop-fs'
+import { downscaleDataUrlForPreview } from '@/lib/image-resize'
 import { normalize } from '@/lib/text'
 import {
   addComposerAttachment,
@@ -50,17 +51,22 @@ export function isImagePath(filePath: string): boolean {
  * In local mode the facade IS the local bridge, so this stays a single read.
  */
 export async function attachmentPreviewDataUrl(filePath: string): Promise<string> {
+  let dataUrl: string
+
   try {
     const local = await window.hermesDesktop?.readFileDataUrl?.(filePath)
 
     if (local) {
-      return local
+      dataUrl = local
+    } else {
+      dataUrl = await readDesktopFileDataUrl(filePath)
     }
   } catch {
     // Not on this machine (or unreadable locally) — try the gateway.
+    dataUrl = await readDesktopFileDataUrl(filePath)
   }
 
-  return readDesktopFileDataUrl(filePath)
+  return dataUrl
 }
 
 export interface DroppedFile {
@@ -421,7 +427,17 @@ export function useComposerActions({
         const previewUrl = await attachmentPreviewDataUrl(filePath)
 
         if (previewUrl) {
-          scope.add({ ...baseAttachment, previewUrl })
+          // Downscale only the pill thumbnail. `previewUrl` must keep the
+          // full-resolution bytes: current main feeds it to ImageLightbox and
+          // useImageDownload (attachments.tsx), and the attached-image
+          // pipeline uploads the on-disk original to the model. The helper
+          // never rejects — on failure it returns a 1×1 placeholder so the
+          // pill never renders the multi-MB original.
+          const thumbnailUrl = previewUrl.startsWith('data:image/')
+            ? await downscaleDataUrlForPreview(previewUrl)
+            : undefined
+
+          scope.add({ ...baseAttachment, previewUrl, thumbnailUrl })
         }
 
         return true

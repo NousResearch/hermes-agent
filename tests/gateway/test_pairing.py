@@ -282,6 +282,84 @@ class TestApprovalFlow:
             store.approve_code("telegram", code)
             assert store.is_approved("telegram", "user1") is True
 
+    def test_is_approved_reads_the_file_once_across_messages(self, tmp_path):
+        """The authz gate calls is_approved per inbound message; the approved
+        file must be read+parsed once, then served from the mtime-keyed cache."""
+        import json as _json
+
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1", "Alice")
+            store.approve_code("telegram", code)
+
+            reads = {"n": 0}
+            real_load = store._load_json
+
+            def counting_load(path):
+                if path.name == "telegram-approved.json":
+                    reads["n"] += 1
+                return real_load(path)
+
+            with patch.object(store, "_load_json", counting_load):
+                for _ in range(50):
+                    assert store.is_approved("telegram", "user1") is True
+                assert reads["n"] == 1
+
+                # An external write (pairing CLI in another process) bumps
+                # the mtime and must invalidate the cache.
+                path = tmp_path / "telegram-approved.json"
+                data = _json.loads(path.read_text(encoding="utf-8"))
+                data["user2"] = {"user_name": "Bob", "approved_at": 1.0}
+                path.write_text(_json.dumps(data), encoding="utf-8")
+                assert store.is_approved("telegram", "user2") is True
+                assert reads["n"] == 2
+
+    def test_is_approved_cache_misses_file_without_repeated_stat_error(self, tmp_path):
+        """A platform with no approved file answers False, and file creation
+        later is picked up (negative cache keyed on the missing-file shape)."""
+        import json as _json
+
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            for _ in range(5):
+                assert store.is_approved("telegram", "user1") is False
+            (tmp_path / "telegram-approved.json").write_text(
+                _json.dumps({"user1": {"user_name": "Alice", "approved_at": 1.0}}),
+                encoding="utf-8",
+            )
+            assert store.is_approved("telegram", "user1") is True
+
+    def test_is_approved_cache_invalidates_on_same_size_write(self, tmp_path):
+        """A same-size external write (same byte count, new mtime) must still
+        invalidate: the stat key is (mtime_ns, size), not size alone."""
+        import json as _json
+        import os as _os
+
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            path = tmp_path / "telegram-approved.json"
+            path.write_text(
+                _json.dumps({"user1": {"user_name": "Alice", "approved_at": 1.0}}),
+                encoding="utf-8",
+            )
+            assert store.is_approved("telegram", "user1") is True
+
+            # Replace the only key with a different one of identical length,
+            # so the file size cannot change. Bump mtime explicitly to keep
+            # the test independent of filesystem timestamp granularity.
+            before = path.stat().st_size
+            path.write_text(
+                _json.dumps({"user2": {"user_name": "Alice", "approved_at": 1.0}}),
+                encoding="utf-8",
+            )
+            assert path.stat().st_size == before
+            future = path.stat().st_mtime_ns + 1_000_000_000
+            _os.utime(path, ns=(future, future))
+
+            assert store.is_approved("telegram", "user1") is False
+            assert store.is_approved("telegram", "user2") is True
+
+
     def test_approve_request_id_from_pending_list(self, tmp_path):
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()

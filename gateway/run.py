@@ -645,23 +645,13 @@ def _format_exec_approval_fallback(
 
 
 def _gateway_provider_error_reply(text: str) -> str:
-    """Map raw provider/API errors to a short user-safe Telegram reply."""
-    if _GATEWAY_AUTH_ERROR_RE.search(text):
-        return (
-            "⚠️ Provider authentication failed. Check the configured credentials; "
-            "raw provider details are in the gateway logs."
-        )
-    if _GATEWAY_PROVIDER_POLICY_RE.search(text):
-        return (
-            "⚠️ The model provider rejected the request. I kept the raw provider "
-            "error out of chat; check gateway logs for details or try rephrasing."
-        )
-    if _GATEWAY_RATE_LIMIT_RE.search(text):
-        return "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
-    return (
-        "⚠️ The model provider failed after retries. I kept raw provider details "
-        "out of chat; check gateway logs for diagnostics."
-    )
+    """Return one provider-agnostic failure message for human chat surfaces.
+
+    Provider names, account state, billing guidance, model names, and raw HTTP
+    details belong in logs only. Keeping one stable sentence also prevents
+    retry/status paths from revealing progressively more detail.
+    """
+    return "⚠️ I couldn’t complete that request. Please try again shortly."
 
 
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
@@ -675,6 +665,27 @@ _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"|incorrect\s+api\s+key"
     r"|invalid\s+api\s+key"
     r")",
+    re.IGNORECASE,
+)
+
+_GATEWAY_STRONG_PROVIDER_ERROR_SHAPE_RE = re.compile(
+    r"^\s*(\W*\s*)?("
+    r"api\s+(?:call\s+)?failed"
+    r"|provider\s+authentication\s+failed"
+    r"|non-retryable\s+error"
+    r"|rate\s+limited\s+after\s+\d+\s+retries"
+    r"|error\s+code\s*:"
+    r"|incorrect\s+api\s+key"
+    r"|invalid\s+api\s+key"
+    r")",
+    re.IGNORECASE,
+)
+
+_GATEWAY_PROVIDER_ERROR_PREFIX_RE = re.compile(
+    r"^\s*(?:\W+\s*)?(?:"
+    r"the\s+request\s+failed\s*:"
+    r"|(?:[A-Za-z_]\w*\.)*[A-Za-z_]\w*(?:Error|Exception)\s*:"
+    r")\s*",
     re.IGNORECASE,
 )
 
@@ -695,8 +706,23 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     if not text:
         return False
     body = str(text).strip()
-    # Provider failure envelopes are short. Assistant answers that happen
-    # to mention HTTP status codes ("HTTP 404 means...") tend to be longer.
+    # Normalization and provider SDKs can prepend a small chain of envelopes,
+    # e.g. ``The request failed: AuthenticationError: Incorrect API key``.
+    # Peel only those anchored prefixes so markers buried in assistant prose
+    # remain ineligible for the provider-error rewrite.
+    strong_candidate = body
+    for _ in range(4):
+        prefix = _GATEWAY_PROVIDER_ERROR_PREFIX_RE.match(strong_candidate)
+        if not prefix:
+            break
+        strong_candidate = strong_candidate[prefix.end():]
+    # Strong provider envelopes remain errors even when an SDK appends a long
+    # JSON payload, request id, account guidance, or retry diagnostics. The old
+    # 400-character ceiling leaked exactly those expanded failures.
+    if _GATEWAY_STRONG_PROVIDER_ERROR_SHAPE_RE.search(strong_candidate):
+        return True
+    # Bare "HTTP NNN" is ambiguous (an assistant may be explaining HTTP), so
+    # retain the conservative short-envelope heuristic for that shape alone.
     if len(body) > 400 or body.count("\n") > 4:
         return False
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
@@ -754,7 +780,9 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         ):
             return None
     if _looks_like_gateway_provider_error(text):
-        return _gateway_provider_error_reply(text)
+        # Retry/status callbacks are diagnostics, not a first chat reply. The
+        # final-result path emits the single safe failure sentence.
+        return None
     return text
 
 
@@ -5600,7 +5628,15 @@ class TurnRunner:
             )
             final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)
             if not final_response:
-                final_response = f"⚠️ {result['error']}" if result.get("error") else ""
+                raw_error = result.get("error")
+                final_response = (
+                    _sanitize_gateway_final_response(
+                        ctx.source.platform,
+                        f"API call failed: {raw_error}",
+                    )
+                    if raw_error
+                    else ""
+                )
             return {
                 "final_response": final_response,
                 "messages": result.get("messages", []),
@@ -19914,9 +19950,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             result = await self._run_in_executor_with_context(run_sync)
 
-            response = result.get("final_response", "") if result else ""
-            if not response and result and result.get("error"):
-                response = f"Error: {result['error']}"
+            response = result.get("final_response", "") if isinstance(result, dict) else ""
+            if not response and isinstance(result, dict) and result.get("error"):
+                raw_error = result.get("error")
+                response = _sanitize_gateway_final_response(
+                    source.platform,
+                    f"API call failed: {raw_error}",
+                )
 
             # Extract media files from the response
             if response:
@@ -20003,7 +20043,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 await adapter.send(
                     chat_id=source.chat_id,
-                    content=f"❌ Background task {task_id} failed: {e}",
+                    content=_sanitize_gateway_final_response(
+                        source.platform,
+                        f"API call failed: {e}",
+                    ),
                     metadata=_thread_metadata,
                 )
             except Exception:

@@ -7,11 +7,31 @@ Kimi has dual endpoints:
 This module covers the chat_completions path (/v1 endpoint).
 """
 
+import logging
 from typing import Any
 from urllib.parse import urlparse
 
 from providers import register_provider
 from providers.base import OMIT_TEMPERATURE, ProviderProfile
+
+logger = logging.getLogger(__name__)
+
+# kimi-k3's documented reasoning_effort vocabulary is {"low", "high", "max"}
+# (platform.kimi.ai models-overview). hermes' wider effort ladder maps onto it
+# monotonically, rounding up to the nearest documented value at-or-above the
+# request so a configured effort is never silently shallower than asked.
+# Unmapped values warn loudly and fall back to the thinking toggle — the
+# previous behavior silently emitted NO reasoning_effort for anything outside
+# {low, medium, high}, which made a configured `ultra` a quiet no-op.
+_KIMI_K3_EFFORT_MAP = {
+    "minimal": "low",
+    "low": "low",
+    "medium": "high",
+    "high": "high",
+    "max": "max",
+    "ultra": "max",
+    "xhigh": "max",
+}
 
 
 def _is_confirmed_kimi_coding_url(base_url: str) -> bool:
@@ -84,12 +104,20 @@ class KimiProfile(ProviderProfile):
             extra_body["thinking"] = {"type": "disabled"}
             return extra_body, top_level
 
-        # Enabled: prefer an explicit effort; only fall back to extra_body
-        # thinking when no recognized effort is requested.
+        # Enabled: map the requested effort onto kimi-k3's documented
+        # vocabulary; fall back to extra_body thinking only when no effort
+        # was requested — or, loudly, when the value is unrecognized.
         effort = (reasoning_config.get("effort") or "").strip().lower()
-        if effort in {"low", "medium", "high"}:
-            top_level["reasoning_effort"] = effort
+        if effort in _KIMI_K3_EFFORT_MAP:
+            top_level["reasoning_effort"] = _KIMI_K3_EFFORT_MAP[effort]
         else:
+            if effort:
+                logger.warning(
+                    "kimi-coding: reasoning_effort %r has no documented "
+                    "kimi-k3 mapping; falling back to extra_body.thinking "
+                    "(no reasoning_effort sent)",
+                    effort,
+                )
             extra_body["thinking"] = {"type": "enabled"}
 
         return extra_body, top_level

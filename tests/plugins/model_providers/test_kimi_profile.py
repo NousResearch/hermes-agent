@@ -45,12 +45,24 @@ class TestKimiReasoningWireShape:
         assert extra_body == {"thinking": {"type": "enabled"}}
         assert top_level == {}
 
-    @pytest.mark.parametrize("effort", ["low", "medium", "high"])
-    def test_explicit_effort_sends_effort_only(self, kimi_profile, effort):
+    @pytest.mark.parametrize(
+        "effort,expected",
+        [
+            ("minimal", "low"),
+            ("low", "low"),
+            ("medium", "high"),
+            ("high", "high"),
+            ("max", "max"),
+            ("ultra", "max"),
+            ("xhigh", "max"),
+        ],
+    )
+    def test_explicit_effort_sends_effort_only(self, kimi_profile, effort, expected):
+        """hermes' effort ladder maps onto kimi-k3's documented {low, high, max}."""
         extra_body, top_level = kimi_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort}
         )
-        assert top_level == {"reasoning_effort": effort}
+        assert top_level == {"reasoning_effort": expected}
         assert "thinking" not in extra_body
 
     def test_enabled_without_effort_falls_back_to_thinking(self, kimi_profile):
@@ -60,15 +72,23 @@ class TestKimiReasoningWireShape:
         assert extra_body == {"thinking": {"type": "enabled"}}
         assert top_level == {}
 
-    @pytest.mark.parametrize("effort", ["", "garbage", "xhigh", "max"])
+    @pytest.mark.parametrize("effort", ["", "garbage"])
     def test_unrecognized_effort_falls_back_to_thinking(self, kimi_profile, effort):
-        """Unknown/strong efforts aren't in Moonshot's low|medium|high set, so
-        we drop to the thinking toggle rather than sending an invalid effort."""
+        """Unmapped values never emit reasoning_effort — they drop to the
+        thinking toggle rather than sending an invalid effort."""
         extra_body, top_level = kimi_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort}
         )
         assert extra_body == {"thinking": {"type": "enabled"}}
         assert top_level == {}
+
+    def test_unrecognized_effort_warns_loudly(self, kimi_profile, caplog):
+        """The silent-drop trap: unknown efforts must warn, not vanish."""
+        with caplog.at_level("WARNING"):
+            kimi_profile.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": "garbage"}
+            )
+        assert any("garbage" in record.getMessage() for record in caplog.records)
 
     def test_disabled_sends_thinking_disabled_only(self, kimi_profile):
         extra_body, top_level = kimi_profile.build_api_kwargs_extras(

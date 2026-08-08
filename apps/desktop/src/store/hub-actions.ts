@@ -105,9 +105,10 @@ async function runHubAction(key: string, kind: HubActionKind, spawn: () => Promi
     // (un)install adds/removes a skill, so its count/rows must update too.
     void queryClient.invalidateQueries({ queryKey: HUB_SOURCES_KEY })
     void queryClient.invalidateQueries({ queryKey: SKILLS_LIST_KEY })
-    // …and the composer's `/` list, which caches the command catalog for an
-    // hour and would otherwise keep offering the skill we just removed.
-    invalidateSlashCompletions()
+
+    if (exitCode === 0) {
+      invalidateSlashCompletions()
+    }
   } catch (err) {
     // A profile switch points the next poll at the new backend, which 404s the
     // old action name — that's an abandonment, not a failure, so swallow it

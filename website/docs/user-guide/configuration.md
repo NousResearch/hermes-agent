@@ -2147,6 +2147,14 @@ browser:
   # browser via /browser connect). Ignored on Camofox and default local agent-browser mode.
   dialog_policy: must_respond    # must_respond | auto_dismiss | auto_accept
   dialog_timeout_s: 300          # Safety auto-dismiss under must_respond (seconds)
+  # Viewport applied via Emulation.setDeviceMetricsOverride when the CDP
+  # supervisor attaches to a page (browser.cdp_url / /browser connect).
+  # Defaults match Chrome's headless window size (1280x720, 1x, desktop).
+  viewport:
+    width: 1280
+    height: 720
+    device_scale_factor: 1
+    mobile: false
   camofox:
     managed_persistence: false   # When true, Camofox sessions persist cookies/logins across restarts
     user_id: ""                  # Optional externally managed Camofox userId
@@ -2159,6 +2167,8 @@ browser:
 - `must_respond` (default) — capture the dialog, surface it in `browser_snapshot.pending_dialogs`, and wait for the agent to call `browser_dialog(action=...)`. After `dialog_timeout_s` seconds with no response, the dialog is auto-dismissed to prevent the page's JS thread from stalling forever.
 - `auto_dismiss` — capture, dismiss immediately. The agent still sees the dialog record in `browser_snapshot.recent_dialogs` with `closed_by="auto_policy"` after the fact.
 - `auto_accept` — capture, accept immediately. Useful for pages with aggressive `beforeunload` prompts.
+
+**CDP viewport:** when a CDP backend is attached (`browser.cdp_url` or `/browser connect`), `browser.viewport` sets the effective viewport for the session via `Emulation.setDeviceMetricsOverride`. This fixes screenshots and `browser_vision` capturing at Chrome's headless default (780×493 px) on desktop sites. Keys: `width`, `height`, `device_scale_factor`, `mobile`. Defaults are 1280×720 at 1× scale, desktop mode, so existing users see no change unless they opt in.
 
 See the [browser feature page](./features/browser.md#browser_dialog) for the full dialog workflow.
 

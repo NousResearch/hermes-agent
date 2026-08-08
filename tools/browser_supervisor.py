@@ -77,6 +77,15 @@ _VALID_POLICIES = frozenset(
 DEFAULT_DIALOG_POLICY = DIALOG_POLICY_MUST_RESPOND
 DEFAULT_DIALOG_TIMEOUT_S = 300.0
 
+# Viewport applied via ``Emulation.setDeviceMetricsOverride`` when the
+# supervisor attaches to a page. Defaults match Chrome's headless window size
+# (1280x720 at 1x scale, desktop mode) so existing users see no change unless
+# they opt in via ``browser.viewport`` in config.yaml.
+DEFAULT_VIEWPORT_WIDTH = 1280
+DEFAULT_VIEWPORT_HEIGHT = 720
+DEFAULT_VIEWPORT_DEVICE_SCALE_FACTOR = 1
+DEFAULT_VIEWPORT_MOBILE = False
+
 # Snapshot caps for frame_tree — keep payloads bounded on ad-heavy pages.
 FRAME_TREE_MAX_ENTRIES = 30
 FRAME_TREE_MAX_OOPIF_DEPTH = 2
@@ -310,6 +319,7 @@ class CDPSupervisor:
         *,
         dialog_policy: str = DEFAULT_DIALOG_POLICY,
         dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S,
+        viewport: Optional[Dict[str, Any]] = None,
     ) -> None:
         if dialog_policy not in _VALID_POLICIES:
             raise ValueError(
@@ -320,6 +330,10 @@ class CDPSupervisor:
         self.cdp_url = cdp_url
         self.dialog_policy = dialog_policy
         self.dialog_timeout_s = float(dialog_timeout_s)
+        # Raw ``browser.viewport`` config (width/height/device_scale_factor/
+        # mobile). Empty dict = user hasn't opted in; the supervisor then
+        # applies the built-in defaults in ``_apply_viewport_override``.
+        self.viewport: Dict[str, Any] = dict(viewport or {})
 
         # State protected by ``_state_lock`` for cross-thread reads.
         self._state_lock = threading.Lock()
@@ -761,11 +775,63 @@ class CDPSupervisor:
             {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True},
             session_id=self._page_session_id,
         )
+        # Apply the configured viewport (Emulation.setDeviceMetricsOverride)
+        # for the lifetime of this session — screenshots and browser_vision
+        # then respect browser.viewport instead of Chrome's headless default.
+        await self._apply_viewport_override()
         # Install the dialog bridge — overrides native alert/confirm/prompt with
         # a synchronous XHR we intercept via Fetch domain. This is how we make
         # dialog response work on Browserbase (whose CDP proxy auto-dismisses
         # real native dialogs before we can call handleJavaScriptDialog).
         await self._install_dialog_bridge(self._page_session_id)
+
+    async def _apply_viewport_override(self) -> None:
+        """Apply ``browser.viewport`` via ``Emulation.setDeviceMetricsOverride``.
+
+        Best-effort: a failure to set the viewport must not break the attach
+        (the supervisor is a non-fatal enhancement on top of the browser
+        session). Missing or invalid values fall back to the built-in defaults
+        (1280x720, 1x scale, desktop), so existing users see no change unless
+        they opt in via config.
+        """
+        if not self._page_session_id:
+            return
+        vp = self.viewport
+        try:
+            width = int(vp.get("width") or DEFAULT_VIEWPORT_WIDTH)
+            height = int(vp.get("height") or DEFAULT_VIEWPORT_HEIGHT)
+            dsf = float(
+                vp.get("device_scale_factor") or DEFAULT_VIEWPORT_DEVICE_SCALE_FACTOR
+            )
+            mobile = bool(vp.get("mobile", DEFAULT_VIEWPORT_MOBILE))
+            if width <= 0 or height <= 0 or dsf <= 0:
+                raise ValueError("viewport dimensions must be positive")
+        except (TypeError, ValueError):
+            logger.debug(
+                "viewport override: invalid browser.viewport=%r; using defaults",
+                vp,
+            )
+            width = DEFAULT_VIEWPORT_WIDTH
+            height = DEFAULT_VIEWPORT_HEIGHT
+            dsf = DEFAULT_VIEWPORT_DEVICE_SCALE_FACTOR
+            mobile = DEFAULT_VIEWPORT_MOBILE
+        try:
+            await self._cdp(
+                "Emulation.setDeviceMetricsOverride",
+                {
+                    "width": width,
+                    "height": height,
+                    "deviceScaleFactor": dsf,
+                    "mobile": mobile,
+                },
+                session_id=self._page_session_id,
+                timeout=5.0,
+            )
+        except Exception as e:
+            logger.debug(
+                "viewport override failed on sid=%s: %s",
+                (self._page_session_id or "")[:16], e,
+            )
 
     async def _install_dialog_bridge(self, session_id: str) -> None:
         """Install the dialog-bridge init script + Fetch interceptor on a session.
@@ -1445,6 +1511,7 @@ class _SupervisorRegistry:
         *,
         dialog_policy: str = DEFAULT_DIALOG_POLICY,
         dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S,
+        viewport: Optional[Dict[str, Any]] = None,
         start_timeout: float = 15.0,
     ) -> CDPSupervisor:
         """Idempotently ensure a supervisor is running for ``(task_id, cdp_url)``.
@@ -1471,6 +1538,7 @@ class _SupervisorRegistry:
             cdp_url=cdp_url,
             dialog_policy=dialog_policy,
             dialog_timeout_s=dialog_timeout_s,
+            viewport=viewport,
         )
         supervisor.start(timeout=start_timeout)
         with self._lock:
@@ -1506,6 +1574,10 @@ __all__ = [
     "ConsoleEvent",
     "DEFAULT_DIALOG_POLICY",
     "DEFAULT_DIALOG_TIMEOUT_S",
+    "DEFAULT_VIEWPORT_DEVICE_SCALE_FACTOR",
+    "DEFAULT_VIEWPORT_HEIGHT",
+    "DEFAULT_VIEWPORT_MOBILE",
+    "DEFAULT_VIEWPORT_WIDTH",
     "DIALOG_POLICY_AUTO_ACCEPT",
     "DIALOG_POLICY_AUTO_DISMISS",
     "DIALOG_POLICY_MUST_RESPOND",

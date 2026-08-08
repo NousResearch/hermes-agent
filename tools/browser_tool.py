@@ -591,6 +591,29 @@ def _get_dialog_policy_config() -> Tuple[str, float]:
         return DEFAULT_DIALOG_POLICY, DEFAULT_DIALOG_TIMEOUT_S
 
 
+def _get_viewport_config() -> Dict[str, Any]:
+    """Read ``browser.viewport`` from config for the CDP supervisor.
+
+    Returns a normalized dict with keys ``width``, ``height``,
+    ``device_scale_factor`` and ``mobile``, or ``{}`` when the user has not
+    configured a viewport — the supervisor then applies its built-in defaults
+    (1280x720 at 1x scale, desktop), preserving today's behavior.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
+        if not isinstance(browser_cfg, dict):
+            return {}
+        vp = browser_cfg.get("viewport") or {}
+        if not isinstance(vp, dict):
+            return {}
+        return dict(vp)
+    except Exception:
+        return {}
+
+
 def _ensure_cdp_supervisor(task_id: str) -> None:
     """Start a CDP supervisor for ``task_id`` if an endpoint is reachable.
 
@@ -625,11 +648,13 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
 
         policy, timeout_s = _get_dialog_policy_config()
+        viewport = _get_viewport_config()
         SUPERVISOR_REGISTRY.get_or_start(
             task_id=task_id,
             cdp_url=cdp_url,
             dialog_policy=policy,
             dialog_timeout_s=timeout_s,
+            viewport=viewport,
         )
     except Exception as exc:
         logger.debug(

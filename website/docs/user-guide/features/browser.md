@@ -528,6 +528,8 @@ Raw Chrome DevTools Protocol passthrough — the escape hatch for browser operat
 
 **Only available when a CDP endpoint is reachable at session start** — meaning `/browser connect` has attached to a running Chrome, Brave, Chromium, or Edge browser, or `browser.cdp_url` is set in `config.yaml`. The default local agent-browser mode, Camofox, and cloud providers (Browserbase, Browser Use, Firecrawl) do not currently expose CDP to this tool — cloud providers have per-session CDP URLs but live-session routing is a follow-up.
 
+When a CDP endpoint is attached, the supervisor applies `browser.viewport` (`width`, `height`, `device_scale_factor`, `mobile`; default 1280×720 at 1× scale, desktop) via `Emulation.setDeviceMetricsOverride` on the page session — so screenshots and `browser_vision` render at your chosen size instead of Chrome's headless default (780×493 px). See [configuration](../configuration.md#browser).
+
 **CDP method reference:** https://chromedevtools.github.io/devtools-protocol/ — the agent can `web_extract` a specific method's page to look up parameters and return shape.
 
 Common patterns:

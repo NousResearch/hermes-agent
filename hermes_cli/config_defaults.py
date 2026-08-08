@@ -425,6 +425,16 @@ DEFAULT_CONFIG = {
         # website/docs/developer-guide/browser-supervisor.md.
         "dialog_policy": "must_respond",  # must_respond | auto_dismiss | auto_accept
         "dialog_timeout_s": 300,  # Safety auto-dismiss after N seconds under must_respond
+        # Viewport applied via Emulation.setDeviceMetricsOverride when the CDP
+        # supervisor attaches to a page (browser.cdp_url / /browser connect).
+        # Defaults match Chrome's headless window size so existing users see no
+        # change unless they opt in.
+        "viewport": {
+            "width": 1280,
+            "height": 720,
+            "device_scale_factor": 1,
+            "mobile": False,
+        },
         "camofox": {
             # When true, Hermes sends a stable profile-scoped userId to Camofox
             # so the server maps it to a persistent Firefox profile automatically.

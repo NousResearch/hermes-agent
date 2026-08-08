@@ -9410,7 +9410,24 @@ def extract_content_or_reasoning(response) -> str:
     import re
 
     msg = response.choices[0].message
-    content = (msg.content or "").strip()
+    raw_content = msg.content
+    # Multimodal responses may return content as a list of typed parts
+    # (e.g. [{"type": "text", "text": "..."}, {"type": "image_url", ...}]).
+    # Flatten to a plain string so downstream regex/string ops don't crash
+    # with "expected string or bytes-like object, got 'list'".
+    if isinstance(raw_content, list):
+        text_bits: list[str] = []
+        for part in raw_content:
+            if isinstance(part, str):
+                text_bits.append(part)
+            elif isinstance(part, dict):
+                if part.get("type") == "text":
+                    text_bits.append(part.get("text", ""))
+                elif part.get("type") == "image_url":
+                    text_bits.append("[image]")
+            # Skip unknown part types silently
+        raw_content = "\n".join(text_bits) if text_bits else ""
+    content = (raw_content or "").strip()
 
     if content:
         # Strip inline think/reasoning blocks (mirrors _strip_think_blocks)

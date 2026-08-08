@@ -9,6 +9,7 @@ Covers:
 """
 
 import asyncio
+import json
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -21,6 +22,8 @@ from gateway.config import PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
     _approval_event_choices,
+    _conversation_history_entry_validation_error,
+    _normalize_conversation_history_entry,
     cors_middleware,
     security_headers_middleware,
 )
@@ -112,6 +115,257 @@ def adapter():
 @pytest.fixture
 def auth_adapter():
     return _make_adapter(api_key="sk-secret")
+
+
+def _make_tool_agent(tool_call_id="call_abc", tool_name="skill_view", tool_args=None, tool_result="skill body"):
+    """Create a mock agent that invokes structured tool callbacks during a run."""
+    if tool_args is None:
+        tool_args = {"name": "data-mask"}
+
+    captured = {}
+
+    def _fake_create(**kwargs):
+        captured["start"] = kwargs.get("tool_start_callback")
+        captured["complete"] = kwargs.get("tool_complete_callback")
+        mock_agent = MagicMock()
+
+        def _run(user_message=None, conversation_history=None, task_id=None):
+            if captured["start"]:
+                captured["start"](tool_call_id, tool_name, tool_args)
+            if captured["complete"]:
+                captured["complete"](tool_call_id, tool_name, tool_args, tool_result)
+            return {"final_response": "done"}
+
+        mock_agent.run_conversation.side_effect = _run
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        return mock_agent
+
+    return _fake_create, captured
+
+
+# ---------------------------------------------------------------------------
+# Tool SSE callbacks (H8–H10)
+# ---------------------------------------------------------------------------
+
+
+class TestRunToolSSECallbacks:
+    @pytest.mark.asyncio
+    async def test_tool_started_includes_tool_call_id(self, adapter):
+        loop = asyncio.get_running_loop()
+        run_id = "run_tool_sse_unit"
+        q: asyncio.Queue = asyncio.Queue()
+        adapter._run_streams[run_id] = q
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
+
+        on_start, on_complete = adapter._make_run_tool_sse_callbacks(run_id, loop)
+        on_start("call_abc", "skill_view", {"name": "data-mask"})
+
+        event = await asyncio.wait_for(q.get(), timeout=1.0)
+        assert event["event"] == "tool.started"
+        assert event["tool_call_id"] == "call_abc"
+        assert event["tool"] == "skill_view"
+        assert event["preview"]
+        assert event["input"] == {"name": "data-mask"}
+
+    @pytest.mark.asyncio
+    async def test_tool_completed_includes_tool_call_id_without_result_preview(self, adapter):
+        loop = asyncio.get_running_loop()
+        run_id = "run_tool_sse_complete"
+        q: asyncio.Queue = asyncio.Queue()
+        adapter._run_streams[run_id] = q
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
+
+        on_start, on_complete = adapter._make_run_tool_sse_callbacks(run_id, loop)
+        on_start("call_abc", "skill_view", {"name": "data-mask"})
+        await q.get()
+        on_complete("call_abc", "skill_view", {"name": "data-mask"}, "masked output")
+
+        event = await asyncio.wait_for(q.get(), timeout=1.0)
+        assert event["event"] == "tool.completed"
+        assert event["tool_call_id"] == "call_abc"
+        assert event["tool"] == "skill_view"
+        # Correlation metadata only — no unbounded tool-result egress.
+        assert "preview" not in event
+        assert "masked output" not in str(event)
+        assert "duration" in event
+        assert event["error"] is False
+
+    @pytest.mark.asyncio
+    async def test_orphan_tool_completed_is_dropped(self, adapter):
+        loop = asyncio.get_running_loop()
+        run_id = "run_tool_sse_orphan"
+        q: asyncio.Queue = asyncio.Queue()
+        adapter._run_streams[run_id] = q
+
+        _, on_complete = adapter._make_run_tool_sse_callbacks(run_id, loop)
+        on_complete("call_missing", "skill_view", {}, "result")
+
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(q.get(), timeout=0.1)
+
+    @pytest.mark.asyncio
+    async def test_internal_tool_names_are_filtered(self, adapter):
+        loop = asyncio.get_running_loop()
+        run_id = "run_tool_sse_internal"
+        q: asyncio.Queue = asyncio.Queue()
+        adapter._run_streams[run_id] = q
+
+        on_start, on_complete = adapter._make_run_tool_sse_callbacks(run_id, loop)
+        on_start("call_internal", "_thinking", {})
+        on_complete("call_internal", "_thinking", {}, "thought")
+
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(q.get(), timeout=0.1)
+
+    @pytest.mark.asyncio
+    async def test_handle_runs_wires_structured_tool_callbacks(self, adapter):
+        app = _create_runs_app(adapter)
+        fake_create, _ = _make_tool_agent()
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=fake_create) as mock_create:
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                data = await resp.json()
+                run_id = data["run_id"]
+
+                kwargs = mock_create.call_args.kwargs
+                assert kwargs.get("tool_start_callback") is not None
+                assert kwargs.get("tool_complete_callback") is not None
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+                body = await events_resp.text()
+
+                started_payloads = []
+                for line in body.splitlines():
+                    if not line.startswith("data: "):
+                        continue
+                    payload = json.loads(line[len("data: "):])
+                    if payload.get("event") == "tool.started":
+                        started_payloads.append(payload)
+
+                assert started_payloads, "expected at least one tool.started SSE event"
+                assert started_payloads[0]["tool_call_id"] == "call_abc"
+                assert started_payloads[0]["tool"] == "skill_view"
+                assert "input" in started_payloads[0]
+
+                completed_payloads = []
+                for line in body.splitlines():
+                    if not line.startswith("data: "):
+                        continue
+                    payload = json.loads(line[len("data: "):])
+                    if payload.get("event") == "tool.completed":
+                        completed_payloads.append(payload)
+
+                assert completed_payloads, "expected at least one tool.completed SSE event"
+                assert completed_payloads[0]["tool_call_id"] == "call_abc"
+                assert "preview" not in completed_payloads[0]
+                assert "skill body" not in body
+
+
+# ---------------------------------------------------------------------------
+# Conversation history normalization (H1–H3)
+# ---------------------------------------------------------------------------
+
+
+NATIVE_TOOL_HISTORY = [
+    {"role": "user", "content": "use data-mask"},
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{
+            "id": "call_abc",
+            "type": "function",
+            "function": {"name": "skill_view", "arguments": '{"name":"data-mask"}'},
+        }],
+    },
+    {
+        "role": "tool",
+        "tool_call_id": "call_abc",
+        "content": "skill instructions body",
+        "name": "skill_view",
+    },
+    {"role": "assistant", "content": "ready"},
+]
+
+
+class TestRunsConversationHistory:
+    def test_normalize_preserves_assistant_tool_calls(self):
+        msg = _normalize_conversation_history_entry(NATIVE_TOOL_HISTORY[1])
+        assert msg["role"] == "assistant"
+        assert msg["tool_calls"][0]["id"] == "call_abc"
+        assert msg["content"] == ""
+
+    def test_normalize_preserves_tool_result(self):
+        msg = _normalize_conversation_history_entry(NATIVE_TOOL_HISTORY[2])
+        assert msg["role"] == "tool"
+        assert msg["tool_call_id"] == "call_abc"
+        assert msg["content"] == "skill instructions body"
+        assert msg["tool_name"] == "skill_view"
+
+    def test_normalize_simple_message_unchanged(self):
+        msg = _normalize_conversation_history_entry({"role": "user", "content": "hello"})
+        assert msg == {"role": "user", "content": "hello"}
+
+    def test_validation_requires_tool_call_id_for_tool_role(self):
+        err = _conversation_history_entry_validation_error(
+            {"role": "tool", "content": "body"}, 0,
+        )
+        assert err is not None
+        assert "tool_call_id" in err
+
+    def test_validation_allows_assistant_with_tool_calls_no_content(self):
+        err = _conversation_history_entry_validation_error(NATIVE_TOOL_HISTORY[1], 1)
+        assert err is None
+
+    @pytest.mark.asyncio
+    async def test_runs_passes_native_history_to_run_conversation(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "ok"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "continue", "conversation_history": NATIVE_TOOL_HISTORY},
+                )
+                assert resp.status == 202
+
+                for _ in range(20):
+                    if mock_agent.run_conversation.called:
+                        break
+                    await asyncio.sleep(0.05)
+
+                mock_agent.run_conversation.assert_called_once()
+                history = mock_agent.run_conversation.call_args.kwargs["conversation_history"]
+                assert len(history) == 4
+                assert history[1]["tool_calls"][0]["id"] == "call_abc"
+                assert history[2]["tool_call_id"] == "call_abc"
+                assert history[2]["tool_name"] == "skill_view"
+
+    @pytest.mark.asyncio
+    async def test_runs_rejects_tool_row_without_call_id(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs",
+                json={
+                    "input": "continue",
+                    "conversation_history": [
+                        {"role": "tool", "content": "orphan"},
+                    ],
+                },
+            )
+        assert resp.status == 400
+        assert adapter._run_streams == {}
 
 
 # ---------------------------------------------------------------------------

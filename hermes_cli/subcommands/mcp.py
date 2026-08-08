@@ -61,6 +61,14 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     mcp_add_p.add_argument("--auth", choices=["oauth", "header"], help="Auth method")
     mcp_add_p.add_argument("--preset", help="Known MCP preset name")
     mcp_add_p.add_argument(
+        "--scope",
+        choices=["project", "local", "global"],
+        help=(
+            "Where to save the server. Inside a git worktree the default is "
+            "project; outside one the default is global."
+        ),
+    )
+    mcp_add_p.add_argument(
         "--connect-timeout",
         type=float,
         help="Timeout in seconds for initial connection and tool discovery",

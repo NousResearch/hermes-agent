@@ -9007,6 +9007,39 @@ class TelegramAdapter(BasePlatformAdapter):
             profile=event.source.profile,
         )
 
+    @staticmethod
+    def _text_source_message(event: MessageEvent) -> dict[str, Any]:
+        """Return lossless provenance for one Telegram update before batching.
+
+        The gateway intentionally combines rapid text updates so a client-side
+        split reaches the agent as one turn.  Plugins observing the later
+        ``pre_gateway_dispatch`` hook still need the original update boundaries
+        for durable audit/capture use cases.  Keep that provenance in metadata;
+        it does not alter the text that is dispatched to the agent.
+        """
+        raw_text = getattr(getattr(event, "raw_message", None), "text", None)
+        timestamp = getattr(event, "timestamp", None)
+        if isinstance(timestamp, datetime):
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+            timestamp_value = timestamp.isoformat()
+        else:
+            timestamp_value = str(timestamp or "")
+        source = getattr(event, "source", None)
+        return {
+            "message_id": str(getattr(event, "message_id", None) or ""),
+            "platform_update_id": str(getattr(event, "platform_update_id", None) or ""),
+            "thread_id": str(getattr(source, "thread_id", None) or ""),
+            "source_timestamp": timestamp_value,
+            "source_text": str(raw_text if raw_text is not None else (event.text or "")),
+            "reply_to_message_id": str(getattr(event, "reply_to_message_id", None) or ""),
+            "message_type": (
+                event.message_type.value
+                if isinstance(getattr(event, "message_type", None), MessageType)
+                else str(getattr(event, "message_type", None) or "")
+            ),
+        }
+
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer.
 
@@ -9019,10 +9052,15 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.debug("[Telegram] Dropping text batch enqueue after disconnect started")
             return
 
+        # Capture the raw update boundary before topic recovery mutates the
+        # routing source or a later update is concatenated into ``event.text``.
+        source_message = self._text_source_message(event)
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
         chunk_len = len(event.text or "")
         if existing is None:
+            event.metadata = dict(event.metadata or {})
+            event.metadata["telegram_source_messages"] = [source_message]
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             self._pending_text_batches[key] = event
         else:
@@ -9034,6 +9072,12 @@ class TelegramAdapter(BasePlatformAdapter):
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
+            existing.metadata = dict(existing.metadata or {})
+            source_messages = existing.metadata.get("telegram_source_messages")
+            if not isinstance(source_messages, list):
+                source_messages = []
+                existing.metadata["telegram_source_messages"] = source_messages
+            source_messages.append(source_message)
 
         # Cancel any pending flush and restart the timer
         prior_task = self._pending_text_batch_tasks.get(key)

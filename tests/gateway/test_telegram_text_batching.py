@@ -6,6 +6,7 @@ from the same session and aggregate them before dispatching.
 """
 
 import asyncio
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -50,11 +51,27 @@ def _make_adapter():
     return adapter
 
 
-def _make_event(text: str, chat_id: str = "12345") -> MessageEvent:
+def _make_event(
+    text: str,
+    chat_id: str = "12345",
+    *,
+    message_id: str | None = None,
+    update_id: int | None = None,
+    thread_id: str | None = None,
+) -> MessageEvent:
     return MessageEvent(
         text=text,
         message_type=MessageType.TEXT,
-        source=SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"),
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=chat_id,
+            chat_type="dm",
+            thread_id=thread_id,
+        ),
+        raw_message=SimpleNamespace(text=text),
+        message_id=message_id,
+        platform_update_id=update_id,
+        timestamp=datetime(2026, 8, 7, 12, 0, tzinfo=timezone.utc),
     )
 
 
@@ -95,6 +112,48 @@ class TestTextBatching:
         dispatched = adapter.handle_message.call_args[0][0]
         assert "part one" in dispatched.text
         assert "split by Telegram" in dispatched.text
+
+    @pytest.mark.asyncio
+    async def test_split_messages_preserve_each_source_update_for_observers(self):
+        """Batching must not erase unique message IDs, text, or topic provenance."""
+        adapter = _make_adapter()
+
+        adapter._enqueue_text_event(
+            _make_event(
+                "rough idea", message_id="41", update_id=101, thread_id="topic-7"
+            )
+        )
+        await asyncio.sleep(0.02)
+        adapter._enqueue_text_event(
+            _make_event(
+                "later iteration", message_id="42", update_id=102, thread_id="topic-7"
+            )
+        )
+
+        await asyncio.sleep(0.2)
+
+        dispatched = adapter.handle_message.call_args[0][0]
+        assert dispatched.text == "rough idea\nlater iteration"
+        assert dispatched.metadata["telegram_source_messages"] == [
+            {
+                "message_id": "41",
+                "platform_update_id": "101",
+                "thread_id": "topic-7",
+                "source_timestamp": "2026-08-07T12:00:00+00:00",
+                "source_text": "rough idea",
+                "reply_to_message_id": "",
+                "message_type": "text",
+            },
+            {
+                "message_id": "42",
+                "platform_update_id": "102",
+                "thread_id": "topic-7",
+                "source_timestamp": "2026-08-07T12:00:00+00:00",
+                "source_text": "later iteration",
+                "reply_to_message_id": "",
+                "message_type": "text",
+            },
+        ]
 
     @pytest.mark.asyncio
     async def test_three_way_split_aggregated(self):

@@ -273,6 +273,28 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     return None
 
 
+def get_recent_upstream_commits(repo_dir: Optional[Path] = None, count: int = 5) -> list[str]:
+    """Return the last ``count`` commit subjects from HEAD..origin/main.
+
+    Returns an empty list if the repo isn't a git checkout, the fetch
+    hasn't been done, or there are no commits behind.
+    """
+    repo_dir = repo_dir or _resolve_repo_dir()
+    if repo_dir is None:
+        return []
+    try:
+        result = subprocess.run(
+            ["git", "log", "--oneline", f"-{count}", "HEAD..origin/main"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=5, cwd=str(repo_dir),
+        )
+    except Exception:
+        return []
+    if result.returncode != 0 or not result.stdout:
+        return []
+    return [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
+
+
 def check_for_updates() -> Optional[int]:
     """Check whether a Hermes update is available.
 
@@ -867,6 +889,24 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                     f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
                     f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to update[/]"
                 )
+                # Show recent upstream commits
+                recent = get_recent_upstream_commits(count=5)
+                if recent:
+                    right_lines.append("")
+                    right_lines.append(f"[bold {accent}]Recent Commits[/]")
+                    for commit_line in recent:
+                        parts = commit_line.split(" ", 1)
+                        if len(parts) == 2:
+                            short_hash, subject = parts
+                            right_lines.append(
+                                f"[dim {dim}]{short_hash[:8]}[/] [{text}]{subject}[/]"
+                            )
+                        else:
+                            right_lines.append(f"[dim {dim}]{commit_line}[/]")
+                    if behind > 5:
+                        right_lines.append(
+                            f"[dim {dim}]... and {behind - 5} more commits[/]"
+                        )
             else:
                 # UPDATE_AVAILABLE_NO_COUNT: nix-built hermes; we know an update
                 # exists but not by how much, and we don't know how the user

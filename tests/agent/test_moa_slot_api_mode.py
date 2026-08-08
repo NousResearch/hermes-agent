@@ -55,6 +55,81 @@ class TestSlotRuntimeApiMode:
         result = _slot_runtime({"provider": "copilot", "model": "gpt-5.5"})
         assert "api_mode" not in result
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_slot_explicit_connection_info_forwarded(self, mock_resolve):
+        """Slot base_url/api_key reach resolve_runtime_provider as explicit_*."""
+        mock_resolve.return_value = {
+            "base_url": "https://mirror.example/v1",
+            "api_key": "mirror-key",
+        }
+        import agent.moa_loop as moa
+        moa._runtime_cache.clear()
+
+        moa._slot_runtime({
+            "provider": "custom", "model": "some-model",
+            "base_url": "https://mirror.example/v1", "api_key": "mirror-key",
+        })
+        kwargs = mock_resolve.call_args.kwargs
+        assert kwargs["explicit_base_url"] == "https://mirror.example/v1"
+        assert kwargs["explicit_api_key"] == "mirror-key"
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_slot_api_mode_overrides_autodetected(self, mock_resolve):
+        """An explicit slot api_mode wins over the resolver's auto-detected one."""
+        mock_resolve.return_value = {
+            "base_url": "https://x.example/v1",
+            "api_key": "k",
+            "api_mode": "chat_completions",
+        }
+        import agent.moa_loop as moa
+        moa._runtime_cache.clear()
+
+        result = moa._slot_runtime({
+            "provider": "custom", "model": "m",
+            "base_url": "https://x.example/v1",
+            "api_mode": "anthropic_messages",
+        })
+        assert result["api_mode"] == "anthropic_messages"
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_slot_runtime_cache_keyed_by_connection_info(self, mock_resolve):
+        """Slots sharing provider+model but differing in base_url/api_key must
+        NOT share a cache entry — otherwise the first slot resolved poisons
+        the cache and every sibling silently inherits its endpoint and
+        credentials.
+        """
+
+        def _echo_explicit(**kwargs):
+            return {
+                "base_url": kwargs.get("explicit_base_url") or "http://catalog",
+                "api_key": kwargs.get("explicit_api_key") or "catalog-key",
+            }
+
+        mock_resolve.side_effect = _echo_explicit
+        import agent.moa_loop as moa
+        moa._runtime_cache.clear()
+
+        slot_a = {
+            "provider": "custom", "model": "shared-model",
+            "base_url": "https://a.example/v1", "api_key": "KEY-A",
+        }
+        slot_b = {
+            "provider": "custom", "model": "shared-model",
+            "base_url": "https://b.example/v1", "api_key": "KEY-B",
+        }
+        result_a = moa._slot_runtime(slot_a)
+        result_b = moa._slot_runtime(slot_b)
+        assert result_a["base_url"] == "https://a.example/v1"
+        assert result_b["base_url"] == "https://b.example/v1"
+        assert result_a["api_key"] == "KEY-A"
+        assert result_b["api_key"] == "KEY-B"
+
+        # The cache itself still works: an identical slot re-resolves from
+        # cache without another resolve_runtime_provider call.
+        calls_before = mock_resolve.call_count
+        again = moa._slot_runtime(dict(slot_a))
+        assert again["base_url"] == "https://a.example/v1"
+        assert mock_resolve.call_count == calls_before
 
 
 def test_run_reference_passes_slot_extra_body(monkeypatch):

@@ -47,6 +47,7 @@ import threading
 import uuid
 import warnings
 from typing import List, Dict, Any, Optional, Callable
+from urllib.parse import urlparse
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
 # that imports the SDK on first call/isinstance check. This preserves:
@@ -7070,6 +7071,28 @@ class AIAgent:
         from agent.chat_completion_helpers import build_api_kwargs
         return build_api_kwargs(self, api_messages, tools_for_api=tools_for_api)
 
+    def _is_ollama_reasoning_endpoint(self) -> bool:
+        """Return whether the active route is an Ollama API endpoint.
+
+        ``provider=custom`` covers several OpenAI-compatible servers, so a
+        generic local/private URL is not enough. Use only explicit Ollama
+        identities: the dedicated provider, the genuine Ollama Cloud host,
+        or Ollama's native default port. Parsing the port avoids treating a
+        hostile or accidental ``:11434`` path fragment as an Ollama route.
+        """
+        if (self.provider or "").strip().lower() == "ollama":
+            return True
+        if base_url_host_matches(self._base_url_lower, "ollama.com"):
+            return True
+        raw_base_url = str(self.base_url or "").strip()
+        try:
+            parsed = urlparse(
+                raw_base_url if "://" in raw_base_url else f"//{raw_base_url}"
+            )
+            return parsed.port == 11434
+        except ValueError:
+            return False
+
     def _supports_reasoning_extra_body(self) -> bool:
         """Return True when reasoning extra_body is safe to send for this route/model.
 
@@ -7099,7 +7122,7 @@ class AIAgent:
         # /api/show capabilities list is authoritative — emit reasoning_effort
         # only for models that declare the "thinking" capability. deepseek-v4
         # has it; gemma3 / qwen3-coder don't. Cached per (model, base_url).
-        if base_url_host_matches(self._base_url_lower, "ollama.com"):
+        if self._is_ollama_reasoning_endpoint():
             return self._ollama_supports_thinking_cached()
         if "openrouter" not in self._base_url_lower:
             return False

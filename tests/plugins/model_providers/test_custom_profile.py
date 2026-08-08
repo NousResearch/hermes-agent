@@ -96,6 +96,39 @@ class TestCustomReasoningWireShape:
         )
         assert eb.get("think") is not True
 
+    def test_local_ollama_nonthinking_model_clamps_stale_effort(self, custom_profile):
+        """A persisted Desktop effort must not 400 a non-thinking Ollama model."""
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            model="granite4.1:8b-hermes64k",
+            base_url="http://127.0.0.1:11434/v1",
+            supports_reasoning=False,
+        )
+        assert eb == {"think": False}
+        assert tl == {"reasoning_effort": "none"}
+
+    def test_local_ollama_thinking_model_keeps_requested_effort(self, custom_profile):
+        """Capability clamping must not disable a thinking-capable model."""
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            model="qwen3:4b-hermes64k",
+            base_url="http://127.0.0.1:11434/v1",
+            supports_reasoning=True,
+        )
+        assert eb == {}
+        assert tl == {"reasoning_effort": "medium"}
+
+    def test_non_ollama_custom_endpoint_keeps_existing_behavior(self, custom_profile):
+        """A custom GLM/vLLM endpoint is not reclassified as Ollama."""
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="glm-5.2",
+            base_url="https://ark.example.com/v1",
+            supports_reasoning=False,
+        )
+        assert eb == {}
+        assert tl == {"reasoning_effort": "high"}
+
 
 class TestCustomReasoningWithNumCtx:
     """Ollama num_ctx and reasoning are independent and compose."""
@@ -106,4 +139,3 @@ class TestCustomReasoningWithNumCtx:
         )
         assert eb == {"options": {"num_ctx": 8192}}
         assert tl == {}
-

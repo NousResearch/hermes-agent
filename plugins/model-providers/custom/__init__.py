@@ -13,6 +13,7 @@ Volcengine ARK, vLLM, llama.cpp). Key quirks:
 """
 
 from typing import Any
+from urllib.parse import urlparse
 
 from providers import register_provider
 from providers.base import ProviderProfile
@@ -20,6 +21,19 @@ from providers.base import ProviderProfile
 
 class CustomProfile(ProviderProfile):
     """Custom/Ollama local provider — think=false and num_ctx support."""
+
+    @staticmethod
+    def _is_ollama_endpoint(base_url: str | None) -> bool:
+        """Return whether ``base_url`` uses Ollama's native default port.
+
+        CustomProfile also fronts vLLM, llama.cpp, and hosted OpenAI-compatible
+        endpoints.  Restrict capability clamping to port 11434 so an unknown
+        hosted endpoint keeps its existing reasoning-effort behavior.
+        """
+        try:
+            return urlparse(str(base_url or "")).port == 11434
+        except ValueError:
+            return False
 
     def build_api_kwargs_extras(
         self,
@@ -30,6 +44,19 @@ class CustomProfile(ProviderProfile):
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}
+
+        # Desktop sessions persist their own reasoning-effort override.  A
+        # session created with "medium" can therefore outlive a later global
+        # config change to "none".  Ollama rejects that stale override with an
+        # HTTP 400 when the selected model does not advertise ``thinking``.
+        # Capability metadata is passed explicitly by the transport, so clamp
+        # only the authoritative Ollama/non-thinking combination.  Thinking
+        # Ollama models and non-Ollama custom endpoints keep normal behavior.
+        _ollama_non_thinking = (
+            self._is_ollama_endpoint(ctx.get("base_url"))
+            and "supports_reasoning" in ctx
+            and ctx.get("supports_reasoning") is False
+        )
 
         # Ollama context window
         if ollama_num_ctx:
@@ -51,7 +78,10 @@ class CustomProfile(ProviderProfile):
         # Ollama-only flag and thinking is already server-default-on for these
         # backends, so forcing it risks a 400 on GLM/vLLM endpoints that don't
         # recognize it. Mirrors the DeepSeek/Zai profile precedent.
-        if reasoning_config and isinstance(reasoning_config, dict):
+        if _ollama_non_thinking:
+            top_level["reasoning_effort"] = "none"
+            extra_body["think"] = False
+        elif reasoning_config and isinstance(reasoning_config, dict):
             _effort = (reasoning_config.get("effort") or "").strip().lower()
             _enabled = reasoning_config.get("enabled", True)
             if _effort == "none" or _enabled is False:

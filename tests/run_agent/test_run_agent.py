@@ -6175,6 +6175,31 @@ class TestSupportsReasoningExtraBody:
             agent.model = model
             assert agent._supports_reasoning_extra_body() is True, model
 
+    @pytest.mark.parametrize("supported", [True, False])
+    def test_local_ollama_uses_native_capability_probe(self, supported):
+        agent = self._make_agent()
+        agent.provider = "custom"
+        agent.base_url = "http://127.0.0.1:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "qwen3:4b" if supported else "granite4.1:8b"
+
+        with patch.object(
+            agent, "_ollama_supports_thinking_cached", return_value=supported
+        ) as probe:
+            assert agent._supports_reasoning_extra_body() is supported
+        probe.assert_called_once_with()
+
+    def test_non_ollama_custom_endpoint_does_not_probe(self):
+        agent = self._make_agent()
+        agent.provider = "custom"
+        agent.base_url = "https://ark.example.com/v1/:11434"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "glm-5.2"
+
+        with patch.object(agent, "_ollama_supports_thinking_cached") as probe:
+            assert agent._supports_reasoning_extra_body() is False
+        probe.assert_not_called()
+
 
 class TestMemoryContextSanitization:
     """sanitize_context() helper correctness — used at provider boundaries."""

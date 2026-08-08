@@ -474,6 +474,25 @@ def load_hermes_dotenv(
     """
     loaded: list[Path] = []
 
+    # In a multiplexed gateway, a context-local profile-home override means this
+    # call is running inside a profile-scoped turn (e.g. a lazily imported module
+    # whose import-time load resolves get_hermes_home() to the routed profile).
+    # Loading that profile's .env into the process-global os.environ with
+    # override=True clobbers shared adapter config for every other profile —
+    # e.g. DISCORD_ALLOWED_CHANNELS collapses to one profile's list and the
+    # other bots start rejecting their own channels (ELS-906). Profile
+    # credentials are served by the isolated secret scope in multiplex mode
+    # (see gateway/run.py::_reload_runtime_env_preserving_config_authority),
+    # so skip the global-env mutation entirely here.
+    try:
+        from agent.secret_scope import is_multiplex_active
+        from hermes_constants import get_hermes_home_override
+
+        if is_multiplex_active() and get_hermes_home_override() is not None:
+            return loaded
+    except Exception:
+        pass
+
     home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None

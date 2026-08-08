@@ -2813,7 +2813,7 @@ def run_conversation(
                     # Check for x-openrouter-provider or similar metadata
                     if provider_name == "Unknown" and response:
                         # Log all response attributes for debugging
-                        resp_attrs = {k: str(v)[:100] for k, v in vars(response).items() if not k.startswith('_')}
+                        resp_attrs = {k: str(v)[:100] for k, v in (vars(response) if hasattr(response, "__dict__") else response.items() if isinstance(response, dict) else {}).items()}
                         if agent.verbose_logging:
                             logging.debug(f"Response attributes for invalid response: {resp_attrs}")
                     

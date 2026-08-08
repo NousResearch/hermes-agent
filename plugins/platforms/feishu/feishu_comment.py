@@ -799,6 +799,26 @@ def _truncate(text: str, limit: int = _PROMPT_TEXT_LIMIT) -> str:
     return text[:limit] + "..."
 
 
+def _timeline_entry_line(user_id: str, text: str, is_self: bool) -> str:
+    """Render one comment-card timeline entry as an inert single line.
+
+    ``text`` is untrusted comment content: any collaborator on the document
+    can write a comment, and the card timeline is joined with newlines into the
+    prompt that ``_run_comment_agent`` hands to the model. Left raw, an embedded
+    newline lets a comment break out of its ``[user_id] text`` line and pose as
+    a fresh markdown section (a fake "## SYSTEM"/"## Override" heading) — the
+    same indirect-prompt-injection vector the sender-name prefix and the
+    Slack/Discord thread-context backfills already neutralize. Collapse each
+    entry to a single line; ``max_chars=0`` defers length capping to
+    ``_truncate`` so the existing per-comment limit is unchanged.
+    """
+    from gateway.session import neutralize_untrusted_inline_text
+
+    marker = " <-- YOU" if is_self else ""
+    inert = _truncate(neutralize_untrusted_inline_text(text, max_chars=0))
+    return f"[{user_id}] {inert}{marker}"
+
+
 def _select_local_timeline(
     timeline: List[Tuple[str, str, bool]],
     target_index: int,
@@ -915,8 +935,7 @@ def build_local_comment_prompt(
     ]
 
     for user_id, text, is_self in selected:
-        marker = " <-- YOU" if is_self else ""
-        lines.append(f"[{user_id}] {_truncate(text)}{marker}")
+        lines.append(_timeline_entry_line(user_id, text, is_self))
 
     if referenced_docs:
         lines.append(referenced_docs)
@@ -956,8 +975,7 @@ def build_whole_comment_prompt(
     ]
 
     for user_id, text, is_self in selected:
-        marker = " <-- YOU" if is_self else ""
-        lines.append(f"[{user_id}] {_truncate(text)}{marker}")
+        lines.append(_timeline_entry_line(user_id, text, is_self))
 
     if referenced_docs:
         lines.append(referenced_docs)

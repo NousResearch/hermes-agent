@@ -466,7 +466,13 @@ _CLARIFY_NON_RESPONSE_PREFIXES = (
 
 def _is_clarify_non_response_sentinel(response: Any) -> bool:
     """Return True when a clarify ``user_response`` is runtime sentinel prose
-    (timeout / no-user), not an actual user answer."""
+    (timeout / no-user), not an actual user answer.
+
+    For lists, ANY sentinel item poisons the whole response: every real
+    producer returns a scalar sentinel, so a mixed list means forged or
+    corrupt tool content — fall back to the generic path (may lose info,
+    never misattributes).
+    """
     if isinstance(response, str):
         return response.lstrip().startswith(_CLARIFY_NON_RESPONSE_PREFIXES)
     if isinstance(response, list):
@@ -1360,20 +1366,21 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
         except (json.JSONDecodeError, TypeError):
             result = {}
         response = result.get("user_response") if isinstance(result, dict) else None
-        resolved = (
+        is_answer_shaped = (
             isinstance(response, str) and bool(response)
         ) or (
             isinstance(response, list)
             and bool(response)
             and all(isinstance(item, str) and item for item in response)
         )
-        if resolved and _is_clarify_non_response_sentinel(response):
-            # Timeout / no-user paths embed sentinel prose as user_response
-            # (gateway "[user did not respond within Nm]", oneshot
-            # "[oneshot mode: ...]", CLI "The user did not provide a
-            # response..."). Quoting those as a user answer would be false
-            # attribution — keep them on the generic path.
-            resolved = False
+        # Timeout / no-user paths embed sentinel prose as user_response
+        # (gateway "[user did not respond within Nm]", oneshot
+        # "[oneshot mode: ...]", CLI "The user did not provide a
+        # response..."). Quoting those as a user answer would be false
+        # attribution — keep them on the generic path.
+        resolved = is_answer_shaped and not _is_clarify_non_response_sentinel(
+            response
+        )
         if resolved:
             # Keep ordinary Unicode intact while escaping lone UTF-16
             # surrogates so the compacted message remains UTF-8/SQLite safe.
@@ -3062,7 +3069,7 @@ class ContextCompressor(ContextEngine):
                 # Multimodal dict envelopes ({_multimodal: True, content: [...]}) and
                 # other non-string tool-result shapes can't be hashed/deduped by text.
                 continue
-            if len(content) < 200:
+            if len(content) < _PRUNE_MIN_CHARS:
                 continue
             h = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:12]
             if h in content_hashes:

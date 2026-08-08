@@ -149,7 +149,7 @@ class TestSummarizeToolResultClarify:
         summary = pruned_messages[1]["content"]
 
         assert pruned_count == 1
-        assert len(summary) <= 200
+        assert len(summary) <= _PRUNE_MIN_CHARS
         assert summary.encode("utf-8")
         assert "Привет 😀" in summary
         assert "\\ud83d" in summary
@@ -211,6 +211,26 @@ class TestSummarizeToolResultClarify:
         summary = _summarize_tool_result("clarify", "{}", content)
 
         assert summary == "[clarify] asked user a question"
+
+    def test_live_oneshot_producer_is_recognized_as_sentinel(self):
+        """Producer→recognizer drift guard: run the REAL oneshot no-user
+        callback and assert its output is filtered. If the producer's wording
+        drifts away from _CLARIFY_NON_RESPONSE_PREFIXES, this fails."""
+        from hermes_cli.oneshot import _oneshot_clarify_callback
+
+        sentinels = (
+            _oneshot_clarify_callback("Deploy when?", choices=["a", "b"]),
+            _oneshot_clarify_callback(
+                "Deploy when?", choices=["a", "b"], multi_select=True
+            ),
+            _oneshot_clarify_callback("Deploy when?"),
+        )
+        for sentinel in sentinels:
+            content = json.dumps({"user_response": sentinel})
+
+            summary = _summarize_tool_result("clarify", "{}", content)
+
+            assert summary == "[clarify] asked user a question", sentinel
 
 
 class TestShouldCompress:

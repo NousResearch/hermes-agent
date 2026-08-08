@@ -1223,6 +1223,21 @@ Unlike Discord (where reactions are additive), Telegram's Bot API replaces all b
 If the bot doesn't have permission to add reactions in a group, the reaction calls fail silently and message processing continues normally.
 :::
 
+### Inbound reactions
+
+Hermes can also treat a user's reaction to a Hermes-authored Telegram message as a new turn in the same conversation or forum topic. This is disabled by default because reactions can otherwise trigger unexpected agent usage.
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      inbound_reactions: true
+```
+
+When enabled, Hermes processes standard emoji additions and removals from authorized users. It ignores reactions to unknown messages, messages sent by another bot/profile, ambiguous legacy forum entries, and bot-authored reactions. Telegram's General forum topic is retained as logical thread `1` even though the Bot API omits that thread ID on the wire.
+
+A reaction is conversational context, not approval for a consequential or risky action. Hermes still requires explicit text for those actions.
+
 ## Per-Channel Prompts
 
 Assign ephemeral system prompts to specific Telegram groups or forum topics. The prompt is injected at runtime on every turn — never persisted to transcript history — so changes take effect immediately.

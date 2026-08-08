@@ -215,3 +215,138 @@ def test_callback_state_mismatch_aborts(monkeypatch, tmp_path, caplog):
     assert "url" not in captured_token, (
         "token exchange must NOT happen when state mismatches"
     )
+
+
+def test_login_token_exchange_falls_back_to_api_anthropic_host(monkeypatch, tmp_path):
+    """When ``platform.claude.com`` and ``console.anthropic.com`` both fail,
+    the login exchange must fall back to ``api.anthropic.com``.
+
+    Corporate content filters (Zscaler and similar) category-block the first
+    two hosts ("Developer Tools") while allowing the primary API domain.
+    Without the fallback, login on such networks dies with a confusing
+    ``HTTP Error 404`` from the console host after the filter 403s platform.
+    """
+    import urllib.error
+    import urllib.request
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    captured_url: Dict[str, str] = {}
+    _patch_oauth_flow(
+        monkeypatch,
+        callback_code="placeholder",
+        capture_auth_url=captured_url,
+    )
+
+    import builtins
+
+    def fake_input(*_a, **_kw):
+        qs = parse_qs(urlparse(captured_url.get("url", "")).query)
+        state = qs.get("state", [""])[0]
+        return f"auth-code#{state}"
+
+    monkeypatch.setattr(builtins, "input", fake_input)
+
+    attempts: list[str] = []
+
+    class _Resp:
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self):
+            return self._body
+
+    def selective_urlopen(req, *_a, **_kw):
+        url = req.full_url
+        attempts.append(url)
+        if "api.anthropic.com" not in url:
+            raise urllib.error.HTTPError(url, 403, "Forbidden", None, None)
+        return _Resp(
+            json.dumps(
+                {
+                    "access_token": "sk-ant-test-access",
+                    "refresh_token": "sk-ant-test-refresh",
+                    "expires_in": 3600,
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", selective_urlopen)
+
+    from agent.anthropic_adapter import run_hermes_oauth_login_pure
+
+    result = run_hermes_oauth_login_pure()
+
+    assert result is not None, (
+        "login must succeed via the api.anthropic.com fallback when the "
+        "first two token hosts are blocked by a content filter"
+    )
+    assert attempts[-1] == "https://api.anthropic.com/v1/oauth/token", (
+        f"final attempt should be the api.anthropic.com fallback, got {attempts}"
+    )
+    assert attempts[0] == "https://platform.claude.com/v1/oauth/token", (
+        "platform.claude.com must stay the first-choice host"
+    )
+
+
+def test_refresh_falls_back_to_api_anthropic_host(monkeypatch):
+    """The refresh path mirrors the login fallback: blocked platform/console
+    hosts must not kill a refresh that ``api.anthropic.com`` can serve."""
+    import urllib.error
+    import urllib.request
+
+    attempts: list[str] = []
+
+    class _Resp:
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self):
+            return self._body
+
+    def selective_urlopen(req, *_a, **_kw):
+        url = req.full_url
+        attempts.append(url)
+        if "api.anthropic.com" not in url:
+            raise urllib.error.HTTPError(url, 403, "Forbidden", None, None)
+        return _Resp(
+            json.dumps(
+                {
+                    "access_token": "sk-ant-refreshed",
+                    "refresh_token": "sk-ant-next-refresh",
+                    "expires_in": 3600,
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", selective_urlopen)
+
+    from agent.anthropic_adapter import refresh_anthropic_oauth_pure
+
+    result = refresh_anthropic_oauth_pure("sk-ant-old-refresh")
+
+    assert result["access_token"] == "sk-ant-refreshed"
+    assert attempts[-1] == "https://api.anthropic.com/v1/oauth/token", (
+        f"refresh must fall back to api.anthropic.com, got {attempts}"
+    )
+
+
+def test_oauth_token_url_order_contract():
+    """Order contract: platform first (fast path for unfiltered networks),
+    console second (legacy), api.anthropic.com strictly last (fallback)."""
+    from agent.anthropic_adapter import _OAUTH_TOKEN_URLS
+
+    assert _OAUTH_TOKEN_URLS[0] == "https://platform.claude.com/v1/oauth/token"
+    assert _OAUTH_TOKEN_URLS[-1] == "https://api.anthropic.com/v1/oauth/token"

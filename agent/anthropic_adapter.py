@@ -1120,6 +1120,9 @@ def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) 
     token_endpoints = [
         "https://platform.claude.com/v1/oauth/token",
         "https://console.anthropic.com/v1/oauth/token",
+        # Same fallback rationale as _OAUTH_TOKEN_URLS: reachable where the
+        # other two hosts are category-blocked by corporate content filters.
+        "https://api.anthropic.com/v1/oauth/token",
     ]
     last_error = None
     for endpoint in token_endpoints:
@@ -1467,6 +1470,11 @@ _OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 _OAUTH_TOKEN_URLS = [
     "https://platform.claude.com/v1/oauth/token",
     "https://console.anthropic.com/v1/oauth/token",
+    # api.anthropic.com serves the same OAuth token endpoint and is the only
+    # host of the three reachable on networks whose content filter blocks
+    # platform.claude.com/console.anthropic.com ("Developer Tools" category)
+    # while allowing the primary API domain.
+    "https://api.anthropic.com/v1/oauth/token",
 ]
 _OAUTH_TOKEN_URL = _OAUTH_TOKEN_URLS[0]
 # User-Agent sent on the OAuth *token endpoint* (login exchange + refresh).

@@ -440,3 +440,37 @@ def _detect_video_mime(data: bytes, src: str) -> Optional[str]:
     if len(data) > 12 and data[4:8] == b"ftyp":
         return "video/mp4"
     return None
+
+
+async def resolve_local_source_to_data_url(
+    src: str, task_id: Optional[str], *, permitted: tuple = ("image",)
+) -> str:
+    """Convert a path-like media source into a ``data:`` URL via the resolver.
+
+    Generation tools (image_generate / video_generate) forward model-supplied
+    source images to provider plugins, which historically read local paths off
+    the HOST filesystem regardless of terminal backend. Under a non-local
+    backend that is both broken (the file usually lives in the sandbox, so the
+    host read misses) and inconsistent with the confinement model vision/video
+    analysis enforce (GHSA-gpxw-6wxv-w3qq): the sandbox boundary should govern
+    every model-supplied path.
+
+    This helper is the dispatch-layer chokepoint: URL-shaped sources
+    (http/https/data) pass through untouched; anything path-like resolves
+    through :func:`resolve_image_source` — media-cache host reads, bounded
+    in-sandbox exec-read, lazy env bring-up, credential guard, ingest cap —
+    and comes back as a ``data:`` URL every provider already accepts.
+
+    Callers apply this only under a non-local terminal backend: on the local
+    backend providers keep their existing host-side reads (chosen posture,
+    zero behavior change).
+    """
+    s = (src or "").strip()
+    if not s or s.lower().startswith(("http://", "https://", "data:")):
+        return src
+    resolved = await resolve_image_source(
+        s, ResolveContext(task_id=task_id), permitted=permitted
+    )
+    encoded = base64.b64encode(resolved.data).decode("ascii")
+    mime = resolved.mime or "application/octet-stream"
+    return f"data:{mime};base64,{encoded}"

@@ -1498,6 +1498,48 @@ def _maybe_route_managed_krea(
     return json.dumps(result)
 
 
+def _confine_source_images(
+    image_url, reference_image_urls, task_id, *, permitted: tuple = ("image",)
+):
+    """Route path-like source images through the sandbox-aware resolver.
+
+    Under a non-local terminal backend (ssh/docker/…), model-supplied local
+    paths are resolved via ``tools.image_source`` (in-sandbox exec-read,
+    media-cache host reads, credential guard, lazy env bring-up) and converted
+    to ``data:`` URLs before any provider sees them — so generation tools obey
+    the same confinement boundary as vision/video analysis, and sandbox-only
+    files actually work as edit sources. URLs and data: URLs pass through
+    untouched; the local backend is a no-op (providers keep their host reads).
+
+    Returns ``(image_url, reference_image_urls, error_json_or_None)``.
+    """
+    backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
+    if backend in ("", "local"):
+        return image_url, reference_image_urls, None
+
+    from model_tools import _run_async
+    from tools.image_source import ImageResolutionError, resolve_local_source_to_data_url
+
+    try:
+        if isinstance(image_url, str) and image_url.strip():
+            image_url = _run_async(resolve_local_source_to_data_url(
+                image_url, task_id, permitted=permitted))
+        if isinstance(reference_image_urls, (list, tuple)):
+            reference_image_urls = [
+                _run_async(resolve_local_source_to_data_url(ref, task_id, permitted=permitted))
+                if isinstance(ref, str) else ref
+                for ref in list(reference_image_urls)
+            ]
+    except ImageResolutionError as exc:
+        return image_url, reference_image_urls, json.dumps({
+            "success": False,
+            "image": None,
+            "error": f"Could not read source image: {exc}",
+            "error_type": type(exc).__name__,
+        })
+    return image_url, reference_image_urls, None
+
+
 def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
@@ -1506,6 +1548,15 @@ def _handle_image_generate(args, **kw):
     image_url = args.get("image_url")
     reference_image_urls = args.get("reference_image_urls")
     task_id = kw.get("task_id")
+
+    # Terminal-backend confinement chokepoint: convert path-like sources to
+    # data: URLs via the shared resolver BEFORE any provider dispatch, so
+    # every backend (plugin, managed Krea, in-tree FAL) gets the same
+    # sandbox-confined bytes.
+    image_url, reference_image_urls, confine_error = _confine_source_images(
+        image_url, reference_image_urls, task_id)
+    if confine_error is not None:
+        return confine_error
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path). When ``image_gen.provider == "krea"`` this

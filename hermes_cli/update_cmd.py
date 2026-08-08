@@ -1417,6 +1417,33 @@ OFFICIAL_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
 
 SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
 
+# Ceiling for every git operation in the update flow that talks to a remote
+# (fetch / pull / push).  These calls were unbounded, so a remote that accepts
+# the TCP connection and then stops responding — captive-portal Wi-Fi, a
+# half-up VPN, a filtering corporate proxy, a throttled forge — left the CLI
+# printing "→ Fetching updates..." forever, with Ctrl-C the only way out.
+#
+# The bound is deliberately generous.  The background probe in
+# ``hermes_cli/banner.py`` uses ``timeout=10`` because it is non-blocking and
+# its result is discardable; these are foreground, user-initiated operations
+# where a first fetch over a slow link can legitimately run for minutes.  The
+# defect is the *unbounded* wait, so a large finite ceiling closes it without
+# regressing any setup that works today.
+_GIT_NETWORK_TIMEOUT_SECONDS = 300
+
+def _print_git_network_timeout(remote: str) -> None:
+    """Report a stalled git network operation in the house error style.
+
+    Callers decide what to do next: the ``hermes update`` / ``--check``
+    entry points exit non-zero, while the optional fork-sync path degrades
+    and continues.
+    """
+    print(
+        f"✗ Timed out after {_GIT_NETWORK_TIMEOUT_SECONDS}s fetching from "
+        f"{remote} — the remote accepted the connection but stopped responding."
+    )
+    print("  Check your network (VPN, proxy, captive portal) and try again.")
+
 def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
     """Get the URL of the origin remote, or None if not set."""
     try:
@@ -1515,6 +1542,10 @@ def _sync_fork_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
             cwd=cwd,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
+            # A stalled push here must not wedge the whole update: the
+            # ``except`` below already degrades to False, and the caller
+            # prints "couldn't push to fork".
+            timeout=_GIT_NETWORK_TIMEOUT_SECONDS,
         )
         return result.returncode == 0
     except Exception:
@@ -1577,9 +1608,18 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
             cwd=cwd,
             capture_output=True,
             check=True,
+            timeout=_GIT_NETWORK_TIMEOUT_SECONDS,
         )
     except subprocess.CalledProcessError:
         print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
+        return
+    except subprocess.TimeoutExpired:
+        # Degrade, don't abort: the upstream sync is a convenience on top of
+        # the user's actual update, so a stalled upstream must not block it.
+        print(
+            f"  ✗ Fetching upstream timed out after {_GIT_NETWORK_TIMEOUT_SECONDS}s. "
+            "Skipping upstream sync."
+        )
         return
 
     # Compare origin/main with upstream/main
@@ -1616,10 +1656,18 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
             git_cmd + ["pull", "--ff-only", "upstream", "main"],
             cwd=cwd,
             check=True,
+            timeout=_GIT_NETWORK_TIMEOUT_SECONDS,
         )
     except subprocess.CalledProcessError:
         print(
             "  ✗ Failed to pull from upstream. You may need to resolve conflicts manually."
+        )
+        return
+    except subprocess.TimeoutExpired:
+        # Same degrade-and-continue contract as the fetch above.
+        print(
+            f"  ✗ Pulling from upstream timed out after {_GIT_NETWORK_TIMEOUT_SECONDS}s. "
+            "Skipping upstream sync."
         )
         return
 
@@ -2263,35 +2311,56 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         fetch_result = None
         if has_upstream_remote:
             print("→ Fetching from upstream...")
-            fetch_result = subprocess.run(
-                git_cmd + ["fetch"] + depth_args + ["upstream", branch],
-                cwd=_m().PROJECT_ROOT,
-                capture_output=True,
-                text=True, encoding="utf-8", errors="replace",
-            )
+            try:
+                fetch_result = subprocess.run(
+                    git_cmd + ["fetch"] + depth_args + ["upstream", branch],
+                    cwd=_m().PROJECT_ROOT,
+                    capture_output=True,
+                    text=True, encoding="utf-8", errors="replace",
+                    timeout=_GIT_NETWORK_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired:
+                # Treat a stall exactly like the existing "upstream fetch
+                # failed" case: fall through to the origin fallback below
+                # instead of aborting, because origin may still be reachable.
+                print(
+                    "  ⚠ Upstream fetch timed out after "
+                    f"{_GIT_NETWORK_TIMEOUT_SECONDS}s — falling back to origin."
+                )
+                fetch_result = None
         if fetch_result is not None and fetch_result.returncode == 0:
             upstream_exists = True
             compare_branch = f"upstream/{branch}"
         else:
             # No upstream remote, or the upstream fetch failed — use origin.
             print("→ Fetching from origin...")
-            fetch_result = subprocess.run(
-                git_cmd + ["fetch"] + depth_args + ["origin", branch],
-                cwd=_m().PROJECT_ROOT,
-                capture_output=True,
-                text=True, encoding="utf-8", errors="replace",
-            )
+            try:
+                fetch_result = subprocess.run(
+                    git_cmd + ["fetch"] + depth_args + ["origin", branch],
+                    cwd=_m().PROJECT_ROOT,
+                    capture_output=True,
+                    text=True, encoding="utf-8", errors="replace",
+                    timeout=_GIT_NETWORK_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired:
+                _print_git_network_timeout("origin")
+                sys.exit(1)
             upstream_exists = False
             compare_branch = f"origin/{branch}"
     else:
         # Non-default branch: compare against origin/<branch> directly.
         print("→ Fetching from origin...")
-        fetch_result = subprocess.run(
-            git_cmd + ["fetch"] + depth_args + ["origin", branch],
-            cwd=_m().PROJECT_ROOT,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-        )
+        try:
+            fetch_result = subprocess.run(
+                git_cmd + ["fetch"] + depth_args + ["origin", branch],
+                cwd=_m().PROJECT_ROOT,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=_GIT_NETWORK_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            _print_git_network_timeout("origin")
+            sys.exit(1)
         upstream_exists = False
         compare_branch = f"origin/{branch}"
 
@@ -3742,12 +3811,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
         branch = _m()._resolve_update_branch(args)
 
         print("→ Fetching updates...")
-        fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin", branch],
-            cwd=_m().PROJECT_ROOT,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-        )
+        try:
+            fetch_result = subprocess.run(
+                git_cmd + ["fetch", "origin", branch],
+                cwd=_m().PROJECT_ROOT,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=_GIT_NETWORK_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            _print_git_network_timeout("origin")
+            sys.exit(1)
         if fetch_result.returncode != 0:
             stderr = fetch_result.stderr.strip()
             if "Could not resolve host" in stderr or "unable to access" in stderr:

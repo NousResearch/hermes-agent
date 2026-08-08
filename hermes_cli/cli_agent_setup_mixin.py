@@ -78,6 +78,40 @@ class CLIAgentSetupMixin:
                     except Exception:
                         continue
 
+        # Last-resort fallback: if the requested provider no longer exists
+        # in the registry (e.g. a session was created with provider X and X
+        # was later removed from config), fall back to "auto" so we use the
+        # current default provider instead of hard-failing.
+        # See: https://github.com/NousResearch/hermes-agent/issues/52943
+        if (
+            runtime is None
+            and _primary_exc is not None
+            and isinstance(_primary_exc, AuthError)
+            and getattr(_primary_exc, "code", None) == "invalid_provider"
+        ):
+            _old_requested = self.requested_provider
+            try:
+                runtime = resolve_runtime_provider(
+                    requested="auto",
+                    explicit_api_key=self._explicit_api_key,
+                    explicit_base_url=self._explicit_base_url,
+                )
+                if runtime is not None:
+                    _new_provider = runtime.get("provider", "auto")
+                    _cprint(
+                        f"⚠️  Previously used provider '{_old_requested}' is no longer "
+                        f"available. Falling back to: {_new_provider}"
+                    )
+                    logger.warning(
+                        "Session provider '%s' not in registry; "
+                        "falling back to '%s'",
+                        _old_requested, _new_provider,
+                    )
+                    self.requested_provider = _new_provider
+                    _primary_exc = None
+            except Exception:
+                runtime = None  # fall through to existing error handling
+
         if runtime is None:
             message = format_runtime_provider_error(_primary_exc) if _primary_exc else "Provider resolution failed."
             ChatConsole().print(f"[bold red]{message}[/]")
@@ -139,6 +173,12 @@ class CLIAgentSetupMixin:
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
+
+        # Keep requested_provider in sync with the actually-resolved provider
+        # so that subsequent _ensure_runtime_credentials() calls don't retry
+        # a stale/invalid requested value.
+        if resolved_provider != self.requested_provider:
+            self.requested_provider = resolved_provider
 
         # When a custom_provider entry carries an explicit `model` field,
         # use it as the effective model name.  Without this, running

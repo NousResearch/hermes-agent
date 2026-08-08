@@ -190,6 +190,30 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 
 class TestJobCRUD:
+    def test_cjk_and_emoji_round_trip_readable_in_jobs_json(self, tmp_cron_dir):
+        """CJK/emoji job text must round-trip AND stay human-readable on disk.
+
+        With json.dump's default ensure_ascii=True, every non-ASCII char in
+        jobs.json is written as \\uXXXX escapes, which users reported as
+        unreadable garbage when inspecting their job store (#52302, #29754).
+        ensure_ascii=False + the existing encoding="utf-8" writer keeps the
+        text literal; the utf-8-sig reader must parse it back identically.
+        """
+        name = "日次レポート 🎉 café"
+        job = create_job(prompt=f"Summarize {name}", schedule="30m", name=name)
+
+        # Round-trip through save/load is lossless.
+        fetched = get_job(job["id"])
+        assert fetched["name"] == name
+        assert name in fetched["prompt"]
+
+        # On-disk representation is literal UTF-8, not \uXXXX escapes.
+        from cron.jobs import JOBS_FILE
+        raw = JOBS_FILE.read_text(encoding="utf-8")
+        assert "日次レポート" in raw
+        assert "🎉" in raw
+        assert "\\u65e5" not in raw
+
     def test_create_and_get(self, tmp_cron_dir):
         job = create_job(prompt="Check server status", schedule="30m")
         assert job["id"]

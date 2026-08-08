@@ -1726,11 +1726,20 @@ def init_agent(
                 if _mp and _mp.is_available():
                     agent._memory_manager.add_provider(_mp)
                 if agent._memory_manager.providers:
+                    # Derive agent_context from platform so non-primary contexts
+                    # (cron, subagent, flush) are properly distinguished from
+                    # user-facing sessions. Memory providers gate writes on this
+                    # value (#72779).
+                    _ctx_map = {
+                        "cron": "cron",
+                        "subagent": "subagent",
+                    }
+                    _agent_context = _ctx_map.get(platform or "cli", "primary")
                     _init_kwargs = {
                         "session_id": agent.session_id,
                         "platform": platform or "cli",
                         "hermes_home": str(get_hermes_home()),
-                        "agent_context": "primary",
+                        "agent_context": _agent_context,
                     }
                     if _init_kwargs["platform"] == "cli":
                         _init_kwargs["warning_callback"] = agent._emit_warning

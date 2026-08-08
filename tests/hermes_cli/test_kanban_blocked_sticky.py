@@ -76,6 +76,29 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
             assert kb.get_task(conn, tid).status == "blocked"
 
 
+def test_initial_block_is_sticky_until_explicit_unblock(kanban_home: Path) -> None:
+    """Creation directly in blocked is an operator gate, not a transient state."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="planned human gate",
+            initial_status="blocked",
+        )
+        assert [event.kind for event in kb.list_events(conn, tid)] == [
+            "created", "blocked"
+        ]
+        assert kb.recompute_ready(conn) == 0
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+
+        assert kb.unblock_task(conn, tid)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "ready"
+        assert [event.kind for event in kb.list_events(conn, tid)] == [
+            "created", "blocked", "unblocked"
+        ]
 
 
 # ---------------------------------------------------------------------------

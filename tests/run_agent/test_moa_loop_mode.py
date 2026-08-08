@@ -1227,6 +1227,105 @@ def test_reference_trim_caches_resolution_failures(monkeypatch):
     assert cache == {("openrouter", "small-window"): None}
 
 
+def _naive_reference_trim(messages, budget):
+    """The original pop-and-re-estimate loop, kept as the spec for equivalence."""
+    from agent.model_metadata import estimate_messages_tokens_rough
+
+    has_system = bool(messages) and messages[0].get("role") == "system"
+    head = [messages[0]] if has_system else []
+    body = list(messages[1:] if has_system else messages)
+    while len(body) > 2 and estimate_messages_tokens_rough(head + body) > budget:
+        body.pop(0)
+        while len(body) > 2 and body[0].get("role") == "assistant":
+            body.pop(0)
+    while len(body) > 1 and body[0].get("role") == "assistant":
+        body.pop(0)
+    return head + body
+
+
+def test_reference_trim_matches_naive_pop_loop(monkeypatch):
+    """Running-total trim returns the same frames as the naive loop."""
+    import random
+
+    from agent import moa_loop
+
+    rng = random.Random(20260802)
+    for _ in range(60):
+        pairs = rng.randint(1, 30)
+        msgs = []
+        if rng.random() < 0.8:
+            msgs.append({"role": "system", "content": "advisory " + "s" * rng.randint(0, 200)})
+        for _i in range(pairs):
+            msgs.append({"role": "user", "content": "u" * rng.randint(0, 800)})
+            msgs.append({"role": "assistant", "content": "a" * rng.randint(0, 800)})
+            # Occasional assistant runs to exercise the user-first sweep.
+            if rng.random() < 0.2:
+                msgs.append({"role": "assistant", "content": "extra"})
+        msgs.append({"role": "user", "content": "judge the state above"})
+
+        window = rng.choice([800, 1500, 3000, 6000])
+        reserve = rng.choice([0, 50, 500])
+        reserve_eff = reserve if reserve > 0 else moa_loop._REFERENCE_DEFAULT_OUTPUT_RESERVE
+        budget = int(window * (1.0 - moa_loop._REFERENCE_TRIM_SAFETY_FRACTION)) - reserve_eff
+
+        # The real function returns the messages untouched when the budget
+        # is not positive; the naive loop has no such early exit.
+        expected = (
+            _naive_reference_trim(list(msgs), budget)
+            if budget > 0
+            else list(msgs)
+        )
+        got = _trim(
+            list(msgs),
+            window=window,
+            reserve=reserve if reserve > 0 else None,
+            monkeypatch=monkeypatch,
+        )
+        assert got == expected
+
+
+def test_reference_trim_weighs_each_message_once(monkeypatch):
+    """Heavy trims stay O(n): no full re-estimate per dropped frame."""
+    from agent import model_metadata
+
+    weighed = {"n": 0}
+    real = model_metadata.estimate_messages_tokens_rough
+
+    def counting(msgs):
+        weighed["n"] += len(msgs)
+        return real(msgs)
+
+    monkeypatch.setattr(
+        model_metadata, "estimate_messages_tokens_rough", counting
+    )
+    msgs = _advisory_view(100)
+    out = _trim(list(msgs), window=3000, reserve=50, monkeypatch=monkeypatch)
+    assert len(out) < len(msgs)
+    # One full-list estimate plus one single-message weigh per frame: 2n.
+    # The naive loop would weigh ~n^2/2 for a trim this deep.
+    assert weighed["n"] <= 2 * len(msgs)
+
+
+def test_reference_trim_preserves_advisory_invariants(monkeypatch):
+    """System kept, user-first enforced, trailing user + one frame retained."""
+    msgs = _advisory_view(40)
+    out = _trim(list(msgs), window=3000, reserve=50, monkeypatch=monkeypatch)
+    assert len(out) < len(msgs)
+    assert out[0]["role"] == "system"
+    assert out[1]["role"] == "user"
+    assert out[-1]["content"] == "judge the state above"
+    # At least the trailing user turn plus one preceding turn survive.
+    assert len(out) >= 3
+
+
+def test_reference_trim_within_budget_returns_unchanged(monkeypatch):
+    msgs = _advisory_view(3)
+    out = _trim(list(msgs), window=10_000_000, monkeypatch=monkeypatch)
+    assert out == msgs
+
+
+
+
 
 
 def test_render_tool_calls_tolerates_namespace_shapes():

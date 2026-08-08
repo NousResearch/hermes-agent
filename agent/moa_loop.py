@@ -733,23 +733,39 @@ def _trim_messages_for_reference(
         return messages
 
     has_system = bool(messages) and messages[0].get("role") == "system"
-    head = [messages[0]] if has_system else []
-    body = list(messages[1:] if has_system else messages)
+    head_count = 1 if has_system else 0
+
+    # estimate_messages_tokens_rough is a pure sum of per-message weights,
+    # so weigh each message once and track a running total while popping
+    # instead of re-estimating head + body after every pop. The naive form
+    # paid one full memo walk per dropped frame (quadratic on long
+    # histories). The pop sequence is unchanged, so the trim result is
+    # identical to the naive loop.
+    weights = [estimate_messages_tokens_rough([m]) for m in messages]
+    total = sum(weights)
 
     # Keep the trailing user turn plus at least one preceding turn.
-    while len(body) > 2 and estimate_messages_tokens_rough(head + body) > budget:
-        body.pop(0)
+    start = head_count
+    remaining = len(messages) - head_count
+    while remaining > 2 and total > budget:
+        total -= weights[start]
+        start += 1
+        remaining -= 1
         # Preserve the user-first invariant: never leave the advisory
         # conversation starting on an assistant turn after a pop.
-        while len(body) > 2 and body[0].get("role") == "assistant":
-            body.pop(0)
+        while remaining > 2 and messages[start].get("role") == "assistant":
+            total -= weights[start]
+            start += 1
+            remaining -= 1
     # The loop can stop with two frames left where the first is an
     # assistant turn — enforce user-first even then (a lone trailing user
     # turn is a valid request; an assistant-first one is not).
-    while len(body) > 1 and body[0].get("role") == "assistant":
-        body.pop(0)
+    while remaining > 1 and messages[start].get("role") == "assistant":
+        total -= weights[start]
+        start += 1
+        remaining -= 1
 
-    trimmed = head + body
+    trimmed = messages[:head_count] + messages[start:]
     dropped = len(messages) - len(trimmed)
     if dropped:
         logger.info(

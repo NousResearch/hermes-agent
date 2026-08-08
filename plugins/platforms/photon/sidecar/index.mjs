@@ -1056,7 +1056,15 @@ const server = http.createServer(async (req, res) => {
       // overrides only when Hermes supplied them so a known-good
       // inference isn't clobbered with an empty string.
       const opts = {};
-      if (name) opts.name = name;
+      if (kind === "voice") {
+        // spectrum-ts transcodes non-M4A bytes before upload but preserves the
+        // supplied filename. Keep converted voice payloads playable by giving
+        // them an M4A filename while retaining the source MIME below, which
+        // ensureM4a still needs to decide whether transcoding is required.
+        opts.name = name && /\.m4a$/i.test(name) ? name : "voice.m4a";
+      } else if (name) {
+        opts.name = name;
+      }
       if (mimeType) opts.mimeType = mimeType;
       const builder =
         kind === "voice"

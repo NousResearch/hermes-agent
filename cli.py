@@ -6888,8 +6888,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if (
             self._stream_buf
             and not self._in_stream_table
-            and not self._stream_buf.lstrip().startswith("|")
             and len(self._stream_buf) >= 80
+            and not looks_like_table_row(self._stream_buf)
         ):
             preview = self._stream_buf[-int(_STREAM_PARTIAL_PREVIEW_LEN):]
             cut = preview.find(" ")

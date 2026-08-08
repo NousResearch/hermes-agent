@@ -24,6 +24,7 @@ from hermes_cli.auth import (
     _refresh_qwen_cli_tokens,
     resolve_qwen_runtime_credentials,
     get_qwen_auth_status,
+    get_qwen_auth_status_local,
 )
 
 
@@ -150,6 +151,31 @@ def test_get_qwen_auth_status_logged_in(qwen_env):
     assert status["logged_in"] is True
     assert status["api_key"] == "status-at"
 
+
+
+def test_get_qwen_auth_status_local_does_not_refresh_expired_token(qwen_env):
+    expired_ms = int((time.time() - 3600) * 1000)
+    tokens = _make_qwen_tokens(access_token="old-at", expiry_date=expired_ms)
+    _write_qwen_creds(qwen_env, tokens)
+
+    with patch("hermes_cli.auth._refresh_qwen_cli_tokens") as mock_refresh:
+        status = get_qwen_auth_status_local()
+
+    mock_refresh.assert_not_called()
+    assert status["logged_in"] is False
+    assert "expired" in status["error"]
+
+
+def test_get_qwen_auth_status_local_reports_fresh_token(qwen_env):
+    expires_ms = int((time.time() + 3600) * 1000)
+    tokens = _make_qwen_tokens(access_token="local-at", expiry_date=expires_ms)
+    _write_qwen_creds(qwen_env, tokens)
+
+    status = get_qwen_auth_status_local()
+
+    assert status["logged_in"] is True
+    assert status["source"] == "qwen-cli"
+    assert status["expires_at_ms"] == expires_ms
 
 def test_get_qwen_auth_status_refreshes_expired_token(qwen_env):
     expired_ms = int((time.time() - 3600) * 1000)

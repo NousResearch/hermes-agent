@@ -1262,16 +1262,13 @@ async def _standalone_send(
         return {"error": "SimpleX standalone send: SIMPLEX_WS_URL is required"}
 
     try:
+        composed = json.dumps(
+            [{"msgContent": {"type": "text", "text": message}}]
+        )
         if chat_id.startswith("group:"):
             group_id = chat_id[6:]
-            composed = json.dumps(
-                [{"msgContent": {"type": "text", "text": message}}]
-            )
             cmd_str = f"/_send #{group_id} json {composed}"
         else:
-            composed = json.dumps(
-                [{"msgContent": {"type": "text", "text": message}}]
-            )
             cmd_str = f"/_send @{chat_id} json {composed}"
 
         payload = {

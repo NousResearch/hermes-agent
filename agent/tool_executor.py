@@ -479,6 +479,120 @@ def _managed_values(
     )
 
 
+def _start_tool_label_spinner(agent, function_name: str, function_args: dict):
+    """Start a kawaii spinner labelled with the tool's (redacted) arguments.
+
+    The caller owns the quiet-mode gating; this only builds and starts the
+    spinner so every inline dispatch renders the same label.
+    """
+    face = random.choice(KawaiiSpinner.get_waiting_faces())
+    emoji = _get_tool_emoji(function_name)
+    display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
+    preview = _build_tool_label(function_name, display_args) or function_name
+    spinner = KawaiiSpinner(
+        f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn
+    )
+    spinner.start()
+    return spinner
+
+
+def _finish_tool_spinner(
+    agent,
+    spinner,
+    *,
+    function_name: str,
+    function_args: dict,
+    duration: float,
+    result: Any,
+) -> None:
+    """Land a tool's completion line — through the spinner when one is running."""
+    cute_msg = _get_cute_tool_message_impl(
+        function_name, function_args, duration, result=result
+    )
+    if spinner:
+        spinner.stop(cute_msg)
+    elif agent._should_emit_quiet_tool_messages():
+        agent._vprint(f"  {cute_msg}")
+
+
+def _make_registry_dispatch(
+    agent,
+    *,
+    function_name: str,
+    effective_task_id: str,
+    tool_call,
+    middleware_trace: list[dict[str, Any]],
+):
+    """Build the ``execute`` callable that dispatches through the tool registry.
+
+    ``handle_function_call`` re-runs the hooks and middleware the executor has
+    already applied, so every skip flag is set here — the sequential quiet-mode
+    and default paths must dispatch registry tools identically.
+    """
+    def _execute(next_args: dict) -> Any:
+        return _ra().handle_function_call(
+            function_name,
+            next_args,
+            effective_task_id,
+            tool_call_id=tool_call.id,
+            session_id=agent.session_id or "",
+            turn_id=getattr(agent, "_current_turn_id", "") or "",
+            api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+            enabled_tools=(
+                list(agent.valid_tool_names)
+                if agent.valid_tool_names
+                else None
+            ),
+            skip_pre_tool_call_hook=True,
+            skip_tool_request_middleware=True,
+            skip_tool_execution_middleware=True,
+            tool_request_middleware_trace=list(middleware_trace),
+            enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+            disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+        )
+    return _execute
+
+
+def _dispatch_inline_builtin_tool(
+    agent,
+    *,
+    function_name: str,
+    function_args: dict,
+    effective_task_id: str,
+    tool_call_id: str,
+    execute,
+    scope_block: str | None,
+    display_index: int,
+    start_time: float,
+) -> tuple[Any, dict[str, Any], list[dict[str, Any]], bool, float]:
+    """Dispatch an in-process built-in tool and emit its quiet-mode activity line.
+
+    Shared by the built-ins that need neither a spinner nor bespoke error
+    handling (todo, session_search, memory, clarify, read_terminal): they differ
+    only in the ``execute`` closure. Returns the usual
+    ``(result, args, middleware_trace, blocked)`` tuple plus the elapsed
+    duration, which the caller reports to the post-tool-call hook.
+    """
+    function_result, function_args, middleware_trace, blocked = _managed_values(
+        _run_agent_tool_execution_middleware(
+            agent,
+            function_name=function_name,
+            function_args=function_args,
+            effective_task_id=effective_task_id,
+            tool_call_id=tool_call_id,
+            execute=execute,
+            scope_block=scope_block,
+            display_index=display_index,
+        )
+    )
+    tool_duration = time.time() - start_time
+    if agent._should_emit_quiet_tool_messages():
+        agent._vprint(
+            f"  {_get_cute_tool_message_impl(function_name, function_args, tool_duration, result=function_result)}"
+        )
+    return function_result, function_args, middleware_trace, blocked, tool_duration
+
+
 def _run_agent_tool_execution_middleware(
     agent,
     *,
@@ -1742,10 +1856,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 execute=_execute,
                 scope_block=_ts_scope_block,
                 display_index=i,
-            ))
-            tool_duration = time.time() - tool_start_time
-            if agent._should_emit_quiet_tool_messages():
-                agent._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
+                start_time=tool_start_time,
+            )
         elif function_name == "session_search":
             def _execute(next_args: dict) -> Any:
                 session_db = agent._get_session_db_for_recall()
@@ -1773,10 +1885,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 execute=_execute,
                 scope_block=_ts_scope_block,
                 display_index=i,
-            ))
-            tool_duration = time.time() - tool_start_time
-            if agent._should_emit_quiet_tool_messages():
-                agent._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
+                start_time=tool_start_time,
+            )
         elif function_name == "memory":
             def _execute(next_args: dict) -> Any:
                 target = next_args.get("target", "memory")
@@ -1812,10 +1922,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 execute=_execute,
                 scope_block=_ts_scope_block,
                 display_index=i,
-            ))
-            tool_duration = time.time() - tool_start_time
-            if agent._should_emit_quiet_tool_messages():
-                agent._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
+                start_time=tool_start_time,
+            )
         elif function_name == "clarify":
             def _execute(next_args: dict) -> Any:
                 from tools.clarify_tool import clarify_tool as _clarify_tool
@@ -1834,10 +1942,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 execute=_execute,
                 scope_block=_ts_scope_block,
                 display_index=i,
-            ))
-            tool_duration = time.time() - tool_start_time
-            if agent._should_emit_quiet_tool_messages():
-                agent._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
+                start_time=tool_start_time,
+            )
         elif function_name == "read_terminal":
             def _execute(next_args: dict) -> Any:
                 from tools.read_terminal_tool import read_terminal_tool as _read_terminal_tool
@@ -1915,21 +2021,19 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             finally:
                 agent._delegate_spinner = None
                 tool_duration = time.time() - tool_start_time
-                cute_msg = _get_cute_tool_message_impl('delegate_task', function_args, tool_duration, result=_delegate_result)
-                if spinner:
-                    spinner.stop(cute_msg)
-                elif agent._should_emit_quiet_tool_messages():
-                    agent._vprint(f"  {cute_msg}")
+                _finish_tool_spinner(
+                    agent,
+                    spinner,
+                    function_name=function_name,
+                    function_args=function_args,
+                    duration=tool_duration,
+                    result=_delegate_result,
+                )
         elif agent._context_engine_tool_names and function_name in agent._context_engine_tool_names:
             # Context engine tools (lcm_grep, lcm_describe, lcm_expand, etc.)
             spinner = None
             if agent._should_emit_quiet_tool_messages():
-                face = random.choice(KawaiiSpinner.get_waiting_faces())
-                emoji = _get_tool_emoji(function_name)
-                display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
-                preview = _build_tool_label(function_name, display_args) or function_name
-                spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
-                spinner.start()
+                spinner = _start_tool_label_spinner(agent, function_name, function_args)
             _ce_result = None
             try:
                 def _execute(next_args: dict) -> Any:
@@ -1950,22 +2054,20 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 logger.error("context_engine.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
                 tool_duration = time.time() - tool_start_time
-                cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_ce_result)
-                if spinner:
-                    spinner.stop(cute_msg)
-                elif agent._should_emit_quiet_tool_messages():
-                    agent._vprint(f"  {cute_msg}")
+                _finish_tool_spinner(
+                    agent,
+                    spinner,
+                    function_name=function_name,
+                    function_args=function_args,
+                    duration=tool_duration,
+                    result=_ce_result,
+                )
         elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
             # Memory provider tools (hindsight_retain, honcho_search, etc.)
             # These are not in the tool registry — route through MemoryManager.
             spinner = None
             if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():
-                face = random.choice(KawaiiSpinner.get_waiting_faces())
-                emoji = _get_tool_emoji(function_name)
-                display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
-                preview = _build_tool_label(function_name, display_args) or function_name
-                spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
-                spinner.start()
+                spinner = _start_tool_label_spinner(agent, function_name, function_args)
             _mem_result = None
             try:
                 def _execute(next_args: dict) -> Any:
@@ -1986,44 +2088,27 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 logger.error("memory_manager.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
                 tool_duration = time.time() - tool_start_time
-                cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_mem_result)
-                if spinner:
-                    spinner.stop(cute_msg)
-                elif agent._should_emit_quiet_tool_messages():
-                    agent._vprint(f"  {cute_msg}")
+                _finish_tool_spinner(
+                    agent,
+                    spinner,
+                    function_name=function_name,
+                    function_args=function_args,
+                    duration=tool_duration,
+                    result=_mem_result,
+                )
         elif agent.quiet_mode:
             spinner = None
             if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():
-                face = random.choice(KawaiiSpinner.get_waiting_faces())
-                emoji = _get_tool_emoji(function_name)
-                display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
-                preview = _build_tool_label(function_name, display_args) or function_name
-                spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
-                spinner.start()
+                spinner = _start_tool_label_spinner(agent, function_name, function_args)
             _spinner_result = None
             try:
-                def _execute(next_args: dict) -> Any:
-                    return _ra().handle_function_call(
-                        function_name,
-                        next_args,
-                        effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=agent.session_id or "",
-                        turn_id=getattr(agent, "_current_turn_id", "") or "",
-                        api_request_id=getattr(agent, "_current_api_request_id", "")
-                        or "",
-                        enabled_tools=(
-                            list(agent.valid_tool_names)
-                            if agent.valid_tool_names
-                            else None
-                        ),
-                        skip_pre_tool_call_hook=True,
-                        skip_tool_request_middleware=True,
-                        skip_tool_execution_middleware=True,
-                        tool_request_middleware_trace=list(middleware_trace),
-                        enabled_toolsets=getattr(agent, "enabled_toolsets", None),
-                        disabled_toolsets=getattr(agent, "disabled_toolsets", None),
-                    )
+                _execute = _make_registry_dispatch(
+                    agent,
+                    function_name=function_name,
+                    effective_task_id=effective_task_id,
+                    tool_call=tool_call,
+                    middleware_trace=middleware_trace,
+                )
 
                 (
                     function_result,
@@ -2074,35 +2159,23 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
                 tool_duration = time.time() - tool_start_time
-                cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_spinner_result)
-                if spinner:
-                    spinner.stop(cute_msg)
-                elif agent._should_emit_quiet_tool_messages():
-                    agent._vprint(f"  {cute_msg}")
+                _finish_tool_spinner(
+                    agent,
+                    spinner,
+                    function_name=function_name,
+                    function_args=function_args,
+                    duration=tool_duration,
+                    result=_spinner_result,
+                )
         else:
             try:
-                def _execute(next_args: dict) -> Any:
-                    return _ra().handle_function_call(
-                        function_name,
-                        next_args,
-                        effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=agent.session_id or "",
-                        turn_id=getattr(agent, "_current_turn_id", "") or "",
-                        api_request_id=getattr(agent, "_current_api_request_id", "")
-                        or "",
-                        enabled_tools=(
-                            list(agent.valid_tool_names)
-                            if agent.valid_tool_names
-                            else None
-                        ),
-                        skip_pre_tool_call_hook=True,
-                        skip_tool_request_middleware=True,
-                        skip_tool_execution_middleware=True,
-                        tool_request_middleware_trace=list(middleware_trace),
-                        enabled_toolsets=getattr(agent, "enabled_toolsets", None),
-                        disabled_toolsets=getattr(agent, "disabled_toolsets", None),
-                    )
+                _execute = _make_registry_dispatch(
+                    agent,
+                    function_name=function_name,
+                    effective_task_id=effective_task_id,
+                    tool_call=tool_call,
+                    middleware_trace=middleware_trace,
+                )
 
                 (
                     function_result,

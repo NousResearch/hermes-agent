@@ -4223,6 +4223,57 @@ def recompute_ready(
 # Claim / complete / block
 # ---------------------------------------------------------------------------
 
+def _open_claimed_run(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    lock: str,
+    expires: int,
+    now: int,
+    source_status: Optional[str] = None,
+) -> Optional[int]:
+    """Open a ``running`` run row for a just-claimed task and point the task at it.
+
+    Callers must already have flipped ``tasks.status`` to ``running`` inside the
+    same write transaction. The run inherits the task's assignee / step /
+    runtime cap, and a ``claimed`` event is appended against it.
+    Returns the new ``task_runs.id``.
+    """
+    trow = conn.execute(
+        "SELECT assignee, max_runtime_seconds, current_step_key "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    run_cur = conn.execute(
+        """
+        INSERT INTO task_runs (
+            task_id, profile, step_key, status,
+            claim_lock, claim_expires, max_runtime_seconds,
+            started_at
+        ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+        """,
+        (
+            task_id,
+            trow["assignee"] if trow else None,
+            trow["current_step_key"] if trow else None,
+            lock,
+            expires,
+            trow["max_runtime_seconds"] if trow else None,
+            now,
+        ),
+    )
+    run_id = run_cur.lastrowid
+    conn.execute(
+        "UPDATE tasks SET current_run_id = ? WHERE id = ?",
+        (run_id, task_id),
+    )
+    payload = {"lock": lock, "expires": expires, "run_id": run_id}
+    if source_status:
+        payload["source_status"] = source_status
+    _append_event(conn, task_id, "claimed", payload, run_id=run_id)
+    return run_id
+
+
 def claim_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4299,40 +4350,8 @@ def claim_task(
         )
         if cur.rowcount != 1:
             return None
-        # Look up the current task row so we can populate the run with
-        # its assignee / step / runtime cap.
-        trow = conn.execute(
-            "SELECT assignee, max_runtime_seconds, current_step_key "
-            "FROM tasks WHERE id = ?",
-            (task_id,),
-        ).fetchone()
-        run_cur = conn.execute(
-            """
-            INSERT INTO task_runs (
-                task_id, profile, step_key, status,
-                claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
-            """,
-            (
-                task_id,
-                trow["assignee"] if trow else None,
-                trow["current_step_key"] if trow else None,
-                lock,
-                expires,
-                trow["max_runtime_seconds"] if trow else None,
-                now,
-            ),
-        )
-        run_id = run_cur.lastrowid
-        conn.execute(
-            "UPDATE tasks SET current_run_id = ? WHERE id = ?",
-            (run_id, task_id),
-        )
-        _append_event(
-            conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id},
-            run_id=run_id,
+        run_id = _open_claimed_run(
+            conn, task_id, lock=lock, expires=expires, now=now
         )
         claimed = get_task(conn, task_id)
     _fire_kanban_lifecycle_hook(
@@ -4383,39 +4402,9 @@ def claim_review_task(
         )
         if cur.rowcount != 1:
             return None
-        trow = conn.execute(
-            "SELECT assignee, max_runtime_seconds, current_step_key "
-            "FROM tasks WHERE id = ?",
-            (task_id,),
-        ).fetchone()
-        run_cur = conn.execute(
-            """
-            INSERT INTO task_runs (
-                task_id, profile, step_key, status,
-                claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
-            """,
-            (
-                task_id,
-                trow["assignee"] if trow else None,
-                trow["current_step_key"] if trow else None,
-                lock,
-                expires,
-                trow["max_runtime_seconds"] if trow else None,
-                now,
-            ),
-        )
-        run_id = run_cur.lastrowid
-        conn.execute(
-            "UPDATE tasks SET current_run_id = ? WHERE id = ?",
-            (run_id, task_id),
-        )
-        _append_event(
-            conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id,
-             "source_status": "review"},
-            run_id=run_id,
+        _open_claimed_run(
+            conn, task_id, lock=lock, expires=expires, now=now,
+            source_status="review",
         )
         return get_task(conn, task_id)
 

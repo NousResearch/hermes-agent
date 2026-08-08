@@ -329,6 +329,31 @@ class AggregateMetrics:
         }
 
 
+_SUMMARY_PROMPT_TEMPLATE = """Summarize the following agent conversation turns concisely. This summary will replace these turns in the conversation history.
+
+Write the summary from a neutral perspective describing what the assistant did and learned. Include:
+1. What actions the assistant took (tool calls, searches, file operations)
+2. Key information or results obtained
+3. Any important decisions or findings
+4. Relevant data, file names, values, or outputs
+
+Keep the summary factual and informative. Target approximately {target_tokens} tokens.
+
+---
+TURNS TO SUMMARIZE:
+{content}
+---
+
+Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
+
+# Used when every summarization attempt fails — the region is still dropped, so
+# the trajectory must carry a marker explaining the gap.
+_SUMMARY_FALLBACK_TEXT = (
+    "[CONTEXT SUMMARY]: [Summary generation failed - previous turns contained "
+    "tool calls and responses that have been compressed to save context space.]"
+)
+
+
 class TrajectoryCompressor:
     """
     Compresses agent trajectories to fit within a target token budget.
@@ -602,6 +627,13 @@ class TrajectoryCompressor:
             return text
         return "[CONTEXT SUMMARY]:" if not text else f"[CONTEXT SUMMARY]: {text}"
     
+    def _build_summary_prompt(self, content: str) -> str:
+        """Render the summarization prompt shared by the sync and async paths."""
+        return _SUMMARY_PROMPT_TEMPLATE.format(
+            target_tokens=self.config.summary_target_tokens,
+            content=content,
+        )
+
     def _generate_summary(self, content: str, metrics: TrajectoryMetrics) -> str:
         """
         Generate a summary of the compressed turns using OpenRouter.
@@ -613,22 +645,7 @@ class TrajectoryCompressor:
         Returns:
             Summary string
         """
-        prompt = f"""Summarize the following agent conversation turns concisely. This summary will replace these turns in the conversation history.
-
-Write the summary from a neutral perspective describing what the assistant did and learned. Include:
-1. What actions the assistant took (tool calls, searches, file operations)
-2. Key information or results obtained
-3. Any important decisions or findings
-4. Relevant data, file names, values, or outputs
-
-Keep the summary factual and informative. Target approximately {self.config.summary_target_tokens} tokens.
-
----
-TURNS TO SUMMARIZE:
-{content}
----
-
-Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
+        prompt = self._build_summary_prompt(content)
 
         for attempt in range(self.config.max_retries):
             try:
@@ -669,7 +686,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     time.sleep(jittered_backoff(attempt + 1, base_delay=self.config.retry_delay, max_delay=30.0))
                 else:
                     # Fallback: create a basic summary
-                    return "[CONTEXT SUMMARY]: [Summary generation failed - previous turns contained tool calls and responses that have been compressed to save context space.]"
+                    return _SUMMARY_FALLBACK_TEXT
     
     async def _generate_summary_async(self, content: str, metrics: TrajectoryMetrics) -> str:
         """
@@ -682,22 +699,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         Returns:
             Summary string
         """
-        prompt = f"""Summarize the following agent conversation turns concisely. This summary will replace these turns in the conversation history.
-
-Write the summary from a neutral perspective describing what the assistant did and learned. Include:
-1. What actions the assistant took (tool calls, searches, file operations)
-2. Key information or results obtained
-3. Any important decisions or findings
-4. Relevant data, file names, values, or outputs
-
-Keep the summary factual and informative. Target approximately {self.config.summary_target_tokens} tokens.
-
----
-TURNS TO SUMMARIZE:
-{content}
----
-
-Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
+        prompt = self._build_summary_prompt(content)
 
         for attempt in range(self.config.max_retries):
             try:
@@ -738,46 +740,49 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     await asyncio.sleep(jittered_backoff(attempt + 1, base_delay=self.config.retry_delay, max_delay=30.0))
                 else:
                     # Fallback: create a basic summary
-                    return "[CONTEXT SUMMARY]: [Summary generation failed - previous turns contained tool calls and responses that have been compressed to save context space.]"
+                    return _SUMMARY_FALLBACK_TEXT
     
-    def compress_trajectory(
+    def _plan_compression(
         self,
-        trajectory: List[Dict[str, str]]
-    ) -> Tuple[List[Dict[str, str]], TrajectoryMetrics]:
-        """
-        Compress a single trajectory to fit within target token budget.
-        
+        trajectory: List[Dict[str, str]],
+        metrics: TrajectoryMetrics,
+    ) -> Optional[Tuple[int, int, str]]:
+        """Decide which region of ``trajectory`` to replace with a summary.
+
+        Populates the original-size fields on ``metrics`` and returns
+        ``(compress_start, compress_until, content_to_summarize)``, or ``None``
+        when the trajectory must be returned untouched (already under target,
+        nothing compressible, or a region too small to pay for its own
+        summary). In the ``None`` case ``metrics`` is finalized for the
+        pass-through result, so the caller only has to return the input.
+
         Algorithm:
         1. Count total tokens
         2. If under target, skip
         3. Find compressible region (between protected head and tail)
         4. Calculate how many tokens need to be saved
         5. Accumulate turns from start of compressible region until savings met
-        6. Replace accumulated turns with single human summary
-        7. Keep remaining turns intact
-        
-        Args:
-            trajectory: List of conversation turns
-            
-        Returns:
-            Tuple of (compressed_trajectory, metrics)
         """
-        metrics = TrajectoryMetrics()
         metrics.original_turns = len(trajectory)
-        
+
         # Count tokens per turn
         turn_tokens = self.count_turn_tokens(trajectory)
         total_tokens = sum(turn_tokens)
         metrics.original_tokens = total_tokens
-        
+
         # Check if compression needed
         if total_tokens <= self.config.target_max_tokens:
             metrics.skipped_under_target = True
             metrics.compressed_tokens = total_tokens
             metrics.compressed_turns = len(trajectory)
             metrics.compression_ratio = 1.0
-            return trajectory, metrics
-        
+            return None
+
+        def _skip() -> None:
+            metrics.compressed_tokens = total_tokens
+            metrics.compressed_turns = len(trajectory)
+            metrics.still_over_limit = total_tokens > self.config.target_max_tokens
+
         # Find protected regions
         protected, compress_start, compress_end = self._find_protected_indices(trajectory)
 
@@ -787,33 +792,30 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
 
         # Check if there's anything to compress
         if compress_start >= compress_end:
-            # Nothing to compress, return as-is
-            metrics.compressed_tokens = total_tokens
-            metrics.compressed_turns = len(trajectory)
-            metrics.still_over_limit = total_tokens > self.config.target_max_tokens
-            return trajectory, metrics
-        
+            _skip()
+            return None
+
         # Calculate how much we need to save
         tokens_to_save = total_tokens - self.config.target_max_tokens
-        
+
         # We'll replace N turns with 1 summary turn
         # Net savings = (sum of N turns' tokens) - summary_target_tokens
         # We need: net_savings >= tokens_to_save
         # So: sum of turns >= tokens_to_save + summary_target_tokens
         target_tokens_to_compress = tokens_to_save + self.config.summary_target_tokens
-        
+
         # Accumulate turns from compress_start until we have enough savings
         accumulated_tokens = 0
         compress_until = compress_start
-        
+
         for i in range(compress_start, compress_end):
             accumulated_tokens += turn_tokens[i]
             compress_until = i + 1  # Exclusive end
-            
+
             # Check if we have enough savings
             if accumulated_tokens >= target_tokens_to_compress:
                 break
-        
+
         # If we still don't have enough savings, compress the entire compressible region
         if accumulated_tokens < target_tokens_to_compress and compress_until < compress_end:
             compress_until = compress_end
@@ -826,10 +828,8 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         compress_until = self._snap_boundary(trajectory, compress_until, compress_start, compress_end)
         if compress_until <= compress_start:
             # Snapping collapsed the region; nothing can be safely compressed.
-            metrics.compressed_tokens = total_tokens
-            metrics.compressed_turns = len(trajectory)
-            metrics.still_over_limit = total_tokens > self.config.target_max_tokens
-            return trajectory, metrics
+            _skip()
+            return None
 
         # If the region we can safely compress is no larger than the summary
         # that would replace it, compression cannot reduce the token count --
@@ -838,27 +838,33 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             sum(turn_tokens[compress_start:compress_until])
             <= self.config.summary_target_tokens
         ):
-            metrics.compressed_tokens = total_tokens
-            metrics.compressed_turns = len(trajectory)
-            metrics.still_over_limit = total_tokens > self.config.target_max_tokens
-            return trajectory, metrics
+            _skip()
+            return None
 
         # Record compression region
         metrics.turns_compressed_start_idx = compress_start
         metrics.turns_compressed_end_idx = compress_until
         metrics.turns_in_compressed_region = compress_until - compress_start
 
-        # Extract content for summary
         content_to_summarize = self._extract_turn_content_for_summary(
             trajectory, compress_start, compress_until
         )
+        return compress_start, compress_until, content_to_summarize
 
-        # Generate summary
-        summary = self._generate_summary(content_to_summarize, metrics)
-        
-        # Build compressed trajectory
+    def _assemble_compressed(
+        self,
+        trajectory: List[Dict[str, str]],
+        compress_start: int,
+        compress_until: int,
+        summary: str,
+        metrics: TrajectoryMetrics,
+    ) -> List[Dict[str, str]]:
+        """Rebuild the trajectory as head + summary turn + verbatim tail.
+
+        Finalizes the post-compression fields on ``metrics``.
+        """
         compressed = []
-        
+
         # Add head (turns before compression region)
         for i in range(compress_start):
             turn = trajectory[i].copy()
@@ -866,17 +872,17 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             if turn.get("from") == "system" and self.config.add_summary_notice:
                 turn["value"] = turn["value"] + self.config.summary_notice_text
             compressed.append(turn)
-        
+
         # Add summary as human message
         compressed.append({
             "from": "human",
             "value": summary
         })
-        
+
         # Add tail (turns after compression region)
         for i in range(compress_until, len(trajectory)):
             compressed.append(trajectory[i].copy())
-        
+
         # Calculate final metrics
         metrics.compressed_turns = len(compressed)
         metrics.compressed_tokens = self.count_trajectory_tokens(compressed)
@@ -885,133 +891,53 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         metrics.compression_ratio = metrics.compressed_tokens / max(metrics.original_tokens, 1)
         metrics.was_compressed = True
         metrics.still_over_limit = metrics.compressed_tokens > self.config.target_max_tokens
-        
+
+        return compressed
+
+    def compress_trajectory(
+        self,
+        trajectory: List[Dict[str, str]]
+    ) -> Tuple[List[Dict[str, str]], TrajectoryMetrics]:
+        """
+        Compress a single trajectory to fit within target token budget.
+
+        Args:
+            trajectory: List of conversation turns
+
+        Returns:
+            Tuple of (compressed_trajectory, metrics)
+        """
+        metrics = TrajectoryMetrics()
+        plan = self._plan_compression(trajectory, metrics)
+        if plan is None:
+            return trajectory, metrics
+        compress_start, compress_until, content_to_summarize = plan
+
+        summary = self._generate_summary(content_to_summarize, metrics)
+        compressed = self._assemble_compressed(
+            trajectory, compress_start, compress_until, summary, metrics
+        )
         return compressed, metrics
-    
+
     async def compress_trajectory_async(
         self,
         trajectory: List[Dict[str, str]]
     ) -> Tuple[List[Dict[str, str]], TrajectoryMetrics]:
         """
         Compress a single trajectory to fit within target token budget (async version).
-        
+
         Same algorithm as compress_trajectory but uses async API calls for summarization.
         """
         metrics = TrajectoryMetrics()
-        metrics.original_turns = len(trajectory)
-        
-        # Count tokens per turn
-        turn_tokens = self.count_turn_tokens(trajectory)
-        total_tokens = sum(turn_tokens)
-        metrics.original_tokens = total_tokens
-        
-        # Check if compression needed
-        if total_tokens <= self.config.target_max_tokens:
-            metrics.skipped_under_target = True
-            metrics.compressed_tokens = total_tokens
-            metrics.compressed_turns = len(trajectory)
-            metrics.compression_ratio = 1.0
+        plan = self._plan_compression(trajectory, metrics)
+        if plan is None:
             return trajectory, metrics
-        
-        # Find protected regions
-        protected, compress_start, compress_end = self._find_protected_indices(trajectory)
+        compress_start, compress_until, content_to_summarize = plan
 
-        # Snap the head boundary so the compressible region never *starts* on an
-        # orphaned <tool_response> whose <tool_call> lives in the protected head.
-        compress_start = self._snap_boundary(trajectory, compress_start, compress_start, compress_end)
-
-        # Check if there's anything to compress
-        if compress_start >= compress_end:
-            metrics.compressed_tokens = total_tokens
-            metrics.compressed_turns = len(trajectory)
-            metrics.still_over_limit = total_tokens > self.config.target_max_tokens
-            return trajectory, metrics
-        
-        # Calculate how much we need to save
-        tokens_to_save = total_tokens - self.config.target_max_tokens
-        target_tokens_to_compress = tokens_to_save + self.config.summary_target_tokens
-        
-        # Accumulate turns from compress_start until we have enough savings
-        accumulated_tokens = 0
-        compress_until = compress_start
-        
-        for i in range(compress_start, compress_end):
-            accumulated_tokens += turn_tokens[i]
-            compress_until = i + 1
-            if accumulated_tokens >= target_tokens_to_compress:
-                break
-        
-        # If we still don't have enough savings, compress the entire compressible region
-        if accumulated_tokens < target_tokens_to_compress and compress_until < compress_end:
-            compress_until = compress_end
-            accumulated_tokens = sum(turn_tokens[compress_start:compress_end])
-
-        # Snap the tail boundary so we never cut between a <tool_call> and its
-        # <tool_response>: the summary replaces [compress_start, compress_until)
-        # and the remainder is kept verbatim, so a boundary on a tool turn would
-        # leave an orphaned marker and corrupt the training trajectory.
-        compress_until = self._snap_boundary(trajectory, compress_until, compress_start, compress_end)
-        if compress_until <= compress_start:
-            # Snapping collapsed the region; nothing can be safely compressed.
-            metrics.compressed_tokens = total_tokens
-            metrics.compressed_turns = len(trajectory)
-            metrics.still_over_limit = total_tokens > self.config.target_max_tokens
-            return trajectory, metrics
-
-        # If the region we can safely compress is no larger than the summary
-        # that would replace it, compression cannot reduce the token count --
-        # it would grow the trajectory and still spend a summarization call.
-        if (
-            sum(turn_tokens[compress_start:compress_until])
-            <= self.config.summary_target_tokens
-        ):
-            metrics.compressed_tokens = total_tokens
-            metrics.compressed_turns = len(trajectory)
-            metrics.still_over_limit = total_tokens > self.config.target_max_tokens
-            return trajectory, metrics
-
-        # Record compression region
-        metrics.turns_compressed_start_idx = compress_start
-        metrics.turns_compressed_end_idx = compress_until
-        metrics.turns_in_compressed_region = compress_until - compress_start
-
-        # Extract content for summary
-        content_to_summarize = self._extract_turn_content_for_summary(
-            trajectory, compress_start, compress_until
-        )
-
-        # Generate summary (ASYNC)
         summary = await self._generate_summary_async(content_to_summarize, metrics)
-        
-        # Build compressed trajectory
-        compressed = []
-        
-        # Add head (turns before compression region)
-        for i in range(compress_start):
-            turn = trajectory[i].copy()
-            if turn.get("from") == "system" and self.config.add_summary_notice:
-                turn["value"] = turn["value"] + self.config.summary_notice_text
-            compressed.append(turn)
-        
-        # Add summary as human message
-        compressed.append({
-            "from": "human",
-            "value": summary
-        })
-        
-        # Add tail (turns after compression region)
-        for i in range(compress_until, len(trajectory)):
-            compressed.append(trajectory[i].copy())
-        
-        # Calculate final metrics
-        metrics.compressed_turns = len(compressed)
-        metrics.compressed_tokens = self.count_trajectory_tokens(compressed)
-        metrics.turns_removed = metrics.original_turns - metrics.compressed_turns
-        metrics.tokens_saved = metrics.original_tokens - metrics.compressed_tokens
-        metrics.compression_ratio = metrics.compressed_tokens / max(metrics.original_tokens, 1)
-        metrics.was_compressed = True
-        metrics.still_over_limit = metrics.compressed_tokens > self.config.target_max_tokens
-        
+        compressed = self._assemble_compressed(
+            trajectory, compress_start, compress_until, summary, metrics
+        )
         return compressed, metrics
     
     async def process_entry_async(self, entry: Dict[str, Any]) -> Tuple[Dict[str, Any], TrajectoryMetrics]:

@@ -1955,6 +1955,43 @@ BEGIN
 END;
 """
 
+# Walks a session's whole compression lineage (both directions) into a
+# ``lineage(id)`` CTE: a compression chain is one logical conversation, so
+# per-session flags flip as a unit no matter which link the caller holds.
+# Takes the session id twice — once to seed the ancestor walk, once the
+# descendant walk.
+_COMPRESSION_LINEAGE_CTE = """
+WITH RECURSIVE
+  ancestors(id) AS (
+    SELECT ?
+    UNION
+    SELECT parent.id
+    FROM ancestors a
+    JOIN sessions child ON child.id = a.id
+    JOIN sessions parent ON parent.id = child.parent_session_id
+    WHERE parent.end_reason = 'compression'
+  ),
+  descendants(id) AS (
+    SELECT ?
+    UNION
+    SELECT child.id
+    FROM descendants d
+    JOIN sessions parent ON parent.id = d.id
+    JOIN sessions child ON child.parent_session_id = parent.id
+    WHERE parent.end_reason = 'compression'
+  ),
+  lineage(id) AS (
+    SELECT id FROM ancestors
+    UNION
+    SELECT id FROM descendants
+  )
+""".strip()
+
+# Columns `_set_session_lineage_flag` may write. Interpolating a column name
+# into SQL is only safe against this allowlist.
+_SESSION_LINEAGE_FLAG_COLUMNS = frozenset({"archived", "pinned"})
+
+
 def fts5_cjk_so_path() -> Path:
     """Location of the cjk_unicode61 loadable extension."""
     env = os.getenv("HERMES_FTS5_CJK_SO")
@@ -6079,45 +6116,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         displayed tip lets the still-unarchived root resurrect it on refresh.
         Returns True when at least one row was updated.
         """
-        def _do(conn):
-            cursor = conn.execute(
-                """
-                WITH RECURSIVE
-                  ancestors(id) AS (
-                    SELECT ?
-                    UNION
-                    SELECT parent.id
-                    FROM ancestors a
-                    JOIN sessions child ON child.id = a.id
-                    JOIN sessions parent ON parent.id = child.parent_session_id
-                    WHERE parent.end_reason = 'compression'
-                  ),
-                  descendants(id) AS (
-                    SELECT ?
-                    UNION
-                    SELECT child.id
-                    FROM descendants d
-                    JOIN sessions parent ON parent.id = d.id
-                    JOIN sessions child ON child.parent_session_id = parent.id
-                    WHERE parent.end_reason = 'compression'
-                  ),
-                  lineage(id) AS (
-                    SELECT id FROM ancestors
-                    UNION
-                    SELECT id FROM descendants
-                  )
-                UPDATE sessions
-                SET archived = ?
-                WHERE id IN (SELECT id FROM lineage)
-                """,
-                (session_id, session_id, 1 if archived else 0),
-            )
-            rowcount = cursor.rowcount
-            if rowcount is None or rowcount < 0:
-                rowcount = conn.execute("SELECT changes()").fetchone()[0]
-            return rowcount
-        rowcount = self._execute_write(_do)
-        return rowcount > 0
+        return self._set_session_lineage_flag(session_id, "archived", archived)
 
     def set_session_pinned(self, session_id: str, pinned: bool) -> bool:
         """Pin or unpin a session (and its whole compression lineage).
@@ -6131,39 +6130,27 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         vice-versa) no matter which id the caller holds. Returns True when at
         least one row changed.
         """
+        return self._set_session_lineage_flag(session_id, "pinned", pinned)
+
+    def _set_session_lineage_flag(
+        self, session_id: str, column: str, value: bool
+    ) -> bool:
+        """Flip a boolean session column across a whole compression lineage.
+
+        ``column`` must name one of :data:`_SESSION_LINEAGE_FLAG_COLUMNS` — the
+        name is interpolated into the statement, so an arbitrary caller-supplied
+        string is never allowed near the SQL. Returns True when at least one row
+        changed.
+        """
+        if column not in _SESSION_LINEAGE_FLAG_COLUMNS:
+            raise ValueError(f"unsupported session lineage flag column: {column!r}")
+        sql = (
+            f"{_COMPRESSION_LINEAGE_CTE}\n"
+            f"UPDATE sessions SET {column} = ? WHERE id IN (SELECT id FROM lineage)"
+        )
+
         def _do(conn):
-            cursor = conn.execute(
-                """
-                WITH RECURSIVE
-                  ancestors(id) AS (
-                    SELECT ?
-                    UNION
-                    SELECT parent.id
-                    FROM ancestors a
-                    JOIN sessions child ON child.id = a.id
-                    JOIN sessions parent ON parent.id = child.parent_session_id
-                    WHERE parent.end_reason = 'compression'
-                  ),
-                  descendants(id) AS (
-                    SELECT ?
-                    UNION
-                    SELECT child.id
-                    FROM descendants d
-                    JOIN sessions parent ON parent.id = d.id
-                    JOIN sessions child ON child.parent_session_id = parent.id
-                    WHERE parent.end_reason = 'compression'
-                  ),
-                  lineage(id) AS (
-                    SELECT id FROM ancestors
-                    UNION
-                    SELECT id FROM descendants
-                  )
-                UPDATE sessions
-                SET pinned = ?
-                WHERE id IN (SELECT id FROM lineage)
-                """,
-                (session_id, session_id, 1 if pinned else 0),
-            )
+            cursor = conn.execute(sql, (session_id, session_id, 1 if value else 0))
             rowcount = cursor.rowcount
             if rowcount is None or rowcount < 0:
                 rowcount = conn.execute("SELECT changes()").fetchone()[0]

@@ -1976,3 +1976,48 @@ class TestSetCronSessionTitle:
         db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
 
 
+class TestRenderSubjectTemplate:
+    """_render_subject_template renders cron job subject templates into metadata."""
+
+    def test_renders_date_placeholder(self):
+        from cron.scheduler import _render_subject_template
+        job = {"id": "j1", "name": "daily", "subject_template": "Daily Report {date}"}
+        metadata = {}
+        _render_subject_template(job, metadata)
+        assert "subject" in metadata
+        # Format: YYYY/MM/DD
+        import re
+        assert re.match(r"Daily Report \d{4}/\d{2}/\d{2}", metadata["subject"])
+
+    def test_no_template_noop(self):
+        from cron.scheduler import _render_subject_template
+        job = {"id": "j1", "name": "no-template"}
+        metadata = {"job_id": "j1"}
+        _render_subject_template(job, metadata)
+        assert "subject" not in metadata
+
+    def test_empty_template_noop(self):
+        from cron.scheduler import _render_subject_template
+        job = {"id": "j1", "name": "empty", "subject_template": ""}
+        metadata = {}
+        _render_subject_template(job, metadata)
+        assert "subject" not in metadata
+
+    def test_unknown_placeholder_falls_back_to_raw(self):
+        from cron.scheduler import _render_subject_template
+        job = {"id": "j1", "name": "bad", "subject_template": "Report {unknown}"}
+        metadata = {}
+        _render_subject_template(job, metadata)
+        # Falls back to raw template instead of raising
+        assert metadata["subject"] == "Report {unknown}"
+
+    def test_preserves_existing_metadata_keys(self):
+        from cron.scheduler import _render_subject_template
+        job = {"id": "j1", "subject_template": "Report {date}"}
+        metadata = {"job_id": "j1", "thread_id": "t1"}
+        _render_subject_template(job, metadata)
+        assert metadata["job_id"] == "j1"
+        assert metadata["thread_id"] == "t1"
+        assert "subject" in metadata
+
+

@@ -326,6 +326,29 @@ def _is_cron_silence_response(text: str) -> bool:
 
     return is_autonomous_silence_response(text)
 
+
+def _render_subject_template(job: dict, metadata: dict) -> None:
+    """Render a cron job's ``subject_template`` into ``metadata['subject']``.
+
+    Supports ``{date}`` → today's date in YYYY/MM/DD format.
+    No-op when the job has no ``subject_template`` field.
+    """
+    template = job.get("subject_template")
+    if not template:
+        return
+    try:
+        from datetime import datetime as _dt
+        metadata["subject"] = template.format(date=_dt.now().strftime("%Y/%m/%d"))
+    except KeyError as e:
+        logger.warning(
+            "Job '%s': subject_template has unknown placeholder %s — "
+            "using raw template as subject",
+            job.get("name", job["id"]),
+            e,
+        )
+        metadata["subject"] = template
+
+
 # ---------------------------------------------------------------------------
 # Persistent thread pool for parallel cron jobs.
 # The tick function submits jobs here and returns immediately so the ticker
@@ -1909,6 +1932,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     "direct_messages_topic_id": str(thread_id),
                     "job_id": job["id"],
                 }
+                _render_subject_template(job, route_metadata)
                 # Media metadata mirrors the text routing so attachments land in
                 # the same DM topic instead of the General lane (#22773).
                 media_metadata = {"direct_messages_topic_id": str(thread_id)}
@@ -1925,6 +1949,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 route_metadata = {"job_id": job["id"]}
                 if route_thread_id:
                     route_metadata["thread_id"] = route_thread_id
+                _render_subject_template(job, route_metadata)
                 media_metadata = {"thread_id": thread_id} if thread_id else None
 
             try:

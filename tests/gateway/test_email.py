@@ -907,5 +907,89 @@ class TestSenderAuthentication(unittest.TestCase):
         self.assertFalse(ok, reason)
 
 
+class TestCustomSubject(unittest.TestCase):
+    """Email adapter honours metadata['subject'] as a custom subject."""
+
+    def _make_adapter(self):
+        from gateway.config import Platform, PlatformConfig, GatewayConfig, _apply_env_overrides
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            cfg = GatewayConfig()
+            _apply_env_overrides(cfg)
+            from plugins.platforms.email.adapter import EmailAdapter
+            return EmailAdapter(cfg.platforms[Platform.EMAIL])
+
+    def test_send_passes_metadata_subject_as_custom_subject(self):
+        adapter = self._make_adapter()
+        adapter._send_email = MagicMock(return_value="<msg-123@test.com>")
+        import asyncio
+
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter.send(
+                "user@example.com",
+                "Hello world",
+                metadata={"subject": "Daily Report 2026/08/05"},
+            )
+        )
+        self.assertTrue(result.success)
+        adapter._send_email.assert_called_once()
+        args = adapter._send_email.call_args
+        self.assertEqual(args[0][0], "user@example.com")
+        self.assertEqual(args[0][1], "Hello world")
+        # custom_subject is the 4th positional arg
+        self.assertEqual(args[0][3], "Daily Report 2026/08/05")
+
+    def test_send_email_custom_subject_used_as_is(self):
+        adapter = self._make_adapter()
+        # Set up thread context with a different subject
+        adapter._thread_context["user@example.com"] = {
+            "subject": "Old Thread",
+            "message_id": "<old@test.com>",
+        }
+        with patch("plugins.platforms.email.adapter.MIMEMultipart") as mock_mime_cls, \
+             patch.object(adapter, "_connect_smtp") as mock_connect:
+            mock_msg = MagicMock()
+            mock_mime_cls.return_value = mock_msg
+            mock_smtp = MagicMock()
+            mock_connect.return_value = mock_smtp
+
+            adapter._send_email("user@example.com", "body", custom_subject="Custom Subject")
+
+            # Subject should be the custom one, not the thread context one
+            self.assertEqual(mock_msg.__setitem__.call_args_list[2][0][1], "Custom Subject")
+
+    def test_send_email_no_custom_subject_falls_back_to_thread(self):
+        adapter = self._make_adapter()
+        adapter._thread_context["user@example.com"] = {
+            "subject": "Old Thread",
+            "message_id": "<old@test.com>",
+        }
+        with patch("plugins.platforms.email.adapter.MIMEMultipart") as mock_mime_cls, \
+             patch.object(adapter, "_connect_smtp") as mock_connect:
+            mock_msg = MagicMock()
+            mock_mime_cls.return_value = mock_msg
+            mock_smtp = MagicMock()
+            mock_connect.return_value = mock_smtp
+
+            adapter._send_email("user@example.com", "body")
+
+            # Subject should be Re: + thread context subject
+            self.assertEqual(mock_msg.__setitem__.call_args_list[2][0][1], "Re: Old Thread")
+
+    def test_no_metadata_does_not_crash(self):
+        adapter = self._make_adapter()
+        adapter._send_email = MagicMock(return_value="<msg@test.com>")
+        import asyncio
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter.send("user@example.com", "Hello")
+        )
+        self.assertTrue(result.success)
+        adapter._send_email.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

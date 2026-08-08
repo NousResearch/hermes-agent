@@ -942,11 +942,21 @@ class EmailAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an email reply to the given address."""
+        """Send an email reply to the given address.
+
+        Subject resolution order:
+          1. ``metadata["subject"]`` (cron / scheduler override — used for
+             templated subjects like ``"Daily Report {date}"``).
+          2. Thread context's last subject, with ``Re:`` prefix if absent.
+          3. Default ``"Re: Hermes Agent"`` (legacy).
+        """
         try:
+            custom_subject = None
+            if metadata:
+                custom_subject = metadata.get("subject")
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
-                None, self._send_email, chat_id, content, reply_to
+                None, self._send_email, chat_id, content, reply_to, custom_subject
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -968,21 +978,37 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         reply_to_msg_id: Optional[str] = None,
+        custom_subject: Optional[str] = None,
     ) -> str:
-        """Send an email via SMTP. Runs in executor thread."""
+        """Send an email via SMTP. Runs in executor thread.
+
+        ``custom_subject`` (from ``metadata.subject``) wins over the thread
+        context's last subject. Used by cron deliveries that want a templated
+        subject independent of any inbound thread.
+        """
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
 
         # Thread context for reply
         ctx = self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
-            subject = f"Re: {subject}"
+        if custom_subject:
+            # Caller-supplied (cron / scheduler) — use as-is, no Re: prefix
+            subject = custom_subject
+        else:
+            subject = ctx.get("subject", "Hermes Agent")
+            if not subject.startswith("Re:"):
+                subject = f"Re: {subject}"
         msg["Subject"] = subject
 
-        # Threading headers
-        original_msg_id = reply_to_msg_id or ctx.get("message_id")
+        # Threading headers — only when this is a thread reply (no custom_subject).
+        # cron / scheduler deliveries with a templated subject are new outbound
+        # messages, NOT replies to an inbound thread, so we don't reuse the
+        # thread's last message-id (would create a misleading In-Reply-To chain).
+        if custom_subject:
+            original_msg_id = reply_to_msg_id
+        else:
+            original_msg_id = reply_to_msg_id or ctx.get("message_id")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
             msg["References"] = original_msg_id

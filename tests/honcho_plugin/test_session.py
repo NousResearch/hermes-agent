@@ -219,6 +219,9 @@ class TestConcludeToolDispatch:
         provider._session_key = "telegram:123"
         provider._manager = MagicMock()
         provider._manager.create_conclusion.return_value = True
+        # The response reports the RESOLVED peer (issue #42980), so the dispatch
+        # asks the manager to resolve the requested peer for the message.
+        provider._manager.resolved_peer_label.return_value = "user"
 
         result = provider.handle_tool_call(
             "honcho_conclude",
@@ -226,12 +229,144 @@ class TestConcludeToolDispatch:
         )
 
         assert "Conclusion saved for user" in result
+        provider._manager.resolved_peer_label.assert_called_once_with("telegram:123", "user")
         provider._manager.create_conclusion.assert_called_once_with(
             "telegram:123",
             "User prefers dark mode",
             peer="user",
         )
 
+    def test_honcho_conclude_can_target_ai_peer(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.create_conclusion.return_value = True
+        provider._manager.resolved_peer_label.return_value = "ai"
+
+        result = provider.handle_tool_call(
+            "honcho_conclude",
+            {"conclusion": "Assistant likes terse replies", "peer": "ai"},
+        )
+
+        assert "Conclusion saved for ai" in result
+        provider._manager.resolved_peer_label.assert_called_once_with("telegram:123", "ai")
+        provider._manager.create_conclusion.assert_called_once_with(
+            "telegram:123",
+            "Assistant likes terse replies",
+            peer="ai",
+        )
+
+    def test_honcho_profile_can_target_explicit_peer_id(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.get_peer_card.return_value = ["Role: Assistant"]
+
+        result = provider.handle_tool_call(
+            "honcho_profile",
+            {"peer": "hermes"},
+        )
+
+        assert "Role: Assistant" in result
+        provider._manager.get_peer_card.assert_called_once_with("telegram:123", peer="hermes")
+
+    def test_honcho_search_can_target_explicit_peer_id(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.search_context.return_value = "Assistant self context"
+
+        result = provider.handle_tool_call(
+            "honcho_search",
+            {"query": "assistant", "peer": "hermes"},
+        )
+
+        assert "Assistant self context" in result
+        provider._manager.search_context.assert_called_once_with(
+            "telegram:123",
+            "assistant",
+            max_tokens=800,
+            peer="hermes",
+        )
+
+    def test_honcho_reasoning_can_target_explicit_peer_id(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.dialectic_query.return_value = "Assistant answer"
+
+        result = provider.handle_tool_call(
+            "honcho_reasoning",
+            {"query": "who are you", "peer": "hermes"},
+        )
+
+        assert "Assistant answer" in result
+        provider._manager.dialectic_query.assert_called_once_with(
+            "telegram:123",
+            "who are you",
+            reasoning_level=None,
+            peer="hermes",
+            apply_injection_cap=False,
+        )
+
+    def test_honcho_conclude_missing_both_params_returns_error(self):
+        """Calling honcho_conclude with neither conclusion nor delete_id returns a tool error."""
+        import json
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+
+        result = provider.handle_tool_call("honcho_conclude", {})
+
+        parsed = json.loads(result)
+        assert parsed == {"error": "Exactly one of conclusion, delete_id, or list must be provided."}
+        provider._manager.create_conclusion.assert_not_called()
+        provider._manager.delete_conclusion.assert_not_called()
+
+    def test_honcho_conclude_rejects_both_params_at_once(self):
+        """Sending both conclusion and delete_id should be rejected."""
+        import json
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        result = provider.handle_tool_call(
+            "honcho_conclude",
+            {"conclusion": "User prefers dark mode", "delete_id": "conc-123"},
+        )
+        parsed = json.loads(result)
+        assert parsed == {"error": "Exactly one of conclusion, delete_id, or list must be provided."}
+        provider._manager.create_conclusion.assert_not_called()
+        provider._manager.delete_conclusion.assert_not_called()
+
+    def test_honcho_conclude_rejects_whitespace_only_conclusion(self):
+        """Whitespace-only conclusion should be treated as empty."""
+        import json
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        result = provider.handle_tool_call("honcho_conclude", {"conclusion": "   "})
+        parsed = json.loads(result)
+        assert parsed == {"error": "Exactly one of conclusion, delete_id, or list must be provided."}
+        provider._manager.create_conclusion.assert_not_called()
+
+    def test_honcho_conclude_rejects_whitespace_only_delete_id(self):
+        """Whitespace-only delete_id should be treated as empty."""
+        import json
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        result = provider.handle_tool_call("honcho_conclude", {"delete_id": "  "})
+        parsed = json.loads(result)
+        assert parsed == {"error": "Exactly one of conclusion, delete_id, or list must be provided."}
+        provider._manager.delete_conclusion.assert_not_called()
 
     def test_sync_turn_strips_leaked_memory_context_before_honcho_ingest(self):
         provider = HonchoMemoryProvider()

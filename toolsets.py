@@ -85,6 +85,9 @@ _HERMES_CORE_TOOLS = [
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Approval-gated external delivery on Discord (available only when a
+    # Discord bot is configured; check_fn keeps it off other installations).
+    "discord_approval_box",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,

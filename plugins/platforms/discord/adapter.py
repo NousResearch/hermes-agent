@@ -1023,6 +1023,10 @@ class DiscordAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
         self._client: Optional[commands.Bot] = None
+        # The Discord HTTP client is bound to the gateway's event loop. Sync
+        # tool handlers must schedule outbound work onto this loop rather than
+        # creating a private loop (aiohttp rejects that path).
+        self._event_loop: Optional[asyncio.AbstractEventLoop] = None
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
         self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
@@ -1263,6 +1267,9 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
 
         try:
+            # Preserve the gateway loop so sync tool handlers can schedule
+            # Discord HTTP work on the aiohttp session's owning loop.
+            self._event_loop = asyncio.get_running_loop()
             if not self._acquire_platform_lock('discord-bot-token', self.config.token, 'Discord bot token'):
                 return False
 
@@ -1827,6 +1834,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         self._running = False
         self._client = None
+        self._event_loop = None
         self._ready_event.clear()
         self._post_connect_task = None
         self._liveness_task = None
@@ -7152,6 +7160,51 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    async def send_deliverable_approval(
+        self,
+        chat_id: str,
+        title: str,
+        body: str,
+        drive_url: str,
+        approval_id: str,
+        metadata: Optional[dict] = None,
+    ) -> SendResult:
+        """Send Approve / Needs Work / Reject controls for a deliverable."""
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+        try:
+            target_id = metadata.get("thread_id") if metadata and metadata.get("thread_id") else chat_id
+            channel = self._client.get_channel(int(target_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_id))
+            title_display = str(title or "Approval Required")[:256]
+            body_display = str(body or "")[:3500]
+            drive_display = str(drive_url or "").strip()[:1800]
+            content = self._self_contained_prompt_content(
+                f"📦 **Approval Required — {title_display}**",
+                body_display,
+                tail=(f"\n\n**Review file:** {drive_display}" if drive_display else "")
+                + "\n\nChoose **Approve**, **Needs Work**, or **Reject** below.",
+            )
+            embed = discord.Embed(
+                title=f"📦 Approval Required — {title_display}",
+                description=body_display or "No description provided.",
+                color=discord.Color.orange(),
+            )
+            if drive_display:
+                embed.add_field(name="Review file", value=drive_display, inline=False)
+            view = DeliverableApprovalView(
+                approval_id=approval_id,
+                allowed_user_ids=self._allowed_user_ids,
+                allowed_role_ids=self._allowed_role_ids,
+            )
+            msg = await channel.send(content=content, embed=embed, view=view)
+            view._message = msg
+            return SendResult(success=True, message_id=str(msg.id))
+        except Exception as exc:
+            logger.warning("[%s] send_deliverable_approval failed: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc))
+
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
         confirm_id: str, metadata: Optional[dict] = None,
@@ -8378,7 +8431,7 @@ def _define_discord_view_classes() -> None:
     lazy install sets DISCORD_AVAILABLE=True but leaves the classes
     undefined, causing NameError on the first button interaction.
     """
-    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, ChoicePickerView
+    global ExecApprovalView, DeliverableApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, ChoicePickerView
 
     class ExecApprovalView(discord.ui.View):
         """
@@ -8542,6 +8595,68 @@ def _define_discord_view_classes() -> None:
                     await msg.edit(embed=embed, view=self)
                 except Exception:
                     pass  # message deleted or too old to edit
+
+    class DeliverableApprovalView(discord.ui.View):
+        """Approve / Needs Work / Reject controls for external deliverables."""
+
+        def __init__(self, approval_id: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
+            super().__init__(timeout=_read_discord_prompt_timeout())
+            self.approval_id = approval_id
+            self.allowed_user_ids = allowed_user_ids
+            self.allowed_role_ids = allowed_role_ids or set()
+            self.resolved = False
+
+        async def _resolve(self, interaction: discord.Interaction, decision: str, color, label: str):
+            if self.resolved:
+                await interaction.response.send_message("This approval has already been resolved.", ephemeral=True)
+                return
+            if not _component_check_auth(interaction, self.allowed_user_ids, self.allowed_role_ids):
+                await interaction.response.send_message("You're not authorized to decide this approval.", ephemeral=True)
+                return
+            try:
+                from tools.discord_approval_box_tool import resolve_approval
+                record = resolve_approval(self.approval_id, decision, interaction.user.display_name)
+            except Exception as exc:
+                logger.error("Deliverable approval resolution failed: %s", exc)
+                record = None
+            if record is None:
+                await interaction.response.send_message("This approval is no longer pending.", ephemeral=True)
+                return
+            self.resolved = True
+            embed = interaction.message.embeds[0] if interaction.message.embeds else None
+            if embed:
+                embed.color = color
+                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
+            for child in self.children:
+                child.disabled = True
+            await interaction.response.edit_message(embed=embed, view=self)
+
+        @discord.ui.button(label="Approve", style=discord.ButtonStyle.green)
+        async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await self._resolve(interaction, "approved", discord.Color.green(), "Approved")
+
+        @discord.ui.button(label="Needs Work", style=discord.ButtonStyle.secondary)
+        async def needs_work(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await self._resolve(interaction, "needs_work", discord.Color.orange(), "Needs work")
+
+        @discord.ui.button(label="Reject", style=discord.ButtonStyle.red)
+        async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await self._resolve(interaction, "rejected", discord.Color.red(), "Rejected")
+
+        async def on_timeout(self):
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+            msg = getattr(self, "_message", None)
+            if msg:
+                try:
+                    embed = msg.embeds[0] if msg.embeds else None
+                    if embed:
+                        embed.color = discord.Color.greyple()
+                        embed.set_footer(text="⏱ Approval expired — no action taken")
+                    await msg.edit(embed=embed, view=self)
+                except Exception:
+                    pass
 
     class SlashConfirmView(discord.ui.View):
         """Three-button view for generic slash-command confirmations.

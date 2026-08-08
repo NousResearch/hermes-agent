@@ -3047,6 +3047,32 @@ def _is_profile_api_key_provider(provider_id: str) -> bool:
         return False
 
 
+def _model_flow_my_models(config, current_model=""):
+    """Select from Nicholas's curated cross-provider model shortcut."""
+    from hermes_cli.config import save_config
+    from hermes_cli.my_models import MY_MODELS
+
+    labels = [label for label, _, _ in MY_MODELS]
+    current_idx = next(
+        (i for i, (_, provider, model) in enumerate(MY_MODELS)
+         if model == current_model or f"{provider}/{model}" == current_model),
+        0,
+    )
+    idx = _prompt_provider_choice(labels, default=current_idx, title="Select My Model:")
+    if idx is None:
+        return
+    label, provider, model = MY_MODELS[idx]
+    model_cfg = config.get("model")
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+        config["model"] = model_cfg
+    model_cfg["default"] = model
+    model_cfg["provider"] = provider
+    model_cfg.pop("base_url", None)
+    save_config(config)
+    print(f"Selected {label}: {provider} · {model}")
+
+
 def select_provider_and_model(args=None):
     """Core provider selection + model picking logic.
 
@@ -3353,6 +3379,8 @@ def select_provider_and_model(args=None):
         else:
             ordered.append((key, label, members))
 
+    ordered.append(("my-models", "My Models ▸", []))
+
     for key, provider_info in _custom_provider_map.items():
         name = provider_info["name"]
         base_url = provider_info["base_url"]
@@ -3414,7 +3442,9 @@ def select_provider_and_model(args=None):
         return
 
     # Step 2: Provider-specific setup + model selection
-    if selected_provider == "openrouter":
+    if selected_provider == "my-models":
+        _model_flow_my_models(config, current_model)
+    elif selected_provider == "openrouter":
         _model_flow_openrouter(config, current_model)
     elif selected_provider == "moa":
         _model_flow_moa(config, current_model)

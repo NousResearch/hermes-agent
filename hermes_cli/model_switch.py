@@ -3181,6 +3181,23 @@ def list_picker_providers(
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)
 
+    # Nicholas's curated cross-provider shortcut. Keep the real provider in
+    # each opaque model ID; the gateway resolves it at selection time.
+    try:
+        from hermes_cli.my_models import picker_models
+        curated = picker_models()
+        providers = [{
+            "slug": "my-models",
+            "name": "My Models",
+            "models": curated,
+            "total_models": len(curated),
+            "is_current": False,
+            "is_user_defined": False,
+            "source": "curated-shortcut",
+        }, *providers]
+    except Exception:
+        pass
+
     filtered: List[dict] = []
     for p in providers:
         slug = str(p.get("slug", "")).lower()

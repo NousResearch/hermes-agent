@@ -6015,6 +6015,11 @@ class TelegramAdapter(BasePlatformAdapter):
         for i, model_id in enumerate(page_models):
             abs_idx = start + i
             short = model_id.split("/")[-1] if "/" in model_id else model_id
+            try:
+                from hermes_cli.my_models import display_name
+                short = display_name(model_id)
+            except Exception:
+                pass
             if len(short) > 38:
                 short = short[:35] + "..."
             buttons.append(
@@ -6175,6 +6180,14 @@ class TelegramAdapter(BasePlatformAdapter):
 
             model_id = model_list[idx]
             provider_slug = state.get("selected_provider", "")
+            if provider_slug == "my-models":
+                try:
+                    from hermes_cli.my_models import resolve
+                    resolved = resolve(model_id)
+                    if resolved:
+                        provider_slug, model_id = resolved
+                except Exception:
+                    pass
             callback = state.get("on_model_selected")
 
             if not callback:
@@ -6224,6 +6237,14 @@ class TelegramAdapter(BasePlatformAdapter):
 
             model_id = model_list[idx]
             provider_slug = state.get("selected_provider", "")
+            if provider_slug == "my-models":
+                try:
+                    from hermes_cli.my_models import resolve
+                    resolved = resolve(model_id)
+                    if resolved:
+                        provider_slug, model_id = resolved
+                except Exception:
+                    pass
             callback = state.get("on_model_selected")
 
             if not callback:

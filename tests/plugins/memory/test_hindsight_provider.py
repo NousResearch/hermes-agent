@@ -23,6 +23,7 @@ from plugins.memory.hindsight import (
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
+    _patch_hindsight_windows_daemon_launcher,
     _load_config,
     _load_simple_env,
     _build_embedded_profile_env,
@@ -30,6 +31,7 @@ from plugins.memory.hindsight import (
     _normalize_retain_tags,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
+    _windows_gui_pythonw,
 )
 
 
@@ -150,6 +152,63 @@ def _assert_cloud_client_lazy_installed_before_import(tmp_path, monkeypatch, mod
         "timeout": 120.0,
         "api_key": "test-key",
     }
+
+
+def test_windows_gui_pythonw_rejects_console_subsystem_launcher(tmp_path, monkeypatch):
+    scripts_dir = tmp_path / "venv" / "Scripts"
+    scripts_dir.mkdir(parents=True)
+    console_pythonw = scripts_dir / "pythonw.exe"
+    gui_pythonw = tmp_path / "runtime" / "pythonw.exe"
+    gui_pythonw.parent.mkdir()
+
+    console_pythonw.write_bytes(_minimal_pe(subsystem=3))
+    gui_pythonw.write_bytes(_minimal_pe(subsystem=2))
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "base_prefix", str(gui_pythonw.parent))
+    monkeypatch.setattr(sys, "executable", str(scripts_dir / "python.exe"))
+    monkeypatch.setattr(sys, "_base_executable", str(gui_pythonw.with_name("python.exe")), raising=False)
+
+    assert _windows_gui_pythonw(scripts_dir) == str(gui_pythonw)
+
+
+def test_patch_hindsight_windows_daemon_launcher_prefers_real_gui_pythonw(tmp_path, monkeypatch):
+    scripts_dir = tmp_path / "venv" / "Scripts"
+    scripts_dir.mkdir(parents=True)
+    console_pythonw = scripts_dir / "pythonw.exe"
+    gui_pythonw = tmp_path / "runtime" / "pythonw.exe"
+    gui_pythonw.parent.mkdir()
+
+    console_pythonw.write_bytes(_minimal_pe(subsystem=3))
+    gui_pythonw.write_bytes(_minimal_pe(subsystem=2))
+
+    class FakeManager:
+        @staticmethod
+        def _windows_gui_interpreter(preferred_dir=None):
+            return str(console_pythonw)
+
+    monkeypatch.setitem(sys.modules, "hindsight_embed.daemon_embed_manager", SimpleNamespace(DaemonEmbedManager=FakeManager))
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "base_prefix", str(gui_pythonw.parent))
+    monkeypatch.setattr(sys, "executable", str(scripts_dir / "python.exe"))
+    monkeypatch.setattr(sys, "_base_executable", str(gui_pythonw.with_name("python.exe")), raising=False)
+
+    _patch_hindsight_windows_daemon_launcher()
+
+    assert FakeManager._windows_gui_interpreter(scripts_dir) == str(gui_pythonw)
+
+
+def _minimal_pe(*, subsystem: int) -> bytes:
+    """Return enough PE header bytes for the plugin's subsystem parser."""
+    data = bytearray(256)
+    data[0:2] = b"MZ"
+    pe_offset = 0x80
+    data[0x3C:0x40] = pe_offset.to_bytes(4, "little")
+    data[pe_offset:pe_offset + 4] = b"PE\0\0"
+    optional_header = pe_offset + 24
+    data[optional_header:optional_header + 2] = (0x20B).to_bytes(2, "little")
+    data[optional_header + 68:optional_header + 70] = subsystem.to_bytes(2, "little")
+    return bytes(data)
 
 
 class _FakeSessionDB:
@@ -338,6 +397,7 @@ class TestConfig:
 
         monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
         monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+        monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
 
         p = HindsightMemoryProvider()
         p._mode = "local_embedded"

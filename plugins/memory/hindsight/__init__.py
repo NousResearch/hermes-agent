@@ -127,6 +127,82 @@ def _export_port_health_grace_timeout(config: dict[str, Any]) -> None:
     os.environ.setdefault(_PORT_HEALTH_GRACE_ENV, repr(seconds))
 
 
+def _pe_subsystem(executable: "Path") -> int | None:
+    """Return a Windows PE subsystem value, or None when it can't be read."""
+    try:
+        data = executable.read_bytes()
+        pe_offset = int.from_bytes(data[0x3C:0x40], "little")
+        optional_header = pe_offset + 24
+        # Subsystem is at offset 68 from the optional header start for both
+        # PE32 and PE32+ executables.
+        return int.from_bytes(data[optional_header + 68:optional_header + 70], "little")
+    except Exception:
+        return None
+
+
+def _windows_gui_pythonw(preferred_dir: "Path" | None = None) -> str | None:
+    """Find a real GUI-subsystem pythonw.exe for Hindsight daemon launch."""
+    if sys.platform != "win32":
+        return None
+
+    from pathlib import Path
+
+    candidates: list[Path] = []
+    if preferred_dir is not None:
+        candidates.append(Path(preferred_dir) / "pythonw.exe")
+    base_executable = getattr(sys, "_base_executable", None)
+    if base_executable:
+        candidates.append(Path(base_executable).with_name("pythonw.exe"))
+    candidates.append(Path(sys.base_prefix) / "pythonw.exe")
+    candidates.append(Path(sys.executable).with_name("pythonw.exe"))
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if candidate.exists() and _pe_subsystem(candidate) == 2:
+            return str(candidate)
+    return None
+
+
+def _patch_hindsight_windows_daemon_launcher() -> None:
+    """Patch Hindsight's Windows daemon launcher to avoid terminal popups.
+
+    Some Windows virtual environments ship a ``Scripts/pythonw.exe`` launcher
+    whose PE subsystem is still console (3). Hindsight upstream trusts the
+    filename and launches the daemon through it; with Windows Terminal as the
+    default console host that creates a visible tab titled with the pythonw.exe
+    path. Patch the manager in-process so new HindsightEmbedded clients prefer
+    the base runtime's real GUI-subsystem pythonw.exe (subsystem 2).
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        module = importlib.import_module("hindsight_embed.daemon_embed_manager")
+        manager_cls = getattr(module, "DaemonEmbedManager", None)
+    except Exception:
+        return
+    if manager_cls is None:
+        return
+
+    current = getattr(manager_cls, "_windows_gui_interpreter", None)
+    if getattr(current, "_hermes_verified_gui_pythonw", False):
+        return
+
+    def _verified_windows_gui_interpreter(preferred_dir=None):
+        from pathlib import Path
+
+        return _windows_gui_pythonw(Path(preferred_dir) if preferred_dir is not None else None)
+
+    _verified_windows_gui_interpreter._hermes_verified_gui_pythonw = True
+    manager_cls._windows_gui_interpreter = staticmethod(_verified_windows_gui_interpreter)
+
+
 def _check_local_runtime() -> tuple[bool, str | None]:
     """Return whether local embedded Hindsight imports cleanly.
 
@@ -146,6 +222,7 @@ def _check_local_runtime() -> tuple[bool, str | None]:
     try:
         importlib.import_module("hindsight")
         importlib.import_module("hindsight_embed.daemon_embed_manager")
+        _patch_hindsight_windows_daemon_launcher()
         importlib.import_module("sentence_transformers")
         return True, None
     except Exception as exc:
@@ -1115,6 +1192,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     pass
                 except Exception as _e:
                     raise ImportError(str(_e))
+                _patch_hindsight_windows_daemon_launcher()
                 from hindsight import HindsightEmbedded
                 HindsightEmbedded.__del__ = lambda self: None
                 llm_provider = self._config.get("llm_provider", "")

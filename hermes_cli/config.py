@@ -4651,6 +4651,13 @@ _DYNAMIC_TOP_LEVEL_KEYS = frozenset({
 # accepted because ``PlatformConfig`` carries an open ``extra`` mapping.
 _PLATFORM_CONTAINER_KEYS = frozenset({"platforms"})
 
+# Nested dictionary paths whose child keys are user-defined.  These are
+# intentionally separate from :data:`_OPEN_DICT_TOP_LEVEL_KEYS` because the
+# container is a schema-defined field rather than a top-level config section.
+_OPEN_DICT_NESTED_KEYS = frozenset({
+    "agent.personalities",
+})
+
 
 def _known_top_level_keys() -> set[str]:
     """Return the union of known top-level config keys for validation.
@@ -4751,6 +4758,11 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     node: Any = DEFAULT_CONFIG.get(top)
     consumed = [top]
     for seg in segments[1:]:
+        # User-defined entries below a nested open-dict field (for example,
+        # ``agent.personalities.<name>``) are valid regardless of their name
+        # or inner shape.
+        if ".".join(consumed) in _OPEN_DICT_NESTED_KEYS:
+            return True, None
         # ``gateway.platforms.<name>.<field>`` (and any other nested
         # ``platforms`` container) — the segment after ``platforms`` is a
         # user-supplied platform name, so accept everything below it.

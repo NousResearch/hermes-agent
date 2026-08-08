@@ -514,6 +514,7 @@ class TestValidateConfigKey:
         "approvals.mode",
         "agent.system_prompt",
         "agent.personalities",
+        "agent.personalities.sherlock",
     ])
     def test_known_keys_pass(self, key):
         from hermes_cli.config import _validate_config_key

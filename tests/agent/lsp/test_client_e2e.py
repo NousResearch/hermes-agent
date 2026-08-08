@@ -236,6 +236,12 @@ def test_encoded_drive_uri_maps_to_original_native_path(tmp_path: Path):
     )
 
     client._handle_publish_diagnostics({"uri": uri, "diagnostics": [diagnostic]})
+    client._handle_publish_diagnostics(
+        {
+            "uri": "FILE:///c%3A/workspace/project/src/index.ts",
+            "diagnostics": [diagnostic],
+        }
+    )
 
     assert client.diagnostics_for(native_path) == [diagnostic]
     assert file_uri(native_path) == "file:///C:/Workspace/Project/src/Index.ts"
@@ -256,14 +262,23 @@ def test_uri_to_path_preserves_non_file_uri():
 
 
 def test_non_file_diagnostic_uri_preserves_opaque_identity(tmp_path: Path):
-    uri = "untitled:CaseSensitive-1"
-    diagnostic = {"message": "virtual document diagnostic"}
+    upper_uri = "x:CaseSensitive-1"
+    lower_uri = "x:casesensitive-1"
+    upper_diagnostic = {"message": "upper virtual document diagnostic"}
+    lower_diagnostic = {"message": "lower virtual document diagnostic"}
     client = _client(tmp_path, "clean")
 
-    client._handle_publish_diagnostics({"uri": uri, "diagnostics": [diagnostic]})
+    client._handle_publish_diagnostics(
+        {"uri": upper_uri, "diagnostics": [upper_diagnostic]}
+    )
+    client._handle_publish_diagnostics(
+        {"uri": lower_uri, "diagnostics": [lower_diagnostic]}
+    )
 
-    assert uri in client._docs
-    assert client.diagnostics_for(uri) == [diagnostic]
+    assert upper_uri in client._docs
+    assert lower_uri in client._docs
+    assert client.diagnostics_for(upper_uri) == [upper_diagnostic]
+    assert client.diagnostics_for(lower_uri) == [lower_diagnostic]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX URI behavior")

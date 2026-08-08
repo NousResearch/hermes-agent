@@ -13,7 +13,9 @@ import os
 import queue
 import re
 import shlex
+import stat
 import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -380,6 +382,188 @@ def _ensure_path_within_cwd(path_text: str, cwd: str) -> Path:
     return resolved
 
 
+def _require_secure_posix_fs() -> None:
+    required_flags = ("O_NOFOLLOW", "O_DIRECTORY")
+    if (
+        os.name != "posix"
+        or any(not hasattr(os, name) for name in required_flags)
+        or os.open not in os.supports_dir_fd
+    ):
+        raise PermissionError(
+            "Secure ACP filesystem operations are unavailable on this platform."
+        )
+
+
+def _open_directory_chain(directory: Path) -> int:
+    """Open an absolute directory without following any symlink component."""
+    _require_secure_posix_fs()
+    flags = (
+        os.O_RDONLY
+        | os.O_DIRECTORY
+        | os.O_NOFOLLOW
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    current_fd = os.open(directory.anchor, flags)
+    try:
+        for component in directory.parts[1:]:
+            next_fd = os.open(component, flags, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        return current_fd
+    except Exception:
+        os.close(current_fd)
+        raise
+
+
+def _open_parent_directory(path: Path, cwd: str) -> tuple[int, str]:
+    root = Path(cwd).resolve()
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise PermissionError(
+            f"Path '{path}' is outside the session cwd '{root}'."
+        ) from exc
+    if not relative.parts:
+        raise PermissionError(
+            "ACP filesystem operations require a file path, not the session cwd."
+        )
+
+    current_fd = _open_directory_chain(root)
+    flags = (
+        os.O_RDONLY
+        | os.O_DIRECTORY
+        | os.O_NOFOLLOW
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    try:
+        for component in relative.parts[:-1]:
+            next_fd = os.open(component, flags, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        return current_fd, relative.parts[-1]
+    except Exception:
+        os.close(current_fd)
+        raise
+
+
+def _read_text_file_secure_posix(path: Path, cwd: str) -> str:
+    """Read through a descriptor chain that never follows symlinks."""
+    parent_fd, name = _open_parent_directory(path, cwd)
+    fd = -1
+    try:
+        flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        fd = os.open(name, flags, dir_fd=parent_fd)
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise PermissionError(
+                "ACP filesystem reads require a regular, single-link file."
+            )
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fd = -1
+            return handle.read()
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        os.close(parent_fd)
+
+
+def _win32_file_api() -> tuple[Any, Any, Any]:
+    try:
+        import pywintypes  # ty: ignore[unresolved-import]
+        import win32con  # ty: ignore[unresolved-import]
+        import win32file  # ty: ignore[unresolved-import]
+    except ImportError as exc:  # pragma: no cover - dependency is Windows-only
+        raise PermissionError(
+            "Secure ACP filesystem reads require pywin32 on Windows."
+        ) from exc
+    return pywintypes, win32con, win32file
+
+
+def _normalize_windows_handle_path(path_text: str) -> str:
+    if path_text.startswith("\\\\?\\UNC\\"):
+        path_text = "\\\\" + path_text[8:]
+    elif path_text.startswith("\\\\?\\"):
+        path_text = path_text[4:]
+    return os.path.normcase(os.path.normpath(path_text))
+
+
+def _read_text_file_secure_windows(path: Path, cwd: str) -> str:
+    """Open the exact non-reparse Windows path validated for this session."""
+    root = Path(cwd).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise PermissionError(
+            f"Path '{path}' is outside the session cwd '{root}'."
+        ) from exc
+
+    pywintypes, win32con, win32file = _win32_file_api()
+    open_reparse_point = 0x00200000
+    share = (
+        win32con.FILE_SHARE_READ
+        | win32con.FILE_SHARE_WRITE
+        | win32con.FILE_SHARE_DELETE
+    )
+    try:
+        handle = win32file.CreateFile(
+            str(path),
+            win32con.GENERIC_READ,
+            share,
+            None,
+            win32con.OPEN_EXISTING,
+            win32con.FILE_ATTRIBUTE_NORMAL | open_reparse_point,
+            None,
+        )
+    except pywintypes.error as exc:
+        if getattr(exc, "winerror", None) in (2, 3):
+            raise FileNotFoundError(str(path)) from exc
+        raise
+
+    try:
+        actual = _normalize_windows_handle_path(
+            win32file.GetFinalPathNameByHandle(handle, 0)
+        )
+        expected = _normalize_windows_handle_path(os.path.abspath(str(path)))
+        if actual != expected:
+            raise PermissionError(
+                "ACP filesystem read handle escaped its validated path."
+            )
+
+        information = win32file.GetFileInformationByHandle(handle)
+        attributes = int(information[0])
+        number_of_links = int(information[7])
+        file_attribute_reparse_point = 0x00000400
+        if (
+            attributes
+            & (win32con.FILE_ATTRIBUTE_DIRECTORY | file_attribute_reparse_point)
+            or number_of_links != 1
+        ):
+            raise PermissionError(
+                "ACP filesystem reads require a regular, non-reparse, single-link file."
+            )
+
+        chunks: list[bytes] = []
+        while True:
+            try:
+                _, chunk = win32file.ReadFile(handle, 64 * 1024)
+            except pywintypes.error as exc:
+                if getattr(exc, "winerror", None) == 38:
+                    break
+                raise
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks).decode("utf-8")
+    finally:
+        win32file.CloseHandle(handle)
+
+
+def _read_text_file_secure(path: Path, cwd: str) -> str:
+    if sys.platform == "win32":
+        return _read_text_file_secure_windows(path, cwd)
+    return _read_text_file_secure_posix(path, cwd)
+
+
 class _ACPChatCompletions:
     def __init__(self, client: "CopilotACPClient"):
         self._client = client
@@ -708,7 +892,7 @@ class CopilotACPClient:
                 if block_error:
                     raise PermissionError(block_error)
                 try:
-                    content = path.read_text(encoding="utf-8")
+                    content = _read_text_file_secure(path, cwd)
                 except FileNotFoundError:
                     content = ""
                 line = params.get("line")

@@ -619,6 +619,118 @@ class TestSendEmailStandalone(unittest.TestCase):
             self.assertEqual(send_call["From"], "hermes@test.com")
 
 
+class TestLoginUser(unittest.TestCase):
+    """EMAIL_LOGIN_USER decouples IMAP/SMTP login from the From: address."""
+
+    def _make_adapter(self, login_user=None):
+        from gateway.config import PlatformConfig
+        env = {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }
+        if login_user is not None:
+            env["EMAIL_LOGIN_USER"] = login_user
+        with patch.dict(os.environ, env):
+            from plugins.platforms.email.adapter import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def test_login_user_defaults_to_address(self):
+        """Without EMAIL_LOGIN_USER the login identity is the address."""
+        adapter = self._make_adapter()
+        self.assertEqual(adapter._login_user, "hermes@test.com")
+        self.assertEqual(adapter._address, "hermes@test.com")
+
+    def test_login_user_overrides_address(self):
+        """EMAIL_LOGIN_USER sets the login identity without changing From:."""
+        adapter = self._make_adapter(login_user="login@icloud.com")
+        self.assertEqual(adapter._login_user, "login@icloud.com")
+        self.assertEqual(adapter._address, "hermes@test.com")
+
+    def test_imap_login_uses_login_user(self):
+        """connect() authenticates IMAP with _login_user, not _address."""
+        import asyncio
+        adapter = self._make_adapter(login_user="login@icloud.com")
+
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b""])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            asyncio.run(adapter.connect())
+
+        mock_imap.login.assert_any_call("login@icloud.com", "secret")
+        self.assertFalse(
+            any(
+                call.args[0] == "hermes@test.com"
+                for call in mock_imap.login.call_args_list
+            ),
+            "IMAP login must use EMAIL_LOGIN_USER, never EMAIL_ADDRESS",
+        )
+        adapter._running = False
+        if adapter._poll_task:
+            adapter._poll_task.cancel()
+
+    def test_smtp_login_uses_login_user(self):
+        """connect() authenticates SMTP with _login_user, not _address."""
+        import asyncio
+        adapter = self._make_adapter(login_user="login@icloud.com")
+
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b""])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            asyncio.run(adapter.connect())
+
+        mock_server.login.assert_called_once_with("login@icloud.com", "secret")
+        adapter._running = False
+        if adapter._poll_task:
+            adapter._poll_task.cancel()
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+        "EMAIL_SMTP_PORT": "587",
+        "EMAIL_LOGIN_USER": "login@icloud.com",
+    })
+    def test_standalone_send_uses_login_user(self):
+        """_standalone_send logs in with EMAIL_LOGIN_USER, From: stays address."""
+        import asyncio
+        from plugins.platforms.email.adapter import _standalone_send as _email_send
+        from types import SimpleNamespace
+
+        async def _send_email(extra, chat_id, message):
+            return await _email_send(
+                SimpleNamespace(token=None, api_key=None, extra=extra or {}),
+                chat_id,
+                message,
+            )
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            result = asyncio.run(
+                _send_email(
+                    {"address": "hermes@test.com", "smtp_host": "smtp.test.com"},
+                    "user@test.com",
+                    "Hello",
+                )
+            )
+
+            self.assertTrue(result["success"])
+            mock_server.login.assert_called_once_with("login@icloud.com", "secret")
+            send_call = mock_server.send_message.call_args[0][0]
+            self.assertEqual(send_call["From"], "hermes@test.com")
+
+
 class TestSmtpConnectionCleanup(unittest.TestCase):
     """Verify SMTP connections are closed even when send_message raises."""
 

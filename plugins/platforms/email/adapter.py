@@ -10,6 +10,8 @@ Environment variables:
     EMAIL_SMTP_HOST     — SMTP server host (e.g., smtp.gmail.com)
     EMAIL_SMTP_PORT     — SMTP server port (default: 587)
     EMAIL_ADDRESS       — Email address for the agent
+    EMAIL_LOGIN_USER    — Optional separate IMAP/SMTP login username; defaults
+                          to EMAIL_ADDRESS when unset (custom-domain aliases)
     EMAIL_PASSWORD      — Email password or app-specific password
     EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
     EMAIL_ALLOWED_USERS — Comma-separated list of allowed sender addresses
@@ -480,6 +482,14 @@ class EmailAdapter(BasePlatformAdapter):
         # instead of an obvious "host not set" error.
         extra = config.extra or {}
         self._address = (_get_secret("EMAIL_ADDRESS", "") or extra.get("address", "")).strip()
+        # Optional separate IMAP/SMTP login identity. Providers that offer
+        # custom-domain aliases (iCloud custom domains, Fastmail, ProtonMail
+        # bridge, hosted Migadu, …) authenticate as the underlying account but
+        # send From: the alias; EMAIL_LOGIN_USER decouples the two. Falls back
+        # to EMAIL_ADDRESS so existing single-identity setups are unchanged.
+        self._login_user = (
+            _get_secret("EMAIL_LOGIN_USER", "") or extra.get("login_user", "") or self._address
+        ).strip()
         self._password = _get_secret("EMAIL_PASSWORD", "")
         self._imap_host = (_get_secret("EMAIL_IMAP_HOST", "") or extra.get("imap_host", "")).strip()
         self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
@@ -628,7 +638,7 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             # Test IMAP connection
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
-            imap.login(self._address, self._password)
+            imap.login(self._login_user, self._password)
             _send_imap_id(imap)
             # Mark all existing messages as seen so we only process new ones
             imap.select("INBOX")
@@ -648,7 +658,7 @@ class EmailAdapter(BasePlatformAdapter):
             # Test SMTP connection
             smtp = self._connect_smtp()
             try:
-                smtp.login(self._address, self._password)
+                smtp.login(self._login_user, self._password)
             finally:
                 smtp.quit()
             logger.info("[Email] SMTP connection test passed.")
@@ -698,7 +708,7 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             try:
-                imap.login(self._address, self._password)
+                imap.login(self._login_user, self._password)
                 _send_imap_id(imap)
                 imap.select("INBOX")
 
@@ -995,7 +1005,7 @@ class EmailAdapter(BasePlatformAdapter):
 
         smtp = self._connect_smtp()
         try:
-            smtp.login(self._address, self._password)
+            smtp.login(self._login_user, self._password)
             smtp.send_message(msg)
         finally:
             try:
@@ -1121,7 +1131,7 @@ class EmailAdapter(BasePlatformAdapter):
 
         smtp = self._connect_smtp()
         try:
-            smtp.login(self._address, self._password)
+            smtp.login(self._login_user, self._password)
             smtp.send_message(msg)
         finally:
             try:
@@ -1199,7 +1209,7 @@ class EmailAdapter(BasePlatformAdapter):
 
         smtp = self._connect_smtp()
         try:
-            smtp.login(self._address, self._password)
+            smtp.login(self._login_user, self._password)
             smtp.send_message(msg)
         finally:
             try:
@@ -1250,6 +1260,9 @@ async def _standalone_send(
 
     extra = getattr(pconfig, "extra", {}) or {}
     address = extra.get("address") or _get_secret("EMAIL_ADDRESS", "")
+    login_user = (
+        extra.get("login_user") or _get_secret("EMAIL_LOGIN_USER", "") or address
+    ).strip() or address
     password = _get_secret("EMAIL_PASSWORD", "")
     smtp_host = extra.get("smtp_host") or _get_secret("EMAIL_SMTP_HOST", "")
     try:
@@ -1269,7 +1282,7 @@ async def _standalone_send(
 
         server = smtplib.SMTP(smtp_host, smtp_port)
         server.starttls(context=_ssl.create_default_context())
-        server.login(address, password)
+        server.login(login_user, password)
         server.send_message(msg)
         server.quit()
         return {"success": True, "platform": "email", "chat_id": chat_id}

@@ -186,7 +186,8 @@ Email access is stricter by default than chat-style platforms:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `EMAIL_ADDRESS` | Yes | — | Agent's email address |
+| `EMAIL_ADDRESS` | Yes | — | Agent's email address (also the From: address) |
+| `EMAIL_LOGIN_USER` | No | `EMAIL_ADDRESS` | Separate IMAP/SMTP login username — required when the login account differs from the From: address (custom-domain aliases on iCloud, Fastmail, ProtonMail bridge, hosted Migadu, etc.) |
 | `EMAIL_PASSWORD` | Yes | — | Email password or app password |
 | `EMAIL_IMAP_HOST` | Yes | — | IMAP server host (e.g., `imap.gmail.com`) |
 | `EMAIL_SMTP_HOST` | Yes | — | SMTP server host (e.g., `smtp.gmail.com`) |

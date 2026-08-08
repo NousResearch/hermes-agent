@@ -826,6 +826,11 @@ def _run_review_in_thread(
             # _get_session_db_for_recall); the review writes only to the skill
             # and memory stores via its tools, which is all it needs.
             review_agent._persist_disabled = True
+            # The fork inherits process environment, including a worker's
+            # HERMES_KANBAN_TASK, but it does not own that task lifecycle.
+            # Prevent its independent budget exhaustion from consuming the
+            # parent card's failure allowance.
+            setattr(review_agent, "_kanban_lifecycle_disabled", True)
             review_agent._session_db = None
             review_agent._session_json_enabled = False
             # Suppress all status/warning emits from the fork so the

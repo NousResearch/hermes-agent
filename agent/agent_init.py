@@ -1607,6 +1607,10 @@ def init_agent(
     # background skill/memory review fork so its harness turn can't leak into
     # the user's real session and hijack the next live turn. Default False.
     agent._persist_disabled = False
+    # Auxiliary forks may share a Kanban worker's process environment without
+    # owning its task claim or run. Such forks set this flag so turn
+    # finalization cannot attribute their failures to the parent card.
+    agent._kanban_lifecycle_disabled = False
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,
         "reasoning_config": reasoning_config,

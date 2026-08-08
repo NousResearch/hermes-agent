@@ -120,6 +120,39 @@ def test_background_review_fork_opts_out_of_session_finalization(monkeypatch):
     assert seen.get("at_run_time") is False
 
 
+def test_background_review_fork_opts_out_of_kanban_lifecycle(monkeypatch):
+    """The fork inherits the worker's env but must never mutate its card."""
+    seen = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            seen["at_run_time"] = getattr(
+                self, "_kanban_lifecycle_disabled", False
+            )
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert seen.get("at_run_time") is True
+
+
 
 
 

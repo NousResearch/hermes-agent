@@ -845,6 +845,7 @@ def _mandatory_aslr_enabled() -> "bool | None":
                 "(Get-ProcessMitigation -System).Aslr.ForceRelocateImages.ToString()",
             ],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True, encoding="utf-8", errors="replace",
             timeout=10,
             creationflags=windows_hide_flags(),
@@ -911,6 +912,12 @@ def _bash_starts(bash: str) -> bool:
         result = subprocess.run(
             [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
             capture_output=True,
+            # Never let the probe inherit the host's stdin. Under a JSON-RPC
+            # stdio host (ACP/TUI gateway) fd 0 is the protocol pipe; MSYS
+            # bash blocks on it at startup, and the timeout below then kills
+            # only the Git\bin wrapper — the surviving mingw child keeps the
+            # pipe open and communicate() hangs the turn. See #73693.
+            stdin=subprocess.DEVNULL,
             text=True, encoding="utf-8", errors="replace",
             timeout=15,
             creationflags=windows_hide_flags() if _IS_WINDOWS else 0,

@@ -145,6 +145,32 @@ class TestGitBashExternalProgramProbe:
         assert local_mod._bash_starts(r"C:\Git\bin\bash.exe") is True
         assert calls[0][0][-1] == "/usr/bin/true; /usr/bin/cat --version >/dev/null"
 
+    def test_probe_never_inherits_host_stdin(self, monkeypatch):
+        """The probe must not inherit fd 0 (#73693).
+
+        Under a JSON-RPC stdio host — ACP, or the TUI gateway of #14036 —
+        stdin is the protocol pipe. MSYS bash blocks on it at startup, and
+        the probe's own timeout only reaps the Git wrapper process, so the
+        surviving mingw child holds the pipe and hangs the turn.
+        """
+        import tools.environments.local as local_mod
+
+        local_mod._bash_starts_cache.clear()
+        local_mod._bash_probe_details_cache.clear()
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(kwargs)
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(local_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+
+        local_mod._bash_starts(r"C:\Git\bin\bash.exe")
+
+        assert calls, "expected the probe to spawn bash"
+        assert calls[0].get("stdin") is subprocess.DEVNULL
+
     def test_aslr_failure_surfaces_targeted_windows_command(
         self, tmp_path, monkeypatch
     ):

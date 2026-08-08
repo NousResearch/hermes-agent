@@ -3635,6 +3635,13 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
 
     # Notify plugins that an approval is being requested. Fires before the
     # gateway notify callback so observers get the event in real time.
+    try:
+        from agent.status_tracker import set_attention, set_state
+
+        set_attention(True, description or None)
+        set_state("attention", "needs approval")
+    except Exception:
+        pass
     _fire_approval_hook(
         "pre_approval_request",
         command=command,
@@ -3728,7 +3735,14 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         surface=surface,
         choice=_outcome,
     )
-    return {"resolved": resolved, "choice": choice, "reason": entry.reason}
+    try:
+        from agent.status_tracker import set_attention, set_state
+
+        set_attention(False, None)
+        set_state("busy")
+    except Exception:
+        pass
+    return {"resolved": resolved, "choice": choice}
 
 
 def check_all_command_guards(command: str, env_type: str,
@@ -4138,7 +4152,14 @@ def check_all_command_guards(command: str, env_type: str,
         return result
 
     # CLI interactive: single combined prompt
-    # Hide [a]lways when no persistable (non-tirith) warning is present
+    # Hide [a]lways when any tirith warning is present
+    try:
+        from agent.status_tracker import set_attention, set_state
+
+        set_attention(True, combined_desc or None)
+        set_state("attention", "needs approval")
+    except Exception:
+        pass
     _fire_approval_hook(
         "pre_approval_request",
         command=command,
@@ -4165,6 +4186,13 @@ def check_all_command_guards(command: str, env_type: str,
         surface="cli",
         choice=choice,
     )
+    try:
+        from agent.status_tracker import set_attention, set_state
+
+        set_attention(False, None)
+        set_state("busy")
+    except Exception:
+        pass
 
     if choice == "timeout":
         breaker_addendum = _denial_breaker_addendum(session_key)

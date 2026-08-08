@@ -4,6 +4,7 @@ Status command for hermes CLI.
 Shows the status of all Hermes Agent components.
 """
 
+import json
 import os
 import sys
 import time
@@ -541,6 +542,28 @@ def show_status(args):
         pass
 
     # =========================================================================
+    # Agent State
+    # =========================================================================
+    print()
+    print(color("◆ Agent State", Colors.CYAN, Colors.BOLD))
+
+    status_file = get_hermes_home() / "status.json"
+    if status_file.exists():
+        try:
+            with open(status_file, encoding="utf-8") as f:
+                agent_status = json.load(f)
+            state = str(agent_status.get("state") or "unknown")
+            detail = agent_status.get("state_detail") or "—"
+            updated = _format_iso_timestamp(agent_status.get("updated_at"))
+            print(f"  State:        ● {state}")
+            print(f"  Detail:       {detail}")
+            print(f"  Updated:      {updated}")
+        except Exception:
+            print("  State:        (error reading status file)")
+    else:
+        print("  State:        (no status file)")
+
+    # =========================================================================
     # Gateway Status
     # =========================================================================
     print()
@@ -584,7 +607,6 @@ def show_status(args):
 
     jobs_file = get_hermes_home() / "cron" / "jobs.json"
     if jobs_file.exists():
-        import json
         try:
             # utf-8-sig: same dialect as cron/jobs.load_jobs — Windows editors
             # may leave a UTF-8 BOM that plain utf-8 json.load rejects.
@@ -604,13 +626,8 @@ def show_status(args):
     print()
     print(color("◆ Sessions", Colors.CYAN, Colors.BOLD))
 
-    # Gateway session count: state.db is the source of truth (#9006);
-    # fall back to sessions.json for pre-migration installs.
-    _session_count = None
-    _gateway_rows = []
-    try:
-        from hermes_state import SessionDB
-        _db = SessionDB()
+    sessions_file = get_hermes_home() / "sessions" / "sessions.json"
+    if sessions_file.exists():
         try:
             _lister = getattr(_db, "list_gateway_sessions", None)
             if callable(_lister):

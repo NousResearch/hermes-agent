@@ -1271,14 +1271,19 @@ def execute_code(
     Returns:
         JSON string with execution results.
     """
+    # Strict providers may send int/list fillers; bare ``.strip()`` after a
+    # truthiness check AttributeErrors (null/"" already fail ``not code``).
+    # Require a real non-empty string — do not str()-coerce fillers into a script.
+    # Validate before the sandbox-availability gate so a bad payload gets a clear
+    # "No code provided" instead of a misleading sandbox-unavailable error.
+    if not isinstance(code, str) or not code.strip():
+        return tool_error("No code provided.")
+
     if not SANDBOX_AVAILABLE:
         return tool_error(
             "execute_code sandbox is unavailable in this environment. "
             "Use normal tool calls (terminal, read_file, write_file, ...) instead."
         )
-
-    if not code or not code.strip():
-        return tool_error("No code provided.")
 
     # Dispatch: remote backends use file-based RPC, local uses UDS
     from tools.terminal_tool import _get_env_config, _docker_has_host_access

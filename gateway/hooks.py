@@ -15,6 +15,8 @@ Events:
   - agent:step          -- Each turn in the tool-calling loop
   - agent:end           -- Agent finishes processing
   - command:*           -- Any slash command executed (wildcard match)
+  - message:pre_route   -- Fired after session resolution, before turn-lease
+                           acquisition; hooks may redirect to a different session
 
 Errors in hooks are caught and logged but never block the main pipeline.
 
@@ -34,6 +36,22 @@ Context dict passed to ``agent:start`` / ``agent:end`` handlers:
 Handlers posting a follow-up into the same Telegram forum-topic should
 include ``message_thread_id=int(thread_id)`` when ``chat_type == "forum"``
 and ``thread_id`` is non-empty.
+
+Context dict passed to ``message:pre_route`` handlers:
+  platform     -- source platform name (e.g. "telegram", "matrix", "slack")
+  user_id      -- platform user id of the sender
+  chat_id      -- platform chat id (group/DM identifier)
+  thread_id    -- thread/topic id (string), or None when not in a thread
+  chat_type    -- "private" | "group" | "supergroup" | "channel" | "" (unknown)
+  session_id   -- current resolved Hermes session id
+  session_key  -- internal session routing key
+  message      -- raw inbound message text
+
+Return value from ``message:pre_route`` handlers (emit_collect style):
+  {"decision": "switch_session", "session_id": "<target_session_id>"}
+      Switch to the named session before the agent begins processing.
+  None or {}
+      Pass-through — no action, agent processes in the current session.
 """
 
 import asyncio

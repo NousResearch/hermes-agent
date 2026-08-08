@@ -1,6 +1,7 @@
 import { normalizeMathDelimiters } from '@assistant-ui/react-streamdown'
 
 import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
+import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 import { linkifySessionRefs } from '@/lib/session-refs'
 
@@ -26,6 +27,9 @@ const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
 const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
+
+const LOCAL_IMAGE_MARKDOWN_RE =
+  /!\[([^\]\n]*(?:\\.[^\]\n]*)*)\]\(\s*(<file:[^>\n]+>|file:[^\s)\n]+)(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/gi
 
 /**
  * Returns true when `body` contains a line that's exactly `marker` (modulo
@@ -144,6 +148,15 @@ function autoLinkRawUrls(text: string): string {
   })
 }
 
+function rewriteLocalImageMarkdown(text: string): string {
+  return text.replace(LOCAL_IMAGE_MARKDOWN_RE, (_, alt: string, destination: string) => {
+    const path = destination.startsWith('<') && destination.endsWith('>') ? destination.slice(1, -1) : destination
+    const label = alt || mediaDisplayLabel(path)
+
+    return `[${label}](${mediaMarkdownHref(path)})`
+  })
+}
+
 function normalizeVisibleProse(text: string): string {
   return text
     .split(INLINE_CODE_SPLIT_RE)
@@ -152,7 +165,10 @@ function normalizeVisibleProse(text: string): string {
         ? part
         : linkifySessionRefs(
             autoLinkRawUrls(
-              part.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+              rewriteLocalImageMarkdown(part)
+                .replace(/`{3,}/g, '')
+                .replace(LOCAL_PREVIEW_URL_RE, '$1')
+                .replace(CITATION_MARKER_RE, '')
             )
           )
     )

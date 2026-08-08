@@ -72,12 +72,39 @@ def validate_copilot_token(token: str) -> tuple[bool, str]:
     return True, "OK"
 
 
+def _copilot_fully_suppressed() -> bool:
+    """True when every copilot credential source is user-suppressed.
+
+    ``hermes auth remove copilot`` marks ``gh_cli`` plus every
+    ``env:<VAR>`` source as suppressed.  When all of them are, skip token
+    resolution entirely so we never hit the network for a token exchange
+    the user has explicitly disabled (the exchange can stall the event
+    loop for seconds when the GitHub endpoint is unreachable).
+    """
+    try:
+        from hermes_cli.auth import is_source_suppressed
+    except Exception:
+        return False
+    if not is_source_suppressed("copilot", "gh_cli"):
+        return False
+    for env_var in COPILOT_ENV_VARS:
+        if not is_source_suppressed("copilot", f"env:{env_var}"):
+            return False
+    return True
+
+
 def resolve_copilot_token() -> tuple[str, str]:
     """Resolve a GitHub token suitable for Copilot API use.
 
     Returns (token, source) where source describes where the token came from.
     Raises ValueError if only a classic PAT is available.
     """
+    # Respect user suppression (`hermes auth remove copilot`): skip
+    # resolution when every source is suppressed so no exchange network
+    # call is made on the caller's behalf.
+    if _copilot_fully_suppressed():
+        return "", ""
+
     # 1. Check env vars in priority order
     any_env_var_set = False
     for env_var in COPILOT_ENV_VARS:

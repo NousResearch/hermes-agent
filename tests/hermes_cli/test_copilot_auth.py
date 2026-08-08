@@ -72,6 +72,45 @@ class TestResolveToken:
         mock_cli.assert_not_called()
 
 
+class TestSuppressedResolution:
+    """`hermes auth remove copilot` must stop token resolution entirely.
+
+    Regression: previously the suppression marker was checked only *after*
+    token resolution, so a suppressed copilot source still triggered a
+    network token exchange on every credential-pool refresh — which could
+    stall the backend event loop for seconds when the GitHub exchange
+    endpoint was unreachable (issue observed with `gh auth token` fallback).
+    """
+
+    def test_fully_suppressed_skips_resolution_without_network(self, monkeypatch):
+        from hermes_cli.copilot_auth import resolve_copilot_token
+        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        with patch("hermes_cli.auth.is_source_suppressed", return_value=True):
+            with patch(
+                "hermes_cli.copilot_auth._try_gh_cli_token",
+                side_effect=AssertionError("must not touch gh CLI when suppressed"),
+            ):
+                token, source = resolve_copilot_token()
+        assert token == ""
+        assert source == ""
+
+    def test_partial_suppression_still_resolves_env_token(self, monkeypatch):
+        from hermes_cli.copilot_auth import resolve_copilot_token
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "github_pat_supp_env_ok")
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        def fake_suppressed(provider, source):
+            return provider == "copilot" and source == "gh_cli"
+
+        with patch("hermes_cli.auth.is_source_suppressed", side_effect=fake_suppressed):
+            token, source = resolve_copilot_token()
+        assert token == "github_pat_supp_env_ok"
+        assert source == "COPILOT_GITHUB_TOKEN"
+
+
 class TestRequestHeaders:
     """Copilot API header generation."""
 

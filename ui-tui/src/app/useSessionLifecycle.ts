@@ -13,6 +13,7 @@ import type {
   SessionCloseResponse,
   SessionCreateResponse,
   SessionInflightTurn,
+  SessionPendingPrompt,
   SessionResumeResponse,
   SessionTitleResponse,
   SetupStatusResponse
@@ -66,6 +67,43 @@ export const hydrateLiveSessionInflight = (inflight?: null | SessionInflightTurn
   }
 
   turnController.hydrateStreamingText(assistant)
+}
+
+/** Restore a pending prompt overlay (clarify, approval, sudo, secret) from
+ *  a session resume/activate response so the picker is visible when the user
+ *  returns to a waiting session. */
+const restorePendingPromptOverlay = (pp: SessionPendingPrompt) => {
+  if (pp.kind === 'clarify') {
+    patchOverlayState({
+      clarify: { choices: pp.choices ?? null, question: pp.question ?? '', requestId: pp.request_id }
+    })
+    return
+  }
+
+  if (pp.kind === 'approval') {
+    patchOverlayState({
+      approval: {
+        allowPermanent: pp.allow_permanent !== false,
+        choices: pp.choices ?? [],
+        command: pp.command ?? '',
+        description: pp.description ?? '',
+        smartDenied: pp.smart_denied === true
+      }
+    })
+    return
+  }
+
+  if (pp.kind === 'sudo') {
+    patchOverlayState({ sudo: { requestId: pp.request_id } })
+    return
+  }
+
+  if (pp.kind === 'secret') {
+    patchOverlayState({
+      secret: { envVar: pp.env_var ?? '', prompt: pp.prompt ?? '', requestId: pp.request_id }
+    })
+    return
+  }
 }
 
 export const signalFreshSessionBoundary = (
@@ -340,6 +378,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             usage: usageFrom(info)
           })
           hydrateLiveSessionInflight(r.inflight)
+          // Restore pending prompt overlay (clarify / approval / sudo / secret)
+          // that may have been cleared while switching sessions.
+          if (r.pending_prompt) {
+            restorePendingPromptOverlay(r.pending_prompt)
+          }
           cancelResumeScrollRef.current?.()
           cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
         })
@@ -394,6 +437,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               usage: usageFrom(info)
             })
             hydrateLiveSessionInflight(r.inflight)
+            // Restore pending prompt overlay (clarify / approval / sudo / secret)
+            // that may have been cleared while switching sessions.
+            if (r.pending_prompt) {
+              restorePendingPromptOverlay(r.pending_prompt)
+            }
             cancelResumeScrollRef.current?.()
             cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
 

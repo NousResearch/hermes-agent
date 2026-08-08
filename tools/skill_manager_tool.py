@@ -36,6 +36,7 @@ import json
 import logging
 import re
 import shutil
+import threading
 import contextvars as _ctxvars
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -52,8 +53,39 @@ from agent.skill_utils import (
 
 logger = logging.getLogger(__name__)
 
-_background_review_read_paths: "_ctxvars.ContextVar[frozenset[str]]" = _ctxvars.ContextVar(
-    "background_review_read_paths", default=frozenset()
+# Read-before-write marks for the autonomous background-review fork.
+#
+# Tool dispatch runs each call inside ``contextvars.copy_context().run(...)``
+# on a worker (``tools.thread_context.propagate_context_to_thread``). A
+# ContextVar that stores an *immutable* frozenset and is re-``.set()`` on each
+# mark only updates that worker's private copy — a later skill_manage worker
+# never sees the mark (#75618).
+#
+# Instead the ContextVar holds a **mutable** lock-protected store object.
+# ``_reset_background_review_read_marks`` installs a fresh store at review
+# start (parent context). Workers copy the ContextVar and therefore share the
+# same object reference within one review, while a second review that resets
+# gets a different object — so forks stay isolated (#75661 / sweeper).
+
+
+class _BackgroundReviewReadMarks:
+    """Mutable read-mark set shared by copied tool contexts within one review."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._paths: set[str] = set()
+
+    def add(self, path: str) -> None:
+        with self._lock:
+            self._paths.add(path)
+
+    def contains(self, path: str) -> bool:
+        with self._lock:
+            return path in self._paths
+
+
+_background_review_read_paths: "_ctxvars.ContextVar[Optional[_BackgroundReviewReadMarks]]" = (
+    _ctxvars.ContextVar("background_review_read_paths", default=None)
 )
 
 
@@ -77,9 +109,13 @@ def mark_background_review_skill_read(path: Path) -> None:
         resolved = str(path.resolve())
     except Exception:
         resolved = str(path)
-    current = set(_background_review_read_paths.get())
-    current.add(resolved)
-    _background_review_read_paths.set(frozenset(current))
+    marks = _background_review_read_paths.get()
+    if marks is None:
+        # Review should call _reset first; fall back so a single in-thread
+        # call still works in tests that mark without an explicit reset.
+        marks = _BackgroundReviewReadMarks()
+        _background_review_read_paths.set(marks)
+    marks.add(resolved)
 
 
 def _background_review_has_read(path: Path) -> bool:
@@ -87,12 +123,17 @@ def _background_review_has_read(path: Path) -> bool:
         resolved = str(path.resolve())
     except Exception:
         resolved = str(path)
-    return resolved in _background_review_read_paths.get()
+    marks = _background_review_read_paths.get()
+    return marks is not None and marks.contains(resolved)
 
 
 def _reset_background_review_read_marks() -> None:
-    """Test helper: clear read-before-write marks for the current context."""
-    _background_review_read_paths.set(frozenset())
+    """Install a fresh read-mark store for the current review context.
+
+    Called at review-fork start (``agent/background_review.py``) and between
+    tests. Subsequent ``copy_context()`` tool workers share this object.
+    """
+    _background_review_read_paths.set(_BackgroundReviewReadMarks())
 
 # Import security scanner — external hub installs always get scanned;
 # agent-created skills only get scanned when skills.guard_agent_created is on.

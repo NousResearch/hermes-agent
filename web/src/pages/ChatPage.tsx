@@ -38,6 +38,7 @@ import { api } from "@/lib/api";
 import { latchChatActivation } from "@/lib/chat-activation";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
+import { encodePtyWheel } from "@/lib/pty-wheel";
 import {
   PTY_CONNECTING_TIMEOUT_MS,
   PTY_RECONNECT_INPUT_MESSAGE,
@@ -717,9 +718,23 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     fitRef.current = fit;
     term.loadAddon(fit);
 
-    // Dashboard chat should scroll the browser-side transcript, not send
-    // mouse-wheel protocol bytes through the PTY.
+    // Primary-buffer/inline sessions use xterm.js scrollback. Fullscreen
+    // dashboard chat runs in the alternate buffer so the TUI can keep its
+    // composer pinned and scroll the internal transcript viewport. Firefox
+    // does not reliably forward wheel reports through xterm's custom handler,
+    // so encode the standard SGR wheel report directly onto the PTY socket.
     term.attachCustomWheelEventHandler((ev) => {
+      if (term.buffer.active.type === "alternate") {
+        const sequence = encodePtyWheel(ev.deltaY, ev);
+        const ws = wsRef.current;
+        if (sequence && ws?.readyState === WebSocket.OPEN) {
+          ws.send(sequence);
+        }
+        ev.preventDefault();
+        ev.stopPropagation();
+        return false;
+      }
+
       const delta = ev.deltaY;
       if (!delta) {
         return false;

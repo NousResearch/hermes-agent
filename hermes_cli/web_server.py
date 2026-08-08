@@ -15022,14 +15022,20 @@ def _resolve_chat_argv(
         _log.debug("Failed to apply terminal config bridge for dashboard chat", exc_info=True)
     _apply_tui_python_env(env)
     env.setdefault("NODE_ENV", "production")
-    # Browser-embedded chat should prefer stable wheel-based scrollback over
-    # native terminal mouse tracking. When mouse tracking is enabled, wheel
-    # events are consumed by the TUI and forwarded as terminal input, which
-    # makes browser-side transcript scrolling feel broken. Keep the terminal
-    # build unchanged for native CLI usage; only disable mouse tracking for
-    # the dashboard PTY path.
-    env.setdefault("HERMES_TUI_DISABLE_MOUSE", "1")
-    env.setdefault("HERMES_TUI_INLINE", "1")
+    # The dashboard now uses the same fullscreen layout as the native TUI:
+    # transcript history lives in the TUI's internal ScrollBox while the
+    # composer stays pinned to the final terminal row.  The former inline
+    # primary-buffer mode left the Ink root at its content height after the
+    # browser resized the PTY (typically 80x24 -> ~97x48), so the composer sat
+    # halfway up the xterm pane with a large blank band below it.
+    #
+    # Force these values rather than using setdefault: dashboard children are a
+    # distinct surface and must not inherit stale shell exports from a prior
+    # native/Termux run.  Mouse tracking is required so xterm wheel/PageUp
+    # input reaches the internal transcript viewport.
+    env["HERMES_TUI_DISABLE_MOUSE"] = "0"
+    env["HERMES_TUI_MOUSE_TRACKING"] = "1"
+    env["HERMES_TUI_INLINE"] = "0"
     # The dashboard terminal is xterm.js, which always renders 24-bit RGB.
     # But chalk inside the TUI child decides its color depth from the
     # SERVER process env — and hosted/cloud deploys run the dashboard under

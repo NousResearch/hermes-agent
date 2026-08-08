@@ -3728,6 +3728,34 @@ class TestPtyWebSocket:
         q = {"token": tok, **params}
         return f"/api/pty?{urlencode(q)}"
 
+    def test_dashboard_tui_uses_fullscreen_scrollbox_layout(self, monkeypatch):
+        """Dashboard chat pins the composer via the TUI's internal viewport.
+
+        Explicit assignments must override stale shell exports; inline mode
+        otherwise leaves the composer above a large blank band after xterm
+        grows the PTY beyond its initial 80x24 size.
+        """
+        import hermes_cli.main as main_mod
+
+        monkeypatch.setenv("HERMES_TUI_DISABLE_MOUSE", "1")
+        monkeypatch.setenv("HERMES_TUI_MOUSE_TRACKING", "0")
+        monkeypatch.setenv("HERMES_TUI_INLINE", "1")
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+        monkeypatch.setattr(self.ws_module, "_build_gateway_ws_url", lambda: None)
+
+        argv, cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert argv == ["node", "dist/entry.js"]
+        assert cwd == "/tmp/ui-tui"
+        assert env is not None
+        assert env["HERMES_TUI_DISABLE_MOUSE"] == "0"
+        assert env["HERMES_TUI_MOUSE_TRACKING"] == "1"
+        assert env["HERMES_TUI_INLINE"] == "0"
+
 
 
     def test_tui_python_command_uses_child_path(self, tmp_path):

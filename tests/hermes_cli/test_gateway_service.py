@@ -679,6 +679,55 @@ class TestGatewayServiceDetection:
         assert gateway_cli._is_service_running() is True
 
 
+class TestScanGatewayPidsPsSelection:
+    """The ps fallback in _scan_gateway_pids must use macOS-valid arguments.
+
+    macOS `ps` rejects the BSD `e` flag in the `-A eww` invocation, so when
+    /proc is unavailable (always true on macOS) the scan silently found
+    nothing and gateway/cron status reported a live gateway as down.
+    """
+
+    def _force_ps_fallback(self, monkeypatch, macos, home):
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: macos)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: Path(home))
+        monkeypatch.setattr(gateway_cli, "_get_ancestor_pids", lambda: set())
+
+        real_isdir = os.path.isdir
+        monkeypatch.setattr(
+            gateway_cli.os.path,
+            "isdir",
+            lambda path: False if path == "/proc" else real_isdir(path),
+        )
+
+        calls = []
+
+        def fake_run(cmd, capture_output=True, text=True, timeout=10, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    f"12345 {home}/hermes-agent/venv/bin/python"
+                    " -m hermes_cli.main gateway run --replace\n"
+                ),
+                stderr="",
+            )
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        return calls
+
+    def test_scan_uses_macos_ps_args_when_proc_unavailable(self, monkeypatch):
+        calls = self._force_ps_fallback(monkeypatch, macos=True, home="/Users/test/.hermes")
+
+        assert gateway_cli._scan_gateway_pids(set()) == [12345]
+        assert calls == [["ps", "-Aww", "-o", "pid=,command="]]
+
+    def test_scan_keeps_linux_ps_args_when_proc_unavailable(self, monkeypatch):
+        calls = self._force_ps_fallback(monkeypatch, macos=False, home="/home/test/.hermes")
+
+        assert gateway_cli._scan_gateway_pids(set()) == [12345]
+        assert calls == [["ps", "-A", "eww", "-o", "pid=,command="]]
+
 class TestGatewaySystemServiceRouting:
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []

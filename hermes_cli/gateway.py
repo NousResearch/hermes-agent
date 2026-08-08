@@ -496,7 +496,7 @@ def _scan_gateway_pids(
                     current_cmd = ""
         else:
             # Try /proc first (works in Docker without procps installed),
-            # fall back to ps -A eww.
+            # fall back to a platform-appropriate ps invocation.
             _found_via_proc = False
             if os.path.isdir("/proc"):
                 try:
@@ -522,8 +522,17 @@ def _scan_gateway_pids(
                     pass
 
             if not _found_via_proc:
+                # macOS `ps` doesn't accept the BSD `e` flag the way Linux does,
+                # so we can't surface env vars there. As a result, gateways started
+                # on macOS with only `HERMES_HOME=<path>` (no `--profile` flag)
+                # won't be attributable to a named profile via `_matches_current_profile`.
+                ps_command = (
+                    ["ps", "-Aww", "-o", "pid=,command="]
+                    if is_macos()
+                    else ["ps", "-A", "eww", "-o", "pid=,command="]
+                )
                 result = subprocess.run(
-                    ["ps", "-A", "eww", "-o", "pid=,command="],
+                    ps_command,
                     capture_output=True,
                     text=True, encoding='utf-8', errors='replace',
                     timeout=10,

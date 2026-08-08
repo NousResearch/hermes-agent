@@ -83,6 +83,11 @@ nous = NousProfile(
     ),
     base_url="https://inference-api.nousresearch.com/v1",
     auth_type="oauth_device_code",
+    # Side tasks (titling, compression, session search) route to a fast model
+    # rather than whatever frontier model the user is chatting with. Without
+    # this, a title request rode the main model — seconds of latency and
+    # frontier pricing for eight words.
+    default_aux_model="google/gemini-3.6-flash",
 )
 
 register_provider(nous)

@@ -740,6 +740,13 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
 # can still use this dict directly. Kept in sync with _FALLBACK above.
 _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = _API_KEY_PROVIDER_AUX_MODELS_FALLBACK
 
+# Auxiliary tasks that prefer the provider's fast/cheap model over the user's
+# main chat model when running in "auto" mode. Restricted to tasks where
+# latency is user-visible and the output is short enough that a small model
+# matches a frontier one. Every other task keeps "auto = my chat model".
+_FAST_MODEL_TASKS: frozenset = frozenset({"title_generation"})
+
+
 # Vision-specific model overrides for direct providers.
 # When the user's main provider has a dedicated vision/multimodal model that
 # differs from their main chat model, map it here.  The vision auto-detect
@@ -5420,7 +5427,6 @@ def _resolve_auto_route(
     runtime_api_key = runtime.get("api_key", "")
     runtime_api_mode = str(runtime.get("api_mode") or "")
 
-
     # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
     #    provider (not 'custom').  This catches the common "env poisoning"
     #    scenario where a user switches providers via `hermes model` but the
@@ -5449,6 +5455,25 @@ def _resolve_auto_route(
     # config.yaml (auxiliary.<task>.provider) still win over this.
     main_provider = str(runtime_provider or _read_main_provider() or "")
     main_model = str(runtime_model or _read_main_model() or "")
+
+    # Latency-critical tasks prefer the provider's registered fast model over
+    # the main chat model. Titling is the only such task: it names a visible
+    # sidebar row, produces ~8 tokens, and running it on a frontier reasoning
+    # model costs seconds per new session. Every comparable tool routes titling
+    # to a small tier (Claude Code → Haiku, OpenCode → small_model, Zed →
+    # default_fast_model, OpenClaw → utilityModel). An explicit
+    # auxiliary.<task>.model in config.yaml still wins — this only redirects
+    # the "auto" default, and only when the provider registered a cheap model.
+    # Every other aux task keeps the "auto means my chat model" contract
+    # documented above: this does NOT change compression, vision, or search.
+    if task in _FAST_MODEL_TASKS and main_provider and main_provider not in {"auto", ""}:
+        fast_model = _get_aux_model_for_provider(main_provider)
+        if fast_model and fast_model != main_model:
+            logger.debug(
+                "Auxiliary task %s: preferring fast model %s over main model %s",
+                task, fast_model, main_model,
+            )
+            main_model = fast_model
 
     # MoA virtual provider: the "model" is a preset name (e.g. "opus-gpt") and
     # there is no real "moa" HTTP endpoint, so resolving an aux client against
@@ -8776,6 +8801,7 @@ def _call_llm_impl(
             api_key=resolved_api_key,
             api_mode=resolved_api_mode,
             main_runtime=main_runtime,
+            task=task,
         )
         effective_provider = _effective_provider_for_client(
             client, resolved_provider,
@@ -9554,6 +9580,7 @@ async def _async_call_llm_impl(
             api_key=resolved_api_key,
             api_mode=resolved_api_mode,
             main_runtime=main_runtime,
+            task=task,
         )
         effective_provider = _effective_provider_for_client(
             client, resolved_provider,

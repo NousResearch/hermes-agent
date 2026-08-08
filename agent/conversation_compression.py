@@ -3331,13 +3331,52 @@ def compress_context(
                         migrate_heartbeat_to_session(old_session_id, agent.session_id)
                     except Exception as _hb_err:
                         logger.debug("Could not migrate heartbeat on compression: %s", _hb_err)
-                    # Auto-number the title for the continuation session
+                    # Carry the title across the compression boundary unchanged.
+                    #
+                    # This used to renumber ("Fix X" → "Fix X #2") on every
+                    # rotation, which is why a long conversation ended up as
+                    # "Smallville Map Architecture Plan #10" — ten forks of ONE
+                    # session, each looking like a separate piece of work in the
+                    # sidebar. Compression is an internal implementation detail;
+                    # the user's conversation did not change topic, so its name
+                    # must not change either. Uniqueness still holds because
+                    # _set_session_title transfers the title off a hidden
+                    # compression ancestor rather than raising on the conflict.
                     if old_title:
+                        # Read provenance BEFORE the write: transferring the
+                        # title off a hidden compression ancestor clears the
+                        # ancestor's row, so reading afterwards always returns
+                        # None and the child would be stamped "user" — freezing
+                        # an auto-title that should still be upgradeable.
+                        _src = None
                         try:
-                            new_title = agent._session_db.get_next_title_in_lineage(old_title)
-                            agent._session_db.set_session_title(agent.session_id, new_title)
+                            _src = agent._session_db.get_session_title_source(
+                                old_session_id
+                            )
+                        except Exception as _src_err:
+                            logger.debug(
+                                "Could not read title provenance: %s", _src_err
+                            )
+                        try:
+                            agent._session_db.set_session_title(
+                                agent.session_id, old_title
+                            )
                         except (ValueError, Exception) as e:
                             logger.debug("Could not propagate title on compression: %s", e)
+                        else:
+                            # set_session_title() records "user"; restore the
+                            # original authority so an inherited auto-title
+                            # stays upgradeable and a manual one stays pinned.
+                            if _src is not None:
+                                try:
+                                    agent._session_db.set_session_title_source(
+                                        agent.session_id, _src
+                                    )
+                                except Exception as _src_err:
+                                    logger.debug(
+                                        "Could not propagate title provenance: %s",
+                                        _src_err,
+                                    )
 
                 # In-place mode still updates/replaces the current row here.
                 # Rotation already published prompt + compacted handoff atomically.

@@ -242,6 +242,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cost_source TEXT,
     pricing_version TEXT,
     title TEXT,
+    title_source TEXT,
     last_activity_at REAL,
     last_activity_description TEXT,
     last_activity_provenance TEXT,

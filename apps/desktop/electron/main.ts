@@ -5432,7 +5432,11 @@ function buildApplicationMenu() {
       { role: 'toggleDevTools' },
       { type: 'separator' },
       {
-        label: 'Actual Size',
+        // Not Chromium's "Actual Size" (100%) — resets to our shipped 90%
+        // default (see DEFAULT_ZOOM_LEVEL in zoom.ts). The old "Actual Size"
+        // label misled users into thinking ⌘0 restored 100%, when it silently
+        // overwrote their chosen UI Scale (e.g. 110%) with 90%.
+        label: 'Reset Zoom to Default (90%)',
         accelerator: 'CommandOrControl+0',
         click: () => {
           setAndPersistZoomLevel(mainWindow, DEFAULT_ZOOM_LEVEL)
@@ -5604,7 +5608,8 @@ function installZoomShortcuts(window) {
   // is 0.1 vs Chromium's 0.2). The menu items handle this on macOS (where the
   // menu is always present), but on Linux/Windows the menu is null and
   // Chromium's default handler would use the full 0.2 step, so we intercept
-  // here for consistency. Ctrl/Cmd+0 resets to DEFAULT_ZOOM_LEVEL, not Chromium 0.
+  // here for consistency. Ctrl/Cmd+0 resets to DEFAULT_ZOOM_LEVEL (our shipped
+  // 90% preset), NOT Chromium's 0/100% "actual size" — see the View menu item.
   window.webContents.on('before-input-event', (event, input) => {
     const mod = IS_MAC ? input.meta : input.control
 

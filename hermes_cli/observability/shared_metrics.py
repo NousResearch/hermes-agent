@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sqlite3
 import uuid
 from collections.abc import Iterator
@@ -116,6 +117,41 @@ class SharedMetricsStore:
                     (_ACTIVE_INSTALL_STATE_KEY, _isoformat(now)),
                 )
         return True
+
+    def record_latency_sample(self, metric_name: str, duration_ms: int) -> None:
+        """Persist one local-only, content-free timing sample."""
+        if metric_name not in {"task", "model_call"}:
+            raise ValueError(f"Unsupported latency metric: {metric_name}")
+        if isinstance(duration_ms, bool) or not isinstance(duration_ms, int) or duration_ms < 0:
+            raise ValueError("Latency duration must be a non-negative integer")
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO local_latency_samples(metric_name, recorded_at, duration_ms)
+                VALUES (?, ?, ?)
+                """,
+                (metric_name, _isoformat(_utc_now()), duration_ms),
+            )
+
+    def latency_summary(self, metric_name: str) -> dict[str, int]:
+        """Return local count/p50/p90 for one content-free timing metric."""
+        if metric_name not in {"task", "model_call"}:
+            raise ValueError(f"Unsupported latency metric: {metric_name}")
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT duration_ms FROM local_latency_samples
+                WHERE metric_name = ? ORDER BY duration_ms
+                """,
+                (metric_name,),
+            ).fetchall()
+        values = [int(row["duration_ms"]) for row in rows]
+        if not values:
+            return {"count": 0, "p50_ms": 0, "p90_ms": 0}
+        def percentile(fraction: float) -> int:
+            index = max(0, -1 + math.ceil(len(values) * fraction))
+            return values[index]
+        return {"count": len(values), "p50_ms": percentile(0.5), "p90_ms": percentile(0.9)}
 
     def record_counter(
         self,
@@ -335,6 +371,21 @@ class SharedMetricsStore:
                 created_at TEXT NOT NULL,
                 exported_at TEXT
             )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS local_latency_samples (
+                metric_name TEXT NOT NULL,
+                recorded_at TEXT NOT NULL,
+                duration_ms INTEGER NOT NULL CHECK (duration_ms >= 0)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS local_latency_samples_metric_duration
+            ON local_latency_samples(metric_name, duration_ms)
             """
         )
         connection.execute(
@@ -701,6 +752,10 @@ class SharedMetricsStore:
                         """,
                         (package_id, cutoff_timestamp),
                     )
+                connection.execute(
+                    "DELETE FROM local_latency_samples WHERE recorded_at < ?",
+                    (cutoff_timestamp,),
+                )
                 connection.execute(
                     """
                     DELETE FROM counter_aggregates

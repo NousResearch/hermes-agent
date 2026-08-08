@@ -42,6 +42,63 @@ See the full [Pluggable interfaces table](/user-guide/features/plugins#pluggable
 Plugins that integrate **someone else's product or project** — observability/metrics backends, vendor SaaS connectors, analytics dashboards, paid-service tie-ins — are built and distributed as **standalone plugin repos**, not merged into `NousResearch/hermes-agent`. Users install them into `~/.hermes/plugins/` or via a pip entry point; everything in this guide works the same way from a standalone repo. This is a coupling-and-maintenance decision (the core moves fast and we don't own your backend), not a quality bar — a plugin can be excellent and still belong in its own repo. Promote it in the Nous Research Discord `#plugins-skills-and-skins` channel. See [CONTRIBUTING.md](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md) for the policy.
 :::
 
+## Portable Agent Plugins v1 packages
+
+Hermes can also install and load directory packages that target the Agent
+Plugins v1.0.0 format. This is a compatibility adapter for the portable
+components Hermes already owns. It does not replace native `plugin.yaml` plus
+`register(ctx)` plugins.
+
+```text
+my-portable-plugin/
+├── plugin.json
+├── skills/
+│   └── summarize/
+│       ├── SKILL.md
+│       └── references/
+└── mcp.json
+```
+
+Install and activate a portable package through the normal workflow:
+
+```bash
+hermes plugins install owner/repository --no-enable
+hermes plugins list
+hermes plugins enable <plugin-name>
+```
+
+Portable packages are disabled after installation unless you explicitly enable
+them. An enabled package may provide immediate `skills/*/SKILL.md` directories
+and stdio MCP servers from root `mcp.json`. Skills are read-only, namespaced,
+and loaded through `skills_list` plus `skill_view`. MCP commands are passed as
+one executable token with a separate argument list, never through a shell.
+Use `skills_list` to discover the full qualified skill name. Portable skill
+namespaces have the deterministic form `agent-plugin-<slug>-<hash>`, derived
+from the discovered plugin key so sanitized names cannot collide.
+
+Hermes validates `plugin.json`, Agent Skills frontmatter, fixed component
+locations, `mcp.json`, resolved paths, and symlink containment locally. It does
+not fetch JSON schemas while loading a package. A bad skill or MCP entry is
+skipped at its own boundary when valid sibling components can still load.
+`PLUGIN_ROOT` points to the resolved package root. `PLUGIN_DATA` points to a
+profile-scoped writable directory managed by Hermes.
+Values declared in portable MCP `env` are visible package data, not a secret
+storage mechanism. Do not place credentials in `mcp.json`.
+
+The current portable subset supports stdio MCP only. Portable Streamable HTTP
+and legacy SSE entries are reported and skipped because the native remote
+client does not yet prove the v1 configured-header redirect boundary end to
+end. Agent Plugins v1 does not define trust, permissions, provenance, or a
+sandbox. Enabling a package grants its instructions and local executable the
+same full-trust posture as other installed Hermes plugins.
+
+The [rendered specification](https://agent-plugins.org/specification) currently
+labels v1.0.0 a Working Draft, while the
+[versioned specification repository](https://github.com/agentplugins/agent-plugins-spec/blob/main/spec/1.0.0.md)
+records it as Published. Hermes keys behavior on the canonical v1.0.0 schema
+identifiers and normative text, not either mutable status label. This is an
+explicit supported subset, not a claim of full Agent Plugins conformance.
+
 ## What you're building
 
 A **calculator** plugin with two tools:
@@ -353,8 +410,8 @@ hermes logs --level WARNING | grep -i plugin
 Common reasons a plugin doesn't appear:
 
 - **Not enabled in config** — plugins are opt-in. Run `hermes plugins enable <name>` (the name comes from the `plugins list` output, which can be `<category>/<plugin>` for nested layouts).
-- **Wrong directory layout** — must be `~/.hermes/plugins/<plugin-name>/plugin.yaml` (flat) or `~/.hermes/plugins/<category>/<plugin-name>/plugin.yaml` (one level of category nesting, max). Anything deeper is ignored.
-- **Missing `__init__.py`** — the plugin directory needs both `plugin.yaml` and `__init__.py` with a `register(ctx)` function.
+- **Wrong directory layout:** Native packages use `~/.hermes/plugins/<plugin-name>/plugin.yaml` (flat) or one category level. Portable packages use root `plugin.json` in the same locations. Anything deeper is ignored.
+- **Missing `__init__.py`:** Native packages need both `plugin.yaml` and `__init__.py` with a `register(ctx)` function. Portable packages do not import Python and do not require `__init__.py`.
 - **Wrong `kind`** — gateway adapters need `kind: platform` in their manifest. Memory providers are auto-detected as `kind: exclusive` and routed through the `memory.provider` config instead of `plugins.enabled`.
 
 ## Your plugin's final structure

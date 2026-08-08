@@ -1985,11 +1985,59 @@ def test_duplicate_detection_uses_commentary_when_hidden_reasoning_changes(monke
 
 
 
+def test_consume_codex_stream_separates_reasoning_summary_parts():
+    """summary_index is the part boundary; the wire sends no separator itself."""
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    reasoning_streamed = []
+
+    _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(
+                type="response.reasoning_summary_text.delta",
+                summary_index=0,
+                delta="**Investigating culprit PRs**",
+            ),
+            SimpleNamespace(
+                type="response.reasoning_summary_text.delta",
+                summary_index=1,
+                delta="**Inspecting message schema**",
+            ),
+            SimpleNamespace(
+                type="response.reasoning_summary_text.delta",
+                summary_index=1,
+                delta=" and tool_calls content",
+            ),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+        ]),
+        model="gpt-5-codex",
+        on_reasoning_delta=reasoning_streamed.append,
+    )
+
+    joined = "".join(reasoning_streamed)
+    assert "****" not in joined
+    assert joined == (
+        "**Investigating culprit PRs**"
+        "\n\n**Inspecting message schema** and tool_calls content"
+    )
 
 
+def test_consume_codex_stream_leaves_unindexed_reasoning_untouched():
+    """Streams with no summary_index (plain reasoning_text) must not gain breaks."""
+    from agent.codex_runtime import _consume_codex_event_stream
 
+    reasoning_streamed = []
 
+    _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.reasoning_text.delta", delta="Need to "),
+            SimpleNamespace(type="response.reasoning_text.delta", delta="inspect files."),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+        ]),
+        model="gpt-5-codex",
+        on_reasoning_delta=reasoning_streamed.append,
+    )
 
-
-
-
+    assert "".join(reasoning_streamed) == "Need to inspect files."

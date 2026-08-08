@@ -139,6 +139,7 @@ _BILLING_ERROR_CODES = frozenset({
     "no_usable_credits",
     "balance_depleted",
     "model_not_supported_on_free_tier",
+    "member_spend_cap_exceeded",
     _XAI_SPENDING_LIMIT_ERROR_CODE,
 })
 

@@ -246,10 +246,7 @@ function ChatRuntimeBoundary({
 
   const expandWindow = useCallback(() => setWindowPages(pages => pages + 1), [])
 
-  const transcriptWindow = useMemo(
-    () => ({ olderAvailable: windowed, expandWindow }),
-    [expandWindow, windowed]
-  )
+  const transcriptWindow = useMemo(() => ({ olderAvailable: windowed, expandWindow }), [expandWindow, windowed])
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
     messageRepository: runtimeMessageRepository,

@@ -10,13 +10,7 @@ import { $activeSessionId } from './session'
 // Native OS notifications (Electron `Notification`), separate from the in-app
 // toast feed in `notifications.ts`. Each kind toggles independently.
 export type NativeNotificationKind =
-  | 'approval'
-  | 'backgroundDone'
-  | 'credits'
-  | 'input'
-  | 'plugin'
-  | 'turnDone'
-  | 'turnError'
+  'approval' | 'backgroundDone' | 'credits' | 'input' | 'plugin' | 'turnDone' | 'turnError'
 
 export const NATIVE_NOTIFICATION_KINDS: readonly NativeNotificationKind[] = [
   'approval',

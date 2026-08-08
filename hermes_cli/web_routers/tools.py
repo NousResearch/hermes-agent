@@ -10,6 +10,7 @@ late-binding seam in :mod:`hermes_cli.web_deps` (``late`` for callables,
 stays authoritative.
 """
 
+import asyncio
 import logging
 import sys  # noqa: F401 — used by handlers
 from typing import Any, Dict, List, Optional  # noqa: F401
@@ -48,6 +49,9 @@ save_config = late("save_config")
 _MODEL_CATALOG_TOOLSETS = LateState("_MODEL_CATALOG_TOOLSETS")
 _TERMINAL_BACKENDS = LateState("_TERMINAL_BACKENDS")
 _TERMINAL_BACKEND_NAMES = LateState("_TERMINAL_BACKEND_NAMES")
+# Config read-modify-write serialization for off-loop handlers (defined in
+# web_server.py; LateState supports ``with``-blocks, so this is the live lock).
+_CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
 
 
 @router.get("/api/tools/toolsets")
@@ -64,21 +68,25 @@ async def get_toolsets(profile: Optional[str] = None):
     from hermes_cli.platforms import platform_label
     from toolsets import resolve_toolset
 
-    with _profile_scope(profile):
-        config = load_config()
-        toolset_rows = _get_effective_configurable_toolsets()
-        target_platforms = {
-            _toolset_configuration_platform(name) for name, _, _ in toolset_rows
-        }
-        enabled_by_platform = {
-            platform: _get_platform_tools(
-                config,
-                platform,
-                include_default_mcp_servers=False,
-            )
-            for platform in target_platforms
-        }
-        features = get_nous_subscription_features(config)
+    def _read():
+        with _profile_scope(profile):
+            config = load_config()
+            toolset_rows = _get_effective_configurable_toolsets()
+            target_platforms = {
+                _toolset_configuration_platform(name) for name, _, _ in toolset_rows
+            }
+            enabled_by_platform = {
+                platform: _get_platform_tools(
+                    config,
+                    platform,
+                    include_default_mcp_servers=False,
+                )
+                for platform in target_platforms
+            }
+            features = get_nous_subscription_features(config)
+        return config, toolset_rows, enabled_by_platform, features
+
+    config, toolset_rows, enabled_by_platform, features = await asyncio.to_thread(_read)
     result = []
     for name, label, desc in toolset_rows:
         try:
@@ -135,37 +143,38 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
     target_platform = _toolset_configuration_platform(name)
-    if name in _CONFIG_ONLY_TOOLSETS:
-        # Config-only capabilities (stt) toggle their own config section's
-        # ``enabled`` flag — there is no platform_toolsets entry to write.
+
+    def _run():
+        if name in _CONFIG_ONLY_TOOLSETS:
+            # Config-only capabilities (stt) toggle their own config section's
+            # ``enabled`` flag — there is no platform_toolsets entry to write.
+            with _profile_scope(body.profile or profile):
+                with _CONFIG_MUTATION_LOCK:
+                    config = load_config()
+                    section = config.setdefault(name, {})
+                    if not isinstance(section, dict):
+                        section = {}
+                        config[name] = section
+                    section["enabled"] = bool(body.enabled)
+                    save_config(config)
+            return
         with _profile_scope(body.profile or profile):
-            config = load_config()
-            section = config.setdefault(name, {})
-            if not isinstance(section, dict):
-                section = {}
-                config[name] = section
-            section["enabled"] = bool(body.enabled)
-            save_config(config)
-        return {
-            "ok": True,
-            "name": name,
-            "platform": target_platform,
-            "enabled": body.enabled,
-        }
-    with _profile_scope(body.profile or profile):
-        config = load_config()
-        enabled = set(
-            _get_platform_tools(
-                config,
-                target_platform,
-                include_default_mcp_servers=False,
-            )
-        )
-        if body.enabled:
-            enabled.add(name)
-        else:
-            enabled.discard(name)
-        _save_platform_tools(config, target_platform, enabled)
+            with _CONFIG_MUTATION_LOCK:
+                config = load_config()
+                enabled = set(
+                    _get_platform_tools(
+                        config,
+                        target_platform,
+                        include_default_mcp_servers=False,
+                    )
+                )
+                if body.enabled:
+                    enabled.add(name)
+                else:
+                    enabled.discard(name)
+                _save_platform_tools(config, target_platform, enabled)
+
+    await asyncio.to_thread(_run)
     return {
         "ok": True,
         "name": name,
@@ -199,79 +208,84 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
     if name not in valid:
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
-    with _profile_scope(profile):
-        config = load_config()
-        cat = TOOL_CATEGORIES.get(name)
-        providers = []
-        active_provider = None
-        active_search_backend = None
-        active_extract_backend = None
-        if cat:
-            # Fetch portal/entitlement state once for the whole matrix — the
-            # per-provider readiness computation below reuses it instead of
-            # re-probing per row.
-            features = get_nous_subscription_features(config, force_fresh=True)
-            for prov in _visible_providers(cat, config, force_fresh=True):
-                env_vars = [
-                    {
-                        "key": e["key"],
-                        "prompt": e.get("prompt", e["key"]),
-                        "url": e.get("url"),
-                        "default": e.get("default"),
-                        "is_set": bool(get_env_value(e["key"])),
+    def _read():
+        with _profile_scope(profile):
+            config = load_config()
+            cat = TOOL_CATEGORIES.get(name)
+            providers = []
+            active_provider = None
+            active_search_backend = None
+            active_extract_backend = None
+            if cat:
+                # Fetch portal/entitlement state once for the whole matrix — the
+                # per-provider readiness computation below reuses it instead of
+                # re-probing per row.
+                features = get_nous_subscription_features(config, force_fresh=True)
+                for prov in _visible_providers(cat, config, force_fresh=True):
+                    env_vars = [
+                        {
+                            "key": e["key"],
+                            "prompt": e.get("prompt", e["key"]),
+                            "url": e.get("url"),
+                            "default": e.get("default"),
+                            "is_set": bool(get_env_value(e["key"])),
+                        }
+                        for e in prov.get("env_vars", [])
+                    ]
+                    # Surface the same active-provider determination the CLI picker
+                    # uses (``_is_provider_active``) so the GUI highlights the provider
+                    # actually written to config (e.g. web.backend), not just the first
+                    # keyless one in the list.
+                    is_active = _is_provider_active(prov, config, force_fresh=True)
+                    if is_active and active_provider is None:
+                        active_provider = prov["name"]
+                    row = {
+                        "name": prov["name"],
+                        "badge": prov.get("badge", ""),
+                        "tag": prov.get("tag", ""),
+                        "env_vars": env_vars,
+                        "post_setup": prov.get("post_setup"),
+                        "requires_nous_auth": bool(prov.get("requires_nous_auth")),
+                        "is_active": is_active,
+                        # Honest server-side readiness. The GUI's old client-side
+                        # heuristic showed "Ready" for every zero-env-var row —
+                        # including logged-out Nous Subscription rows and never-run
+                        # post_setup installs (see provider_readiness_status).
+                        "status": provider_readiness_status(
+                            prov, config, features=features, is_active=is_active
+                        ),
                     }
-                    for e in prov.get("env_vars", [])
-                ]
-                # Surface the same active-provider determination the CLI picker
-                # uses (``_is_provider_active``) so the GUI highlights the provider
-                # actually written to config (e.g. web.backend), not just the first
-                # keyless one in the list.
-                is_active = _is_provider_active(prov, config, force_fresh=True)
-                if is_active and active_provider is None:
-                    active_provider = prov["name"]
-                row = {
-                    "name": prov["name"],
-                    "badge": prov.get("badge", ""),
-                    "tag": prov.get("tag", ""),
-                    "env_vars": env_vars,
-                    "post_setup": prov.get("post_setup"),
-                    "requires_nous_auth": bool(prov.get("requires_nous_auth")),
-                    "is_active": is_active,
-                    # Honest server-side readiness. The GUI's old client-side
-                    # heuristic showed "Ready" for every zero-env-var row —
-                    # including logged-out Nous Subscription rows and never-run
-                    # post_setup installs (see provider_readiness_status).
-                    "status": provider_readiness_status(
-                        prov, config, features=features, is_active=is_active
-                    ),
-                }
-                if name == "web" and prov.get("web_backend"):
-                    # The runtime split web into two capabilities long ago
-                    # (web.search_backend / web.extract_backend); surface each
-                    # row's backend key and which capabilities it can serve so
-                    # the GUI can offer per-capability selection.
-                    row["web_backend"] = prov["web_backend"]
-                    row["capabilities"] = web_provider_capabilities(prov["web_backend"])
-                if name == "tts" and prov.get("tts_provider"):
-                    # The provider key written to tts.provider on selection.
-                    # Doubles as the config section holding the provider's
-                    # voice/model settings (tts.<key>.*) so the GUI can render
-                    # those fields inline in the Capabilities panel.
-                    row["tts_provider"] = prov["tts_provider"]
-                providers.append(row)
-        if name == "web":
-            # Resolve the per-capability active backends exactly the way the
-            # web_search / web_extract dispatchers do (per-capability key →
-            # shared web.backend → credential auto-detect), so the GUI badges
-            # reflect what a tool call would actually hit right now.
-            try:
-                from tools.web_tools import _get_extract_backend, _get_search_backend
+                    if name == "web" and prov.get("web_backend"):
+                        # The runtime split web into two capabilities long ago
+                        # (web.search_backend / web.extract_backend); surface each
+                        # row's backend key and which capabilities it can serve so
+                        # the GUI can offer per-capability selection.
+                        row["web_backend"] = prov["web_backend"]
+                        row["capabilities"] = web_provider_capabilities(prov["web_backend"])
+                    if name == "tts" and prov.get("tts_provider"):
+                        # The provider key written to tts.provider on selection.
+                        # Doubles as the config section holding the provider's
+                        # voice/model settings (tts.<key>.*) so the GUI can render
+                        # those fields inline in the Capabilities panel.
+                        row["tts_provider"] = prov["tts_provider"]
+                    providers.append(row)
+            if name == "web":
+                # Resolve the per-capability active backends exactly the way the
+                # web_search / web_extract dispatchers do (per-capability key →
+                # shared web.backend → credential auto-detect), so the GUI badges
+                # reflect what a tool call would actually hit right now.
+                try:
+                    from tools.web_tools import _get_extract_backend, _get_search_backend
 
-                active_search_backend = _get_search_backend()
-                active_extract_backend = _get_extract_backend()
-            except Exception:
-                active_search_backend = None
-                active_extract_backend = None
+                    active_search_backend = _get_search_backend()
+                    active_extract_backend = _get_extract_backend()
+                except Exception:
+                    active_search_backend = None
+                    active_extract_backend = None
+        return cat, providers, active_provider, active_search_backend, active_extract_backend
+
+    cat, providers, active_provider, active_search_backend, active_extract_backend = await asyncio.to_thread(_read)
+
     payload = {
         "name": name,
         "has_category": cat is not None,
@@ -300,28 +314,35 @@ async def get_toolset_models(
     if section is None:
         return {"name": name, "has_models": False, "models": [], "current": None, "default": None}
 
-    with _profile_scope(profile):
-        config = load_config()
-        row = _find_toolset_provider_row(name, config, provider)
-        plugin = _resolve_toolset_model_plugin(name, row) if row else None
-        if not plugin:
-            return {
-                "name": name,
-                "has_models": False,
-                "models": [],
-                "current": None,
-                "default": None,
-            }
+    def _read():
+        with _profile_scope(profile):
+            config = load_config()
+            row = _find_toolset_provider_row(name, config, provider)
+            plugin = _resolve_toolset_model_plugin(name, row) if row else None
+            if not plugin:
+                return None
 
-        catalog, default_model = _toolset_model_catalog(name, plugin)
-        section_cfg = config.get(section)
-        current = None
-        if isinstance(section_cfg, dict):
-            raw = section_cfg.get("model")
-            if isinstance(raw, str) and raw.strip():
-                current = raw.strip()
-        if current not in catalog:
-            current = default_model if default_model in catalog else None
+            catalog, default_model = _toolset_model_catalog(name, plugin)
+            section_cfg = config.get(section)
+            current = None
+            if isinstance(section_cfg, dict):
+                raw = section_cfg.get("model")
+                if isinstance(raw, str) and raw.strip():
+                    current = raw.strip()
+            if current not in catalog:
+                current = default_model if default_model in catalog else None
+        return row, plugin, catalog, default_model, current
+
+    resolved = await asyncio.to_thread(_read)
+    if resolved is None:
+        return {
+            "name": name,
+            "has_models": False,
+            "models": [],
+            "current": None,
+            "default": None,
+        }
+    row, plugin, catalog, default_model, current = resolved
 
     models = [
         {
@@ -364,30 +385,34 @@ async def select_toolset_model(
     if not model_id:
         raise HTTPException(status_code=400, detail="model is required")
 
-    with _profile_scope(body.profile or profile):
-        config = load_config()
-        row = _find_toolset_provider_row(name, config, body.provider)
-        plugin = _resolve_toolset_model_plugin(name, row) if row else None
-        if not plugin:
-            raise HTTPException(
-                status_code=400,
-                detail=f"No model-capable backend is active for {name}",
-            )
+    def _run():
+        with _profile_scope(body.profile or profile):
+            with _CONFIG_MUTATION_LOCK:
+                config = load_config()
+                row = _find_toolset_provider_row(name, config, body.provider)
+                plugin = _resolve_toolset_model_plugin(name, row) if row else None
+                if not plugin:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"No model-capable backend is active for {name}",
+                    )
 
-        catalog, _default = _toolset_model_catalog(name, plugin)
-        if model_id not in catalog:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown model {model_id!r} for backend {plugin!r}",
-            )
+                catalog, _default = _toolset_model_catalog(name, plugin)
+                if model_id not in catalog:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Unknown model {model_id!r} for backend {plugin!r}",
+                    )
 
-        section_cfg = config.setdefault(section, {})
-        if not isinstance(section_cfg, dict):
-            section_cfg = {}
-            config[section] = section_cfg
-        section_cfg["model"] = model_id
-        save_config(config)
+                section_cfg = config.setdefault(section, {})
+                if not isinstance(section_cfg, dict):
+                    section_cfg = {}
+                    config[section] = section_cfg
+                section_cfg["model"] = model_id
+                save_config(config)
+        return plugin
 
+    plugin = await asyncio.to_thread(_run)
     return {"ok": True, "name": name, "model": model_id, "plugin": plugin}
 
 
@@ -450,77 +475,86 @@ async def select_toolset_provider(
                 detail=f"Unknown capability: {body.capability!r} (expected 'search' or 'extract')",
             )
 
-    with _profile_scope(body.profile or profile):
-        config = load_config()
-        if body.capability is not None:
-            # Per-capability path: resolve the picker row to its backend key
-            # and write web.<capability>_backend. Does NOT touch web.backend,
-            # so the other capability keeps resolving through the shared
-            # fallback chain.
-            cat = TOOL_CATEGORIES.get(name)
-            providers = _visible_providers(cat, config, force_fresh=True) if cat else []
-            prov = next((p for p in providers if p.get("name") == body.provider), None)
-            if prov is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Unknown provider {body.provider!r} for toolset {name!r}",
-                )
-            backend = prov.get("web_backend")
-            if not backend:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Provider {body.provider!r} has no web backend key",
-                )
-            if body.capability not in web_provider_capabilities(backend):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"{body.provider} does not support {body.capability}",
-                )
-            web_cfg = config.setdefault("web", {})
-            if not isinstance(web_cfg, dict):
-                web_cfg = {}
-                config["web"] = web_cfg
-            web_cfg[f"{body.capability}_backend"] = backend
-        else:
-            try:
-                apply_provider_selection(name, body.provider, config)
-            except KeyError as exc:
-                raise HTTPException(status_code=400, detail=str(exc).strip('"'))
-        save_config(config)
-        response: Dict[str, Any] = {"ok": True, "name": name, "provider": body.provider}
-        if body.capability is not None:
-            response["capability"] = body.capability
+    def _run():
+        with _profile_scope(body.profile or profile):
+            with _CONFIG_MUTATION_LOCK:
+                config = load_config()
+                if body.capability is not None:
+                    # Per-capability path: resolve the picker row to its backend key
+                    # and write web.<capability>_backend. Does NOT touch web.backend,
+                    # so the other capability keeps resolving through the shared
+                    # fallback chain.
+                    cat = TOOL_CATEGORIES.get(name)
+                    providers = _visible_providers(cat, config, force_fresh=True) if cat else []
+                    prov = next((p for p in providers if p.get("name") == body.provider), None)
+                    if prov is None:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Unknown provider {body.provider!r} for toolset {name!r}",
+                        )
+                    backend = prov.get("web_backend")
+                    if not backend:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Provider {body.provider!r} has no web backend key",
+                        )
+                    if body.capability not in web_provider_capabilities(backend):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"{body.provider} does not support {body.capability}",
+                        )
+                    web_cfg = config.setdefault("web", {})
+                    if not isinstance(web_cfg, dict):
+                        web_cfg = {}
+                        config["web"] = web_cfg
+                    web_cfg[f"{body.capability}_backend"] = backend
+                else:
+                    try:
+                        apply_provider_selection(name, body.provider, config)
+                    except KeyError as exc:
+                        raise HTTPException(status_code=400, detail=str(exc).strip('"'))
+                save_config(config)
+                response: Dict[str, Any] = {"ok": True, "name": name, "provider": body.provider}
+                if body.capability is not None:
+                    response["capability"] = body.capability
 
-        # Entitlement check for managed Nous rows — mirrors the gate the CLI
-        # applies via ensure_nous_portal_access at selection time.
-        cat = TOOL_CATEGORIES.get(name)
-        row = None
-        if cat:
-            row = next(
-                (
-                    p
-                    for p in _visible_providers(cat, config, force_fresh=True)
-                    if p.get("name") == body.provider
-                ),
-                None,
-            )
-        managed_feature = (row or {}).get("managed_nous_feature")
-        if managed_feature:
-            features = get_nous_subscription_features(config, force_fresh=True)
-            acct = features.account_info
-            category = MANAGED_FEATURE_COVERAGE_CATEGORY.get(managed_feature)
-            entitled = bool(
-                acct
-                and acct.logged_in
-                and (
-                    acct.tool_gateway_entitled_for(category)
-                    if category
-                    else acct.tool_gateway_entitled
+            # Entitlement check for managed Nous rows — mirrors the gate the CLI
+            # applies via ensure_nous_portal_access at selection time. This hits
+            # the network (Portal), so it runs AFTER releasing the mutation lock:
+            # holding a process-wide config-write lock across a network fetch
+            # would stall every other config writer behind a slow Portal call.
+            # Still inside the worker thread + profile scope.
+            cat = TOOL_CATEGORIES.get(name)
+            row = None
+            if cat:
+                row = next(
+                    (
+                        p
+                        for p in _visible_providers(cat, config, force_fresh=True)
+                        if p.get("name") == body.provider
+                    ),
+                    None,
                 )
-            )
-            if not entitled:
-                response["needs_nous_auth"] = True
-                response["feature"] = managed_feature
+            managed_feature = (row or {}).get("managed_nous_feature")
+            if managed_feature:
+                features = get_nous_subscription_features(config, force_fresh=True)
+                acct = features.account_info
+                category = MANAGED_FEATURE_COVERAGE_CATEGORY.get(managed_feature)
+                entitled = bool(
+                    acct
+                    and acct.logged_in
+                    and (
+                        acct.tool_gateway_entitled_for(category)
+                        if category
+                        else acct.tool_gateway_entitled
+                    )
+                )
+                if not entitled:
+                    response["needs_nous_auth"] = True
+                    response["feature"] = managed_feature
+        return response
+
+    response = await asyncio.to_thread(_run)
     return response
 
 
@@ -547,35 +581,39 @@ async def save_toolset_env(name: str, body: ToolsetEnvUpdate, profile: Optional[
     if name not in valid_ts:
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
-    with _profile_scope(body.profile or profile):
-        config = load_config()
-        cat = TOOL_CATEGORIES.get(name)
-        allowed: set[str] = set()
-        if cat:
-            for prov in _visible_providers(cat, config, force_fresh=True):
-                for e in prov.get("env_vars", []):
-                    allowed.add(e["key"])
+    def _run():
+        with _profile_scope(body.profile or profile):
+            config = load_config()
+            cat = TOOL_CATEGORIES.get(name)
+            allowed: set[str] = set()
+            if cat:
+                for prov in _visible_providers(cat, config, force_fresh=True):
+                    for e in prov.get("env_vars", []):
+                        allowed.add(e["key"])
 
-        unknown = [k for k in body.env if k not in allowed]
-        if unknown:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown env var(s) for toolset {name}: {', '.join(sorted(unknown))}",
-            )
+            unknown = [k for k in body.env if k not in allowed]
+            if unknown:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown env var(s) for toolset {name}: {', '.join(sorted(unknown))}",
+                )
 
-        saved: List[str] = []
-        skipped: List[str] = []
-        for key, value in body.env.items():
-            if value and value.strip():
-                try:
-                    save_env_value(key, value.strip())
-                except ValueError as exc:
-                    raise HTTPException(status_code=400, detail=str(exc))
-                saved.append(key)
-            else:
-                skipped.append(key)
+            saved: List[str] = []
+            skipped: List[str] = []
+            for key, value in body.env.items():
+                if value and value.strip():
+                    try:
+                        save_env_value(key, value.strip())
+                    except ValueError as exc:
+                        raise HTTPException(status_code=400, detail=str(exc))
+                    saved.append(key)
+                else:
+                    skipped.append(key)
 
-        status = {k: bool(get_env_value(k)) for k in allowed}
+            status = {k: bool(get_env_value(k)) for k in allowed}
+        return saved, skipped, status
+
+    saved, skipped, status = await asyncio.to_thread(_run)
     return {"ok": True, "name": name, "saved": saved, "skipped": skipped, "is_set": status}
 
 
@@ -639,27 +677,30 @@ async def get_terminal_backends(profile: Optional[str] = None):
     Probes are fast (<~2s each) and defensive — a probe failure surfaces as a
     status, never an error response.
     """
-    with _profile_scope(profile):
-        config = load_config()
-        terminal_cfg = config.get("terminal")
-        if not isinstance(terminal_cfg, dict):
-            terminal_cfg = {}
-        active = str(terminal_cfg.get("backend") or "local").strip().lower()
-        if active not in _TERMINAL_BACKEND_NAMES:
-            active = "local"
+    def _read():
+        with _profile_scope(profile):
+            config = load_config()
+            terminal_cfg = config.get("terminal")
+            if not isinstance(terminal_cfg, dict):
+                terminal_cfg = {}
+            active = str(terminal_cfg.get("backend") or "local").strip().lower()
+            if active not in _TERMINAL_BACKEND_NAMES:
+                active = "local"
 
-        backends = []
-        for row in _TERMINAL_BACKENDS:
-            status, detail = _probe_terminal_backend(row["name"], terminal_cfg)
-            backends.append({
-                "name": row["name"],
-                "label": row["label"],
-                "description": row["description"],
-                "active": row["name"] == active,
-                "status": status,
-                "detail": detail,
-            })
-    return {"active": active, "backends": backends}
+            backends = []
+            for row in _TERMINAL_BACKENDS:
+                status, detail = _probe_terminal_backend(row["name"], terminal_cfg)
+                backends.append({
+                    "name": row["name"],
+                    "label": row["label"],
+                    "description": row["description"],
+                    "active": row["name"] == active,
+                    "status": status,
+                    "detail": detail,
+                })
+        return {"active": active, "backends": backends}
+
+    return await asyncio.to_thread(_read)
 
 
 @router.put("/api/tools/terminal/backend")
@@ -680,14 +721,18 @@ async def select_terminal_backend(
             f"Use one of: {', '.join(sorted(_TERMINAL_BACKEND_NAMES))}",
         )
 
-    with _profile_scope(body.profile or profile):
-        config = load_config()
-        terminal_cfg = config.setdefault("terminal", {})
-        if not isinstance(terminal_cfg, dict):
-            terminal_cfg = {}
-            config["terminal"] = terminal_cfg
-        terminal_cfg["backend"] = backend
-        save_config(config)
+    def _run():
+        with _profile_scope(body.profile or profile):
+            with _CONFIG_MUTATION_LOCK:
+                config = load_config()
+                terminal_cfg = config.setdefault("terminal", {})
+                if not isinstance(terminal_cfg, dict):
+                    terminal_cfg = {}
+                    config["terminal"] = terminal_cfg
+                terminal_cfg["backend"] = backend
+                save_config(config)
+
+    await asyncio.to_thread(_run)
     return {"ok": True, "backend": backend}
 
 
@@ -701,8 +746,11 @@ async def get_computer_use_status(profile: Optional[str] = None):
     """
     from tools.computer_use.permissions import computer_use_status
 
-    with _profile_scope(profile):
-        return computer_use_status()
+    def _read():
+        with _profile_scope(profile):
+            return computer_use_status()
+
+    return await asyncio.to_thread(_read)
 
 
 @router.post("/api/tools/computer-use/permissions/grant")

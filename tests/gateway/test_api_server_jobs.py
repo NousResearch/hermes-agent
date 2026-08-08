@@ -141,6 +141,35 @@ class TestCreateJob:
 
 
     @pytest.mark.asyncio
+    async def test_create_job_reports_saved_but_unregistered(self, adapter):
+        """A failed external registration is a structured partial failure."""
+        from cron.scheduler import CronSchedulerRegistrationError
+
+        app = _create_app(adapter)
+        failure = CronSchedulerRegistrationError(
+            SAMPLE_JOB,
+            RuntimeError("private callback URL and token"),
+        )
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_create", side_effect=failure
+            ):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "test-job",
+                    "schedule": "*/5 * * * *",
+                    "prompt": "do something",
+                })
+
+                assert resp.status == 424
+                data = await resp.json()
+                assert data["job_id"] == SAMPLE_JOB["id"]
+                assert data["job_saved"] is True
+                assert data["scheduler_registered"] is False
+                assert data["retry_create"] is False
+                assert "private callback URL and token" not in data["error"]
+
+
+    @pytest.mark.asyncio
     async def test_create_job_prompt_too_long(self, adapter):
         """POST /api/jobs with prompt > 5000 chars returns 400."""
         app = _create_app(adapter)
@@ -468,5 +497,4 @@ class TestCronPromptScanParity:
                 data = await resp.json()
                 assert "Blocked" in data["error"] or "threat" in data["error"].lower()
                 mock_create.assert_not_called()
-
 

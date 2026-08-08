@@ -9,6 +9,8 @@ import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/p
 import {
   $currentCwd,
   $sessions,
+  commitWorkspaceCwdForSelectedSession,
+  releaseWorkspaceCwdOwner,
   sessionMatchesStoredId,
   setCurrentBranch,
   setCurrentCwd,
@@ -20,6 +22,7 @@ import {
   setCurrentServiceTier,
   setCurrentUsage,
   setSessions,
+  setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
 
@@ -959,7 +962,17 @@ function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
   }
 
   if (state.cwd !== undefined) {
-    setCurrentCwd(state.cwd)
+    if (state.cwd) {
+      // The runtime named a real folder for the session in the main pane, so
+      // that conversation owns the path.
+      commitWorkspaceCwdForSelectedSession(state.cwd)
+    } else {
+      // A detached session: the path on screen is provably still the previous
+      // conversation's. Release rather than write `''` — `setCurrentCwd`
+      // persists, so blanking here would also wipe the remembered workspace
+      // that seeds `$currentCwd` on next boot.
+      releaseWorkspaceCwdOwner()
+    }
   }
 
   if (state.branch !== undefined) {
@@ -1017,7 +1030,12 @@ export function applyRuntimeInfo(
     sessionState.provider = info.provider
   }
 
-  if (info.cwd) {
+  // Empty string is authoritative, not "no opinion": a detached/bare session
+  // reports `cwd: ''`, and the truthy-only test left `$currentCwd` — and so the
+  // Files pane — pinned to the PREVIOUS project for the rest of the session
+  // (#71254). Empty is routed through ownership release below rather than
+  // persisted, so the pane hides a path it no longer owns instead of blanking.
+  if (typeof info.cwd === 'string') {
     sessionState.cwd = info.cwd
   }
 
@@ -1056,7 +1074,10 @@ export function applyRuntimeInfo(
   return sessionState
 }
 
-export function applyStoredSessionPreviewRuntimeInfo(stored: { model?: null | string } | undefined) {
+export function applyStoredSessionPreviewRuntimeInfo(
+  stored: { cwd?: null | string; model?: null | string } | undefined,
+  storedSessionId: null | string
+) {
   setCurrentModel(stored?.model || '')
   setCurrentProvider('')
   setCurrentReasoningEffort('')
@@ -1064,6 +1085,35 @@ export function applyStoredSessionPreviewRuntimeInfo(stored: { model?: null | st
   setCurrentFastMode(false)
   setYoloActive(false)
   setCurrentPersonality('')
+
+  // Cold resume paints the transcript before `session.resume` returns, so
+  // without this the Files pane shows the PREVIOUS project's tree for the whole
+  // round-trip (#71254 / #76696). The sidebar row already knows this
+  // conversation's workspace — `cwd` is part of the compact row projection — so
+  // mirror it on the same tick the selection changes.
+  //
+  // Only `cwd` is consulted. `git_repo_root` is documented as null for non-git
+  // workspaces and not-yet-backfilled history rows, so falling back to it would
+  // read as "no workspace" for those sessions and blank a pane that was correct.
+  const storedCwd = stored?.cwd?.trim() || ''
+
+  if (storedCwd) {
+    setCurrentCwd(storedCwd)
+    setWorkspaceCwdOwner(storedSessionId)
+  } else {
+    // Either a genuinely detached session, or a row outside the loaded sidebar
+    // page (`stored` is undefined) — neither says anything about the workspace,
+    // while `$currentCwd` still holds the previous conversation's folder.
+    // Release so workspace-derived surfaces stop trusting it; `applyRuntimeInfo`
+    // publishes the truth a moment later. The path is deliberately left in place
+    // — clearing it collapses the workspace/review panes and drops file-tree
+    // state on every switch.
+    releaseWorkspaceCwdOwner()
+  }
+
+  // Same window, same reasoning: the branch is derived from the workspace, so
+  // carrying the previous conversation's label across a switch is never right.
+  setCurrentBranch('')
 }
 
 // A "session genuinely doesn't exist" failure (deleted, or an id from a wiped /

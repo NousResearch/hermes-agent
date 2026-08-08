@@ -1,5 +1,5 @@
 import type * as React from 'react'
-import { memo, useCallback, useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { ZoomableImage } from '@/components/chat/zoomable-image'
@@ -17,7 +17,7 @@ import {
 } from '@/components/ui/pagination'
 import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
-import { getSessionMessages, listAllProfileSessions } from '@/hermes'
+import { getAllSessionMessages, listAllProfileSessions } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { resolveBrandIcon } from '@/lib/brand-icon'
 import {
@@ -33,7 +33,7 @@ import { downloadGatewayMediaFile, isRemoteGateway } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { fmtDayTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import { notifyError } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -46,7 +46,7 @@ import {
   type ArtifactFilter,
   artifactImageSrc,
   type ArtifactRecord,
-  collectArtifactsForSession
+  loadArtifactsForSessions
 } from './artifact-utils'
 
 function formatArtifactTime(timestamp: number): string {
@@ -124,29 +124,54 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [filePage, setFilePage] = useState(1)
 
   const [refreshing, setRefreshing] = useState(false)
+  const refreshInFlightRef = useRef(false)
 
   const refreshArtifacts = useCallback(async () => {
+    if (refreshInFlightRef.current) {
+      return
+    }
+
+    refreshInFlightRef.current = true
     setRefreshing(true)
 
     try {
       const sessions = (await listAllProfileSessions(30, 1)).sessions
-      const results = await Promise.allSettled(sessions.map(session => getSessionMessages(session.id, session.profile)))
-      const nextArtifacts: ArtifactRecord[] = []
 
-      results.forEach((result, index) => {
-        if (result.status !== 'fulfilled') {
-          return
-        }
+      const { artifacts: nextArtifacts, failures } = await loadArtifactsForSessions(
+        sessions,
+        async session => (await getAllSessionMessages(session.id, session.profile)).messages
+      )
 
-        const session = sessions[index]
-        nextArtifacts.push(...collectArtifactsForSession(session, result.value.messages))
-      })
+      if (failures.length > 0) {
+        const safeLimitFailures = failures.filter(({ error }) =>
+          String(error instanceof Error ? error.message : error).includes('safe-load limit')
+        ).length
+
+        const otherFailures = failures.length - safeLimitFailures
+
+        const detail = [
+          safeLimitFailures ? `${safeLimitFailures} exceeded the safe transcript load limit.` : '',
+          otherFailures ? `${otherFailures} could not be read.` : ''
+        ]
+          .filter(Boolean)
+          .join(' ')
+
+        notify({
+          id: 'artifacts-partial-load',
+          kind: 'warning',
+          title: a.failedLoad,
+          message: `Skipped ${failures.length} of ${sessions.length} recent sessions while indexing artifacts.`,
+          detail,
+          durationMs: 10_000
+        })
+      }
 
       setArtifacts(nextArtifacts.sort((left, right) => right.timestamp - left.timestamp))
     } catch (err) {
       notifyError(err, a.failedLoad)
       setArtifacts([])
     } finally {
+      refreshInFlightRef.current = false
       setRefreshing(false)
     }
   }, [a])

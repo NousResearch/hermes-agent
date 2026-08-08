@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import copy
 import inspect
+import json
 import os
 import sqlite3
 import threading
@@ -644,12 +645,14 @@ def test_fence_cancelled_compression_leaves_lock_reacquirable(tmp_path: Path) ->
     def _slow_summary(*_args, **_kwargs):
         summary_started.set()
         assert release_summary.wait(timeout=5)
+        agent.context_compressor._proactive_prune_rearm_tokens = 0
         return [
             {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
             {"role": "user", "content": "tail"},
         ]
 
     agent.context_compressor.compress.side_effect = _slow_summary
+    agent.context_compressor._proactive_prune_rearm_tokens = 120_000
     messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
     fence = CompressionCommitFence()
     result = {}
@@ -673,6 +676,7 @@ def test_fence_cancelled_compression_leaves_lock_reacquirable(tmp_path: Path) ->
     # Cancelled attempt: no mutation, and — the invariant under test — the
     # per-session compression lock is fully released.
     assert result["value"][0] is messages
+    assert agent.context_compressor._proactive_prune_rearm_tokens == 120_000
     assert db.get_compression_lock_holder(session_id) is None
 
     # The NEXT attempt (no fence — a manual /compress retry) must be able to
@@ -838,6 +842,100 @@ def test_compression_persists_child_handoff_immediately(tmp_path: Path) -> None:
     assert len(db.get_messages(child_sid)) == len(compressed)
 
 
+
+
+def test_rotation_publish_failure_restores_proactive_prune_runway(
+    tmp_path: Path,
+) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "PRUNE_RUNWAY_ROLLBACK_PARENT"
+    db.create_session(
+        parent_sid,
+        source="cli",
+        model_config={"keep": "value", "_proactive_prune_rearm_tokens": 120_000},
+    )
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+    db.append_messages_batch(parent_sid, messages)
+    for message in messages:
+        message["_db_persisted"] = True
+    agent = _build_agent_with_db(db, parent_sid)
+    agent.context_compressor._proactive_prune_rearm_tokens = 120_000
+
+    def _compress(*_args, **_kwargs):
+        agent.context_compressor._proactive_prune_rearm_tokens = 0
+        return [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "user", "content": "tail"},
+        ]
+
+    agent.context_compressor.compress.side_effect = _compress
+    durable_before = db.get_messages_as_conversation(parent_sid)
+    with patch.object(
+        db,
+        "publish_compression_child",
+        side_effect=RuntimeError("publish failed"),
+    ):
+        returned, _sp = agent._compress_context(
+            messages, "sys", approx_tokens=120_000,
+        )
+
+    assert returned is messages
+    assert agent.session_id == parent_sid
+    assert agent.context_compressor._proactive_prune_rearm_tokens == 120_000
+    assert db.get_messages_as_conversation(parent_sid) == durable_before
+    assert json.loads(db.get_session(parent_sid)["model_config"]) == {
+        "keep": "value",
+        "_proactive_prune_rearm_tokens": 120_000,
+    }
+
+
+def test_full_in_place_compression_atomically_clears_durable_prune_runway(
+    tmp_path: Path,
+) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "IN_PLACE_CLEARS_PRUNE_RUNWAY"
+    db.create_session(
+        session_id,
+        source="cli",
+        model_config={"keep": "value", "_proactive_prune_rearm_tokens": 120_000},
+    )
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+    db.append_messages_batch(session_id, messages)
+    agent = _build_agent_with_db(db, session_id)
+    agent.compression_in_place = True
+    agent.context_compressor._proactive_prune_rearm_tokens = 120_000
+
+    compressed, _sp = agent._compress_context(
+        messages, "sys", approx_tokens=120_000,
+    )
+
+    assert agent.session_id == session_id
+    assert [message["content"] for message in db.get_messages_as_conversation(session_id)] == [
+        message["content"] for message in compressed
+    ]
+    assert json.loads(db.get_session(session_id)["model_config"]) == {"keep": "value"}
+
+
+def test_rotation_child_starts_without_durable_prune_runway(tmp_path: Path) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "ROTATION_CLEARS_PRUNE_RUNWAY"
+    db.create_session(
+        parent_sid,
+        source="cli",
+        model_config={"keep": "parent", "_proactive_prune_rearm_tokens": 120_000},
+    )
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+    db.append_messages_batch(parent_sid, messages)
+    agent = _build_agent_with_db(db, parent_sid)
+
+    agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert agent.session_id != parent_sid
+    child_config = json.loads(db.get_session(agent.session_id)["model_config"])
+    assert "_proactive_prune_rearm_tokens" not in child_config
+    assert json.loads(db.get_session(parent_sid)["model_config"])[
+        "_proactive_prune_rearm_tokens"
+    ] == 120_000
 
 
 @pytest.mark.parametrize("in_place", [False, True])

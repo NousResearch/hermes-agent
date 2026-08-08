@@ -26,6 +26,21 @@ def registry():
     return ProcessRegistry()
 
 
+@pytest.fixture(autouse=True)
+def _reset_systemd_scope_cache():
+    """Reset the cached ``systemd-run --user --scope`` availability flag
+    before each test so a probe run on a real systemd host (where
+    ``INVOCATION_ID`` is set) doesn't leak into tests that mock
+    ``subprocess.Popen``. Tests that exercise the probe directly reset the
+    cache themselves."""
+    import tools.process_registry as _pr
+
+    original = _pr._SYSTEMD_SCOPE_AVAILABLE
+    _pr._SYSTEMD_SCOPE_AVAILABLE = False
+    yield
+    _pr._SYSTEMD_SCOPE_AVAILABLE = original
+
+
 def _make_session(
     sid="proc_test123",
     command="echo hello",
@@ -883,6 +898,54 @@ class TestCheckpoint:
             recovered = registry.recover_from_checkpoint()
             assert recovered == 0
 
+    def test_recover_dead_wrapper_retries_unreaped_systemd_scope(
+        self, registry, tmp_path, monkeypatch
+    ):
+        checkpoint = tmp_path / "procs.json"
+        entry = {
+            "session_id": "proc_dead_scope",
+            "command": "daemonize",
+            "pid": 999999999,
+            "pid_scope": "host",
+            "host_start_time": 123.0,
+            "systemd_unit": "hermes-worker-proc_dead_scope.scope",
+        }
+        checkpoint.write_text(json.dumps([entry]))
+        monkeypatch.setattr(registry, "_host_pid_is_ours", lambda *_args: False)
+        monkeypatch.setattr(registry, "_is_host_pid_alive", lambda *_args: False)
+
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint), patch(
+            "tools.process_registry._stop_systemd_unit", return_value=False
+        ) as stop_unit:
+            assert registry.recover_from_checkpoint() == 0
+
+        stop_unit.assert_called_once_with(entry["systemd_unit"])
+        assert json.loads(checkpoint.read_text()) == [entry]
+
+    def test_recover_dead_wrapper_drops_reaped_systemd_scope(
+        self, registry, tmp_path, monkeypatch
+    ):
+        checkpoint = tmp_path / "procs.json"
+        entry = {
+            "session_id": "proc_dead_scope",
+            "command": "daemonize",
+            "pid": 999999999,
+            "pid_scope": "host",
+            "host_start_time": 123.0,
+            "systemd_unit": "hermes-worker-proc_dead_scope.scope",
+        }
+        checkpoint.write_text(json.dumps([entry]))
+        monkeypatch.setattr(registry, "_host_pid_is_ours", lambda *_args: False)
+        monkeypatch.setattr(registry, "_is_host_pid_alive", lambda *_args: False)
+
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint), patch(
+            "tools.process_registry._stop_systemd_unit", return_value=True
+        ) as stop_unit:
+            assert registry.recover_from_checkpoint() == 0
+
+        stop_unit.assert_called_once_with(entry["systemd_unit"])
+        assert json.loads(checkpoint.read_text()) == []
+
 
     def test_recovery_skips_explicit_sandbox_backed_entries(self, registry, tmp_path):
         checkpoint = tmp_path / "procs.json"
@@ -902,6 +965,26 @@ class TestCheckpoint:
 
             data = json.loads(checkpoint.read_text())
             assert data == []
+
+    def test_checkpoint_redacts_command_with_inline_secret(self, registry, tmp_path):
+        """Issue #77484: the checkpoint file persists raw commands; inline
+        credentials (e.g. ``curl -H 'Authorization: Bearer sk-...'``) must be
+        redacted before write. Recovery only uses command for display/logging
+        (the process is already running), so masking is lossless."""
+        checkpoint = tmp_path / "procs.json"
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            secret = "sk-secret1234567890"
+            command = f"curl -H 'Authorization: Bearer {secret}' http://x"
+            s = _make_session(sid="proc_secret", command=command)
+            s.pid = 12345
+            s.host_start_time = int(time.time())
+            registry._running[s.id] = s
+            registry._write_checkpoint()
+
+            data = json.loads(checkpoint.read_text())
+            assert data[0]["session_id"] == "proc_secret"
+            assert secret not in data[0]["command"]
+            assert data[0]["command"] != command
 
 # =========================================================================
 # Kill process
@@ -1417,6 +1500,24 @@ class TestHandleProcessRedaction:
         out = json.loads(pr._handle_process({"action": "poll", "session_id": sess.id}))
         assert "abc123def456" not in out["output_preview"]
 
+    def test_list_redacts_command_and_output(self, monkeypatch):
+        """`process(action=list)` redacts command + output_preview — issue #77484.
+
+        The list branch previously returned raw ``command[:200]`` and
+        ``output_preview[-200:]`` with no redaction wrap, leaking inline
+        secrets (unlike poll/log/wait/kill).
+        """
+        pr, sess = self._setup(
+            monkeypatch, "curl -H 'Authorization: Bearer sk-abc123def456ghi789jkl012345'",
+            "opaque token sk-proj-AAAABBBBCCCCDDDDEEEEFFFFGGGG output",
+        )
+        out = json.loads(pr._handle_process({"action": "list"}))
+        assert len(out["processes"]) >= 1
+        entry = out["processes"][0]
+        assert "sk-abc123def456ghi789jkl012345" not in entry["command"]
+        assert "sk-proj-AAAABBBBCCCCDDDDEEEEFFFFGGGG" not in entry["output_preview"]
+        assert "curl" in entry["command"]
+
     def test_disabled_passes_through(self, monkeypatch):
         import agent.redact as _r
         monkeypatch.setattr(_r, "_REDACT_ENABLED", False)
@@ -1534,3 +1635,470 @@ class TestReaderLoopOrphanedPipe:
             except (ProcessLookupError, PermissionError):
                 pass
 
+# =========================================================================
+# systemd cgroup isolation for gateway-spawned local executors (#70716)
+# =========================================================================
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: systemd scopes")
+class TestSystemdCgroupIsolation:
+    """Verify spawn_local wraps the worker in ``systemd-run --user --scope``
+    when running under a supervisor and systemd-run is available, and falls
+    back to the legacy ``start_new_session`` path otherwise.
+
+    Issue #70716: local background terminal executors inherit the gateway's
+    cgroup, so an OOM in a memory-heavy worker lets systemd-oomd kill the
+    ENTIRE gateway cgroup, taking down the messaging control plane.
+    """
+
+    def _fake_popen_capture(self):
+        """Return (fake_popen, captured) where captured["argv"] gets the
+        argv passed to subprocess.Popen."""
+        captured = {}
+
+        def fake_popen(argv, **kwargs):
+            captured["argv"] = list(argv)
+            captured["start_new_session"] = kwargs.get("start_new_session")
+            proc = MagicMock()
+            proc.pid = 4321
+            proc.stdout = iter([])
+            proc.stdin = MagicMock()
+            proc.poll.return_value = None
+            return proc
+
+        return fake_popen, captured
+
+    def test_wraps_in_systemd_scope_when_supervisor_and_available(
+        self, registry, monkeypatch
+    ):
+        """Under a supervisor with systemd-run available, the spawn argv is
+        wrapped in ``systemd-run --user --scope --unit=hermes-worker-<id>``."""
+        fake_popen, captured = self._fake_popen_capture()
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: True,
+        )
+        # _build_systemd_scope_argv calls shutil.which — point it at a stub.
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with patch("subprocess.Popen", side_effect=fake_popen), \
+            patch("threading.Thread", return_value=MagicMock()), \
+            patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_local("echo hello", cwd="/tmp")
+
+        argv = captured["argv"]
+        assert argv[0] == "/usr/bin/systemd-run", argv
+        assert "--user" in argv
+        assert "--scope" in argv
+        assert "--quiet" in argv, "systemd-run argv must include --quiet (#70716 gap #3)"
+        assert "--unit" in argv
+        unit_idx = argv.index("--unit")
+        assert argv[unit_idx + 1].startswith("hermes-worker-"), argv
+        assert argv[unit_idx + 1] == f"hermes-worker-{session.id}", argv  # _build_systemd_scope_argv uses bare name
+        properties = [
+            argv[index + 1]
+            for index, value in enumerate(argv[:-1])
+            if value == "--property"
+        ]
+        assert "MemoryAccounting=yes" in properties
+        assert "OOMPolicy=kill" in properties
+        memory_max = next(
+            value for value in properties if value.startswith("MemoryMax=")
+        )
+        assert int(memory_max.split("=", 1)[1]) > 0
+        # The original shell command must still be present at the tail,
+        # after the ``--`` separator that prevents systemd-run from
+        # interpreting command flags as its own.
+        assert "--" in argv, "systemd-run argv must use -- to separate command"
+        sep_idx = argv.index("--")
+        assert "/bin/bash" in argv[sep_idx:]
+        assert "set +m; echo hello" in argv[sep_idx:]
+        # systemd-run owns session/cgroup creation — no start_new_session.
+        assert captured["start_new_session"] is False
+        # The session must record the unit name so kill_process can stop it.
+        assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
+
+    def test_falls_back_when_systemd_run_unavailable(
+        self, registry, monkeypatch
+    ):
+        """Under a supervisor but without systemd-run, fall back to the
+        legacy ``start_new_session=True`` path (worker shares the gateway
+        cgroup)."""
+        fake_popen, captured = self._fake_popen_capture()
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: False,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: True,
+        )
+
+        with patch("subprocess.Popen", side_effect=fake_popen), \
+            patch("threading.Thread", return_value=MagicMock()), \
+            patch.object(registry, "_write_checkpoint"):
+            registry.spawn_local("echo hello", cwd="/tmp")
+
+        argv = captured["argv"]
+        # No systemd-run wrapping — direct shell invocation.
+        assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
+        assert captured["start_new_session"] is True
+
+    def test_falls_back_when_not_under_supervisor(
+        self, registry, monkeypatch
+    ):
+        """CLI mode (no supervisor) must NOT wrap in a systemd scope even if
+        systemd-run is available — isolation is a gateway concern."""
+        fake_popen, captured = self._fake_popen_capture()
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: False,
+        )
+
+        with patch("subprocess.Popen", side_effect=fake_popen), \
+            patch("threading.Thread", return_value=MagicMock()), \
+            patch.object(registry, "_write_checkpoint"):
+            registry.spawn_local("echo hello", cwd="/tmp")
+
+        argv = captured["argv"]
+        assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
+        assert captured["start_new_session"] is True
+
+    def test_systemd_post_spawn_failure_never_kills_gateway_process_group(
+        self, registry, monkeypatch
+    ):
+        """The scope wrapper shares the gateway PG, so cleanup must not killpg."""
+        fake_popen, _captured = self._fake_popen_capture()
+        fake_proc = fake_popen(["placeholder"])
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        broken_reader = MagicMock()
+        broken_reader.start.side_effect = RuntimeError("reader failed")
+
+        with patch("subprocess.Popen", return_value=fake_proc), \
+            patch("threading.Thread", return_value=broken_reader), \
+            patch("tools.process_registry._stop_systemd_unit", return_value=True) as stop_unit, \
+            patch("os.killpg") as killpg, \
+            patch.object(registry, "_write_checkpoint"):
+            with pytest.raises(RuntimeError, match="reader failed"):
+                registry.spawn_local("echo hello", cwd="/tmp")
+
+        stop_unit.assert_called_once()
+        assert stop_unit.call_args.args[0].startswith("hermes-worker-proc_")
+        assert stop_unit.call_args.args[0].endswith(".scope")
+        killpg.assert_not_called()
+
+    def test_pty_spawn_is_wrapped_in_systemd_scope(self, registry, monkeypatch):
+        """Interactive executors receive the same sibling-cgroup isolation."""
+        from ptyprocess import PtyProcess
+
+        fake_pty = MagicMock()
+        fake_pty.pid = 4321
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with patch.object(PtyProcess, "spawn", return_value=fake_pty) as pty_spawn, \
+            patch("threading.Thread", return_value=MagicMock()), \
+            patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
+
+        argv = pty_spawn.call_args.args[0]
+        assert argv[0] == "/usr/bin/systemd-run"
+        assert "--scope" in argv
+        assert "--unit" in argv
+        assert "--" in argv
+        assert argv[-3:] == ["/bin/bash", "-lic", "set +m; codex"]
+        assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
+
+    def test_pty_spawn_failure_reaps_scope_before_distinct_pipe_fallback(
+        self, registry, monkeypatch
+    ):
+        """A failed PTY scope must not collide with the pipe fallback scope."""
+        from ptyprocess import PtyProcess
+
+        events = []
+        fake_proc = MagicMock()
+        fake_proc.pid = 4321
+        fake_proc.stdout = iter([])
+        fake_proc.stdin = MagicMock()
+        fake_proc.poll.return_value = None
+
+        def fake_popen(argv, **_kwargs):
+            events.append(("pipe", list(argv)))
+            return fake_proc
+
+        def fake_stop(unit_name):
+            events.append(("stop", unit_name))
+            return True
+
+        def fail_pty(*_args, **_kwargs):
+            events.append(("pty", None))
+            raise RuntimeError("PTY wrapper failed after scope creation")
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with patch.object(PtyProcess, "spawn", side_effect=fail_pty), \
+            patch("subprocess.Popen", side_effect=fake_popen), \
+            patch("tools.process_registry._stop_systemd_unit", side_effect=fake_stop), \
+            patch("threading.Thread", return_value=MagicMock()), \
+            patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
+
+        assert [event[0] for event in events] == ["pty", "stop", "pipe"]
+        stopped_unit = events[1][1]
+        fallback_argv = events[2][1]
+        assert stopped_unit == f"hermes-worker-{session.id}.scope"
+        unit_idx = fallback_argv.index("--unit")
+        assert fallback_argv[unit_idx + 1] == (
+            f"hermes-worker-{session.id}-pipe-fallback"
+        )
+        assert session.systemd_unit == (
+            f"hermes-worker-{session.id}-pipe-fallback.scope"
+        )
+
+    def test_pty_spawn_failure_does_not_fallback_when_scope_reap_fails(
+        self, registry, monkeypatch
+    ):
+        """Do not launch a duplicate command while the failed PTY scope may live."""
+        from ptyprocess import PtyProcess
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with patch.object(
+            PtyProcess,
+            "spawn",
+            side_effect=RuntimeError("PTY wrapper failed after scope creation"),
+        ), patch("subprocess.Popen") as pipe_spawn, patch(
+            "tools.process_registry._stop_systemd_unit", return_value=False
+        ) as stop_unit:
+            with pytest.raises(RuntimeError, match="could not be reaped"):
+                registry.spawn_local("codex", cwd="/tmp", use_pty=True)
+
+        stop_unit.assert_called_once()
+        pipe_spawn.assert_not_called()
+
+    def test_worker_memory_limit_honors_local_guard_mb_override(self, monkeypatch):
+        import tools.process_registry as pr
+
+        monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "123")
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with patch("tools.process_registry.logger.warning") as warning:
+            argv = pr._build_systemd_scope_argv(
+                ["/bin/bash", "-lc", "true"],
+                unit_suffix="test",
+            )
+
+        warning.assert_not_called()
+        assert f"MemoryMax={123 * 1024 * 1024}" in argv
+
+    def test_worker_memory_limit_caps_oversized_local_guard_override(
+        self, monkeypatch
+    ):
+        import tools.process_registry as pr
+
+        monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "999999")
+        monkeypatch.setattr(
+            pr.Path,
+            "read_text",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("no cgroup")),
+        )
+        monkeypatch.setattr(
+            pr.os,
+            "sysconf",
+            lambda *_args: (_ for _ in ()).throw(OSError("no sysconf")),
+        )
+
+        assert pr._worker_memory_max_bytes() == pr._DEFAULT_WORKER_MEMORY_MAX_BYTES
+
+    def test_kill_recovered_detached_already_exited_stops_persisted_scope(
+        self, registry, monkeypatch
+    ):
+        """Recovered detached sessions whose wrapper PID is gone/recycled must
+        still stop their persisted systemd scope before the already_exited
+        return, while retaining the PID-reuse guard (no PID tree kill)."""
+        session = _make_session(sid="proc_recovered_scope", command="daemonize")
+        session.detached = True
+        session.pid_scope = "host"
+        session.pid = 12345
+        session.host_start_time = 67890
+        session.systemd_unit = "hermes-worker-proc_recovered_scope.scope"
+        registry._running[session.id] = session
+
+        stopped = []
+        terminated = []
+        monkeypatch.setattr(registry, "_host_pid_is_ours", lambda pid, start: False)
+        monkeypatch.setattr(registry, "_terminate_host_pid", lambda pid, start: terminated.append((pid, start)))
+        monkeypatch.setattr("tools.process_registry._stop_systemd_unit", lambda unit: stopped.append(unit) or True)
+
+        with patch.object(registry, "_write_checkpoint"):
+            result = registry.kill_process(session.id)
+
+        assert result["status"] == "already_exited"
+        assert stopped == ["hermes-worker-proc_recovered_scope.scope"]
+        assert terminated == []
+        assert session.exited is True
+        assert session.id in registry._finished
+        assert session.id not in registry._running
+
+    def test_systemd_run_user_scope_available_caches_after_probe(
+        self, registry, monkeypatch
+    ):
+        """The availability check probes once and caches — a second call must
+        not re-probe (and must return the same value)."""
+        import tools.process_registry as pr
+
+        # Reset the cache.
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        probe_calls = []
+
+        def fake_run(*args, **kwargs):
+            probe_calls.append(args)
+            return subprocess.CompletedProcess(args=args[0], returncode=0)
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        first = pr._systemd_run_user_scope_available()
+        second = pr._systemd_run_user_scope_available()
+        assert first is True
+        assert second is True
+        assert len(probe_calls) == 1, "probe must run only once (cached)"
+
+    def test_systemd_scope_first_probe_is_serialized(self, monkeypatch):
+        """Concurrent first-use callers must wait for one definitive probe.
+
+        A temporary cached ``False`` would let a racing worker spawn inside the
+        gateway cgroup, defeating the OOM isolation guarantee.
+        """
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        probe_started = threading.Event()
+        release_probe = threading.Event()
+        probe_calls = []
+        results = []
+
+        def fake_run(*args, **kwargs):
+            probe_calls.append(args)
+            probe_started.set()
+            assert release_probe.wait(timeout=2)
+            return subprocess.CompletedProcess(args=args[0], returncode=0)
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        first = threading.Thread(
+            target=lambda: results.append(pr._systemd_run_user_scope_available())
+        )
+        second = threading.Thread(
+            target=lambda: results.append(pr._systemd_run_user_scope_available())
+        )
+        first.start()
+        assert probe_started.wait(timeout=2)
+        second.start()
+
+        # The racing caller must be blocked behind the probe, not observe a
+        # temporary False cache value.
+        second.join(timeout=0.05)
+        assert second.is_alive()
+
+        release_probe.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert results == [True, True]
+        assert len(probe_calls) == 1
+
+    def test_failed_systemd_probe_retries_after_cache_ttl(self, monkeypatch):
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", 0.0, raising=False)
+        clock = [100.0]
+        probe_results = [1, 0]
+        probe_calls = []
+
+        def fake_run(*args, **kwargs):
+            probe_calls.append(args)
+            return subprocess.CompletedProcess(
+                args=args[0], returncode=probe_results.pop(0)
+            )
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("tools.process_registry.time.monotonic", lambda: clock[0])
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        assert pr._systemd_run_user_scope_available() is False
+        assert pr._systemd_run_user_scope_available() is False
+        assert len(probe_calls) == 1
+
+        clock[0] += 61
+        assert pr._systemd_run_user_scope_available() is True
+        assert len(probe_calls) == 2
+
+    def test_stop_systemd_unit_treats_absent_unit_as_clean(self, monkeypatch):
+        import tools.process_registry as pr
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args=args[0],
+                returncode=5,
+                stderr=b"Unit hermes-worker-gone.scope not loaded.\n",
+            ),
+        )
+
+        assert pr._stop_systemd_unit("hermes-worker-gone.scope") is True

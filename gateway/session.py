@@ -852,6 +852,13 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
+    # Durable ownership marker for the agent turn currently executing on this
+    # routing entry.  A normal unwind clears it with compare-and-swap semantics;
+    # SIGKILL/OOM leaves it behind so the next unclean startup can recover the
+    # exact interrupted session instead of guessing from ``updated_at``.
+    active_turn_token: Optional[str] = None
+    active_turn_started_at: Optional[datetime] = None
+
     # Session-scoped /model override (model/provider/base_url ONLY — never
     # credentials).  ``_session_model_overrides`` in the gateway runner is
     # in-memory, so before this field a gateway restart silently reverted
@@ -888,6 +895,12 @@ class SessionEntry:
                 if self.last_resume_marked_at
                 else None
             ),
+            "active_turn_token": self.active_turn_token,
+            "active_turn_started_at": (
+                self.active_turn_started_at.isoformat()
+                if self.active_turn_started_at
+                else None
+            ),
             "is_fresh_reset": self.is_fresh_reset,
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
@@ -922,6 +935,20 @@ class SessionEntry:
                 last_resume_marked_at = datetime.fromisoformat(_lrma)
             except (TypeError, ValueError):
                 last_resume_marked_at = None
+
+        active_turn_started_at = None
+        _atsa = data.get("active_turn_started_at")
+        if _atsa:
+            try:
+                active_turn_started_at = datetime.fromisoformat(_atsa)
+            except (TypeError, ValueError):
+                active_turn_started_at = None
+        active_turn_token = data.get("active_turn_token")
+        if not isinstance(active_turn_token, str) or not active_turn_token:
+            # The token/timestamp pair is written atomically.  A partial or
+            # malformed pair is not trustworthy enough to auto-resume.
+            active_turn_token = None
+            active_turn_started_at = None
 
         session_key = data["session_key"]
         session_id = data["session_id"]
@@ -965,6 +992,8 @@ class SessionEntry:
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
+            active_turn_token=active_turn_token,
+            active_turn_started_at=active_turn_started_at,
             is_fresh_reset=data.get("is_fresh_reset", False),
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
@@ -1258,6 +1287,14 @@ class SessionStore:
         try:
             from hermes_state import SessionDB
             self._db = SessionDB()
+        except RuntimeError as e:
+            if "live-system guard" in str(e):
+                # Test-isolation guard fired: a pytest-context process
+                # resolved the developer's production state.db. Never
+                # swallow this into the JSONL fallback — the whole point
+                # is a loud, hard failure.
+                raise
+            print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
         except Exception as e:
             print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
 
@@ -1530,7 +1567,18 @@ class SessionStore:
                             "gateway.session: state.db routing save failed: %s", exc
                         )
             if getattr(self, "_write_sessions_json", True) or not db_saved:
-                self._save_sessions_json(data)
+                try:
+                    self._save_sessions_json(data)
+                except Exception as exc:
+                    if not db_saved:
+                        raise
+                    # state.db is authoritative. A failed legacy mirror must not
+                    # report the already-committed primary write as failed.
+                    logger.warning(
+                        "gateway.session: sessions.json mirror save failed "
+                        "after state.db commit: %s",
+                        exc,
+                    )
             self._persisted_routing_generation = generation
             # This rewrite supersedes fast records at or below its
             # generation; newer ones stay for the next delayed full writer.
@@ -1587,7 +1635,13 @@ class SessionStore:
             data, generation = self._snapshot_routing_locked()
         self._persist_routing_data(data, generation)
 
-    def _save_entry(self, session_key: str) -> None:
+    def _save_entry(
+        self,
+        session_key: str,
+        *,
+        entry_data: Optional[Dict[str, Any]] = None,
+        lock_held: bool = False,
+    ) -> None:
         """Persist ONE routing entry via UPSERT — the per-turn fast path.
 
         The steady-state turn only bumps ``updated_at`` /
@@ -1628,13 +1682,34 @@ class SessionStore:
         - No DB, or a failed upsert, falls back to the full rewrite so
           DB-less installs keep sessions.json — their primary store —
           durable every turn.
+
+        ``entry_data`` lets a failure-atomic metadata transition persist a
+        candidate before publishing it to the live entry.  Its full-save
+        fallback carries the same candidate instead of re-snapshotting the
+        unchanged live value.
         """
-        with self._lock:
+        def _capture() -> Optional[tuple[str, int, Optional[Dict[str, Any]]]]:
             entry = self._entries.get(session_key)
             if entry is None:
-                return
-            entry_json = json.dumps(entry.to_dict())
+                return None
+            serialized_entry = (
+                dict(entry_data) if entry_data is not None else entry.to_dict()
+            )
+            entry_json = json.dumps(serialized_entry)
             revision = self._next_routing_generation_locked()
+            # Don't eagerly build the O(n) full snapshot — only the candidate
+            # is needed for the DB upsert.  The fallback is deferred to the
+            # except branch below where it's actually used.
+            return entry_json, revision, serialized_entry if entry_data is not None else None
+
+        if lock_held:
+            captured = _capture()
+        else:
+            with self._lock:
+                captured = _capture()
+        if captured is None:
+            return
+        entry_json, revision, candidate_entry = captured
         _db = getattr(self, "_db", None)
         saver = getattr(_db, "save_gateway_routing_entry", None) if _db else None
         if callable(saver):
@@ -1662,7 +1737,26 @@ class SessionStore:
                     "(%s); falling back to full index rewrite",
                     session_key, exc,
                 )
-        self._save_entries()
+        if candidate_entry is not None:
+            # DB upsert failed (or no DB): build the full snapshot now, carrying
+            # the candidate entry so the fallback persists the intended
+            # transition rather than re-snapshotting the unchanged live value.
+            if lock_held:
+                # Caller already holds _lock — build snapshot in-place.
+                fallback_data: Dict[str, Any] = {
+                    key: current.to_dict()
+                    for key, current in self._entries.items()
+                }
+            else:
+                with self._lock:
+                    fallback_data = {
+                        key: current.to_dict()
+                        for key, current in self._entries.items()
+                    }
+            fallback_data[session_key] = candidate_entry
+            self._persist_routing_data(fallback_data, revision)
+        else:
+            self._save_entries()
 
     def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
         """Return the profile namespace for session keys, or None when off.
@@ -2748,6 +2842,142 @@ class SessionStore:
                 return True
         return False
 
+    def mark_turn_active(self, session_key: str) -> Optional[str]:
+        """Persist exact ownership of the agent turn running for *session_key*.
+
+        The opaque token is returned to the caller and must be supplied to
+        :meth:`clear_turn_active`.  Re-marking replaces the previous token so
+        a stale asynchronous unwind cannot clear a newer turn.
+        """
+        token = uuid.uuid4().hex
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return None
+            now = _now()
+            candidate = entry.to_dict()
+            candidate["active_turn_token"] = token
+            candidate["active_turn_started_at"] = now.isoformat()
+            # Keep the legacy 120-second startup heuristic effective during a
+            # rolling downgrade/upgrade window where an older binary cannot
+            # understand the exact marker fields.
+            candidate["updated_at"] = now.isoformat()
+
+            # Persist before publishing the marker in memory.  If the durable
+            # write raises, a later unrelated save cannot leak an unowned token.
+            self._save_entry(
+                session_key,
+                entry_data=candidate,
+                lock_held=True,
+            )
+            entry.active_turn_token = token
+            entry.active_turn_started_at = now
+            entry.updated_at = now
+        return token
+
+    def clear_turn_active(self, session_key: str, token: str) -> bool:
+        """Compare-and-swap clear an active-turn marker.
+
+        Returns ``False`` when the entry disappeared or a newer turn owns it.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None or entry.active_turn_token != token:
+                return False
+            candidate = entry.to_dict()
+            candidate["active_turn_token"] = None
+            candidate["active_turn_started_at"] = None
+
+            # Keep the live token until the clear is durable.  A failed write
+            # therefore remains retryable instead of becoming a false mismatch.
+            self._save_entry(
+                session_key,
+                entry_data=candidate,
+                lock_held=True,
+            )
+            entry.active_turn_token = None
+            entry.active_turn_started_at = None
+        return True
+
+    def recover_interrupted_turns(
+        self,
+        max_age_seconds: int = 60 * 60,
+    ) -> int:
+        """Promote exact crash-left turn markers into ``resume_pending``.
+
+        This must only be called by the unclean-startup path.  Old or invalid
+        markers are cleared without resuming so a downgrade/re-upgrade cycle
+        cannot revive arbitrarily stale work.  Explicitly suspended sessions
+        are likewise never re-armed.
+
+        Returns the number of newly promoted sessions.
+        """
+        from datetime import timedelta
+
+        now = _now()
+        max_age = timedelta(seconds=max(0, max_age_seconds))
+        promoted = 0
+        changed = False
+
+        with self._lock:
+            self._ensure_loaded_locked()
+            for entry in self._entries.values():
+                if not entry.active_turn_token:
+                    continue
+
+                started_at = entry.active_turn_started_at
+                try:
+                    marker_is_stale = (
+                        started_at is None
+                        or (max_age_seconds > 0 and now - started_at > max_age)
+                    )
+                except TypeError:
+                    # Mixed aware/naive timestamps are invalid for this local
+                    # marker.  Clear rather than risking an unsafe old resume.
+                    marker_is_stale = True
+
+                if not marker_is_stale and not entry.suspended:
+                    if entry.resume_pending:
+                        # A drain-timeout marker is more specific than the
+                        # generic crash reason; preserve it and its freshness.
+                        if entry.last_resume_marked_at is None:
+                            entry.last_resume_marked_at = now
+                    else:
+                        entry.resume_pending = True
+                        entry.resume_reason = "restart_interrupted"
+                        # Freshness starts when recovery is discovered, not
+                        # when a potentially hours-long turn began.
+                        entry.last_resume_marked_at = now
+                        promoted += 1
+
+                entry.active_turn_token = None
+                entry.active_turn_started_at = None
+                changed = True
+
+            if changed:
+                # Cold-start batch: one durable rewrite is clearer and cheaper
+                # than an upsert per interrupted routing entry.
+                self._save()
+
+        return promoted
+
+    def discard_active_turn_markers(self) -> int:
+        """Clear orphan turn markers after a verified clean shutdown."""
+        cleared = 0
+        with self._lock:
+            self._ensure_loaded_locked()
+            for entry in self._entries.values():
+                if not entry.active_turn_token and entry.active_turn_started_at is None:
+                    continue
+                entry.active_turn_token = None
+                entry.active_turn_started_at = None
+                cleared += 1
+            if cleared:
+                self._save()
+        return cleared
+
     def mark_resume_pending(
         self,
         session_key: str,
@@ -3354,11 +3584,24 @@ class SessionStore:
             logger.debug("has_platform_message_id lookup failed", exc_info=True)
             return False
 
-    def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> bool:
+    def rewrite_transcript(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+        active_only: bool = False,
+    ) -> bool:
         """Replace the entire transcript for a session with new messages.
 
-        Used by /retry, /undo, and /compress to persist modified conversation
-        history. state.db is the canonical store.
+        Used by /retry and /compress to persist modified conversation
+        history. state.db is the canonical store. (/undo is not a caller:
+        it soft-archives rows via rewind_session / rewind_to_message.)
+
+        DESTRUCTIVE by default: ``replace_messages(active_only=False)``
+        DELETEs every row for the session, including the soft-archived
+        compaction history that archive_and_compact() keeps on disk
+        (#38763). Callers rewriting the live transcript of a session that
+        may carry archived rows must pass ``active_only=True`` so only the
+        live rows are replaced.
 
         Returns ``True`` when the write lands (or there is no DB to write to)
         and ``False`` when the canonical write fails. Most callers can ignore
@@ -3371,7 +3614,7 @@ class SessionStore:
             return True
         self._clear_dirty_transcript(session_id)
         try:
-            self._db.replace_messages(session_id, messages)
+            self._db.replace_messages(session_id, messages, active_only=active_only)
             return True
         except Exception as e:
             logger.debug("Failed to rewrite transcript in DB: %s", e)

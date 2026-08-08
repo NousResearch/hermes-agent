@@ -1739,6 +1739,9 @@ export const ja = defineLocale({
       baseBranchPlaceholder: 'ブランチを検索…',
       baseBranchNone: 'ブランチが見つかりません',
       startWorkFailed: 'ワークツリーを作成できませんでした',
+      worktreeProjectLabel: 'プロジェクト',
+      worktreeProjectPlaceholder: 'プロジェクトを検索…',
+      worktreeProjectNone: 'フォルダのあるプロジェクトがありません',
       convertBranch: 'ブランチを変換…',
       convertBranchTitle: 'ブランチを変換',
       convertBranchDesc: 'チェックアウト済みのブランチを開くか、空いているブランチのワークツリーを作成します。',
@@ -1747,6 +1750,7 @@ export const ja = defineLocale({
       branchOpenExisting: '開く',
       branchSwitchHome: 'ホームを切替',
       branchCreateWorktree: '新しいワークツリー',
+      branchTrackRemote: 'リモートを追跡',
       branchesLoading: 'ブランチを読み込み中…',
       noBranches: 'ブランチが見つかりません',
       removeWorktree: 'ワークツリーを削除',
@@ -2401,10 +2405,6 @@ export const ja = defineLocale({
 
   preview: {
     tab: 'プレビュー',
-    closeTab: label => `${label} を閉じる`,
-    closeOthers: '他を閉じる',
-    closeToRight: '右側を閉じる',
-    closeAll: 'すべて閉じる',
     closePane: 'プレビューペインを閉じる',
     loading: 'プレビューを読み込み中',
     unavailable: 'プレビューは利用できません',

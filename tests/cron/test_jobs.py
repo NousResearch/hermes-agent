@@ -20,9 +20,11 @@ from cron.jobs import (
     mark_job_run,
     advance_next_run,
     claim_dispatch,
+    claim_job_for_fire,
     heartbeat_run_claim,
     get_due_jobs,
     save_job_output,
+    _hermes_now,
 )
 
 
@@ -260,7 +262,85 @@ class TestPauseResumeJob:
         assert paused["enabled"] is False
         assert paused["state"] == "paused"
         assert paused["paused_reason"] == "user paused"
+        assert paused.get("paused_at")
 
+    def test_pause_is_authoritative_due_jobs_do_not_fire(self, tmp_cron_dir):
+        """Behavioural invariant: after pause, a past-due job must not be due.
+
+        Checks that last_run_at cannot advance via the scheduler path — not
+        merely that pause() returned success. Regression for the 07-30 outage
+        where state=paused coexisted with enabled=true and jobs kept firing.
+        """
+        job = create_job(prompt="Must not fire while paused", schedule="every 1h")
+        past = (_hermes_now() - timedelta(hours=2)).isoformat()
+        # Force the job overdue, then pause.
+        updated = update_job(job["id"], {"next_run_at": past})
+        assert updated["enabled"] is True
+        assert job["id"] in {j["id"] for j in get_due_jobs()}
+
+        paused = pause_job(job["id"], reason="outage freeze")
+        assert paused["enabled"] is False
+        assert paused["state"] == "paused"
+        assert paused.get("paused_at")
+        # Scheduler-honoured flag and pause markers must never contradict.
+        assert not (paused.get("enabled") and paused.get("paused_at"))
+
+        due_ids = {j["id"] for j in get_due_jobs()}
+        assert job["id"] not in due_ids
+
+        before = get_job(job["id"])
+        assert before["last_run_at"] is None or before["last_run_at"] == job.get("last_run_at")
+        # claim path also closed
+        assert claim_job_for_fire(job["id"]) is False
+        after = get_job(job["id"])
+        assert after["last_run_at"] == before.get("last_run_at")
+        assert after["enabled"] is False
+
+    def test_contradictory_half_pause_self_disables_and_does_not_fire(self, tmp_cron_dir):
+        """enabled=true + paused_at must not fire; scan heals enabled=false."""
+        now = _hermes_now()
+        job = {
+            "id": "half-paused-1",
+            "name": "half-paused",
+            "prompt": "should never run",
+            "schedule": {"kind": "interval", "minutes": 5, "display": "every 5m"},
+            "schedule_display": "every 5m",
+            "repeat": {"times": None, "completed": 0},
+            # The contradiction from the 07-30 outage:
+            "enabled": True,
+            "state": "paused",
+            "paused_at": (now - timedelta(hours=20)).isoformat(),
+            "paused_reason": "operator thought this was frozen",
+            "next_run_at": (now - timedelta(hours=1)).isoformat(),
+            "last_run_at": None,
+            "last_status": None,
+            "last_error": None,
+            "last_delivery_error": None,
+            "created_at": (now - timedelta(days=1)).isoformat(),
+            "deliver": "local",
+        }
+        save_jobs([job])
+
+        # Display must NOT say paused while enabled (honest list).
+        from cron.jobs import effective_job_state, list_jobs
+
+        assert effective_job_state(job) == "scheduled"
+        listed = {j["id"]: j for j in list_jobs(include_disabled=True)}
+        # Honest list: enabled=true half-pause must not render as paused.
+        assert listed["half-paused-1"]["enabled"] is True
+        assert listed["half-paused-1"]["state"] != "paused"
+
+        assert claim_job_for_fire("half-paused-1") is False
+        due = get_due_jobs()
+        assert "half-paused-1" not in {j["id"] for j in due}
+
+        healed = get_job("half-paused-1")
+        assert healed is not None
+        assert healed["enabled"] is False
+        assert healed["state"] == "paused"
+        assert healed.get("paused_at")
+        # Still not due after heal
+        assert "half-paused-1" not in {j["id"] for j in get_due_jobs()}
 
     def test_resume_rejects_past_oneshot(self, tmp_cron_dir, monkeypatch):
         """Resuming a paused one-shot whose time is now in the past must raise

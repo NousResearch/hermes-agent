@@ -3183,6 +3183,7 @@ def write_platform_config_field(
 TERMINAL_CONFIG_ENV_MAP = {
     "backend": "TERMINAL_ENV",
     "modal_mode": "TERMINAL_MODAL_MODE",
+    "degraded_mode": "TERMINAL_DEGRADED_MODE",
     "cwd": "TERMINAL_CWD",
     "timeout": "TERMINAL_TIMEOUT",
     "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
@@ -3228,6 +3229,18 @@ def terminal_config_env_var_for_key(key: str) -> Optional[str]:
     return TERMINAL_CONFIG_ENV_MAP.get(key[len(prefix):])
 
 
+def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
+    """Return whether the remote SSH shell must expand *cwd* itself.
+
+    Expanding ``~`` on the Hermes host rewrites it to the host or container
+    home before SSH sees it. Preserve ``~`` and ``~/...`` so they follow the
+    user selected by the SSH connection.
+    """
+    if (backend or "").strip().lower() != "ssh":
+        return False
+    return cwd == "~" or cwd.startswith("~/")
+
+
 def apply_terminal_config_to_env(
     *,
     env: Optional[Dict[str, str]] = None,
@@ -3264,6 +3277,15 @@ def apply_terminal_config_to_env(
     # override existing env values; keys inherited from DEFAULT_CONFIG are
     # backfill-only.
     explicit_keys = terminal_cfg.keys() if config is not None else raw_terminal_cfg.keys()
+    backend_is_explicit = config is not None or "backend" in raw_terminal_cfg
+    if backend_is_explicit:
+        terminal_backend = str(
+            terminal_cfg.get("backend") or target.get("TERMINAL_ENV") or ""
+        )
+    else:
+        terminal_backend = str(
+            target.get("TERMINAL_ENV") or terminal_cfg.get("backend") or ""
+        )
 
     for cfg_key, env_var in TERMINAL_CONFIG_ENV_MAP.items():
         if cfg_key not in terminal_cfg:
@@ -3273,7 +3295,9 @@ def apply_terminal_config_to_env(
             raw_cwd = str(value or "").strip()
             if raw_cwd in {".", "auto", "cwd"}:
                 continue
-            if isinstance(value, str):
+            if isinstance(value, str) and not _is_ssh_remote_tilde_cwd(
+                terminal_backend, raw_cwd
+            ):
                 value = os.path.expanduser(value)
         if (should_override and cfg_key in explicit_keys) or env_var not in target:
             target[env_var] = _terminal_env_value(value)

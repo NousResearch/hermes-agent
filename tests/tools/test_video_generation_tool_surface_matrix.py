@@ -148,6 +148,14 @@ def test_fal_text_only_routes_to_text_endpoint(matrix_env, family_id):
         {"prompt": "a dog running"},
     )
 
+    # Image-only families (e.g. gemini-omni-flash) must reject text-only
+    # jobs with a clean modality error instead of submitting anywhere.
+    if not FAL_FAMILIES[family_id].get("text_endpoint"):
+        assert result["success"] is False, family_id
+        assert result.get("error_type") == "modality_unsupported", result
+        assert not fal_calls, f"{family_id} submitted despite no text endpoint"
+        return
+
     assert result["success"] is True, f"{family_id}: {result.get('error')}"
     assert result["modality"] == "text"
     assert result["provider"] == "fal"

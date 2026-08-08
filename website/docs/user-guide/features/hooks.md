@@ -1278,6 +1278,11 @@ def my_callback(
 
 **Use cases:** Apply a personality/vocabulary transform (pirate-speak, Spongebob), redact user-specific identifiers from the final text, append a project-specific signature footer, enforce a house style guide without burning tokens on SOUL instructions.
 
+When CLI streaming is enabled, an append-only transform is printed after the
+streamed body. A transform that replaces the response is printed in full after
+the streamed body, labeled as a post-stream transformation, so replacement
+content is never silently lost.
+
 ```python
 import os, re
 
@@ -1329,11 +1334,13 @@ hooks:
     - matcher: "<regex>"         # Optional; used for pre/post_tool_call only
       command: "<shell command>" # Required; runs via shlex.split, shell=False
       timeout: <seconds>         # Optional; default 60, capped at 300
+      fail_closed: <bool>        # Optional; default false. pre_tool_call only.
+                                 # `failClosed` also accepted (Cursor/Claude Code compat)
 
 hooks_auto_accept: false         # See "Consent model" below
 ```
 
-Event names must be one of the [plugin hook events](#plugin-hooks); typos produce a "Did you mean X?" warning and are skipped. Unknown keys inside a single entry are ignored; missing `command` is a skip-with-warning. `timeout > 300` is clamped with a warning.
+Event names must be one of the [plugin hook events](#plugin-hooks); typos produce a "Did you mean X?" warning and are skipped. Unknown keys inside a single entry are ignored; missing `command` is a skip-with-warning. `timeout > 300` is clamped with a warning. `fail_closed: true` on an event other than `pre_tool_call` warns and is ignored (only blocking-capable events can fail closed).
 
 ### JSON wire protocol
 
@@ -1372,6 +1379,50 @@ Each time the event fires, Hermes spawns a subprocess for every matching hook (m
 ```
 
 Malformed JSON, non-zero exit codes, and timeouts log a warning but never abort the agent loop.
+
+### Exit code 2 = block (Claude Code / Cursor compatible)
+
+A `pre_tool_call` hook that exits with code **2** blocks the tool call even when its stdout carries no block JSON. The block message is resolved in priority order:
+
+1. stdout block JSON (`reason` / `message`), when present;
+2. the first 400 characters of stderr;
+3. a generic `"Blocked by shell hook."` default.
+
+So the simplest possible blocking hook is:
+
+```bash
+#!/usr/bin/env bash
+echo "policy violation: rm -rf is not permitted" >&2
+exit 2
+```
+
+For events whose block directive is not honored (everything except `pre_tool_call`), exit 2 is treated like any other non-zero exit: a warning is logged and stdout is still parsed.
+
+### Fail-open vs fail-closed
+
+By default shell hooks **fail open**: a spawn error, timeout, or unparseable stdout logs a warning and the action proceeds. That is the right default for observability hooks — but wrong for security gates. A crashed secret-scanner must not silently allow the tool call it was supposed to vet.
+
+Set `fail_closed: true` (or `failClosed: true`, the Cursor/Claude Code spelling) on a `pre_tool_call` entry to invert that:
+
+```yaml
+hooks:
+  pre_tool_call:
+    - matcher: "terminal|write_file|patch"
+      command: "~/.hermes/agent-hooks/secret-scan.sh"
+      timeout: 10
+      fail_closed: true
+```
+
+With `fail_closed: true`, each of these now **blocks** the tool call with `hook <command> failed closed: <reason>`:
+
+| Failure | Fail-open (default) | `fail_closed: true` |
+|---------|--------------------|--------------------|
+| Command not found / not executable | warn, proceed | **block** |
+| Timeout | warn, proceed | **block** |
+| Non-JSON stdout (e.g. a stack trace) | warn, proceed | **block** |
+| Clean exit, valid no-op JSON (`{}`) | proceed | proceed |
+
+`fail_closed` only applies to blocking-capable events (`pre_tool_call` today); setting it on any other event logs a warning at config-parse time and is ignored. `hermes hooks test` reflects these semantics — the `parsed` line shows exactly the block shape the dispatcher would receive.
 
 ### Worked examples
 

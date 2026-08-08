@@ -197,8 +197,14 @@ def test_initial_connect_failure_revives_same_registered_server(monkeypatch, tmp
         _cleanup_mcp_state(mcp_tool, created)
 
 
-def test_terminal_initial_failure_is_not_retained(monkeypatch, tmp_path):
-    """A non-recoverable startup error must not leave a dead cache entry."""
+def test_initial_auth_failure_is_retained_and_reaped(monkeypatch, tmp_path):
+    """An auth failure must stay parked (revivable) and reap on shutdown.
+
+    A 401 used to end the run task outright, which dropped the only listener
+    on ``_reconnect_event`` — the server could not come back even after the
+    user re-authenticated. It is now retained like any other parked server,
+    and must still tear down cleanly.
+    """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
@@ -216,6 +222,7 @@ def test_terminal_initial_failure_is_not_retained(monkeypatch, tmp_path):
 
     monkeypatch.setattr(mcp_tool, "MCPServerTask", _AuthFailingServerTask)
     monkeypatch.setattr(mcp_tool, "_MCP_AVAILABLE", True)
+    monkeypatch.setattr(mcp_tool, "_PARKED_RETRY_INTERVAL", 3600)
     monkeypatch.setattr(mcp_tool, "_is_auth_error", lambda exc: True)
 
     try:
@@ -223,12 +230,18 @@ def test_terminal_initial_failure_is_not_retained(monkeypatch, tmp_path):
             "auth-failure": {"command": "unused", "connect_timeout": 5}
         }) == []
         assert len(created) == 1
-        assert created[0]._task.done()
+        server = created[0]
+        assert not server._task.done(), (
+            "auth failure ended the run task — the server is unrevivable"
+        )
         with mcp_tool._lock:
-            assert "auth-failure" not in mcp_tool._servers
+            assert mcp_tool._servers["auth-failure"] is server
             assert "terminal authentication failure" in (
                 mcp_tool._server_connect_errors["auth-failure"]
             )
+
+        mcp_tool.shutdown_mcp_servers()
+        assert server._task.done()
     finally:
         _cleanup_mcp_state(mcp_tool, created)
 

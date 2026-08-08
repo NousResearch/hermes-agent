@@ -38,6 +38,25 @@ from hermes_cli.web_models import (
 # Same logger the handlers used before extraction (identical logger object).
 _log = logging.getLogger("hermes_cli.web_server")
 
+# Per-profile session reads report failures in the response's ``errors``
+# array, which the desktop sidebar does not currently surface — during the
+# stale-schema incident that made an empty sidebar look healthy while
+# /api/sessions (which logs) was the only diagnosable trace. Warn once per
+# (profile, message) per process so a persistent failure is loud in
+# errors.log without turning every sidebar poll into log spam.
+_profile_read_warned: set = set()
+
+
+def _warn_profile_read_error(profile: str, exc: Exception) -> None:
+    key = (profile, str(exc))
+    if key in _profile_read_warned:
+        return
+    _profile_read_warned.add(key)
+    _log.warning(
+        "profile session read failed for %r (reported only in the response "
+        "errors array): %s", profile, exc,
+    )
+
 sessions_router = APIRouter()
 router = APIRouter()
 
@@ -47,6 +66,7 @@ _cron_profile_home = late("_cron_profile_home")
 _disable_unselected_skills = late("_disable_unselected_skills")
 _fallback_profile_dicts = late("_fallback_profile_dicts")
 _hub_action_name = late("_hub_action_name")
+_open_session_db_at_path = late("_open_session_db_at_path")
 _profile_setup_command = late("_profile_setup_command")
 _profile_to_dict = late("_profile_to_dict")
 _resolve_profile_dir = late("_resolve_profile_dir")
@@ -92,7 +112,6 @@ def get_profiles_sessions(
     if order not in ("created", "recent"):
         raise HTTPException(status_code=400, detail="order must be one of: created, recent")
 
-    from hermes_state import SessionDB
     from hermes_cli import profiles as profiles_mod
 
     targets: List[Tuple[str, Path]] = []
@@ -132,11 +151,17 @@ def get_profiles_sessions(
         if not db_path.exists():
             continue
         try:
-            # Read-only: this loop runs on every sidebar refresh, so it must
-            # never DDL/write-lock another profile's live DB (see SessionDB
-            # read_only docstring).
-            db = SessionDB(db_path=db_path, read_only=True)
+            # Read-only on the healthy path: this loop runs on every sidebar
+            # refresh, so it must not routinely DDL/write-lock another
+            # profile's live DB (see SessionDB read_only docstring). The
+            # helper's stale-schema probe performs a ONE-TIME writable open
+            # when the store predates a schema addition — the same reconcile
+            # that profile's own backend runs at startup — because read-only
+            # opens skip column reconciliation and would otherwise fail here
+            # on every refresh until something else opened the DB writable.
+            db = _open_session_db_at_path(db_path, read_only=True)
         except Exception as exc:
+            _warn_profile_read_error(name, exc)
             errors.append({"profile": name, "error": str(exc)})
             continue
         try:
@@ -176,6 +201,7 @@ def get_profiles_sessions(
                 s["pinned"] = bool(s.get("pinned"))
                 merged.append(s)
         except Exception as exc:
+            _warn_profile_read_error(name, exc)
             errors.append({"profile": name, "error": str(exc)})
         finally:
             db.close()
@@ -226,7 +252,6 @@ def get_profiles_sessions_sidebar(
     ``min_messages=1`` / ``archived=exclude`` / recency order, matching the
     desktop's per-slice calls.
     """
-    from hermes_state import SessionDB
     from hermes_cli import profiles as profiles_mod
 
     # cron + messaging are cross-profile; recents is scoped to recents_profile.
@@ -290,8 +315,12 @@ def get_profiles_sessions_sidebar(
         if not db_path.exists():
             continue
         try:
-            db = SessionDB(db_path=db_path, read_only=True)
+            # Read-only with the stale-schema heal — same contract as the
+            # per-slice endpoint above (one-time writable reconcile when the
+            # store predates a schema addition, plain read-only otherwise).
+            db = _open_session_db_at_path(db_path, read_only=True)
         except Exception as exc:
+            _warn_profile_read_error(name, exc)
             errors.append({"profile": name, "error": str(exc)})
             continue
         try:
@@ -310,6 +339,7 @@ def get_profiles_sessions_sidebar(
                 _tag(_slice(db, exclude=messaging_exclude_list, cap=messaging_cap), name)
             )
         except Exception as exc:
+            _warn_profile_read_error(name, exc)
             errors.append({"profile": name, "error": str(exc)})
         finally:
             db.close()
@@ -613,7 +643,25 @@ async def get_profile_soul(name: str):
 async def update_profile_soul(name: str, body: ProfileSoulUpdate):
     soul_path = _resolve_profile_dir(name) / "SOUL.md"
     try:
-        soul_path.write_text(body.content, encoding="utf-8")
+        from utils import atomic_write_text
+
+        # PUT replaces the whole persona document from the dashboard editor.
+        # A bare write_text() truncates SOUL.md before the new body lands, and
+        # the paired GET above reports an unreadable file as
+        # ``{"content": "", "exists": False}`` -- so an interrupted save shows
+        # up as "your persona was never set" and the editor's next Save
+        # persists that empty document over it.
+        #
+        # preserve_mode carries an existing file's permission bits and owner
+        # across the replace. create_mode=0o644 covers the first save: named
+        # profiles seed SOUL.md at the umask default (hermes_cli.profiles
+        # chmods only .env to 0600), and SOUL.md is not a secret. (The default
+        # profile's runtime seeder does run it through _secure_file, but that
+        # seeder fires on every load_config, so the file already exists there
+        # and preserve_mode keeps whatever mode it set.)
+        atomic_write_text(
+            soul_path, body.content, preserve_mode=True, create_mode=0o644
+        )
     except OSError as e:
         _log.exception("PUT /api/profiles/%s/soul failed", name)
         raise HTTPException(status_code=500, detail=f"Could not write SOUL.md: {e}")

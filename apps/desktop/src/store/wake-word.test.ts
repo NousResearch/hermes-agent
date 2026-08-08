@@ -77,7 +77,7 @@ describe('toggleWakeWord', () => {
 
     await toggleWakeWord(request)
 
-    expect(request).toHaveBeenCalledWith('wake.start', { persist: true, surface: 'gui' })
+    expect(request).toHaveBeenCalledWith('wake.start', { client_capture: true, persist: true, surface: 'gui' })
     expect($wakeWord.get()).toMatchObject({ listening: true, notice: '', pending: false })
   })
 
@@ -297,7 +297,7 @@ describe('resumeWakeAfterVoice (post-voice reconcile)', () => {
 
     await resumeWakeAfterVoice(request)
 
-    expect(startParams).toEqual([{ surface: 'gui' }])
+    expect(startParams).toEqual([{ client_capture: true, surface: 'gui' }])
   })
 
   it('stops after the resume alone brings the listener back', async () => {

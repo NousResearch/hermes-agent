@@ -870,8 +870,12 @@ def write_profile_meta(
         existing["description"] = description.strip()
     if description_auto is not None:
         existing["description_auto"] = bool(description_auto)
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(existing, f, sort_keys=False, default_flow_style=False)
+    # Atomic write: bare open("w") truncates before the dump, and the read
+    # path above swallows parse errors as {}, so a crashed write would
+    # silently drop unspecified fields on the next call (#51356, #16743).
+    from utils import atomic_yaml_write
+
+    atomic_yaml_write(path, existing, sort_keys=False)
 
 
 # ---------------------------------------------------------------------------

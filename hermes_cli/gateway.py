@@ -290,9 +290,24 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
     except (PermissionError, OSError):
         return False
 
+    # Drain-wait: delegate to the shared PID-exit helper (0.5s poll, bounded).
+    return _wait_for_pid_exit(pid, max(drain_timeout, 1.0))
+
+
+def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
+    """Wait up to ``timeout`` seconds for ``pid`` to leave the process table.
+
+    ``launchctl bootstrap`` of a label whose previous instance is still draining
+    fails with EIO ("already loaded"), so callers that tear the gateway down
+    must wait for the old process to actually exit before re-bootstrapping.
+
+    Returns True once the PID is gone (or was never alive), False on timeout.
+    """
+    if pid <= 0:
+        return True
+
     import time as _time
 
-    deadline = _time.monotonic() + max(drain_timeout, 1.0)
     # IMPORTANT Windows note: ``os.kill(pid, 0)`` is NOT a no-op on
     # Windows — Python's implementation calls ``TerminateProcess(handle, 0)``
     # for sig=0, hard-killing the target. Use the cross-platform
@@ -300,12 +315,13 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
     # WaitForSingleObject on Windows.
     from gateway.status import _pid_exists
 
-    while _time.monotonic() < deadline:
+    deadline = _time.monotonic() + max(timeout, 0.0)
+    while True:
         if not _pid_exists(pid):
             return True
+        if _time.monotonic() >= deadline:
+            return False
         _time.sleep(0.5)
-    # Drain didn't finish in time.
-    return False
 
 
 def _get_ancestor_pids() -> set[int]:
@@ -3873,17 +3889,34 @@ def _append_launchd_reload_log(message: str) -> None:
         pass
 
 
-def _launchctl_label_registered(label: str) -> bool:
-    """True when ``launchctl list <label>`` reports the job as registered."""
+def _launchctl_label_supervising_process(label: str) -> bool:
+    """True when launchd both knows ``label`` AND is running a process for it.
+
+    A bare ``launchctl list <label>`` exit-0 only proves a *definition* is
+    registered — it also returns 0 for ``state = not running`` (macOS 26+),
+    which is why :func:`_probe_launchd_service_running` already insists on a
+    PID. The reload's success check needs the same standard: ending the retry
+    loop on "a definition exists" can report success for a job launchd is not
+    actually running.
+
+    Measured against live launchd (2026-08-05): immediately after ``bootout``
+    the label deregisters within ~1s (rc=113) while the old process keeps
+    draining, so this is NOT what distinguishes a draining instance from a
+    fresh one — waiting for the old PID to exit before bootstrapping is what
+    does that. This check is the narrower guarantee: success means launchd is
+    supervising a live process.
+    """
     try:
         result = subprocess.run(
             ["launchctl", "list", label],
             check=False,
             timeout=10,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
+            text=True, encoding='utf-8', errors='replace',
         )
-        return result.returncode == 0
+        if result.returncode != 0:
+            return False
+        return _parse_launchd_pid_from_list_output(result.stdout) is not None
     except (subprocess.TimeoutExpired, OSError):
         return False
 
@@ -3913,11 +3946,11 @@ def _retry_launchctl_bootstrap_until_registered(
         attempt += 1
         try:
             _launchctl_bootstrap(domain, plist_path, label, timeout=30)
-            if _launchctl_label_registered(label):
+            if _launchctl_label_supervising_process(label):
                 return True
             _append_launchd_reload_log(
                 f"bootstrap attempt {attempt} exited 0 but {domain}/{label} "
-                f"is not registered (launchctl list) — retrying"
+                f"has no supervised process (launchctl list) — retrying"
             )
         except subprocess.CalledProcessError as exc:
             _append_launchd_reload_log(
@@ -4190,8 +4223,9 @@ def refresh_launchd_plist_if_needed() -> bool:
     # (e.g. the agent triggered a self-update via its terminal tool), a direct
     # `launchctl bootout` tears down the service's process group — which
     # includes THIS CLI — before the follow-up `bootstrap` can run. The gateway
-    # then stays unloaded and KeepAlive can't revive it (#43842). Detect that
-    # case and hand the reload to a detached session that survives the bootout.
+    # then stays unloaded and KeepAlive can't revive it (#43842). The reload is
+    # therefore always handed to a detached helper job (see NOTE below — POSIX
+    # ancestry cannot reliably detect the dangerous case, so we no longer try).
     gateway_pid = None
     try:
         from gateway.status import get_running_pid
@@ -4199,9 +4233,21 @@ def refresh_launchd_plist_if_needed() -> bool:
     except Exception:
         gateway_pid = None
 
+    # NOTE: POSIX ancestry is NOT a reliable test for "the bootout will kill us".
+    # What bootout tears down is the launchd job's process *coalition*, and
+    # coalition membership is inherited at spawn — it survives reparenting. A
+    # process the gateway spawned whose intermediate parent has since exited is
+    # reparented to PID 1, so the gateway is no longer an ancestor, yet the
+    # process is still in the coalition and still dies with it. That
+    # misclassification stranded the job on 2026-08-05: the in-process retry loop
+    # below was killed mid-bootstrap (4 attempts, rc=5, no exhaustion line) and
+    # nothing was left to re-register the label, so KeepAlive could not revive it.
+    #
+    # Since the detached helper is also correct when we are genuinely outside the
+    # coalition (just asynchronous), always prefer it and keep the in-process path
+    # only as the fallback for when the helper cannot be spawned.
     if (
         gateway_pid is not None
-        and _is_pid_ancestor_of_current_process(gateway_pid)
         and hasattr(os, "setsid")  # POSIX-only; launchd is macOS so always true here
     ):
         # Delegate to a new session: `start_new_session=True` detaches the
@@ -4239,16 +4285,34 @@ def refresh_launchd_plist_if_needed() -> bool:
         reload_script = (
             f"sleep 2; "
             f"launchctl bootout {shlex.quote(target)} 2>/dev/null; "
+            # Wait for the OLD gateway to actually exit before bootstrapping.
+            # bootout only sends SIGTERM; the gateway then drains in-flight agent
+            # runs (up to agent.restart_drain_timeout), and every bootstrap issued
+            # while it is still draining fails EIO ("already loaded"). Racing the
+            # drain is what burned the retry budget on 2026-08-05.
+            f"_wait_deadline=$(($(date +%s) + {_reload_budget})); "
+            f"while kill -0 {gateway_pid} 2>/dev/null; do "
+            f"  if [ $(date +%s) -ge $_wait_deadline ]; then "
+            f"    echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] old gateway pid {gateway_pid} still alive after {_reload_budget}s drain wait — bootstrapping anyway\" >> {shlex.quote(str(reload_log_path))}; "
+            f"    break; "
+            f"  fi; "
+            f"  sleep 1; "
+            f"done; "
+            # Let launchd finish unregistering the label after the process exits.
             f"sleep 1; "
             f"_deadline=$(($(date +%s) + {_reload_budget})); "
             f"while :; do "
             f"  launchctl bootstrap {shlex.quote(domain)} {shlex.quote(str(plist_path))} 2>/dev/null; "
-            f"  if launchctl list {shlex.quote(label)} >/dev/null 2>&1; then break; fi; "
+            # Require a POSITIVE PID, not just exit 0: a bare `launchctl list`
+            # also succeeds for a registered-but-not-running definition, and a
+            # recently-crashed job reports `"PID" = -1` — both must keep the
+            # loop retrying (mirrors _parse_launchd_pid_from_list_output).
+            f"  if launchctl list {shlex.quote(label)} 2>/dev/null | grep -qE '\\\"PID\\\" = [0-9]+;'; then break; fi; "
             f"  echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] bootstrap not yet registered for {shlex.quote(target)} — retrying\" >> {shlex.quote(str(reload_log_path))}; "
             f"  if [ $(date +%s) -ge $_deadline ]; then break; fi; "
             f"  sleep 2; "
             f"done; "
-            f"if ! launchctl list {shlex.quote(label)} >/dev/null 2>&1; then "
+            f"if ! launchctl list {shlex.quote(label)} 2>/dev/null | grep -qE '\\\"PID\\\" = [0-9]+;'; then "
             f"  echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] FAILED launchd reload for {shlex.quote(target)} — service NOT registered after {_reload_budget}s of retries\" >> {shlex.quote(str(reload_log_path))}; "
             f"fi; "
             # Submitted jobs stay registered with launchd after the script
@@ -4282,16 +4346,21 @@ def refresh_launchd_plist_if_needed() -> bool:
                 stderr=subprocess.DEVNULL,
             )
         except Exception as e:
+            # Don't give up — fall through to the in-process bootout/bootstrap
+            # below. It risks being killed mid-reload if we share the gateway's
+            # coalition, but an attempt beats leaving the plist updated and the
+            # service never reloaded.
             logger.warning("Deferred launchd reload could not be spawned: %s", e)
             _append_launchd_reload_log(
-                f"FAILED to spawn launchd reload helper for {target}: {e}"
+                f"FAILED to spawn launchd reload helper for {target}: {e} — "
+                f"falling back to in-process bootout/bootstrap"
             )
-            return False
-        print(
-            "↻ Updated gateway launchd service definition; reload deferred to a "
-            "transient launchd job (refresh ran inside the gateway process tree)"
-        )
-        return True
+        else:
+            print(
+                "↻ Updated gateway launchd service definition; reload deferred to "
+                "a transient launchd job (survives the bootout of this process)"
+            )
+            return True
 
     # Bootout/bootstrap so launchd picks up the new definition. The reported
     # incident (2026-06-26) happened when bootout succeeded but bootstrap
@@ -4310,14 +4379,23 @@ def refresh_launchd_plist_if_needed() -> bool:
     # fixed ~10s: the failure mode occurs while the old gateway is still
     # draining, so a short window can exhaust before launchd settles.
     _reload_budget = max(30.0, _get_restart_drain_timeout())
+    # Wait out the old gateway's drain first, so the retry budget is spent on
+    # real bootstrap failures rather than on EIO ("already loaded") responses
+    # that are guaranteed while the previous instance is still shutting down.
+    if gateway_pid is not None and not _wait_for_pid_exit(
+        gateway_pid, _reload_budget
+    ):
+        _append_launchd_reload_log(
+            f"old gateway pid {gateway_pid} still alive after "
+            f"{int(_reload_budget)}s drain wait — bootstrapping {target} anyway"
+        )
     _deadline = time.monotonic() + _reload_budget
     if not _retry_launchctl_bootstrap_until_registered(
         domain, plist_path, label, deadline=_deadline
     ):
         _append_launchd_reload_log(
             f"FAILED launchd reload of {target} — service NOT registered after "
-            f"retrying for {int(_reload_budget)}s (refresh ran outside gateway "
-            f"process tree)"
+            f"retrying for {int(_reload_budget)}s (in-process fallback path)"
         )
         logger.error(
             "launchd reload of %s failed — service not registered after %ds of "

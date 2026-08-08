@@ -1,3 +1,5 @@
+import { isCardTool, isFileEditTool, isSilentTool } from '@/lib/tool-render-class'
+
 /**
  * Render cost of one message's content parts, in budget units.
  *
@@ -6,12 +8,24 @@
  * budget (how many of those actually render). Neither can be a message COUNT —
  * counting only parts underpriced a 51KB tool result as "1", so a handful of
  * huge results let a 600KB transcript through the old 300-part cap and drove
- * Chromium's renderer into a GC crash. Characters approximate markdown
- * parsing, text-node allocation, and tool-result formatting; parts approximate
- * component/node count.
+ * Chromium's renderer into a GC crash (#55191). Characters approximate
+ * markdown parsing, text-node allocation, and tool-result formatting; parts
+ * approximate component/node count.
  *
- * Shared so a heavy-but-short session is bounded by the same rule as a
- * long-but-light one (#55191).
+ * The two layers do NOT price a part the same way, because they protect
+ * different things:
+ *
+ *   - The STORE window protects the heap. Every message it admits is
+ *     normalized into the runtime repository whether or not the transcript
+ *     collapses it, so it prices the payload it has to hold: `messageStoreWeight`.
+ *   - The DOM budget protects the paint, and what a turn paints is decided by
+ *     the GROUPING, not by the bytes behind it. A settled run of twelve reads
+ *     is one grey summary line, a thought is one collapsed disclosure, a
+ *     `todo` is hoisted out of the transcript entirely, and a generated image
+ *     is one `<img>` however long its data URL. Charging those their payload
+ *     had the budget counting hundreds of units of work that never mounts, so
+ *     "Show earlier" appeared after two or three tool-heavy turns of a session
+ *     that was painting almost nothing: `messagePaintWeight`.
  */
 
 export const RENDER_WEIGHT_CHARS = 512
@@ -22,36 +36,53 @@ export const RENDER_WEIGHT_CHARS = 512
 // payloads.
 const MAX_MEASURED_MESSAGE_CHARS = 300 * RENDER_WEIGHT_CHARS
 
-const contentWeightCache = new WeakMap<object, number>()
+const storeWeightCache = new WeakMap<object, number>()
+const paintWeightCache = new WeakMap<object, number>()
 const NON_RENDERED_CONTENT_FIELDS = new Set(['id', 'role', 'toolCallId', 'toolName', 'type'])
 
 /**
- * Estimate the synchronous renderer cost of one message's content array.
+ * What a collapsed row costs the DOM: one line of scaffolding.
  *
- * A WeakMap keeps settled history O(message count) on later store updates;
- * both assistant-ui and the session store publish a new content array when a
- * streaming message changes, so the live tail still receives a fresh weight.
+ * A settled tool row is an icon, a title and maybe a count; a settled thought
+ * is a "Thought for 12s" header. Either one keeps its payload behind a
+ * disclosure, and an unopened disclosure mounts none of it. History always
+ * mounts collapsed, and history is exactly what "Show earlier" pages back
+ * through.
  */
-export function messageRenderWeight(content: unknown): number {
-  if (!Array.isArray(content)) {
-    return 1
-  }
+const COLLAPSED_ROW_WEIGHT = 1
 
-  const cached = contentWeightCache.get(content)
+/**
+ * What a fixed-size card costs the DOM.
+ *
+ * A generated image is one `<img>` whether its result carries a path or a
+ * multi-megabyte data URL; a clarify question is a prompt and a few buttons; a
+ * delegation is a header over a one-line ticker. None of them scale with the
+ * payload, so charging characters priced a single image at more than a whole
+ * page of real turns.
+ */
+const CARD_WEIGHT = 6
 
-  if (cached !== undefined) {
-    return cached
-  }
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
 
+/**
+ * Character cost of an arbitrary payload, bounded and cycle-safe.
+ *
+ * `budget` is the characters still worth measuring. It is threaded through a
+ * whole message rather than reset per part, so a message of many huge parts
+ * cannot walk past the ceiling one part at a time.
+ */
+function payloadCharacters(roots: readonly unknown[], budget: number): number {
   const seen = new WeakSet<object>()
-  const pending: unknown[] = [...content]
+  const pending: unknown[] = [...roots]
   let characters = 0
 
-  while (pending.length > 0 && characters < MAX_MEASURED_MESSAGE_CHARS) {
+  while (pending.length > 0 && characters < budget) {
     const value = pending.pop()
 
     if (typeof value === 'string') {
-      characters += Math.min(value.length, MAX_MEASURED_MESSAGE_CHARS - characters)
+      characters += Math.min(value.length, budget - characters)
 
       continue
     }
@@ -77,8 +108,111 @@ export function messageRenderWeight(content: unknown): number {
     }
   }
 
-  const weight = Math.max(1, content.length) + Math.ceil(characters / RENDER_WEIGHT_CHARS)
-  contentWeightCache.set(content, weight)
+  return characters
+}
+
+/** Payload price: one unit per part, plus one per 512 characters it carries. */
+function payloadWeight(parts: readonly unknown[], budget: number): number {
+  return parts.length + Math.ceil(payloadCharacters(parts, budget) / RENDER_WEIGHT_CHARS)
+}
+
+/**
+ * Estimate the cost of holding one message's content array in the runtime.
+ *
+ * A WeakMap keeps settled history O(message count) on later store updates;
+ * both assistant-ui and the session store publish a new content array when a
+ * streaming message changes, so the live tail still receives a fresh weight.
+ */
+export function messageStoreWeight(content: unknown): number {
+  if (!Array.isArray(content)) {
+    return 1
+  }
+
+  const cached = storeWeightCache.get(content)
+
+  if (cached !== undefined) {
+    return cached
+  }
+
+  const weight = Math.max(1, payloadWeight(content, MAX_MEASURED_MESSAGE_CHARS))
+  storeWeightCache.set(content, weight)
+
+  return weight
+}
+
+/**
+ * What one part mounts, priced the way `message-parts.tsx` renders it.
+ *
+ * `measure` prices a payload against the message's shared character ceiling —
+ * only the parts that actually paint their content spend from it.
+ */
+function partPaintWeight(part: unknown, measure: (parts: readonly unknown[]) => number): number {
+  if (!isRecord(part)) {
+    return 1
+  }
+
+  // A thought mounts its header; the reasoning text sits behind it.
+  if (part.type === 'reasoning') {
+    return COLLAPSED_ROW_WEIGHT
+  }
+
+  if (part.type !== 'tool-call') {
+    // Text is markdown the DOM really builds, so it keeps the payload price.
+    return measure([part])
+  }
+
+  const toolName = typeof part.toolName === 'string' ? part.toolName : ''
+
+  if (isSilentTool(toolName)) {
+    return 0
+  }
+
+  if (!isCardTool(toolName)) {
+    return COLLAPSED_ROW_WEIGHT
+  }
+
+  // A diff is the one card that scales: `FileDiffPanel` mounts a row per line,
+  // and a big patch really is the expensive thing in the turn.
+  return isFileEditTool(toolName) ? measure([part]) : CARD_WEIGHT
+}
+
+/**
+ * Estimate what one message's content array actually MOUNTS in the transcript.
+ *
+ * Cached like the store weight: a settled message keeps its number across
+ * later store updates, and a streaming one publishes a fresh array per delta
+ * so the live tail is always re-measured.
+ */
+export function messagePaintWeight(content: unknown): number {
+  if (!Array.isArray(content)) {
+    return 1
+  }
+
+  const cached = paintWeightCache.get(content)
+
+  if (cached !== undefined) {
+    return cached
+  }
+
+  // One character ceiling for the whole message, not one per part — otherwise a
+  // message of many huge parts walks past it one part at a time.
+  let remaining = MAX_MEASURED_MESSAGE_CHARS
+
+  const measure = (parts: readonly unknown[]) => {
+    const characters = payloadCharacters(parts, remaining)
+    remaining -= characters
+
+    return parts.length + Math.ceil(characters / RENDER_WEIGHT_CHARS)
+  }
+
+  let weight = 0
+
+  for (const part of content) {
+    weight += partPaintWeight(part, measure)
+  }
+
+  weight = Math.max(1, weight)
+  paintWeightCache.set(content, weight)
 
   return weight
 }

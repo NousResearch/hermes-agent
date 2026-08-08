@@ -1086,8 +1086,11 @@ export async function startWorkInRepo(
   return { branch: result.branch, path: result.path }
 }
 
-// Local branches for the composer's "convert a branch into a worktree" picker.
-// Empty on a remote backend / non-repo (the Electron probe can't run).
+// Branches for the composer's "convert a branch into a worktree" picker: the
+// local heads, plus the remote-tracking refs that have no local branch yet. A
+// teammate's branch is therefore reachable, and the user does not check it out
+// by hand first.
+// Empty on a remote backend or a non-repo, where the Electron probe cannot run.
 export async function listRepoBranches(repoPath: string): Promise<HermesGitBranch[]> {
   const git = desktopGit()
 
@@ -1138,15 +1141,26 @@ export interface StartWorkSessionRequest {
 
 export const $startWorkSessionRequest = atom<StartWorkSessionRequest | null>(null)
 
-// Keyboard-driven "spin up a new worktree" intent. The composer's coding rail
-// owns the name dialog (it has the active repo + branch context), so a global
-// hotkey just bumps this token; the rail opens its branch-off dialog in
-// response. A monotonic token re-fires even on repeat presses. No-ops off a
-// repo (the rail isn't mounted), which is the right "nothing to branch" outcome.
-export const $newWorktreeRequest = atom(0)
+// The "make a new worktree" intent, from the keyboard or a menu. One dialog is
+// mounted, in the sidebar beside ProjectDialog, and it reads this atom. This
+// mirrors $projectDialog. This atom was a monotonic token that every mounted
+// coding rail subscribed to. N composers on screen therefore gave N stacked
+// dialogs for one ⌘⇧B, and the dialog the user dismissed showed an identical
+// empty one behind it. One mount cannot double-open.
+//
+// `repoPath` is resolved when the dialog opens (see resolveWorktreeRepoPath).
+// It is not read from the rail that received the key, so the dialog always
+// targets the surface the user looks at.
+export interface WorktreeDialogState {
+  repoPath: string
+  /** The base branch selected in a "branch off from X" menu. */
+  base?: string
+}
 
-export function requestNewWorktree(): void {
-  $newWorktreeRequest.set($newWorktreeRequest.get() + 1)
+export const $worktreeDialog = atom<null | WorktreeDialogState>(null)
+
+export function closeWorktreeDialog(): void {
+  $worktreeDialog.set(null)
 }
 
 let startWorkToken = 0

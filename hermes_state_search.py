@@ -25,6 +25,7 @@ from hermes_state_common import (
     MAX_FTS5_QUERY_CHARS,
     SCHEMA_VERSION,
     _FTS_CJK_TRIGGERS,
+    escape_like as _escape_like,
 )
 
 # Moved methods logged under the "hermes_state" logger before the split;
@@ -163,6 +164,16 @@ class SessionSearchMixin:
         The trash tables are PLAIN tables (their vtable parent was demoted
         away during the migration), so chunked DELETE + final DROP involve
         no FTS5 machinery at all. Returns True while teardown work remains.
+
+        Single-column-key trash tables (the common shape — FTS shadow
+        tables carry a rowid/integer PK) are drained with a high-water
+        marker mirroring :meth:`fts_rebuild_step`: each chunk deletes only
+        rows after the previously-drained key, so the per-chunk scan is
+        bounded instead of re-scanning from the start of the table every
+        chunk (O(n²) total on large trash tables, #79324). Compound-key
+        trash tables (multi-column PK) cannot use a scalar high-water
+        comparison, so they keep the legacy chunked ``LIMIT`` delete —
+        those shadow tables are small by construction.
         """
         with self._lock:
             trash = [
@@ -178,11 +189,62 @@ class SessionSearchMixin:
         tbl = trash[0]
 
         def _do(conn):
-            pk_cols = [
-                r[1] for r in conn.execute(f"PRAGMA table_info({tbl})")
+            pk_info = [
+                (r[1], (r[2] or "").upper())
+                for r in conn.execute(f"PRAGMA table_info({tbl})")
                 if r[5] > 0
             ]
+            pk_cols = [name for name, _typ in pk_info]
             key = ", ".join(pk_cols) if pk_cols else "rowid"
+
+            if len(pk_cols) == 1 and (not pk_info or pk_info[0][1] == "INTEGER"):
+                # High-water drain: delete only rows past the marker key.
+                # The marker is read/written inside the same BEGIN IMMEDIATE
+                # transaction as the DELETE, so concurrent callers claim
+                # disjoint key ranges instead of re-deleting. Only integer
+                # PKs can anchor a numeric high-water comparison — the FTS
+                # config shadow table (TEXT pk like 'version') falls back to
+                # the legacy chunked delete below.
+                marker_key = f"fts_teardown_{tbl}_progress"
+                row = conn.execute(
+                    "SELECT value FROM state_meta WHERE key = ?",
+                    (marker_key,),
+                ).fetchone()
+                high_water = int(row[0]) if row is not None else 0
+
+                # Claim the chunk's upper bound: the LAST row of the
+                # LIMIT window, so a full chunk is deleted per step.
+                upper_rows = conn.execute(
+                    f"SELECT {key} FROM {tbl} WHERE {key} > ? "
+                    f"ORDER BY {key} LIMIT {self._FTS_REBUILD_CHUNK_ROWS}",
+                    (high_water,),
+                ).fetchall()
+                if not upper_rows:
+                    # Drained — the DROP is cheap now.
+                    conn.execute(f"DROP TABLE IF EXISTS {tbl}")
+                    conn.execute(
+                        "DELETE FROM state_meta WHERE key = ?", (marker_key,)
+                    )
+                    logger.info("Old FTS shadow table %s torn down.", tbl)
+                    return True
+
+                upper = upper_rows[-1][0]
+                cur = conn.execute(
+                    f"DELETE FROM {tbl} WHERE {key} > ? AND {key} <= ?",
+                    (high_water, upper),
+                )
+                if cur.rowcount > 0:
+                    conn.execute(
+                        "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        (marker_key, str(upper)),
+                    )
+                return True
+
+            # Compound-key or rowid trash table: legacy chunked delete.
+            # These shadow tables are small, so the quadratic re-scan is
+            # not a concern (#79324 keeps the high-water path for the big
+            # single-key tables).
             cur = conn.execute(
                 f"DELETE FROM {tbl} WHERE ({key}) IN "
                 f"(SELECT {key} FROM {tbl} LIMIT {self._FTS_REBUILD_CHUNK_ROWS})"
@@ -1041,19 +1103,33 @@ class SessionSearchMixin:
         active_clause = "" if include_inactive else " AND active = 1"
         # Match CLI/desktop: only real user turns, not timeline bookkeeping.
         display_clause = " AND (display_kind IS NULL OR display_kind = '')"
+        # Legacy standalone compaction handoffs (persisted pre-#80622) are
+        # durable role='user' rows with NO display_kind — SQL can't see them,
+        # so fetch with headroom and drop them in the decode loop below.
+        # Without this, /undo N and rewind pair an in-memory count that
+        # excludes handoffs with a DB pick that includes them, soft-deleting
+        # the wrong turn.
+        fetch_limit = int(limit) * 2 + 5
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT id, timestamp, content FROM messages "
                 "WHERE session_id = ? AND role = 'user'"
                 f"{active_clause}{display_clause} "
                 "ORDER BY id DESC LIMIT ?",
-                (session_id, int(limit)),
+                (session_id, fetch_limit),
             )
             rows = cursor.fetchall()
 
+        from agent.context_compressor import ContextCompressor
+
         result: List[Dict[str, Any]] = []
         for row in rows:
+            if len(result) >= int(limit):
+                break
             decoded = self._decode_content(row["content"])
+            if ContextCompressor._is_context_summary_content(decoded):
+                # Compaction handoff — never a user-originated turn (#80622).
+                continue
             if isinstance(decoded, list):
                 # Multimodal — flatten text parts.
                 text_parts = [
@@ -1730,7 +1806,7 @@ class SessionSearchMixin:
                 token_clauses = []
                 like_params: list = []
                 for tok in non_op_tokens:
-                    esc = tok.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                    esc = _escape_like(tok)
                     token_clauses.append(
                         "(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"
                     )
@@ -1986,7 +2062,7 @@ class SessionSearchMixin:
         where = ["m.id > ? AND m.id <= ?"]
         params: list = [progress, high_water]
         for term in terms:
-            esc = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            esc = _escape_like(term)
             where.append(
                 "(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' "
                 "OR m.tool_calls LIKE ? ESCAPE '\\')"

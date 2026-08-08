@@ -3,6 +3,7 @@ import type { HermesSkin } from '@hermes/shared/skin'
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
@@ -46,6 +47,8 @@ import {
   $currentCwd,
   $currentModel,
   $currentProvider,
+  $selectedStoredSessionId,
+  $sessions,
   sessionMatchesStoredId,
   setCurrentBranch,
   setCurrentCwd,
@@ -56,7 +59,9 @@ import {
   setCurrentUsage,
   setMessages,
   setSessions,
+  setTerminalBackend,
   setTurnStartedAt,
+  setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
 import { dropSessionState } from '@/store/session-states'
@@ -78,6 +83,42 @@ import { hasSessionInfoStatePatch, sessionInfoStatePatch, SUBAGENT_EVENT_TYPES, 
 
 function firstBillingLine(text: string): string {
   return (text || '').split('\n')[0]?.trim() ?? ''
+}
+
+/**
+ * Whether a `session.info` payload's `stored_session_id` may be treated as the
+ * selected conversation's, so its cwd can be claimed for it (#71254).
+ *
+ * Absent is not the same as different: the backend omits the id on a
+ * not-yet-built (`lazy`) session, and refusing there would leave the workspace
+ * marked un-owned for the rest of the conversation. Matching goes through the
+ * lineage (`sessionMatchesStoredId`) so a compression-rotated tip and the root
+ * a pinned-row selection may hold still read as one conversation.
+ */
+function sessionInfoDescribesSelectedSession(storedSessionId: string | undefined): boolean {
+  const infoStoredSessionId = storedSessionId?.trim() || null
+  const selected = $selectedStoredSessionId.get() ?? null
+
+  if (!infoStoredSessionId) {
+    return true
+  }
+
+  // A named session cannot describe a fresh draft. Treating a null selection as
+  // a wildcard let a background tile's `session.info` rehome the draft to the
+  // tile's workspace.
+  if (!selected) {
+    return false
+  }
+
+  if (infoStoredSessionId === selected) {
+    return true
+  }
+
+  // Either id may be the live tip or the lineage root, so ask whether ONE row
+  // answers to both rather than assuming which side rotated.
+  return $sessions
+    .get()
+    .some(session => sessionMatchesStoredId(session, infoStoredSessionId) && sessionMatchesStoredId(session, selected))
 }
 
 /**
@@ -395,7 +436,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           // Active-session model/provider still flows through the session state
           // cache via updateSessionState → syncRuntimeMetadataToView below.
 
-          if (typeof payload?.cwd === 'string') {
+          if (typeof payload?.cwd === 'string' && sessionInfoDescribesSelectedSession(payload.stored_session_id)) {
             // The active session's agent can relocate itself (new repo/worktree
             // via the terminal). When the SAME active session's cwd actually
             // moves, follow it — refresh the project tree + scope so the sidebar
@@ -407,6 +448,14 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             lastCwdInfoSessionRef.current = sessionId
             setCurrentCwd(payload.cwd)
 
+            // The backend just confirmed the selected conversation's real
+            // workspace, so it owns the path we wrote. Without the claim the
+            // marker keeps naming whoever held it before — including the
+            // released state a detached resume leaves behind — and the primary
+            // workspace-derived surfaces stay hidden against a folder the
+            // backend has confirmed (#71254).
+            setWorkspaceCwdOwner($selectedStoredSessionId.get())
+
             if (cwdMoved && sameSession) {
               void followActiveSessionCwd(payload.cwd)
             }
@@ -414,6 +463,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
           if (typeof payload?.branch === 'string') {
             setCurrentBranch(payload.branch)
+          }
+
+          if (typeof payload?.terminal_backend === 'string') {
+            setTerminalBackend(payload.terminal_backend)
           }
 
           if (typeof payload?.personality === 'string') {
@@ -1008,6 +1061,22 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           void $gateway.get()?.request('terminal.read.respond', {
             request_id: requestId,
             text: result ? JSON.stringify(result) : ''
+          })
+        }
+      } else if (event.type === 'preview.read.request') {
+        // read_preview tool: serialize the active preview tab (a Browser
+        // webview's page text is async) and answer. Empty text = nothing open.
+        const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+        if (requestId) {
+          const start = typeof payload?.start === 'number' ? payload.start : undefined
+          const count = typeof payload?.count === 'number' ? payload.count : undefined
+
+          void readActivePreview({ count, start }).then(result => {
+            void $gateway.get()?.request('preview.read.respond', {
+              request_id: requestId,
+              text: result ? JSON.stringify(result) : ''
+            })
           })
         }
       } else if (event.type === 'agent.terminal.output') {

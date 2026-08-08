@@ -37,6 +37,11 @@ Example config::
         url: "https://my-mcp-server.example.com/mcp"
         headers:
           Authorization: "Bearer sk-..."
+        identity_header:       # optional per-user identity header attached
+          name: "X-User-Id"    # to this server's HTTP/SSE requests
+          value_from: "static" # "static" (default) or "profile"
+          value: "alice"       # required for static; profile mode uses the
+                               # active Hermes profile name
         timeout: 180
         skip_preflight: true  # bypass the content-type probe for a valid
                               # Streamable HTTP endpoint that answers HEAD/GET
@@ -437,6 +442,48 @@ def _env_ref_name(ref: str) -> str:
     if ref.startswith("env:"):
         ref = ref[len("env:"):].strip()
     return ref
+
+
+def _workspace_folder() -> str:
+    """Best-effort absolute workspace root for ``${workspaceFolder}``.
+
+    Resolution order:
+
+      1. ``tools.file_tools._authoritative_workspace_root()`` — the session's
+         recorded terminal cwd, a registered task/session cwd override, or a
+         sentinel-free absolute ``$TERMINAL_CWD`` (in that order).
+      2. ``os.getcwd()`` as the final fallback when no session anchor exists.
+    """
+    try:
+        from tools.file_tools import _authoritative_workspace_root
+
+        root = _authoritative_workspace_root()
+        if root:
+            return root
+    except Exception:
+        pass
+    return os.getcwd()
+
+
+def _context_var_value(ref: str) -> Optional[str]:
+    """Resolve Cursor-style context variables in ``${...}`` references.
+
+    Supports the case-sensitive names Cursor's ``mcp.json`` interpolation
+    understands beyond env vars: ``${userHome}``, ``${workspaceFolder}``,
+    ``${workspaceFolderBasename}``, ``${pathSeparator}`` and its ``${/}``
+    shorthand. Returns ``None`` for anything else so unknown references keep
+    the existing env-var lookup semantics.
+    """
+    if ref == "userHome":
+        return os.path.expanduser("~")
+    if ref == "workspaceFolder":
+        return _workspace_folder()
+    if ref == "workspaceFolderBasename":
+        root = _workspace_folder()
+        return os.path.basename(root.rstrip("/\\")) or root
+    if ref in ("pathSeparator", "/"):
+        return os.sep
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1179,6 +1226,81 @@ def _resolve_client_cert(server_name: str, config: dict):
         return (cert_path, key_path)
     # Single combined PEM file (cert + key in one file).
     return cert_path
+
+
+def _resolve_identity_header(server_name: str, config: dict):
+    """Resolve the optional per-server ``identity_header`` config.
+
+    Config shape (in the server's ``mcp_servers`` entry)::
+
+        identity_header:
+          name: "X-User-Id"
+          value_from: "static"   # or "profile"; default: static
+          value: "alice"         # required when value_from is static
+
+    Returns a ``(header_name, header_value)`` tuple, or ``None`` when the
+    key is unset or invalid. Invalid configs warn and are ignored — an
+    identity header must never break the server connection. ``profile``
+    mode resolves the value to the active Hermes profile name once at
+    connect time; there is no per-call mutation.
+    """
+    raw = config.get("identity_header")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        logger.warning(
+            "MCP server '%s': identity_header must be a mapping with "
+            "'name' and 'value'/'value_from' keys (got %s) — ignoring",
+            server_name, type(raw).__name__,
+        )
+        return None
+    name = raw.get("name")
+    if not isinstance(name, str) or not name.strip():
+        logger.warning(
+            "MCP server '%s': identity_header requires a non-empty "
+            "'name' — ignoring", server_name,
+        )
+        return None
+    value_from = (raw.get("value_from") or "static").strip().lower()
+    if value_from == "static":
+        value = raw.get("value")
+        if not isinstance(value, str) or not value.strip():
+            logger.warning(
+                "MCP server '%s': identity_header with value_from: static "
+                "requires a non-empty string 'value' — ignoring",
+                server_name,
+            )
+            return None
+        return (name.strip(), value)
+    if value_from == "profile":
+        from hermes_cli.profiles import get_active_profile_name
+        return (name.strip(), get_active_profile_name())
+    logger.warning(
+        "MCP server '%s': identity_header value_from must be 'static' or "
+        "'profile' (got %r) — ignoring", server_name, value_from,
+    )
+    return None
+
+
+def _apply_identity_header(server_name: str, config: dict, headers: dict) -> dict:
+    """Merge the resolved identity header into ``headers`` (in place).
+
+    An explicit per-server ``headers`` entry with the same name (any
+    casing) wins — the identity header never silently overrides user
+    config.
+    """
+    resolved = _resolve_identity_header(server_name, config)
+    if resolved is None:
+        return headers
+    name, value = resolved
+    if any(key.lower() == name.lower() for key in headers):
+        logger.debug(
+            "MCP server '%s': identity_header '%s' already set via explicit "
+            "headers config — keeping the explicit value", server_name, name,
+        )
+        return headers
+    headers[name] = value
+    return headers
 
 
 def _format_connect_error(exc: BaseException) -> str:
@@ -2376,6 +2498,13 @@ class MCPServerTask:
 
     async def _run_stdio(self, config: dict):
         """Run the server using stdio transport."""
+        if config.get("identity_header") is not None:
+            # Headers don't exist on stdio transports — warn and ignore so a
+            # copy-pasted HTTP config block doesn't silently mislead.
+            logger.warning(
+                "MCP server '%s': identity_header is only supported on "
+                "HTTP/SSE transports — ignored for stdio servers", self.name,
+            )
         if not _MCP_AVAILABLE:
             raise ImportError(
                 f"MCP server '{self.name}' requires the 'mcp' Python SDK, but "
@@ -2437,6 +2566,7 @@ class MCPServerTask:
             command=command,
             args=args,
             env=safe_env if safe_env else None,
+            cwd=config.get("cwd"),
             # On Windows, pipe I/O can deliver non-UTF-8 bytes at chunk
             # boundaries.  Use "replace" to substitute undecodable bytes
             # with U+FFFD instead of crashing with UnicodeDecodeError.
@@ -2760,6 +2890,9 @@ class MCPServerTask:
 
         url = config["url"]
         headers = dict(config.get("headers") or {})
+        # Optional per-user identity header (config-gated; static or
+        # profile-derived). Explicit headers of the same name win.
+        headers = _apply_identity_header(self.name, config, headers)
         # Some MCP servers require MCP-Protocol-Version on the initial
         # initialize request and reject session-less POSTs otherwise.
         # Seed it as a client-level default, but treat user overrides as
@@ -3250,27 +3383,36 @@ class MCPServerTask:
                 # should not permanently kill the server.
                 # (Ported from Kilo Code's MCP resilience fix.)
                 if not self._ready.is_set():
-                    if _is_auth_error(root):
-                        logger.warning(
-                            "MCP server '%s' failed initial OAuth authentication, "
-                            "not retrying automatically: %s: %s",
-                            self.name, type(root).__name__, root,
-                        )
-                        self._error = exc
-                        self._ready.set()
-                        return
-
                     if failure_class == "permanent":
                         # Deterministic failure (bad command, non-MCP URL,
                         # 401/403): every retry hits the same wall. Park
                         # immediately instead of burning the retry ladder
                         # and spamming N identical warnings (#65673).
-                        logger.warning(
-                            "MCP server '%s' failed initial connection with a "
-                            "permanent error, parking without retries "
-                            "(state: connecting → parked): %s: %s",
-                            self.name, type(root).__name__, root,
-                        )
+                        #
+                        # Auth failures park here too rather than returning.
+                        # Returning ends the run task, and with it the only
+                        # listener on ``_reconnect_event`` — so a 401 on the
+                        # very first connect left the server unrevivable for
+                        # the life of the process, even after the user
+                        # re-authenticated with ``hermes mcp login``. Parking
+                        # keeps the task alive so the 300s self-probe (and an
+                        # explicit /mcp refresh) can pick up fresh tokens.
+                        if _is_auth_error(root):
+                            logger.warning(
+                                "MCP server '%s' failed initial authentication, "
+                                "parking until credentials change; re-authenticate "
+                                "with `hermes mcp login %s` "
+                                "(state: connecting → parked): %s: %s",
+                                self.name, self.name,
+                                type(root).__name__, root,
+                            )
+                        else:
+                            logger.warning(
+                                "MCP server '%s' failed initial connection with a "
+                                "permanent error, parking without retries "
+                                "(state: connecting → parked): %s: %s",
+                                self.name, type(root).__name__, root,
+                            )
                         self._error = exc
                         self._ready.set()
                         self._was_parked = True
@@ -3621,6 +3763,150 @@ _server_error_counts: Dict[str, int] = {}
 _server_breaker_opened_at: Dict[str, float] = {}
 _CIRCUIT_BREAKER_THRESHOLD = 3
 _CIRCUIT_BREAKER_COOLDOWN_SEC = 60.0
+
+# ---------------------------------------------------------------------------
+# Trust-tier gating state (per-server trust + per-tool readOnlyHint).
+#
+# ``trust: full | untrusted`` is a per-server key in the MCP server config
+# (config.yaml → mcp_servers.<name>.trust). On an ``untrusted`` server,
+# every WRITE-CAPABLE tool call routes through the existing dangerous-
+# approval surface before the RPC fires. A tool is write-capable unless its
+# discovery-time ``annotations.readOnlyHint`` is exactly ``True``
+# (missing/malformed annotations fail closed to write-capable).
+#
+# Security model (read this before changing defaults):
+# - ``readOnlyHint`` is a HINT supplied by the server itself. A hostile
+#   server can lie. That is precisely why the gate is tiered per-server by
+#   OPERATOR config: on an untrusted server the hint can only ever exempt
+#   tools the server claims are read-only — the worst a lie buys is
+#   skipping approval for calls the operator was already warned about when
+#   they marked the server untrusted. It can never widen access on top of
+#   the approval a write-capable tool would otherwise need.
+# - Default trust for servers with NO ``trust`` key is ``full`` (gate off)
+#   for backward compatibility — existing configs keep working unchanged.
+#   Operators opt servers into gating explicitly with ``trust: untrusted``.
+# - Any unrecognized ``trust`` value normalizes to ``untrusted``
+#   (fail closed): a typo must never silently disable the gate.
+#
+# Classification happens at CALL TIME from data captured at DISCOVERY —
+# no toolset or schema mutation, so the conversation's toolset stays
+# byte-stable and prompt caching is preserved.
+_server_trust_levels: Dict[str, str] = {}
+_tool_read_only_hints: Dict[str, Dict[str, bool]] = {}
+
+_TRUST_FULL = "full"
+_TRUST_UNTRUSTED = "untrusted"
+
+
+def _normalize_server_trust(value: Any) -> str:
+    """Normalize a config ``trust`` value to ``full`` or ``untrusted``.
+
+    Missing (None) → ``full`` (backward-compatible default, documented
+    above). Any string other than the two known tiers → ``untrusted``:
+    a misspelled tier must fail closed, never silently disable gating.
+    """
+    if value is None:
+        return _TRUST_FULL
+    text = str(value).strip().lower()
+    if text == _TRUST_FULL:
+        return _TRUST_FULL
+    if text == _TRUST_UNTRUSTED:
+        return _TRUST_UNTRUSTED
+    logger.warning(
+        "MCP trust: unrecognized trust value %r — treating as 'untrusted' "
+        "(valid values: full, untrusted)", value,
+    )
+    return _TRUST_UNTRUSTED
+
+
+def _annotation_read_only_hint(mcp_tool: Any) -> bool:
+    """Return True only when the tool's annotations carry readOnlyHint=True.
+
+    Accepts both SDK annotation objects (attribute access) and plain dicts
+    (schema-cache JSON). Anything else — missing annotations, missing key,
+    non-bool truthy values — is False: unknown metadata means the tool must
+    be treated as write-capable.
+    """
+    annotations = getattr(mcp_tool, "annotations", None)
+    if annotations is None:
+        return False
+    if isinstance(annotations, dict):
+        hint = annotations.get("readOnlyHint")
+    else:
+        hint = getattr(annotations, "readOnlyHint", None)
+    return hint is True
+
+
+def _record_tool_trust_metadata(
+    server_name: str, config: dict, tools: List[Any]
+) -> None:
+    """Capture per-server trust and per-tool readOnlyHint at discovery."""
+    with _lock:
+        _server_trust_levels[server_name] = _normalize_server_trust(
+            (config or {}).get("trust")
+        )
+        hints = _tool_read_only_hints.setdefault(server_name, {})
+        for tool in tools:
+            name = getattr(tool, "name", None)
+            if name:
+                hints[name] = _annotation_read_only_hint(tool)
+
+
+def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
+    """Consult the approval path for write-capable tools on untrusted servers.
+
+    Returns None when the call may proceed, or an error string (already
+    formatted via ``tool_error``) when the call is blocked. Fail-closed:
+    approval-system errors block the call.
+    """
+    trust = _server_trust_levels.get(server_name, _TRUST_FULL)
+    if trust != _TRUST_UNTRUSTED:
+        return None
+    if _tool_read_only_hints.get(server_name, {}).get(tool_name) is True:
+        return None
+
+    # Lazy import mirrors the elicitation handler's pattern: tools.approval
+    # routes the prompt to whichever surface owns the session (CLI, TUI,
+    # Telegram, Slack, ...) and normalizes the answer.
+    try:
+        from tools.approval import request_elicitation_consent
+
+        answer = request_elicitation_consent(
+            (
+                f"MCP tool '{tool_name}' on UNTRUSTED server "
+                f"'{server_name}' wants to run. This tool is write-capable "
+                f"(no readOnlyHint=true annotation) and may modify external "
+                f"state."
+            ),
+            (
+                f"Server '{server_name}' is configured 'trust: untrusted'. "
+                f"Approve to run '{tool_name}' once, or deny to block it."
+            ),
+            surface=f"mcp-trust/{server_name}",
+        )
+    except Exception as exc:
+        logger.error(
+            "MCP trust gate: approval check failed for %s.%s: %s",
+            server_name, tool_name, exc, exc_info=True,
+        )
+        return tool_error(
+            f"MCP tool '{tool_name}' on untrusted server '{server_name}' "
+            f"was blocked: the approval system was unavailable "
+            f"(fail-closed)."
+        )
+
+    if answer == "accept":
+        return None
+    logger.info(
+        "MCP trust gate: user %s '%s' on untrusted server '%s'",
+        "cancelled" if answer == "cancel" else "denied",
+        tool_name, server_name,
+    )
+    return tool_error(
+        f"The user did not approve running write-capable MCP tool "
+        f"'{tool_name}' on untrusted server '{server_name}'. The command "
+        f"was NOT run. Do not retry without explicit user direction."
+    )
 
 
 def _bump_server_error(server_name: str) -> None:
@@ -4539,16 +4825,23 @@ def _interpolate_env_vars(value):
 
     Both ``${VAR}`` and Cursor-style ``${env:VAR}`` are accepted — the
     ``env:`` prefix is stripped so a doc copied from a Cursor / Claude MCP
-    config resolves the same secret. Resolves from the active profile's secret
-    scope when multiplexing is on (so an MCP server config's ``${API_KEY}``
-    picks up the routed profile's value, not the process-global ``os.environ``
-    which may hold another profile's), falling back to ``os.environ``
-    otherwise. Unset vars keep the literal placeholder, as before.
+    config resolves the same secret. Cursor's context variables are also
+    supported (case-sensitive): ``${userHome}``, ``${workspaceFolder}``,
+    ``${workspaceFolderBasename}``, ``${pathSeparator}`` and ``${/}`` — see
+    :func:`_context_var_value` / :func:`_workspace_folder` for resolution.
+    Env refs resolve from the active profile's secret scope when multiplexing
+    is on (so an MCP server config's ``${API_KEY}`` picks up the routed
+    profile's value, not the process-global ``os.environ`` which may hold
+    another profile's), falling back to ``os.environ`` otherwise. Unset vars
+    keep the literal placeholder, as before.
     """
     from agent.secret_scope import get_secret as _get_secret
 
     if isinstance(value, str):
         def _replace(m):
+            ctx = _context_var_value(m.group(1).strip())
+            if ctx is not None:
+                return ctx
             name = _env_ref_name(m.group(1))
             return _get_secret(name, m.group(0)) or m.group(0)
         return _ENV_VAR_PATTERN.sub(_replace, value)
@@ -4656,8 +4949,8 @@ def _load_mcp_config() -> Dict[str, dict]:
             return {}
         config = load_config()
         servers = config.get("mcp_servers")
-        if not servers or not isinstance(servers, dict):
-            return {}
+        if not isinstance(servers, dict):
+            servers = {}
         # Ensure .env vars are available for interpolation
         try:
             from hermes_cli.env_loader import load_hermes_dotenv
@@ -4670,6 +4963,21 @@ def _load_mcp_config() -> Dict[str, dict]:
             if isinstance(interpolated, dict):
                 _warn_hidden_whitespace(name, interpolated)
                 safe_servers[name] = interpolated
+        try:
+            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+            discover_plugins()
+            portable = get_plugin_manager().get_portable_mcp_servers()
+            for name, cfg in _filter_suspicious_mcp_servers(portable).items():
+                if name in safe_servers:
+                    logger.warning(
+                        "Portable MCP server '%s' conflicts with native config; skipping",
+                        name,
+                    )
+                    continue
+                safe_servers[name] = dict(cfg)
+        except Exception:
+            logger.debug("Failed to load portable MCP servers", exc_info=True)
         return safe_servers
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
@@ -4883,6 +5191,14 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """
 
     def _handler(args: dict, **kwargs) -> str:
+        # Trust-tier gate (security boundary): write-capable tools on
+        # servers configured ``trust: untrusted`` must be approved by the
+        # user before ANY transport work happens — including the lazy
+        # first-use spawn below. A denied call never touches the server.
+        gate_error = _trust_gate_check(server_name, tool_name)
+        if gate_error is not None:
+            return gate_error
+
         # Circuit breaker: if this server has failed too many times
         # consecutively, short-circuit with a clear message so the model
         # stops retrying and uses alternative approaches (#10447).
@@ -5443,6 +5759,19 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
 
         return strip_nullable_unions(node, keep_nullable_hint=True)
 
+    def _collapse_const_unions(node):
+        """Collapse anyOf/oneOf unions of same-typed consts to property enums.
+
+        Delegates to ``tools.schema_sanitizer.collapse_const_unions``. Runs
+        AFTER the nullable strip: single-non-null unions are already collapsed
+        by then, and unions of several const branches plus a null branch are
+        handled here (consts -> enum, null -> ``nullable: true`` hint).
+        Ported from block/goose tool_schema_normalize.rs (Apache-2.0).
+        """
+        from tools.schema_sanitizer import collapse_const_unions
+
+        return collapse_const_unions(node)
+
     def _repair_object_shape(node):
         """Recursively repair object-shaped nodes: fill type, prune required."""
         if isinstance(node, list):
@@ -5483,6 +5812,7 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
 
     normalized = _rewrite_local_refs(schema)
     normalized = _strip_nullable_union(normalized)
+    normalized = _collapse_const_unions(normalized)
     normalized = _repair_object_shape(normalized)
 
     # Ensure top-level is a well-formed object schema
@@ -5854,6 +6184,12 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     check_fn = _make_check_fn(name)
     candidates: List[dict] = []
 
+    # Trust-tier metadata (security boundary): capture the server's
+    # configured trust tier and each tool's readOnlyHint annotation NOW,
+    # at discovery, so the call-time gate in _make_tool_handler classifies
+    # from data we control rather than re-reading server-supplied state.
+    _record_tool_trust_metadata(name, config, server._tools)
+
     for mcp_tool in server._tools:
         if not _should_register(mcp_tool.name):
             logger.debug(
@@ -6006,6 +6342,12 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
                     "name": mcp_tool.name,
                     "description": mcp_tool.description or "",
                     "inputSchema": schema_obj if isinstance(schema_obj, dict) else {},
+                    # Persist the trust-relevant annotation so the lazy
+                    # (cache-registered) path gates identically on next
+                    # startup without spawning the server.
+                    "annotations": {
+                        "readOnlyHint": _annotation_read_only_hint(mcp_tool),
+                    },
                 })
             utility_payload = [
                 {"schema": entry["schema"], "handler_key": entry["handler_key"]}
@@ -6068,6 +6410,22 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
         return True
 
     check_fn = _make_check_fn(name)
+    # Trust-tier metadata for the lazy path: the cached manifest carries
+    # each tool's readOnlyHint (written by the live discovery path), and
+    # trust comes from operator config. Recording it before registration
+    # keeps the call-time gate identical whether the server was spawned
+    # live or registered from cache. Missing "annotations" in older cache
+    # files fails closed to write-capable.
+    cached_tool_objs = [
+        SimpleNamespace(
+            name=raw.get("name"),
+            annotations=raw.get("annotations")
+            if isinstance(raw.get("annotations"), dict) else None,
+        )
+        for raw in tools_from_cache_entry(entry)
+        if isinstance(raw, dict) and raw.get("name")
+    ]
+    _record_tool_trust_metadata(name, config, cached_tool_objs)
     for raw in tools_from_cache_entry(entry):
         if not isinstance(raw, dict):
             continue

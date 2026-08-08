@@ -50,13 +50,34 @@ class PlatformEntry:
     # (e.g. passing extra kwargs, wrapping in try/except).
     adapter_factory: Callable[[Any], Any]
 
-    # Returns True when the platform's dependencies are available.
+    # PASSIVE dependency probe: returns True when the platform's dependencies
+    # are available RIGHT NOW.  Must be side-effect free — it is called from
+    # status displays (``hermes setup``, ``hermes status``, the dashboard
+    # readiness probe) and the config enablement pass, none of which may
+    # trigger a pip install.  Put install logic in ``ensure_deps_fn`` instead.
     check_fn: Callable[[], bool]
 
     # Optional: given a PlatformConfig, is it properly configured?
     # If None, the registry skips config validation and lets the adapter
     # fail at connect() time with a descriptive error.
     validate_config: Optional[Callable[[Any], bool]] = None
+
+    # ACTIVE dependency installer: make the platform's dependencies available,
+    # installing them (pip / lazy_deps) if needed.  Returns True once deps are
+    # importable, False if they could not be installed.  Called by
+    # ``create_adapter()`` when ``check_fn`` returns False — i.e. exactly at
+    # the moment the gateway is about to bring the platform up and the user
+    # has it enabled/configured.  None = no auto-install; a False ``check_fn``
+    # is then a hard block (correct for platforms with no optional deps).
+    #
+    # Why two fields (#79812): when the ACTIVE installer was registered as
+    # ``check_fn``, every status display pip-installed SDKs as a side effect
+    # (desktop boot-loop at 94%, see gateway/config.py enablement comments);
+    # when the PASSIVE probe was registered instead, ``create_adapter()``
+    # returned None before ``connect()`` could lazy-install, so the deps
+    # never installed at all (Teams deadlock).  Splitting the two roles makes
+    # both call sites correct by construction.
+    ensure_deps_fn: Optional[Callable[[], bool]] = None
 
     # Optional: given a PlatformConfig, is the platform connected/enabled?
     # Used by ``GatewayConfig.get_connected_platforms()`` and setup UI status.
@@ -280,7 +301,8 @@ class PlatformRegistry:
 
         Returns None if:
         - No entry registered for *name*
-        - check_fn() returns False (missing deps)
+        - check_fn() returns False and deps can't be installed
+          (no ensure_deps_fn, or ensure_deps_fn() returned False)
         - validate_config() returns False (misconfigured)
         - The factory raises an exception
         """
@@ -290,7 +312,34 @@ class PlatformRegistry:
         if entry is None:
             return None
 
-        if not entry.check_fn():
+        deps_ok = False
+        try:
+            deps_ok = bool(entry.check_fn())
+        except Exception as e:
+            logger.warning(
+                "Platform '%s' check_fn raised: %s", entry.label, e
+            )
+        if not deps_ok and entry.ensure_deps_fn is not None:
+            # Deps missing but the platform can install them on demand.
+            # This is the ONE place the active installer runs in the adapter
+            # path: the platform is enabled+configured and the gateway is
+            # about to connect it, so an install is what the user wants
+            # (#79812 — Teams' installer previously lived behind this very
+            # gate inside connect(), which could never be reached).
+            logger.info(
+                "Platform '%s' dependencies missing — attempting install...",
+                entry.label,
+            )
+            try:
+                deps_ok = bool(entry.ensure_deps_fn())
+            except Exception as e:
+                logger.warning(
+                    "Platform '%s' dependency install raised: %s",
+                    entry.label,
+                    e,
+                )
+                deps_ok = False
+        if not deps_ok:
             hint = f" ({entry.install_hint})" if entry.install_hint else ""
             logger.warning(
                 "Platform '%s' requirements not met%s",

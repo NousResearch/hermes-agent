@@ -183,6 +183,30 @@ def _format_changed_paths(paths: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _workspace_has_runnable_recipe(root: Any) -> bool:
+    """Whether the workspace has a runtime verify recipe ``hermes verify`` can run.
+
+    True when a saved ``.hermes/environment.json`` manifest exists, or when
+    cheap static detection (:func:`agent.verify.recipes.detect_recipe`) finds a
+    recipe with a start command. Deliberately fail-silent and cheap — this only
+    decorates the nudge text; it must never break or slow the nudge path.
+    """
+    if not root:
+        return False
+    try:
+        root_path = Path(str(root))
+        from agent.verify.environment import manifest_path
+
+        if manifest_path(root_path).is_file():
+            return True
+        from agent.verify.recipes import detect_recipe
+
+        recipe = detect_recipe(root_path)
+        return bool(recipe is not None and recipe.start)
+    except Exception:
+        return False
+
+
 def _status_detail(status: dict[str, Any]) -> str:
     state = str(status.get("status") or "unverified")
     evidence = status.get("evidence") if isinstance(status.get("evidence"), dict) else None
@@ -248,16 +272,31 @@ def build_verify_on_stop_nudge(
             + (", ..." if len(verify_commands) > 3 else "")
             + "), read any failure, repair the code, and summarize what passed."
         )
+        if _workspace_has_runnable_recipe(facts.get("root")):
+            command_instruction += (
+                " For a full check including a runtime boot (build + test + "
+                "start + readiness), prefer `hermes verify --json` — a passing "
+                "run records verification evidence for this workspace."
+            )
     else:
         temp_dir = os.path.realpath(tempfile.gettempdir())
-        command_instruction = (
-            "No canonical test/lint/build command was detected. Create a focused "
-            f"temporary verification script under `{temp_dir}` using an OS-safe "
-            "`tempfile` path with a `hermes-verify-` filename prefix, run it "
-            "against the changed behavior, clean it up when possible, and "
-            "summarize it explicitly as ad-hoc verification rather than suite "
-            "green."
-        )
+        if _workspace_has_runnable_recipe(facts.get("root")):
+            command_instruction = (
+                "No canonical test/lint/build command was detected, but the "
+                "project has a runnable verification recipe. Run `hermes verify "
+                "--json` (detect -> build -> test -> boot -> readiness poll); a "
+                "passing run records verification evidence for this workspace. "
+                "Read any failure, repair the code, and summarize what passed."
+            )
+        else:
+            command_instruction = (
+                "No canonical test/lint/build command was detected. Create a focused "
+                f"temporary verification script under `{temp_dir}` using an OS-safe "
+                "`tempfile` path with a `hermes-verify-` filename prefix, run it "
+                "against the changed behavior, clean it up when possible, and "
+                "summarize it explicitly as ad-hoc verification rather than suite "
+                "green."
+            )
 
     return (
         "[System: You edited code in this turn, but the workspace does not have "

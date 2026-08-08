@@ -10,6 +10,10 @@ MCP lets Hermes Agent connect to external tool servers so the agent can use tool
 
 If you have ever wanted Hermes to use a tool that already exists somewhere else, MCP is usually the cleanest way to do it.
 
+:::tip Coming from Claude Code?
+The `mcpServers` block in your `~/.claude.json` maps to `mcp_servers` in Hermes' `config.yaml` — and `hermes import-agent claude-code` migrates it (along with skills and instructions) automatically. See [Import from Other Agents](../import-from-other-agents.md).
+:::
+
 ## What MCP gives you
 
 - Access to external tool ecosystems without writing a native Hermes tool first
@@ -149,6 +153,12 @@ and `headers`, `${VAR}` placeholders are resolved at server-connect time
 from environment variables (which include everything in `~/.hermes/.env`).
 This is useful when a catalog entry wants to reference a value the user
 configured elsewhere — e.g. `${HOME}/foo` or `${MY_PROVIDER_TOKEN}`.
+
+Cursor-style context variables are also substituted (case-sensitive):
+`${userHome}` (home directory), `${workspaceFolder}` (session workspace
+root), `${workspaceFolderBasename}`, and `${pathSeparator}` / `${/}`
+(the OS path separator). See the
+[MCP config reference](/docs/reference/mcp-config-reference) for details.
 
 Note this is distinct from `${INSTALL_DIR}` in catalog manifests, which is
 substituted at install-time with the path the catalog cloned the entry's
@@ -308,6 +318,25 @@ mcp_servers:
 
 You can also keep the cert and key fully separate via `client_cert` (combined PEM) plus an explicit `client_key`. Paths support `~` expansion; a missing file raises a clear, server-scoped error rather than an opaque TLS handshake failure.
 
+## Per-user identity header
+
+Remote HTTP/SSE MCP servers that key behavior on a caller identity (per-user rate limits, audit trails, multi-tenant routing) can be sent an identity header on every request via `identity_header`:
+
+```yaml
+mcp_servers:
+  team_api:
+    url: "https://mcp.team.example.com/mcp"
+    identity_header:
+      name: "X-User-Id"
+      value_from: "static"   # "static" (default) or "profile"
+      value: "alice"         # required for static
+```
+
+- `value_from: static` sends the literal `value` from config.yaml.
+- `value_from: profile` sends the active Hermes profile name, resolved once at connect time — useful when multiple profiles on one machine talk to the same server and it needs to tell them apart.
+
+An explicit entry in the server's `headers` mapping with the same name (any casing) always wins; the identity header never overrides your own header config. Invalid `identity_header` blocks are warned about and ignored — they never block the server from connecting. On stdio servers the key is ignored with a warning (stdio transports have no headers).
+
 ## Basic configuration reference
 
 Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
@@ -323,6 +352,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `headers` | mapping | HTTP headers for remote servers |
 | `client_cert` | string \| list | Client certificate for mTLS — a combined PEM path, or `[cert, key]` / `[cert, key, password]` |
 | `client_key` | string | Client private-key PEM path (when separate from `client_cert`) |
+| `identity_header` | mapping | Optional per-user identity header for HTTP/SSE servers — `{name, value_from: static\|profile, value}` |
 | `timeout` | number | Tool call timeout |
 | `connect_timeout` | number | Initial connection timeout (also bounds the MCP `initialize` handshake) |
 | `idle_timeout_seconds` | number | Recycle a stdio server after this many seconds without a tool call (`0` = never, default). The server restarts transparently on the next tool call. |

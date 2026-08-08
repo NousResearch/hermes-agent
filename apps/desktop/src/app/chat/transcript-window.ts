@@ -1,5 +1,5 @@
 import type { ChatMessage } from '@/lib/chat-messages'
-import { messageRenderWeight } from '@/lib/render-weight'
+import { messageStoreWeight } from '@/lib/render-weight'
 
 /**
  * Bound what reaches assistant-ui at all.
@@ -77,10 +77,7 @@ export function alignToBranchGroup(messages: readonly ChatMessage[], start: numb
  * Walks newest-first accumulating weight until the budget is met, keeps at
  * least MIN messages, then aligns the cut off a branch-group boundary.
  */
-export function selectTranscriptWindow(
-  messages: readonly ChatMessage[],
-  pages = 1
-): TranscriptWindow {
+export function selectTranscriptWindow(messages: readonly ChatMessage[], pages = 1): TranscriptWindow {
   const budget = TRANSCRIPT_WINDOW_BUDGET * Math.max(1, Math.floor(pages))
 
   if (messages.length === 0) {
@@ -91,7 +88,7 @@ export function selectTranscriptWindow(
   let weight = 0
 
   for (let i = messages.length - 1; i >= 0; i--) {
-    weight += messageRenderWeight(messages[i].parts)
+    weight += messageStoreWeight(messages[i].parts)
     start = i
 
     if (weight >= budget && messages.length - i >= TRANSCRIPT_WINDOW_MIN_MESSAGES) {

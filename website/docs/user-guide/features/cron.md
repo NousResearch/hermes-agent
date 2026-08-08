@@ -67,6 +67,33 @@ Every morning at 9am, check Hacker News for AI news and send me a summary on Tel
 
 Hermes will use the unified `cronjob` tool internally.
 
+## Pre-dispatch configuration validation
+
+Before constructing any agent machinery for a scheduled run, the scheduler
+validates that the job's configuration can actually produce a successful run:
+
+- the provider API key resolves (skipped when a `fallback_providers` chain is
+  configured, since the fallback path may rescue a missing primary key),
+- attached skills are ready (no missing required environment variables,
+  commands, or credential files),
+- delivery platform targets are known and have gateway credentials configured
+  (`local`/`origin` targets are never checked).
+
+When validation fails, the job's `last_status` becomes `blocked_config`, ONE
+alert is delivered (it is not repeated every tick), and **no LLM call is
+made** — a misconfigured job never spends tokens. The next healthy run clears
+the blocked state so a future configuration break alerts again.
+
+To disable the validation and restore the old behavior (the run proceeds and
+fails during execution):
+
+```yaml
+cron:
+  preflight: false
+```
+
+Or: `hermes config set cron.preflight false`
+
 ## Letting unpinned jobs track global defaults
 
 The model/provider drift guard is enabled by default. If your unpinned cron
@@ -637,6 +664,30 @@ cronjob(action="remove", job_id="...")
 
 For `update`, pass `skills=[]` to remove all attached skills.
 
+### Manual runs are asynchronous
+
+`cronjob(action="run")` fires the job immediately **in the background** (like
+`delegate_task`): the tool call returns at once with a handle, and the job's
+outcome — success/failure, delivery target, next scheduled run, and an output
+excerpt — re-enters the conversation as a new message when the run finishes.
+The agent (and you) can keep working in the meantime, and a job that is
+already mid-run is refused with "already running" instead of double-firing.
+
+You can also pass `prompt` with `action="run"` to inject transient per-run
+context:
+
+```python
+cronjob(action="run", job_id="...", prompt="CONTEXT: focus on the EU region today")
+```
+
+The context is appended to the job's stored prompt under a `## Run Context`
+header for that single fire only — it is never persisted to the job
+definition, and it passes the same prompt-injection scan as stored prompts.
+
+Runtimes that can't receive detached results (one-shot `hermes -z`, `hermes
+cron run` from the CLI, cron child sessions, Kanban workers) fall back to
+synchronous execution automatically.
+
 ## Toolsets available to cron jobs
 
 Cron runs each job in a fresh agent session with no chat platform attached. By default the cron agent gets **the toolset you configured for the `cron` platform in `hermes tools`** — not the CLI default, not everything under the sun.
@@ -778,6 +829,8 @@ The referenced jobs' most recent completed outputs are injected above the prompt
 ## Job storage
 
 Jobs are stored in `~/.hermes/cron/jobs.json`. Output from job runs is saved to `~/.hermes/cron/output/{job_id}/{timestamp}.md`.
+
+Job definitions are plain JSON on disk: they survive `hermes update`, gateway restarts, and machine reboots. A job that was mid-run during a restart is marked `unknown` in the execution ledger — it is not automatically retried, but the job's next scheduled tick fires normally. See [Execution history](#execution-history) for details.
 
 :::tip
 Ask the agent to manage jobs through the `cronjob` tool, `hermes cron edit`, or `/cron` — not by patching `jobs.json` directly. Direct edits can fail silently when [file write safety](../security.md#file-write-safety) blocks the path (for example when `HERMES_WRITE_SAFE_ROOT` is set), and the [file-mutation verifier](../configuration.md#file-mutation-verifier) footer is the authoritative signal that nothing was saved.

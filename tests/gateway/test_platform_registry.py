@@ -100,6 +100,97 @@ class TestPlatformRegistry:
         assert reg.create_adapter("novalidate", MagicMock()) is mock_adapter
 
 
+class TestEnsureDepsFn:
+    """check_fn (PASSIVE probe) vs ensure_deps_fn (ACTIVE installer) split.
+
+    Regression for #79812: Teams registered its passive probe as check_fn,
+    so create_adapter() returned None before connect() could lazy-install —
+    the SDK never installed.  The inverse wiring (active installer as
+    check_fn) made status displays pip-install SDKs as a side effect.
+    create_adapter() now runs ensure_deps_fn when check_fn is False.
+    """
+
+    def _entry(self, name, *, check_fn, ensure_deps_fn=None):
+        adapter = MagicMock()
+        entry = PlatformEntry(
+            name=name,
+            label=name.title(),
+            adapter_factory=lambda cfg: adapter,
+            check_fn=check_fn,
+            ensure_deps_fn=ensure_deps_fn,
+            source="plugin",
+        )
+        return entry, adapter
+
+    def test_deps_present_skips_installer(self):
+        """check_fn True → adapter created, ensure_deps_fn never called."""
+        reg = PlatformRegistry()
+        installer = MagicMock(return_value=True)
+        entry, adapter = self._entry(
+            "ready", check_fn=lambda: True, ensure_deps_fn=installer
+        )
+        reg.register(entry)
+        assert reg.create_adapter("ready", MagicMock()) is adapter
+        installer.assert_not_called()
+
+    def test_missing_deps_runs_installer_then_creates(self):
+        """check_fn False + ensure_deps_fn True → install runs, adapter created."""
+        reg = PlatformRegistry()
+        installer = MagicMock(return_value=True)
+        entry, adapter = self._entry(
+            "installable", check_fn=lambda: False, ensure_deps_fn=installer
+        )
+        reg.register(entry)
+        assert reg.create_adapter("installable", MagicMock()) is adapter
+        installer.assert_called_once()
+
+    def test_install_failure_returns_none(self):
+        """check_fn False + ensure_deps_fn False → no adapter."""
+        reg = PlatformRegistry()
+        installer = MagicMock(return_value=False)
+        entry, _ = self._entry(
+            "broken", check_fn=lambda: False, ensure_deps_fn=installer
+        )
+        reg.register(entry)
+        assert reg.create_adapter("broken", MagicMock()) is None
+        installer.assert_called_once()
+
+    def test_no_installer_missing_deps_returns_none(self):
+        """check_fn False + no ensure_deps_fn → hard block (legacy behavior)."""
+        reg = PlatformRegistry()
+        entry, _ = self._entry("blocked", check_fn=lambda: False)
+        reg.register(entry)
+        assert reg.create_adapter("blocked", MagicMock()) is None
+
+    def test_installer_exception_returns_none(self):
+        """ensure_deps_fn raising is caught, adapter not created."""
+        reg = PlatformRegistry()
+
+        def _boom():
+            raise RuntimeError("pip exploded")
+
+        entry, _ = self._entry(
+            "explosive", check_fn=lambda: False, ensure_deps_fn=_boom
+        )
+        reg.register(entry)
+        assert reg.create_adapter("explosive", MagicMock()) is None
+
+    def test_check_fn_exception_falls_through_to_installer(self):
+        """A raising check_fn is treated as deps-missing, installer still runs."""
+        reg = PlatformRegistry()
+
+        def _bad_probe():
+            raise RuntimeError("probe error")
+
+        installer = MagicMock(return_value=True)
+        entry, adapter = self._entry(
+            "flaky", check_fn=_bad_probe, ensure_deps_fn=installer
+        )
+        reg.register(entry)
+        assert reg.create_adapter("flaky", MagicMock()) is adapter
+        installer.assert_called_once()
+
+
 # ── GatewayConfig integration ────────────────────────────────────────────
 
 
@@ -494,3 +585,115 @@ class TestPluginEnablementGate:
                 )
         finally:
             _reg.unregister("myrejectedplat")
+
+    def test_missing_deps_with_installer_still_enables(
+        self, tmp_path, monkeypatch
+    ):
+        """is_connected=True + check_fn=False + ensure_deps_fn set → ENABLED.
+
+        The install is deferred to ``create_adapter()`` at gateway start
+        (#79812).  Skipping enablement here would mean a configured platform
+        whose SDK isn't installed yet never gets the chance to install it.
+        """
+        from gateway.platform_registry import platform_registry as _reg
+
+        installer = MagicMock(return_value=True)
+        _reg.register(PlatformEntry(
+            name="myinstallableplat",
+            label="MyInstallable",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: False,            # SDK not installed yet
+            ensure_deps_fn=installer,          # ...but installable on demand
+            is_connected=lambda cfg: True,     # user configured credentials
+            source="plugin",
+        ))
+        try:
+            home = self._write_config(tmp_path)
+            monkeypatch.setenv("HERMES_HOME", str(home))
+
+            from gateway.config import load_gateway_config, Platform
+            cfg = load_gateway_config()
+
+            plat = Platform("myinstallableplat")
+            assert plat in cfg.platforms and cfg.platforms[plat].enabled, (
+                "Configured platform with a registered installer must be "
+                "enabled; the install runs at create_adapter() time"
+            )
+            # Config loading must NOT have run the installer (that's the
+            # desktop boot-loop bug — see module docstring of
+            # test_startup_no_eager_platform_install.py).
+            installer.assert_not_called()
+        finally:
+            _reg.unregister("myinstallableplat")
+
+    def test_missing_deps_without_installer_not_enabled(
+        self, tmp_path, monkeypatch
+    ):
+        """is_connected=True + check_fn=False + NO ensure_deps_fn → skipped.
+
+        Without an installer, missing deps are a hard block — enabling the
+        platform would just queue guaranteed connect failures.
+        """
+        from gateway.platform_registry import platform_registry as _reg
+
+        _reg.register(PlatformEntry(
+            name="myhardblockplat",
+            label="MyHardBlock",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: False,
+            is_connected=lambda cfg: True,
+            source="plugin",
+        ))
+        try:
+            home = self._write_config(tmp_path)
+            monkeypatch.setenv("HERMES_HOME", str(home))
+
+            from gateway.config import load_gateway_config, Platform
+            cfg = load_gateway_config()
+
+            plat = Platform("myhardblockplat")
+            if plat in cfg.platforms:
+                assert cfg.platforms[plat].enabled is False
+        finally:
+            _reg.unregister("myhardblockplat")
+
+
+class TestMigratedPlatformWiring:
+    """Every lazy-installable bundled platform must register the split:
+    a PASSIVE check_fn plus an ACTIVE ensure_deps_fn (#79812).
+
+    Behavior contract, not a snapshot: asserts the two fields are distinct
+    callables (probe != installer), not specific function identities, so
+    renames don't churn this test.
+    """
+
+    import pytest as _pytest
+
+    @_pytest.mark.parametrize(
+        "platform_name",
+        [
+            "teams", "telegram", "discord", "slack",
+            "matrix", "dingtalk", "feishu", "wecom_callback",
+        ],
+    )
+    def test_lazy_installable_platform_has_split_wiring(self, platform_name):
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+        from gateway.platform_registry import platform_registry
+
+        # Materialize deferred loaders (wecom_callback is registered by the
+        # "wecom" manifest's loader; a cold get() by its own name misses).
+        platform_registry.plugin_entries()
+        entry = platform_registry.get(platform_name)
+        assert entry is not None, f"{platform_name} not registered"
+        assert entry.ensure_deps_fn is not None, (
+            f"{platform_name} has a lazy-installable SDK but no "
+            "ensure_deps_fn — its deps can never auto-install "
+            "(the #79812 deadlock)"
+        )
+        assert entry.ensure_deps_fn is not entry.check_fn, (
+            f"{platform_name} registered the same callable for the passive "
+            "probe and the active installer — status displays would "
+            "pip-install as a side effect"
+        )

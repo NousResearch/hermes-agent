@@ -20,7 +20,6 @@ vi.mock('@/store/profile', () => ({
   requestFreshSession: () => requestFreshSession()
 }))
 
-import { $rightRailActiveTabId } from '@/store/layout'
 import { $previewTabs, closeRightRail, openPreview, type PreviewTarget } from '@/store/preview'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
@@ -65,25 +64,18 @@ afterEach(() => {
 })
 
 describe('closeActiveTab', () => {
-  it('closes the active file preview tab (⌘W happy path)', () => {
+  // Preview tabs are layout-tree panes now, so ⌘W reaches them through the
+  // focused-zone rungs (closeFocusedSessionTab / closeFocusedToolTab → the
+  // pane's registered closer) rather than a rail-shaped special case. Open
+  // previews must therefore NOT claim the key on their own.
+  it('leaves ⌘W to the zone rungs even with previews open', () => {
     openPreview(fileTarget('/work/notes.md'), 'manual')
-
-    expect($previewTabs.get()).toHaveLength(1)
-    expect($rightRailActiveTabId.get()).toBe('file:file:///work/notes.md')
-
-    expect(closeActiveTab()).toBe(true)
-    expect($previewTabs.get()).toHaveLength(0)
-  })
-
-  it('closes the visible tab when the active selection points at a tab that is gone', () => {
-    // The rail falls back to tabs[0] until React syncs the selection, so ⌘W has
-    // to act on what is actually on screen rather than no-op'ing.
-    openPreview(fileTarget('/work/notes.md'), 'manual')
-    $rightRailActiveTabId.set('file:file:///work/stale.md')
+    closeFocusedToolTab.mockReturnValue(true)
 
     expect($previewTabs.get()).toHaveLength(1)
     expect(closeActiveTab()).toBe(true)
-    expect($previewTabs.get()).toHaveLength(0)
+    // The zone closed its own tab; the rail store was never consulted.
+    expect($previewTabs.get()).toHaveLength(1)
   })
 })
 
@@ -132,7 +124,7 @@ describe('closeWorkspaceTab', () => {
     expect(requestFreshSession).not.toHaveBeenCalled()
   })
 
-  it('⌘W reaches it once the terminal, rail and zone tabs pass', () => {
+  it('⌘W reaches it once the terminal and zone tabs pass', () => {
     loadedMainOnly()
 
     expect(closeActiveTab(vi.fn())).toBe(true)

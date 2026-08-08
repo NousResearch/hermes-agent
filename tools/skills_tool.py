@@ -801,18 +801,22 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         active_skills_dir = _skills_dir()
         if not active_skills_dir.exists():
             active_skills_dir.mkdir(parents=True, exist_ok=True)
-            return json.dumps(
-                {
-                    "success": True,
-                    "skills": [],
-                    "categories": [],
-                    "message": f"No skills found. Skills directory created at {display_hermes_home()}/skills/",
-                },
-                ensure_ascii=False,
-            )
 
         # Find all skills
         all_skills = _find_all_skills()
+        try:
+            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+            discover_plugins()
+            for plugin_skill in get_plugin_manager().list_plugin_skill_metadata():
+                frontmatter = plugin_skill.pop("frontmatter", {})
+                if not skill_matches_platform(frontmatter):
+                    continue
+                if _is_skill_disabled(plugin_skill["name"]):
+                    continue
+                all_skills.append(plugin_skill)
+        except Exception:
+            logger.debug("Plugin skill listing failed", exc_info=True)
 
         if not all_skills:
             return json.dumps(
@@ -859,6 +863,7 @@ def _serve_plugin_skill(
     skill_md: Path,
     namespace: str,
     bare: str,
+    file_path: str | None = None,
     *,
     preprocess: bool = True,
     session_id: str | None = None,
@@ -892,12 +897,75 @@ def _serve_plugin_skill(
     except Exception:
         pass
 
+    qualified_name = f"{namespace}:{bare}"
+    if _is_skill_disabled(qualified_name):
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"Skill '{qualified_name}' is disabled.",
+            },
+            ensure_ascii=False,
+        )
+
     if not skill_matches_platform(parsed_frontmatter):
         return json.dumps(
             {
                 "success": False,
-                "error": f"Skill '{namespace}:{bare}' is not supported on this platform.",
+                "error": f"Skill '{qualified_name}' is not supported on this platform.",
                 "readiness_status": SkillReadinessStatus.UNSUPPORTED.value,
+            },
+            ensure_ascii=False,
+        )
+
+    if file_path:
+        from tools.path_security import has_traversal_component, validate_within_dir
+
+        skill_root = skill_md.parent
+        if has_traversal_component(file_path):
+            return json.dumps(
+                {"success": False, "error": "Path traversal ('..') is not allowed."},
+                ensure_ascii=False,
+            )
+        target = skill_root / file_path
+        path_error = validate_within_dir(target, skill_root)
+        if path_error:
+            return json.dumps(
+                {"success": False, "error": path_error}, ensure_ascii=False
+            )
+        if not target.is_file():
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"File '{file_path}' not found in skill '{namespace}:{bare}'.",
+                },
+                ensure_ascii=False,
+            )
+        try:
+            content = target.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return json.dumps(
+                {
+                    "success": True,
+                    "name": f"{namespace}:{bare}",
+                    "file": file_path,
+                    "content": f"[Binary file: {target.name}, size: {target.stat().st_size} bytes]",
+                    "is_binary": True,
+                },
+                ensure_ascii=False,
+            )
+        except Exception as exc:
+            return json.dumps(
+                {"success": False, "error": f"Failed to read '{file_path}': {exc}"},
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {
+                "success": True,
+                "name": f"{namespace}:{bare}",
+                "file": file_path,
+                "content": content,
+                "file_type": target.suffix,
+                "_source_path": str(target),
             },
             ensure_ascii=False,
         )
@@ -952,11 +1020,30 @@ def _serve_plugin_skill(
             "name": f"{namespace}:{bare}",
             "content": f"{banner}{rendered_content}" if banner else rendered_content,
             "description": description,
-            "linked_files": None,
+            "linked_files": _plugin_skill_linked_files(skill_md.parent),
             "readiness_status": SkillReadinessStatus.AVAILABLE.value,
         },
         ensure_ascii=False,
     )
+
+
+def _plugin_skill_linked_files(skill_root: Path) -> Dict[str, List[str]] | None:
+    from tools.path_security import validate_within_dir
+
+    linked: Dict[str, List[str]] = {}
+    for category in ("references", "templates", "assets", "scripts"):
+        base = skill_root / category
+        if not base.is_dir():
+            continue
+        files = [
+            str(path.relative_to(skill_root))
+            for path in sorted(base.rglob("*"))
+            if path.is_file()
+            and validate_within_dir(path, skill_root) is None
+        ]
+        if files:
+            linked[category] = files
+    return linked or None
 
 
 def skill_view(
@@ -1041,6 +1128,7 @@ def skill_view(
                     plugin_skill_md,
                     namespace,
                     bare,
+                    file_path=file_path,
                     preprocess=preprocess,
                     session_id=task_id,
                 )
@@ -1943,7 +2031,11 @@ def _skill_view_with_bump(args, **kw):
                 # A skill_view tool call is the agent actively loading the skill
                 # to act on it — that counts as use, not just a browse/view.
                 # Curator's stale timer keys off last_used_at (see agent/curator.py).
-                bump_use(str(resolved))
+                bump_use(
+                    str(resolved),
+                    task_id=kw.get("task_id"),
+                    session_id=kw.get("session_id"),
+                )
     except Exception:
         pass
     return result

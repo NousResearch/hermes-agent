@@ -826,6 +826,12 @@ agent:
   # API responses.  Only fires after the agent has been idle for this duration.
   # gateway_timeout: 1800
 
+  # Maximum time an alias routing key waits for an active turn holding the same
+  # resolved session lease. On expiry Hermes rejects this inbound message and
+  # asks the user to resend rather than running it without serialization.
+  # Non-positive values fall back to the 1800-second default.
+  # gateway_turn_lease_timeout: 1800
+
   # Staged warning: send a warning before escalating to full timeout.
   # Fires once per run when inactivity reaches this threshold (seconds).
   # Set to 0 to disable the warning.
@@ -1187,6 +1193,14 @@ platform_toolsets:
 stt:
   enabled: true
   # provider: "local"          # auto-detected if omitted
+  # --- Cloud pre-upload silence trim (groq/openai/mistral/xai/elevenlabs/deepinfra) ---
+  # Local whisper gets Silero VAD; cloud endpoints otherwise receive raw audio —
+  # silence inflates upload time, per-audio-minute billing, and hallucination risk.
+  # Collapses pauses with ffmpeg client-side; clips under 12s skip the trim, and
+  # on any failure the original uploads untouched.
+  # cloud_trim_silence: true   # set false to always upload the original audio
+  # cloud_trim_threshold_db: -40  # audio quieter than this counts as silence
+  # cloud_trim_keep_ms: 300    # how much of each pause survives (keeps natural pacing)
   local:
     model: "base"              # tiny | base | small | medium | large-v3 | turbo
     # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
@@ -1196,7 +1210,8 @@ stt:
     #                          # Set false to restore raw behavior (e.g. transcribing music/ambient audio).
     # vad_min_silence_ms: 500  # min silence (ms) that splits speech chunks when vad is on
     # no_speech_prob_threshold: 0.6  # drop a segment only if no_speech_prob > this...
-    # logprob_threshold: -1.0        # ...AND avg_logprob < this (both must hit — quiet real speech survives)
+    # logprob_threshold: -1.0       # ...AND avg_logprob < this (both must hit — quiet real speech survives)
+    # unload_after_idle_seconds: 0  # 0=never unload (default); e.g. 300 releases the model after 5min idle (frees VRAM on GPU; next voice message reloads it)
   language: "en"               # GLOBAL language hint for every STT provider (per-provider language wins). Set "" for auto-detect.
   # groq:
   #   model: "whisper-large-v3-turbo"
@@ -1224,6 +1239,19 @@ stt:
 #     # live result.
 #     model: ""
 #     voice: "default"
+
+# "Hey Hermes" hands-free wake word (off by default; toggle with /wake).
+# Full engine/provider options inherit from DEFAULT_CONFIG in
+# hermes_cli/config_defaults.py — only capture placement is documented here.
+# wake_word:
+#   enabled: false
+#   capture: "auto"    # auto | local | client
+#                      # auto: backend PortAudio mic when one exists; a remote
+#                      #       desktop on a mic-less (headless/VPS) backend
+#                      #       streams its own mic via the wake.feed RPC.
+#                      # local: always the backend mic (wake_word.input_device).
+#                      # client: always desktop-streamed PCM (detection stays
+#                      #         on the backend).
 
 # Image generation. Each provider plugin reads its own ``image_gen.<name>``
 # block; deepinfra discovers models live from

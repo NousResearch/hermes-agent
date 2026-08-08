@@ -19,10 +19,14 @@ hermes --tui
 # Resume the latest TUI session (falls back to the latest classic session)
 hermes --tui -c
 hermes --tui --continue
+hermes --tui --resume latest
 
 # Resume a specific session by ID or title
 hermes --tui -r 20260409_000000_aa11bb
 hermes --tui --resume "my t0p session"
+
+# Resume the latest session for a specific project directory
+hermes --tui --resume latest --in ./my-project
 
 # Run source directly — skips the prebuild step (for TUI contributors)
 hermes --tui --dev

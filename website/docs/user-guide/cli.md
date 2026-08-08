@@ -42,6 +42,8 @@ hermes chat -s github-pr-workflow -q "open a draft PR"
 # Resume previous sessions
 hermes --continue             # Resume the most recent CLI session (-c)
 hermes --resume <session_id>  # Resume a specific session by ID (-r)
+hermes --resume latest        # Resume the most recent session (same as -c)
+hermes --resume latest --in ./dir  # Resume ./dir's latest session, staying in ./dir
 
 # Verbose mode (debug output)
 hermes chat --verbose
@@ -50,6 +52,25 @@ hermes chat --verbose
 hermes -w                         # Interactive mode in worktree
 hermes -w -z "Fix issue #123"     # Single query in worktree
 ```
+
+### Plugin management
+
+The `hermes plugins` commands manage native Hermes plugins and portable Agent
+Plugins v1 packages through the same opt-in workflow:
+
+```bash
+hermes plugins install owner/repository --no-enable
+hermes plugins list
+hermes plugins enable <plugin-name>
+hermes plugins disable <plugin-name>
+hermes plugins update <plugin-name>
+hermes plugins remove <plugin-name>
+```
+
+Portable packages remain disabled until explicitly enabled. Hermes currently
+loads portable Agent Skills and stdio MCP entries. See the
+[plugin developer guide](/developer-guide/plugins#portable-agent-plugins-v1-packages)
+for the exact supported subset and trust boundary.
 
 ## Interface Layout
 
@@ -372,6 +393,8 @@ hermes -c                                  # Short form
 hermes -c "my project"                     # Resume a named session (latest in lineage)
 hermes --resume 20260225_143052_a1b2c3     # Resume a specific session by ID
 hermes --resume "refactoring auth"         # Resume by title
+hermes --resume latest                     # Resume the most recent session (same as -c)
+hermes --resume latest --in ./my-project   # Latest session for ./my-project's workspace
 hermes -r 20260225_143052_a1b2c3           # Short form
 ```
 

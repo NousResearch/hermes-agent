@@ -570,6 +570,12 @@ export interface SessionMessage {
 
 export interface SessionMessagesResponse {
   messages: SessionMessage[]
+  pagination?: {
+    limit: number
+    offset: number
+    order: 'latest' | 'oldest'
+    returned: number
+  }
   session_id: string
 }
 
@@ -1144,6 +1150,8 @@ export interface ActionResponse {
   name: string
   ok: boolean
   pid: number
+  action_id?: string
+  already_running?: boolean
 }
 
 export interface ActionStatusResponse {

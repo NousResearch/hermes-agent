@@ -710,15 +710,19 @@ def _(rid, params: dict) -> dict:
         if not history:
             return _err(rid, 4018, "no previous user message to retry")
         # Walk backwards to the last *real* user turn. Timeline bookkeeping
-        # rows (display_kind set) are durable role=user but no client counts
-        # them as user turns — same predicate as CLI resume/count and the
-        # prompt.submit ordinal fix. Without this, /retry re-sends opaque
-        # markers (model_switch / async_delegation_complete / auto_continue)
-        # and truncates only the marker instead of the failed exchange.
+        # rows (display_kind set) and compaction handoffs are durable
+        # role=user but must not count as user-originated asks — same
+        # predicate as CLI resume/count and the prompt.submit ordinal fix.
+        # Without this, /retry re-sends opaque markers (model_switch /
+        # async_delegation_complete / auto_continue / CONTEXT COMPACTION
+        # handoffs) and truncates only the marker instead of the failed
+        # exchange (#80622).
+        from agent.context_compressor import is_user_originated_turn
+
         last_user_idx = None
         for i in range(len(history) - 1, -1, -1):
             msg = history[i]
-            if msg.get("role") == "user" and not msg.get("display_kind"):
+            if is_user_originated_turn(msg):
                 last_user_idx = i
                 break
         if last_user_idx is None:
@@ -1294,12 +1298,17 @@ def _(rid, params: dict) -> dict:
                 removed = 0
                 with session["history_lock"]:
                     history = session.get("history", [])
-                    # Truncate from the last *real* user turn (no display_kind).
-                    # Same predicate as list_recent_user_messages / /undo / /retry.
+                    # Truncate from the last *real* user turn. Same predicate
+                    # as list_recent_user_messages / /undo / /retry —
+                    # is_user_originated_turn also excludes compaction
+                    # handoffs (durable role=user, sometimes without
+                    # display_kind on legacy sessions; #80622).
+                    from agent.context_compressor import is_user_originated_turn
+
                     last_user_idx = None
                     for i in range(len(history) - 1, -1, -1):
                         msg = history[i]
-                        if msg.get("role") == "user" and not msg.get("display_kind"):
+                        if is_user_originated_turn(msg):
                             last_user_idx = i
                             break
                     if last_user_idx is not None:

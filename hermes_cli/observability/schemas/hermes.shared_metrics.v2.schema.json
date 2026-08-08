@@ -41,13 +41,28 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "hermes_version"
+        "architecture",
+        "hermes_version",
+        "install_method",
+        "os_family"
       ],
       "properties": {
+        "architecture": {
+          "type": "string",
+          "enum": ["arm", "arm64", "unknown", "x86", "x86_64"]
+        },
         "hermes_version": {
           "type": "string",
           "minLength": 1,
           "maxLength": 64
+        },
+        "install_method": {
+          "type": "string",
+          "enum": ["docker", "git", "homebrew", "nixos", "pip", "unknown"]
+        },
+        "os_family": {
+          "type": "string",
+          "enum": ["linux", "macos", "unknown", "windows"]
         }
       }
     },
@@ -56,6 +71,9 @@
       "minItems": 1,
       "items": {
         "oneOf": [
+          {
+            "$ref": "#/$defs/client_active_counter"
+          },
           {
             "$ref": "#/$defs/model_call_counter"
           },
@@ -73,12 +91,44 @@
           },
           {
             "$ref": "#/$defs/tool_approval_counter"
+          },
+          {
+            "$ref": "#/$defs/skill_lifecycle_counter"
+          },
+          {
+            "$ref": "#/$defs/skill_load_counter"
           }
         ]
       }
     }
   },
   "$defs": {
+    "client_active_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.client.active"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "maxProperties": 0
+        },
+        "value": {
+          "const": 1
+        }
+      }
+    },
     "uuid": {
       "type": "string",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -539,6 +589,114 @@
           "minimum": 1
         }
       }
+    },
+    "skill_lifecycle_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.skill.lifecycle.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "provenance"
+          ],
+          "properties": {
+            "action": {
+              "enum": [
+                "archived",
+                "created",
+                "edited",
+                "installed",
+                "patched",
+                "restored",
+                "stale"
+              ]
+            },
+            "provenance": {
+              "$ref": "#/$defs/skill_provenance"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "skill_load_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.skill.load.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "post_patch_state",
+            "provenance",
+            "reuse_state",
+            "use_count_bucket"
+          ],
+          "properties": {
+            "post_patch_state": {
+              "enum": [
+                "no_new_patch",
+                "not_applicable",
+                "reused_after_patch"
+              ]
+            },
+            "provenance": {
+              "$ref": "#/$defs/skill_provenance"
+            },
+            "reuse_state": {
+              "enum": [
+                "first_use",
+                "reused"
+              ]
+            },
+            "use_count_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "skill_provenance": {
+      "enum": [
+        "agent_created",
+        "external",
+        "installed",
+        "local",
+        "unknown"
+      ]
     }
   }
 }

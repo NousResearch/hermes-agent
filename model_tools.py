@@ -54,6 +54,17 @@ def _is_delegated_child_context() -> bool:
         return False
 
 
+def _is_dispatcher_owned_worker() -> bool:
+    """False when HERMES_KANBAN_* is present but this execution does not own it
+    (delegate_task child, or a cron job fired in-process from a worker)."""
+    try:
+        from agent.delegation_context import is_dispatcher_owned_worker_context
+
+        return is_dispatcher_owned_worker_context()
+    except Exception:
+        return True
+
+
 # =============================================================================
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
 # =============================================================================
@@ -342,6 +353,7 @@ def get_tool_definitions(
                 bool(os.environ.get("HERMES_KANBAN_TASK")),
                 bool(skip_tool_search_assembly),
                 _is_delegated_child_context(),
+                _is_dispatcher_owned_worker(),
                 profile_scope,
             )
         cached = _tool_defs_cache.get(cache_key) if cache_key is not None else None
@@ -391,6 +403,7 @@ def _compute_tool_definitions(
         if (
             os.environ.get("HERMES_KANBAN_TASK")
             and not _is_delegated_child_context()
+            and _is_dispatcher_owned_worker()
             and "kanban" not in effective_enabled_toolsets
         ):
             # Dispatcher-spawned workers are scoped by HERMES_KANBAN_TASK and
@@ -691,7 +704,11 @@ _TOOL_ERROR_ROLE_TAG_RE = re.compile(
 _TOOL_ERROR_FENCE_OPEN_RE = re.compile(r'^\s*```(?:json|xml|html|markdown)?\s*', re.MULTILINE)
 _TOOL_ERROR_FENCE_CLOSE_RE = re.compile(r'\s*```\s*$', re.MULTILINE)
 _TOOL_ERROR_CDATA_RE = re.compile(r'<!\[CDATA\[.*?\]\]>', re.DOTALL)
-_TOOL_ERROR_MAX_LEN = 2000
+# Single home for the tool-error context cap: tools/registry.py. Both this
+# sanitizer (exception paths) and the dispatch-boundary bounding
+# (tool_error / _bound_json_error_result) trim to the same budget so text
+# never passes two different caps with two different markers.
+from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 
 
 def _sanitize_tool_error(error_msg: str) -> str:

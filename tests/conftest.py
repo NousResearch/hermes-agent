@@ -58,7 +58,35 @@ if str(PROJECT_ROOT) not in sys.path:
 # would silently stop protecting the operator's actual ~/.hermes (#69385).
 _PRE_SANDBOX_KANBAN_OVERRIDE = os.environ.get("HERMES_KANBAN_HOME", "").strip()
 _PRE_SANDBOX_HERMES_HOME = os.environ.get("HERMES_HOME", "")
-if not os.environ.get("HERMES_HOME"):
+
+
+def _hermes_home_points_at_production(value: str) -> bool:
+    """True when a pre-set HERMES_HOME resolves to the real production root.
+
+    Gateway-launched shells (and developer shells that ``export
+    HERMES_HOME=~/.hermes``) hand pytest the PRODUCTION home. Historically
+    the session sandbox below honored any pre-set value, so collection-time
+    imports (logging handlers, ``hermes_state.DEFAULT_DB_PATH``) froze paths
+    inside the real ``~/.hermes`` — the escape vector that landed pytest
+    fixture rows (chat-1 / wx-chat sessions, /tmp/pytest-of-* routing
+    scopes) in the live state.db and flipped its journal mode under the
+    WAL-mode gateway writer. Only a genuinely custom (non-production)
+    HERMES_HOME is honored now.
+    """
+    if not value:
+        return True
+    try:
+        resolved = Path(value).expanduser().resolve()
+        real_root = (Path.home() / ".hermes").resolve()
+    except Exception:
+        return True
+    if resolved == real_root:
+        return True
+    # Profile home directly under the production root: <root>/profiles/<name>
+    return resolved.parent.name == "profiles" and resolved.parent.parent == real_root
+
+
+if _hermes_home_points_at_production(os.environ.get("HERMES_HOME", "")):
     _SESSION_HERMES_HOME = tempfile.mkdtemp(prefix="hermes-test-home-")
     os.environ["HERMES_HOME"] = _SESSION_HERMES_HOME
     atexit.register(shutil.rmtree, _SESSION_HERMES_HOME, True)
@@ -578,9 +606,14 @@ def _capture_real_kanban_root() -> Path:
     """
     if _PRE_SANDBOX_KANBAN_OVERRIDE:
         return Path(_PRE_SANDBOX_KANBAN_OVERRIDE).expanduser().resolve()
-    if _PRE_SANDBOX_HERMES_HOME:
-        # HERMES_HOME was genuinely set before the sandbox — honor it via the
-        # normal resolver (it may be a profile dir whose root matters).
+    if _PRE_SANDBOX_HERMES_HOME and not _hermes_home_points_at_production(
+        _PRE_SANDBOX_HERMES_HOME
+    ):
+        # HERMES_HOME was genuinely set to a CUSTOM root before the sandbox
+        # (production-pointing values are sandboxed away above, in which case
+        # the env still holds the tempdir and the resolver would be wrong) —
+        # honor it via the normal resolver (it may be a profile dir whose
+        # root matters).
         from hermes_constants import get_default_hermes_root
         return get_default_hermes_root().resolve()
     # No pre-existing HERMES_HOME: the real root is the platform default,
@@ -643,6 +676,45 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
         )
 
     monkeypatch.setattr(_kdb, "connect", _guarded_connect)
+
+
+# ── Live state.db write guard ───────────────────────────────────────────────
+# Companion to the kanban guard above, for the MAIN state database.
+# ``hermes_state._ensure_test_isolation`` (the single choke point every
+# ``SessionDB()`` construction goes through) refuses, under pytest, any DB
+# path that resolves inside the REAL Hermes root. This fixture wires the
+# test-side knobs:
+#   • honors ``@pytest.mark.live_system_guard_bypass`` (the established
+#     escape-hatch marker) by disabling the state-db guard for that test;
+#   • injects the pre-sandbox CUSTOM production root (Docker/portable
+#     installs where HERMES_HOME is not ~/.hermes) into the guard's
+#     deny-list, mirroring the kanban deny-list capture above.
+# The guard itself is env-activated (PYTEST_CURRENT_TEST / PYTEST_VERSION),
+# so subprocess children that import hermes_state directly are covered even
+# without this fixture.
+
+
+@pytest.fixture(autouse=True)
+def _state_db_write_guard(request, monkeypatch):
+    _hs = sys.modules.get("hermes_state")
+    if _hs is None or not hasattr(_hs, "_STATE_DB_GUARD_BYPASS"):
+        yield
+        return
+    if request.node.get_closest_marker("live_system_guard_bypass") is not None:
+        monkeypatch.setattr(_hs, "_STATE_DB_GUARD_BYPASS", True)
+        yield
+        return
+    extra_roots = []
+    if _PRE_SANDBOX_HERMES_HOME and not _hermes_home_points_at_production(
+        _PRE_SANDBOX_HERMES_HOME
+    ):
+        extra_roots.append(
+            Path(_PRE_SANDBOX_HERMES_HOME).expanduser().resolve()
+        )
+    monkeypatch.setattr(
+        _hs, "_STATE_DB_GUARD_EXTRA_DENY_ROOTS", tuple(extra_roots)
+    )
+    yield
 
 
 # ── Module-level state reset — replaced by per-file process isolation ──────

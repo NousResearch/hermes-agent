@@ -2283,6 +2283,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("memory", {"action": "view", "target": "memory"}),
         ("clarify", {"question": "Continue?"}),
         ("read_terminal", {}),
+        ("read_preview", {}),
         ("delegate_task", {"goal": "Check the child path"}),
     )
 
@@ -2320,6 +2321,10 @@ class TestAgentRuntimePostHookOwnershipSync:
         )
         monkeypatch.setattr(
             "tools.read_terminal_tool.read_terminal_tool",
+            lambda **kwargs: '{"ok":true}',
+        )
+        monkeypatch.setattr(
+            "tools.read_preview_tool.read_preview_tool",
             lambda **kwargs: '{"ok":true}',
         )
         monkeypatch.setattr(agent, "_get_session_db_for_recall", lambda: None)
@@ -2449,6 +2454,13 @@ class TestMcpParallelToolBatch:
 
 
 class TestHandleMaxIterations:
+    def test_summary_notice_uses_safe_print(self, agent):
+        agent._print_fn = lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("closed"))
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+
+        assert agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60) == "Summary"
+
     def test_returns_summary(self, agent):
         resp = _mock_response(content="Here is a summary of what I did.")
         agent.client.chat.completions.create.return_value = resp
@@ -4015,6 +4027,47 @@ class TestRunConversation:
             result = agent.run_conversation("write the report")
 
         # Recovered on the 3rd attempt instead of refusing after the 1st.
+        mock_hfc.assert_called_once()
+        assert result["final_response"] == "Done!"
+
+    def test_zero_byte_tool_args_stub_recovers_within_retries(self, agent):
+        """#80498: a stream that dies before a single argument byte arrives
+        (name-only tool call) produces a stub with tool_calls=None and
+        _dropped_tool_names set — the real shape _build_partial_stream_stub
+        returns, distinct from the truncated-JSON stub above (which still
+        carries a tool_calls list). Confirms the zero-byte trigger is wired
+        end-to-end through the retry loop, not just detected at the
+        chat_completion_helpers unit level."""
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("write_file")
+
+        stall = _mock_response(content="", finish_reason="length", tool_calls=None)
+        stall.id = PARTIAL_STREAM_STUB_ID
+        stall._dropped_tool_names = ["write_file"]
+
+        good_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"full content"}',
+            call_id="c2",
+        )
+        good_resp = _mock_response(content="", finish_reason="stop", tool_calls=[good_tc])
+        final_resp = _mock_response(content="Done!", finish_reason="stop")
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success":true}') as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.client.chat.completions.create.side_effect = [
+                stall, good_resp, final_resp,
+            ]
+            result = agent.run_conversation("write the report")
+
+        # The zero-byte stub must trigger a retry, not silently execute
+        # write_file with coerced empty arguments (the #80498 regression).
         mock_hfc.assert_called_once()
         assert result["final_response"] == "Done!"
 
@@ -6141,4 +6194,3 @@ class TestMemoryContextSanitization:
         assert "memory-context" not in result.lower()
         assert "stale observation" not in result
         assert "how is the honcho working" in result
-

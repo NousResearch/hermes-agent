@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest'
 
-import { messageRenderWeight, RENDER_WEIGHT_CHARS } from '@/lib/render-weight'
-
 import {
   buildGroups,
   firstVisibleGroupIndex,
@@ -136,49 +134,19 @@ describe('firstVisibleGroupIndex', () => {
   it('returns groups.length for an empty list', () => {
     expect(firstVisibleGroupIndex([], 60)).toBe(0)
   })
-})
 
-describe('messageRenderWeight', () => {
-  it('charges large text and tool results by character cost, not only part count', () => {
-    const text = [{ type: 'text', text: 'x'.repeat(RENDER_WEIGHT_CHARS * 3) }]
+  it('keeps a floor of turns visible however heavy they are', () => {
+    // Without the floor a session of enormous turns puts "Show earlier" two
+    // turns from the bottom, which reads as broken rather than as paging.
+    const groups = Array.from({ length: 20 }, (_, i) => group(`g${i}`, 5_000))
 
-    const tool = [
-      {
-        type: 'tool-call',
-        toolName: 'skill_view',
-        args: { name: 'hermes-agent' },
-        result: { content: 'x'.repeat(RENDER_WEIGHT_CHARS * 100) }
-      }
-    ]
-
-    expect(messageRenderWeight(text)).toBe(4)
-    expect(messageRenderWeight(tool)).toBeGreaterThanOrEqual(101)
+    expect(firstVisibleGroupIndex(groups, 600, 8)).toBe(groups.length - 8)
   })
 
-  it('makes repeated 51KB tool outputs exceed the normal transcript page', () => {
-    const toolOutput = () => [
-      {
-        type: 'tool-call',
-        toolName: 'skill_view',
-        result: { content: 'x'.repeat(51_236) }
-      }
-    ]
+  it('does not force the floor to hide turns the budget already showed', () => {
+    const groups = Array.from({ length: 20 }, (_, i) => group(`g${i}`, 1))
 
-    const groups = Array.from({ length: 5 }, (_, index) => ({
-      id: `tool-${index}`,
-      index,
-      kind: 'standalone' as const,
-      weight: messageRenderWeight(toolOutput())
-    }))
-
-    expect(firstVisibleGroupIndex(groups, 300)).toBeGreaterThan(0)
-  })
-
-  it('handles circular tool payloads without recursing forever', () => {
-    const result: { content: string; self?: unknown } = { content: 'ok' }
-    result.self = result
-
-    expect(messageRenderWeight([{ type: 'tool-call', result }])).toBe(2)
+    expect(firstVisibleGroupIndex(groups, 600, 8)).toBe(0)
   })
 })
 

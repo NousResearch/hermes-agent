@@ -262,10 +262,22 @@ def _repo_name_from_url(url: str) -> str:
 
 
 def _read_manifest(plugin_dir: Path) -> dict:
-    """Read plugin.yaml and return the parsed dict, or empty dict."""
+    """Read a native or portable manifest, preferring native YAML."""
     manifest_file = plugin_dir / "plugin.yaml"
     if not manifest_file.exists():
-        return {}
+        manifest_file = plugin_dir / "plugin.yml"
+    if not manifest_file.exists():
+        portable_file = plugin_dir / "plugin.json"
+        if not portable_file.exists() and not portable_file.is_symlink():
+            return {}
+        try:
+            from hermes_cli.agent_plugins import read_agent_plugin_manifest
+
+            manifest, _ = read_agent_plugin_manifest(plugin_dir)
+            return manifest
+        except Exception as e:
+            logger.warning("Failed to read plugin.json in %s: %s", plugin_dir, e)
+            return {}
     try:
         import yaml
 
@@ -497,7 +509,25 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
         else:
             tmp_target = tmp_clone
 
-        manifest = _read_manifest(tmp_target)
+        has_native_manifest = (tmp_target / "plugin.yaml").exists() or (
+            tmp_target / "plugin.yml"
+        ).exists()
+        has_portable_manifest = (tmp_target / "plugin.json").exists() or (
+            tmp_target / "plugin.json"
+        ).is_symlink()
+        if not has_native_manifest and has_portable_manifest:
+            try:
+                from hermes_cli.agent_plugins import read_agent_plugin_manifest
+
+                manifest, diagnostics = read_agent_plugin_manifest(tmp_target)
+                for diagnostic in diagnostics:
+                    logger.warning("Agent Plugin install: %s", diagnostic.message)
+            except Exception as exc:
+                raise PluginOperationError(
+                    f"Portable plugin manifest validation failed: {exc}"
+                ) from exc
+        else:
+            manifest = _read_manifest(tmp_target)
         plugin_name = manifest.get("name") or (
             subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _repo_name_from_url(git_url)
         )
@@ -536,7 +566,8 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
         shutil.move(str(tmp_target), str(target))
 
     has_yaml = (target / "plugin.yaml").exists() or (target / "plugin.yml").exists()
-    if not has_yaml and not (target / "__init__.py").exists():
+    has_portable = (target / "plugin.json").exists()
+    if not has_yaml and not has_portable and not (target / "__init__.py").exists():
         logger.warning(
             "%s has no plugin.yaml / __init__.py; may not be a valid plugin",
             plugin_name,
@@ -590,12 +621,12 @@ def cmd_install(
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
-    if not (target / "plugin.yaml").exists() and not (target / "plugin.yml").exists() and not (
+    if not (target / "plugin.yaml").exists() and not (target / "plugin.yml").exists() and not (target / "plugin.json").exists() and not (
         target / "__init__.py"
     ).exists():
         console.print(
-            f"[yellow]Warning:[/yellow] {installed_name} doesn't contain plugin.yaml "
-            f"or __init__.py. It may not be a valid Hermes plugin.",
+            f"[yellow]Warning:[/yellow] {installed_name} doesn't contain plugin.yaml, "
+            f"plugin.json, or __init__.py. It may not be a valid Hermes plugin.",
         )
 
     _prompt_plugin_env_vars(installed_manifest, console)
@@ -985,7 +1016,7 @@ def _plugin_exists(name: str) -> bool:
 
 
 def _read_manifest_info(d: Path, prefix: str):
-    """Read a plugin.yaml manifest and return (name, version, description, key).
+    """Read a native or portable manifest and return display metadata.
 
     Returns None if no manifest file exists.
     """
@@ -993,7 +1024,23 @@ def _read_manifest_info(d: Path, prefix: str):
     if not manifest_file.exists():
         manifest_file = d / "plugin.yml"
     if not manifest_file.exists():
-        return None
+        portable_file = d / "plugin.json"
+        if not portable_file.exists() and not portable_file.is_symlink():
+            return None
+        try:
+            from hermes_cli.agent_plugins import read_agent_plugin_manifest
+
+            manifest, _ = read_agent_plugin_manifest(d)
+            name = manifest["name"]
+            key = f"{prefix}/{d.name}" if prefix else name
+            return (
+                name,
+                manifest.get("version", ""),
+                manifest.get("description", ""),
+                key,
+            )
+        except Exception:
+            return None
     try:
         import yaml
     except ImportError:

@@ -74,6 +74,21 @@ class TestCodexBuildKwargs:
         )
         assert kw1["prompt_cache_key"] == kw2["prompt_cache_key"]
 
+    def test_cache_key_differs_across_unrelated_sessions(self, transport):
+        """#78941: two unrelated sessions (different users/conversations)
+        sharing the same static prefix must NOT collapse onto the same
+        prompt_cache_key — session_id scopes the hash unless it is a cron
+        per-fire id, which is normalized to its stable job prefix instead."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw1 = transport.build_kwargs(
+            model="gpt-5.4", messages=messages, tools=[],
+            session_id="session_alice_1",
+        )
+        kw2 = transport.build_kwargs(
+            model="gpt-5.4", messages=messages, tools=[],
+            session_id="session_bob_1",
+        )
+        assert kw1["prompt_cache_key"] != kw2["prompt_cache_key"]
 
     def test_github_responses_drops_message_item_id_end_to_end(self, transport):
         # #32716: Copilot binds codex_message_items ids to a backend
@@ -235,6 +250,21 @@ class TestCodexBuildKwargs:
         assert eb.get("prompt_cache_key") == "caller-override"
         assert eb.get("other_field") == 42
 
+    def test_xai_top_level_override_also_governs_extra_body(self, transport):
+        """A caller's top-level request_overrides={"prompt_cache_key": ...}
+        must win in extra_body.prompt_cache_key too -- the field xAI actually
+        reads -- instead of being silently outrun by the auto-derived
+        content-hash cache_key (#78941)."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="grok-4.3", messages=messages, tools=[],
+            session_id="conv-xai-1",
+            is_xai_responses=True,
+            request_overrides={"prompt_cache_key": "caller-top-level"},
+        )
+        assert kw["prompt_cache_key"] == "caller-top-level"
+        assert kw["extra_body"]["prompt_cache_key"] == "caller-top-level"
+
 
 
 
@@ -242,25 +272,55 @@ class TestCodexBuildKwargs:
     @pytest.mark.parametrize("length", [64, 65])
     def test_codex_cache_scope_boundary(self, transport, length):
         session_id = "s" * length
-        scope = transport.build_kwargs(
+        kw = transport.build_kwargs(
             model="gpt-5.4",
             messages=[{"role": "user", "content": "Hi"}],
             tools=[],
             session_id=session_id,
             is_codex_backend=True,
             request_overrides={"extra_headers": {"x-test": "1"}},
+        )
+        headers = kw["extra_headers"]
+
+        assert headers["x-test"] == "1"
+        # session_id header carries the raw physical id untouched regardless
+        # of length (#57012); x-client-request-id mirrors the body's
+        # effective (already-bounded) prompt_cache_key.
+        assert headers["session_id"] == session_id
+        assert headers["x-client-request-id"] == kw["prompt_cache_key"]
+        assert len(headers["x-client-request-id"]) <= 64
+
+    def test_codex_cache_scope_headers_normalize_cron_session_id(self, transport):
+        """x-client-request-id shares a cache scope across cron re-fires of the
+        same job (cron per-fire timestamp stripped, same as prompt_cache_key),
+        while session_id stays the raw per-fire physical id (#57012)."""
+        first_run = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            session_id="cron_job42_20260801_090000",
+            is_codex_backend=True,
+        )["extra_headers"]
+        second_run = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            session_id="cron_job42_20260802_090000",
+            is_codex_backend=True,
+        )["extra_headers"]
+        other_job = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            session_id="cron_job99_20260801_090000",
+            is_codex_backend=True,
         )["extra_headers"]
 
-        assert scope["x-test"] == "1"
-        assert len(scope["session_id"]) <= 64
-        assert scope["x-client-request-id"] == scope["session_id"]
-        if length == 64:
-            assert scope["session_id"] == session_id
-        else:
-            assert scope["session_id"].startswith("pck_")
-            assert scope["session_id"] != session_id
-
-
+        assert first_run["session_id"] == "cron_job42_20260801_090000"
+        assert second_run["session_id"] == "cron_job42_20260802_090000"
+        assert first_run["x-client-request-id"].startswith("pck_")
+        assert first_run["x-client-request-id"] == second_run["x-client-request-id"]
+        assert first_run["x-client-request-id"] != other_job["x-client-request-id"]
 
 
 

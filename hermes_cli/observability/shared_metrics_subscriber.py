@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import logging
+import platform
 import threading
 from typing import Any
 
 from agent.relay_runtime import RUNTIME_INSTANCE_KEY
+from hermes_cli.config import detect_install_method
 
 from .shared_metrics import SharedMetricsStore
 from .shared_metrics_contract import (
+    CLIENT_ACTIVE_METRIC,
     MODEL_ROUTE_METRIC,
     TOOL_CALL_METRIC,
+    client_active_counter,
+    client_resource,
     model_call_dimensions,
+    skill_counter,
     task_counter,
     tool_approval_counter,
     tool_call_dimensions,
@@ -32,7 +38,12 @@ class SharedMetricsSubscriber:
         runtime_id: str | None = None,
     ) -> None:
         self.store = store
-        self._hermes_version = hermes_version or "unknown"
+        self._client_resource = client_resource(
+            hermes_version,
+            os_name=platform.system(),
+            architecture=platform.machine(),
+            install_method=detect_install_method(),
+        )
         self._runtime_id = runtime_id
         self._active = True
         self._lock = threading.RLock()
@@ -50,13 +61,23 @@ class SharedMetricsSubscriber:
                 or metadata.get(RUNTIME_INSTANCE_KEY) != self._runtime_id
             ):
                 return
-        dimensions = model_call_dimensions(event)
-        metric_name = MODEL_ROUTE_METRIC
+        metric = client_active_counter(event)
+        dimensions = None
+        metric_name = CLIENT_ACTIVE_METRIC
+        if metric is not None:
+            metric_name, dimensions = metric
+        if dimensions is None:
+            dimensions = model_call_dimensions(event)
+            metric_name = MODEL_ROUTE_METRIC
         if dimensions is None:
             dimensions = tool_call_dimensions(event)
             metric_name = TOOL_CALL_METRIC
         if dimensions is None:
-            metric = task_counter(event) or tool_approval_counter(event)
+            metric = (
+                task_counter(event)
+                or tool_approval_counter(event)
+                or skill_counter(event)
+            )
             if metric is None:
                 return
             metric_name, dimensions = metric
@@ -64,11 +85,14 @@ class SharedMetricsSubscriber:
             if not self._active:
                 return
             try:
-                self.store.record_counter(
-                    metric_name,
-                    dimensions,
-                    self._hermes_version,
-                )
+                if metric_name == CLIENT_ACTIVE_METRIC:
+                    self.store.record_client_active(self._client_resource)
+                else:
+                    self.store.record_counter(
+                        metric_name,
+                        dimensions,
+                        self._client_resource,
+                    )
             except Exception:
                 logger.warning(
                     "Unable to persist the Hermes shared metric: %s",

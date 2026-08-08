@@ -400,12 +400,12 @@ _CACHE_DIRS: list[tuple[str, str]] = [
     # reach uploads inside sandbox containers (#69575). No legacy alias exists,
     # so both tuple slots are ``images``.
     ("images", "images"),
+    # Desktop non-image file attachments (tui_gateway ``file.attach`` staging)
+    # land in the flat top-level ``attachments/`` dir. Mount it so the agent's
+    # file tools can read dropped binaries (zip/pdf/...) from inside sandbox
+    # containers instead of dangling host paths (#76577).
+    ("attachments", "attachments"),
 ]
-
-# Delegation artifacts are created after an agent may already have opened its
-# Docker sandbox.  Pre-create this one mount source during sandbox assembly so
-# later summary/transcript writes appear through the existing read-only bind.
-_EAGER_CACHE_DIRS = {"cache/delegation"}
 
 
 def get_cache_directory_mounts(
@@ -422,22 +422,25 @@ def get_cache_directory_mounts(
     mounts: List[Dict[str, str]] = []
     for new_subpath, old_name in _CACHE_DIRS:
         host_dir = get_hermes_dir(new_subpath, old_name)
-        if new_subpath in _EAGER_CACHE_DIRS:
+        if not host_dir.is_dir():
+            # Create missing staging dirs instead of skipping them: Docker
+            # snapshots this mount list at container CREATION, so a dir that
+            # appears later (first desktop attachment, first clipboard image)
+            # would dangle for the whole life of a persistent container
+            # (#76577). An empty bind-mounted dir costs nothing; a missing
+            # mount costs the feature. get_hermes_dir() already resolved
+            # new-vs-legacy layout, so creating its answer cannot shadow a
+            # populated legacy dir.
             try:
                 host_dir.mkdir(parents=True, exist_ok=True)
-            except OSError as exc:
-                logger.warning(
-                    "credential_files: could not prepare cache mount %s: %s",
-                    host_dir,
-                    exc,
-                )
-        if host_dir.is_dir():
-            # Always map to the *new* container layout regardless of host layout.
-            container_path = f"{container_base.rstrip('/')}/{new_subpath}"
-            mounts.append({
-                "host_path": str(host_dir),
-                "container_path": container_path,
-            })
+            except OSError:
+                continue  # unwritable home (tests, RO mounts) — skip as before
+        # Always map to the *new* container layout regardless of host layout.
+        container_path = f"{container_base.rstrip('/')}/{new_subpath}"
+        mounts.append({
+            "host_path": str(host_dir),
+            "container_path": container_path,
+        })
     return mounts
 
 
@@ -498,11 +501,14 @@ def to_agent_visible_cache_path(
 
     Returns the input unchanged if it is not under any auto-mounted cache
     directory, or if the active terminal backend does not require translation.
-    File-sync backends need *task_id* so their active environment can provide
-    the remote home and receive the newly-created artifact before its path is
-    advertised.
+    When *task_id* identifies an active file-sync backend, newly-created
+    artifacts are synced before their remote-visible paths are advertised.
+
+    Docker and Modal use ``/root/.hermes``. SSH, Daytona, and Vercel Sandbox
+    use the active environment's remote home when available, otherwise
+    ``~/.hermes``. Local and Singularity keep the host path.
     """
-    backend = os.environ.get("TERMINAL_ENV", "local")
+    backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
     env = None
     overrides: Dict[str, Any] = {}
     if task_id:
@@ -510,7 +516,9 @@ def to_agent_visible_cache_path(
             from tools.terminal_tool import get_active_env, resolve_task_overrides
 
             env = get_active_env(task_id)
-            overrides = resolve_task_overrides(task_id)
+            resolved = resolve_task_overrides(task_id)
+            if isinstance(resolved, dict):
+                overrides = resolved
         except Exception:
             logger.debug("Could not resolve terminal context for cache path", exc_info=True)
 
@@ -522,20 +530,17 @@ def to_agent_visible_cache_path(
     remote_home = getattr(env, "_remote_home", None) if env is not None else None
     env_name = type(env).__name__.lower() if env is not None else ""
 
-    if sync_manager is not None:
-        effective_base = (
-            posixpath.join(str(remote_home), ".hermes")
-            if remote_home
-            else container_base
-        )
-    elif backend == "docker" or "docker" in env_name:
+    if remote_home:
+        effective_base = posixpath.join(str(remote_home), ".hermes")
+    elif backend in {"docker", "modal"} or any(
+        name in env_name for name in ("docker", "modal")
+    ):
         effective_base = container_base
-    elif env is None and backend in {
+    elif backend in {
         "ssh",
-        "modal",
         "daytona",
         "vercel_sandbox",
-    }:
+    } or any(name in env_name for name in ("ssh", "daytona", "vercel")):
         # The remote home is not known until the backend connects. File tools
         # expand this tilde inside the backend, after its initial file sync.
         effective_base = "~/.hermes"

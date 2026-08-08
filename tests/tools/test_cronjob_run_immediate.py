@@ -11,8 +11,10 @@ into the calling agent's activity tracker — otherwise the gateway inactivity
 watchdog kills the parent turn at ~1800s.
 """
 import json
+import sys
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from tools.cronjob_tools import cronjob, _execute_job_now
@@ -49,6 +51,40 @@ class TestCronjobRunExecutesImmediately:
         assert res["success"] is False
         m_run.assert_not_called()
 
+    def test_execute_job_now_passes_live_gateway_context_to_delivery(self):
+        """Manual runs must deliver on the live gateway adapter's owning loop."""
+        adapters = {"matrix": object()}
+        gateway_loop = object()
+        runner = SimpleNamespace(adapters=adapters, _gateway_loop=gateway_loop)
+        completed = {"id": "job-run-1", "last_status": "ok", "last_error": None}
+
+        with patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+             patch("gateway.run._gateway_runner_ref", return_value=runner), \
+             patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
+             patch("tools.cronjob_tools.get_job", return_value=completed):
+            res = _execute_job_now(dict(_JOB))
+
+        assert res["success"] is True
+        m_run.assert_called_once_with(
+            _JOB,
+            adapters=adapters,
+            loop=gateway_loop,
+            extra_prompt=None,
+        )
+
+    def test_execute_job_now_remains_standalone_without_gateway(self):
+        """CLI-only runs retain the standalone delivery path."""
+        completed = {"id": "job-run-1", "last_status": "ok", "last_error": None}
+
+        with patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+             patch.dict(sys.modules, {"gateway.run": None}), \
+             patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
+             patch("tools.cronjob_tools.get_job", return_value=completed):
+            res = _execute_job_now(dict(_JOB))
+
+        assert res["success"] is True
+        m_run.assert_called_once_with(_JOB, adapters=None, loop=None, extra_prompt=None)
+
     def test_execute_job_now_marks_failure_on_exception(self):
         """An exception during fire is captured, marked failed, not propagated."""
         with patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
@@ -74,7 +110,7 @@ class TestCronjobRunExecutesImmediately:
 
         set_activity_callback(record)
         try:
-            def slow_run(job):
+            def slow_run(job, **kw):
                 # Deterministic: block until at least one heartbeat has fired
                 # (bounded so a broken heartbeat can't hang the test).
                 assert heartbeat_seen.wait(timeout=5.0), "no heartbeat within 5s"
@@ -123,7 +159,7 @@ class TestCronjobRunExecutesImmediately:
 
         set_activity_callback(record)
         try:
-            def slow_run(job):
+            def slow_run(job, **kw):
                 # Ceiling=0 → the very first wake stops the loop without
                 # touching. Give it a couple of cycles to prove silence.
                 time.sleep(0.2)
@@ -156,7 +192,7 @@ class TestCronjobRunExecutesImmediately:
 
         set_activity_callback(flaky)
         try:
-            def slow_run(job):
+            def slow_run(job, **kw):
                 # Block until a heartbeat AFTER the raising one has fired.
                 assert second_beat.wait(timeout=5.0), \
                     "heartbeat stopped after one callback exception"

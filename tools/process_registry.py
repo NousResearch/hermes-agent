@@ -40,6 +40,7 @@ import subprocess
 import threading
 import time
 import uuid
+from pathlib import Path
 
 _IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
@@ -48,6 +49,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
+
+from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +78,253 @@ WATCH_STRIKE_LIMIT = 3            # Strikes in a row → disable watch + promote
 WATCH_GLOBAL_MAX_PER_WINDOW = 15
 WATCH_GLOBAL_WINDOW_SECONDS = 10
 WATCH_GLOBAL_COOLDOWN_SECONDS = 30
+
+
+# ---------------------------------------------------------------------------
+# systemd cgroup isolation for gateway-spawned local executors (#70716)
+# ---------------------------------------------------------------------------
+# When Hermes runs as a systemd gateway with MemoryHigh/MemoryMax limits,
+# local background terminal commands inherit the gateway's cgroup.  A
+# memory-heavy executor (Codex, tests, Node) can push the whole cgroup past
+# MemoryMax and trigger systemd-oomd to kill the ENTIRE gateway — taking down
+# the messaging control plane and silently losing the active turn.
+#
+# Wrapping the spawn in ``systemd-run --user --scope --unit=hermes-worker-<pid>``
+# places the worker in its own transient cgroup so an OOM in the worker kills
+# only the worker, not the gateway.  We probe *once* whether
+# ``systemd-run --user --scope`` is actually usable (the binary can exist on
+# the PATH while the user D-Bus session is unavailable — common for system
+# services and containers), and cache the result for the process lifetime.
+
+_SYSTEMD_SCOPE_AVAILABLE: Optional[bool] = None
+_SYSTEMD_SCOPE_PROBE_LOCK = threading.Lock()
+_SYSTEMD_SCOPE_PROBED_AT = 0.0
+_SYSTEMD_SCOPE_FAILURE_TTL_SECONDS = 60.0
+_MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
+_DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
+_WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
+
+
+def _worker_memory_max_bytes() -> int:
+    """Return a finite per-worker cgroup limit without widening host risk.
+
+    The proposed local-memory-guard environment override is honored when it
+    tightens the safe bound, so this isolation composes with PR #57121 instead
+    of inventing a second knob.  An oversized override cannot widen host risk.
+    Otherwise retain the tighter of the gateway's current cgroup-v2
+    ``memory.max`` and half of physical RAM, capped at 4 GiB.  This keeps the
+    sibling worker outside the gateway cgroup while ensuring the worker cannot
+    consume memory up to the enclosing user slice or host limit.
+    """
+    override_bound: Optional[int] = None
+    override = os.getenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "").strip()
+    if override:
+        override_valid = False
+        try:
+            parsed = int(override) * 1024 * 1024
+            if parsed >= _MIN_WORKER_MEMORY_MAX_BYTES:
+                override_bound = parsed
+                override_valid = True
+        except ValueError:
+            pass
+        if not override_valid:
+            logger.warning(
+                "Ignoring invalid TERMINAL_LOCAL_MEMORY_MAX_MB=%r; "
+                "expected an integer representing at least %d MiB",
+                override,
+                _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024),
+            )
+
+    candidates: List[int] = []
+    try:
+        for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
+            if line.startswith("0::"):
+                relative = line.partition("::")[2].lstrip("/")
+                raw_limit = (
+                    Path("/sys/fs/cgroup") / relative / "memory.max"
+                ).read_text(encoding="utf-8").strip()
+                if raw_limit.isdigit():
+                    cgroup_limit = int(raw_limit)
+                    if cgroup_limit >= _MIN_WORKER_MEMORY_MAX_BYTES:
+                        candidates.append(cgroup_limit)
+                break
+    except (OSError, ValueError):
+        pass
+
+    try:
+        physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(
+            os.sysconf("SC_PAGE_SIZE")
+        )
+        physical_bound = min(
+            _WORKER_MEMORY_MAX_CAP_BYTES,
+            max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2),
+        )
+        candidates.append(physical_bound)
+    except (OSError, ValueError, TypeError):
+        pass
+
+    safe_bound = min(candidates) if candidates else _DEFAULT_WORKER_MEMORY_MAX_BYTES
+    return min(override_bound, safe_bound) if override_bound else safe_bound
+
+
+def _systemd_run_user_scope_available() -> bool:
+    """Return True if ``systemd-run --user --scope`` can create a cgroup.
+
+    Cached after the first probe.  ``shutil.which`` alone is insufficient:
+    in system-service deployments (and containers) the user D-Bus session
+    bus that ``systemd-run --user`` needs may be absent even though the
+    binary is on PATH, causing every spawn to fail with
+    ``Failed to connect to user bus``.  We do a cheap no-op probe
+    (``systemd-run --user --scope --unit=… -- /bin/true``) and remember the
+    outcome.
+    """
+    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
+    cached = _SYSTEMD_SCOPE_AVAILABLE
+    now = time.monotonic()
+    if cached is True:
+        return True
+    if (
+        cached is False
+        and now - _SYSTEMD_SCOPE_PROBED_AT < _SYSTEMD_SCOPE_FAILURE_TTL_SECONDS
+    ):
+        return False
+
+    # Double-checked locking keeps concurrent first-use spawns from observing
+    # a temporary False while the definitive probe is still in flight.  Such a
+    # race would launch the losing workload back inside the gateway cgroup.
+    with _SYSTEMD_SCOPE_PROBE_LOCK:
+        cached = _SYSTEMD_SCOPE_AVAILABLE
+        now = time.monotonic()
+        if cached is True:
+            return True
+        if (
+            cached is False
+            and now - _SYSTEMD_SCOPE_PROBED_AT
+            < _SYSTEMD_SCOPE_FAILURE_TTL_SECONDS
+        ):
+            return False
+
+        available = False
+        if not _IS_WINDOWS:
+            try:
+                import shutil
+
+                binary = shutil.which("systemd-run")
+                if binary:
+                    # Probe: create a transient scope that immediately exits.
+                    # A unique unit avoids collisions; timeout bounds D-Bus.
+                    probe_unit = f"hermes-probe-scope-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+                    result = subprocess.run(
+                        [
+                            binary, "--user", "--scope", "--quiet",
+                            "--unit", probe_unit,
+                            "--collect",
+                            "--property", "MemoryAccounting=yes",
+                            "--property", f"MemoryMax={_worker_memory_max_bytes()}",
+                            "--property", "OOMPolicy=kill",
+                            "--",
+                            "/bin/true",
+                        ],
+                        capture_output=True,
+                        timeout=3,
+                    )
+                    available = result.returncode == 0
+                    if not available:
+                        logger.debug(
+                            "systemd-run --user --scope probe failed (rc=%s): %s",
+                            result.returncode,
+                            (result.stderr or b"").decode(
+                                "utf-8", "replace"
+                            ).strip(),
+                        )
+            except Exception as exc:
+                logger.debug("systemd-run --user --scope probe error: %s", exc)
+
+        _SYSTEMD_SCOPE_AVAILABLE = available
+        _SYSTEMD_SCOPE_PROBED_AT = time.monotonic()
+        return available
+
+
+def _build_systemd_scope_argv(
+    shell_argv: List[str],
+    unit_suffix: str,
+) -> List[str]:
+    """Wrap *shell_argv* in a ``systemd-run --user --scope`` invocation.
+
+    The resulting cgroup gets its own memory accounting so an OOM in the
+    worker does not kill the gateway cgroup (#70716).  ``--collect`` makes
+    the transient scope self-clean after exit; ``--unit`` gives it a
+    recognisable name for ``systemctl --user status`` / journalctl.
+    """
+    import shutil
+
+    binary = shutil.which("systemd-run")
+    if binary is None:
+        # Caller should have checked _systemd_run_user_scope_available();
+        # guard anyway so we never pass None into Popen.
+        return shell_argv
+    unit_name = f"hermes-worker-{unit_suffix}"
+    memory_max = _worker_memory_max_bytes()
+    return [
+        binary,
+        "--user",
+        "--scope",
+        "--quiet",
+        "--unit",
+        unit_name,
+        "--collect",
+        "--property",
+        "MemoryAccounting=yes",
+        "--property",
+        f"MemoryMax={memory_max}",
+        "--property",
+        "OOMPolicy=kill",
+        "--",
+        *shell_argv,
+    ]
+
+
+def _stop_systemd_unit(unit_name: str) -> bool:
+    """Stop a transient systemd user scope by unit name.
+
+    This reaps the *entire* cgroup — catching double-forked descendants that
+    survive a plain PID signal because they were reparented to init inside the
+    scope (issue #70716, reviewer gap #2).  ``systemctl --user stop`` sends
+    SIGTERM to every process in the unit's cgroup and escalates to SIGKILL
+    after the unit's ``TimeoutStopSec``.
+
+    Returns True if the unit was successfully stopped (or was already gone),
+    False if ``systemctl`` is unavailable or the stop command failed.
+    """
+    import shutil
+
+    binary = shutil.which("systemctl")
+    if binary is None:
+        return False
+    try:
+        result = subprocess.run(
+            [binary, "--user", "stop", unit_name],
+            capture_output=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            stderr = (result.stderr or b"").decode(errors="replace").strip()
+            stderr_lower = stderr.lower()
+            if any(
+                marker in stderr_lower
+                for marker in ("not loaded", "not found", "does not exist")
+            ):
+                return True
+            logger.debug(
+                "systemctl --user stop %s exited %d: %s",
+                unit_name, result.returncode,
+                stderr,
+            )
+            return False
+        return True
+    except Exception as exc:
+        logger.debug("systemctl --user stop %s failed: %s", unit_name, exc)
+        return False
 
 
 def format_uptime_short(seconds: int) -> str:
@@ -109,6 +359,7 @@ class ProcessSession:
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # True if recovered from crash (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
+    systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run (#70716)
     # Watcher/notification metadata (persisted for crash recovery)
     watcher_platform: str = ""
     watcher_chat_id: str = ""
@@ -724,6 +975,7 @@ class ProcessRegistry:
             started_at=time.time(),
         )
 
+        pty_scope_attempted = False
         if use_pty:
             # Try PTY mode for interactive CLI tools
             try:
@@ -734,8 +986,44 @@ class ProcessRegistry:
                 user_shell = _find_shell()
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
+                pty_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
+
+                # Cgroup isolation for PTY mode (#70716, reviewer gap #1):
+                # Wrap the PTY command in a systemd scope so interactive
+                # executors get their own cgroup, same as pipe mode.
+                pty_use_systemd_scope = False
+                try:
+                    from gateway.restart import is_gateway_supervisor_process
+
+                    pty_under_supervisor = is_gateway_supervisor_process()
+                    pty_use_systemd_scope = (
+                        not _IS_WINDOWS
+                        and pty_under_supervisor
+                        and _systemd_run_user_scope_available()
+                    )
+                except Exception:
+                    pty_use_systemd_scope = False
+
+                if pty_use_systemd_scope:
+                    pty_argv = _build_systemd_scope_argv(
+                        pty_argv, unit_suffix=session.id,
+                    )
+                    session.systemd_unit = f"hermes-worker-{session.id}.scope"
+                    pty_scope_attempted = True
+                elif not _IS_WINDOWS:
+                    try:
+                        from gateway.restart import is_gateway_supervisor_process as _sup
+                        if _sup():
+                            logger.debug(
+                                "PTY background executor not isolated in a "
+                                "systemd scope (systemd-run --user unavailable); "
+                                "worker shares the gateway cgroup."
+                            )
+                    except Exception:
+                        pass
+
                 pty_proc = _PtyProcessCls.spawn(
-                    [user_shell, "-lic", f"set +m; {safe_command}"],
+                    pty_argv,
                     cwd=session.cwd,
                     env=pty_env,
                     dimensions=(30, 120),
@@ -766,6 +1054,13 @@ class ProcessRegistry:
                 logger.warning("ptyprocess not installed, falling back to pipe mode")
             except Exception as e:
                 logger.warning("PTY spawn failed (%s), falling back to pipe mode", e)
+                if pty_scope_attempted and session.systemd_unit:
+                    if not _stop_systemd_unit(session.systemd_unit):
+                        raise RuntimeError(
+                            "PTY scope could not be reaped; refusing pipe fallback "
+                            "to avoid duplicate command execution"
+                        ) from e
+                    session.systemd_unit = ""
 
         # Standard Popen path (non-PTY or PTY fallback)
         # Use the user's login shell for consistency with LocalEnvironment --
@@ -778,8 +1073,58 @@ class ProcessRegistry:
         bg_env["PYTHONUNBUFFERED"] = "1"
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
+        # Cgroup isolation (#70716): when running under a service manager
+        # (systemd gateway), wrap the worker in its own transient systemd
+        # scope so it gets a separate cgroup.  An OOM in the worker then
+        # kills only the worker instead of taking down the whole gateway
+        # cgroup (and the messaging control plane with it).  We only do this
+        # for both pipe mode and the PTY path above.
+        shell_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
+        use_systemd_scope = False
+        under_supervisor = False
+        try:
+            from gateway.restart import is_gateway_supervisor_process
+
+            under_supervisor = is_gateway_supervisor_process()
+            use_systemd_scope = (
+                not _IS_WINDOWS
+                and under_supervisor
+                and _systemd_run_user_scope_available()
+            )
+        except Exception:
+            use_systemd_scope = False
+
+        if use_systemd_scope:
+            unit_suffix = (
+                f"{session.id}-pipe-fallback"
+                if pty_scope_attempted
+                else session.id
+            )
+            spawn_argv = _build_systemd_scope_argv(
+                shell_argv, unit_suffix=unit_suffix,
+            )
+            session.systemd_unit = f"hermes-worker-{unit_suffix}.scope"
+            # systemd-run creates the new session/cgroup for us; do NOT also
+            # set start_new_session (harmless, but redundant and it can mask
+            # scope-creation failures in some systemd versions).
+            popen_start_new_session = False
+        else:
+            spawn_argv = shell_argv
+            popen_start_new_session = True
+            if not _IS_WINDOWS and under_supervisor:
+                # Running under a supervisor but could not get a private
+                # cgroup — the worker shares the gateway cgroup, so an OOM
+                # in the worker can still kill the whole gateway (#70716).
+                logger.debug(
+                    "Local background executor not isolated in a systemd scope "
+                    "(supervisor=%s, systemd-run --user available=%s); "
+                    "worker shares the gateway cgroup.",
+                    under_supervisor,
+                    _systemd_run_user_scope_available(),
+                )
+
         proc = subprocess.Popen(
-            [user_shell, "-lic", f"set +m; {safe_command}"],
+            spawn_argv,
             text=True,
             cwd=session.cwd,
             env=bg_env,
@@ -788,7 +1133,7 @@ class ProcessRegistry:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
-            start_new_session=True,
+            start_new_session=popen_start_new_session,
             **_popen_kwargs,
         )
 
@@ -817,7 +1162,14 @@ class ProcessRegistry:
             # descendants spawned via setsid) before re-raising so they do not
             # leak as untracked background processes.
             try:
-                if not _IS_WINDOWS:
+                if session.systemd_unit:
+                    # systemd-run --scope shares the gateway's process group
+                    # because start_new_session=False.  Never killpg here: that
+                    # can signal the gateway itself.  Stop the sibling cgroup,
+                    # then safely terminate the wrapper PID tree as fallback.
+                    _stop_systemd_unit(session.systemd_unit)
+                    self._terminate_host_pid(proc.pid, session.host_start_time)
+                elif not _IS_WINDOWS:
                     try:
                         kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
                         os.killpg(os.getpgid(proc.pid), kill_signal)  # windows-footgun: ok - guarded by _IS_WINDOWS above
@@ -1650,6 +2002,12 @@ class ProcessRegistry:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
         if session.exited:
+            # Even if the main process already exited, a double-forked
+            # descendant may still be alive in the systemd scope (#70716,
+            # reviewer gap #2 — the ``already_exited`` early return skipped
+            # unit cleanup).  Stop the scope to reap any survivors.
+            if session.systemd_unit:
+                _stop_systemd_unit(session.systemd_unit)
             with session._lock:
                 result = {
                     "status": "already_exited",
@@ -1685,8 +2043,14 @@ class ProcessRegistry:
             elif session.detached and session.pid_scope == "host" and session.pid:
                 # Identity check, not bare liveness: if the PID is gone OR was
                 # recycled onto an unrelated process, treat our process as
-                # exited and never tree-kill the stranger.
+                # exited and never tree-kill the stranger.  If this recovered
+                # session also carries an owned systemd scope, stop that scope
+                # before returning: a daemonized descendant may still be alive
+                # there even though the wrapper PID exited or was recycled
+                # across the gateway restart (#70716, teknium1 review).
                 if not self._host_pid_is_ours(session.pid, session.host_start_time):
+                    if session.systemd_unit:
+                        _stop_systemd_unit(session.systemd_unit)
                     with session._lock:
                         session.exited = True
                         session.exit_code = None
@@ -1708,6 +2072,16 @@ class ProcessRegistry:
                         "its original runtime handle is no longer available"
                     ),
                 }
+
+            # If the worker was spawned in its own systemd scope (#70716),
+            # stop the entire unit to reap any double-forked descendants that
+            # were reparented inside the scope and survived the PID signal
+            # above (reviewer gap #2).  ``systemctl --user stop`` sends
+            # SIGTERM to every process in the cgroup and escalates to SIGKILL
+            # after TimeoutStopSec.  This is additive — the PID-based kill
+            # above already handled the main process; this catches stragglers.
+            if session.systemd_unit:
+                _stop_systemd_unit(session.systemd_unit)
             # Capture output before marking consumed, then mark consumed before
             # exposing ``exited`` to watcher tasks. This closes the delayed
             # notification race without discarding the terminal transcript.
@@ -2053,7 +2427,10 @@ class ProcessRegistry:
 
     # ----- Checkpoint (crash recovery) -----
 
-    def _write_checkpoint(self):
+    def _write_checkpoint(
+        self,
+        extra_entries: Optional[List[Dict[str, Any]]] = None,
+    ):
         """Write running process metadata to checkpoint file atomically."""
         try:
             with self._lock:
@@ -2067,10 +2444,18 @@ class ProcessRegistry:
                             s.host_start_time = self._safe_host_start_time(s.pid)
                         entries.append({
                             "session_id": s.id,
-                            "command": s.command,
+                            # Redact inline credentials before persisting to
+                            # disk — the checkpoint file lives under
+                            # ~/.hermes/processes.json with the raw command
+                            # (issue #77484). Recovery only uses command for
+                            # display/logging (the process is already running;
+                            # adoption re-validates the PID, never re-runs the
+                            # command), so masking is lossless.
+                            "command": redact_sensitive_text(s.command, code_file=True),
                             "pid": s.pid,
                             "pid_scope": s.pid_scope,
                             "host_start_time": s.host_start_time,
+                            "systemd_unit": s.systemd_unit,
                             "cwd": s.cwd,
                             "started_at": s.started_at,
                             "task_id": s.task_id,
@@ -2085,6 +2470,13 @@ class ProcessRegistry:
                             "notify_on_complete": s.notify_on_complete,
                             "watch_patterns": s.watch_patterns,
                         })
+                if extra_entries:
+                    tracked_ids = {item.get("session_id") for item in entries}
+                    entries.extend(
+                        item
+                        for item in extra_entries
+                        if item.get("session_id") not in tracked_ids
+                    )
             
             # Atomic write to avoid corruption on crash
             from utils import atomic_json_write
@@ -2107,6 +2499,7 @@ class ProcessRegistry:
             return 0
 
         recovered = 0
+        unresolved_scope_entries: List[Dict[str, Any]] = []
         for entry in entries:
             pid = entry.get("pid")
             if not pid:
@@ -2140,6 +2533,15 @@ class ProcessRegistry:
                         "an unrelated process; refusing to adopt it.",
                         entry.get("session_id", "?"), pid,
                     )
+                systemd_unit = entry.get("systemd_unit", "")
+                if systemd_unit and not _stop_systemd_unit(systemd_unit):
+                    logger.warning(
+                        "Could not reap persisted scope %s for dead wrapper pid %s; "
+                        "retaining checkpoint entry for the next startup",
+                        systemd_unit,
+                        pid,
+                    )
+                    unresolved_scope_entries.append(entry)
                 continue
 
             session = ProcessSession(
@@ -2150,6 +2552,7 @@ class ProcessRegistry:
                 pid=pid,
                 host_start_time=recorded_start,
                 pid_scope=pid_scope,
+                systemd_unit=entry.get("systemd_unit", ""),
                 cwd=entry.get("cwd"),
                 started_at=entry.get("started_at", time.time()),
                 detached=True,  # Can't read output, but can report status + kill
@@ -2183,7 +2586,7 @@ class ProcessRegistry:
                     "notify_on_complete": session.notify_on_complete,
                 })
 
-        self._write_checkpoint()
+        self._write_checkpoint(extra_entries=unresolved_scope_entries)
 
         return recovered
 
@@ -2493,7 +2896,12 @@ def _handle_process(args, **kw):
         except Exception:
             session_key = ""
         return json.dumps(
-            {"processes": process_registry.list_sessions(task_id=task_id, session_key=session_key or None)},
+            {
+                "processes": [
+                    _redact_process_result(p)
+                    for p in process_registry.list_sessions(task_id=task_id, session_key=session_key or None)
+                ]
+            },
             ensure_ascii=False,
         )
     elif action in {"poll", "log", "wait", "kill", "write", "submit", "close"}:

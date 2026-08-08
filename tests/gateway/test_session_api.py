@@ -76,6 +76,40 @@ async def test_capabilities_advertises_session_control_surface(adapter):
 
 
 @pytest.mark.asyncio
+async def test_session_messages_default_to_latest_bounded_page(adapter, session_db):
+    session_id = session_db.create_session("bounded-messages", "api_server")
+    session_db.replace_messages(
+        session_id,
+        [{"role": "user", "content": f"msg {i}"} for i in range(501)],
+    )
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(f"/api/sessions/{session_id}/messages")
+        assert resp.status == 200
+        payload = await resp.json()
+
+        explicit_resp = await cli.get(
+            f"/api/sessions/{session_id}/messages?limit=2&offset=1"
+        )
+        assert explicit_resp.status == 200
+        explicit = await explicit_resp.json()
+
+    assert payload["pagination"] == {
+        "limit": 500,
+        "offset": 0,
+        "order": "latest",
+        "returned": 500,
+    }
+    assert payload["data"][0]["content"] == "msg 1"
+    assert payload["data"][-1]["content"] == "msg 500"
+    assert [message["content"] for message in explicit["data"]] == [
+        "msg 1",
+        "msg 2",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeypatch):
     """API-server request sessions should reach tools and terminal subprocess env."""
     monkeypatch.setenv("HERMES_SESSION_ID", "stale-session")
@@ -608,3 +642,56 @@ async def test_require_model_lock_hard_fails_when_global_default_would_be_used(a
     mock_run.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_patch_session_persists_pinned_and_archived(adapter, session_db):
+    """PATCH must accept the durable pin/archive flags and round-trip them.
+
+    These were rejected as unsupported fields, so every pin the desktop made
+    400'd silently (the client swallows the error) and the pin only ever lived
+    in that one app's localStorage. The auto-archive sweep reads
+    `sessions.pinned` server-side, so an unpersisted pin does not protect the
+    chat it was supposed to keep.
+    """
+    session_id = session_db.create_session("pin-session", "api_server")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.patch(f"/api/sessions/{session_id}", json={"pinned": True})
+        assert resp.status == 200, await resp.text()
+        assert (await resp.json())["session"]["pinned"] is True
+
+        # The flag is durable, not just echoed back from the request body.
+        assert bool(session_db.get_session(session_id)["pinned"]) is True
+
+        resp = await cli.get(f"/api/sessions/{session_id}")
+        assert (await resp.json())["session"]["pinned"] is True
+
+        resp = await cli.patch(f"/api/sessions/{session_id}", json={"pinned": False})
+        assert (await resp.json())["session"]["pinned"] is False
+        assert bool(session_db.get_session(session_id)["pinned"]) is False
+
+        resp = await cli.patch(f"/api/sessions/{session_id}", json={"archived": True})
+        assert (await resp.json())["session"]["archived"] is True
+        assert bool(session_db.get_session(session_id)["archived"]) is True
+
+
+@pytest.mark.asyncio
+async def test_patch_session_rejects_non_boolean_pinned(adapter, session_db):
+    session_id = session_db.create_session("pin-type-session", "api_server")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.patch(f"/api/sessions/{session_id}", json={"pinned": "yes"})
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["error"]["code"] == "invalid_session_field"
+
+
+@pytest.mark.asyncio
+async def test_patch_session_still_rejects_unknown_fields(adapter, session_db):
+    session_id = session_db.create_session("unknown-field-session", "api_server")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.patch(f"/api/sessions/{session_id}", json={"nonsense": 1})
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["error"]["code"] == "unsupported_session_field"

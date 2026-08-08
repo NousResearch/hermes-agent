@@ -16,15 +16,20 @@ from hermes_cli import __version__
 
 from .shared_metrics import SharedMetricsStore
 from .shared_metrics_contract import (
+    CLIENT_ACTIVE_MARK,
     MODEL_CALL_PROFILE_MODEL,
     MODEL_CALL_SCOPE,
     SCHEMA_KEY,
     SCHEMA_VERSION,
+    SKILL_LIFECYCLE_MARK,
+    SKILL_LOAD_MARK,
     SUBSCRIBER_NAME,
     TASK_SCOPE,
     TOOL_APPROVAL_MARK,
     TOOL_CALL_SCOPE,
     model_call_fields,
+    skill_lifecycle_fields,
+    skill_load_fields,
     task_start_fields,
     task_terminal_fields,
     task_terminal_state,
@@ -48,6 +53,7 @@ HANDLED_HOOKS = frozenset({
     "post_approval_response",
     "post_api_request",
     "api_request_error",
+    "on_skill_lifecycle",
     "subagent_stop",
 })
 
@@ -161,6 +167,26 @@ class _Runtime:
                 return None
         return session
 
+    def record_client_active(self, event: dict[str, Any]) -> None:
+        """Emit one payload-free activation attempt under the session scope."""
+        session = self.ensure_session(event)
+        if session is None:
+            return
+        self._emit_client_active(session)
+
+    def _emit_client_active(self, session: _MetricsSession) -> None:
+        with session.lock:
+            if session.closing:
+                return
+            self._run_in_session(
+                session,
+                self.relay.scope.event,
+                CLIENT_ACTIVE_MARK,
+                handle=session.relay_session.handle,
+                data={},
+                metadata=self._event_metadata(),
+            )
+
     def _run_in_session(
         self,
         session: _MetricsSession,
@@ -189,6 +215,8 @@ class _Runtime:
                         return None
                     task = owner.tasks.get(task_id)
                     if task is not None:
+                        if not self._event_matches_task_turn(task, event):
+                            return None
                         self._remember_turn(owner, task, event)
                     return task
 
@@ -196,11 +224,14 @@ class _Runtime:
             if session is None:
                 return None
             with session.lock:
+                turn_id = str(event.get("turn_id") or "")
                 if (
                     session.closing
+                    or (turn_id and turn_id in session.retired_turn_ids)
                     or session.relay_session.context is None
                 ):
                     return None
+                self._emit_client_active(session)
                 task_context = session.relay_session.context.copy()
                 start_fields = task_start_fields(event)
                 active_turn = relay_runtime.active_turn(session.session_id)
@@ -258,6 +289,8 @@ class _Runtime:
         if task is None:
             task = self.start_task(event)
             session = self._task_session(event) if task is not None else None
+            if task_id and task is None:
+                return
         if session is None:
             session = self.ensure_session(event)
         if session is None:
@@ -272,6 +305,11 @@ class _Runtime:
             if session.closing:
                 return
             if task is not None:
+                if (
+                    session.tasks.get(task.task_id) is not task
+                    or not self._event_matches_task_turn(task, event)
+                ):
+                    return
                 self._remember_turn(session, task, event)
             existing = session.model_calls.get(model_call_key)
             if existing is not None:
@@ -465,6 +503,55 @@ class _Runtime:
                 tool_call = self._open_tool_call(task, event)
             self._finish_tool_call(task, tool_call, event)
 
+    def record_skill_lifecycle(self, event: dict[str, Any]) -> None:
+        """Emit one allowlisted skill fact without its local identity."""
+        action = str(event.get("action") or "").strip().lower()
+        if action == "loaded":
+            mark = SKILL_LOAD_MARK
+            fields = skill_load_fields(event)
+        else:
+            mark = SKILL_LIFECYCLE_MARK
+            fields = skill_lifecycle_fields(event)
+        if fields is None:
+            return
+
+        session_id = str(event.get("session_id") or "")
+        task_id = str(event.get("task_id") or "")
+        session = self._task_session(
+            event,
+            allow_task_id_fallback=not session_id,
+        )
+        task = session.tasks.get(task_id) if session is not None else None
+        if session is not None:
+            if task is None:
+                return
+            with session.lock:
+                if session.closing:
+                    return
+                if (
+                    session.tasks.get(task.task_id) is not task
+                    or not self._event_matches_task_turn(task, event)
+                ):
+                    return
+                self._run_in_task(
+                    task,
+                    self.relay.scope.event,
+                    mark,
+                    handle=task.handle,
+                    data=fields,
+                    metadata=self._event_metadata(),
+                )
+            return
+        if session_id and task_id:
+            return
+
+        self.relay.get_scope_stack()
+        self.relay.scope.event(
+            mark,
+            data=fields,
+            metadata=self._event_metadata(),
+        )
+
     def end_model_call(self, event: dict[str, Any]) -> None:
         session = self._task_session(event, allow_task_id_fallback=True)
         if session is None:
@@ -643,19 +730,23 @@ class _Runtime:
         *,
         allow_task_id_fallback: bool = False,
     ) -> _MetricsSession | None:
-        task_key = self._task_key(event)
-        if task_key is None:
+        session_id = str(event.get("session_id") or "")
+        task_id = str(event.get("task_id") or "")
+        if not task_id:
             return None
+        task_key = (session_id, task_id) if session_id else None
         turn_key = self._turn_key(event)
         with self._task_sessions_lock:
             if turn_key is not None:
                 owner = self._turn_sessions.get(turn_key)
                 if owner is not None:
                     return owner
-            owner = self._task_sessions.get(task_key)
-            if owner is not None or not allow_task_id_fallback:
-                return owner
-            task_id = task_key[1]
+            if task_key is not None:
+                owner = self._task_sessions.get(task_key)
+                if owner is not None:
+                    return owner
+            if not allow_task_id_fallback:
+                return None
             candidates: list[_MetricsSession] = []
             for (_, candidate_task_id), session in self._task_sessions.items():
                 if candidate_task_id != task_id:
@@ -1020,7 +1111,7 @@ def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
         return
     try:
         if hook_name == "on_session_start":
-            runtime.ensure_session(kwargs)
+            runtime.record_client_active(kwargs)
         elif hook_name == "pre_llm_call":
             runtime.start_task(kwargs)
         elif hook_name == "pre_api_request":
@@ -1031,6 +1122,8 @@ def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
             runtime.record_tool_call(_with_runtime_toolset(kwargs))
         elif hook_name == "post_approval_response":
             runtime.record_approval(kwargs)
+        elif hook_name == "on_skill_lifecycle":
+            runtime.record_skill_lifecycle(kwargs)
         elif hook_name == "post_api_request":
             runtime.end_model_call(kwargs)
         elif hook_name == "api_request_error":

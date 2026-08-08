@@ -83,6 +83,20 @@ class TestAllowlist:
 
     def test_feature_install_command_unknown(self):
         assert ld.feature_install_command("not.real") is None
+        assert ld.feature_install_command("not.real", venv_pip=True) is None
+
+    def test_feature_install_command_venv_pip_targets_interpreter(self):
+        # venv_pip=True must target the running interpreter's pip (correct in
+        # every install layout, immune to PEP 668) and carry the same specs
+        # as the default uv form.
+        import sys as _sys
+        default = ld.feature_install_command("platform.teams")
+        venv = ld.feature_install_command("platform.teams", venv_pip=True)
+        assert default is not None and venv is not None
+        assert venv.startswith(f"{_sys.executable} -m pip install ")
+        assert default.startswith("uv pip install ")
+        # Same spec tail on both forms.
+        assert venv.split(" -m pip install ", 1)[1] == default.split("uv pip install ", 1)[1]
 
 
 # ---------------------------------------------------------------------------

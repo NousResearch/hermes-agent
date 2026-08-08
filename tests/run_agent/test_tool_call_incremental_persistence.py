@@ -241,6 +241,88 @@ def test_failed_assistant_persist_blocks_ui_projection_and_tool_side_effects():
     assert result["failed"] is True
     assert result["completed"] is False
     assert result["turn_exit_reason"] == "session_persistence_failed"
+    # No exception was visible (flush returned False), so the cause is
+    # unknown — but the machine-readable contract fields must still be set.
+    assert result["failure_reason"] == "session_persistence_failed:unknown"
+    assert isinstance(result.get("error"), str) and result["error"].strip() != ""
+
+
+def test_locked_flush_exception_surfaces_locked_cause_in_result_contract():
+    """SQLite write-lock contention must surface as a 'locked' cause.
+
+    Gateway contract: result['failure_reason'] is exactly
+    'session_persistence_failed:locked' and result['error'] is a non-empty
+    string whose wording talks about busy storage, NOT disk space.
+    """
+    import sqlite3
+
+    agent = _make_agent()
+    tool_call = _mock_tool_call(call_id="must-not-run")
+    agent.client.chat.completions.create.return_value = _mock_response(
+        content="I'll inspect the repository now.",
+        finish_reason="tool_calls",
+        tool_calls=[tool_call],
+    )
+    agent._flush_messages_to_session_db = MagicMock(
+        side_effect=sqlite3.OperationalError("database is locked")
+    )
+    agent.interim_assistant_callback = MagicMock()
+    agent._execute_tool_calls = MagicMock()
+
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("inspect the repository")
+
+    agent.interim_assistant_callback.assert_not_called()
+    agent._execute_tool_calls.assert_not_called()
+    assert result["failed"] is True
+    assert result["turn_exit_reason"] == "session_persistence_failed"
+    assert result["failure_reason"] == "session_persistence_failed:locked"
+    assert isinstance(result.get("error"), str) and result["error"].strip() != ""
+    assert "busy" in result["error"].lower()
+    assert "disk" not in result["error"].lower()
+
+
+def test_persistence_cause_resets_between_turns():
+    """A locked failure on turn 1 must not leak its cause into turn 2."""
+    import sqlite3
+
+    agent = _make_agent()
+    tool_call = _mock_tool_call(call_id="must-not-run")
+    agent.client.chat.completions.create.return_value = _mock_response(
+        content="I'll inspect the repository now.",
+        finish_reason="tool_calls",
+        tool_calls=[tool_call],
+    )
+    agent._flush_messages_to_session_db = MagicMock(
+        side_effect=sqlite3.OperationalError("database is locked")
+    )
+    agent._execute_tool_calls = MagicMock()
+
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        first = agent.run_conversation("inspect the repository")
+        assert first["failure_reason"] == "session_persistence_failed:locked"
+
+        # Storage recovered but the flush function now reports a bare False
+        # (no exception): the stale 'locked' cause must not be reused.
+        agent.client.chat.completions.create.side_effect = None
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="I'll inspect the repository now.",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(call_id="must-not-run-2")],
+        )
+        agent._flush_messages_to_session_db = MagicMock(return_value=False)
+        second = agent.run_conversation("inspect the repository again")
+
+    assert second["turn_exit_reason"] == "session_persistence_failed"
+    assert second["failure_reason"] == "session_persistence_failed:unknown"
 
 
 # ---------------------------------------------------------------------------

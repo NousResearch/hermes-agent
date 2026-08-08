@@ -16,7 +16,7 @@ import { findBarClaimsCombo } from '@/lib/find-in-page'
 import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
 import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
-import { $repoStatus } from '@/store/coding-status'
+import { openWorktreeDialog } from '@/store/coding-status'
 import { toggleCommandPalette } from '@/store/command-palette'
 import {
   $findInPage,
@@ -40,7 +40,7 @@ import {
   switchToDefaultProfile,
   toggleShowAllProfiles
 } from '@/store/profile'
-import { openFolderAsProject, requestNewWorktree } from '@/store/projects'
+import { openFolderAsProject } from '@/store/projects'
 import { toggleReview } from '@/store/review'
 import { $selectedStoredSessionId, setModelPickerOpen } from '@/store/session'
 import { reopenLastClosedTile } from '@/store/session-states'
@@ -208,9 +208,11 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     ...sessionSlotHandlers,
     'session.focusSearch': requestSessionSearchFocus,
     'session.togglePin': deps.toggleSelectedPin,
-    // Only meaningful inside a git repo — a no-op otherwise (the key falls
-    // through instead of silently doing nothing).
-    'workspace.newWorktree': () => $repoStatus.get() && requestNewWorktree(),
+    // openWorktreeDialog resolves the target. There is no test for a repo
+    // here, so the key works from a detached session that sits inside a
+    // project, and not only from a session with a repo. When no repo is in
+    // reach, openWorktreeDialog does nothing.
+    'workspace.newWorktree': () => void openWorktreeDialog(),
     // ⌘O: native folder picker → open the folder as a project (upsert) with a
     // fresh session anchored there.
     'workspace.openFolder': () => void openFolderAsProject(),

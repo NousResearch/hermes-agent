@@ -311,6 +311,17 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     prompt = (args.get("prompt") or "").strip()
     image_url = (args.get("image_url") or "").strip() or None
     reference_image_urls = _normalize_reference_images(args.get("reference_image_urls"))
+    task_id = _kw.get("task_id")
+
+    # Terminal-backend confinement chokepoint (mirrors image_generate): under
+    # a non-local backend, path-like source images resolve through the shared
+    # sandbox-aware resolver and reach providers as data: URLs.
+    from tools.image_generation_tool import _confine_source_images
+
+    image_url, reference_image_urls, confine_error = _confine_source_images(
+        image_url, reference_image_urls, task_id)
+    if confine_error is not None:
+        return confine_error
     duration = _coerce_int(args.get("duration"))
     aspect_ratio = (args.get("aspect_ratio") or DEFAULT_ASPECT_RATIO).strip() or DEFAULT_ASPECT_RATIO
     resolution = (args.get("resolution") or DEFAULT_RESOLUTION).strip() or DEFAULT_RESOLUTION

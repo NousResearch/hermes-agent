@@ -86,6 +86,9 @@ from agent.retry_utils import (
     zai_coding_overload_retry_ceiling,
 )
 from agent.trajectory import has_incomplete_scratchpad
+# Bind before the turn starts so a source-tree swap cannot load a skewed
+# finalizer at turn end.
+from agent.turn_finalizer import finalize_turn
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
@@ -93,6 +96,66 @@ from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
+
+
+def _restore_user_after_reference_handoff(
+    messages: List[Dict[str, Any]], user_message: Any
+) -> bool:
+    """Re-append this turn's real user ask when compaction left only a handoff.
+
+    Returns True when a restore append happened. The caller has already
+    established that a reference-only handoff would drive the next model
+    call (#80622); this helper only decides whether a restorable ask exists.
+    """
+    if user_message is None:
+        return False
+    if isinstance(user_message, str):
+        if not user_message.strip():
+            return False
+        content: Any = user_message
+    elif isinstance(user_message, list):
+        if not user_message:
+            return False
+        content = user_message
+    else:
+        return False
+    if (
+        messages
+        and isinstance(messages[-1], dict)
+        and messages[-1].get("role") == "user"
+        and messages[-1].get("content") == content
+    ):
+        return False
+    messages.append({"role": "user", "content": content})
+    return True
+
+
+def _should_skip_model_call_for_reference_handoff(
+    messages: List[Dict[str, Any]], user_message: Any
+) -> bool:
+    """Guard post-compaction continues against sole-handoff active turns (#80622)."""
+    from agent.context_compressor import reference_handoff_would_drive_next_model_call
+
+    if not reference_handoff_would_drive_next_model_call(messages):
+        return False
+    if _restore_user_after_reference_handoff(messages, user_message):
+        # The restored ask is an actionable non-synthetic user row appended
+        # after the handoff — by construction the handoff no longer drives.
+        return False
+    return True
+
+
+# Fallback final_response for a turn ended by the sole-handoff skip (#80622).
+# Deliberately NOT a replay of the last assistant text: finalize_turn's
+# non-assistant-tail chokepoint (#43849) appends final_response as a fresh
+# assistant row, so recovering the previous turn's prose here would duplicate
+# it in the durable transcript AND re-deliver it to the user as if it were
+# this turn's answer. A short status is honest and idempotent.
+_HANDOFF_SKIP_FINAL_RESPONSE = (
+    "Context was compacted. The previous response is complete — "
+    "awaiting your next message."
+)
+
 
 # Stable prefix of the local interrupt status string emitted when a turn is
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
@@ -117,6 +180,16 @@ _LOCAL_PROCESSING_MODULES = frozenset({
 _API_CALL_MODULES = frozenset({
     "chat_completion_helpers",
 })
+
+
+def _join_truncated_parts(parts: List[str]) -> str:
+    """Join continuation fragments, adding a newline where two would glue together (#78577)."""
+    joined = ""
+    for part in parts:
+        if joined and not joined[-1].isspace() and part and not part[0].isspace():
+            joined += "\n"
+        joined += part
+    return joined
 
 
 def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text: str) -> None:
@@ -795,6 +868,50 @@ def _canonicalize_tool_call_arguments(arg_str: str) -> str:
     return canonical
 
 
+def _clone_message_for_send(msg):
+    """Structural clone of a history message for the per-call API copy.
+
+    The send path builds ``api_messages`` from the persisted history and
+    then rewrites the copies in place (canonicalization/repair of tool-call
+    arguments, surrogate and non-ASCII sanitization, content strips, cache
+    decoration). A shallow ``msg.copy()`` only decouples TOP-LEVEL fields:
+    nested containers — ``tool_calls`` entries and their ``function`` dicts,
+    multimodal ``content`` part lists, ``reasoning_details`` — remain the
+    SAME objects the persisted history holds, so any in-place write there
+    silently rewrites the stored transcript (#80498: an unrepairable
+    ``write_file`` argument string was replaced with ``{}`` in the persisted
+    turn, destroying the streamed file content).
+
+    Cloning every container (dict/list) recursively while SHARING immutable
+    leaves (strings, numbers, None) makes every downstream in-place
+    transform safe by construction — current and future — at container-count
+    cost, not string-byte cost: big argument strings and base64 image
+    payloads are shared, never copied. Measured: ~1-5ms per 2000-message
+    pathological build (20% multimodal, 30% tool calls) vs ~0.4ms for the
+    shallow copy; compression keeps real request histories far smaller, and
+    the build runs once per API call — noise next to the call itself.
+    copy.deepcopy would be equally correct (CPython deepcopy also shares
+    immutable str) but ~4x slower again and needs its memo machinery;
+    history messages are JSON-shaped and acyclic (depth < 10 in practice;
+    a >~1000-deep pathological nest would hit the recursion limit, exactly
+    as deepcopy would), so cycle handling isn't needed here. Tuples are
+    shared as leaves: JSON-derived message content never contains tuples,
+    so a mutable container smuggled inside one is not a reachable shape on
+    this path.
+    """
+    if isinstance(msg, dict):
+        return {
+            k: _clone_message_for_send(v) if isinstance(v, (dict, list)) else v
+            for k, v in msg.items()
+        }
+    if isinstance(msg, list):
+        return [
+            _clone_message_for_send(v) if isinstance(v, (dict, list)) else v
+            for v in msg
+        ]
+    return msg
+
+
 def _canonicalize_api_tool_calls(api_messages) -> None:
     """Canonicalize tool-call argument JSON on the send-path message copy.
 
@@ -821,10 +938,25 @@ def _canonicalize_api_tool_calls(api_messages) -> None:
                         ),
                     }}
                 except Exception:
-                    tc["function"]["arguments"] = _repair_tool_call_arguments(
-                        tc["function"]["arguments"],
-                        tc["function"].get("name", "?"),
-                    )
+                    # Copy-on-write here too. The send-path build now hands
+                    # this pass structurally-cloned messages (see
+                    # _clone_message_for_send), but this branch keeps its own
+                    # copy as defense in depth: some callers (tests, future
+                    # call sites) pass shallow copies, and assigning into a
+                    # shared ``tc["function"]`` would rewrite the stored
+                    # turn. On the unrepairable path the repair returns "{}",
+                    # so a write-through here replaced the model's real
+                    # arguments with an empty object in the transcript: a
+                    # stream that died mid ``write_file`` lost the file
+                    # content it had already streamed, with only a WARNING
+                    # to show for it (#80498).
+                    tc = {**tc, "function": {
+                        **tc["function"],
+                        "arguments": _repair_tool_call_arguments(
+                            tc["function"]["arguments"],
+                            tc["function"].get("name", "?"),
+                        ),
+                    }}
             new_tcs.append(tc)
         am["tool_calls"] = new_tcs
 
@@ -1144,10 +1276,13 @@ def _apply_context_engine_selection(
     # and it may be replaced wholesale via the return value — never mutated in
     # place either. ``conversation_messages`` / ``incoming_message`` are
     # read-only context; copying enforces the request-only contract rather than
-    # merely documenting it.
-    _conv_copy = [dict(m) if isinstance(m, dict) else m for m in conversation_messages] \
+    # merely documenting it. Structural clones, not dict(m): a shallow copy
+    # would leave nested containers (tool_calls, content parts) aliased to
+    # the persisted history, so an engine writing into them would rewrite
+    # the transcript (#80498 aliasing class).
+    _conv_copy = [_clone_message_for_send(m) for m in conversation_messages] \
         if conversation_messages is not None else None
-    _incoming_copy = dict(incoming_message) if isinstance(incoming_message, dict) else incoming_message
+    _incoming_copy = _clone_message_for_send(incoming_message) if isinstance(incoming_message, dict) else incoming_message
     try:
         selected = engine.select_context(
             api_messages,
@@ -1218,7 +1353,10 @@ def _notify_context_engine_turn_complete(
 
     try:
         hook(
-            [dict(m) if isinstance(m, dict) else m for m in messages],
+            # Structural clones: on_turn_complete receives the PERSISTED
+            # history; a shallow dict(m) would let a hook write through
+            # nested containers into the transcript (#80498 aliasing class).
+            [_clone_message_for_send(m) for m in messages],
             usage=usage,
             **meta,
         )
@@ -1347,6 +1485,11 @@ def run_conversation(
     # A configured SessionDB append failure halts only the affected turn. A
     # cached gateway agent must recover on the next message if storage did.
     agent._incremental_persistence_failed = False
+    # Cause of the most recent persistence failure this turn ('locked',
+    # 'disk', or 'unknown' — see hermes_state.classify_persistence_error).
+    # Reset alongside the failure flag so a lock-contention diagnosis from a
+    # previous turn can never leak into this turn's user-facing explanation.
+    agent._last_persistence_error_cause = None
 
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
@@ -1586,7 +1729,12 @@ def run_conversation(
 
         api_messages = []
         for idx, msg in enumerate(messages):
-            api_msg = msg.copy()
+            # Structural clone, NOT msg.copy(): every in-place transform
+            # below (canonicalize/repair, surrogate + non-ASCII sanitizers,
+            # cache decoration) must be unable to reach the persisted
+            # history through shared nested containers. See
+            # _clone_message_for_send.
+            api_msg = _clone_message_for_send(msg)
 
             # api_content is the persistence sidecar carrying the exact bytes
             # sent to the API for this message when they differ from the clean
@@ -1660,6 +1808,9 @@ def run_conversation(
                 api_msg.pop("finish_reason")
             # Strip internal thinking-prefill marker
             api_msg.pop("_thinking_prefill", None)
+            # Strip length-continuation marks; not every transport drops underscore keys.
+            api_msg.pop("_length_continuation_fragment", None)
+            api_msg.pop("_length_continuation_nudge", None)
             # Strip Codex Responses API fields (call_id, response_item_id) for
             # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
             # Uses new dicts so the internal messages list retains the fields
@@ -1768,7 +1919,11 @@ def run_conversation(
         if agent.prefill_messages:
             sys_offset = 1 if (api_messages and api_messages[0].get("role") == "system") else 0
             for idx, pfm in enumerate(agent.prefill_messages):
-                api_messages.insert(sys_offset + idx, pfm.copy())
+                # Structural clone: the sanitizers below run over
+                # api_messages in place, and a shallow copy would let them
+                # write through into agent.prefill_messages' nested
+                # containers (same aliasing class as the history build).
+                api_messages.insert(sys_offset + idx, _clone_message_for_send(pfm))
 
         # Per-turn context selection hook (additive, no-op by default).
         # Lets a context engine select/replace which context enters the
@@ -1902,6 +2057,15 @@ def run_conversation(
             _estimate_tools_tokens_rough(agent.tools) if agent.tools else 0
         )
         total_chars = approx_tokens * 4
+        # Stash this request's rough estimate so update_from_response() can
+        # pair it with the provider's real prompt count — the (rough, real)
+        # anchor behind should_defer_preflight_to_real_usage()'s projection.
+        # getattr guard: test doubles built via object.__new__ lack the method.
+        _note_rough = getattr(
+            agent.context_compressor, "note_request_rough_estimate", None
+        )
+        if callable(_note_rough):
+            _note_rough(request_pressure_tokens)
 
         _runtime_context_error = _ollama_context_limit_error(
             agent, request_pressure_tokens
@@ -2068,9 +2232,30 @@ def run_conversation(
                 conversation_history = conversation_history_after_compression(
                     agent, messages, conversation_history
                 )
+                # This preflight iteration never reaches the provider whether
+                # we skip the turn (handoff guard below) or re-run the loop —
+                # refund the consumed call/budget in BOTH cases, mirroring the
+                # ollama_runtime_context_too_small early-exit above. Without
+                # the refund on the break path, every skipped turn leaked one
+                # iteration-budget unit for the agent's lifetime and
+                # finalize_turn logged an api_call_count including a call that
+                # was never made.
                 api_call_count -= 1
                 agent._api_call_count = api_call_count
                 agent.iteration_budget.refund()
+                if _should_skip_model_call_for_reference_handoff(
+                    messages, user_message
+                ):
+                    # Reference-only handoff must not become the active turn
+                    # after a completed assistant response (#80622).
+                    logger.info(
+                        "Skipping post-compaction model call: reference-only "
+                        "handoff would be the sole active user turn (#80622)"
+                    )
+                    if not final_response:
+                        final_response = _HANDOFF_SKIP_FINAL_RESPONSE
+                    _turn_exit_reason = "compaction_handoff_not_actionable"
+                    break
                 continue
         elif (
             agent.compression_enabled
@@ -2900,8 +3085,8 @@ def run_conversation(
                 if finish_reason == "length":
                     if getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID:
                         agent._vprint(
-                            f"{agent.log_prefix}⚠️  Stream interrupted by network error "
-                            f"(finish_reason='length' on partial-stream-stub)",
+                            f"{agent.log_prefix}⚠️  Response truncated — stream "
+                            f"ended before completion",
                             force=True,
                         )
                     else:
@@ -3028,6 +3213,11 @@ def run_conversation(
                                 # gets a coherent continuation point.
                                 if truncated_response_parts:
                                     messages = agent._get_messages_up_to_last_assistant(messages)
+                                # Unmark survivors: their text left the stitched partial.
+                                for _frag in messages:
+                                    if isinstance(_frag, dict):
+                                        _frag.pop("_length_continuation_fragment", None)
+                                        _frag.pop("_length_continuation_nudge", None)
                                 agent._session_messages = messages
                                 length_continue_retries = 0
                                 truncated_response_parts = []
@@ -3064,6 +3254,8 @@ def run_conversation(
                             )
                             if not _is_empty_partial_stub:
                                 interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                                # Marked so the ceiling exit can drop the fragment trail.
+                                interim_msg["_length_continuation_fragment"] = True
                                 messages.append(interim_msg)
                                 if assistant_message.content:
                                     truncated_response_parts.append(assistant_message.content)
@@ -3102,13 +3294,45 @@ def run_conversation(
                                 continue_msg = {
                                     "role": "user",
                                     "content": _continue_content,
+                                    "_length_continuation_nudge": True,
                                 }
                                 messages.append(continue_msg)
                                 agent._session_messages = messages
                                 _retry.restart_with_length_continuation = True
                                 break
 
-                            partial_response = agent._strip_think_blocks("".join(truncated_response_parts)).strip()
+                            partial_response = agent._strip_think_blocks(_join_truncated_parts(truncated_response_parts)).strip()
+                            if partial_response:
+                                agent._vprint(
+                                    f"{agent.log_prefix}⚠️  Response still truncated "
+                                    f"after 4 continuation attempts — keeping the "
+                                    f"partial response received so far.",
+                                    force=True,
+                                )
+                            # Unanswered continue nudges made every later turn re-truncate.
+                            _turn_start = (
+                                current_turn_user_idx + 1
+                                if isinstance(current_turn_user_idx, int)
+                                and current_turn_user_idx >= 0
+                                else 0
+                            )
+                            messages[_turn_start:] = [
+                                m for m in messages[_turn_start:]
+                                if not (
+                                    isinstance(m, dict)
+                                    and (
+                                        m.get("_length_continuation_fragment")
+                                        or m.get("_length_continuation_nudge")
+                                    )
+                                )
+                            ]
+                            if partial_response:
+                                messages.append({
+                                    "role": "assistant",
+                                    "content": partial_response,
+                                    "finish_reason": "length",
+                                })
+                            agent._session_messages = messages
                             agent._cleanup_task_resources(effective_task_id)
                             agent._persist_session(messages, conversation_history)
                             return {
@@ -5641,12 +5865,26 @@ def run_conversation(
             # to fit the context window.
             retry_count += 1
             _retry.restart_with_compressed_messages = False
+            if _should_skip_model_call_for_reference_handoff(
+                messages, user_message
+            ):
+                logger.info(
+                    "Skipping compressed-restart model call: reference-only "
+                    "handoff would be the sole active user turn (#80622)"
+                )
+                if not final_response:
+                    final_response = _HANDOFF_SKIP_FINAL_RESPONSE
+                _turn_exit_reason = "compaction_handoff_not_actionable"
+                break
             # In-loop compression rebuilt `messages` with fresh compaction
             # copies, so the pre-compression current-turn index is stale.
             # Re-anchor exactly like the prologue does: a stale index that
             # lands on a historical user message would make the live-compose
             # fallback inject this turn's prefetch into that message on the
             # wire only, diverging the next turn's replayed prefix there.
+            # Ordered AFTER the handoff guard: the guard may have re-appended
+            # this turn's real user ask (restore path), and the anchor must
+            # land on that restored row, not on -1 / a pre-restore index.
             current_turn_user_idx = reanchor_current_turn_user_idx(
                 messages, user_message
             )
@@ -6327,6 +6565,10 @@ def run_conversation(
                     )
                 except Exception as exc:
                     _tool_turn_persisted = False
+                    from hermes_state import classify_persistence_error
+                    agent._last_persistence_error_cause = (
+                        classify_persistence_error(exc)
+                    )
                     logger.warning(
                         "Incremental tool-call persistence failed before execution "
                         "(session=%s): %s",
@@ -6339,6 +6581,10 @@ def run_conversation(
                     # run side-effecting tools from state that exists only in
                     # this process. Breaking also avoids retrying the same
                     # unpersisted turn until the iteration budget is exhausted.
+                    # The flush may have classified the cause internally; if
+                    # nothing was recorded, the cause is genuinely unknown.
+                    if getattr(agent, "_last_persistence_error_cause", None) is None:
+                        agent._last_persistence_error_cause = "unknown"
                     _turn_exit_reason = "session_persistence_failed"
                     final_response = ""
                     failed = True
@@ -6492,6 +6738,18 @@ def run_conversation(
                         conversation_history = conversation_history_after_compression(
                             agent, messages, conversation_history
                         )
+                        if _should_skip_model_call_for_reference_handoff(
+                            messages, user_message
+                        ):
+                            logger.info(
+                                "Skipping post-tool compaction model call: "
+                                "reference-only handoff would be the sole "
+                                "active user turn (#80622)"
+                            )
+                            if not final_response:
+                                final_response = _HANDOFF_SKIP_FINAL_RESPONSE
+                            _turn_exit_reason = "compaction_handoff_not_actionable"
+                            break
                 elif agent.compression_enabled:
                     # Over threshold but compression is blocked (summary-LLM
                     # cooldown or anti-thrashing). Surface a deduped warning so
@@ -6539,14 +6797,12 @@ def run_conversation(
                         # Standard no-op caller contract: only commit when the
                         # engine returned a NEW list object with a non-zero count.
                         if _pruned_n and _pruned_msgs is not messages:
-                            # Do NOT rebuild conversation_history here. Unlike the
-                            # compression branch, the prune neither rotates the session
-                            # nor calls archive_and_compact(), so there is no new
-                            # persistence baseline to establish. _prune_old_tool_results
-                            # returns per-message copies that preserve the
+                            # Do NOT rebuild conversation_history here. The compressor
+                            # atomically rewrites the active transcript with the durable
+                            # rearm threshold, then stamps every returned row with
                             # _DB_PERSISTED_MARKER, so the marker-based flush dedup (see
-                            # _flush_messages_to_session_db) already prevents both
-                            # duplicate writes and dropped rows. Calling
+                            # _flush_messages_to_session_db) prevents duplicate writes.
+                            # Calling
                             # conversation_history_after_compression (a compaction-only
                             # helper keyed on the _last_compaction_in_place flag) would be
                             # a no-op at best, and on a stale in-place flag could seed
@@ -6953,9 +7209,14 @@ def run_conversation(
                 codex_ack_continuations = 0
 
                 if truncated_response_parts:
-                    final_response = "".join(truncated_response_parts) + final_response
+                    final_response = _join_truncated_parts([*truncated_response_parts, final_response])
                     truncated_response_parts = []
                     length_continue_retries = 0
+                    # The continuation recovered, so the fragments stay in the transcript.
+                    for _frag in messages:
+                        if isinstance(_frag, dict):
+                            _frag.pop("_length_continuation_fragment", None)
+                            _frag.pop("_length_continuation_nudge", None)
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
                 
@@ -7312,7 +7573,6 @@ def run_conversation(
     # Post-loop turn finalization extracted to agent/turn_finalizer.finalize_turn
     # (god-file decomposition Phase 1 step 4). Behavior-neutral: the assembled
     # result dict is returned exactly as before.
-    from agent.turn_finalizer import finalize_turn
     return finalize_turn(
         agent,
         final_response=final_response,

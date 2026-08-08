@@ -60,6 +60,8 @@ def test_latest_message_wins_over_inherited_active_task():
     # resumption on topic overlap (#41607, #38364) — it must stay gone.
     assert "you may use the summary as background" not in lower
     assert "topic overlap" in lower
+    # #80622: empty-after-handoff must not resume historical work.
+    assert "if no user message appears after this summary" in lower
 
 
 

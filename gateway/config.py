@@ -2512,23 +2512,23 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             pass
 
     # Registry-driven enable for plugin platforms.  Built-ins have explicit
-    # blocks above; plugins expose check_fn() which is the single source of
-    # truth for "are my env vars set?".  When it returns True, ensure the
-    # platform is enabled so start() will create its adapter.  Plugins that
-    # need to seed ``PlatformConfig.extra`` from env vars (e.g. Google Chat's
+    # blocks above.  A plugin platform is enabled when its credentials are
+    # configured (``is_connected``) and its dependencies are either present
+    # (passive ``check_fn``) or installable on demand (``ensure_deps_fn``,
+    # run later by ``create_adapter()`` — never here).  Plugins that need to
+    # seed ``PlatformConfig.extra`` from env vars (e.g. Google Chat's
     # project_id / subscription_name) can supply ``env_enablement_fn`` on
     # their PlatformEntry — called here BEFORE adapter construction.
     #
     # Enablement gate (#31116): when a plugin registers ``is_connected``
     # (the "has the user actually configured credentials for this?" check),
     # we MUST consult it before flipping ``enabled = True``.  Otherwise
-    # ``check_fn`` alone — which for adapter plugins typically just
-    # verifies the SDK is importable / lazy-installs it — silently enables
-    # platforms the user never opted into, and the gateway then tries to
-    # connect to Discord / Teams / Google Chat with no token and emits
-    # noisy retry-forever errors.  ``_platform_status`` was already fixed
-    # for the same bug class in commit 7849a3d73; this is the runtime
-    # counterpart.
+    # ``check_fn`` alone — a passive "is the SDK importable?" probe —
+    # silently enables platforms the user never opted into, and the gateway
+    # then tries to connect to Discord / Teams / Google Chat with no token
+    # and emits noisy retry-forever errors.  ``_platform_status`` was
+    # already fixed for the same bug class in commit 7849a3d73; this is the
+    # runtime counterpart.
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
@@ -2623,20 +2623,25 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                         )
                         continue
             # Verify dependencies LAST — only for platforms that are already
-            # enabled or passed the credential gate above.  For adapter plugins
-            # ``check_fn`` lazy-INSTALLS the platform SDK (pip) as a side
-            # effect, so running it as an unconditional sweep over every
-            # registered platform made ``load_gateway_config()`` pip-install
-            # Discord/Telegram/Slack/Feishu/Dingtalk on every call — including
-            # the desktop/dashboard readiness probe (``GET /api/status``, which
-            # awaits this synchronously) — even when the user configured none
-            # of them.  That blocked startup until every install finished and
-            # caused the desktop app to time out and boot-loop (stuck at 94%).
+            # enabled or passed the credential gate above.  ``check_fn`` is a
+            # PASSIVE probe (never installs); a platform whose deps are
+            # missing but which registered ``ensure_deps_fn`` still gets
+            # enabled here — the registry's ``create_adapter()`` runs the
+            # active installer at gateway start, when the user actually
+            # wants the platform up.  Historically the ACTIVE installer was
+            # wired as ``check_fn`` and this sweep pip-installed
+            # Discord/Telegram/Slack/Feishu/Dingtalk SDKs on every
+            # ``load_gateway_config()`` call — including the desktop/dashboard
+            # readiness probe (``GET /api/status``) — blocking startup until
+            # every install finished and boot-looping the desktop app at 94%.
+            # The check_fn/ensure_deps_fn split (#79812) makes that
+            # impossible by construction.
             try:
-                if not entry.check_fn():
-                    continue
+                deps_ok = bool(entry.check_fn())
             except Exception as e:
                 logger.debug("check_fn for %s raised: %s", entry.name, e)
+                deps_ok = False
+            if not deps_ok and entry.ensure_deps_fn is None:
                 continue
             if platform not in config.platforms:
                 config.platforms[platform] = PlatformConfig()

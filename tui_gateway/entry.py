@@ -376,19 +376,10 @@ _recovery_times: list[float] = []
 
 
 def _has_configured_mcp_servers() -> bool:
-    """Return whether startup should attempt MCP discovery.
+    """Delegate to the shared native and portable MCP startup gate."""
+    from hermes_cli.mcp_startup import _has_configured_mcp_servers as configured
 
-    Keep this cheap so non-MCP users do not pay the MCP SDK import cost.
-    """
-    try:
-        from hermes_cli.config import read_raw_config
-
-        mcp_servers = (read_raw_config() or {}).get("mcp_servers")
-        return isinstance(mcp_servers, dict) and len(mcp_servers) > 0
-    except Exception:
-        # Be conservative: if we can't decide, fall back to attempting
-        # discovery. The caller starts it in the background.
-        return True
+    return configured()
 
 
 def ensure_mcp_discovery_started() -> None:

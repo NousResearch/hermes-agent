@@ -616,3 +616,67 @@ class TestSubdirInstallE2E:
         identifier = f"file://{repo_root}#does-not-exist"
         with pytest.raises(PluginOperationError, match="does not exist"):
             pc._install_plugin_core(identifier, force=False)
+
+    def test_installs_portable_root_package_disabled(self, tmp_path, monkeypatch):
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+
+        import json
+        import subprocess as sp
+        from hermes_cli import plugins_cmd as pc
+        from hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1
+
+        repo_root = tmp_path / "portable-repo"
+        repo_root.mkdir()
+        (repo_root / "plugin.json").write_text(
+            json.dumps({"$schema": PLUGIN_SCHEMA_V1, "name": "portable.test"})
+        )
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        sp.run(["git", "init", "-q"], cwd=repo_root, check=True, env=env)
+        sp.run(["git", "add", "-A"], cwd=repo_root, check=True, env=env)
+        sp.run(["git", "commit", "-q", "-m", "init"], cwd=repo_root, check=True, env=env)
+        plugins_dir = tmp_path / "installed"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+
+        target, manifest, name = pc._install_plugin_core(
+            f"file://{repo_root}", force=False
+        )
+
+        assert name == "portable.test"
+        assert manifest["name"] == "portable.test"
+        assert target == (plugins_dir / "portable.test").resolve()
+        assert pc._resolve_plugin_key("portable.test") == "portable.test"
+
+
+def test_portable_manifest_is_visible_to_plugin_cli(tmp_path):
+    import json
+
+    from hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1
+    from hermes_cli.plugins_cmd import _read_manifest_info
+
+    plugin = tmp_path / "portable"
+    plugin.mkdir()
+    (plugin / "plugin.json").write_text(
+        json.dumps(
+            {
+                "$schema": PLUGIN_SCHEMA_V1,
+                "name": "portable.test",
+                "version": "1.0.0",
+                "description": "Portable test plugin",
+            }
+        )
+    )
+
+    assert _read_manifest_info(plugin, "") == (
+        "portable.test",
+        "1.0.0",
+        "Portable test plugin",
+        "portable.test",
+    )

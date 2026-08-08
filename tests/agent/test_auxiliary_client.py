@@ -3187,6 +3187,69 @@ class TestCodexAuxiliaryAdapterTimeout:
         assert time.monotonic() - started < 0.14
 
 
+class TestCodexAuxiliaryAdapterCacheScope:
+    """Regression for issue #78941: auxiliary Codex calls (compression,
+    flush_memories, MoA, session_search) must not bucket-share a prompt
+    cache slot across unrelated sessions just because their instructions
+    and tools happen to match.
+    """
+
+    def _create_and_capture(self, *, session_id):
+        import agent.auxiliary_client as aux
+
+        class _FakeCreateStream:
+            def __iter__(self):
+                return iter([
+                    SimpleNamespace(
+                        type="response.output_item.done",
+                        item=SimpleNamespace(
+                            type="message",
+                            content=[SimpleNamespace(type="output_text", text="ok")],
+                        ),
+                    ),
+                    SimpleNamespace(type="response.completed", response=SimpleNamespace(
+                        status="completed", id="r1", usage=None,
+                    )),
+                ])
+
+            def close(self):
+                pass
+
+        class FakeResponses:
+            def __init__(self):
+                self.kwargs = None
+
+            def create(self, **kwargs):
+                self.kwargs = kwargs
+                return _FakeCreateStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses(), base_url="")
+        adapter = aux._CodexCompletionsAdapter(fake_client, "gpt-5.5")
+        token = aux.set_runtime_main("openai", "gpt-5.5", session_id=session_id)
+        try:
+            adapter.create(
+                messages=[
+                    {"role": "system", "content": "You are a memory summarizer."},
+                    {"role": "user", "content": "Summarize the last turn."},
+                ],
+            )
+        finally:
+            aux.reset_runtime_main(token)
+        return fake_client.responses.kwargs["prompt_cache_key"]
+
+    def test_different_sessions_get_different_cache_keys(self):
+        key_a = self._create_and_capture(session_id="session-A")
+        key_b = self._create_and_capture(session_id="session-B")
+        assert key_a != key_b
+
+    def test_cron_refires_of_the_same_job_share_a_cache_key(self):
+        first = self._create_and_capture(session_id="cron_job42_20260801_090000")
+        second = self._create_and_capture(session_id="cron_job42_20260802_090000")
+        other_job = self._create_and_capture(session_id="cron_job99_20260801_090000")
+        assert first == second
+        assert first != other_job
+
+
 class TestCodexAuxiliaryToolMessageConversion:
     """Regression for issue #5709.
 
@@ -4363,3 +4426,65 @@ class TestAsynchronousFallbackCachePlans:
         wire_tools = client.chat.completions.create.call_args.kwargs["tools"]
         assert "cache_control" in wire_tools[-1]
         assert "cache_control" not in tools[-1]
+
+
+class TestAutoRoutedProviderProfileHooks:
+    def test_cached_auto_route_projects_selected_provider_on_every_request(self):
+        """Auto routing must retain the concrete provider for request hooks."""
+        import agent.auxiliary_client as aux
+        from providers.base import ProviderProfile
+
+        hook_calls = []
+
+        class DynamicProfile(ProviderProfile):
+            def build_api_kwargs_extras(self, *, reasoning_config=None, **context):
+                hook_calls.append(context)
+                return {}, {
+                    "extra_headers": {
+                        "Authorization": f"Bearer token-{len(hook_calls)}",
+                    },
+                }
+
+        profile = DynamicProfile(name="agentgateway")
+        client = MagicMock()
+        client.base_url = "https://gateway.example.com/v1"
+        response = MagicMock()
+        response.choices = [MagicMock(message=MagicMock(content="ok"))]
+
+        def lookup_profile(name):
+            return profile if name == "agentgateway" else None
+
+        aux.shutdown_cached_clients()
+        try:
+            with (
+                patch(
+                    "agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", "gateway/model", None, None, None),
+                ),
+                patch(
+                    "agent.auxiliary_client._resolve_auto_route",
+                    return_value=(client, "gateway/model", "agentgateway"),
+                ) as resolve_auto,
+                patch("providers.get_provider_profile", side_effect=lookup_profile),
+                patch(
+                    "agent.auxiliary_client._relay_sync_completion",
+                    return_value=response,
+                ) as relay,
+            ):
+                for _ in range(2):
+                    result = call_llm(
+                        task="title_generation",
+                        messages=[{"role": "user", "content": "title this"}],
+                    )
+                    assert result is response
+        finally:
+            aux.shutdown_cached_clients()
+
+        resolve_auto.assert_called_once()
+        assert len(hook_calls) == 2
+        assert relay.call_args_list[0].args[1]["extra_headers"] == {
+            "Authorization": "Bearer token-1",
+        }
+        assert relay.call_args_list[1].args[1]["extra_headers"] == {
+            "Authorization": "Bearer token-2",
+        }

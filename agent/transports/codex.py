@@ -10,6 +10,23 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
+# Cron fires build session_id as ``cron_<job_id>_<YYYYMMDD_HHMMSS>`` (see
+# cron/scheduler.py). The trailing timestamp is per-fire noise; stripped so
+# repeat fires of the same job share a cache scope (see #51395/#52295).
+_CRON_SESSION_ID_RE = re.compile(r"^(cron_.+)_\d{8}_\d{6}$")
+
+
+def _cache_scope_from_session_id(session_id: Optional[str]) -> str:
+    """Normalize a physical session_id into a stable logical cache scope.
+
+    Every non-cron session_id already identifies one conversation/agent
+    instance (main run, a specific child/subagent, a sibling child, ...),
+    so it is used unchanged. Only cron's per-fire timestamp needs stripping.
+    """
+    sid = str(session_id or "")
+    match = _CRON_SESSION_ID_RE.match(sid)
+    return match.group(1) if match else sid
+
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
 
@@ -117,20 +134,26 @@ def _default_prompt_cache_retention_for_request(
     return None
 
 
-def _content_cache_key(instructions: str, tools: Optional[List[Dict[str, Any]]]) -> Optional[str]:
-    """Content-address the prompt cache key from the static request prefix.
+def _content_cache_key(
+    instructions: str,
+    tools: Optional[List[Dict[str, Any]]],
+    scope_id: str = "",
+) -> Optional[str]:
+    """Content-address the prompt cache key within a logical cache scope.
 
-    Returns ``pck_<sha256[:24]>`` of (instructions + sorted tool schemas), or
-    None when there is nothing static to key on. The cache key is a routing
-    hint only — never a correctness boundary — so two requests sharing a system
-    prompt and tool set intentionally resolve to the same warm prefix bucket.
+    Returns ``pck_<sha256[:24]>`` of (scope_id + instructions + sorted tool
+    schemas), or None when there is nothing static to key on. The cache key
+    is a routing hint only — never a correctness boundary — so two requests
+    sharing a scope, system prompt, and tool set intentionally resolve to the
+    same warm prefix bucket.
 
-    The fix this exists for: recurring cron jobs build session_id as
-    ``cron_<id>_<timestamp>``, so using session_id as the cache key made every
-    fire cache-cold. The static prefix (identity + tools) is identical across
-    fires, so hashing it gives a stable key that stays warm within the
-    provider's cache TTL. Sorting tools by name keeps the hash insertion-order
-    independent.
+    ``scope_id`` (pass ``_cache_scope_from_session_id(session_id)``) keeps
+    unrelated sessions — independent conversations, main vs. child/subagent,
+    sibling children — from concentrating onto the same bucket merely because
+    their static prefix matches (see #78941), while still letting recurring
+    cron fires of one job share a stable key across their timestamped
+    session_ids (the original #51395/#52295 fix this built on). Sorting tools
+    by name keeps the hash insertion-order independent.
     """
     if not instructions and not tools:
         return None
@@ -143,9 +166,9 @@ def _content_cache_key(instructions: str, tools: Optional[List[Dict[str, Any]]])
         tools_part = json.dumps(
             sorted_tools, sort_keys=True, ensure_ascii=False, separators=(",", ":")
         )
-    # \x00 separator so instructions ending in the tool JSON can't collide with
-    # a request whose instructions contain that JSON and whose tools are empty.
-    content = f"{instructions or ''}\x00{tools_part}"
+    # \x00 separators so a scope/instructions/tools boundary can't be forged
+    # by content that happens to contain the same bytes.
+    content = f"{scope_id}\x00{instructions or ''}\x00{tools_part}"
     digest = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:24]
     return f"pck_{digest}"
 
@@ -274,6 +297,12 @@ class ResponsesApiTransport(ProviderTransport):
         if params.get("is_xai_responses", False):
             # xAI Responses tops out at high; keep generic stronger values usable.
             _effort_clamp.update({"xhigh": "high", "max": "high", "ultra": "high"})
+        if (params.get("provider") or "").strip().lower() == "actual":
+            # Actual Computer relays to SGLang/vLLM backends that accept only
+            # none/low/medium/high/max for reasoning effort — a forwarded
+            # xhigh/ultra fails with a wrapped HTTP 400 ("Expecting value:
+            # line 1 column 1"). Clamp Hermes' wider set to the supported one.
+            _effort_clamp.update({"xhigh": "high", "ultra": "max"})
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 
         response_tools = _responses_tools(tools)
@@ -341,12 +370,17 @@ class ResponsesApiTransport(ProviderTransport):
 
         session_id = params.get("session_id")
         # prompt_cache_key is content-addressed from the static prefix
-        # (instructions + tools), NOT session_id — recurring cron jobs carry a
-        # per-fire timestamp in session_id (cron_<id>_<ts>) that made every run
-        # cache-cold. session_id is left untouched for transcript isolation and
-        # the cache-scope routing headers below. Falls back to session_id when
-        # there is no static content to hash.
-        cache_key = _content_cache_key(instructions, response_tools) or session_id
+        # (instructions + tools) scoped by session, NOT the raw session_id —
+        # recurring cron jobs carry a per-fire timestamp in session_id
+        # (cron_<id>_<ts>) that made every run cache-cold, so the scope strips
+        # that suffix (see _cache_scope_from_session_id). session_id is left
+        # untouched for transcript isolation and the cache-scope routing
+        # headers below. Falls back to session_id when there is no static
+        # content to hash.
+        _cache_scope = _cache_scope_from_session_id(session_id)
+        cache_key = _content_cache_key(
+            instructions, response_tools, _cache_scope
+        ) or _cache_scope
         # xAI Responses takes prompt_cache_key in extra_body (set further
         # down); GitHub Models opts out of cache-key routing entirely.
         if not is_github_responses and not is_xai_responses and cache_key:
@@ -428,13 +462,13 @@ class ResponsesApiTransport(ProviderTransport):
         if is_codex_backend:
             # The Codex backend rejects body-level ``extra_headers`` with
             # HTTP 400, but the OpenAI SDK's ``extra_headers`` kwarg maps
-            # to actual HTTP request headers (not body fields).  We need
-            # these headers for cache-scope routing so prompt cache hits
-            # remain high.  Send session_id / x-client-request-id as HTTP
-            # headers while keeping ``prompt_cache_key`` in the body for
-            # standard OpenAI routing as a belt-and-braces fallback.
-            cache_scope_id = _bounded_prompt_cache_key(session_id)
-            if cache_scope_id:
+            # to actual HTTP request headers (not body fields).  ``session_id``
+            # carries the raw physical session id — transcript/identity, per
+            # the #57012 contract — while ``x-client-request-id`` mirrors the
+            # body's effective ``prompt_cache_key`` so header and body always
+            # agree on the same routing bucket instead of diverging (#78941).
+            final_cache_key = kwargs.get("prompt_cache_key") or _bounded_prompt_cache_key(_cache_scope)
+            if session_id or final_cache_key:
                 existing_extra_headers = kwargs.get("extra_headers")
                 merged_extra_headers: Dict[str, str] = {}
                 if isinstance(existing_extra_headers, dict):
@@ -445,8 +479,10 @@ class ResponsesApiTransport(ProviderTransport):
                             if key and value is not None
                         }
                     )
-                merged_extra_headers["session_id"] = cache_scope_id
-                merged_extra_headers["x-client-request-id"] = cache_scope_id
+                if session_id:
+                    merged_extra_headers["session_id"] = str(session_id)
+                if final_cache_key:
+                    merged_extra_headers["x-client-request-id"] = final_cache_key
                 kwargs["extra_headers"] = merged_extra_headers
 
         max_tokens = params.get("max_tokens")
@@ -464,18 +500,27 @@ class ResponsesApiTransport(ProviderTransport):
                         if key and value is not None
                     }
                 )
-            merged_extra_headers["x-grok-conv-id"] = session_id
+            # Scoped like the body cache key below — otherwise cron's
+            # per-fire timestamp in session_id (cron_<id>_<ts>) pins every
+            # fire of the same job to a different xAI backend server (#78941).
+            merged_extra_headers["x-grok-conv-id"] = _cache_scope
             kwargs["extra_headers"] = merged_extra_headers
 
             # xAI Responses cache-routing — body-level field per
             # https://docs.x.ai/developers/advanced-api-usage/prompt-caching/maximizing-cache-hits.
             # Sent via extra_body (not the typed kwarg) so it survives openai
             # SDK builds whose Responses.stream() signature has dropped the field.
+            # A caller's request_overrides={"prompt_cache_key": ...} lands on
+            # the top-level kwarg set above — read it back here so an explicit
+            # override actually governs the field xAI reads, instead of being
+            # silently outrun by the auto-derived cache_key (#78941).
             existing_extra_body = kwargs.get("extra_body")
             merged_extra_body: Dict[str, Any] = {}
             if isinstance(existing_extra_body, dict):
                 merged_extra_body.update(existing_extra_body)
-            merged_extra_body.setdefault("prompt_cache_key", cache_key)
+            merged_extra_body.setdefault(
+                "prompt_cache_key", kwargs.get("prompt_cache_key", cache_key)
+            )
             kwargs["extra_body"] = merged_extra_body
 
         extra_body = kwargs.get("extra_body")

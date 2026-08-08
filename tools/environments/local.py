@@ -1396,17 +1396,48 @@ def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
     Each file is wrapped so a failing rc file doesn't abort the whole
     bootstrap: ``set +e`` keeps going on errors, ``2>/dev/null`` hides
     noisy prompts, and ``|| true`` neutralises the exit status.
+
+    Even when ``files`` is empty (strict-login / auto-source disabled), still
+    emit the running-install PATH re-pin: ``bash -l`` continues to read
+    login rc files natively, and those can prepend a competing install.
     """
-    if not files:
+    prelude_parts: list[str] = []
+    if files:
+        prelude_parts.append("set +e")
+        for path in files:
+            # shlex.quote isn't available here without an import; the files list
+            # comes from os.path.expanduser output so it's a concrete absolute
+            # path.  Escape single quotes defensively anyway.
+            safe = path.replace("'", "'\\''")
+            prelude_parts.append(f"[ -r '{safe}' ] && . '{safe}' 2>/dev/null || true")
+
+    # Re-pin the running install's bin dir AFTER optional rc sources.
+    #
+    # A sourced rc (or a native login rc when Hermes does not auto-source)
+    # may prepend a *different* Hermes install's bin dir — multi-HERMES_HOME
+    # machines commonly carry a stale
+    # ``export PATH="$HOME/.hermes/hermes-agent/venv/bin:$PATH"`` in
+    # ~/.bashrc / ~/.bash_profile from an older per-instance install. That
+    # rewrite happens inside the login shell, i.e. *after* the process-env
+    # pin applied by ``_prepend_hermes_bin_dir`` in ``_make_run_env``, so the
+    # environment snapshot captures the interloper first and every subsequent
+    # terminal call resolves bare ``hermes`` to the wrong install (wrong
+    # version, wrong venv). Prepend-if-missing semantics wouldn't help here
+    # either: our dir is usually already on PATH, just at a lower position —
+    # so we prepend unconditionally and rely on first-occurrence-wins.
+    #
+    # POSIX-only: on Windows the bin dir is a native path that would need
+    # MSYS translation before it could be embedded in a bash export, and
+    # the auto-source path is disabled there anyway.
+    if not _IS_WINDOWS:
+        bin_dir = _resolve_hermes_bin_dir()
+        if bin_dir:
+            safe_bin = bin_dir.replace("'", "'\\''")
+            prelude_parts.append(f"export PATH='{safe_bin}':\"$PATH\"")
+
+    if not prelude_parts:
         return cmd_string
 
-    prelude_parts = ["set +e"]
-    for path in files:
-        # shlex.quote isn't available here without an import; the files list
-        # comes from os.path.expanduser output so it's a concrete absolute
-        # path.  Escape single quotes defensively anyway.
-        safe = path.replace("'", "'\\''")
-        prelude_parts.append(f"[ -r '{safe}' ] && . '{safe}' 2>/dev/null || true")
     prelude = "\n".join(prelude_parts) + "\n"
     return prelude + cmd_string
 
@@ -1494,9 +1525,11 @@ class LocalEnvironment(BaseEnvironment):
         # Non-login invocations are already sourcing the snapshot and
         # don't need this.
         if login:
+            # Always run through the wrapper on login snapshots — even when
+            # the resolved init-file list is empty — so the running-install
+            # PATH re-pin still fires after native ``bash -l`` login rc.
             init_files = _resolve_shell_init_files()
-            if init_files:
-                cmd_string = _prepend_shell_init(cmd_string, init_files)
+            cmd_string = _prepend_shell_init(cmd_string, init_files)
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
 

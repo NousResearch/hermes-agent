@@ -647,21 +647,12 @@ def _format_exec_approval_fallback(
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
     if _GATEWAY_AUTH_ERROR_RE.search(text):
-        return (
-            "⚠️ Provider authentication failed. Check the configured credentials; "
-            "raw provider details are in the gateway logs."
-        )
+        return t("gateway.provider_auth_failed")
     if _GATEWAY_PROVIDER_POLICY_RE.search(text):
-        return (
-            "⚠️ The model provider rejected the request. I kept the raw provider "
-            "error out of chat; check gateway logs for details or try rephrasing."
-        )
+        return t("gateway.provider_rejected")
     if _GATEWAY_RATE_LIMIT_RE.search(text):
-        return "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
-    return (
-        "⚠️ The model provider failed after retries. I kept raw provider details "
-        "out of chat; check gateway logs for diagnostics."
-    )
+        return t("gateway.provider_rate_limited")
+    return t("gateway.provider_failed")
 
 
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
@@ -14313,10 +14304,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # busy_handler naming an entry here). All other rejected commands get
     # the generic catch-all text in _dispatch_busy_slash_command.
     _BUSY_REJECT_TEXT: Dict[str, str] = {
-        "model": "Agent is running — wait or /stop first, then switch models.",
-        "codex-runtime": ("Agent is running — wait or /stop first, then "
-                          "change runtime."),
-        "moa": "Agent is running — wait or /stop first, then run /moa.",
+        "model": lambda: t("gateway.busy_reject.model"),
+        "codex-runtime": lambda: t("gateway.busy_reject.codex_runtime"),
+        "moa": lambda: t("gateway.busy_reject.moa"),
     }
 
     async def _dispatch_busy_slash_command(
@@ -14355,7 +14345,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return await special(event, quick_key, source)
             reject_text = self._BUSY_REJECT_TEXT.get(handler_key)
             if reject_text is not None:
-                return reject_text
+                return reject_text()
 
         if policy in ("dispatch", "interrupt_then_dispatch"):
             plain = {
@@ -14389,10 +14379,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Catch-all: any other recognized slash command reached the
         # running-agent guard. Reject gracefully rather than falling
         # through to interrupt + discard.
-        return (
-            f"⏳ Agent is running — `/{name}` can't run "
-            f"mid-turn. Wait for the current response or `/stop` first."
-        )
+        return t("gateway.busy_reject.generic", name=name)
 
     async def _handle_pause_command(self, event: MessageEvent):
         """`/pause [reason]` engages the global emergency stop; `/pause off`
@@ -14578,7 +14565,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         if _is_control:
             return await self._handle_goal_command(event)
-        return "Agent is running — use /goal status / pause / clear / wait mid-run, or /stop before setting a new goal."
+        return t("gateway.goal_busy_hint")
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -15480,7 +15467,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 event.text = build_learn_prompt(_learn_req)
                 # fall through to agent processing
             except Exception:
-                return "Could not start /learn — please try again."
+                return t("gateway.learn_start_failed")
 
         if canonical == "init":
             # /init: rewrite the turn to a guidance-laden prompt and fall
@@ -15494,7 +15481,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 _init_prompt = build_init_prompt_for_cwd(extra=_init_notes)
             except Exception:
-                return "Could not start /init — please try again."
+                return t("gateway.init_start_failed")
             _ack = (
                 "Updating AGENTS.md from a project scan…"
                 if "UPDATE the existing AGENTS.md" in _init_prompt
@@ -15669,7 +15656,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # message. If the payload is empty, surface the usage hint.
             steer_payload = event.get_command_args().strip()
             if not steer_payload:
-                return "Usage: /steer <prompt>  (no agent is running; sending as a normal message)"
+                return t("gateway.steer.usage_no_agent")
             try:
                 event.text = steer_payload
             except Exception:
@@ -15720,7 +15707,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._evict_cached_agent(_quick_key)
                 event._moa_disable_after_turn = True
             except Exception:
-                return "Failed to prepare MoA turn."
+                return t("gateway.moa_prepare_failed")
 
         if canonical == "subgoal":
             return await self._handle_subgoal_command(event)
@@ -15774,7 +15761,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 output = redact_sensitive_text(output)
                             return output if output else "Command returned no output."
                         except asyncio.TimeoutError:
-                            return "Quick command timed out (30s)."
+                            return t("gateway.quick_command_timed_out")
                         except Exception as e:
                             return f"Quick command error: {e}"
                     else:
@@ -19418,17 +19405,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Join the user's current Discord voice channel."""
         adapter = self._adapter_for_source(event.source)
         if not hasattr(adapter, "join_voice_channel"):
-            return "Voice channels are not supported on this platform."
+            return t("gateway.voice_unsupported_platform")
 
         guild_id = self._get_guild_id(event)
         if not guild_id:
-            return "This command only works in a Discord server."
+            return t("gateway.voice_discord_only")
 
         voice_channel = await adapter.get_user_voice_channel(
             guild_id, event.source.user_id
         )
         if not voice_channel:
-            return "You need to be in a voice channel first."
+            return t("gateway.voice_join_first")
 
         # Wire callbacks BEFORE join so voice input arriving immediately
         # after connection is not lost.
@@ -19477,10 +19464,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         guild_id = self._get_guild_id(event)
 
         if not guild_id or not hasattr(adapter, "leave_voice_channel"):
-            return "Not in a voice channel."
+            return t("gateway.voice_not_in_channel")
 
         if not hasattr(adapter, "is_in_voice_channel") or not adapter.is_in_voice_channel(guild_id):
-            return "Not in a voice channel."
+            return t("gateway.voice_not_in_channel")
 
         try:
             await adapter.leave_voice_channel(guild_id)
@@ -19492,7 +19479,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._set_adapter_auto_tts_disabled(adapter, event.source.chat_id, disabled=True)
         if hasattr(adapter, "_voice_input_callback"):
             adapter._voice_input_callback = None
-        return "Left voice channel."
+        return t("gateway.voice_left_channel")
 
     def _handle_voice_timeout_cleanup(self, chat_id: str) -> None:
         """Called by the adapter when a voice channel times out.
@@ -20673,7 +20660,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
         chat_id = str(source.chat_id or "")
         if not chat_id:
-            return "Could not determine chat ID."
+            return t("gateway.topic_chat_id_unknown")
         # No-op if never enabled.
         try:
             currently_enabled = await self._session_db.is_telegram_topic_mode_enabled(
@@ -20683,7 +20670,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             currently_enabled = False
         if not currently_enabled:
-            return "Multi-session topic mode is not currently enabled for this chat."
+            return t("gateway.topic_mode_not_enabled")
         try:
             await self._session_db.disable_telegram_topic_mode(chat_id=chat_id)
         except Exception as exc:
@@ -20760,9 +20747,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not session:
             return f"Session not found: {raw_session_id.strip()}"
         if str(session.get("source") or "") != "telegram":
-            return "That session is not a Telegram session and cannot be restored into this topic."
+            return t("gateway.topic_restore_not_telegram")
         if str(session.get("user_id") or "") != str(source.user_id):
-            return "That session does not belong to this Telegram user."
+            return t("gateway.topic_restore_not_owner")
 
         linked = await self._session_db.is_telegram_session_linked_to_topic(session_id=session_id)
         current_binding = await self._session_db.get_telegram_topic_binding(
@@ -20771,7 +20758,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         if linked:
             if not current_binding or current_binding.get("session_id") != session_id:
-                return "That session is already linked to another Telegram topic."
+                return t("gateway.topic_restore_already_linked")
 
         session_key = self._session_key_for_source(source)
         try:
@@ -20785,7 +20772,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         except ValueError as exc:
             if "already linked" in str(exc):
-                return "That session is already linked to another Telegram topic."
+                return t("gateway.topic_restore_already_linked")
             raise
 
         title = await self._session_db.get_session_title(session_id) or session_id
@@ -25055,7 +25042,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except Exception as _phrase_err:
                 logger.debug("generic status phrase selection failed: %s", _phrase_err)
-                return "still on it" if kind in {"heartbeat", "waiting", "long_running", "status"} else "one sec"
+                return t("gateway.activity.still_on_it") if kind in {"heartbeat", "waiting", "long_running", "status"} else t("gateway.activity.one_sec")
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform

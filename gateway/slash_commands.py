@@ -2673,12 +2673,12 @@ class GatewaySlashCommandsMixin:
         if lower == "wait" or lower.startswith("wait "):
             wait_arg = args[len("wait"):].strip()
             if not wait_arg:
-                return "Usage: /goal wait <pid> [reason]"
+                return t("gateway.goal_wait_usage")
             wtokens = wait_arg.split(None, 1)
             try:
                 pid = int(wtokens[0])
             except ValueError:
-                return "/goal wait: <pid> must be an integer process id."
+                return t("gateway.goal_wait_invalid_pid")
             reason = wtokens[1].strip() if len(wtokens) > 1 else ""
             try:
                 mgr.wait_on(pid, reason=reason)
@@ -2690,8 +2690,8 @@ class GatewaySlashCommandsMixin:
         # /goal unwait — clear the wait barrier.
         if lower == "unwait":
             if mgr.stop_waiting():
-                return "▶ Wait barrier cleared — goal loop resumes."
-            return "No wait barrier set."
+                return t("gateway.goal_wait_cleared")
+            return t("gateway.goal_no_wait_barrier")
 
         # /goal gate ... — manage deterministic quality gates.
         if lower == "gate" or lower.startswith("gate "):
@@ -2731,7 +2731,7 @@ class GatewaySlashCommandsMixin:
         if lower.startswith("draft"):
             objective = args[len("draft"):].strip()
             if not objective:
-                return "Usage: /goal draft <objective in plain language>"
+                return t("gateway.goal_draft_usage")
             try:
                 import asyncio
                 from hermes_cli.goals import draft_contract
@@ -2782,7 +2782,7 @@ class GatewaySlashCommandsMixin:
             return f"{base}\nCompletion contract:\n{state.contract.render_block()}"
         if lower.startswith("draft"):
             # Drafting was requested but the aux model couldn't produce one.
-            return f"{base}\n(Couldn't draft a contract — running as a free-form goal.)"
+            return f"{base}\n{t('gateway.goal.contract_draft_failed')}"
         return base
 
     async def _handle_heartbeat_command(self, event: "MessageEvent") -> str:
@@ -2913,7 +2913,7 @@ class GatewaySlashCommandsMixin:
         if mgr is None:
             return t("gateway.goal.unavailable")
         if not mgr.has_goal():
-            return "No active goal. Set one with /goal <text>."
+            return t("gateway.goal_none_active_set")
 
         # No args → list current subgoals.
         if not args:
@@ -2925,11 +2925,11 @@ class GatewaySlashCommandsMixin:
 
         if verb == "remove":
             if not rest:
-                return "Usage: /subgoal remove <n>"
+                return t("gateway.subgoal_remove_usage")
             try:
                 idx = int(rest.split()[0])
             except ValueError:
-                return "/subgoal remove: <n> must be an integer (1-based index)."
+                return t("gateway.subgoal_remove_invalid")
             try:
                 removed = mgr.remove_subgoal(idx)
             except (IndexError, RuntimeError) as exc:
@@ -2943,7 +2943,7 @@ class GatewaySlashCommandsMixin:
                 return f"/subgoal clear: {exc}"
             if prev:
                 return f"✓ Cleared {prev} subgoal{'s' if prev != 1 else ''}."
-            return "No subgoals to clear."
+            return t("gateway.subgoal_none_to_clear")
 
         try:
             text = mgr.add_subgoal(args)
@@ -3785,7 +3785,7 @@ class GatewaySlashCommandsMixin:
         # this side-effect boundary. Unconfigured policies remain unrestricted.
         policy = policy_for_source(self.config, event.source)
         if requested and not policy.is_admin(event.source.user_id):
-            return "Only gateway admins can change the persistent approval mode."
+            return t("gateway.approve_admins_only")
         result = run_approval_mode_command(requested)
         # Approval checks load config dynamically; do not evict the cached agent
         # or alter its system prompt/tool schema (prompt-cache prefix is sacred).

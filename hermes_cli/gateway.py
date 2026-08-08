@@ -43,7 +43,7 @@ from gateway.restart import (
     resolve_restart_exit_wait_budget,
 )
 from hermes_cli.config import (
-    get_env_value,
+
     get_hermes_home,
     is_managed,
     managed_error,
@@ -362,7 +362,7 @@ def _scan_gateway_pids(
     """Best-effort process-table scan for gateway PIDs.
 
     This supplements the profile-scoped PID file so status views can still spot
-    a live gateway when the PID file is stale/missing, and ``--all`` sweeps can
+
     discover gateways outside the current profile.
     """
     # Exclude the entire ancestor chain so the CLI process that invoked this
@@ -1386,6 +1386,38 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
             gateway_pids=gateway_pids,
             service_scope="launchd",
         )
+
+    if is_windows():
+        try:
+            from hermes_cli import gateway_windows
+
+            # ``is_installed()`` is also true for the Startup-folder fallback,
+            # so branch explicitly and give each persistence mode its own
+            # manager label and scope rather than labelling every Windows
+            # install as a Scheduled Task.
+            if gateway_windows.is_task_registered():
+                task_info = gateway_windows.query_task_status()
+                service_running = (
+                    task_info.get("status", "").strip().lower() == "running"
+                    or bool(gateway_pids)
+                )
+                return GatewayRuntimeSnapshot(
+                    manager="windows scheduled task",
+                    service_installed=True,
+                    service_running=service_running,
+                    gateway_pids=gateway_pids,
+                    service_scope="scheduled-task",
+                )
+            if gateway_windows.is_startup_entry_installed():
+                return GatewayRuntimeSnapshot(
+                    manager="windows startup item",
+                    service_installed=True,
+                    service_running=bool(gateway_pids),
+                    gateway_pids=gateway_pids,
+                    service_scope="startup-folder",
+                )
+        except Exception:
+            pass
 
     return GatewayRuntimeSnapshot(
         manager="manual process",

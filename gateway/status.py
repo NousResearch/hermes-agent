@@ -394,12 +394,10 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
         raw_tokens = shlex.split(command, posix=False)
     except ValueError:
         raw_tokens = command.split()
-    # Strip surrounding quotes, normalize slashes + case per token.
     tokens = [t.strip("\"'").replace("\\", "/").lower() for t in raw_tokens]
     if not tokens:
         return None
 
-    # Gateway-dedicated entrypoints carry no subcommand to inspect.
     for token in tokens:
         if token == "gateway/run.py" or token.endswith("/gateway/run.py"):
             return "run"
@@ -416,9 +414,6 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     if not has_gateway_entry:
         return None
 
-    # Drop profile selectors anywhere: --profile X / -p X / --profile=X / -p=X.
-    # This consumes a profile VALUE of "gateway" too, so the real subcommand
-    # token is the one we land on below.
     filtered: list[str] = []
     skip_next = False
     for token in tokens:
@@ -436,7 +431,7 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
         if token != "gateway":
             continue
         if i + 1 >= len(filtered):
-            return "run"  # bare `hermes gateway` defaults to `run`
+            return "run"
         return filtered[i + 1]
     return None
 
@@ -479,6 +474,7 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
 
     cmdline = " ".join(str(part) for part in argv)
     return looks_like_gateway_runtime_command_line(cmdline)
+
 
 
 def _profile_name_for_home(profile_home: Path) -> Optional[str]:

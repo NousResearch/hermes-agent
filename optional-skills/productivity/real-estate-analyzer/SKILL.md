@@ -35,7 +35,7 @@ Open the listing URL with browser and extract:
 - Description highlights and any red flags in the text
 
 ### Step 2: Find Comparable Listings
-Use web_search to find 3-5 similar properties in the same area:
+Use web_search to find as many comparable listings as available in the same area (aim for at least 3, more is better for accuracy):
 - Same neighborhood or district
 - Similar size (±20%)
 - Similar room count

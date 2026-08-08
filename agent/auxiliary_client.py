@@ -6008,6 +6008,11 @@ def resolve_provider_client(
         custom_key = ""
         if explicit_base_url:
             custom_base = _to_openai_base_url(explicit_base_url).strip()
+            # Resolve callable API keys (short-lived credential suppliers)
+            # before string operations — the runtime path preserves callables
+            # but auxiliary resolution must invoke them first. (#79121)
+            if callable(explicit_api_key):
+                explicit_api_key = str(explicit_api_key() or "").strip()
             custom_key = (
                 (explicit_api_key or "").strip()
                 or _scoped_key_env("OPENAI_API_KEY")
@@ -6028,7 +6033,10 @@ def resolve_provider_client(
             # OpenRouter or a wrong API-key provider — the main agent already
             # solved this, we just need to reuse its answer. (#45472)
             _main_base = str(main_runtime.get("base_url") or "").strip().rstrip("/")
-            _main_key = str(main_runtime.get("api_key") or "").strip()
+            _main_raw = main_runtime.get("api_key")
+            if callable(_main_raw):
+                _main_raw = _main_raw()
+            _main_key = str(_main_raw or "").strip()
             if _main_base and _main_key:
                 custom_base = _main_base
                 custom_key = _main_key

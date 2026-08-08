@@ -355,6 +355,10 @@ export function projectNameForCwd(cwd: string): null | string {
 // session row show live, then follow the view into the session's new project
 // (from the overview or a now-stale project alike). Caller gates this on a real
 // same-session cwd move, so a plain session switch never reaches here.
+// Monotonic counter so a newer follow supersedes an older one still awaiting
+// its refresh RPCs — mirrors the projectTreeRefreshGeneration idiom below.
+let followCwdGeneration = 0
+
 export async function followActiveSessionCwd(cwd: string): Promise<void> {
   const target = cwd.trim()
 
@@ -362,9 +366,23 @@ export async function followActiveSessionCwd(cwd: string): Promise<void> {
     return
   }
 
+  const generation = ++followCwdGeneration
+
+  // Always refresh: projectIdForCwd() uses ancestor-prefix matching, so a
+  // newly created nested repository would hit the old outer project and skip
+  // the structural refresh that the backend needs to surface the new repo.
+  // The two RPCs are cheap relative to the correctness risk of a stale tree.
   await Promise.all([refreshProjects(), refreshProjectTree()])
 
-  // Resolve only after the refresh, so a just-created/auto project is in the tree.
+  // Stale-follow guard: a newer follow superseded this one, or the agent
+  // cd'd again while the RPCs were in flight. Only $currentCwd is checked —
+  // $selectedStoredSessionId is NOT compared because auto-compression rotates
+  // it for the same runtime session.
+  if (generation !== followCwdGeneration || $currentCwd.get().trim() !== target) {
+    return
+  }
+
+  // Resolve after the refresh so a just-created/auto project is in the tree.
   const projectId = projectIdForCwd(target)
 
   if (projectId) {

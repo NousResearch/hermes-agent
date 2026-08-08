@@ -20,6 +20,7 @@ import {
   endSessionMutation,
   enterProject,
   exitProjectScope,
+  followActiveSessionCwd,
   openProjectCreate,
   pickProjectFolder,
   projectNameForCwd,
@@ -542,5 +543,110 @@ describe('tombstone pruning', () => {
     await refreshProjectTree()
 
     expect($removedSessionIds.get().has('sess-1')).toBe(false)
+  })
+})
+
+describe('followActiveSessionCwd', () => {
+  const treeNode = (
+    over: Partial<SidebarProjectTree> & Pick<SidebarProjectTree, 'id' | 'label'>
+  ): SidebarProjectTree => ({ path: null, repos: [], sessionCount: 0, ...over })
+
+  const payload = (projects: SidebarProjectTree[]) => ({ active_id: null, projects, scoped_session_ids: [] })
+
+  const openGatewayReturning = (result: unknown) => {
+    const gateway = { connectionState: 'open', request: vi.fn().mockResolvedValue(result) }
+
+    activeGateway.mockImplementation(() => gateway as never)
+    gatewayAtom.set(gateway as never)
+
+    return gateway
+  }
+
+  const deferredGateway = () => {
+    let resolve!: (value: unknown) => void
+    const promise = new Promise(r => { resolve = r })
+    const gateway = { connectionState: 'open', request: vi.fn().mockReturnValue(promise) }
+
+    activeGateway.mockImplementation(() => gateway as never)
+    gatewayAtom.set(gateway as never)
+
+    return { resolve }
+  }
+
+  beforeEach(() => {
+    $projectTree.set([])
+    $projectScope.set(ALL_PROJECTS)
+    $currentCwd.set('')
+    $selectedStoredSessionId.set(null)
+  })
+
+  it('always refreshes even when the project is already cached', async () => {
+    $projectTree.set([treeNode({ id: 'p_known', label: 'Known', path: '/repos/known' })])
+    $currentCwd.set('/repos/known')
+
+    const gateway = openGatewayReturning(payload([treeNode({ id: 'p_known', label: 'Known', path: '/repos/known' })]))
+
+    await followActiveSessionCwd('/repos/known')
+
+    const methods = gateway.request.mock.calls.map((c: unknown[]) => c[0])
+
+    expect(methods).toContain('projects.list')
+    expect(methods).toContain('projects.tree')
+    expect($projectScope.get()).toBe('p_known')
+  })
+
+  it('resolves a nested repository to the inner project after refresh', async () => {
+    $projectTree.set([treeNode({ id: 'p_outer', label: 'Outer', path: '/repos/outer' })])
+    $currentCwd.set('/repos/outer/nested')
+    openGatewayReturning(payload([
+      treeNode({ id: 'p_outer', label: 'Outer', path: '/repos/outer' }),
+      treeNode({ id: 'p_nested', label: 'Nested', path: '/repos/outer/nested' })
+    ]))
+
+    await followActiveSessionCwd('/repos/outer/nested')
+
+    expect($projectScope.get()).toBe('p_nested')
+  })
+
+  it('does not abort when auto-compression rotates the stored session id mid-flight', async () => {
+    $currentCwd.set('/repos/active')
+    $selectedStoredSessionId.set('sess-original')
+    const { resolve } = deferredGateway()
+
+    const follow = followActiveSessionCwd('/repos/active')
+
+    $selectedStoredSessionId.set('sess-compressed')
+    resolve(payload([treeNode({ id: 'p_active', label: 'Active', path: '/repos/active' })]))
+    await follow
+
+    expect($projectScope.get()).toBe('p_active')
+  })
+
+  it('does not yank sidebar scope when the live cwd moved away mid-flight', async () => {
+    $currentCwd.set('/repos/old')
+    const { resolve } = deferredGateway()
+
+    const follow = followActiveSessionCwd('/repos/old')
+
+    $currentCwd.set('/repos/new')
+    resolve(payload([treeNode({ id: 'p_old', label: 'Old', path: '/repos/old' })]))
+    await follow
+
+    expect($projectScope.get()).toBe(ALL_PROJECTS)
+  })
+
+  it('supersedes an older follow when a newer one starts mid-flight', async () => {
+    const { resolve } = deferredGateway()
+
+    $currentCwd.set('/repos/first')
+    const first = followActiveSessionCwd('/repos/first')
+
+    $currentCwd.set('/repos/second')
+    const second = followActiveSessionCwd('/repos/second')
+
+    resolve(payload([treeNode({ id: 'p_second', label: 'Second', path: '/repos/second' })]))
+    await Promise.all([first, second])
+
+    expect($projectScope.get()).toBe('p_second')
   })
 })

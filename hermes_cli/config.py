@@ -3176,6 +3176,30 @@ def get_pipeline_config() -> Dict[str, Any]:
     return merged
 
 
+def get_council_config() -> "CouncilConfig":
+    """Return the ``council`` section from config, merged with defaults.
+
+    Returns a CouncilConfig dataclass with panel members, chairman, token cap,
+    and timeout settings. Panel lists and chairman routes are atomic user
+    choices, so configured values replace their defaults rather than being
+    merged item-by-item.
+    """
+    from hermes_cli.council import CouncilConfig
+
+    cfg = load_config_readonly()
+    council_cfg = cfg.get("council", {})
+    if not isinstance(council_cfg, dict):
+        council_cfg = {}
+    defaults = DEFAULT_CONFIG.get("council", {})
+    merged = dict(defaults)
+    merged.update(council_cfg)
+    if "panel" in council_cfg:
+        merged["panel"] = council_cfg["panel"]
+    if "chairman" in council_cfg:
+        merged["chairman"] = council_cfg["chairman"]
+    return CouncilConfig.from_config(merged)
+
+
 def write_platform_config_field(
     platform_key: str,
     field_key: str,

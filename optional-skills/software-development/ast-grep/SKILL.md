@@ -1,6 +1,6 @@
 ---
 name: ast-grep
-description: "AST-aware code search and rewrite (ast-grep/sg) across 25 languages. Use for structural matching or deterministic codemods: find every function/call/class/import shaped like X, rewrite console.log to logger.info, strip `as any`, migrate require() to import, find empty catch blocks, scan/apply YAML rules. Prefer over search_files/rg when the target is syntax shape rather than text."
+description: "AST-aware structural code search and rewrite via ast-grep."
 version: 1.0.0
 author: Yeongyu Kim (code-yeongyu), adapted by Hermes Agent
 license: MIT

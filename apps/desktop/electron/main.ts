@@ -136,6 +136,7 @@ import {
   TEXT_PREVIEW_SOURCE_MAX_BYTES
 } from './hardening'
 import { cursorPointInWindow } from './hud-cursor'
+import { buildHudWindowUrl } from './hud-url'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
@@ -9154,6 +9155,12 @@ let hudRestoreMainWindow = false
 // the id and hands it over in the close broadcast.
 let hudSessionId = null
 
+// The profile the live HUD renderer booted against (rides hudUrl's query
+// string). A renderer adopts its backend once at boot, so a retarget onto a
+// session from a DIFFERENT profile cannot be a same-window `goto` — the HUD
+// must be respawned against the new profile's backend (see openHudWindow).
+let hudProfile = null
+
 // A wide, short bar parked near the bottom of the active display — the shape
 // of a game chat frame, and where one belongs. Defaults only: once the user
 // moves or resizes the HUD, hud-state.json wins (same pattern as the main
@@ -9288,15 +9295,17 @@ function hudBounds() {
   }
 }
 
-function hudUrl(sessionId) {
-  const query = '?win=hud'
-  const route = sessionId ? `#/${encodeURIComponent(sessionId)}` : '#/'
-
-  if (DEV_SERVER) {
-    return `${DEV_SERVER.endsWith('/') ? DEV_SERVER.slice(0, -1) : DEV_SERVER}/${query}${route}`
-  }
-
-  return `${pathToFileURL(resolveRendererIndex()).toString()}${query}${route}`
+function hudUrl(sessionId, profile) {
+  // The profile rides the query string next to `win=hud` (BEFORE the '#', so
+  // HashRouter never sees it). The HUD renderer's gateway boot reads it and
+  // adopts that backend instead of the primary — without it, a HUD opened on a
+  // non-primary profile's conversation resolves the session id against the
+  // wrong backend and falls back to the default profile's last session.
+  return buildHudWindowUrl(sessionId, {
+    devServer: DEV_SERVER,
+    profile,
+    rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
+  })
 }
 
 // Tell every window whether the HUD is up, so a toggle in any of them reads
@@ -9313,7 +9322,7 @@ function broadcastHudState(open) {
   }
 }
 
-function spawnHudWindow(sessionId) {
+function spawnHudWindow(sessionId, profile) {
   const win = new BrowserWindow({
     ...hudBounds(),
     minWidth: 380,
@@ -9396,7 +9405,7 @@ function spawnHudWindow(sessionId) {
     broadcastHudState(false)
   })
 
-  loadWindowUrl(win, hudUrl(sessionId), 'HUD')
+  loadWindowUrl(win, hudUrl(sessionId, profile), 'HUD')
 
   return win
 }
@@ -9414,8 +9423,28 @@ function restoreMainWindowFromHud() {
   }
 }
 
-function openHudWindow(sessionId) {
+function openHudWindow(sessionId, profile) {
+  const profileKey = typeof profile === 'string' && profile.trim() ? profile.trim() : null
+
   if (hudWindow && !hudWindow.isDestroyed()) {
+    // Pointed at another PROFILE: the live renderer is bound to the old
+    // profile's backend, and a renderer adopts its backend exactly once at
+    // boot — an in-place goto would resolve the id against the wrong backend
+    // (the #82285 fallback). Respawn against the right one.
+    if (profileKey && hudProfile !== profileKey) {
+      const win = hudWindow
+      hudWindow = null
+      win.removeAllListeners('closed')
+      win.destroy()
+
+      hudSessionId = sessionId || null
+      hudProfile = profileKey
+      hudWindow = spawnHudWindow(sessionId, profileKey)
+      broadcastHudState(true)
+
+      return hudWindow
+    }
+
     // Already up, but pointed somewhere else — switch it rather than just
     // raising it. Asking for HUD mode from another tab means "put THIS
     // conversation in the HUD", and a plain focus leaves the wrong one there.
@@ -9434,7 +9463,8 @@ function openHudWindow(sessionId) {
 
   hudRestoreMainWindow = Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible())
   hudSessionId = sessionId || null
-  hudWindow = spawnHudWindow(sessionId)
+  hudProfile = profileKey
+  hudWindow = spawnHudWindow(sessionId, profileKey)
   broadcastHudState(true)
 
   return hudWindow
@@ -10130,7 +10160,10 @@ ipcMain.on('hermes:pet-overlay:control', (_event, payload) => {
 
 // --- HUD mode (chrome-free floating chat) -----------------------------------
 ipcMain.handle('hermes:hud:open', async (_event, request) => {
-  openHudWindow(typeof request?.sessionId === 'string' ? request.sessionId : null)
+  openHudWindow(
+    typeof request?.sessionId === 'string' ? request.sessionId : null,
+    typeof request?.profile === 'string' ? request.profile : null
+  )
 
   return { ok: true }
 })

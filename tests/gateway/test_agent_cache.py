@@ -636,6 +636,61 @@ class TestAgentCacheIdleResume:
             f"tabs and cookies gone on resume. Calls: {browser_calls}"
         )
 
+    def test_release_clients_shuts_down_memory_provider(self):
+        """release_clients() must call shutdown_all() on the memory manager.
+
+        Memory providers (notably Hindsight) spawn background writer threads.
+        Without shutdown on soft eviction, these threads pile up as zombies
+        — one per evicted agent — eventually causing thread/memory exhaustion
+        and gateway liveness crashes.
+
+        This test verifies that release_clients() calls shutdown_all() on the
+        memory manager without calling on_session_end() (which would trigger
+        end-of-session extraction, too heavy for a soft-evicted session that
+        may resume).
+        """
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            model="anthropic/claude-sonnet-4", api_key="test",
+            base_url="https://openrouter.ai/api/v1", provider="openrouter",
+            max_iterations=5, quiet_mode=True,
+            skip_context_files=True, skip_memory=True,
+            session_id="mem-provider-evict-test",
+        )
+
+        class _MockMM:
+            def __init__(self):
+                self.shutdown_all_calls = 0
+                self.on_session_end_calls = 0
+            def shutdown_all(self):
+                self.shutdown_all_calls += 1
+            def on_session_end(self, messages):
+                self.on_session_end_calls += 1
+
+        mock_mm = _MockMM()
+        agent._memory_manager = mock_mm
+
+        try:
+            agent.release_clients()
+        except Exception:
+            pass
+        finally:
+            try:
+                agent.close()
+            except Exception:
+                pass
+
+        assert mock_mm.shutdown_all_calls >= 1, (
+            "release_clients() must call shutdown_all() to terminate memory "
+            "provider writer threads. Leaked threads cause thread proliferation "
+            "under cache turnover."
+        )
+        assert mock_mm.on_session_end_calls == 0, (
+            "release_clients() must NOT call on_session_end() — that triggers "
+            "end-of-session extraction, too heavy for a soft-evicted session."
+        )
+
 
     def test_close_vs_release_full_teardown_difference(self, monkeypatch):
         """close() tears down task state; release_clients() does not.

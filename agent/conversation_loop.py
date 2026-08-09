@@ -4101,6 +4101,30 @@ def run_conversation(
                 if recovered_with_pool:
                     continue
 
+                # Terminal quota/billing errors have already had their chance
+                # to rotate credentials. Do not let the eager rate-limit gate
+                # below suppress a configured fallback merely because the pool
+                # reports an available entry. Successful rotation returns
+                # above, so transient rate-limit handling is unchanged.
+                fallback_attempted = False
+                if (
+                    classified.reason == FailoverReason.billing
+                    and classified.should_fallback
+                    and agent._has_pending_fallback()
+                ):
+                    fallback_attempted = True
+                    agent._buffer_status(
+                        "⚠️ Billing or credits exhausted — trying fallback provider..."
+                    )
+                    if agent._try_activate_fallback(reason=classified.reason):
+                        active_system_prompt = _sync_failover_system_message(
+                            agent, api_messages, active_system_prompt
+                        )
+                        retry_count = 0
+                        compression_attempts = 0
+                        _retry.primary_recovery_attempted = False
+                        continue
+
                 # Image-too-large recovery: shrink oversized native image
                 # parts in-place and retry once.  Triggered by Anthropic's
                 # per-image 5 MB ceiling (400 with "image exceeds 5 MB
@@ -4713,7 +4737,11 @@ def run_conversation(
                     is_rate_limited
                     or (_is_transport_failure and retry_count >= 2)
                 )
-                if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
+                if (
+                    _should_fallback
+                    and not fallback_attempted
+                    and agent._fallback_index < len(agent._fallback_chain)
+                ):
                     # Don't eagerly fallback if credential pool rotation may
                     # still recover.  See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool exception.  Fixes #11314.
@@ -5381,14 +5409,18 @@ def run_conversation(
                     # exists; otherwise "trying fallback..." is a lie and the
                     # session looks like it's recovering when it's about to
                     # abort silently (#35314, #17446).
-                    if agent._has_pending_fallback():
+                    if not fallback_attempted and agent._has_pending_fallback():
                         if classified.reason == FailoverReason.content_policy_blocked:
                             agent._buffer_status("⚠️ Provider safety filter blocked this request — trying fallback...")
                         elif classified.reason == FailoverReason.ssl_cert_verification:
                             agent._buffer_status("⚠️ TLS certificate verification failed — trying fallback...")
                         else:
                             agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
-                    if agent._try_activate_fallback():
+                    if (
+                        not fallback_attempted
+                        and agent._has_pending_fallback()
+                        and agent._try_activate_fallback()
+                    ):
                         active_system_prompt = _sync_failover_system_message(
                             agent, api_messages, active_system_prompt)
                         retry_count = 0

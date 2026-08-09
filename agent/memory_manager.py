@@ -392,6 +392,8 @@ class MemoryManager:
         # a bounded FIFO drain, then explicitly report anything abandoned.
         self._background_futures: Dict[Future, str] = {}
         self._shutting_down = False
+        self._shutdown_all_lock = threading.Lock()
+        self._shutdown_all_complete = False
         self._shutdown_drain_state: Dict[str, Any] = {
             "status": "not_started",
             "abandoned_writes": 0,
@@ -1150,15 +1152,24 @@ class MemoryManager:
         daemon, so anything still wedged past the drain window dies with
         the interpreter rather than blocking exit.
         """
-        self._drain_sync_executor()
-        for provider in reversed(self._providers):
+        with self._shutdown_all_lock:
+            if self._shutdown_all_complete:
+                return
             try:
-                provider.shutdown()
-            except Exception as e:
-                logger.warning(
-                    "Memory provider '%s' shutdown failed: %s",
-                    provider.name, e,
-                )
+                self._drain_sync_executor()
+                for provider in reversed(self._providers):
+                    try:
+                        provider.shutdown()
+                    except Exception as e:
+                        logger.warning(
+                            "Memory provider '%s' shutdown failed: %s",
+                            provider.name, e,
+                        )
+            finally:
+                # Mark complete even when one provider raises: shutdown is a
+                # best-effort terminal boundary and a concurrent/repeated
+                # caller must not invoke already-partially-torn-down providers.
+                self._shutdown_all_complete = True
 
     @property
     def shutdown_drain_state(self) -> Dict[str, Any]:

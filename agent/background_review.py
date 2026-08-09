@@ -783,6 +783,33 @@ def _run_review_in_thread(
                     _pref_val = getattr(agent, _pref_attr, None)
                     if _pref_val:
                         _fork_kwargs[_pref_attr] = _pref_val
+            # Inherit the parent's fallback provider chain so the review fork
+            # can recover from quota exhaustion / rate-limits exactly like the
+            # top-level agent and subagent forks do (delegate_tool.py passes
+            # the same parameter).  Without this the fork's _fallback_chain is
+            # empty, a hard-quota 429 on the review's model aborts instead of
+            # switching to the configured fallback — the same bug class as the
+            # main-conversation path this PR already fixes.
+            #
+            # Unlike reasoning_config (gated by ``not _routed`` above because
+            # a routed model may 400 on the parent's effort vocabulary),
+            # fallback entries are API parameters, not request payloads:
+            # try_activate_fallback resolves each entry independently and
+            # skips any whose provider/model is not locally usable, so an
+            # inherited entry can never cause a malformed request.  In the
+            # worst case the fork tries a fallback entry that is not configured
+            # for its routed provider; that entry is skipped and the next one
+            # (or graceful failure) takes over — strictly better than the
+            # pre-fix behavior of aborting with no fallback at all.
+            #
+            # On the same-model path, fallback activation does break the
+            # warm-cache prefix (the fallback model cannot reuse the primary's
+            # cached prefix), but that is the correct tradeoff: losing one
+            # turn of cache warmth is better than the review silently aborting
+            # on every request until the quota window resets.  The chain list
+            # is shared by reference with the parent, matching delegate_tool.py
+            # — the fallback path only reads entries (.get()), never writes.
+            parent_fallback = getattr(agent, "_fallback_chain", None) or None
             review_agent = AIAgent(
                 model=_rt.get("model") or agent.model,
                 max_iterations=16,
@@ -798,6 +825,7 @@ def _run_review_in_thread(
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 skip_memory=True,
+                fallback_model=parent_fallback,
                 **_fork_kwargs,
             )
             review_agent._memory_write_origin = "background_review"

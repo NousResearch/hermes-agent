@@ -4290,6 +4290,32 @@ class AIAgent:
         except Exception:
             pass
 
+        # 3. Shut down memory providers WITHOUT on_session_end().
+        #
+        # Each memory provider instance (notably Hindsight) spawns its own
+        # background writer thread.  When an agent is soft-evicted from the
+        # LRU cache, those writer threads are never terminated — they pile
+        # up as zombie daemons, one per evicted agent.  Under a 128-entry
+        # cache with heavy turnover (e.g. concurrent 429 retry storms), this
+        # produces dozens of leaked threads, each holding stack memory and
+        # references to Hindsight clients/queues/loops that prevent GC.
+        #
+        # shutdown_memory_provider() calls on_session_end() first — too heavy
+        # for soft eviction (it triggers end-of-session extraction; a
+        # resumed session would re-extract).  Instead, call shutdown_all()
+        # directly on the memory manager: this drains the sync executor and
+        # terminates writer threads (Hindsight sends _WRITER_SENTINEL, joins
+        # the thread) without the extraction side-effect.
+        #
+        # Safe because a resumed session's freshly-built AIAgent creates a
+        # new MemoryManager with fresh provider instances.
+        try:
+            _mm = getattr(self, "_memory_manager", None)
+            if _mm is not None and not getattr(_mm, "_shutting_down", False):
+                _mm.shutdown_all()
+        except Exception:
+            pass
+
     def close(self) -> None:
         """Release all resources held by this agent instance.
 

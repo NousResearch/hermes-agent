@@ -97,7 +97,7 @@ def ensure_dingtalk_deps() -> bool:
     ``create_adapter()``, and have the installer veto on env-var grounds before ever installing —
     re-creating the #79812 deadlock for extra-configured setups.
     """
-    global DINGTALK_STREAM_AVAILABLE, dingtalk_stream, ChatbotMessage, CallbackMessage, AckMessage, HTTPX_AVAILABLE, httpx
+    global DINGTALK_STREAM_AVAILABLE, dingtalk_stream, ChatbotMessage, CallbackMessage, AckMessage, HTTPX_AVAILABLE, httpx, _IncomingHandler
     if DINGTALK_STREAM_AVAILABLE and HTTPX_AVAILABLE:
         return True
     try:
@@ -110,6 +110,16 @@ def ensure_dingtalk_deps() -> bool:
         return False
     dingtalk_stream, ChatbotMessage, CallbackMessage, AckMessage, httpx = _ds, _CM, _CBM, _AM, _httpx
     DINGTALK_STREAM_AVAILABLE = HTTPX_AVAILABLE = True
+    if not issubclass(_IncomingHandler, dingtalk_stream.ChatbotHandler):
+        stale_handler_cls = _IncomingHandler
+        _IncomingHandler = type(
+            "_IncomingHandler",
+            (stale_handler_cls, dingtalk_stream.ChatbotHandler),
+            {
+                "__module__": __name__,
+                "__doc__": stale_handler_cls.__doc__,
+            },
+        )
     return True
 
 

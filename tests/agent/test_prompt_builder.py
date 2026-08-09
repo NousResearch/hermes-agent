@@ -283,6 +283,22 @@ class TestBuildSkillsSystemPrompt:
 
 
 
+    def test_loading_guidance_requires_clear_scope_match(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        d = tmp_path / "skills" / "tools" / "search"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: search\ndescription: Search stuff\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "trigger or scope clearly matches the task" in result
+        assert "Do not load a skill solely because it is tangentially related" in result
+        assert "even partially relevant" not in result
+        assert "context you don't need" not in result
+
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"

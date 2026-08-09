@@ -9,13 +9,17 @@ Dependencies (optional):
     or: uv sync --extra voice
 """
 
+import difflib
 import logging
+import math
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 import tempfile
 import threading
 import time
@@ -40,6 +44,55 @@ def _import_audio():
     return sd, np
 
 
+def _import_numpy():
+    """Lazy-import numpy only (no sounddevice).  Returns the module.
+
+    Used where we need to synthesize/convert audio samples but must NOT
+    import sounddevice — see _sounddevice_output_allowed.
+    """
+    import numpy as np
+    return np
+
+
+def _sounddevice_output_allowed() -> bool:
+    """Whether sounddevice may be used for audio OUTPUT.
+
+    Returns False on macOS: importing/initializing sounddevice
+    (PortAudio/CoreAudio) for output triggers a kTCCServiceMediaLibrary
+    permission prompt, even though playback needs no media-library access.
+    On macOS all output is routed through ``afplay`` instead. This does NOT
+    affect audio *input* (recording), which legitimately needs microphone
+    permission. See PR #62601 / #13291.
+    """
+    return platform.system() != "Darwin"
+
+
+def _play_int16_via_tempfile(audio, sample_rate: int) -> None:
+    """Write int16 mono PCM to a temp WAV and play it via play_audio_file.
+
+    Used on macOS so tone/beep output goes through ``afplay`` instead of
+    sounddevice (avoids the TCC media-library prompt).
+    """
+    tmp_path = None
+    try:
+        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        tmp_path = tmp.name
+        with wave.open(tmp, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)  # 16-bit
+            wf.setframerate(sample_rate)
+            wf.writeframes(audio.tobytes())
+        play_audio_file(tmp_path)
+    except Exception as e:
+        logger.debug("Tone tempfile playback failed: %s", e)
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
 def _audio_available() -> bool:
     """Return True if audio libraries can be imported."""
     try:
@@ -49,12 +102,41 @@ def _audio_available() -> bool:
         return False
 
 
+def _default_input_samplerate(sd) -> int:
+    """Return the preferred capture rate for the default input device.
+
+    Falls back to the Whisper-friendly 16 kHz constant when the backend does
+    not expose a numeric default rate.
+    """
+    try:
+        info = sd.query_devices(None, "input")
+        rate = info.get("default_samplerate") if isinstance(info, dict) else getattr(info, "default_samplerate", None)
+        if isinstance(rate, (int, float)) and rate > 0:
+            return int(round(rate))
+    except Exception:
+        pass
+    return SAMPLE_RATE
+
+
 from hermes_constants import is_termux as _is_termux_environment
 
 
 def _voice_capture_install_hint() -> str:
     if _is_termux_environment():
         return "pkg install python-numpy portaudio && python -m pip install sounddevice"
+    # If we're running inside a venv (e.g. the bundled Hermes venv at
+    # ~/.hermes/profiles/<name>/hermes-agent/venv/), `pip install` on the
+    # user's PATH won't reach the right site-packages — the bare hint sends
+    # them off to whichever Python their shell resolves first, which on macOS
+    # is often a system Python under Rosetta with a totally separate wheel
+    # index. Point them at the actual interpreter pip is sitting next to.
+    try:
+        if sys.prefix != getattr(sys, "base_prefix", sys.prefix):
+            pip_in_venv = Path(sys.prefix) / "bin" / "pip"
+            if pip_in_venv.exists():
+                return f"{pip_in_venv} install sounddevice numpy"
+    except Exception:
+        pass
     return "pip install sounddevice numpy"
 
 
@@ -65,21 +147,74 @@ def _termux_microphone_command() -> Optional[str]:
 
 
 
+# Probes used to detect whether the Termux:API Android app is installed.
+# `pm list packages` is the canonical Android lookup but is unreliable on
+# some devices: on certain ROMs / Android API levels `pm` itself isn't on
+# Termux's PATH while `cmd package` is, on others `pm` returns nothing for
+# the calling user even when the app is present.  We try both before
+# concluding that the app is genuinely missing (issue #31015).
+_TERMUX_API_PACKAGE_PROBES = (
+    ("pm", "list", "packages", "com.termux.api"),
+    ("cmd", "package", "list", "packages", "com.termux.api"),
+)
+
+
 def _termux_api_app_installed() -> bool:
+    """Return True iff the Termux:API Android app is installed.
+
+    Strategy (issue #31015):
+
+    1. Try each probe in ``_TERMUX_API_PACKAGE_PROBES`` and look for
+       ``package:com.termux.api`` in stdout.  Any positive hit is
+       authoritative — return True.
+    2. If every probe is *inconclusive* (binary missing, permission
+       denied, timeout, non-zero exit) we cannot honestly say the app
+       is missing; fall back to trusting the ``termux-microphone-record``
+       binary on PATH.  The binary ships with the ``termux-api`` package
+       and is only useful when the Android app is installed; users who
+       installed the package deliberately almost always have the app
+       too.  A false negative on this gate blocks ``/voice on``
+       outright (the symptom reported in #31015), while a false
+       positive only surfaces a precise runtime error from the binary
+       itself — strictly more actionable.
+    3. If at least one probe ran cleanly and definitively did not
+       mention the package, treat the app as missing and return False
+       — that's the genuine "Termux:API CLI installed without the app"
+       case the existing warning was written for.
+    """
     if not _is_termux_environment():
         return False
-    try:
-        result = subprocess.run(
-            ["pm", "list", "packages", "com.termux.api"],
-            capture_output=True,
-            text=True, encoding='utf-8', errors='replace',
-            timeout=5,
-            check=False,
-            stdin=subprocess.DEVNULL,
+
+    inconclusive = False
+    for cmd in _TERMUX_API_PACKAGE_PROBES:
+        try:
+            result = subprocess.run(
+                list(cmd),
+                capture_output=True,
+                text=True, encoding='utf-8', errors='replace',
+                timeout=5,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
+        except (FileNotFoundError, PermissionError, OSError):
+            inconclusive = True
+            continue
+        except subprocess.TimeoutExpired:
+            inconclusive = True
+            continue
+        if result.returncode != 0:
+            inconclusive = True
+            continue
+        if "package:com.termux.api" in (result.stdout or "").lower():
+            return True
+
+    if inconclusive and shutil.which("termux-microphone-record") is not None:
+        logger.debug(
+            "Termux package-manager probes inconclusive; trusting "
+            "termux-microphone-record binary on PATH (issue #31015)."
         )
-        return "package:com.termux.api" in (result.stdout or "")
-    except Exception:
-        return False
+        return True
+    return False
 
 
 def _termux_voice_capture_available() -> bool:
@@ -192,13 +327,28 @@ def detect_audio_environment() -> dict:
 
     # WSL detection — a reachable sound server makes audio work in WSL.
     # Honor any forwarding (PulseAudio bridge OR a forwarded PipeWire/Pulse
-    # socket), mirroring the SSH and container blocks above. Only block when
-    # no forwarding is configured.
+    # socket), mirroring the SSH and container blocks above. When no
+    # forwarding is configured, only hard-block if the WSL2 PowerShell TTS
+    # fallback (Media.SoundPlayer via powershell.exe, see play_audio_file)
+    # isn't available either. The PowerShell path only covers OUTPUT (TTS
+    # playback) -- microphone recording genuinely still needs the
+    # PulseAudio bridge -- so when it's the only thing available we
+    # downgrade to a notice (keeps the same recording guidance visible,
+    # but doesn't block /voice on for TTS-only usage).
     try:
         with open('/proc/version', 'r', encoding="utf-8") as f:
             if 'microsoft' in f.read().lower():
                 if has_forwarded_audio:
                     notices.append("Running in WSL with a reachable PulseAudio/PipeWire sound server")
+                elif _wsl_powershell_tts_available():
+                    notices.append(
+                        "Running in WSL without a PulseAudio bridge -- TTS playback "
+                        "will use the PowerShell/Media.SoundPlayer fallback. "
+                        "Voice INPUT (recording) still requires a PulseAudio bridge:\n"
+                        "  1. Set PULSE_SERVER=unix:/mnt/wslg/PulseServer\n"
+                        "  2. Create ~/.asoundrc pointing ALSA at PulseAudio\n"
+                        "  3. Verify with: arecord -d 3 /tmp/test.wav && aplay /tmp/test.wav"
+                    )
                 else:
                     warnings.append(
                         "Running in WSL -- audio requires a forwarded sound server.\n"
@@ -290,6 +440,41 @@ _TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_voice")
 # ============================================================================
 # Audio cues (beep tones)
 # ============================================================================
+_DEFAULT_BEEP_VOLUME = 0.3   # Backward-compatible default (matches prior hardcoded value)
+
+
+def _get_beep_volume() -> float:
+    """Read ``voice.beep_volume`` from config.yaml; clamps to 0.0-1.0.
+
+    Defaults to 0.3 when the key is missing, invalid, or when the config
+    system can't be imported (e.g. broken ~/.hermes/config.yaml during a
+    partial install). Failures fall back silently so the audio cue never
+    breaks the voice loop on a degenerate config.
+    """
+    try:
+        from hermes_cli.config import load_config
+        voice_cfg = load_config().get("voice", {})
+        if not isinstance(voice_cfg, dict):
+            return _DEFAULT_BEEP_VOLUME
+        raw = voice_cfg.get("beep_volume", _DEFAULT_BEEP_VOLUME)
+    except Exception:
+        return _DEFAULT_BEEP_VOLUME
+    try:
+        volume = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_BEEP_VOLUME
+    if isinstance(raw, bool) or volume < 0.0 or volume > 1.0 or _is_nan(volume):
+        return _DEFAULT_BEEP_VOLUME
+    return volume
+
+
+def _is_nan(value: float) -> bool:
+    try:
+        return math.isnan(value)
+    except Exception:
+        return False
+
+
 def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> None:
     """Play a short beep tone using numpy + sounddevice.
 
@@ -298,15 +483,18 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
         duration: Duration of each beep in seconds.
         count: Number of beeps to play (with short gap between).
     """
+    # Synthesize the tone with numpy only (no sounddevice import yet, so the
+    # macOS TCC prompt is not triggered on the synthesis step).
     try:
-        sd, np = _import_audio()
-    except (ImportError, OSError):
+        np = _import_numpy()
+    except ImportError:
         return
     try:
         gap = 0.06  # seconds between beeps
         samples_per_beep = int(SAMPLE_RATE * duration)
         samples_per_gap = int(SAMPLE_RATE * gap)
 
+        beep_volume = _get_beep_volume()
         parts = []
         for i in range(count):
             t = np.linspace(0, duration, samples_per_beep, endpoint=False)
@@ -315,11 +503,21 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
             fade_len = min(int(SAMPLE_RATE * 0.01), samples_per_beep // 4)
             tone[:fade_len] *= np.linspace(0, 1, fade_len)
             tone[-fade_len:] *= np.linspace(1, 0, fade_len)
-            parts.append((tone * 0.3 * 32767).astype(np.int16))
+            parts.append((tone * beep_volume * 32767).astype(np.int16))
             if i < count - 1:
                 parts.append(np.zeros(samples_per_gap, dtype=np.int16))
 
         audio = np.concatenate(parts)
+
+        # On macOS, route the tone through afplay instead of sounddevice.
+        if not _sounddevice_output_allowed():
+            _play_int16_via_tempfile(audio, SAMPLE_RATE)
+            return
+
+        try:
+            sd, _ = _import_audio()
+        except (ImportError, OSError):
+            return
         sd.play(audio, samplerate=SAMPLE_RATE)
         # sd.wait() calls Event.wait() without timeout — hangs forever if the
         # audio device stalls.  Poll with a 2s ceiling and force-stop.
@@ -635,6 +833,7 @@ class AudioRecorder:
         self._frames: List[Any] = []
         self._recording = False
         self._start_time: float = 0.0
+        self._sample_rate: int = SAMPLE_RATE
         # Silence detection state
         self._has_spoken = False
         self._speech_start: float = 0.0  # When speech attempt began
@@ -807,7 +1006,7 @@ class AudioRecorder:
         stream = None
         try:
             stream = sd.InputStream(
-                samplerate=SAMPLE_RATE,
+                samplerate=self._sample_rate,
                 channels=CHANNELS,
                 dtype=DTYPE,
                 callback=_callback,
@@ -841,8 +1040,24 @@ class AudioRecorder:
         or if a recording is already in progress.
         """
         try:
-            _import_audio()
-        except (ImportError, OSError) as e:
+            sd, _ = _import_audio()
+        except OSError as e:
+            # sounddevice imports but PortAudio's shared library is missing —
+            # a pip install can't fix that; point at the system package
+            # instead of misreporting missing Python packages (#18432).
+            if _is_termux_environment():
+                portaudio_hint = "  Termux: pkg install portaudio"
+            else:
+                portaudio_hint = (
+                    "  Linux:  sudo apt-get install libportaudio2\n"
+                    "  macOS:  brew install portaudio"
+                )
+            raise RuntimeError(
+                "PortAudio system library not found -- install it first:\n"
+                f"{portaudio_hint}\n"
+                "Then retry /voice on."
+            ) from e
+        except ImportError as e:
             raise RuntimeError(
                 "Voice mode requires sounddevice and numpy.\n"
                 f"Install with: {sys.executable} -m pip install sounddevice numpy"
@@ -863,13 +1078,13 @@ class AudioRecorder:
             self._peak_rms = 0
             self._current_rms = 0
             self._on_silence_stop = on_silence_stop
-
         # Ensure the persistent stream is alive (no-op after first call).
+        self._sample_rate = _default_input_samplerate(sd)
         self._ensure_stream()
 
         with self._lock:
             self._recording = True
-        logger.info("Voice recording started (rate=%d, channels=%d)", SAMPLE_RATE, CHANNELS)
+        logger.info("Voice recording started (rate=%d, channels=%d)", self._sample_rate, CHANNELS)
 
     def _close_stream_with_timeout(self, timeout: float = 3.0) -> None:
         """Close the audio stream with a timeout to prevent CoreAudio hangs."""
@@ -924,7 +1139,7 @@ class AudioRecorder:
             logger.info("Voice recording stopped (%.1fs, %d samples)", elapsed, len(audio_data))
 
             # Skip very short recordings (< 0.3s of audio)
-            min_samples = int(SAMPLE_RATE * 0.3)
+            min_samples = int(self._sample_rate * 0.3)
             if len(audio_data) < min_samples:
                 logger.debug("Recording too short (%d samples), discarding", len(audio_data))
                 return None
@@ -936,7 +1151,7 @@ class AudioRecorder:
                             self._peak_rms, SILENCE_RMS_THRESHOLD)
                 return None
 
-            return self._write_wav(audio_data)
+            return self._write_wav(audio_data, sample_rate=self._sample_rate)
 
     def cancel(self) -> None:
         """Stop recording and discard all captured audio.
@@ -963,7 +1178,7 @@ class AudioRecorder:
     # -- private helpers -----------------------------------------------------
 
     @staticmethod
-    def _write_wav(audio_data) -> str:
+    def _write_wav(audio_data, *, sample_rate: int = SAMPLE_RATE) -> str:
         """Write numpy int16 audio data to a WAV file.
 
         Returns the file path.
@@ -975,7 +1190,7 @@ class AudioRecorder:
         with wave.open(wav_path, "wb") as wf:
             wf.setnchannels(CHANNELS)
             wf.setsampwidth(SAMPLE_WIDTH)
-            wf.setframerate(SAMPLE_RATE)
+            wf.setframerate(sample_rate)
             wf.writeframes(audio_data.tobytes())
 
         file_size = os.path.getsize(wav_path)
@@ -1096,6 +1311,76 @@ def is_voice_stop_phrase(transcript: str, stop_phrases: Optional[tuple] = None) 
     return cleaned in stop_phrases
 
 
+# Similarity ratio (difflib.SequenceMatcher, 0..1) above which a
+# playback-phase barge transcript is treated as a self-capture of Hermes'
+# own just-spoken TTS rather than genuine user speech. See #75780: the
+# full-duplex listener has no acoustic echo cancellation, so speaker bleed
+# on the mic can trip the barge trigger and get transcribed nearly
+# verbatim from the TTS text, creating a TTS -> STT -> TTS feedback loop.
+DEFAULT_TTS_ECHO_SIMILARITY_THRESHOLD = 0.6
+
+# Minimum normalized-transcript length (in characters) required before the
+# fragment sliding-window fallback runs. Below this, any same-length window
+# of `spoken_text` that happens to contain the transcript verbatim (e.g. a
+# genuine one-word barge-in like "yes" landing inside a longer reply that
+# also says "yes") scores a trivial 1.0 ratio and would otherwise be
+# misread as a self-capture. A real self-capture fragment spans at least
+# the pre-roll buffer plus time-to-silence, so it is normally well above
+# this length; a short genuine interjection is not (#75792 review).
+MIN_FRAGMENT_LENGTH_FOR_ECHO = 10
+
+
+def _normalize_for_echo_compare(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def is_tts_echo(
+    transcript: str,
+    spoken_text: str,
+    threshold: float = DEFAULT_TTS_ECHO_SIMILARITY_THRESHOLD,
+) -> bool:
+    """Return True when *transcript* looks like a self-capture of *spoken_text*.
+
+    Compares a playback-phase barge-in transcript against the TTS text
+    Hermes just spoke using a character-level similarity ratio, which works
+    across languages without word-tokenization. A genuine user interjection
+    is very unlikely to closely match Hermes' own words, so a high ratio is
+    a strong signal of speaker-bleed self-capture (fail-closed guard for the
+    playback-phase full-duplex listener, which has no acoustic echo
+    cancellation; see #75780).
+
+    The playback-phase capture is cut immediately when the barge trigger
+    fires and only spans the pre-roll buffer plus time-to-silence, so for
+    any spoken reply longer than a clause the transcript is a short
+    FRAGMENT of `spoken_text`, not a near-verbatim repeat of the whole
+    thing. A whole-string ratio dilutes towards 0 as `spoken_text` grows
+    past the fragment's length, so when the whole-string check misses, we
+    also slide a window sized to the transcript's character length across
+    `spoken_text` and compare against each window, catching a short
+    fragment echoed from within a much longer multi-sentence reply. This
+    windowing is character-based (not word-split), so it also works for
+    languages without whitespace between words. Transcripts shorter than
+    `MIN_FRAGMENT_LENGTH_FOR_ECHO` skip this fallback entirely, since a
+    short genuine interjection can trivially match an equally short window
+    of unrelated spoken text.
+    """
+    if not transcript or not spoken_text:
+        return False
+    a = _normalize_for_echo_compare(transcript)
+    b = _normalize_for_echo_compare(spoken_text)
+    if not a or not b:
+        return False
+    if difflib.SequenceMatcher(None, a, b).ratio() >= threshold:
+        return True
+    if len(a) < MIN_FRAGMENT_LENGTH_FOR_ECHO or len(a) >= len(b):
+        return False
+    for start in range(0, len(b) - len(a) + 1):
+        window = b[start : start + len(a)]
+        if difflib.SequenceMatcher(None, a, window).ratio() >= threshold:
+            return True
+    return False
+
+
 def voice_stop_hint() -> str:
     """One-line 'Say "stop" to end the voice chat.' hint for voice-mode start.
 
@@ -1129,10 +1414,13 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
     """
     from tools.transcription_tools import MAX_FILE_SIZE, transcribe_audio
 
-    if _should_chunk_for_transcription(wav_path, MAX_FILE_SIZE):
+    result = transcribe_audio(wav_path, model=model)
+
+    # Only chunk when the provider itself reports "File too large" —
+    # local providers (faster-whisper, whisper.cpp, etc.) have no upload
+    # cap so ``transcribe_audio`` will never return this error for them.
+    if not result.get("success") and "File too large" in result.get("error", ""):
         result = _transcribe_wav_in_chunks(wav_path, model=model, max_file_size=MAX_FILE_SIZE)
-    else:
-        result = transcribe_audio(wav_path, model=model)
 
     # Filter out Whisper hallucinations (common on silent/near-silent audio).
     # A configured voice-chat stop phrase is checked FIRST and always survives:
@@ -1293,6 +1581,45 @@ def stop_playback() -> None:
         pass
 
 
+def _is_wsl() -> bool:
+    """True when running inside Windows Subsystem for Linux."""
+    try:
+        with open("/proc/version", "r", encoding="utf-8", errors="replace") as f:
+            return "microsoft" in f.read().lower()
+    except Exception:
+        return False
+
+
+def _is_wsl2_env() -> bool:
+    """Return True when running inside WSL2 (Windows Subsystem for Linux 2).
+
+    Reads /proc/version and checks for the Microsoft kernel signature.
+    Returns False on any error (non-WSL Linux, Docker, SSH, etc.).
+    Extracted as a module-level function so tests can patch it directly
+    without fighting builtins.open patching complexity.
+    """
+    try:
+        with open("/proc/version", encoding="utf-8", errors="replace") as _fv:
+            return "microsoft" in _fv.read().lower()
+    except OSError:
+        return False
+
+
+def _wsl_powershell_tts_available() -> bool:
+    """Return True when the WSL2 PowerShell TTS playback fallback can be used.
+
+    This only covers OUTPUT (TTS playback via Media.SoundPlayer on the
+    Windows host) -- it does NOT make microphone recording work. A caller
+    using this to relax the audio-environment gate must still surface the
+    existing PulseAudio-bridge guidance for recording/STT.
+    """
+    return bool(
+        _is_wsl2_env()
+        and shutil.which("powershell.exe")
+        and shutil.which("ffmpeg")
+    )
+
+
 def play_audio_file(file_path: str) -> bool:
     """Play an audio file through the default output device.
 
@@ -1322,8 +1649,11 @@ def _play_audio_file_impl(file_path: str) -> bool:
         logger.warning("Audio file not found: %s", file_path)
         return False
 
-    # Try sounddevice for WAV files
-    if file_path.endswith(".wav"):
+    # Skip sounddevice for output where it is not allowed (macOS): PortAudio/
+    # CoreAudio init triggers a kTCCServiceMediaLibrary permission prompt even
+    # though playback needs no media-library access. afplay (added to the
+    # system-player list below) handles all formats natively instead.
+    if file_path.endswith(".wav") and _sounddevice_output_allowed():
         try:
             sd, np = _import_audio()
             with wave.open(file_path, "rb") as wf:
@@ -1331,7 +1661,27 @@ def _play_audio_file_impl(file_path: str) -> bool:
                 audio_data = np.frombuffer(frames, dtype=np.int16)
                 sample_rate = wf.getframerate()
 
-            sd.play(audio_data, samplerate=sample_rate)
+            # WSLg RDP audio needs a warmup to avoid crackling at the start.
+            # The RDP virtual-channel connection takes ~100 ms to stabilise,
+            # and small default blocksize exasperates timing jitter caused by
+            # systemd-timesyncd clock adjustments (microsoft/wslg#1257).
+            if _is_wsl():
+                silence_samples = int(0.1 * sample_rate)
+                fade_samples = int(0.1 * sample_rate)
+                fade = np.linspace(0.0, 1.0, fade_samples, dtype=np.float64)
+                audio_float = audio_data.astype(np.float64)
+                audio_float[:fade_samples] *= fade
+                tail = np.zeros(int(0.05 * sample_rate), dtype=np.int16)
+                audio_data = np.concatenate([
+                    np.zeros(silence_samples, dtype=np.int16),
+                    audio_float.astype(np.int16),
+                    tail,
+                ])
+                blocksize = 4096
+            else:
+                blocksize = 0  # default (auto)
+
+            sd.play(audio_data, samplerate=sample_rate, blocksize=blocksize)
             # sd.wait() calls Event.wait() without timeout — hangs forever if
             # the audio device stalls.  Poll with a ceiling and force-stop.
             duration_secs = len(audio_data) / sample_rate
@@ -1351,6 +1701,60 @@ def _play_audio_file_impl(file_path: str) -> bool:
 
     if system == "Darwin":
         players.append(["afplay", file_path])
+
+    # WSL2 PowerShell fallback: when running in WSL without a PulseAudio
+    # bridge, ffplay and aplay have no audio device. If powershell.exe and
+    # ffmpeg are available, convert the audio to a uniquely-named WAV in the
+    # Windows %TEMP% directory and play it via Media.SoundPlayer -- which
+    # always has a working audio device on the Windows host (#17608).
+    # A unique suffix prevents concurrent Hermes TTS calls from colliding on
+    # the same filename. The WAV is deleted in the shell pipeline
+    # unconditionally (success or failure), and the ORIGINAL ffmpeg/
+    # powershell exit status is preserved past that cleanup so the player
+    # loop below can correctly fall through to ffplay/aplay on failure.
+    if system == "Linux" and shutil.which("powershell.exe") and shutil.which("ffmpeg"):
+        if _is_wsl2_env():
+            try:
+                import uuid
+                _win_tmp_raw = subprocess.check_output(
+                    ["cmd.exe", "/c", "echo %TEMP%"],
+                    stderr=subprocess.DEVNULL, timeout=3,
+                ).decode(errors="replace").strip()
+                _win_tmp_wsl = subprocess.check_output(
+                    ["wslpath", "-u", _win_tmp_raw],
+                    stderr=subprocess.DEVNULL, timeout=3,
+                ).decode(errors="replace").strip()
+                if _win_tmp_wsl:
+                    # Unique suffix prevents concurrent TTS playback collision.
+                    _unique = uuid.uuid4().hex[:8]
+                    _wsl_wav = os.path.join(_win_tmp_wsl, f"hermes-tts-{_unique}.wav")
+                    _win_wav = subprocess.check_output(
+                        ["wslpath", "-w", _wsl_wav],
+                        stderr=subprocess.DEVNULL, timeout=3,
+                    ).decode(errors="replace").strip()
+                    if _win_wav:
+                        _win_wav_safe = _win_wav.replace("'", "''")
+                        _ps_script = (
+                            f"(New-Object Media.SoundPlayer '{_win_wav_safe}').PlaySync()"
+                        )
+                        _ps_cmd = " && ".join([
+                            shlex.join(["ffmpeg", "-i", file_path, "-f", "wav",
+                                        _wsl_wav, "-loglevel", "quiet", "-y"]),
+                            shlex.join(["powershell.exe", "-NoProfile", "-Command",
+                                        _ps_script]),
+                        ])
+                        _cleanup = shlex.join(["rm", "-f", _wsl_wav])
+                        # Capture the (ffmpeg && powershell) exit status into
+                        # $rc BEFORE cleanup runs, then exit with that status
+                        # instead of rm -f's (rm -f always exits 0, which
+                        # would otherwise mask a conversion/playback failure
+                        # and prevent falling through to the next player).
+                        _full_cmd = f"( {_ps_cmd} ); rc=$?; {_cleanup}; exit $rc"
+                        # Use full path so the which(cmd[0]) check in the player loop passes.
+                        players.insert(0, ["/bin/sh", "-c", _full_cmd])
+            except Exception:
+                pass  # WSL path resolution failed; fall through to ffplay/aplay
+
     players.append(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", file_path])
     if system == "Linux":
         players.append(["aplay", "-q", file_path])
@@ -1373,9 +1777,15 @@ def _play_audio_file_impl(file_path: str) -> bool:
                 with _playback_lock:
                     _active_playback = proc
                 proc.wait(timeout=300)
+                rc = proc.returncode
                 with _playback_lock:
                     _active_playback = None
-                return True
+                if rc == 0:
+                    return True
+                # Non-zero exit: player failed (e.g. WSL ffplay/aplay with no
+                # audio device, or the PowerShell fallback's ffmpeg/playback
+                # step failing). Fall through to the next player in the list.
+                logger.debug("System player %s exited with code %d, trying next", cmd[0], rc)
             except subprocess.TimeoutExpired:
                 logger.warning("System player %s timed out, killing process", cmd[0])
                 proc.kill()
@@ -1794,6 +2204,46 @@ def full_duplex_listen(
 # ============================================================================
 # Requirements check
 # ============================================================================
+def _check_plugin_stt_provider(provider: str) -> bool:
+    """Return True when *provider* resolves to an available STT plugin."""
+    if not provider:
+        return False
+    key = provider.lower().strip()
+    if key == "none":
+        return False
+    try:
+        from agent.transcription_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        plugin_provider = get_provider(key)
+        if plugin_provider is None:
+            # Match the transcription dispatcher: long-lived processes may
+            # need one refresh after plugins or configuration change.
+            _ensure_plugins_discovered(force=True)
+            plugin_provider = get_provider(key)
+    except Exception as exc:  # noqa: BLE001 - discovery failure is non-fatal
+        logger.debug(
+            "STT plugin requirements check skipped for '%s': %s", key, exc,
+        )
+        return False
+
+    if plugin_provider is None:
+        return False
+
+    try:
+        return bool(plugin_provider.is_available())
+    except Exception as exc:  # noqa: BLE001 - plugins must not break status
+        logger.warning(
+            "STT plugin provider '%s' is_available() raised during requirements "
+            "check: %s - treating as unavailable",
+            key,
+            exc,
+            exc_info=True,
+        )
+        return False
+
+
 def check_voice_requirements() -> Dict[str, Any]:
     """Check if all voice mode requirements are met.
 
@@ -1802,11 +2252,37 @@ def check_voice_requirements() -> Dict[str, Any]:
         ``missing_packages``, and ``details``.
     """
     # Determine STT provider availability
-    from tools.transcription_tools import _get_provider, _load_stt_config, is_stt_enabled
+    from tools.transcription_tools import (
+        _get_provider,
+        _load_stt_config,
+        _resolve_command_stt_provider_config,
+        is_stt_enabled,
+    )
     stt_config = _load_stt_config()
     stt_enabled = is_stt_enabled(stt_config)
     stt_provider = _get_provider(stt_config)
-    stt_available = stt_enabled and stt_provider != "none"
+    native_stt_available = stt_provider in {
+        "local",
+        "local_command",
+        "groq",
+        "openai",
+        "mistral",
+        "xai",
+        "elevenlabs",
+    }
+    command_stt_config = None
+    plugin_stt_available = False
+    if stt_enabled and not native_stt_available:
+        command_stt_config = _resolve_command_stt_provider_config(
+            stt_provider, stt_config,
+        )
+        if command_stt_config is None:
+            plugin_stt_available = _check_plugin_stt_provider(stt_provider)
+    stt_available = stt_enabled and (
+        native_stt_available
+        or command_stt_config is not None
+        or plugin_stt_available
+    )
 
     missing: List[str] = []
     termux_capture = _termux_voice_capture_available()
@@ -1832,10 +2308,22 @@ def check_voice_requirements() -> Dict[str, Any]:
         details_parts.append("STT provider: DISABLED in config (stt.enabled: false)")
     elif stt_provider == "local":
         details_parts.append("STT provider: OK (local faster-whisper)")
+    elif stt_provider == "local_command":
+        details_parts.append("STT provider: OK (local command)")
     elif stt_provider == "groq":
         details_parts.append("STT provider: OK (Groq)")
     elif stt_provider == "openai":
         details_parts.append("STT provider: OK (OpenAI)")
+    elif stt_provider == "mistral":
+        details_parts.append("STT provider: OK (Mistral Voxtral)")
+    elif stt_provider == "xai":
+        details_parts.append("STT provider: OK (xAI Grok STT)")
+    elif stt_provider == "elevenlabs":
+        details_parts.append("STT provider: OK (ElevenLabs Scribe)")
+    elif command_stt_config is not None:
+        details_parts.append(f"STT provider: OK (command: {stt_provider})")
+    elif plugin_stt_available:
+        details_parts.append(f"STT provider: OK (plugin: {stt_provider})")
     else:
         details_parts.append(
             "STT provider: MISSING (uv pip install faster-whisper — "

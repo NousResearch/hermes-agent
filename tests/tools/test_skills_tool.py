@@ -725,7 +725,8 @@ class TestSkillViewPrerequisites:
 
     @pytest.mark.parametrize(
         "backend",
-        ["ssh", "daytona", "docker", "modal", "vercel_sandbox"],
+        ["ssh", "daytona", "docker", "modal", "vercel_sandbox",
+         "kubernetes"],
     )
     def test_remote_backend_becomes_available_after_local_secret_capture(
         self, tmp_path, monkeypatch, backend

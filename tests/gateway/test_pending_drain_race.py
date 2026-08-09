@@ -84,6 +84,8 @@ async def test_pending_drain_keeps_active_session_guard_live():
     first_started = asyncio.Event()
     release_first = asyncio.Event()
     second_processed = asyncio.Event()
+    handoff_entered = asyncio.Event()
+    release_handoff = asyncio.Event()
 
     async def handler(event):
         first_started.set()
@@ -93,6 +95,15 @@ async def test_pending_drain_keeps_active_session_guard_live():
         return "done"
 
     adapter._message_handler = handler
+
+    original_stop_refresh = adapter._stop_typing_refresh
+
+    async def stop_typing_during_handoff(*args, **kwargs):
+        handoff_entered.set()
+        await release_handoff.wait()
+        return await original_stop_refresh(*args, **kwargs)
+
+    adapter._stop_typing_refresh = stop_typing_during_handoff
 
     # Spawn M1 through handle_message.
     await adapter.handle_message(_make_event(text="M1"))
@@ -112,27 +123,28 @@ async def test_pending_drain_keeps_active_session_guard_live():
     # reference) so any M3 arriving in that window hits the busy-handler.
     release_first.set()
 
-    # Give the drain a moment to execute its .clear() + await typing_task
-    # without letting it fully finish the recursive call.
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    try:
+        # Pause inside the handoff's typing cleanup. Production has already
+        # cleared the guard and has not yet transferred task ownership.
+        await asyncio.wait_for(handoff_entered.wait(), timeout=2.0)
 
-    # Across the drain transition, the Event object must be the SAME
-    # reference (not replaced, not deleted).  If del happened, the key
-    # would be missing briefly; if a new Event was installed, the
-    # identity would differ.
-    assert sk in adapter._active_sessions, (
-        "_active_sessions[session_key] was deleted during pending-drain — "
-        "opens a window for duplicate-agent spawn"
-    )
-    assert adapter._active_sessions[sk] is active_event, (
-        "_active_sessions[session_key] was replaced during pending-drain — "
-        "the old Event may have waiters that now won't be signaled"
-    )
+        # Across the drain transition, the Event object must be the SAME
+        # reference (not replaced, not deleted).
+        assert sk in adapter._active_sessions, (
+            "_active_sessions[session_key] was deleted during pending-drain — "
+            "opens a window for duplicate-agent spawn"
+        )
+        assert adapter._active_sessions[sk] is active_event, (
+            "_active_sessions[session_key] was replaced during pending-drain — "
+            "the old Event may have waiters that now won't be signaled"
+        )
 
-    # Finish drain without relying on scheduler speed.
-    await asyncio.wait_for(second_processed.wait(), timeout=2.0)
-    await adapter.cancel_background_tasks()
+        # Finish drain without relying on scheduler speed.
+        release_handoff.set()
+        await asyncio.wait_for(second_processed.wait(), timeout=2.0)
+    finally:
+        release_handoff.set()
+        await adapter.cancel_background_tasks()
 
 
 @pytest.mark.asyncio

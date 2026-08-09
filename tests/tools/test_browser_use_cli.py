@@ -162,6 +162,18 @@ class TestLegacyCloudMigration:
         monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: self._LEGACY)
         assert bu_cli.is_browser_use_cli_mode() is False
 
+    def test_camofox_user_does_not_migrate(self, monkeypatch):
+        """A Camofox user (env-var selected, cloud_provider unset) with a
+        stray BROWSER_USE_API_KEY keeps Camofox — no silent mode flip."""
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config", lambda: {"browser": {}}
+        )
+        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
+        import tools.browser_camofox as camofox
+
+        monkeypatch.setattr(camofox, "is_camofox_mode", lambda: True)
+        assert bu_cli.is_browser_use_cli_mode() is False
+
     def test_explicit_other_backend_wins(self, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.config.read_raw_config",

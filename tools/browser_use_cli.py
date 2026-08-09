@@ -83,6 +83,15 @@ def is_legacy_browser_use_cloud_config(browser_cfg: dict) -> bool:
         return False  # explicit local/Browserbase/… choices win
     if is_truthy_value(browser_cfg.get("use_gateway"), default=False):
         return False
+    # Camofox is selected via env var, not cloud_provider — a Camofox user
+    # with a stray BROWSER_USE_API_KEY must keep their explicit choice.
+    try:
+        from tools.browser_camofox import is_camofox_mode
+
+        if is_camofox_mode():
+            return False
+    except Exception as e:
+        logger.debug("Camofox activity check failed during migration: %s", e)
     return bool(os.getenv("BROWSER_USE_API_KEY"))
 
 

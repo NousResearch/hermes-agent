@@ -189,6 +189,7 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
             # paying for actually went out on the wire (July 2026 incident:
             # a config-matching bug silently dropped flex -> 2.3x billing).
             "service_tier": result.get("service_tier"),
+            "reasoning_effort": result.get("reasoning_effort"),
         }
         if failure is not None:
             report["failure"] = failure
@@ -206,6 +207,7 @@ def run_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: Optional[str] = None,
+    reasoning: Optional[str] = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -230,6 +232,14 @@ def run_oneshot(
     # the root logger's handler list, not affected by level), but no
     # bytes reach the terminal.
     logging.disable(logging.CRITICAL)
+
+    from hermes_constants import parse_reasoning_effort
+
+    if reasoning is not None and parse_reasoning_effort(reasoning) is None:
+        sys.stderr.write(
+            f"hermes -z: invalid --reasoning: unrecognized effort {reasoning!r}\n"
+        )
+        return 2
 
     # --provider without --model is ambiguous: carrying the user's configured
     # model across to a different provider is usually wrong (that provider may
@@ -283,6 +293,8 @@ def run_oneshot(
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
                     skills=skills,
+                    reasoning=reasoning,
+                    run_metadata=result,
                 )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
@@ -361,6 +373,8 @@ def _run_agent(
     toolsets: object = None,
     use_config_toolsets: bool = True,
     skills: object = None,
+    reasoning: Optional[str] = None,
+    run_metadata: Optional[dict] = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns ``(final_response, run_result)``."""
@@ -371,6 +385,7 @@ def _run_agent(
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_cli.tools_config import _get_platform_tools
     from run_agent import AIAgent
+    from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
 
     cfg = load_config()
 
@@ -432,6 +447,21 @@ def _run_agent(
                 if detected:
                     effective_provider, effective_model = detected
 
+    reasoning_config = (
+        parse_reasoning_effort(reasoning)
+        if reasoning is not None
+        else resolve_reasoning_config(cfg, effective_model)
+    )
+    effective_reasoning_effort = (
+        "none"
+        if reasoning_config == {"enabled": False}
+        else reasoning_config.get("effort")
+        if reasoning_config
+        else None
+    )
+    if run_metadata is not None:
+        run_metadata["reasoning_effort"] = effective_reasoning_effort
+
     runtime = resolve_runtime_provider(
         requested=effective_provider,
         target_model=effective_model or None,
@@ -487,6 +517,7 @@ def _run_agent(
             credential_pool=runtime.get("credential_pool"),
             fallback_model=_fb or None,
             ephemeral_system_prompt=skills_prompt,
+            reasoning_config=reasoning_config,
             # Interactive callbacks are intentionally NOT wired beyond this
             # one.  In oneshot mode there's no user sitting at a terminal:
             #   - clarify  → returns a synthetic "pick a default" instruction
@@ -508,6 +539,7 @@ def _run_agent(
         agent.tool_gen_callback = None
 
         result = agent.run_conversation(prompt)
+        result["reasoning_effort"] = effective_reasoning_effort
         return (result.get("final_response") or "", result)
     finally:
         # Ordering deliberately mirrors gateway/run.py:_cleanup_agent_resources,

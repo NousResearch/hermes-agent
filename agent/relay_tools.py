@@ -93,7 +93,12 @@ def _jsonable(value: Any) -> Any:
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):
         try:
-            return _jsonable(model_dump(mode="json"))
+            # warnings=False: suppress pydantic's serializer UserWarnings on
+            # generic-union SDK models; they would leak to the CLI mid-turn.
+            try:
+                return _jsonable(model_dump(mode="json", warnings=False))
+            except TypeError:
+                return _jsonable(model_dump())
         except Exception:
             pass
     try:

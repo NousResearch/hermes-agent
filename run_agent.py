@@ -2768,9 +2768,15 @@ class AIAgent:
         try:
             if hasattr(value, "model_dump"):
                 try:
-                    dumped = value.model_dump(mode="json")
+                    # warnings=False: pydantic's serializer UserWarnings on
+                    # generic-union SDK models (Anthropic ParsedMessage etc.)
+                    # would otherwise leak to the terminal mid-response.
+                    dumped = value.model_dump(mode="json", warnings=False)
                 except TypeError:
-                    dumped = value.model_dump()
+                    try:
+                        dumped = value.model_dump(mode="json")
+                    except TypeError:
+                        dumped = value.model_dump()
                 return cls._hook_jsonable(
                     dumped,
                     depth=depth + 1,

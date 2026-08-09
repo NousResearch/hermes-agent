@@ -1755,7 +1755,12 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             elif hasattr(d, "__dict__"):
                 preserved.append(d.__dict__)
             elif hasattr(d, "model_dump"):
-                preserved.append(d.model_dump())
+                try:
+                    # warnings=False: avoid pydantic serializer UserWarnings
+                    # on generic-union SDK models leaking to the terminal.
+                    preserved.append(d.model_dump(warnings=False))
+                except TypeError:
+                    preserved.append(d.model_dump())
         if preserved:
             msg["reasoning_details"] = preserved
 
@@ -1845,7 +1850,10 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             extra = getattr(tool_call, "extra_content", None)
             if extra is not None:
                 if hasattr(extra, "model_dump"):
-                    extra = extra.model_dump()
+                    try:
+                        extra = extra.model_dump(warnings=False)
+                    except TypeError:
+                        extra = extra.model_dump()
                 tc_dict["extra_content"] = extra
             tool_calls.append(tc_dict)
         msg["tool_calls"] = tool_calls
@@ -3538,7 +3546,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         extra = (tc_delta.model_extra if isinstance(tc_delta.model_extra, dict) else {}).get("extra_content")
                     if extra is not None:
                         if hasattr(extra, "model_dump"):
-                            extra = extra.model_dump()
+                            try:
+                                extra = extra.model_dump(warnings=False)
+                            except TypeError:
+                                extra = extra.model_dump()
                         entry["extra_content"] = extra
                     # Fire once per tool when the full name is available
                     name = entry["function"]["name"]

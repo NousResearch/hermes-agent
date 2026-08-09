@@ -778,7 +778,12 @@ class ChatCompletionsTransport(ProviderTransport):
                 if extra is not None:
                     if hasattr(extra, "model_dump"):
                         try:
-                            extra = extra.model_dump()
+                            extra = extra.model_dump(warnings=False)
+                        except TypeError:
+                            try:
+                                extra = extra.model_dump()
+                            except Exception:
+                                pass
                         except Exception:
                             pass
                     tc_provider_data["extra_content"] = extra

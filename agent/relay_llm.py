@@ -1194,7 +1194,15 @@ def _jsonable(value: Any) -> Any:
     model_dump = getattr(type(value), "model_dump", None)
     if callable(model_dump):
         try:
-            return _jsonable(value.model_dump(mode="json"))
+            # warnings=False: SDK stream events (e.g. the Anthropic
+            # ParsedMessage inside message_stop) carry generic-union content
+            # blocks that pydantic serializes fine but warns about — and the
+            # warning leaks to the user's terminal mid-response (#82xxx).
+            try:
+                return _jsonable(value.model_dump(mode="json", warnings=False))
+            except TypeError:
+                # Duck-typed model_dump without pydantic's signature.
+                return _jsonable(value.model_dump())
         except Exception:
             pass
     try:

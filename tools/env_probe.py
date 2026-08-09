@@ -35,7 +35,7 @@ _WAIT_ALREADY_TIMED_OUT = False  # after one full wait, later callers only peek
 # Duplicated rather than imported to avoid a circular import.
 _REMOTE_BACKENDS = frozenset({
     "docker", "singularity", "modal", "daytona", "ssh", "managed_modal",
-    "vercel_sandbox",
+    "vercel_sandbox", "kubernetes",
 })
 
 

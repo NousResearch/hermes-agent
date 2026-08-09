@@ -264,7 +264,14 @@ RUN cd plugins/platforms/photon/sidecar && \
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
+# `kubernetes` joins the other extras that are baked but deliberately outside
+# [all] (anthropic, bedrock, azure-identity, hindsight, matrix). The terminal
+# tool is gated on the client being importable, and the lazy-install path is
+# not reachable in a locked-down cluster deployment: /opt/hermes is root-owned
+# and immutable at runtime, and a session-pod NetworkPolicy will not permit
+# egress to PyPI. Baking it keeps `terminal.backend: kubernetes` usable in the
+# published image.
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix --extra kubernetes
 
 # ---------- Frontend build (cached independently from Python source) ----------
 # Copy only the frontend source trees first so that Python-only changes don't

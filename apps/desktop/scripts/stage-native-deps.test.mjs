@@ -437,6 +437,53 @@ test('win32 staging fails when only foreign bindings exist', () => {
   }
 })
 
+test('win32 staging self-heals through the rebuild hook when the binding is missing', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'get-windows')
+    const destRoot = join(tmp, 'dest')
+
+    // The bricked state a blocked install script leaves behind: the package is
+    // present, lib/binding was never populated by node-pre-gyp.
+    makeFakeGetWindows(srcRoot, { bindings: [] })
+
+    let calls = 0
+    const rebuild = () => {
+      calls += 1
+      makeFakeNode(
+        join(srcRoot, 'lib', 'binding', 'napi-9-win32-unknown-x64', 'node-get-windows.node'),
+        'win32'
+      )
+    }
+
+    stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', rebuild })
+
+    assert.equal(calls, 1)
+    assert.ok(
+      existsSync(join(destRoot, 'lib', 'binding', 'napi-9-win32-unknown-x64', 'node-get-windows.node'))
+    )
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('win32 staging reports the recovery steps when the rebuild hook produces nothing', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'get-windows')
+    const destRoot = join(tmp, 'dest')
+
+    makeFakeGetWindows(srcRoot, { bindings: [] })
+
+    assert.throws(
+      () => stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', rebuild: () => {} }),
+      /npm rebuild get-windows/
+    )
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
 test('staging refuses a get-windows version the lib/windows.js rewrite was not verified against', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
   try {

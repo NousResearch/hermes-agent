@@ -7827,6 +7827,31 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             result.append(msg)
         return result
 
+    def find_pr_url_messages(self, session_ids: List[str]) -> List[Dict[str, Any]]:
+        """Tool results in these sessions that mention a GitHub PR url.
+
+        A candidate scan, deliberately loose: it hands back every tool result
+        containing ``/pull/`` and leaves the caller to decide which ones make a
+        claim (see the desktop's PR recovery, which only accepts an output that
+        is a bare PR url — the signature of ``gh pr create``). Ordered
+        oldest-first per session so the caller can take the last match.
+        """
+        found: List[Dict[str, Any]] = []
+        ids = [s for s in session_ids if s]
+        for start in range(0, len(ids), 900):  # SQLite's bound-variable ceiling.
+            chunk = ids[start : start + 900]
+            placeholders = ",".join("?" * len(chunk))
+            with self._read_ctx() as conn:
+                rows = conn.execute(
+                    f"""SELECT session_id, content FROM messages
+                        WHERE session_id IN ({placeholders})
+                          AND role = 'tool' AND content LIKE '%/pull/%'
+                        ORDER BY id ASC""",
+                    chunk,
+                ).fetchall()
+            found.extend({"session_id": row[0], "content": row[1]} for row in rows)
+        return found
+
     def get_messages_around(
         self,
         session_id: str,

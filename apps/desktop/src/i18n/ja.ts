@@ -1696,6 +1696,7 @@ export const ja = defineLocale({
     noWorkspace: 'ワークスペースなし',
     projectEmpty: 'セッションはまだありません',
     noSessions: 'セッションはまだありません',
+    noFilterMatches: 'このフィルターに一致するセッションはありません',
     projects: {
       sectionLabel: 'プロジェクト',
       home: 'ホーム',
@@ -1804,6 +1805,10 @@ export const ja = defineLocale({
       thisWeek: '今週',
       lastWeek: '先週',
       thisMonth: '今月'
+    },
+    statusDivider: {
+      working: '実行中',
+      done: '完了'
     }
   },
 

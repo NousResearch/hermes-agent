@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 
 import { getCronJobs, listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
 import { sameCronSignature } from '@/lib/session-signatures'
@@ -9,7 +9,15 @@ import {
   normalizeSessionSource
 } from '@/lib/session-source'
 import { setCronJobs } from '@/store/cron'
-import { $pinnedSessionIds, $sessionsLimit, bumpSessionsLimit, SIDEBAR_SESSIONS_PAGE_SIZE } from '@/store/layout'
+import {
+  $pinnedSessionIds,
+  $sessionsLimit,
+  $sidebarFiltersActive,
+  bumpSessionsLimit,
+  raiseSessionsLimit,
+  SIDEBAR_FILTERED_PAGE_SIZE,
+  SIDEBAR_SESSIONS_PAGE_SIZE
+} from '@/store/layout'
 import { ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
 import { $removedSessionIds } from '@/store/projects'
 import {
@@ -243,6 +251,36 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     bumpSessionsLimit()
     await refreshSessions()
   }, [refreshSessions])
+
+  // A filter searches the loaded page, so switching one on has to deepen the
+  // page — otherwise "merged PRs" answers for the last 50 rows and reads as
+  // "you only have 6 merged PRs". Clearing the filters hands the window back:
+  // the list refreshes on every settled turn, and paying for 300 rows a turn
+  // once the view is unfiltered again buys nothing. Whatever the user had
+  // paged to by hand is what it returns to.
+  const unfilteredLimit = useRef<null | number>(null)
+
+  useEffect(
+    () =>
+      $sidebarFiltersActive.subscribe(active => {
+        if (active) {
+          unfilteredLimit.current ??= $sessionsLimit.get()
+
+          if (raiseSessionsLimit(SIDEBAR_FILTERED_PAGE_SIZE)) {
+            void refreshSessions()
+          }
+        } else if (unfilteredLimit.current !== null) {
+          const restored = unfilteredLimit.current
+          unfilteredLimit.current = null
+
+          if ($sessionsLimit.get() > restored) {
+            $sessionsLimit.set(restored)
+            void refreshSessions()
+          }
+        }
+      }),
+    [refreshSessions]
+  )
 
   // ALL-profiles view pages one profile at a time: fetch that profile's next
   // page and merge it in place, leaving every other profile's rows untouched.

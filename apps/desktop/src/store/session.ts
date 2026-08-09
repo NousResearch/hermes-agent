@@ -603,6 +603,12 @@ export const setActiveSessionStoredIdRotation = (next: Updater<ActiveSessionStor
 // Written by session-states.ts (handleTransition), cleared here on session open.
 export const $unreadFinishedSessionIds = atom<string[]>([])
 
+export const markAllSessionsRead = () => {
+  if ($unreadFinishedSessionIds.get().length) {
+    $unreadFinishedSessionIds.set([])
+  }
+}
+
 export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
   updateAtom($selectedStoredSessionId, next)
   // Opening a session clears its unread state — the user is now looking at it.

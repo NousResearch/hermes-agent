@@ -29,6 +29,7 @@ import { ColorSwatches } from '@/components/ui/color-swatches'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
+import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { getProfileSoul, updateProfileSoul } from '@/hermes'
@@ -496,19 +497,12 @@ function ProfileDropdown({
 // One dropdown row per profile — its own component so each row can own a
 // hover-intent prewarm timer (see useProfilePrewarm).
 function ProfileDropdownItem({ color, name }: { color: null | string; name: string }) {
-  const hue = color ?? 'var(--ui-text-quaternary)'
   const { cancelPrewarm, startPrewarm } = useProfilePrewarm(name)
 
   return (
     <SelectItem onPointerEnter={startPrewarm} onPointerLeave={cancelPrewarm} value={name}>
       <span className="flex min-w-0 items-center gap-1.5">
-        <span
-          aria-hidden="true"
-          className="grid size-4 shrink-0 place-items-center rounded-[3px] text-[0.5rem] font-semibold uppercase leading-none"
-          style={{ backgroundColor: profileColorSoft(hue, 22), color: color ?? undefined }}
-        >
-          {name.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
-        </span>
+        <ProfileGlyph aria-hidden="true" color={color} isDefault={false} name={name} />
         <span className="truncate">{name}</span>
       </span>
     </SelectItem>

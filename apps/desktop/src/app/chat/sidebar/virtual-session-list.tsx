@@ -1,6 +1,7 @@
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import type * as React from 'react'
 import { type FC, useCallback, useRef } from 'react'
 
 import type { SessionInfo } from '@/hermes'
@@ -29,6 +30,8 @@ interface SessionRowCommonProps {
 export interface VirtualSessionListProps {
   activeSessionId: null | string
   className?: string
+  /** Hover-revealed control for date dividers (the group-level "+"). */
+  dividerAction?: React.ReactNode
   rows: SidebarListRow[]
   onArchiveSession: (sessionId: string) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
@@ -46,6 +49,7 @@ const OVERSCAN_ROWS = 12
 export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   activeSessionId,
   className,
+  dividerAction,
   rows: listRows,
   onArchiveSession,
   onBranchSession,
@@ -90,9 +94,10 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     if (row.kind === 'divider') {
       return (
         <SidebarDateDivider
+          action={dividerAction}
           data-index={virtualItem.index}
           key={row.key}
-          label={sessionBucketLabel(row.bucket, dividerLabels)}
+          label={'label' in row ? row.label : sessionBucketLabel(row.bucket, dividerLabels)}
           ref={virtualizer.measureElement}
         />
       )

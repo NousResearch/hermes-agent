@@ -109,7 +109,7 @@ describe('SidebarSessionsSection memoization & virtualizer stability', () => {
     expect(nextRowsRef).toBe(initialRowsRef)
   })
 
-  it('re-computes flatRows reference when dateGrouped or sessions change', () => {
+  it('re-computes flatRows reference when grouping or sessions change', () => {
     mockVirtualListPropsHistory.length = 0
 
     const initialSessions = generateSessions(VIRTUALIZE_THRESHOLD + 2)
@@ -117,8 +117,8 @@ describe('SidebarSessionsSection memoization & virtualizer stability', () => {
     const { rerender } = render(
       <SidebarSessionsSection
         activeSessionId={null}
-        dateGrouped={false}
         emptyState={<div>Empty</div>}
+        grouping="none"
         label="Sessions"
         onArchiveSession={noop}
         onDeleteSession={noop}
@@ -133,12 +133,12 @@ describe('SidebarSessionsSection memoization & virtualizer stability', () => {
 
     const firstRowsRef = mockVirtualListPropsHistory[0].rows
 
-    // Change dateGrouped to true
+    // Switch on date dividers
     rerender(
       <SidebarSessionsSection
         activeSessionId={null}
-        dateGrouped={true}
         emptyState={<div>Empty</div>}
+        grouping="date"
         label="Sessions"
         onArchiveSession={noop}
         onDeleteSession={noop}
@@ -159,8 +159,8 @@ describe('SidebarSessionsSection memoization & virtualizer stability', () => {
     rerender(
       <SidebarSessionsSection
         activeSessionId={null}
-        dateGrouped={true}
         emptyState={<div>Empty</div>}
+        grouping="date"
         label="Sessions"
         onArchiveSession={noop}
         onDeleteSession={noop}

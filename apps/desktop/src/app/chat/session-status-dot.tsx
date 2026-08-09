@@ -83,6 +83,11 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
   }
 }
 
+/** The dot a state paints, for surfaces that describe a status rather than
+ *  render a session — the sidebar's status filter, say. Idle carries no color
+ *  of its own (it inherits the project's), so callers supply one. */
+export const sessionDotClassName = (state: SessionDotState): string => DOT_VARIANTS[state].className
+
 export interface SessionStatusDotProps {
   /** The STORED session id — the key every live-state atom (working /
    *  attention / stalled / unread / background) is keyed by, on BOTH surfaces:

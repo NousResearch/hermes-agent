@@ -1560,6 +1560,7 @@ export const ar = defineLocale({
     noWorkspace: 'بدون مساحة عمل',
     projectEmpty: 'لا توجد جلسات بعد',
     noSessions: 'لا توجد جلسات بعد',
+    noFilterMatches: 'لا توجد جلسات تطابق عوامل التصفية هذه',
     projects: {
       sectionLabel: 'المشاريع',
       home: 'الرئيسية',

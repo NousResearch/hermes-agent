@@ -4,10 +4,12 @@ import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
 import { matchesQuery } from '@/hooks/use-media-query'
-import { Codecs, persistentAtom } from '@/lib/persisted'
+import { type Codec, Codecs, persistentAtom } from '@/lib/persisted'
 import { arraysEqual, insertUniqueId, readKey } from '@/lib/storage'
 
 import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride, togglePane } from './panes'
+import type { PullRequestBucket } from './pull-requests'
+import type { SessionStatusBucket } from './session-dot-state'
 
 export const SIDEBAR_DEFAULT_WIDTH = 237
 export const SIDEBAR_MAX_WIDTH = 360
@@ -19,6 +21,10 @@ export const FILE_BROWSER_MIN_WIDTH = '10rem'
 export const FILE_BROWSER_MAX_WIDTH = '20rem'
 
 export const SIDEBAR_SESSIONS_PAGE_SIZE = 50
+// How deep the list reaches once a filter is on. A filter that only searches
+// the loaded page answers the wrong question — "6 merged PRs" really meant "6
+// among the last 50 rows" — so narrowing the view widens the window it reads.
+export const SIDEBAR_FILTERED_PAGE_SIZE = 300
 
 const SIDEBAR_PINNED_STORAGE_KEY = 'hermes.desktop.pinnedSessions'
 const SIDEBAR_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorkspace'
@@ -26,6 +32,13 @@ const SIDEBAR_CRON_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarCronOpen'
 const SIDEBAR_MESSAGING_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarMessagingOpen'
 const SIDEBAR_SESSION_ORDER_STORAGE_KEY = 'hermes.desktop.sessionOrder'
 const SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY = 'hermes.desktop.sessionOrder.manual'
+const SIDEBAR_GROUPING_STORAGE_KEY = 'hermes.desktop.sidebarGrouping'
+const SIDEBAR_SORT_KEY_STORAGE_KEY = 'hermes.desktop.sidebarSortKey'
+const SIDEBAR_ROW_META_STORAGE_KEY = 'hermes.desktop.sidebarRowMeta'
+const SIDEBAR_STATUS_FILTER_STORAGE_KEY = 'hermes.desktop.sidebarStatusFilter'
+const SIDEBAR_SHOW_ARCHIVED_STORAGE_KEY = 'hermes.desktop.sidebarShowArchived'
+const SIDEBAR_PROJECT_FILTER_STORAGE_KEY = 'hermes.desktop.sidebarProjectFilter'
+const SIDEBAR_PR_FILTER_STORAGE_KEY = 'hermes.desktop.sidebarPrFilter'
 const SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceOrder'
 const SIDEBAR_WORKSPACE_PARENT_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceParentOrder'
 const SIDEBAR_PROJECT_ORDER_STORAGE_KEY = 'hermes.desktop.projectOrder'
@@ -186,6 +199,107 @@ export const $sidebarMessagingOpenIds = persistentAtom(
   Codecs.stringArray
 )
 export const $sidebarAgentsGrouped = persistentAtom(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, false, Codecs.bool)
+
+/** How the recents list is divided. `date` is the sidebar's long-standing
+ *  default (Today / Yesterday / Last week dividers). */
+export type SidebarGrouping = 'date' | 'project' | 'status'
+/** What ranks rows within whatever grouping is active. */
+export type SidebarOrdering = 'cost' | 'created' | 'manual' | 'status' | 'tokens' | 'updated'
+/** The sort keys the menu offers; `manual` is entered by dragging, not picked. */
+export type SidebarSortKey = Exclude<SidebarOrdering, 'manual'>
+/** Optional per-row metadata the user can switch on. */
+export type SidebarRowMeta = 'cost' | 'pr' | 'profile' | 'tokens' | 'updated'
+
+function oneOf<T extends string>(values: readonly T[], fallback: T): Codec<T> {
+  return {
+    decode: raw => (values.includes(raw as T) ? (raw as T) : fallback),
+    encode: value => value
+  }
+}
+
+function listOf<T extends string>(values: readonly T[]): Codec<T[]> {
+  return {
+    decode: raw => Codecs.stringArray.decode(raw).filter((item): item is T => values.includes(item as T)),
+    encode: value => Codecs.stringArray.encode(value)
+  }
+}
+
+const ROW_META: readonly SidebarRowMeta[] = ['cost', 'pr', 'profile', 'tokens', 'updated']
+const STATUS_FILTERS: readonly SessionStatusBucket[] = ['needs-input', 'working', 'unread', 'draft', 'idle']
+const PR_FILTERS: readonly PullRequestBucket[] = ['open', 'draft', 'merged', 'closed', 'none']
+export const SIDEBAR_SORT_KEYS: readonly SidebarSortKey[] = ['updated', 'created', 'status', 'tokens', 'cost']
+
+// `project` deliberately does NOT live here. Entering a project from ⌘K, the
+// projects store, or a repo scan flips $sidebarAgentsGrouped directly, so that
+// atom stays the single authority for the project view and this one only holds
+// the grouping to fall back to when the user leaves it.
+const $sidebarFlatGrouping = persistentAtom<SidebarGrouping>(
+  SIDEBAR_GROUPING_STORAGE_KEY,
+  'date',
+  oneOf(['date', 'status'], 'date')
+)
+
+const $sidebarSortKey = persistentAtom<SidebarSortKey>(
+  SIDEBAR_SORT_KEY_STORAGE_KEY,
+  'updated',
+  oneOf(SIDEBAR_SORT_KEYS, 'updated')
+)
+
+export const $sidebarRowMeta = persistentAtom<SidebarRowMeta[]>(SIDEBAR_ROW_META_STORAGE_KEY, [], listOf(ROW_META))
+
+// Archived sessions are a separate backend query (`archived: 'only'`), so this
+// flag both filters the list and drives the fetch.
+export const $sidebarShowArchived = persistentAtom(SIDEBAR_SHOW_ARCHIVED_STORAGE_KEY, false, Codecs.bool)
+
+export const $sidebarStatusFilter = persistentAtom<SessionStatusBucket[]>(
+  SIDEBAR_STATUS_FILTER_STORAGE_KEY,
+  [],
+  listOf(STATUS_FILTERS)
+)
+
+// Project ids as `liveSessionProjectId` reports them: an explicit project's id,
+// or a repo root path for an auto-promoted one.
+export const $sidebarProjectFilter = persistentAtom(
+  SIDEBAR_PROJECT_FILTER_STORAGE_KEY,
+  [] as string[],
+  Codecs.stringArray
+)
+
+// Whether a session's branch has a PR, and in what state. Fetched per repo via
+// `gh` (see store/pull-requests), so this is empty on backends without a local
+// checkout — the menu hides the submenu rather than offering a dead filter.
+export const $sidebarPrFilter = persistentAtom<PullRequestBucket[]>(
+  SIDEBAR_PR_FILTER_STORAGE_KEY,
+  [],
+  listOf(PR_FILTERS)
+)
+
+export const $sidebarGrouping: ReadableAtom<SidebarGrouping> = computed(
+  [$sidebarAgentsGrouped, $sidebarFlatGrouping],
+  (grouped, grouping) => (grouped ? 'project' : grouping)
+)
+
+// A hand-dragged order outranks any sort key — dragging IS how you pick manual,
+// so the menu reflects that rather than offering a fourth way to say it.
+export const $sidebarOrdering: ReadableAtom<SidebarOrdering> = computed(
+  [$sidebarSessionOrderManual, $sidebarSortKey],
+  (manual, key) => (manual ? 'manual' : key)
+)
+
+export const $sidebarFiltersActive: ReadableAtom<boolean> = computed(
+  [$sidebarStatusFilter, $sidebarProjectFilter, $sidebarPrFilter, $sidebarShowArchived],
+  (statuses, projects, prs, archived) => statuses.length > 0 || projects.length > 0 || prs.length > 0 || archived
+)
+
+/** Anything at all moved off the shipped view — what makes a reset worth
+ *  offering. Broader than `$sidebarFiltersActive`, which only knows about what
+ *  hides rows, not about how they're grouped, sorted or labelled. */
+export const $sidebarViewCustomized: ReadableAtom<boolean> = computed(
+  [$sidebarGrouping, $sidebarOrdering, $sidebarRowMeta, $sidebarFiltersActive],
+  (grouping, ordering, rowMeta, filtersActive) =>
+    grouping !== 'date' || ordering !== 'updated' || rowMeta.length > 0 || filtersActive
+)
+
 // When true, the sessions sidebar moves to the right and the file browser +
 // preview rail move to the left — a mirror of the default layout.
 export const $panesFlipped = persistentAtom(PANES_FLIPPED_STORAGE_KEY, false, Codecs.bool)
@@ -212,6 +326,16 @@ export function setWorkspaceNodeOpen(id: string, open: boolean): void {
 // Toggle a repo/worktree/file-tree node relative to its current resolved state.
 export function toggleWorkspaceNodeCollapsed(id: string, defaultOpen = true): void {
   setWorkspaceNodeOpen(id, !workspaceNodeOpen(id, defaultOpen))
+}
+
+// Fold a whole level shut (or open) in one write — the sidebar's "Collapse all"
+// over the project rows. Their lanes keep their own state underneath, so
+// re-opening a project shows it as the user left it.
+export function setWorkspaceNodesOpen(ids: readonly string[], open: boolean): void {
+  $sidebarWorkspaceNodeOpen.set({
+    ...$sidebarWorkspaceNodeOpen.get(),
+    ...Object.fromEntries(ids.map(id => [id, open]))
+  })
 }
 
 // Dismiss ("delete") an auto-derived project from the overview.
@@ -367,6 +491,79 @@ export function setSidebarAgentsGrouped(grouped: boolean) {
   $sidebarAgentsGrouped.set(grouped)
 }
 
+export function setSidebarGrouping(grouping: SidebarGrouping) {
+  setSidebarAgentsGrouped(grouping === 'project')
+
+  if (grouping !== 'project') {
+    $sidebarFlatGrouping.set(grouping)
+  }
+}
+
+export function setSidebarOrdering(ordering: SidebarOrdering) {
+  if (ordering === 'manual') {
+    setSidebarSessionOrderManual(true)
+
+    return
+  }
+
+  // Picking a sort key is the only way back out of a hand-dragged order, so it
+  // has to drop the saved sequence as well as the flag.
+  setSidebarSessionOrderManual(false)
+  setSidebarSessionOrderIds([])
+  $sidebarSortKey.set(ordering)
+}
+
+export function setSidebarShowArchived(show: boolean) {
+  $sidebarShowArchived.set(show)
+}
+
+function toggleIn<T extends string>($atom: WritableAtom<T[]>, value: T) {
+  const current = $atom.get()
+
+  $atom.set(current.includes(value) ? current.filter(item => item !== value) : [...current, value])
+}
+
+export function toggleSidebarRowMeta(meta: SidebarRowMeta) {
+  toggleIn($sidebarRowMeta, meta)
+}
+
+export function toggleSidebarStatusFilter(status: SessionStatusBucket) {
+  toggleIn($sidebarStatusFilter, status)
+}
+
+export function toggleSidebarProjectFilter(projectId: string) {
+  toggleIn($sidebarProjectFilter, projectId)
+}
+
+export function toggleSidebarPrFilter(bucket: PullRequestBucket) {
+  toggleIn($sidebarPrFilter, bucket)
+}
+
+function clearSidebarFilters() {
+  $sidebarStatusFilter.set([])
+  $sidebarProjectFilter.set([])
+  $sidebarPrFilter.set([])
+  $sidebarShowArchived.set(false)
+}
+
+/** Every knob the filter menu owns, back to the sidebar as it ships: date
+ *  groups, newest first, no extra row metadata, no filters. Ordering goes
+ *  through its setter so a hand-dragged sequence is dropped along with it. */
+export function resetSidebarView() {
+  setSidebarGrouping('date')
+  setSidebarOrdering('updated')
+  $sidebarRowMeta.set([])
+  clearSidebarFilters()
+}
+
+/** Whether anything on screen needs PR data — the gate on shelling out to
+ *  `gh`. Nobody pays for a network call per repo to render a view that would
+ *  not show a PR anywhere. */
+export const $sidebarPrDataWanted: ReadableAtom<boolean> = computed(
+  [$sidebarRowMeta, $sidebarPrFilter],
+  (rowMeta, prFilter) => rowMeta.includes('pr') || prFilter.length > 0
+)
+
 // Write an order list only when it actually changed, so an identical drag
 // result keeps the same array reference and subscribers don't churn.
 function setOrderIds($atom: WritableAtom<string[]>, ids: string[]) {
@@ -445,6 +642,18 @@ export function setPinnedSessionOrder(ids: string[]) {
 export function bumpSessionsLimit(step: number = SIDEBAR_SESSIONS_PAGE_SIZE) {
   const safeStep = Math.max(1, Math.floor(step))
   $sessionsLimit.set($sessionsLimit.get() + safeStep)
+}
+
+/** Raise the window to at least `floor`, never shrinking it. Returns true when
+ *  it moved, so the caller knows a refetch is worth it. */
+export function raiseSessionsLimit(floor: number): boolean {
+  if ($sessionsLimit.get() >= floor) {
+    return false
+  }
+
+  $sessionsLimit.set(floor)
+
+  return true
 }
 
 export function resetSessionsLimit() {

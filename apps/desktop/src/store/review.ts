@@ -10,8 +10,9 @@ import { isExcludedPath } from '@/lib/excluded-paths'
 import { requestOneShot } from '@/lib/oneshot'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 
-import { refreshRepoStatus } from './coding-status'
-import { $busy, $currentCwd } from './session'
+import { refreshRepoStatus, repoStatusForCwd } from './coding-status'
+import { stampSessionPrBranch } from './pull-requests'
+import { $busy, $currentCwd, $selectedStoredSessionId, $sessions } from './session'
 import { $workspaceChangeTick } from './workspace-events'
 
 // State for the review pane: the working-tree changed-file list, the selected
@@ -525,6 +526,17 @@ export async function createOrOpenPr(): Promise<void> {
 
     if (url) {
       void window.hermesDesktop?.openExternal?.(url)
+    }
+
+    // The session recorded its branch when it started; the checkout may have
+    // moved since, so bind the conversation to the branch the PR actually came
+    // from — otherwise a session that began on trunk badges whatever else lives
+    // on trunk, or nothing.
+    const session = $sessions.get().find(s => s.id === $selectedStoredSessionId.get())
+    const branch = repoStatusForCwd(ctx.cwd).get()?.branch
+
+    if (session?.git_repo_root && branch) {
+      stampSessionPrBranch(session.id, session.git_repo_root, branch)
     }
 
     void refreshShipInfo()

@@ -16,6 +16,7 @@ from hermes_cli.web_models import (
     GitPathBody,
     GitFileBody,
     GitCommitBody,
+    GitPrListBody,
     GitWorktreeAddBody,
     GitWorktreeRemoveBody,
     GitBranchSwitchBody,
@@ -79,6 +80,11 @@ async def git_rev_parse_route(path: str, ref: Optional[str] = None):
 @router.get("/api/git/review/ship-info")
 async def git_ship_info_route(path: str):
     return await _git_op(_web_git.review_ship_info, _git_path(path))
+
+
+@router.post("/api/git/review/pr-list")
+async def git_pr_list_route(body: GitPrListBody):
+    return await _git_op(_web_git.review_pr_list, _git_path(body.path), body.branches, body.numbers)
 
 
 @router.post("/api/git/review/stage")

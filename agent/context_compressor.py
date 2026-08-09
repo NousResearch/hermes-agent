@@ -943,6 +943,26 @@ _REPLAY_BUDGET_KEYS = (
     "codex_message_items",
 )
 
+# Subset of ``_REPLAY_BUDGET_KEYS`` that every transport replays on EVERY
+# retained assistant turn (Codex Responses items ride the wire each request;
+# message items are required for prefix-cache continuity).  The remaining
+# generic thinking-text keys (``reasoning`` / ``reasoning_content``) are
+# replayed for at most the NEWEST assistant turn on non-Codex transports —
+# Anthropic strips all-but-newest at convert time, Bedrock Converse never
+# replays thinking at all, and strict chat-completions providers either
+# reject the field or receive a one-space echo pad (#73624).  Charging them
+# on every message spent 19-24% of the tail budget on bytes that provably
+# never reach the wire, so the tail cut landed early and each compaction
+# discarded more real transcript than configured.
+_ALWAYS_REPLAYED_BUDGET_KEYS = (
+    "codex_reasoning_items",
+    "codex_message_items",
+)
+_NEWEST_TURN_ONLY_BUDGET_KEYS = (
+    "reasoning",
+    "reasoning_content",
+)
+
 # Replay keys that can be safely pruned from stale assistant messages during
 # compaction.  ``codex_reasoning_items`` carries encrypted reasoning blobs that
 # are only needed for the current turn's replay — prior-turn items are pure
@@ -988,7 +1008,7 @@ def _reasoning_details_text_chars(value: Any) -> int:
     return total
 
 
-def _estimate_msg_budget_tokens(msg: dict) -> int:
+def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -> int:
     """Token estimate for one message in the tail-protection budget walks.
 
     Counts the message content plus the **full** ``tool_call`` envelope —
@@ -999,17 +1019,26 @@ def _estimate_msg_budget_tokens(msg: dict) -> int:
     tail overshot ``tail_token_budget`` and compression became ineffective.
     See issue #28053.
 
-    Also counts provider replay fields (``codex_reasoning_items`` etc. —
-    see ``_REPLAY_BUDGET_KEYS``).  The preflight "should I compress?"
-    estimator sees the full message shape, so the tail walk must use the
-    same size class; otherwise an assistant message with tiny visible
-    content but large hidden replay blobs is protected as if it were small,
-    the post-compression session stays near the context limit, and
-    compaction re-fires continuously (#55572).  Stale replay fields from
-    prior assistant turns are stripped during the compaction assembly pass
-    (``_prune_stale_reasoning_replay``, #71058).  Accounting-only here: this
-    budget walk does not mutate or prune — it counts so the tail-protection
-    boundary does not undershoot due to invisible replay payload.
+    Also counts provider replay fields.  Wire-replayed-every-turn fields
+    (``_ALWAYS_REPLAYED_BUDGET_KEYS``) are charged unconditionally: the
+    preflight "should I compress?" estimator sees the full message shape, so
+    the tail walk must use the same size class; otherwise an assistant
+    message with tiny visible content but large hidden replay blobs is
+    protected as if it were small and compaction re-fires continuously
+    (#55572).  Stale replay fields from prior assistant turns are stripped
+    during the compaction assembly pass (``_prune_stale_reasoning_replay``,
+    #71058).  Accounting-only here: this budget walk does not mutate or
+    prune.
+
+    ``charge_stale_thinking`` controls the generic thinking-text keys
+    (``_NEWEST_TURN_ONLY_BUDGET_KEYS`` + the ``reasoning_details`` text
+    charge).  Callers that know the message is NOT the newest assistant turn
+    on a transport that only replays newest-turn thinking pass ``False`` so
+    the tail budget is not spent on bytes that never reach the wire (#73624:
+    19-24% of the budget went to provably-stripped blocks, making the tail
+    cut land early and discard more real transcript than configured).
+    Default ``True`` preserves the conservative full charge for callers
+    without turn-position context.
     """
     content = msg.get("content") or ""
     if isinstance(content, str):
@@ -1020,7 +1049,11 @@ def _estimate_msg_budget_tokens(msg: dict) -> int:
     for tc in msg.get("tool_calls") or []:
         if isinstance(tc, dict):
             tokens += estimate_tokens_rough(str(tc))
-    for key in _REPLAY_BUDGET_KEYS:
+    for key in _ALWAYS_REPLAYED_BUDGET_KEYS:
+        tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
+    if not charge_stale_thinking:
+        return tokens
+    for key in _NEWEST_TURN_ONLY_BUDGET_KEYS:
         tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
     # reasoning_details: charge only the thinking TEXT, never the signed /
     # base64 envelope (#73298 second site; mirrors the preflight estimator's
@@ -1034,6 +1067,19 @@ def _estimate_msg_budget_tokens(msg: dict) -> int:
             // _CHARS_PER_TOKEN
         )
     return tokens
+
+
+def _last_assistant_index(messages: "List[Dict[str, Any]]") -> int:
+    """Index of the newest assistant message, or -1.
+
+    The one turn whose thinking fields every transport may still replay —
+    see ``_NEWEST_TURN_ONLY_BUDGET_KEYS``.
+    """
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            return i
+    return -1
 
 
 def _content_text_for_contains(content: Any) -> str:
@@ -3116,9 +3162,15 @@ class ContextCompressor(ContextEngine):
                 len(result),
                 _MAX_TAIL_MESSAGE_FLOOR,
             )
+            # Same newest-turn-only thinking charge as the tail-cut walk
+            # (#73624) — this boundary decides which tool results stay
+            # prunable, and overcharging stale thinking shrinks that window.
+            _newest_asst_idx = _last_assistant_index(result)
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
-                msg_tokens = _estimate_msg_budget_tokens(msg)
+                msg_tokens = _estimate_msg_budget_tokens(
+                    msg, charge_stale_thinking=(i == _newest_asst_idx)
+                )
                 if accumulated + msg_tokens > protect_tail_tokens and (len(result) - i) >= min_protect:
                     boundary = i
                     break
@@ -5468,9 +5520,17 @@ This compaction should PRIORITISE preserving all information related to the focu
         accumulated = 0
         cut_idx = n  # start from beyond the end
 
+        # Newest assistant turn: the only message whose generic thinking
+        # fields any transport still replays (#73624) — every older turn's
+        # reasoning/reasoning_content is stripped or padded at send time,
+        # so charging it here spends tail budget on bytes that never ship.
+        _newest_asst_idx = _last_assistant_index(messages)
+
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
-            msg_tokens = _estimate_msg_budget_tokens(msg)
+            msg_tokens = _estimate_msg_budget_tokens(
+                msg, charge_stale_thinking=(i == _newest_asst_idx)
+            )
             # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
                 break
@@ -5496,7 +5556,9 @@ This compaction should PRIORITISE preserving all information related to the focu
             raw_accumulated = 0
             for j in range(n - 1, head_end - 1, -1):
                 raw_msg = messages[j]
-                raw_tok = _estimate_msg_budget_tokens(raw_msg)
+                raw_tok = _estimate_msg_budget_tokens(
+                    raw_msg, charge_stale_thinking=(j == _newest_asst_idx)
+                )
                 if raw_accumulated + raw_tok > raw_budget and (n - j) >= min_tail:
                     cut_idx = j
                     break

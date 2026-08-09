@@ -46,6 +46,46 @@ test('renderer loads and shows DOM content', async () => {
   expect(childCount).toBeGreaterThan(0)
 })
 
+test('HUD composer remains fully inside the transparent window', async () => {
+  const hudPagePromise = fixture!.app.waitForEvent('window')
+
+  await fixture!.page.evaluate(() =>
+    (window as typeof window & {
+      hermesDesktop?: { hud?: { open: (options: { sessionId: null }) => Promise<void> } }
+    }).hermesDesktop?.hud?.open({ sessionId: null })
+  )
+
+  const hudPage = await hudPagePromise
+  await hudPage.waitForSelector('[data-slot="composer-rich-input"]', { state: 'visible' })
+
+  const geometry = await hudPage.evaluate(() => {
+    const dock = document.querySelector<HTMLElement>('[data-slot="composer-dock"]')
+    const input = document.querySelector<HTMLElement>('[data-slot="composer-rich-input"]')
+
+    if (!dock || !input) {
+      throw new Error('HUD composer did not render')
+    }
+
+    const dockRect = dock.getBoundingClientRect()
+    const inputRect = input.getBoundingClientRect()
+
+    return {
+      viewportWidth: window.innerWidth,
+      dockLeft: dockRect.left,
+      dockRight: dockRect.right,
+      inputLeft: inputRect.left,
+      inputRight: inputRect.right,
+    }
+  })
+
+  expect(geometry.dockLeft).toBeGreaterThanOrEqual(0)
+  expect(geometry.inputLeft).toBeGreaterThanOrEqual(0)
+  expect(geometry.dockRight).toBeLessThanOrEqual(geometry.viewportWidth)
+  expect(geometry.inputRight).toBeLessThanOrEqual(geometry.viewportWidth)
+
+  await hudPage.close()
+})
+
 test('boot progress overlay fades out or shows error state', async () => {
   const page = fixture!.page
   await page.waitForFunction(

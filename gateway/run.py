@@ -29630,9 +29630,17 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # historical in-process 60s ticker; an external provider (e.g. chronos)
     # may arm a schedule and return. Pass the event loop so cron delivery can
     # use live adapters (E2EE support).
-    from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
+    from cron.scheduler_provider import (
+        InProcessCronScheduler,
+        resolve_cron_scheduler,
+        scheduler_for_profile_mode,
+    )
     cron_stop = threading.Event()
-    cron_provider = resolve_cron_scheduler()
+    multiplex_cron = bool(getattr(runner.config, "multiplex_profiles", False))
+    cron_provider = scheduler_for_profile_mode(
+        resolve_cron_scheduler(),
+        multiplex_profiles=multiplex_cron,
+    )
     cron_start_kwargs: Dict[str, Any] = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
 
     # Multiplex profiles: tell the built-in ticker which profile homes to
@@ -29643,7 +29651,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # never execute because no ticker owns that store.
     if (
         isinstance(cron_provider, InProcessCronScheduler)
-        and getattr(runner.config, "multiplex_profiles", False)
+        and multiplex_cron
     ):
         try:
             profile_homes = _multiplex_profile_homes(runner.config)

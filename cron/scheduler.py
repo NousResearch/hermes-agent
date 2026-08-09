@@ -11,12 +11,14 @@ runs at a time if multiple processes overlap.
 import asyncio
 import atexit
 import concurrent.futures
+import contextlib
 import contextvars
 import json
 import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -34,7 +36,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Protocol
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -427,7 +429,18 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_runs, claim_dispatch, heartbeat_run_claim
+from cron.jobs import (
+    advance_next_runs,
+    claim_dispatch,
+    claim_job_for_fire,
+    fire_claim_fence,
+    get_due_jobs,
+    heartbeat_fire_claim,
+    heartbeat_run_claim,
+    mark_job_run,
+    save_job_output,
+    use_cron_store,
+)
 from cron.executions import create_execution, finish_execution, mark_execution_running
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
@@ -471,6 +484,7 @@ def _is_cron_silence_response(text: str) -> bool:
 _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _parallel_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
+_running_fire_owners: dict[str, dict[object, tuple[Optional[str], Path]]] = {}
 _running_lock = threading.Lock()
 
 # Wall-clock (time.time()) instant each in-flight job id was claimed by
@@ -507,14 +521,46 @@ _FORCED_RELEASE_HISTORY = 20
 _INFLIGHT_MIN_ALLOWANCE_MINUTES = 30.0
 
 
-# Job IDs the gateway shutdown path force-killed the tool subprocess of
-# while still in ``_running_job_ids`` (see ``mark_running_jobs_interrupted``
-# below). ``run_one_job``'s own completion path checks this set before
-# writing its own ``last_status`` so a cron agent thread that keeps running
-# in-process after its tool was killed out from under it — and produces a
-# plausible-looking final response from truncated output — can never
-# overwrite the interrupted status with a false "ok" (#60432).
+# Execution tokens (``object()`` identity keys from ``_running_fire_owners``)
+# of runs the shutdown path force-interrupted — see
+# ``mark_running_jobs_interrupted`` below. ``run_one_job``'s own completion
+# path checks its OWN token before writing ``last_status`` so a cron agent
+# thread that keeps running in-process after its tool was killed out from
+# under it — and produces a plausible-looking final response from truncated
+# output — can never overwrite the interrupted status with a false "ok"
+# (#60432). Token keying keeps an interruption scoped to that exact
+# execution: a later run of the same job ID (recurring jobs reuse the ID
+# every fire) must not inherit the stale flag. Legacy dispatch paths without
+# a registered fire owner fall back to storing the bare job ID.
 _interrupted_job_ids: set = set()
+
+
+class _CancelEventLike(Protocol):
+    """Structural type for cancellation sources (``threading.Event`` and
+    ``_CombinedCancelEvent`` both satisfy it)."""
+
+    def is_set(self) -> bool: ...
+    def set(self) -> None: ...
+
+
+class _CombinedCancelEvent:
+    """Duck-typed ``threading.Event`` that ORs several cancellation sources.
+
+    ``run_one_job`` already derives a ``lost_ownership`` event from the
+    fire-claim heartbeat; transports (dashboard webhook drain, API server
+    shutdown) contribute their own per-task event. The worker only ever
+    calls ``is_set()`` / ``set()``, so a tiny wrapper beats a pump thread.
+    """
+
+    def __init__(self, *events: Optional["_CancelEventLike"]) -> None:
+        self._events = [event for event in events if event is not None]
+
+    def is_set(self) -> bool:
+        return any(event.is_set() for event in self._events)
+
+    def set(self) -> None:
+        for event in self._events:
+            event.set()
 
 
 def get_running_job_ids() -> "frozenset[str]":
@@ -533,7 +579,7 @@ def get_running_job_ids() -> "frozenset[str]":
     blind to them (#60432).
     """
     with _running_lock:
-        return frozenset(_running_job_ids)
+        return frozenset(_running_job_ids | _running_fire_owners.keys())
 
 
 def try_register_running_job(job_id: str) -> bool:
@@ -829,7 +875,11 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
     return [s[0] for s in stale]
 
 
-def mark_running_jobs_interrupted(reason: str) -> list:
+def mark_running_jobs_interrupted(
+    reason: str,
+    *,
+    only_owners: Optional[set] = None,
+) -> list:
     """Best-effort: mark every currently in-flight cron job interrupted.
 
     Called by the gateway shutdown path immediately after it force-kills
@@ -851,24 +901,62 @@ def mark_running_jobs_interrupted(reason: str) -> list:
     every entry in ``_running_agents`` on a drain timeout without
     per-agent correlation either.
 
+    ``only_owners``: optional set of ``(job_id, fire_owner)`` pairs. When
+    given (dashboard webhook drain), ONLY those exact executions are
+    marked — unrelated runs sharing the process (e.g. the desktop ticker's
+    own jobs) are left untouched. Interruption flags are recorded per
+    execution token, so a later run of the same job ID never consumes a
+    stale flag that targeted its dead predecessor.
+
     Returns the list of job IDs marked, for the caller to log.
     """
     with _running_lock:
-        job_ids = list(_running_job_ids)
-        _interrupted_job_ids.update(job_ids)
+        active_fires = [
+            (token, job_id, owner, profile_home)
+            for job_id, executions in _running_fire_owners.items()
+            for token, (owner, profile_home) in executions.items()
+        ]
+        if only_owners is not None:
+            active_fires = [
+                fire for fire in active_fires
+                if (fire[1], fire[2]) in only_owners
+            ]
+        registered_ids = {job_id for _t, job_id, _o, _p in active_fires}
+        if only_owners is None:
+            active_fires.extend(
+                (None, job_id, None, _get_hermes_home())
+                for job_id in _running_job_ids - registered_ids
+            )
+        _interrupted_job_ids.update(
+            token if token is not None else job_id
+            for token, job_id, _owner, _profile_home in active_fires
+        )
     marked = []
-    for job_id in job_ids:
+    for _token, job_id, fire_owner, profile_home in active_fires:
+        if not fire_owner:
+            logger.warning(
+                "Job '%s' interrupted before its durable fire owner was registered; "
+                "leaving persisted state untouched",
+                job_id,
+            )
+            continue
         try:
-            mark_job_run(job_id, False, reason)
-            marked.append(job_id)
+            with use_cron_store(profile_home):
+                if mark_job_run(
+                    job_id,
+                    False,
+                    reason,
+                    expected_fire_owner=fire_owner,
+                ):
+                    marked.append(job_id)
         except Exception as e:
             logger.warning("Failed to mark job %s interrupted: %s", job_id, e)
     return marked
 
 
-def _is_interrupted(job_id: str) -> bool:
-    """Non-destructive peek at whether the shutdown path has marked
-    ``job_id`` interrupted (see ``mark_running_jobs_interrupted``).
+def _is_interrupted(job_id: str, token: Optional[object] = None) -> bool:
+    """Non-destructive peek at whether the shutdown path has marked THIS
+    execution interrupted (see ``mark_running_jobs_interrupted``).
 
     Called by ``run_one_job`` BEFORE it decides what to deliver — a job
     whose tool subprocess was killed mid-flight may still produce a
@@ -876,24 +964,35 @@ def _is_interrupted(job_id: str) -> bool:
     that must not go out to the user as if it were a normal result.
     Unlike ``_consume_interrupted_flag`` below, this does not clear the
     flag: the later, authoritative check (right before ``last_status`` is
-    written) still needs to see it."""
+    written) still needs to see it. ``token`` scopes the check to one
+    exact execution: owner-registered runs are matched by token, so a
+    fresh run reusing the same job ID is not poisoned by a flag that
+    targeted its dead predecessor. The bare job ID is only ever stored
+    for legacy dispatch paths with no registered fire owner.
+    """
     with _running_lock:
+        if token is not None and token in _interrupted_job_ids:
+            return True
         return job_id in _interrupted_job_ids
 
 
-def _consume_interrupted_flag(job_id: str) -> bool:
+def _consume_interrupted_flag(job_id: str, token: Optional[object] = None) -> bool:
     """Return True and clear the flag if the shutdown path already marked
-    ``job_id`` interrupted (see ``mark_running_jobs_interrupted``).
+    THIS execution interrupted (see ``mark_running_jobs_interrupted``).
 
     Called by ``run_one_job`` right before it would otherwise write its own
     ``last_status``. Consuming (discarding) rather than just checking keeps
     the flag from leaking across a later, unrelated run of the same job ID
     (recurring jobs reuse their ID every fire)."""
     with _running_lock:
+        hit = False
+        if token is not None and token in _interrupted_job_ids:
+            _interrupted_job_ids.discard(token)
+            hit = True
         if job_id in _interrupted_job_ids:
             _interrupted_job_ids.discard(job_id)
-            return True
-        return False
+            hit = True
+        return hit
 
 
 # Sequential (env-mutating) cron jobs — workdir jobs that touch
@@ -2808,6 +2907,7 @@ _DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
 _RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
+_FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS = _RUN_CLAIM_HEARTBEAT_SECONDS * 3
 
 
 def _get_script_timeout() -> int:
@@ -2901,9 +3001,91 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
     return str(interpreter), env_overlay
 
 
+def _terminate_cron_script_process(proc: subprocess.Popen) -> None:
+    """Best-effort hard stop of a cron script and every child it spawned."""
+    if proc.poll() is not None:
+        return
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                capture_output=True,
+                timeout=10,
+                creationflags=windows_hide_flags(),
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            proc.kill()
+    else:
+        try:
+            process_group: Optional[int] = os.getpgid(proc.pid)
+        except (ProcessLookupError, OSError):
+            process_group = None
+        if process_group is not None:
+            try:
+                os.killpg(process_group, signal.SIGTERM)  # windows-footgun: ok — POSIX-only branch (win32 handled above)
+            except (ProcessLookupError, PermissionError, OSError):
+                process_group = None
+            if process_group is not None:
+                try:
+                    proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    pass
+                # Escalate whenever ANY group member survived the TERM: a
+                # TERM-ignoring descendant keeps the stdio pipe write ends
+                # open, and the caller's communicate() would then block on
+                # EOF forever.  killpg(pgid, 0) probes group liveness.
+                try:
+                    os.killpg(process_group, 0)  # windows-footgun: ok — POSIX-only branch
+                except (ProcessLookupError, OSError):
+                    process_group = None
+                if process_group is not None:
+                    try:
+                        os.killpg(process_group, getattr(signal, "SIGKILL", signal.SIGTERM))
+                    except (ProcessLookupError, PermissionError, OSError):
+                        pass
+    try:
+        proc.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=1.0)
+
+
+def _drain_script_pipes(proc: subprocess.Popen) -> None:
+    """Reap a terminated script process without ever blocking indefinitely.
+
+    A descendant that survived the tree kill can hold the pipe write ends
+    open, so a bare ``communicate()`` would wait for EOF forever.  Bound the
+    drain, then abandon the pipes — the caller only needs the process reaped
+    and the worker thread unblocked, not the output.
+    """
+    try:
+        proc.communicate(timeout=5.0)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    for stream in (proc.stdout, proc.stderr):
+        try:
+            if stream is not None:
+                stream.close()
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=5.0)
+    except subprocess.TimeoutExpired:
+        # Truly wedged — leave the zombie to the OS reaper rather than
+        # blocking the cron worker thread forever.
+        pass
+
+
 def _run_job_script(
     script_path: str,
     workdir: Optional[str] = None,
+    cancel_event: Optional[_CancelEventLike] = None,
 ) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -3006,10 +3188,11 @@ def _run_job_script(
     try:
         from tools.environments.local import build_subprocess_env
 
-        popen_kwargs = {}
+        popen_kwargs: dict[str, Any] = {"start_new_session": True}
         if sys.platform == "win32":
             popen_kwargs = {
-                "creationflags": windows_hide_flags(),
+                "creationflags": windows_hide_flags()
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
                 "encoding": "utf-8",
                 "errors": "replace",
             }
@@ -3020,17 +3203,34 @@ def _run_job_script(
         # NEVER mutate the Python process cwd — that would leak into
         # concurrent gateway sessions (#69396).
         _script_cwd = workdir or str(path.parent)
-        result = subprocess.run(
+        proc = subprocess.Popen(
             argv,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=script_timeout,
             cwd=_script_cwd,
             env=env,
             **popen_kwargs,
         )
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
+        deadline = time.monotonic() + script_timeout
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                _terminate_cron_script_process(proc)
+                _drain_script_pipes(proc)
+                return False, "Script cancelled because cron fire ownership was lost"
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _terminate_cron_script_process(proc)
+                _drain_script_pipes(proc)
+                return False, f"Script timed out after {script_timeout}s: {path}"
+            try:
+                stdout_raw, stderr_raw = proc.communicate(timeout=min(0.1, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                continue
+
+        stdout = (stdout_raw or "").strip()
+        stderr = (stderr_raw or "").strip()
 
         # Redact secrets from both stdout and stderr before any return path.
         try:
@@ -3042,8 +3242,8 @@ def _run_job_script(
             stdout = "[REDACTED - redaction failed]"
             stderr = "[REDACTED - redaction failed]"
 
-        if result.returncode != 0:
-            parts = [f"Script exited with code {result.returncode}"]
+        if proc.returncode != 0:
+            parts = [f"Script exited with code {proc.returncode}"]
             if stderr:
                 parts.append(f"stderr:\n{stderr}")
             if stdout:
@@ -3052,14 +3252,15 @@ def _run_job_script(
 
         return True, stdout
 
-    except subprocess.TimeoutExpired:
-        return False, f"Script timed out after {script_timeout}s: {path}"
     except Exception as exc:
         return False, f"Script execution failed: {exc}"
 
 
 def _run_job_script_with_claim_heartbeat(
-    job: dict, script_path: str, workdir: Optional[str] = None,
+    job: dict,
+    script_path: str,
+    workdir: Optional[str] = None,
+    cancel_event: Optional[_CancelEventLike] = None,
 ) -> tuple[bool, str]:
     """Run a cron script while keeping its owned one-shot claim fresh.
 
@@ -3081,7 +3282,7 @@ def _run_job_script_with_claim_heartbeat(
         and schedule.get("kind") == "once"
         and owner
     ):
-        return _run_job_script(script_path, workdir=workdir)
+        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -3112,10 +3313,10 @@ def _run_job_script_with_claim_heartbeat(
             job_id,
             exc_info=True,
         )
-        return _run_job_script(script_path, workdir=workdir)
+        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
 
     try:
-        return _run_job_script(script_path, workdir=workdir)
+        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
     finally:
         stop.set()
         # Event.wait() wakes immediately.  Keep completion bounded if the
@@ -3726,8 +3927,11 @@ def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
 
 
 def run_job(
-    job: dict, *, defer_agent_teardown: Optional[list] = None,
+    job: dict,
+    *,
+    defer_agent_teardown: Optional[list] = None,
     extra_prompt: Optional[str] = None,
+    cancel_event: Optional[_CancelEventLike] = None,
 ) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -3807,7 +4011,7 @@ def run_job(
 
         try:
             ok, output = _run_job_script_with_claim_heartbeat(
-                job, script_path, workdir=_job_workdir,
+                job, script_path, workdir=_job_workdir, cancel_event=cancel_event,
             )
         except Exception as exc:
             logger.exception(
@@ -4009,7 +4213,9 @@ def run_job(
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script_with_claim_heartbeat(job, script_path)
+        prerun_script = _run_job_script_with_claim_heartbeat(
+            job, script_path, cancel_event=cancel_event,
+        )
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(
@@ -4725,6 +4931,15 @@ def run_job(
         )
         _last_claim_heartbeat = time.monotonic()
 
+        def _abort_if_fire_claim_lost() -> None:
+            if cancel_event is None or not cancel_event.is_set():
+                return
+            if agent is not None and hasattr(agent, "interrupt"):
+                agent.interrupt("Cron fire claim ownership was lost")
+            raise RuntimeError(
+                f"Cron job '{job_name}' lost its durable fire claim ownership"
+            )
+
         def _heartbeat_run_claim_if_due():
             nonlocal _last_claim_heartbeat
             if not _is_oneshot or not _run_claim_owner:
@@ -4754,15 +4969,17 @@ def run_job(
             if _cron_inactivity_limit is None:
                 # Unlimited — no inactivity watchdog, but a one-shot still
                 # needs its run_claim heartbeat, so poll instead of blocking.
-                if _is_oneshot:
+                if _is_oneshot or cancel_event is not None:
                     result = None
                     while True:
                         done, _ = concurrent.futures.wait(
                             {_cron_future}, timeout=_POLL_INTERVAL,
                         )
                         if done:
+                            _abort_if_fire_claim_lost()
                             result = _cron_future.result()
                             break
+                        _abort_if_fire_claim_lost()
                         _heartbeat_run_claim_if_due()
                 else:
                     result = _cron_future.result()
@@ -4773,8 +4990,10 @@ def run_job(
                         {_cron_future}, timeout=_POLL_INTERVAL,
                     )
                     if done:
+                        _abort_if_fire_claim_lost()
                         result = _cron_future.result()
                         break
+                    _abort_if_fire_claim_lost()
                     _heartbeat_run_claim_if_due()
                     # Agent still running — check inactivity.
                     _idle_secs = 0.0
@@ -5120,9 +5339,117 @@ def _teardown_cron_agent(agent, job_id: str) -> None:
         logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
+def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
+    """Run ``run`` while keeping this job's owned durable fire claim fresh."""
+    claim = job.get("fire_claim")
+    owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+    if not owner:
+        return run(None)
+
+    job_id = str(job.get("id") or "")
+    stop = threading.Event()
+    lost_ownership = threading.Event()
+    heartbeat_context = contextvars.copy_context()
+
+    def _finish_unstarted(error: str) -> None:
+        execution_id = job.get("execution_id")
+        if not execution_id:
+            return
+        try:
+            finish_execution(execution_id, success=False, error=error)
+        except Exception:
+            logger.warning(
+                "Job '%s': failed to close unstarted execution ledger row",
+                job_id,
+                exc_info=True,
+            )
+
+    try:
+        owns_fire_claim = heartbeat_fire_claim(job_id, expected_owner=owner)
+    except Exception:
+        logger.warning(
+            "Job '%s': initial fire_claim validation failed",
+            job_id,
+            exc_info=True,
+        )
+        _finish_unstarted(
+            "Fire claim ownership could not be validated before execution started."
+        )
+        return True
+
+    if owns_fire_claim is False:
+        logger.warning(
+            "Job '%s': fire claim ownership was already lost before execution",
+            job_id,
+        )
+        _finish_unstarted("Fire claim ownership lost before execution started.")
+        return True
+
+    def _heartbeat_loop() -> None:
+        last_confirmed = time.monotonic()
+        while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
+            try:
+                if not heartbeat_fire_claim(job_id, expected_owner=owner):
+                    lost_ownership.set()
+                    logger.warning(
+                        "Job '%s': fire claim ownership lost; interrupting stale run",
+                        job_id,
+                    )
+                    return
+                last_confirmed = time.monotonic()
+            except Exception:
+                logger.debug(
+                    "Job '%s': fire_claim heartbeat failed",
+                    job_id,
+                    exc_info=True,
+                )
+                if (
+                    time.monotonic() - last_confirmed
+                    >= _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS
+                ):
+                    lost_ownership.set()
+                    logger.warning(
+                        "Job '%s': fire_claim could not be renewed within %.1fs; "
+                        "interrupting uncertain run",
+                        job_id,
+                        _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS,
+                    )
+                    return
+
+    heartbeat_thread = threading.Thread(
+        target=heartbeat_context.run,
+        args=(_heartbeat_loop,),
+        name="cron-fire-claim-heartbeat",
+        daemon=True,
+    )
+    try:
+        heartbeat_thread.start()
+    except Exception:
+        logger.warning(
+            "Job '%s': could not start fire_claim heartbeat",
+            job_id,
+            exc_info=True,
+        )
+        _finish_unstarted(
+            "Fire claim heartbeat could not be started; execution was not run."
+        )
+        return True
+
+    try:
+        return run(lost_ownership)
+    finally:
+        stop.set()
+        heartbeat_thread.join(timeout=1.0)
+
+
 def run_one_job(
-    job: dict, *, adapters=None, loop=None, verbose: bool = False,
+    job: dict,
+    *,
+    adapters=None,
+    loop=None,
+    verbose: bool = False,
     extra_prompt: Optional[str] = None,
+    cancel_event: Optional[_CancelEventLike] = None,
 ) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
 
@@ -5130,14 +5457,94 @@ def run_one_job(
     that BOTH the built-in ticker and an external provider's ``fire_due`` (e.g.
     Chronos) run the identical sequence — no duplicated correctness.
 
-    It does NOT decide whether the job is due, claim it, or compute the next
-    run — those are the caller's concern (``tick`` advances ``next_run_at``
-    under the file lock before dispatch; an external provider claims via the
-    store CAS). This function only fires the given job once.
+    It does NOT decide whether the job is due or acquire the initial claim —
+    both the ticker and external providers use the same store CAS before
+    calling it. It does keep an acquired claim alive for the full execution.
 
     Returns True if the job was processed (even if the job itself failed —
     failure is recorded via ``mark_job_run``), False only if processing raised.
+
+    ``cancel_event``: optional transport-level cancellation source (dashboard
+    webhook drain, API server shutdown). It is OR-combined with the internal
+    fire-claim heartbeat's lost-ownership event, so either trigger stops the
+    run cooperatively — agent interruption AND script process-tree kill —
+    through the single fenced completion path.
     """
+    claim = job.get("fire_claim")
+    fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+    execution_token = object()
+    profile_home = _get_hermes_home().resolve()
+    with _running_lock:
+        _running_fire_owners.setdefault(job["id"], {})[execution_token] = (
+            fire_owner or None,
+            profile_home,
+        )
+    try:
+        return _run_with_fire_claim_heartbeat(
+            job,
+            lambda lost_ownership: _run_one_job_body(
+                job,
+                adapters=adapters,
+                loop=loop,
+                verbose=verbose,
+                extra_prompt=extra_prompt,
+                fire_claim_lost=(
+                    _CombinedCancelEvent(lost_ownership, cancel_event)
+                    if cancel_event is not None
+                    else lost_ownership
+                ),
+                execution_token=execution_token,
+            ),
+        )
+    finally:
+        with _running_lock:
+            executions = _running_fire_owners.get(job["id"])
+            if executions is not None:
+                executions.pop(execution_token, None)
+                if not executions:
+                    _running_fire_owners.pop(job["id"], None)
+
+
+def _run_one_job_body(
+    job: dict,
+    *,
+    adapters=None,
+    loop=None,
+    verbose: bool = False,
+    extra_prompt: Optional[str] = None,
+    fire_claim_lost: Optional[_CancelEventLike] = None,
+    execution_token: Optional[object] = None,
+) -> bool:
+    claim = job.get("fire_claim")
+    fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else None
+
+    class _FireClaimLostDuringSideEffect(Exception):
+        pass
+
+    def _side_effect_fence():
+        if fire_owner is None:
+            return contextlib.nullcontext(True)
+        return fire_claim_fence(job["id"], expected_owner=fire_owner)
+
+    def _fire_claim_ownership_lost() -> bool:
+        if fire_claim_lost is not None and fire_claim_lost.is_set():
+            return True
+        if fire_owner is None:
+            return False
+        try:
+            if heartbeat_fire_claim(job["id"], expected_owner=fire_owner):
+                return False
+        except Exception:
+            logger.debug(
+                "Job '%s': fire_claim ownership validation failed",
+                job["id"],
+                exc_info=True,
+            )
+            return False
+        if fire_claim_lost is not None:
+            fire_claim_lost.set()
+        return True
+
     execution_id = job.get("execution_id")
     if not execution_id:
         execution_id = create_execution(job["id"], source="direct")["id"]
@@ -5190,10 +5597,19 @@ def run_one_job(
         # interpreter-shutdown guard in _deliver_result.
         _deferred_agents: list = []
         try:
-            success, output, final_response, error = run_job(
-                job, defer_agent_teardown=_deferred_agents,
-                extra_prompt=extra_prompt,
-            )
+            if fire_claim_lost is None:
+                success, output, final_response, error = run_job(
+                    job,
+                    defer_agent_teardown=_deferred_agents,
+                    extra_prompt=extra_prompt,
+                )
+            else:
+                success, output, final_response, error = run_job(
+                    job,
+                    defer_agent_teardown=_deferred_agents,
+                    extra_prompt=extra_prompt,
+                    cancel_event=fire_claim_lost,
+                )
         except BaseException:
             # run_job's finally still hands back the agent when it raises; tear
             # it down here so a failed run never leaks its async resources
@@ -5206,6 +5622,37 @@ def run_one_job(
         finally:
             reset_secret_scope(_scope_token)
 
+        if _fire_claim_ownership_lost():
+            for _deferred_agent in _deferred_agents:
+                _teardown_cron_agent(_deferred_agent, job["id"])
+            # Distinguish a real ownership loss (TTL expiry / replacement
+            # claim) from a transport-level cancel (dashboard drain): in the
+            # latter case WE still own the claim, and silently discarding
+            # would leave fire_claim lingering until TTL and last_status
+            # stale. Probe ownership once; if still ours, record the
+            # interruption through the owner-fenced terminal write.
+            if fire_owner is not None and heartbeat_fire_claim(
+                job["id"], expected_owner=fire_owner,
+            ):
+                mark_job_run(
+                    job["id"],
+                    False,
+                    "Interrupted by shutdown before terminal completion.",
+                    expected_fire_owner=fire_owner,
+                )
+                finish_execution(
+                    execution_id,
+                    success=False,
+                    error="Interrupted by shutdown before terminal completion.",
+                )
+            else:
+                finish_execution(
+                    execution_id,
+                    success=False,
+                    error="Fire claim ownership lost; stale result was discarded.",
+                )
+            return True
+
         # Everything from here through delivery runs with the agent still live
         # (deferred teardown). Wrap it ALL in a try/finally so that if any step
         # between run_job returning and delivery — save_job_output, the [SILENT]
@@ -5214,8 +5661,12 @@ def run_one_job(
         # swallow the error and leak the agent's subprocesses/clients (#10200).
         delivery_error = None
         blocked_config = False
+        side_effect_ownership_lost = False
         try:
-            output_file = save_job_output(job["id"], output)
+            with _side_effect_fence() as owns_output:
+                if not owns_output:
+                    raise _FireClaimLostDuringSideEffect
+                output_file = save_job_output(job["id"], output)
             if verbose:
                 logger.info("Output saved to: %s", output_file)
 
@@ -5226,7 +5677,7 @@ def run_one_job(
             # "this run was interrupted" summary instead of that response.
             # Peek-only: the flag stays set for the authoritative check
             # right before mark_job_run below.
-            if success and _is_interrupted(job["id"]):
+            if success and _is_interrupted(job["id"], execution_token):
                 success = False
                 error = (
                     "Interrupted by gateway shutdown before the run finished "
@@ -5303,22 +5754,67 @@ def run_one_job(
                 logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                 should_deliver = False
 
+            if should_deliver and _fire_claim_ownership_lost():
+                should_deliver = False
+                logger.warning(
+                    "Job '%s': skipping delivery after fire claim ownership loss",
+                    job["id"],
+                )
+
             if should_deliver:
                 unresolved_origin = (
                     _normalize_deliver_value(job.get("deliver", "local")) == "origin"
                     and not _resolve_delivery_targets(job)
                 )
                 try:
-                    delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                    with _side_effect_fence() as owns_delivery:
+                        if not owns_delivery:
+                            raise _FireClaimLostDuringSideEffect
+                        delivery_error = _deliver_result(
+                            job,
+                            deliver_content,
+                            adapters=adapters,
+                            loop=loop,
+                        )
                 except Exception as de:
+                    if isinstance(de, _FireClaimLostDuringSideEffect):
+                        raise
                     delivery_error = str(de)
                     logger.error("Delivery failed for job %s: %s", job["id"], de)
+        except _FireClaimLostDuringSideEffect:
+            side_effect_ownership_lost = True
         finally:
             # Tear down the deferred agent(s) now that save + delivery have run
             # (or raised). Must happen on every path so cron agents never leak
             # their subprocesses/clients (#10200).
             for _deferred_agent in _deferred_agents:
                 _teardown_cron_agent(_deferred_agent, job["id"])
+
+        if side_effect_ownership_lost or _fire_claim_ownership_lost():
+            # Same transport-cancel distinction as the pre-side-effect path:
+            # if WE still own the claim, record the interruption instead of
+            # discarding silently (lingering claim + stale last_status).
+            if fire_owner is not None and heartbeat_fire_claim(
+                job["id"], expected_owner=fire_owner,
+            ):
+                mark_job_run(
+                    job["id"],
+                    False,
+                    "Interrupted by shutdown before terminal completion.",
+                    expected_fire_owner=fire_owner,
+                )
+                finish_execution(
+                    execution_id,
+                    success=False,
+                    error="Interrupted by shutdown before terminal completion.",
+                )
+            else:
+                finish_execution(
+                    execution_id,
+                    success=False,
+                    error="Fire claim ownership lost; stale result was discarded.",
+                )
+            return True
 
         # Treat empty final_response as a soft failure so last_status
         # is not "ok" — the agent ran but produced nothing useful.
@@ -5327,14 +5823,28 @@ def run_one_job(
             success = False
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
-        if not _consume_interrupted_flag(job["id"]):
-            if blocked_config:
-                mark_job_run(
-                    job["id"], success, error, delivery_error=delivery_error,
-                    status="blocked_config",
-                )
-            else:
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+        interrupted = _consume_interrupted_flag(job["id"], execution_token)
+        if interrupted:
+            finish_execution(
+                execution_id,
+                success=False,
+                error="Interrupted by gateway shutdown before terminal completion.",
+            )
+            return True
+
+        mark_kwargs = {"delivery_error": delivery_error}
+        if fire_owner is not None:
+            mark_kwargs["expected_fire_owner"] = fire_owner
+        if blocked_config:
+            mark_kwargs["status"] = "blocked_config"
+        marked = mark_job_run(job["id"], success, error, **mark_kwargs)
+        if fire_owner is not None and not marked:
+            finish_execution(
+                execution_id,
+                success=False,
+                error="Fire claim ownership lost before terminal completion.",
+            )
+            return True
         normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
         if delivery_error:
             delivery_outcome = "failed"
@@ -5361,12 +5871,16 @@ def run_one_job(
         # is never written, so the job sits in state "scheduled" until the
         # run-claim TTL expires and the dispatch-limit guard removes it with
         # no output and no error. Record the failure first, then re-raise
-        # anything that isn't a plain Exception.
+        # anything that isn't a plain Exception. Owner fencing still applies:
+        # a stale worker must not record over a replacement claim owner.
         _err_text = str(e) or type(e).__name__
         logger.error("Error processing job %s: %s", job['id'], _err_text)
         try:
-            if not _consume_interrupted_flag(job["id"]):
-                mark_job_run(job["id"], False, _err_text)
+            if not _consume_interrupted_flag(job["id"], execution_token):
+                mark_kwargs = {}
+                if fire_owner is not None:
+                    mark_kwargs["expected_fire_owner"] = fire_owner
+                mark_job_run(job["id"], False, _err_text, **mark_kwargs)
         except Exception as record_err:
             # Never let bookkeeping mask the original interruption.
             logger.error(
@@ -5555,6 +6069,10 @@ def tick(
         # bumping next_run_at forward so the grace window never expires.
         # mark_job_run() overwrites next_run_at on completion.
         # Batched: one load + one save for the whole due set, not one per job.
+        # Composes with the claim-time advance in claim_job_for_fire: for
+        # cron-kind jobs both compute the same next occurrence; interval jobs
+        # re-anchor from their own "now" at claim time (harmless for
+        # at-most-once — mark_job_run re-anchors at completion regardless).
         advance_next_runs([job["id"] for job in due_jobs])
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
@@ -5589,7 +6107,28 @@ def tick(
             module-level ``run_one_job`` so ``tick`` and external providers
             (Chronos ``fire_due``) use the identical execute→save→deliver→mark
             body."""
-            return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
+            # Acquire the durable claim only when this worker actually starts,
+            # not while it may wait behind other work in an executor queue.
+            # This prevents a queued lease from expiring before execution.
+            claimed = claim_job_for_fire(job["id"], return_job=True)
+            if not claimed:
+                finish_execution(
+                    job["execution_id"],
+                    success=False,
+                    error="Fire claim lost; execution was not started.",
+                )
+                return True
+            # Production CAS returns the exact persisted record with its unique
+            # owner. Bool fallback keeps older test doubles/API overrides
+            # compatible; real callers using return_job=True never take it.
+            claimed_job = dict(claimed) if isinstance(claimed, dict) else dict(job)
+            claimed_job["execution_id"] = job["execution_id"]
+            return run_one_job(
+                claimed_job,
+                adapters=adapters,
+                loop=loop,
+                verbose=verbose,
+            )
 
         # Partition due jobs: those with a per-job workdir mutate
         # os.environ["TERMINAL_CWD"] inside run_job, which is process-global, so

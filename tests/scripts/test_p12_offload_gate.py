@@ -370,3 +370,35 @@ def test_gate_threshold_alias_matches_policy_default():
     policy = _util.module_from_spec(spec)
     spec.loader.exec_module(policy)
     assert module.HUGE_CONTEXT_MIN_TOKENS == policy.DEFAULT_OFFLOAD_THRESHOLD
+
+
+# ---------------------------------------------------------------------------
+# Direct-CLI import regression (t_dd6c32b4 docs task)
+# ---------------------------------------------------------------------------
+
+def test_direct_script_invocation_imports_real_policy_not_fallback():
+    """`python scripts/p12_offload_gate.py` must resolve the repo-root
+    `scripts` package so it imports the real kv_cache_policy instead of the
+    ImportError fallback (which hardcodes 262144 as the offload threshold and
+    silently diverges from the central policy)."""
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [sys.executable, str(MODULE_PATH), "--ctx-size", "131073",
+         "--", "-m", "darwin.gguf", "-ngl", "99", "--no-kv-offload",
+         "--ctx-size", "262144"],
+        capture_output=True, text=True,
+        env={"P12_ALLOW_HUGE_CONTEXT_OFFLOAD": "1", "PATH": "/usr/bin:/bin"},
+        cwd=str(Path(__file__).resolve().parents[2]),
+    )
+    assert proc.returncode == 0, proc.stderr
+    import json
+    decision = json.loads(proc.stdout)
+    # 131073 (>128K) with the flag on must be allowed+enabled by the real
+    # policy. Before the fix, the fallback threshold 262144 made the gate
+    # refuse it (allowed=False) — the documented CLI example was wrong.
+    assert decision["allowed"] is True
+    assert decision["enabled"] is True
+    assert "--no-kv-offload" in decision["argv"]
+

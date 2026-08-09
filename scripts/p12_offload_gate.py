@@ -36,6 +36,16 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
+from pathlib import Path
+
+# Make `python scripts/p12_offload_gate.py` resolve the repo-root `scripts`
+# package the same way `python -m scripts.p12_offload_gate` does. Without
+# this, the direct CLI form hits the ImportError fallback below and silently
+# uses a different threshold than the central policy.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 # Opt-in switch. Anything other than "1" means OFF (normal fast path).
 ENV_OFFLOAD_FLAG = "P12_ALLOW_HUGE_CONTEXT_OFFLOAD"

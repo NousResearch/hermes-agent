@@ -41,10 +41,33 @@ import os
 ENV_OFFLOAD_FLAG = "P12_ALLOW_HUGE_CONTEXT_OFFLOAD"
 
 # Contexts at or above this are considered "huge" for offload eligibility.
-# The main lane's proven daily context is 65536 tokens (PROVEN_DARWIN_CONTEXT
-# in sirvir_turbohaul_observer.py). 256K = 262144 tokens is the huge-context
-# target this gate exists for.
-HUGE_CONTEXT_MIN_TOKENS = 262144
+# The policy module (scripts/kv_cache_policy.py) is the single source of
+# truth for the context-length threshold; this constant is kept as a
+# backward-compatible alias for older importers. The decision logic uses
+# decide_tier() so both the GPU fast path and the offload path share one
+# policy.
+try:
+    from scripts.kv_cache_policy import (
+        DEFAULT_OFFLOAD_THRESHOLD as HUGE_CONTEXT_MIN_TOKENS,
+        KVCacheTier,
+        decide_tier,
+    )
+except ImportError:  # pragma: no cover - policy always present in-repo
+    # Fall back to the P12 256K target if the policy module is unavailable.
+    HUGE_CONTEXT_MIN_TOKENS = 262144
+
+    class KVCacheTier:  # type: ignore[no-redef]
+        GPU_RESIDENT = "gpu"
+        HOST_RAM_OFFLOAD = "offload"
+
+    def decide_tier(ctx_size):  # type: ignore[no-redef]
+        class _Decision:
+            tier = (
+                KVCacheTier.HOST_RAM_OFFLOAD
+                if int(ctx_size) > HUGE_CONTEXT_MIN_TOKENS
+                else KVCacheTier.GPU_RESIDENT
+            )
+        return _Decision()
 
 # llama.cpp flags that put the KV cache / context in host RAM.
 KV_OFFLOAD_FLAGS = {
@@ -260,8 +283,15 @@ def decide_offload(argv, ctx_size, env=None):
 
     Returns an OffloadDecision. The decision never throws; it reports policy
     violations via ``allowed``/``enabled`` and returns a neutralized argv.
+    Invalid or out-of-range context values are treated as "not an offload
+    request" (fast path preserved) rather than crashing the launch wrapper.
     """
-    ctx_size = int(ctx_size or 0)
+    try:
+        ctx_size = int(ctx_size or 0)
+    except (TypeError, ValueError):
+        ctx_size = 0
+    if ctx_size < 0:
+        ctx_size = 0
     enabled = offload_enabled(env)
 
     # 1. Weights must never move off GPU0. If the argv pins the main lane to
@@ -318,16 +348,20 @@ def decide_offload(argv, ctx_size, env=None):
                     argv=sanitized,
                 )
 
-    # 2. Offload only applies to genuinely huge contexts.
-    if ctx_size < HUGE_CONTEXT_MIN_TOKENS:
+    # 2. Offload only applies to contexts the placement policy routes to
+    #    host-RAM offload (default: >128K, up to 256K). The policy is the
+    #    single source of truth for the boundary — the gate never
+    #    duplicates the threshold.
+    policy = decide_tier(ctx_size)
+    if policy.tier is not KVCacheTier.HOST_RAM_OFFLOAD:
         sanitized, _, _ = sanitize_argv(argv, enabled=False)
         return OffloadDecision(
             allowed=False,
             enabled=False,
             reason=(
-                f"ctx {ctx_size} < huge-context threshold "
-                f"({HUGE_CONTEXT_MIN_TOKENS}); offload not applicable, fast "
-                "path preserved"
+                f"ctx {ctx_size} not routed to offload by policy "
+                f"(default threshold {HUGE_CONTEXT_MIN_TOKENS}); fast path "
+                "preserved"
             ),
             argv=sanitized,
         )

@@ -23,6 +23,9 @@ MODULE_PATH = (
 
 HUGE = 262144
 NORMAL = 65536
+# The placement policy's default boundary (single source of truth):
+# <=128K GPU-resident, >128K offload. The gate must not duplicate it.
+POLICY_THRESHOLD = 131072  # 128K
 
 # A realistic main-lane fast-path argv (mirrors turbohaul-main.service).
 FAST_ARGV = ["-m", "darwin.gguf", "--host", "127.0.0.1", "--port", "11500",
@@ -325,3 +328,45 @@ def test_unknown_argv_passthrough_is_safe():
     # canonical GPU0-only pins so weights can never leave GPU0.
     assert decision.argv[: len(argv)] == argv
     assert decision.argv[-4:] == ["--split-mode", "none", "--main-gpu", "0"]
+
+
+# ---------------------------------------------------------------------------
+# Placement-policy coordination (single source of truth, kanban t_510d90f1)
+# ---------------------------------------------------------------------------
+
+def test_gate_uses_policy_threshold_for_offload_eligibility():
+    """The gate must not duplicate the 128K threshold; it consults the
+    placement policy (scripts/kv_cache_policy.py)."""
+    module = load_module()
+    env_on = {module.ENV_OFFLOAD_FLAG: "1"}
+
+    # 128K exactly -> policy says GPU-resident -> gate refuses offload even
+    # with the flag on.
+    at = module.decide_offload(OFFLOAD_ARGV, POLICY_THRESHOLD, env=env_on)
+    assert at.enabled is False
+    assert "--no-kv-offload" not in at.argv
+
+    # 128K+1 -> policy says offload -> gate allows when flag is on.
+    above = module.decide_offload(OFFLOAD_ARGV, POLICY_THRESHOLD + 1, env=env_on)
+    assert above.allowed is True
+    assert above.enabled is True
+    assert "--no-kv-offload" in above.argv
+
+    # 128K+1 with flag off -> gate refuses (opt-in still required).
+    above_off = module.decide_offload(OFFLOAD_ARGV, POLICY_THRESHOLD + 1, env={})
+    assert above_off.enabled is False
+    assert "--no-kv-offload" not in above_off.argv
+
+
+def test_gate_threshold_alias_matches_policy_default():
+    """HUGE_CONTEXT_MIN_TOKENS is a backward-compatible alias for the
+    policy default; it must equal the policy's DEFAULT_OFFLOAD_THRESHOLD."""
+    module = load_module()
+    import importlib.util as _util
+    from pathlib import Path as _Path
+    policy_path = _Path(__file__).resolve().parents[2] / "scripts" / "kv_cache_policy.py"
+    spec = _util.spec_from_file_location("kv_cache_policy", policy_path)
+    assert spec and spec.loader
+    policy = _util.module_from_spec(spec)
+    spec.loader.exec_module(policy)
+    assert module.HUGE_CONTEXT_MIN_TOKENS == policy.DEFAULT_OFFLOAD_THRESHOLD

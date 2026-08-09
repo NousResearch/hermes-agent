@@ -99,6 +99,17 @@ _DEFAULT_IMAGE_PARALLEL_REQUESTS = 4
 # Keep this above the stock auxiliary.web_extract timeout (360s) so the batch
 # guard does not preempt a slow-but-valid summarization attempt.
 _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
+_AUTHORIZATION_GATE_LOCK_TIMEOUT_S = 360.0
+
+
+def _authorization_gate_lock_timeout() -> float:
+    """Use the same ceiling as human-wait accounting for gate acquisition."""
+    try:
+        from tools.approval import human_wait_ceiling
+
+        return human_wait_ceiling()
+    except Exception:
+        return _AUTHORIZATION_GATE_LOCK_TIMEOUT_S
 
 
 def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
@@ -459,43 +470,58 @@ class _ManagedToolResult:
 
 
 class _ConcurrentToolAuthorizationGate:
-    """Serialize policy prompts and exclude their queue from batch deadlines."""
+    """Serialize prompts while excluding only genuine human waits from deadlines."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        lock_timeout: float | None = None,
+        session_key: str | None = None,
+    ) -> None:
         self._serialization_lock = threading.Lock()
-        self._state_lock = threading.Lock()
-        self._pending = 0
-        self._window_started: float | None = None
-        self._excluded_seconds = 0.0
+        self._lock_timeout = (
+            _authorization_gate_lock_timeout()
+            if lock_timeout is None
+            else lock_timeout
+        )
+        self._session_key = session_key
+        if self._session_key is None:
+            try:
+                from tools.approval import get_current_session_key
+
+                self._session_key = get_current_session_key()
+            except Exception:
+                logger.debug(
+                    "authorization gate could not snapshot the session key",
+                    exc_info=True,
+                )
+        self._baseline_wait_seconds = self._human_wait_seconds()
+
+    def _human_wait_seconds(self) -> float:
+        try:
+            from tools.approval import human_wait_seconds
+
+            return human_wait_seconds(self._session_key)
+        except Exception:
+            return 0.0
 
     def run(self, callback):
-        now = time.monotonic()
-        with self._state_lock:
-            if self._pending == 0:
-                self._window_started = now
-            self._pending += 1
+        acquired = self._serialization_lock.acquire(timeout=self._lock_timeout)
+        if not acquired:
+            logger.warning(
+                "authorization gate lock not acquired after %.1fs; "
+                "running prompt unserialized",
+                self._lock_timeout,
+            )
+            return callback()
         try:
-            with self._serialization_lock:
-                return callback()
+            return callback()
         finally:
-            now = time.monotonic()
-            with self._state_lock:
-                self._pending -= 1
-                if self._pending == 0:
-                    if self._window_started is not None:
-                        self._excluded_seconds += max(
-                            0.0, now - self._window_started
-                        )
-                    self._window_started = None
+            self._serialization_lock.release()
 
     def excluded_seconds(self) -> float:
-        """Return completed plus currently active authorization wait time."""
-        now = time.monotonic()
-        with self._state_lock:
-            excluded = self._excluded_seconds
-            if self._window_started is not None:
-                excluded += max(0.0, now - self._window_started)
-            return excluded
+        """Return human-wait seconds accrued since this batch began."""
+        return max(0.0, self._human_wait_seconds() - self._baseline_wait_seconds)
 
 
 def _managed_values(

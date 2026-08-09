@@ -8,6 +8,7 @@ This module is the single source of truth for the dangerous command system:
 - Permanent allowlist persistence (config.yaml)
 """
 
+import contextlib
 import contextvars
 import fnmatch
 import functools
@@ -2223,6 +2224,99 @@ _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
 _permanent_approved: set = set()
 
+
+class _HumanWaitState:
+    """Coalesced human-wait accounting for one session."""
+
+    __slots__ = ("pending", "window_started", "completed_seconds")
+
+    def __init__(self) -> None:
+        self.pending = 0
+        self.window_started: float | None = None
+        self.completed_seconds = 0.0
+
+
+_human_wait_lock = threading.Lock()
+_human_wait_states: dict[str, _HumanWaitState] = {}
+_HUMAN_WAIT_MAX_SESSIONS = 256
+HUMAN_WAIT_MARGIN_S = 60.0
+
+
+def human_wait_ceiling() -> float:
+    """Maximum contribution of one human wait: approval timeout plus margin."""
+    return float(_get_approval_timeout()) + HUMAN_WAIT_MARGIN_S
+
+
+def _clamped_window_seconds(started: float, now: float, ceiling: float) -> float:
+    return min(max(0.0, now - started), ceiling)
+
+
+def _human_wait_state(session_key: str) -> _HumanWaitState:
+    """Get/create a wait state while preserving all currently open windows.
+
+    Caller holds ``_human_wait_lock``. Idle entries are evicted in insertion
+    order until there is room; active entries are never evicted.
+    """
+    state = _human_wait_states.get(session_key)
+    if state is None:
+        if len(_human_wait_states) >= _HUMAN_WAIT_MAX_SESSIONS:
+            for key in list(_human_wait_states):
+                if len(_human_wait_states) < _HUMAN_WAIT_MAX_SESSIONS:
+                    break
+                if _human_wait_states[key].pending == 0:
+                    del _human_wait_states[key]
+        state = _HumanWaitState()
+        _human_wait_states[session_key] = state
+    return state
+
+
+@contextlib.contextmanager
+def human_wait_window(session_key: str | None = None):
+    """Mark time genuinely blocked on a user's approval response.
+
+    Overlapping waits for one session coalesce rather than double-counting.
+    Both open- and close-side accrual are clamped so a wedged approval path
+    cannot extend a batch deadline indefinitely.
+    """
+    key = session_key if session_key is not None else get_current_session_key()
+    now = time.monotonic()
+    with _human_wait_lock:
+        state = _human_wait_state(key)
+        if state.pending == 0:
+            state.window_started = now
+        state.pending += 1
+    try:
+        yield
+    finally:
+        now = time.monotonic()
+        ceiling = human_wait_ceiling()
+        with _human_wait_lock:
+            state = _human_wait_states.get(key)
+            if state is not None:
+                state.pending -= 1
+                if state.pending == 0:
+                    if state.window_started is not None:
+                        state.completed_seconds += _clamped_window_seconds(
+                            state.window_started, now, ceiling
+                        )
+                    state.window_started = None
+
+
+def human_wait_seconds(session_key: str | None = None) -> float:
+    """Return completed plus currently open human-wait seconds for a session."""
+    key = session_key if session_key is not None else get_current_session_key()
+    now = time.monotonic()
+    ceiling = human_wait_ceiling()
+    with _human_wait_lock:
+        state = _human_wait_states.get(key)
+        if state is None:
+            return 0.0
+        total = state.completed_seconds
+        if state.window_started is not None:
+            total += _clamped_window_seconds(state.window_started, now, ceiling)
+        return total
+
+
 # =========================================================================
 # Consecutive-denial circuit breaker for smart approvals
 # =========================================================================
@@ -2578,6 +2672,25 @@ def prompt_dangerous_approval(command: str, description: str,
                               allow_permanent: bool = True,
                               approval_callback=None,
                               *, smart_denied: bool = False) -> str:
+    """Prompt for approval while accounting only the genuine human wait."""
+    if timeout_seconds is None:
+        timeout_seconds = _get_approval_timeout()
+    with human_wait_window():
+        return _prompt_dangerous_approval_inner(
+            command,
+            description,
+            timeout_seconds,
+            allow_permanent,
+            approval_callback,
+            smart_denied=smart_denied,
+        )
+
+
+def _prompt_dangerous_approval_inner(command: str, description: str,
+                                     timeout_seconds: int | None = None,
+                                     allow_permanent: bool = True,
+                                     approval_callback=None,
+                                     *, smart_denied: bool = False) -> str:
     """Prompt the user to approve a dangerous command (CLI only).
 
     Args:
@@ -3526,32 +3639,28 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     _deadline = _now + max(timeout, 0)
     _activity_state = {"last_touch": _now, "start": _now}
     resolved = False
-    while True:
-        # Respect interrupt signals (e.g. /stop, /new, or an inactivity
-        # timeout from the gateway) so a pending approval doesn't keep the
-        # session wedged on threading.Event.wait() until the 5-minute approval
-        # timeout. The wait runs on the agent's execution thread, which is the
-        # exact thread AIAgent.interrupt() flags — so is_interrupted() here
-        # sees the signal. Resolve as "deny" so the agent loop receives a
-        # normal denial and unwinds cleanly (#8697).
-        if is_interrupted():
-            logger.info(
-                "Approval wait interrupted by user signal — "
-                "returning deny for session %s",
-                session_key,
-            )
-            entry.result = "deny"
-            entry.event.set()
-            resolved = True
-            break
-        _remaining = _deadline - time.monotonic()
-        if _remaining <= 0:
-            break
-        if entry.event.wait(timeout=min(1.0, _remaining)):
-            resolved = True
-            break
-        if touch_activity_if_due is not None:
-            touch_activity_if_due(_activity_state, "waiting for user approval")
+    with human_wait_window(session_key):
+        while True:
+            # Poll so interrupt signals and activity heartbeats remain live while
+            # the user decides. The surrounding window is bounded by timeout.
+            if is_interrupted():
+                logger.info(
+                    "Approval wait interrupted by user signal — "
+                    "returning deny for session %s",
+                    session_key,
+                )
+                entry.result = "deny"
+                entry.event.set()
+                resolved = True
+                break
+            _remaining = _deadline - time.monotonic()
+            if _remaining <= 0:
+                break
+            if entry.event.wait(timeout=min(1.0, _remaining)):
+                resolved = True
+                break
+            if touch_activity_if_due is not None:
+                touch_activity_if_due(_activity_state, "waiting for user approval")
 
     _drop_entry()
 

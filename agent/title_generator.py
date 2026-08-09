@@ -132,6 +132,15 @@ _MACHINE_PREFIXES = (
     "[Runtime note:",
     "[System note:",
     "[SYSTEM]",
+    # Model-switch marker from tui_gateway.server._append_model_switch_marker.
+    # It is persisted with role="user" (strict OpenAI-compatible providers
+    # reject a system message that is not first — #48338), so without this
+    # entry it looks like a real opening turn: switching models before the
+    # first real message titled the session
+    # "[System: The active model for this chat has…" instead of the user's
+    # actual question. Keep in sync with
+    # tui_gateway.server._MODEL_SWITCH_MARKER_PREFIX.
+    "[System: The active model for this chat has changed to ",
 )
 
 
@@ -673,10 +682,19 @@ def maybe_auto_title(
     # turn prologue, and after it when called post-response, so accept both.
     # Entries are dicts; anything else means a caller passed the wrong
     # positional and titling must degrade quietly rather than raise.
+    #
+    # Machine-authored openers are excluded from the count. They are persisted
+    # with role="user" (see _MACHINE_PREFIXES), so counting them would make a
+    # session that opened with e.g. a model-switch marker look like it was
+    # already past its opening turn — the real first question then arrives at
+    # count 2 and never gets titled at all, leaving the session permanently
+    # NULL-titled.
     user_msg_count = sum(
         1
         for m in (conversation_history or [])
-        if isinstance(m, dict) and m.get("role") == "user"
+        if isinstance(m, dict)
+        and m.get("role") == "user"
+        and is_titleable_user_message(m.get("content") or "")
     )
     if user_msg_count > 1 and not _session_is_untitled(session_db, session_id):
         return

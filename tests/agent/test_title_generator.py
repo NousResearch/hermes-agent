@@ -452,3 +452,88 @@ class TestRuntimeValidator:
             assert called.wait(timeout=10), "auto_title thread never ran"
             kwargs = mock_auto.call_args.kwargs
             assert kwargs["runtime_validator"] is _v
+
+
+class TestModelSwitchMarkerNotTitleable:
+    """Regression: a model-switch marker must never become the session title.
+
+    ``_append_model_switch_marker`` (tui_gateway/server.py) persists its notice
+    with ``role="user"`` because strict OpenAI-compatible providers reject a
+    system message that is not first (#48338). Titling therefore has to
+    recognise it as machine-authored, or switching models before asking the
+    first real question titles the session
+    "[System: The active model for this chat has…".
+    """
+
+    MARKER = (
+        "[System: The active model for this chat has changed to "
+        "deepseek-v4-flash via provider 94mei. From this point forward, use "
+        "this runtime metadata when answering questions about what "
+        "model/provider is active.]"
+    )
+
+    def test_marker_prefix_matches_gateway_constant(self):
+        """The guard must stay in sync with the gateway's marker builder."""
+        from tui_gateway.server import _MODEL_SWITCH_MARKER_PREFIX
+        from agent.title_generator import _MACHINE_PREFIXES
+
+        assert _MODEL_SWITCH_MARKER_PREFIX in _MACHINE_PREFIXES
+        assert self.MARKER.startswith(_MODEL_SWITCH_MARKER_PREFIX)
+
+    def test_marker_is_not_titleable(self):
+        from agent.title_generator import is_titleable_user_message
+
+        assert is_titleable_user_message(self.MARKER) is False
+
+    def test_derive_title_is_unguarded_by_design(self):
+        """``derive_title`` is a dumb formatter; the guard lives in the callers.
+
+        Documents the contract deliberately: every caller checks
+        ``is_titleable_user_message`` first, so ``derive_title`` itself is
+        allowed to format a marker. If a future caller forgets that check, the
+        marker leaks into the title — which is exactly the bug this class
+        guards against.
+        """
+        from agent.title_generator import derive_title
+
+        assert derive_title(self.MARKER) is not None
+
+    def test_unrelated_system_bracket_text_still_titleable(self):
+        """The guard is narrow: real user text starting "[System:" still titles."""
+        from agent.title_generator import is_titleable_user_message
+
+        assert is_titleable_user_message("[System: my own note] how do I ...") is True
+
+    def test_real_question_after_marker_still_titles(self):
+        """The marker must not consume the session's one titling opportunity.
+
+        The marker is a role="user" row, so counting it made the first real
+        question look like turn 2 — and titling bailed out entirely, leaving
+        the session permanently untitled.
+        """
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        db.get_session_title_source.return_value = None
+        history = [
+            {"role": "user", "content": self.MARKER},
+            {"role": "user", "content": "南京市秦淮区 小时级天气预报"},
+        ]
+
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            import threading
+
+            called = threading.Event()
+            mock_auto.side_effect = lambda *a, **k: called.set()
+            maybe_auto_title(db, "sess-1", "南京市秦淮区 小时级天气预报", history)
+            assert called.wait(timeout=10), "auto_title never ran after marker"
+
+    def test_instant_title_skips_marker_uses_real_message(self):
+        from agent.title_generator import apply_instant_title
+
+        db = MagicMock()
+        db.get_session_title_source.return_value = None
+
+        assert apply_instant_title(db, "sess-1", self.MARKER) is None
+        assert apply_instant_title(db, "sess-1", "南京市秦淮区 小时级天气预报") == (
+            "南京市秦淮区 小时级天气预报"
+        )

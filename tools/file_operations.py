@@ -31,6 +31,7 @@ import os
 import re
 import difflib
 import hashlib
+import unicodedata
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, ClassVar
@@ -1241,7 +1242,23 @@ class ShellFileOperations(FileOperations):
         stat_result = self._exec(stat_cmd)
         
         if stat_result.exit_code != 0:
-            # File not found - try to suggest similar files
+            # File not found. Before failing, try unicode-equivalent
+            # spellings — NFC/NFD, narrow no-break space, curly quotes
+            # render identically in a terminal, so the model retyping a
+            # visually-correct path can never discover the byte mismatch
+            # on its own (retrying is the tool's job, not the model's).
+            variant = self._unicode_variant_match(path)
+            if variant is not None:
+                result = self.read_file(variant, offset=offset, limit=limit)
+                note = (
+                    f"Note: '{path}' not found byte-for-byte; resolved to "
+                    f"the unicode-equivalent file '{variant}' (invisible "
+                    "encoding difference: NFC/NFD or special space/quote "
+                    "characters)."
+                )
+                result.hint = f"{note} {result.hint}" if result.hint else note
+                return result
+            # No equivalent spelling — suggest similar files
             return self._suggest_similar_files(path)
         
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
@@ -1323,6 +1340,50 @@ class ShellFileOperations(FileOperations):
             hint=hint
         )
     
+    def _unicode_variant_match(self, path: str) -> Optional[str]:
+        """Find an existing file whose name is unicode-equivalent to ``path``.
+
+        macOS names screenshots with a NARROW NO-BREAK SPACE (U+202F) before
+        AM/PM, stores names NFD-decomposed, and Finder renames turn ' into
+        \u2019 — all invisible in rendered text. Compare directory entries
+        under a normalization that erases exactly those differences and
+        return the on-disk spelling when exactly one entry matches.
+        """
+        dir_path = os.path.dirname(path) or "."
+        filename = os.path.basename(path)
+        if not filename:
+            return None
+
+        def _canon(name: str) -> str:
+            # NFC first so composed/decomposed collapse together, then the
+            # confusable space/quote characters seen in real filenames.
+            out = unicodedata.normalize("NFC", name)
+            for src, dst in (
+                ("\u202f", " "),  # narrow no-break space
+                ("\u00a0", " "),  # no-break space
+                ("\u2019", "'"),  # right single quotation mark
+                ("\u2018", "'"),  # left single quotation mark
+            ):
+                out = out.replace(src, dst)
+            return out
+
+        target = _canon(filename)
+        ls_cmd = f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null"
+        ls_result = self._exec(ls_cmd)
+        if ls_result.exit_code != 0 or not ls_result.stdout.strip():
+            return None
+        candidates = [
+            entry
+            for entry in _strip_terminal_fence_leaks(ls_result.stdout).splitlines()
+            if entry and entry != filename and _canon(entry) == target
+        ]
+        # Exactly one equivalent spelling = unambiguous repair. Zero or
+        # several = fall through to suggestions; guessing among homoglyph
+        # collisions would silently read the wrong file.
+        if len(candidates) == 1:
+            return os.path.join(dir_path, candidates[0]) if dir_path != "." or "/" in path else candidates[0]
+        return None
+
     def _suggest_similar_files(self, path: str) -> ReadResult:
         """Suggest similar files when the requested file is not found."""
         dir_path = os.path.dirname(path) or "."
@@ -1363,6 +1424,13 @@ class ShellFileOperations(FileOperations):
                     common = set(lower_name) & set(lf)
                     if len(common) >= max(len(lower_name), len(lf)) * 0.4:
                         score = 30
+                # Near-miss spelling (AGENT.md -> AGENTS.md): substring
+                # checks above find nothing, but a high sequence ratio
+                # catches 1-2 edit typos without a homegrown levenshtein.
+                if score == 0 and difflib.SequenceMatcher(
+                    None, lower_name, lf
+                ).ratio() >= 0.8:
+                    score = 50
 
                 if score > 0:
                     scored.append((score, os.path.join(dir_path, f)))

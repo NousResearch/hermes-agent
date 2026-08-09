@@ -26,9 +26,11 @@ NOTES_BULLET_3 = "rotate the API keys quarterly"
 AGENTS_BUILD_CMD = "npm run build:prod"
 
 # The filename the fixture writes (adversarial spelling) vs the spelling a
-# prompt/screen would show (clean spelling). NARROW NO-BREAK SPACE before
-# "PM", NFD-decomposed accents, RIGHT SINGLE QUOTATION MARK.
-NOTES_NAME_CLEAN = "Meeting notes' resume 3.04 PM.txt"
+# prompt/screen would show (clean spelling). The two render IDENTICALLY:
+# NARROW NO-BREAK SPACE vs space, RIGHT SINGLE QUOTATION MARK vs it typed
+# again, NFD vs NFC accents. (Accent-dropping is a VISIBLE difference and
+# deliberately not part of this task — that class belongs to did-you-mean.)
+NOTES_NAME_CLEAN = "Meeting notes\u2019 r\u00e9sum\u00e9 3.04 PM.txt"
 NOTES_NAME_HOSTILE = unicodedata.normalize(
     "NFD", "Meeting\u202fnotes\u2019 re\u0301sume\u0301 3.04\u202fPM.txt"
 )

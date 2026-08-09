@@ -1365,6 +1365,95 @@ class TestBuzzAdapterSend:
         args, _stdin = cli.calls[0]
         assert args[args.index("--reply-to") + 1] == "stable-root"
 
+    @pytest.mark.asyncio
+    async def test_send_retries_unresolved_presentation_mention_without_notifying(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr=(
+                "mention '@session' does not match a current channel member; "
+                "retry with --mention <pubkey>"
+            ),
+        )
+        cli.script(
+            "messages",
+            "send",
+            {"accepted": True, "event_id": "evt124", "message": ""},
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send(
+            CHANNEL,
+            "Continue in @session:default/20260809_092321_24aa09.",
+        )
+
+        assert result.success is True
+        assert result.message_id == "evt124"
+        assert len(cli.calls) == 2
+        assert cli.calls[0][1] == (
+            "Continue in @session:default/20260809_092321_24aa09."
+        )
+        assert cli.calls[1][1] == (
+            "Continue in @\u200bsession:default/20260809_092321_24aa09."
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_does_not_retry_unrelated_cli_failure(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr="relay unavailable",
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send(CHANNEL, "hello @session")
+
+        assert result.success is False
+        assert len(cli.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_send_image_retries_unresolved_presentation_mention(self, tmp_path):
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG fake")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr=(
+                "mention '@session' does not match a current channel member; "
+                "retry with --mention <pubkey>"
+            ),
+        )
+        cli.script(
+            "messages",
+            "send",
+            {"accepted": True, "event_id": "evt127", "message": ""},
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send_image(
+            CHANNEL,
+            str(img),
+            caption="See @session:default/example.",
+        )
+
+        assert result.success is True
+        assert len(cli.calls) == 2
+        assert cli.calls[0][1] == "See @session:default/example."
+        assert cli.calls[1][1] == "See @\u200bsession:default/example."
+
+
 
 # ── Thread anchoring ──────────────────────────────────────────────────────
 
@@ -1705,6 +1794,59 @@ class TestStandaloneSend:
         assert result == {"success": True, "message_id": "evt-key"}
         assert captured["private_key"] == "nsec1x"
         assert captured["auth_tag"] == ""
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_retries_unresolved_presentation_mention(
+        self, monkeypatch, tmp_path
+    ):
+        from gateway.config import PlatformConfig
+
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://r")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1x")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+        sent = []
+
+        async def fake_exec(
+            cli_path,
+            args,
+            *,
+            relay_url,
+            private_key,
+            input_text=None,
+            timeout=30.0,
+        ):
+            sent.append(input_text)
+            if len(sent) == 1:
+                return (
+                    1,
+                    "",
+                    "user_error: mention '@session' does not match a current "
+                    "channel member; retry with --mention <pubkey>",
+                )
+            return (
+                0,
+                json.dumps(
+                    {"accepted": True, "event_id": "evt-standalone", "message": ""}
+                ),
+                "",
+            )
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            CHANNEL,
+            "See @session:default/example.",
+        )
+
+        assert result == {"success": True, "message_id": "evt-standalone"}
+        assert sent == [
+            "See @session:default/example.",
+            "See @\u200bsession:default/example.",
+        ]
+
 
 
 # ── Editing and deleting (streaming) ──────────────────────────────────

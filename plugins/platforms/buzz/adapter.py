@@ -186,6 +186,40 @@ _CHAT_KIND = 9
 # deliberately keeps the kind-9-only check: widening it there would let a
 # p-tagged forum post be reclassified as a DM and bypass mention gating.
 _DISPATCH_KINDS = frozenset({_CHAT_KIND, 45001, 45003})
+_UNRESOLVED_MENTION_ERROR_RE = re.compile(
+    r"mention '@(?P<name>[^']+)' does not match a current channel member"
+)
+_BUZZ_PRESENTATION_MENTION_SEPARATOR = "\u200b"
+
+
+def _escape_unresolved_presentation_mention(content: str, error: str) -> Optional[str]:
+    """Make one CLI-rejected ``@name`` token presentation-only.
+
+    Buzz resolves whitespace-prefixed ``@name`` tokens into notification
+    p-tags before signing or publishing. Ordinary prose such as a Hermes
+    ``@session:...`` link can therefore fail mention preflight. Insert an
+    invisible separator only after the rejected ``@`` so the rendered text
+    remains readable while valid member mentions remain unchanged.
+
+    Return ``None`` for unrelated errors or absent tokens. Callers retry at
+    most once.
+    """
+    match = _UNRESOLVED_MENTION_ERROR_RE.search(error or "")
+    if match is None:
+        return None
+    name = match.group("name")
+    if not name:
+        return None
+    token = re.compile(
+        rf"(?<!\S)@{re.escape(name)}(?=$|[^A-Za-z0-9._-])",
+        re.IGNORECASE,
+    )
+    escaped, count = token.subn(
+        lambda found: "@" + _BUZZ_PRESENTATION_MENTION_SEPARATOR + found.group(0)[1:],
+        content,
+    )
+    return escaped if count else None
+
 # How many events to request per poll / seed call.
 _FETCH_LIMIT = 50
 # Bound on the per-channel de-dupe set (events, not bytes).
@@ -860,6 +894,19 @@ class BuzzAdapter(BasePlatformAdapter):
 
     # ── Sending ───────────────────────────────────────────────────────────
 
+    async def _run_message_send(self, args: List[str], content: str):
+        """Run one send with a single unresolved-mention preflight retry."""
+        code, out, err = await self._run_cli(args, input_text=content)
+        if code == 0:
+            return code, out, err
+        escaped = _escape_unresolved_presentation_mention(content, err)
+        if escaped is None:
+            return code, out, err
+        logger.info(
+            "Buzz: retrying message after unresolved presentation-mention preflight"
+        )
+        return await self._run_cli(args, input_text=escaped)
+
     async def send(
         self,
         chat_id: str,
@@ -880,7 +927,7 @@ class BuzzAdapter(BasePlatformAdapter):
         )
         if reply_target and self._reply_to_mode != "off":
             args += ["--reply-to", str(reply_target)]
-        code, out, err = await self._run_cli(args, input_text=content)
+        code, out, err = await self._run_message_send(args, content)
         if code != 0:
             return SendResult(
                 success=False,
@@ -1034,7 +1081,7 @@ class BuzzAdapter(BasePlatformAdapter):
             )
             if reply_target and self._reply_to_mode != "off":
                 args += ["--reply-to", str(reply_target)]
-            code, out, err = await self._run_cli(args, input_text=caption or "")
+            code, out, err = await self._run_message_send(args, caption or "")
             if code != 0:
                 return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
             try:
@@ -2050,6 +2097,20 @@ async def _standalone_send(
             auth_tag=auth_tag,
             input_text=message,
         )
+        if code != 0:
+            escaped = _escape_unresolved_presentation_mention(message, err)
+            if escaped is not None:
+                logger.info(
+                    "Buzz: retrying standalone message after unresolved "
+                    "presentation-mention preflight"
+                )
+                code, out, err = await _exec_buzz(
+                    cli_path,
+                    args,
+                    relay_url=relay,
+                    private_key=private_key,
+                    input_text=escaped,
+                )
     except asyncio.CancelledError:
         raise
     except OSError as e:

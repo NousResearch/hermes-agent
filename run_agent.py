@@ -4668,6 +4668,16 @@ class AIAgent:
         # empty-turn handling instead of being dropped here.
         codex_items = msg.get("codex_reasoning_items")
         if drop_codex_reasoning_items and isinstance(codex_items, list):
+            # A native compaction checkpoint rides this same sidecar and is
+            # the server-side stand-in for already-pruned history. Dropping
+            # the turn takes the checkpoint with it — the request then carries
+            # neither the compacted history nor the checkpoint that replaces
+            # it. Compaction pruning filters items for this reason rather than
+            # popping the key; a carrier is never thinking-only.
+            from agent.native_compaction import has_compaction_checkpoint
+
+            if has_compaction_checkpoint(codex_items):
+                return False
             return any(
                 isinstance(item, dict) and item.get("type") == "reasoning"
                 for item in codex_items

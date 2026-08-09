@@ -303,6 +303,22 @@ def is_native_compaction_rejection(error: Any, status_code: Any = None) -> bool:
     return any(marker in text for marker in rejection_markers)
 
 
+def has_compaction_checkpoint(items: Any) -> bool:
+    """Does this ``codex_reasoning_items`` sidecar carry a compaction checkpoint?
+
+    A ``type: "compaction"`` item is the server-side stand-in for history that
+    has already been pruned — cumulative context, not per-turn reasoning. It
+    rides the same sidecar as ordinary reasoning items, so anything that
+    rewrites or discards that sidecar (or the message carrying it) has to ask
+    this question first: the checkpoint exists in exactly one place, and the
+    request that loses it loses the compacted history with it.
+    """
+    return any(
+        isinstance(item, dict) and item.get("type") == "compaction"
+        for item in (items if isinstance(items, list) else ())
+    )
+
+
 def merge_interim_reasoning_items(
     prior_items: Any,
     new_items: Any,
@@ -324,10 +340,6 @@ def merge_interim_reasoning_items(
         if isinstance(item, dict) and item.get("type") == "compaction"
     ]
     new_list = list(new_items) if isinstance(new_items, list) else []
-    new_has_checkpoint = any(
-        isinstance(item, dict) and item.get("type") == "compaction"
-        for item in new_list
-    )
-    if new_has_checkpoint or not kept_checkpoints:
+    if has_compaction_checkpoint(new_list) or not kept_checkpoints:
         return new_list
     return kept_checkpoints + new_list

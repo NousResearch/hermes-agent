@@ -137,6 +137,9 @@ def format_issue(issue: RetirementIssue) -> str:
 # ---------------------------------------------------------------------------
 
 import datetime as _dt
+import io
+import os
+import stat
 from pathlib import Path
 import shutil
 
@@ -243,10 +246,38 @@ def apply_migration(
         shutil.copy2(config_path, backup_path)
 
     from hermes_cli.config import require_readable_config_before_write
+    from utils import atomic_write_text
 
     require_readable_config_before_write(config_path)
-    with config_path.open("w", encoding="utf-8") as fh:
-        yaml.dump(doc, fh)
+
+    # Serialize with the round-trip dumper first, then hand the finished text
+    # to the shared atomic writer (temp file + fsync + atomic replace).
+    # ``open(config_path, "w")`` truncates before the dump runs, so a crash or
+    # SIGINT mid-write leaves config.yaml empty or half-written -- and
+    # ``--no-backup`` is a documented flag, so on that path the truncated file
+    # is the only copy left. The load half above returns early when ``doc is
+    # None``, so the next `hermes migrate xai` reports nothing to migrate
+    # rather than surfacing the damage. atomic_replace also keeps a symlinked
+    # config.yaml (dotfiles repo / managed deployment) intact (GitHub #16743).
+    buf = io.StringIO()
+    yaml.dump(doc, buf)
+
+    # atomic_write_text swaps in a fresh 0600 temp file, so carry the existing
+    # permission bits across: _secure_file deliberately leaves config.yaml
+    # alone under managed (NixOS 0640) and container installs, and a migration
+    # must not silently tighten what those setups widened.
+    try:
+        prior_mode = stat.S_IMODE(config_path.stat().st_mode)
+    except OSError:
+        prior_mode = None
+
+    atomic_write_text(config_path, buf.getvalue())
+
+    if prior_mode is not None:
+        try:
+            os.chmod(config_path, prior_mode)
+        except OSError:
+            pass
 
     return ApplyResult(
         file_path=config_path,

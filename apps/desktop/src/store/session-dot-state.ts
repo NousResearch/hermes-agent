@@ -37,6 +37,24 @@ export const showsRunningArc = (state: SessionDotState): boolean => state === 's
  *  answer has not ended. */
 export const hasLiveTurn = (state: SessionDotState): boolean => showsRunningArc(state) || state === 'needs-input'
 
+/** The buckets the sidebar's status filter and ordering work in. `stalled` and
+ *  `background` fold into the state a user would name them. */
+export type SessionStatusBucket = 'draft' | 'idle' | 'needs-input' | 'unread' | 'working'
+
+export const sessionStatusBucket = (state: SessionDotState = 'idle'): SessionStatusBucket =>
+  state === 'stalled' || state === 'background' ? 'working' : state
+
+const STATUS_RANK: Record<SessionStatusBucket, number> = {
+  'needs-input': 0,
+  working: 1,
+  unread: 2,
+  draft: 3,
+  idle: 4
+}
+
+/** Loudest first — what ordering by status sorts on. */
+export const sessionStatusRank = (state?: SessionDotState): number => STATUS_RANK[sessionStatusBucket(state)]
+
 let dotStates: Readonly<Record<string, SessionDotState>> = {}
 
 export const $sessionDotStateById = computed(

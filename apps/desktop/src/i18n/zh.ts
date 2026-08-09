@@ -2062,6 +2062,7 @@ export const zh: Translations = {
     noWorkspace: '无工作区',
     projectEmpty: '暂无会话',
     noSessions: '暂无会话',
+    noFilterMatches: '没有会话符合这些筛选条件',
     projects: {
       sectionLabel: '项目',
       home: '主页',
@@ -2178,6 +2179,10 @@ export const zh: Translations = {
       thisWeek: '本周',
       lastWeek: '上周',
       thisMonth: '本月'
+    },
+    statusDivider: {
+      working: '进行中',
+      done: '已完成'
     }
   },
 

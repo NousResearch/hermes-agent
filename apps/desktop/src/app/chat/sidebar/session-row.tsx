@@ -1,6 +1,8 @@
+import { useStore } from '@nanostores/react'
 import { memo } from 'react'
 import type * as React from 'react'
 
+import { PrTag } from '@/app/chat/pr-tag'
 import { ProfileTag } from '@/app/chat/profile-tag'
 import { startSessionDrag } from '@/app/chat/session-drag'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
@@ -11,17 +13,29 @@ import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
+import { compactNumber } from '@/lib/format'
 import { triggerHaptic } from '@/lib/haptics'
 import { middleClickHandlers } from '@/lib/middle-click'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
+import { $sidebarRowMeta } from '@/store/layout'
+import { normalizeProfileKey } from '@/store/profile'
+import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
 import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
+import { sessionCostUsd } from '@/store/sidebar-archive'
 
 import { SessionStatusDot } from '../session-status-dot'
 
-import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
+import {
+  SidebarRowBody,
+  SidebarRowGrab,
+  SidebarRowLabel,
+  SidebarRowLead,
+  SidebarRowLeadGlyph,
+  SidebarRowShell
+} from './chrome'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 import { useProfilePrewarm } from './use-profile-prewarm'
 
@@ -79,6 +93,48 @@ function SidebarSessionRowImpl({
   const title = sessionTitle(session)
   const age = formatAge(session.last_active || session.started_at, r)
   const handleLabel = `Reorder ${title}`
+  // Opt-in row metadata from the sidebar's filter menu. Read from the store
+  // rather than threaded as props: the subscription re-renders past the memo
+  // below, and a toggle should repaint every row at once anyway.
+  const rowMeta = useStore($sidebarRowMeta)
+  // Pinned metadata occupies the actions slot and swaps out for the kebab on
+  // hover, so the row reserves the same width either way and never reflows.
+  const pinnedAge = rowMeta.includes('updated')
+  // The default profile has no mark worth spending a row slot on — a chip on
+  // every row that says "the normal one" is noise. Named profiles only.
+  const hasProfileTag = normalizeProfileKey(session.profile) !== 'default'
+  const pinnedProfile = hasProfileTag && rowMeta.includes('profile')
+  // The branch's PR, if the row was asked to show one. A selector, not a plain
+  // useStore: a repo's PRs land as a single map write, and only the rows on
+  // those branches should repaint.
+  const prKey = sessionPrKey(session)
+  const pr = useStoreSelector($pullRequestsByBranch, prs => (rowMeta.includes('pr') && prKey ? prs[prKey] : undefined))
+  const totalTokens = session.input_tokens + session.output_tokens
+  const cost = sessionCostUsd(session)
+
+  // Tokens, cost and age share the one trailing slot rather than each claiming
+  // their own column: several switched on read as one figure, not as a
+  // widening gutter.
+  const pinnedFacts = [
+    rowMeta.includes('tokens') && totalTokens > 0 ? compactNumber(totalTokens) : null,
+    // Sub-cent spend rounds to "$0.00", which reads as a bug rather than as a
+    // cheap session — below a cent the row says nothing at all.
+    rowMeta.includes('cost') && cost >= 0.01 ? `$${cost.toFixed(2)}` : null,
+    pinnedAge ? age : null
+  ].filter(Boolean) as string[]
+
+  // The kebab covers the END of the slot, so only the last fact steps aside for
+  // it. With tokens and age both on, hovering costs you the age and keeps the
+  // number you switched on to read.
+  const pinnedTail = pinnedFacts.at(-1) ?? ''
+  const pinnedHead = pinnedFacts.slice(0, -1).join(' · ')
+  const pinnedLabel = pinnedFacts.join(' · ')
+  // Chips that ride in the BODY, beside the title. The kebab lifts out of the
+  // actions slot, so it only ever covers what's in there — a body chip has no
+  // reason to step aside, and the hover-age (which does overlay the body) is
+  // dropped rather than made to fight them.
+  const bodyChip = Boolean(pr) || pinnedProfile || (showProfile && hasProfileTag)
+  const pinnedMeta = Boolean(pinnedLabel) || bodyChip
   // A handed-off session's live source is local, but it originated on a
   // messaging platform — surface that origin as a small badge so e.g. a
   // Telegram thread continued here still reads as Telegram.
@@ -89,6 +145,14 @@ function SidebarSessionRowImpl({
   // whenever any session's status changes, but a row only repaints on its own.
   const dotState = useStoreSelector($sessionDotStateById, states => states[session.id] ?? 'idle')
   const liveTurn = hasLiveTurn(dotState)
+
+  // An archived session has no live status to paint, so the archive glyph takes
+  // the lead slot the dot would occupy instead of adding a column of its own.
+  const lead = session.archived ? (
+    <SidebarRowLeadGlyph className="text-(--ui-text-quaternary)">
+      <Codicon name="archive" size="0.75rem" />
+    </SidebarRowLeadGlyph>
+  ) : null
 
   return (
     <SessionContextMenu
@@ -103,10 +167,36 @@ function SidebarSessionRowImpl({
     >
       <SidebarRowShell
         actions={
-          <div className="relative z-2 grid w-[1.375rem] place-items-center" data-row-actions>
-            {!liveTurn && (
-              <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
-                {age}
+          // Pinned metadata sits in normal flow and the kebab lifts out of it,
+          // so this slot's intrinsic width IS the metadata's — the row's
+          // `auto` actions column measures it and the title truncates against
+          // whatever is switched on, with no width to hand-maintain.
+          <div className="relative z-2 flex items-center justify-end" data-row-actions>
+            {/* Pinned metadata stays put through a turn — it was switched on to
+                be read. Only the tail hands its slot to the kebab; anything
+                ahead of it stays legible while you hover. The hover-only age is
+                an overlay instead, so it needs the row to open up 48px of right
+                padding — which beside a body chip reads as a hole. A row that
+                already shows a chip skips it. */}
+            {(pinnedLabel || (!liveTurn && !bodyChip)) && (
+              <span
+                className={cn(
+                  'pointer-events-none whitespace-nowrap text-right text-[0.625rem] leading-none text-(--ui-text-tertiary)',
+                  !pinnedLabel && 'absolute right-6 opacity-0 transition-opacity group-hover:opacity-100'
+                )}
+              >
+                {pinnedLabel ? (
+                  <>
+                    {pinnedHead}
+                    {/* Never narrower than the kebab that has to cover it. */}
+                    <span className="inline-block min-w-5 transition-opacity group-hover:opacity-0">
+                      {pinnedHead && ' · '}
+                      {pinnedTail}
+                    </span>
+                  </>
+                ) : (
+                  age
+                )}
               </span>
             )}
             <SessionActionsMenu
@@ -121,7 +211,10 @@ function SidebarSessionRowImpl({
             >
               <Button
                 aria-label={r.sessionActions}
-                className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
+                className={cn(
+                  'size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!',
+                  pinnedLabel && 'absolute right-0'
+                )}
                 size="icon"
                 variant="ghost"
               >
@@ -173,7 +266,10 @@ function SidebarSessionRowImpl({
       >
         {showsRunningArc(dotState) && <span aria-hidden="true" className="arc-border arc-row" />}
         <SidebarRowBody
-          className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
+          // Pinned metadata already sits in the actions slot, so the title only
+          // needs a gap from it — and the same gap on hover, or the row would
+          // jump every time the kebab took over.
+          className={cn('z-0', pinnedMeta ? 'pr-2' : 'group-hover:pr-12', branchStem && 'pl-3.5')}
           // Middle-click = open in a new tab (browser muscle memory).
           {...middleClickHandlers(() => {
             triggerHaptic('selection')
@@ -217,16 +313,18 @@ function SidebarSessionRowImpl({
         >
           {reorderable ? (
             <SidebarRowGrab ariaLabel={handleLabel} dragging={dragging} dragHandleProps={dragHandleProps}>
-              <SessionStatusDot
-                branchStem={branchStem}
-                className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
-                session={session}
-                storedSessionId={session.id}
-              />
+              {lead ?? (
+                <SessionStatusDot
+                  branchStem={branchStem}
+                  className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
+                  session={session}
+                  storedSessionId={session.id}
+                />
+              )}
             </SidebarRowGrab>
           ) : (
             <SidebarRowLead className="overflow-hidden">
-              <SessionStatusDot branchStem={branchStem} session={session} storedSessionId={session.id} />
+              {lead ?? <SessionStatusDot branchStem={branchStem} session={session} storedSessionId={session.id} />}
             </SidebarRowLead>
           )}
           {handoffSource && handoffLabel ? (
@@ -241,7 +339,10 @@ function SidebarSessionRowImpl({
           <SidebarRowLabel className="flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90">
             {title}
           </SidebarRowLabel>
-          {showProfile && <ProfileTag profile={session.profile} />}
+          {/* Stays put on hover, unlike the other chips: it's a link, and the
+              kebab lives in its own column rather than over this one. */}
+          {pr && <PrTag pr={pr} />}
+          {(showProfile || pinnedProfile) && hasProfileTag && <ProfileTag profile={session.profile} />}
         </SidebarRowBody>
       </SidebarRowShell>
     </SessionContextMenu>

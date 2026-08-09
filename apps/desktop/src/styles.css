@@ -2811,14 +2811,18 @@ button[data-slot='aui_msg-reactions'] svg {
   background: transparent !important;
   border: 0;
   color: var(--ui-text-primary) !important;
-  /* Focus only. A turn landing brings the transcript up but doesn't mean you
-     are reaching for the window controls, and at rest this is a lone chip
-     hovering over whatever you're actually working in. */
-  opacity: 0;
+  /* Always clickable, dim at rest. Gating the CLICKS on composer `:focus` made
+     the only visible way out of HUD mode depend on the thing most likely to be
+     broken when someone wants out: if focus never lands (#81893) you can't type
+     AND the chip silently swallows clicks, leaving a transparent always-on-top
+     rectangle over the desktop with no in-app way to dismiss it.
+
+     Dim rather than invisible keeps the original intent — this shouldn't be a
+     loud chip floating over whatever you're actually working in — without
+     making the escape hatch conditional on the failure it exists for. */
+  opacity: 0.45;
   transition: opacity var(--hud-fade) var(--hud-ease-exit);
-  /* Clicks on exactly the same terms as the paint — a faded-out control that
-     still takes them is an invisible button floating over the app behind. */
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 /* Flipped, "above the composer" is the reserved strip at the top of the
@@ -2828,9 +2832,12 @@ button[data-slot='aui_msg-reactions'] svg {
   top: 0;
 }
 
-[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-exit] {
-  opacity: 0.75;
-  pointer-events: auto;
+/* Hover and focus-visible brighten it too, so pointing at the chip confirms it
+   is a control before you commit the click. */
+[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-exit],
+[data-hud-shell] [data-hud-exit]:hover,
+[data-hud-shell] [data-hud-exit]:focus-visible {
+  opacity: 0.9;
   transition-duration: var(--hud-reveal);
   transition-delay: 0s;
 }

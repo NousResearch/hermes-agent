@@ -1,6 +1,8 @@
 """Tests for DingTalk platform adapter."""
 import asyncio
-from types import SimpleNamespace
+import sys
+from importlib.util import find_spec, module_from_spec
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -173,6 +175,68 @@ class TestConnect:
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
         result = await adapter.connect()
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_connect_dispatches_inbound_after_lazy_sdk_install(self, monkeypatch):
+        from gateway.platform_registry import PlatformEntry, PlatformRegistry
+        from plugins.platforms.dingtalk import adapter as dt
+
+        # Import the real adapter with an SDK that becomes available only later.
+        spec = find_spec(dt.__name__)
+        recovered = module_from_spec(spec)
+        with monkeypatch.context() as unavailable:
+            unavailable.setitem(sys.modules, "dingtalk_stream", None)
+            spec.loader.exec_module(recovered)
+
+        class ChatbotHandler:
+            def __init__(self):
+                self.logger = MagicMock()
+
+            async def raw_process(self, message):
+                self.logger.debug("Processing callback")
+                return await self.process(message)
+
+        class ChatbotMessage(_FakeChatbotMessage):
+            TOPIC = "chatbot"
+
+        client = MagicMock(spec=["register_callback_handler"], websocket=None)
+        sdk = ModuleType("dingtalk_stream")
+        sdk.ChatbotHandler = ChatbotHandler
+        sdk.ChatbotMessage = ChatbotMessage
+        sdk.Credential = MagicMock()
+        sdk.DingTalkStreamClient = MagicMock(return_value=client)
+        frames = ModuleType("dingtalk_stream.frames")
+        frames.CallbackMessage = SimpleNamespace
+        frames.AckMessage = SimpleNamespace(STATUS_OK=200, STATUS_SYSTEM_EXCEPTION=500)
+        monkeypatch.setitem(sys.modules, "dingtalk_stream", sdk)
+        monkeypatch.setitem(sys.modules, "dingtalk_stream.frames", frames)
+
+        registry = PlatformRegistry()
+        recovered.register(SimpleNamespace(
+            register_platform=lambda **fields: registry.register(PlatformEntry(**fields)),
+        ))
+        adapter = registry.create_adapter("dingtalk", PlatformConfig(
+            enabled=True, extra={"client_id": "client", "client_secret": "secret"},
+        ))
+        assert adapter is not None
+        monkeypatch.setattr(adapter, "_run_stream", AsyncMock())
+        received = asyncio.get_running_loop().create_future()
+
+        async def on_message(message):
+            received.set_result(message)
+
+        monkeypatch.setattr(adapter, "_on_message", on_message)
+        try:
+            assert await adapter.connect()
+            topic, handler = client.register_callback_handler.call_args.args
+            assert topic == sdk.ChatbotMessage.TOPIC
+            ack = await handler.raw_process(frames.CallbackMessage(data={
+                "msgtype": "text", "text": {"content": "hello"},
+            }))
+            assert ack == (frames.AckMessage.STATUS_OK, "OK")
+            assert (await asyncio.wait_for(received, timeout=5)).text == {"content": "hello"}
+        finally:
+            await adapter.disconnect()
 
     @pytest.mark.asyncio
     async def test_disconnect_finalizes_open_streaming_cards(self):

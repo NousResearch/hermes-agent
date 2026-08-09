@@ -161,6 +161,7 @@ def ensure_dingtalk_deps() -> bool:
     re-creating the #79812 deadlock for extra-configured setups.
     """
     global DINGTALK_STREAM_AVAILABLE, dingtalk_stream, ChatbotMessage, CallbackMessage, AckMessage, HTTPX_AVAILABLE, httpx
+    global _IncomingHandler
     if DINGTALK_STREAM_AVAILABLE and HTTPX_AVAILABLE:
         return True
     try:
@@ -169,6 +170,15 @@ def ensure_dingtalk_deps() -> bool:
         import dingtalk_stream as _ds, httpx as _httpx
         from dingtalk_stream import ChatbotMessage as _CM
         from dingtalk_stream.frames import CallbackMessage as _CBM, AckMessage as _AM
+
+        # An import before installation leaves the handler without SDK dispatch (#78597).
+        handler = _IncomingHandler
+        if not issubclass(handler, _ds.ChatbotHandler):
+            _IncomingHandler = type(
+                "_IncomingHandler",
+                (handler, _ds.ChatbotHandler),
+                {"__module__": __name__, "__doc__": handler.__doc__},
+            )
     except Exception:
         return False
     dingtalk_stream, ChatbotMessage, CallbackMessage, AckMessage, httpx = _ds, _CM, _CBM, _AM, _httpx

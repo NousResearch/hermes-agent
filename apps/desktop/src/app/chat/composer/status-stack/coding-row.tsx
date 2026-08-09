@@ -90,9 +90,8 @@ export const CodingStatusRow = memo(function CodingStatusRow({
     }
   }, [resolvedRepoPath, prBranch])
 
-  const pr = useStore($pullRequestsByBranch)[
-    resolvedRepoPath && prBranch ? branchPrKey(resolvedRepoPath, prBranch) : ''
-  ]
+  const pr =
+    useStore($pullRequestsByBranch)[resolvedRepoPath && prBranch ? branchPrKey(resolvedRepoPath, prBranch) : '']
 
   const switchToBranch = async (branch: string) => {
     if (!onSwitchBranch) {

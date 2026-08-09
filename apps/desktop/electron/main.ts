@@ -134,6 +134,7 @@ import {
   resolveTimeoutMs,
   TEXT_PREVIEW_SOURCE_MAX_BYTES
 } from './hardening'
+import { cursorPointInWindow } from './hud-cursor'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
@@ -9101,6 +9102,60 @@ function persistHudState() {
 
 const schedulePersistHudState = debounce(persistHudState, 250)
 
+// How often Linux gets told where the cursor is. Fast enough that the bar is
+// solid before a click lands after the pointer arrives, cheap enough to leave
+// running for as long as the HUD is open — it is one `getCursorScreenPoint()`
+// and, when the answer has not changed, nothing else.
+const HUD_CURSOR_POLL_MS = 60
+
+/**
+ * Feed the HUD renderer the cursor position on Linux.
+ *
+ * Everywhere else the renderer learns this from mousemove, which keeps arriving
+ * while the window ignores the mouse because we pass `{ forward: true }`. That
+ * option is macOS/Windows only. Without it a Linux HUD stops hearing the
+ * pointer the moment it turns click-through, so it can never notice the pointer
+ * coming back and stays transparent — the bar is there, and clicking it hits
+ * whatever is behind. Main can still see the cursor, so it says so.
+ *
+ * Deliberately the same decision, just a different source for one input: the
+ * renderer runs its usual hit test on the point it is handed. Re-deciding
+ * anything here would put a second, drifting copy of the click-through rules in
+ * the main process.
+ */
+function startHudCursorFeed(win: BrowserWindow) {
+  if (process.platform !== 'linux') {
+    return
+  }
+
+  let last: string | null = null
+
+  const timer = setInterval(() => {
+    if (win.isDestroyed() || !win.isVisible()) {
+      return
+    }
+
+    const point = cursorPointInWindow(
+      screen.getCursorScreenPoint(),
+      win.getBounds(),
+      win.webContents.getZoomFactor()
+    )
+    // Off-window is a real answer (it is what hands the mouse back), so it is
+    // sent — once. Only an unchanged answer is dropped, to keep an idle cursor
+    // from waking the renderer 16 times a second.
+    const key = point ? `${Math.round(point.x)},${Math.round(point.y)}` : 'out'
+
+    if (key === last) {
+      return
+    }
+
+    last = key
+    win.webContents.send('hermes:hud:cursor', point)
+  }, HUD_CURSOR_POLL_MS)
+
+  win.on('closed', () => clearInterval(timer))
+}
+
 function hudBounds() {
   // Remembered spot first — validated against the LIVE displays so a HUD
   // parked on an unplugged monitor comes back on-screen instead of lost.
@@ -9222,6 +9277,8 @@ function spawnHudWindow(sessionId) {
   // Remember where the user parks and sizes it (debounced — these fire many
   // times mid-drag).
   bindGeometryPersistence(win, schedulePersistHudState)
+
+  startHudCursorFeed(win)
 
   wireWindowReveal(win, {
     show: () => {

@@ -58,7 +58,9 @@ export function hudIgnoresMouse(
  * interactive: wherever the cursor is over something the HUD paints, and
  * whenever a portalled overlay holds focus. `forward: true` keeps mousemove
  * flowing while ignoring, which is what lets it re-arm when the cursor comes
- * back to the bar.
+ * back to the bar. That option is macOS/Windows only, so on Linux main polls
+ * the cursor and pushes it in through `onCursor` — the same point, the same
+ * decision, a different courier.
  *
  * It follows that nothing in HUD mode may declare `-webkit-app-region: drag`
  * at all: a draggable region swallows the page's mouse events, so the moves
@@ -102,6 +104,17 @@ export function useHudClickThrough(rootRef: RefObject<HTMLElement | null>): void
       apply()
     }
 
+    // Linux's stand-in for mousemove, pushed from main because `forward` is not
+    // supported there and the moves stop the moment the window starts ignoring
+    // — leaving the bar permanently click-through. Same decision, same hit
+    // test; only where the point came from differs, and on macOS and Windows
+    // this never fires. `null` is the cursor leaving the window, which is the
+    // `onLost` answer.
+    const offCursor = window.hermesDesktop?.hud?.onCursor?.(next => {
+      point = next
+      apply()
+    })
+
     // Whenever we stop knowing where the cursor is, hand the window back. Solid
     // is only ever right under a cursor we can still see: the last point we saw
     // is usually the bar, and holding that answer means the whole rectangle
@@ -123,6 +136,7 @@ export function useHudClickThrough(rootRef: RefObject<HTMLElement | null>): void
 
     return () => {
       setIgnoreMouse(false)
+      offCursor?.()
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('blur', onLost)
       window.removeEventListener('focus', apply)

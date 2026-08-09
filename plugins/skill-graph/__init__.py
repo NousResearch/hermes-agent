@@ -1764,6 +1764,81 @@ def register(ctx):
 
     ctx.register_hook("on_session_start", _on_session_start)
 
+    # ── Hook: build_skills_index — replace flat index with graph discovery ──
+    def _on_build_skills_index(agent, skills_prompt, valid_tool_names, **kw):
+        """Replace the flat skill index with graph discovery guidance.
+
+        Returns a dict that suppresses the flat index and injects the
+        skill-graph identity protocol + tool guidance + a minimal
+        Available Skills block (skill-graph companion + gateway extensions)
+        into the system prompt.  Only fires when ``skill_graph_search``
+        is in the valid tool set (plugin loaded and not disabled).
+        """
+        if "skill_graph_search" not in valid_tool_names:
+            return None
+
+        from agent.prompt_builder import SKILL_GRAPH_IDENTITY, SKILL_GRAPH_GUIDANCE
+
+        # Build a minimal Available Skills block so the agent can discover
+        # and load the skill-graph companion without flat-index search.
+        _sg_desc = "Skill knowledge graph — discover and load skills by intent"
+        try:
+            import yaml as _yaml
+            for _p in [
+                os.path.expanduser("~/.hermes/hermes-agent/skills/hermes/skill-graph/SKILL.md"),
+                os.path.expanduser("~/.hermes/skills/hermes/skill-graph/SKILL.md"),
+            ]:
+                if os.path.isfile(_p):
+                    _fm = next(_yaml.safe_load_all(open(_p, encoding="utf-8")))
+                    _sg_desc = (_fm or {}).get("description", "") or _sg_desc
+                    break
+        except Exception:
+            pass
+
+        # Read gateway skill extensions from routing-extensions.md.
+        _gateway_extras: list[tuple[str, str]] = []
+        try:
+            from hermes_cli.config import load_config_readonly as _load_cfg
+            _cfg = _load_cfg()
+            _ext_file = (
+                (((_cfg.get("skills") or {}).get("config") or {})
+                 .get("skill-graph") or {}).get("extensions_file") or ""
+            )
+            if _ext_file:
+                _ext_path = os.path.expanduser(_ext_file)
+                if os.path.isfile(_ext_path):
+                    _in_gw = False
+                    for _line in open(_ext_path, encoding="utf-8").readlines():
+                        _line = _line.rstrip()
+                        if _line.startswith("## Pre-installed Gateways"):
+                            _in_gw = True
+                            continue
+                        if _in_gw:
+                            if _line.startswith("## "):
+                                break
+                            if _line.startswith("| `") and "|" in _line[3:]:
+                                _cells = _line.split("|")
+                                if len(_cells) >= 3:
+                                    _gn = _cells[1].strip().strip("`")
+                                    _gp = _cells[2].strip()
+                                    if _gn and not _gn.startswith("-"):
+                                        _gateway_extras.append((_gn, _gp))
+        except Exception:
+            pass
+
+        _avail = [f"  skill-graph — {_sg_desc[:100]}"]
+        for _gn, _gp in _gateway_extras:
+            _avail.append(f"  {_gn} — {_gp[:100]}")
+        _available_block = "Available Skills\n" + "\n".join(_avail) + "\n"
+
+        return {
+            "skills_prompt": "",
+            "identity": SKILL_GRAPH_IDENTITY + "\n\n" + _available_block,
+            "guidance": SKILL_GRAPH_GUIDANCE,
+        }
+
+    ctx.register_hook("build_skills_index", _on_build_skills_index)
+
         # ── Register proxy commands from graph-discovered skills ──
     _main_skills_dir = str((Path.home() / ".hermes" / "skills").resolve())
 

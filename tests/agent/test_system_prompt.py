@@ -404,128 +404,70 @@ class TestSkillsInVolatileBand:
         assert full.index(_CONTEXT) < full.index(_SKILLS)
         assert full.index(_SKILLS) < full.index("Conversation started:")
 
-# ── skill-graph gateway injection tests ──────────────────────────────────
+# ── skill-graph build_skills_index hook tests ──────────────────────────
 
 def _make_skill_graph_agent(**overrides):
-    """Agent with skill-graph mode enabled and skill_graph_search tool."""
+    """Agent with skill_graph_search tool available."""
     return _make_agent(
         valid_tool_names=["skill_graph_search"],
-        _skill_graph_mode=True,
-        _task_completion_guidance=False,
-        _tool_use_enforcement=False,
-        _environment_probe=False,
         **overrides,
     )
 
 
-def test_gateway_extras_from_routing_extensions(tmp_path, monkeypatch):
-    """Gateway skills declared in routing-extensions.md are injected."""
-    # Write routing-extensions.md with a gateway skill
-    ext_file = tmp_path / "routing-extensions.md"
-    ext_file.write_text("""## Pre-installed Gateways (Extensions)
+def _mock_skill_graph_hook(identity=None, guidance=None, skills_prompt=""):
+    """Mock invoke_hook to simulate skill-graph plugin's build_skills_index callback."""
+    from agent.prompt_builder import SKILL_GRAPH_IDENTITY, SKILL_GRAPH_GUIDANCE
+    return [
+        {
+            "skills_prompt": skills_prompt,
+            "identity": identity if identity is not None else SKILL_GRAPH_IDENTITY,
+            "guidance": guidance if guidance is not None else SKILL_GRAPH_GUIDANCE,
+        }
+    ]
 
-| Gateway Skill | Purpose |
-|--------------|---------|
-| `project-directories` | Project code directory map |
-| `troupe-lookup` | Troupe roster queries |
-""")
 
-    # Mock config to return our temp file
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
-        lambda: {
-            "skills": {
-                "config": {
-                    "skill-graph": {
-                        "extensions_file": str(ext_file),
-                    }
-                }
-            }
-        },
-    )
-
-    agent = _make_skill_graph_agent()
-
-    captured = []
-    def fake_context_files(**kw):
-        return ""
-
+def test_build_skills_index_hook_suppresses_flat_index():
+    """When the hook returns empty skills_prompt, the flat index is suppressed."""
+    agent = _make_agent(valid_tool_names=["skills_list", "skill_graph_search"])
     with (
         patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_context_files_prompt", side_effect=fake_context_files),
-    ):
-        parts = build_system_prompt_parts(agent)
-
-    stable = parts.get("stable", "")
-    assert "Available Skills" in stable
-    assert "skill-graph" in stable
-    assert "project-directories" in stable
-    assert "troupe-lookup" in stable
-
-
-def test_gateway_extras_missing_file_no_crash(tmp_path, monkeypatch):
-    """Missing extensions_file should not crash — just inject skill-graph only."""
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
-        lambda: {
-            "skills": {
-                "config": {
-                    "skill-graph": {
-                        "extensions_file": "/nonexistent/path/routing-extensions.md",
-                    }
-                }
-            }
-        },
-    )
-
-    agent = _make_skill_graph_agent()
-
-    with (
-        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
         patch("run_agent.build_context_files_prompt", return_value=""),
+        patch("run_agent.build_skills_system_prompt", return_value="SHOULD_NOT_APPEAR"),
+        patch("hermes_cli.lifecycle.invoke_hook", return_value=_mock_skill_graph_hook()),
     ):
         parts = build_system_prompt_parts(agent)
-
-    stable = parts.get("stable", "")
-    assert "Available Skills" in stable
-    assert "skill-graph" in stable
-    # Gateway extras not injected (file missing)
-    assert "project-directories" not in stable
+    volatile = parts.get("volatile", "")
+    assert "SHOULD_NOT_APPEAR" not in volatile
 
 
-def test_gateway_extras_no_extensions_file_config(tmp_path, monkeypatch):
-    """No extensions_file in config — only skill-graph in Available Skills."""
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
-        lambda: {"skills": {"config": {"skill-graph": {}}}},
-    )
-
-    agent = _make_skill_graph_agent()
-
+def test_build_skills_index_hook_injects_identity():
+    """The hook can inject identity protocol into the stable tier."""
+    agent = _make_agent(valid_tool_names=["skill_graph_search"])
     with (
         patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
         patch("run_agent.build_context_files_prompt", return_value=""),
+        patch("hermes_cli.lifecycle.invoke_hook", return_value=_mock_skill_graph_hook()),
     ):
         parts = build_system_prompt_parts(agent)
-
     stable = parts.get("stable", "")
-    assert "Available Skills" in stable
-    assert "skill-graph" in stable
+    assert "Skill Discovery Protocol" in stable
 
 
-def test_gateway_extras_not_injected_without_skill_graph_mode(tmp_path, monkeypatch):
-    """Without skill-graph mode, Available Skills section should not appear."""
-    agent = _make_agent(
-        valid_tool_names=["skills_list", "skill_view"],
-    )
-
+def test_build_skills_index_no_hook_preserves_flat_index():
+    """Without any hook registered, the default flat index is used."""
+    agent = _make_agent(valid_tool_names=["skills_list"])
     with (
         patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
         patch("run_agent.build_context_files_prompt", return_value=""),
+        patch("run_agent.build_skills_system_prompt", return_value="FLAT_INDEX_SENTINEL"),
+        patch("hermes_cli.lifecycle.invoke_hook", return_value=[]),
     ):
         parts = build_system_prompt_parts(agent)
-
-    stable = parts.get("stable", "")
-    # "Available Skills\n  skill-graph —" is the injection pattern;
-    # plain "Available Skills" might appear in other contexts
-    assert "Available Skills\n  skill-graph" not in stable
+    volatile = parts.get("volatile", "")
+    assert "FLAT_INDEX_SENTINEL" in volatile

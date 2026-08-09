@@ -17,22 +17,38 @@ voice client; the real ``MisaMisaVoiceBridge`` runs against it.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import time
 from typing import List
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import numpy as np
 import pytest
+
+# The bridge and its numeric audio runtime are optional together. Gate both
+# before importing either so a base install reports a module skip rather than
+# failing collection before the existing kensei_voice guard can run.
+_HAS_VOICE_BRIDGE_STACK = all(
+    importlib.util.find_spec(name) is not None
+    for name in ("numpy", "kensei_voice", "pocket_tts")
+)
+pytestmark = pytest.mark.skipif(
+    not _HAS_VOICE_BRIDGE_STACK,
+    reason="voice bridge integration requires numpy, kensei_voice, and pocket_tts",
+)
 
 # kensei_voice is an intentionally separate, optional package.  When it
 # is not installed the entire integration seam has nothing to test, so
 # skip the whole module cleanly instead of raising a collection error.
 # Do NOT add kensei-voice as a core dependency — the adapter runtime
 # already guards the import with KENSEI_VOICE_BRIDGE_AVAILABLE.
-pytest.importorskip("kensei_voice")
-
-from kensei_voice.discord_transport import _StreamingPCMSource
-from kensei_voice.misa_misa_seam import LiveLatencyLog
+if _HAS_VOICE_BRIDGE_STACK:
+    import numpy as np
+    from kensei_voice.discord_transport import _StreamingPCMSource
+    from kensei_voice.misa_misa_seam import LiveLatencyLog
+else:
+    np = None
+    _StreamingPCMSource = None
+    LiveLatencyLog = None
 
 from gateway.config import Platform, PlatformConfig
 

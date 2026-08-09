@@ -5061,7 +5061,8 @@ class DiscordAdapter(BasePlatformAdapter):
             if listen_task:
                 listen_task.cancel()
 
-            guild = self._client.get_guild(guild_id) if self._client is not None else None
+            client = getattr(self, "_client", None)
+            guild = client.get_guild(guild_id) if client is not None else None
             for user_id, pcm_data in pending_inputs:
                 if self._is_allowed_user(str(user_id), guild=guild, is_dm=False):
                     await self._process_voice_input(guild_id, user_id, pcm_data)

@@ -8,9 +8,21 @@ source.event=shared_injection provenance.
 """
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 import pytest
+
+# Severian is an intentionally external Kensei integration, not a core Hermes
+# dependency. Its dedicated integration environment supplies the package and
+# SQLAlchemy; base CI must skip this module cleanly when that stack is absent.
+_HAS_SEVERIAN_STACK = all(
+    importlib.util.find_spec(name) is not None for name in ("severian", "sqlalchemy")
+)
+pytestmark = pytest.mark.skipif(
+    not _HAS_SEVERIAN_STACK,
+    reason="shared injection requires the Severian integration stack",
+)
 
 
 @pytest.fixture()

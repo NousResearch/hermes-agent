@@ -12,6 +12,8 @@ Covers:
 from __future__ import annotations
 
 import json
+import sys
+import types
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -482,7 +484,8 @@ class TestSearXNG403FallbackToDDGS:
                 }
             ]
 
-        with patch("httpx.get", side_effect=_searxng_403), \
+        with patch.dict(sys.modules, {"ddgs": types.ModuleType("ddgs")}), \
+             patch("httpx.get", side_effect=_searxng_403), \
              patch("plugins.web.ddgs.provider._run_ddgs_search_bounded", side_effect=_ddgs_ok):
             result_str = web_tools.web_search_tool("query", limit=3)
 

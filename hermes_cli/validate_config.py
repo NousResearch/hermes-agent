@@ -9,21 +9,15 @@ Scans the user's config.yaml for common misconfigurations:
 - pipeline.<setting> invalid types or values.
 """
 
-import os
 import sys
-import yaml
-from pathlib import Path
 
 
 def _get_user_config_raw() -> dict:
     """Load the user's config.yaml without merging DEFAULT_CONFIG defaults."""
-    hermes_home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
-    config_path = Path(hermes_home) / "config.yaml"
-    if not config_path.exists():
-        return {}
+    from hermes_cli.config import read_user_config_raw
+
     try:
-        with open(config_path, encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+        return read_user_config_raw()
     except Exception:
         return {}
 

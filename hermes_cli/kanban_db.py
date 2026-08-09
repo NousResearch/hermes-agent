@@ -12527,13 +12527,12 @@ def _is_profile_spawnable(name: str) -> bool:
     # Fails open for profile-level config reads (tier is advisory);
     # fails closed for the root nonspawnable list above.
     try:
+        from hermes_cli.config import read_user_config_raw
         from hermes_cli.profiles import get_profile_dir
-        import yaml as _yaml
         _profile_dir = get_profile_dir(name)
         _config_path = _profile_dir / "config.yaml"
         if _config_path.is_file():
-            with open(_config_path) as _fh:
-                _profile_cfg = _yaml.safe_load(_fh) or {}
+            _profile_cfg = read_user_config_raw(_config_path)
             _tier = _profile_cfg.get("tier")
             if _tier is not None:
                 try:

@@ -3152,6 +3152,30 @@ def load_config_readonly() -> Dict[str, Any]:
     return _load_config_impl(want_deepcopy=False)
 
 
+def get_pipeline_config() -> Dict[str, Any]:
+    """Return the ``pipeline`` section from config, merged with defaults.
+
+    The pipeline config lives under ``pipeline:`` in config.yaml and controls
+    gated progression of full-pipeline tasks. ``stage_owners`` is merged
+    separately so one user override does not discard owners for other stages.
+    """
+    cfg = load_config_readonly()
+    pipeline_cfg = cfg.get("pipeline", {})
+    if not isinstance(pipeline_cfg, dict):
+        pipeline_cfg = {}
+    defaults = DEFAULT_CONFIG.get("pipeline", {})
+    merged = dict(defaults)
+    merged.update(pipeline_cfg)
+
+    if isinstance(defaults.get("stage_owners"), dict):
+        owner_defaults = dict(defaults["stage_owners"])
+        configured_owners = pipeline_cfg.get("stage_owners", {})
+        if isinstance(configured_owners, dict):
+            owner_defaults.update(configured_owners)
+        merged["stage_owners"] = owner_defaults
+    return merged
+
+
 def write_platform_config_field(
     platform_key: str,
     field_key: str,

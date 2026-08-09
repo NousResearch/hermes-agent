@@ -137,6 +137,10 @@ opencode_zen = ProviderProfile(
 
 opencode_go = OpenCodeGoProfile(
     name="opencode-go",
+    # The Go relay silently DISCARDS developer-role messages rather than
+    # erroring: a gpt-5* model there loses its entire system prompt and
+    # answers as a generic assistant, with HTTP 200 and no log line.
+    supports_developer_role=False,
     aliases=("opencode_go", "go", "opencode-go-sub"),
     env_vars=("OPENCODE_GO_API_KEY",),
     base_url="https://opencode.ai/zen/go/v1",

@@ -607,12 +607,18 @@ class ChatCompletionsTransport(ProviderTransport):
         # Message preprocessing
         sanitized = profile.prepare_messages(sanitized)
 
-        # Developer role swap — model-name-based, applies to all providers
+        # Developer role swap for GPT-5/Codex models, unless the profile
+        # declares that its endpoint does not understand the ``developer``
+        # role. The model name alone cannot tell us that: an OpenAI-compatible
+        # relay serving a gpt-5* model may reject the role outright, or
+        # accept the request and silently drop the message, discarding the
+        # entire system prompt.
         _model_lower = (model or "").lower()
         if (
             sanitized
             and isinstance(sanitized[0], dict)
             and sanitized[0].get("role") == "system"
+            and getattr(profile, "supports_developer_role", True)
             and any(p in _model_lower for p in DEVELOPER_ROLE_MODELS)
         ):
             sanitized = list(sanitized)

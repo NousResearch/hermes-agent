@@ -78,6 +78,15 @@ class ProviderProfile:
     # top-level fields rather than ignoring them.
     supports_prompt_cache_key: bool = False
 
+    # True when the provider's endpoint understands the ``developer`` role
+    # that newer OpenAI models expect in place of ``system``.  Defaults to
+    # True to preserve existing behaviour.  Set to False for endpoints that
+    # are OpenAI-*compatible* without implementing the newer role: some
+    # reject it outright (HTTP 400 "unknown variant developer"), and some
+    # silently drop the message, which discards the entire system prompt
+    # with a 200 response and no error.
+    supports_developer_role: bool = True
+
     # ── Model catalog ─────────────────────────────────────────
     # fallback_models: curated list shown in /model picker when live fetch fails.
     # Only agentic models that support tool calling should appear here.

@@ -4979,6 +4979,12 @@ def set_config_value(key: str, value: str, force: bool = False):
             coerced_value = float(value)
 
     value = coerced_value
+    # Snapshot the pre-write mapping so the round-trip writer below can apply
+    # only the changed paths and leave every untouched line — comments, blank
+    # lines, ordering, quoting — exactly as the user wrote it (#63039). Taken
+    # BEFORE the scalar-model normalization below so that normalization is
+    # part of the before/after diff and gets persisted.
+    _config_before_write = copy.deepcopy(user_config)
     # Normalize a scalar ``model`` key before writing sub-keys so that
     # ``hermes config set model.provider openai`` doesn't silently
     # destroy the model id when ``model`` is a bare string shorthand
@@ -5056,10 +5062,25 @@ def set_config_value(key: str, value: str, force: bool = False):
         user_config = _normalize_root_model_keys(user_config)
         key = "model.base_url"
         print("  (note: 'api_base' is an alias — saved as model.base_url)")
-    # Write only user config back (not the full merged defaults)
+    # Write only user config back (not the full merged defaults).
+    # Round-trip apply preserves the user's comments and formatting on every
+    # untouched key (#63039) — the same guarantee cli.py's save_config_value
+    # already gives via atomic_roundtrip_yaml_update. Files the round-trip
+    # parser rejects but PyYAML tolerates (e.g. duplicate keys) fall back to
+    # the historical plain dump so the write itself never regresses. Only
+    # RoundTripUnsupportedError falls back — filesystem/atomic-write failures
+    # propagate, so a failed write can never masquerade as a successful
+    # (comment-stripping) rewrite.
     ensure_hermes_home()
-    from utils import atomic_yaml_write
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    from utils import (
+        RoundTripUnsupportedError,
+        atomic_roundtrip_yaml_apply,
+        atomic_yaml_write,
+    )
+    try:
+        atomic_roundtrip_yaml_apply(config_path, _config_before_write, user_config)
+    except RoundTripUnsupportedError:
+        atomic_yaml_write(config_path, user_config, sort_keys=False)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
@@ -5174,6 +5195,9 @@ def unset_config_value(key: str):
             )
             sys.exit(1)
 
+    # Snapshot for the round-trip diff below — the removal must not cost the
+    # user every comment and blank line in the rest of the file (#63039).
+    _config_before_write = copy.deepcopy(user_config)
     removed = _unset_nested(user_config, key)
 
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
@@ -5186,8 +5210,18 @@ def unset_config_value(key: str):
         sys.exit(1)
 
     ensure_hermes_home()
-    from utils import atomic_yaml_write
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    from utils import (
+        RoundTripUnsupportedError,
+        atomic_roundtrip_yaml_apply,
+        atomic_yaml_write,
+    )
+    try:
+        atomic_roundtrip_yaml_apply(config_path, _config_before_write, user_config)
+    except RoundTripUnsupportedError:
+        # Same fallback contract as set_config_value: files the round-trip
+        # parser rejects still get the historical plain dump; write failures
+        # propagate rather than silently stripping comments.
+        atomic_yaml_write(config_path, user_config, sort_keys=False)
     print(f"✓ Unset {key} from {config_path}")
 
 

@@ -480,6 +480,163 @@ def atomic_roundtrip_yaml_update(
         raise
 
 
+def _rt_safe_scalar(value: Any) -> Any:
+    """Quote strings whose plain YAML form would round-trip as a different type.
+
+    ruamel emits YAML 1.2, where ``off``/``yes``/``090`` are plain strings —
+    but this codebase reads config back with PyYAML (YAML 1.1), which parses
+    those spellings as booleans/numbers.  Wrapping ambiguous strings in an
+    explicit single-quoted scalar keeps the readers' view identical to what
+    the historical PyYAML dump produced (it quoted them for the same reason).
+    """
+    if isinstance(value, str):
+        try:
+            if not isinstance(yaml.safe_load(value), str):
+                from ruamel.yaml.scalarstring import SingleQuotedScalarString
+
+                return SingleQuotedScalarString(value)
+        except yaml.YAMLError:
+            pass  # unparseable as a bare scalar — ruamel will quote it itself
+    elif isinstance(value, dict):
+        return {k: _rt_safe_scalar(v) for k, v in value.items()}
+    elif isinstance(value, list):
+        return [_rt_safe_scalar(v) for v in value]
+    return value
+
+
+def _apply_yaml_diff(doc: Any, before: Any, after: Any) -> None:
+    """Mutate round-trip *doc* so its data equals *after*, touching only paths
+    that differ between the plain mappings *before* and *after*.
+
+    Untouched siblings keep their ruamel comment/format metadata because their
+    nodes are never reassigned.  Equal-length lists are merged element-wise so
+    an indexed write (``custom_providers.0.api_key``) does not flatten the
+    comments on the other elements; structural list changes replace the whole
+    sequence (comment loss is then confined to the list the caller changed).
+    """
+    # Deletions first (e.g. the api_base → base_url alias migration pops keys).
+    if isinstance(before, dict) and isinstance(after, dict):
+        for key in before:
+            if key not in after and key in doc:
+                del doc[key]
+        for key, new_val in after.items():
+            if key in before and before[key] == new_val:
+                continue  # unchanged — leave the node (and its comments) alone
+            old_val = before.get(key)
+            existing = doc[key] if key in doc else None
+            if (
+                isinstance(existing, dict)
+                and isinstance(old_val, dict)
+                and isinstance(new_val, dict)
+            ):
+                _apply_yaml_diff(existing, old_val, new_val)
+            elif (
+                isinstance(existing, list)
+                and isinstance(old_val, list)
+                and isinstance(new_val, list)
+                and len(existing) == len(old_val) == len(new_val)
+            ):
+                for i, (o, n) in enumerate(zip(old_val, new_val)):
+                    if o == n:
+                        continue
+                    if isinstance(existing[i], dict) and isinstance(o, dict) and isinstance(n, dict):
+                        _apply_yaml_diff(existing[i], o, n)
+                    else:
+                        existing[i] = _rt_safe_scalar(n)
+            else:
+                doc[key] = _rt_safe_scalar(new_val)
+
+
+class RoundTripUnsupportedError(ValueError):
+    """The round-trip writer cannot represent this document.
+
+    Raised by :func:`atomic_roundtrip_yaml_apply` ONLY for conditions where
+    falling back to a plain (comment-stripping) dump is legitimate: ruamel
+    being unavailable, or the round-trip parser rejecting a document that
+    PyYAML tolerates (e.g. duplicate keys).  Genuine write failures — temp
+    file creation, fsync, atomic replace — propagate as-is so callers never
+    mask a failed write by "successfully" rewriting the file without its
+    comments.
+    """
+
+
+def atomic_roundtrip_yaml_apply(
+    path: Union[str, Path],
+    before: Any,
+    after: Any,
+) -> None:
+    """Rewrite *path* so its data equals *after*, preserving the comments,
+    ordering, quoting, and blank lines of everything that did not change
+    between *before* and *after*.
+
+    Companion to :func:`atomic_roundtrip_yaml_update` for callers that compute
+    the full post-write mapping through existing (plain-dict) mutation and
+    normalisation helpers and need multi-key semantics — nested writes, list
+    index writes, and key deletions — in one atomic replace.
+
+    Raises :class:`RoundTripUnsupportedError` when the document cannot go
+    through the round-trip parser (duplicate keys, ruamel unavailable) — the
+    only condition where a plain-dump fallback is appropriate.  Filesystem
+    and atomic-write failures propagate unchanged.
+    """
+    try:
+        from ruamel.yaml import YAML
+        from ruamel.yaml.comments import CommentedMap
+        from ruamel.yaml.error import YAMLError
+    except ImportError as exc:
+        raise RoundTripUnsupportedError(f"ruamel.yaml unavailable: {exc}") from exc
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    yaml_rt = YAML(typ="rt")
+    yaml_rt.preserve_quotes = True
+    yaml_rt.allow_unicode = True
+    yaml_rt.default_flow_style = False
+    yaml_rt.indent(mapping=2, sequence=4, offset=2)
+
+    if path.exists():
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                doc = yaml_rt.load(f) or CommentedMap()
+        except YAMLError as exc:
+            # PyYAML tolerates documents ruamel's round-trip parser rejects
+            # (duplicate keys being the common case) — signal "unsupported",
+            # not "failed", so callers may fall back to the historical dump.
+            raise RoundTripUnsupportedError(
+                f"round-trip parser rejected {path.name}: {exc}"
+            ) from exc
+    else:
+        doc = CommentedMap()
+    if not isinstance(doc, CommentedMap):
+        doc = CommentedMap(doc)
+
+    _apply_yaml_diff(doc, before if isinstance(before, dict) else {}, after)
+
+    original_mode = _preserve_file_mode(path)
+    original_owner = _preserve_file_owner(path)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.stem}_",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml_rt.dump(doc, f)
+            f.flush()
+            os.fsync(f.fileno())
+        real_path = atomic_replace(tmp_path, path)
+        real_path_obj = Path(real_path)
+        _restore_file_owner(real_path_obj, original_owner)
+        _restore_file_mode(real_path_obj, original_mode)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 # ─── JSON Helpers ─────────────────────────────────────────────────────────────
 
 

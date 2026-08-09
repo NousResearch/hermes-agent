@@ -1318,6 +1318,24 @@ class SessionStore:
         with self._lock:
             self._ensure_loaded_locked()
 
+    def list_resume_pending(
+        self, platform: Optional[Platform] = None
+    ) -> List[SessionEntry]:
+        """Return a stable snapshot of restart-interrupted routing entries."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            return [
+                replace(entry)
+                for entry in self._entries.values()
+                if entry.resume_pending
+                and not entry.suspended
+                and entry.origin is not None
+                and (
+                    platform is None
+                    or entry.origin.platform == platform
+                )
+            ]
+
     def _routing_scope(self) -> str:
         """Namespace for this store's rows in the gateway_routing table.
 

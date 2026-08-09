@@ -606,7 +606,7 @@ async def test_startup_auto_resume_skips_unauthorized_owner():
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
     await asyncio.sleep(0)
 
     assert scheduled == 0
@@ -656,7 +656,9 @@ async def test_reconnect_reschedule_is_platform_scoped():
     adapter.handle_message = AsyncMock()
     runner.adapters = {Platform.TELEGRAM: adapter}
 
-    scheduled = runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
+    scheduled = await runner._schedule_resume_pending_sessions(
+        platform=Platform.TELEGRAM
+    )
     await asyncio.sleep(0)
 
     # Only the telegram session is resumed; the discord session waits for its
@@ -703,7 +705,7 @@ async def test_startup_restore_waits_for_resume_before_draining_inbound():
 
     adapter.handle_message = fake_handle_message
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
     await asyncio.sleep(0)
 
     inbound = MessageEvent(
@@ -859,7 +861,7 @@ async def test_auto_resume_sets_sentinel_before_task_execution():
 
     adapter.handle_message = _slow_handle
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
 
     assert scheduled == 1
     # The sentinel must be set immediately — before the task starts executing.
@@ -958,7 +960,7 @@ async def test_auto_resume_runs_agent_exactly_once_through_full_path():
     )
     adapter._run_processing_hook = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
     assert scheduled == 1
     # Pre-claim must be visible immediately.
     assert runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL

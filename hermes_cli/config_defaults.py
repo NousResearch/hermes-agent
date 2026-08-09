@@ -2400,6 +2400,13 @@ DEFAULT_CONFIG = {
         # otherwise saturate one profile's local model / API quota /
         # browser pool while leaving other profiles idle.
         "max_in_progress_per_profile": None,
+        # Per-tick spawn budget (distinct from max_spawn / max_in_progress).
+        # ``max_spawn`` is a live-concurrency cap (running + this tick) and
+        # ``max_in_progress`` is the live-concurrency ceiling; neither limits
+        # how many new workers a single dispatcher tick may start. A positive
+        # value throttles burst starts across ready, review, and pipeline lanes.
+        # None or a non-positive/non-int user value means no per-tick budget.
+        "max_spawn_per_tick": None,
         # When true, the kanban dispatcher auto-runs the decomposer on
         # tasks that land in Triage (every dispatcher tick). When false,
         # decomposition is manual via `hermes kanban decompose <id>` or

@@ -4523,6 +4523,11 @@ class BasePlatformAdapter(ABC):
         for match in media_pattern.finditer(scan_content):
             path = _normalize_media_tag_path(match.group("path"))
             if path:
+                # The directive is message-global, but only audio paths may be
+                # marked as voice. Tainting images/videos/documents forces them
+                # down document delivery paths instead of their native routes.
+                ext = os.path.splitext(path)[1].lower()
+                is_voice = has_voice_tag and ext in _AUDIO_EXTS
                 try:
                     expanded = os.path.expanduser(path)
                 except (OSError, RuntimeError, ValueError):
@@ -4531,7 +4536,7 @@ class BasePlatformAdapter(ABC):
                     continue
                 if expanded not in seen_paths:
                     seen_paths.add(expanded)
-                    media.append((expanded, has_voice_tag))
+                    media.append((expanded, is_voice))
 
         for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(scan_content):
             path = _normalize_media_tag_path(match.group("path"))
@@ -4542,7 +4547,8 @@ class BasePlatformAdapter(ABC):
                 continue
             safe = resolved[0]
             if safe not in seen_paths:
-                media.append((safe, has_voice_tag))
+                safe_ext = os.path.splitext(safe)[1].lower()
+                media.append((safe, has_voice_tag and safe_ext in _AUDIO_EXTS))
                 seen_paths.add(safe)
 
         # Remove the delivered MEDIA tags from the user-visible text. Mask a

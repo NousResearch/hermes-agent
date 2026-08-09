@@ -348,6 +348,31 @@ def transfer_active_session(
         return updated
 
 
+def release_orphaned_leases(live_lease_ids: set[str]) -> int:
+    """Drop this process's registry entries that no live session owns.
+
+    Dead-process pruning cannot reclaim a leaked lease while a long-lived
+    dashboard process remains alive. Only the owning process can reconcile its
+    own lease IDs, so entries from other processes are always preserved.
+    """
+    pid = os.getpid()
+    state_path = _state_path()
+    if not state_path.exists():
+        return 0
+    with _FileLock(_lock_path()):
+        entries = _prune_dead(_read_entries(state_path))
+        kept = [
+            entry
+            for entry in entries
+            if entry.get("pid") != pid
+            or str(entry.get("lease_id") or "") in live_lease_ids
+        ]
+        dropped = len(entries) - len(kept)
+        if dropped:
+            _write_entries(state_path, kept)
+    return dropped
+
+
 def active_session_registry_snapshot() -> list[dict[str, Any]]:
     """Return the pruned active-session registry for diagnostics/tests."""
     state_path = _state_path()

@@ -517,6 +517,27 @@ def _claim_active_session_slot(
         return None, None
 
 
+def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
+    """Claim this session's cap slot on its first real turn; None when ok.
+
+    Session creation and resume deliberately do not claim a slot. Idle desktop
+    tabs and abandoned drafts are not active work and must not starve messaging
+    gateways that share the same cap. The first submitted turn claims the slot,
+    mirroring the lazy session-row contract.
+    """
+    if session.get("active_session_lease") is not None:
+        return None
+    lease, limit_message = _claim_active_session_slot(
+        str(session.get("session_key") or ""),
+        live_session_id=sid,
+        surface=_session_source(session),
+    )
+    if limit_message is not None:
+        return limit_message
+    session["active_session_lease"] = lease
+    return None
+
+
 def _release_active_session_slot(session: dict | None) -> None:
     if not session:
         return

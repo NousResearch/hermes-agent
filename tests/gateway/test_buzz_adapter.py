@@ -19,6 +19,7 @@ npub_to_hex = _buzz_mod.npub_to_hex
 _normalize_user_ref = _buzz_mod._normalize_user_ref
 _cli_error_message = _buzz_mod._cli_error_message
 _resolve_private_key = _buzz_mod._resolve_private_key
+_resolve_auth_tag = _buzz_mod._resolve_auth_tag
 check_requirements = _buzz_mod.check_requirements
 validate_config = _buzz_mod.validate_config
 register = _buzz_mod.register
@@ -46,6 +47,7 @@ _ENV_VARS = (
     "BUZZ_AUTH_TAG",
     "BUZZ_CLI_PATH",
     "BUZZ_CREDENTIALS_FILE",
+    "BUZZ_AUTH_TAG",
 )
 
 
@@ -926,6 +928,20 @@ class TestCredentialResolution:
         monkeypatch.setenv("BUZZ_CREDENTIALS_FILE", str(creds))
         assert _resolve_private_key() == "nsec1fromfile"
 
+    def test_owner_auth_tag_from_credentials_file(self, monkeypatch, tmp_path):
+        tag = ["auth", "b" * 64, "", "c" * 128]
+        creds = tmp_path / "agent_credentials.json"
+        creds.write_text(json.dumps({"nsec": "nsec1fromfile", "auth_tag": tag}), encoding="utf-8")
+        monkeypatch.setenv("BUZZ_CREDENTIALS_FILE", str(creds))
+        assert json.loads(_resolve_auth_tag()) == tag
+
+    def test_invalid_owner_auth_tag_fails_closed(self, monkeypatch, tmp_path):
+        creds = tmp_path / "agent_credentials.json"
+        creds.write_text(json.dumps({"nsec": "nsec1fromfile", "auth_tag": ["bad"]}), encoding="utf-8")
+        monkeypatch.setenv("BUZZ_CREDENTIALS_FILE", str(creds))
+        with pytest.raises(ValueError, match="auth tag"):
+            _resolve_auth_tag()
+
 
 # ── Env enablement / registration / standalone send ──────────────────────
 
@@ -969,8 +985,8 @@ class TestStandaloneSend:
 
         captured = {}
 
-        async def fake_exec(cli_path, args, *, relay_url, private_key, input_text=None, timeout=30.0):
-            captured.update(cli_path=cli_path, args=args, relay_url=relay_url, input_text=input_text)
+        async def fake_exec(cli_path, args, *, relay_url, private_key, auth_tag="", input_text=None, timeout=30.0):
+            captured.update(cli_path=cli_path, args=args, relay_url=relay_url, auth_tag=auth_tag, input_text=input_text)
             return 0, json.dumps({"accepted": True, "event_id": "evt-cron", "message": ""}), ""
 
         monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)

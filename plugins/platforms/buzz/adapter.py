@@ -361,12 +361,47 @@ def _resolve_private_key(extra: Optional[dict] = None) -> str:
     return ""
 
 
+def _resolve_auth_tag(extra: Optional[dict] = None) -> str:
+    """Resolve and validate the optional NIP-OA owner-attestation tag."""
+    configured = os.getenv("BUZZ_AUTH_TAG", "").strip()
+    if configured:
+        raw: Any = configured
+    else:
+        credentials_file = os.getenv("BUZZ_CREDENTIALS_FILE", "").strip() or (extra or {}).get(
+            "credentials_file", ""
+        )
+        if not credentials_file:
+            return ""
+        try:
+            data = json.loads(Path(credentials_file).expanduser().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return ""
+        if not isinstance(data, dict) or "auth_tag" not in data:
+            return ""
+        raw = data["auth_tag"]
+
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Buzz auth tag is not valid JSON") from exc
+    if (
+        not isinstance(raw, list)
+        or len(raw) != 4
+        or raw[0] != "auth"
+        or not all(isinstance(part, str) for part in raw)
+    ):
+        raise ValueError("Buzz auth tag must be a four-string auth tag")
+    return json.dumps(raw, separators=(",", ":"))
+
+
 async def _exec_buzz(
     cli_path: str,
     args: List[str],
     *,
     relay_url: str,
     private_key: str,
+    auth_tag: str = "",
     input_text: Optional[str] = None,
     timeout: float = _CLI_TIMEOUT,
 ) -> Tuple[int, str, str]:
@@ -379,6 +414,9 @@ async def _exec_buzz(
     env = os.environ.copy()
     env["BUZZ_RELAY_URL"] = relay_url
     env["BUZZ_PRIVATE_KEY"] = private_key
+    env.pop("BUZZ_AUTH_TAG", None)
+    if auth_tag:
+        env["BUZZ_AUTH_TAG"] = auth_tag
     proc = await asyncio.create_subprocess_exec(
         cli_path,
         *args,
@@ -512,6 +550,7 @@ class BuzzAdapter(BasePlatformAdapter):
         # never logged).  connect() re-resolves it to fail fast with a clear
         # error when it is missing.
         self._private_key: str = ""
+        self._auth_tag: str = ""
 
         # Identity — filled in by connect() from ``buzz users get``
         self._self_pubkey: str = ""
@@ -554,11 +593,13 @@ class BuzzAdapter(BasePlatformAdapter):
     async def _run_cli(self, args: List[str], *, input_text: Optional[str] = None) -> Tuple[int, str, str]:
         if not self._private_key:
             self._private_key = _resolve_private_key(self._extra)
+            self._auth_tag = _resolve_auth_tag(self._extra)
         return await _exec_buzz(
             self.cli_path,
             args,
             relay_url=self.relay_url,
             private_key=self._private_key,
+            auth_tag=self._auth_tag,
             input_text=input_text,
         )
 
@@ -574,7 +615,13 @@ class BuzzAdapter(BasePlatformAdapter):
             logger.error("Buzz: buzz CLI binary not found (set BUZZ_CLI_PATH or put 'buzz' on PATH)")
             self._set_fatal_error("cli_missing", "buzz CLI binary not found", retryable=False)
             return False
-        self._private_key = _resolve_private_key(self._extra)
+        try:
+            self._private_key = _resolve_private_key(self._extra)
+            self._auth_tag = _resolve_auth_tag(self._extra)
+        except ValueError as exc:
+            logger.error("Buzz: invalid owner-auth configuration — %s", exc)
+            self._set_fatal_error("config_invalid", str(exc), retryable=False)
+            return False
         if not self._private_key:
             logger.error("Buzz: no private key (set BUZZ_PRIVATE_KEY or a credentials file)")
             self._set_fatal_error("config_missing", "BUZZ_PRIVATE_KEY must be set", retryable=False)
@@ -885,12 +932,14 @@ class BuzzAdapter(BasePlatformAdapter):
         # multiplex profile a missing tag fails closed to "" instead of
         # attaching the default profile's tag from os.environ, while
         # single-profile and unscoped default-profile reads keep the legacy
-        # env behavior (the wrapper falls back to os.environ there).
+        # env behavior. ``self._auth_tag`` is populated by connect() via
+        # ``_resolve_auth_tag`` (scope-aware read + credentials-file
+        # fallback, #79514).
         event = build_auth_event(
             private_key=self._private_key,
             challenge=str(message[1]),
             relay_url=self._websocket_url(),
-            auth_tag_json=_get_scoped_secret("BUZZ_AUTH_TAG", "") or "",
+            auth_tag_json=self._auth_tag,
         )
         await websocket.send(json.dumps(["AUTH", event], separators=(",", ":")))
         while True:
@@ -1549,6 +1598,10 @@ async def _standalone_send(
     relay = (_relay_raw or extra.get("relay_url", "")).strip()
     private_key = _resolve_private_key(extra)
     _cli_raw = _scoped_platform_setting("BUZZ_CLI_PATH", extra, "cli_path")
+    try:
+        auth_tag = _resolve_auth_tag(extra)
+    except ValueError as exc:
+        return {"error": f"Buzz standalone send: {exc}"}
     cli_path = _resolve_cli_path(
         str(_cli_raw or "").strip() or str(extra.get("cli_path", "") or "")
     )
@@ -1568,7 +1621,12 @@ async def _standalone_send(
         args += ["--file", str(path)]
     try:
         code, out, err = await _exec_buzz(
-            cli_path, args, relay_url=relay, private_key=private_key, input_text=message
+            cli_path,
+            args,
+            relay_url=relay,
+            private_key=private_key,
+            auth_tag=auth_tag,
+            input_text=message,
         )
     except asyncio.CancelledError:
         raise

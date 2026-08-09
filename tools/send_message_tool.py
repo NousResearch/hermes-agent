@@ -157,6 +157,23 @@ def _authorize_relay_target(platform_name: str, chat_id, thread_id=None, *,
         )
 
 
+def _reaction_fn(adapter, remove: bool):
+    """The adapter's reaction coroutine, or None when reactions are not on offer.
+
+    Capability is the ``SUPPORTS_REACTIONS`` flag, not method presence: the base mixin always
+    defines both coroutines, so only a subclass-declared flag (or a pre-flag override) counts.
+    """
+    fn_name = "remove_reaction" if remove else "add_reaction"
+    react_fn = getattr(adapter, fn_name, None)
+    if not callable(react_fn):
+        return None
+    from gateway.platforms.base_reactions import ReactionSupportMixin
+    flag_owner = next((k for k in type(adapter).__mro__ if "SUPPORTS_REACTIONS" in vars(k)), None)
+    if flag_owner is not None and flag_owner is not ReactionSupportMixin:
+        return react_fn if flag_owner.SUPPORTS_REACTIONS else None
+    return react_fn if getattr(react_fn, "__func__", react_fn) is not getattr(ReactionSupportMixin, fn_name) else None
+
+
 def _handle_react(args, remove=False):
     """Attach (``remove=True``: retract) an emoji reaction via the live gateway adapter; no
     standalone fallback because reacting needs the adapter's live message-id state."""
@@ -190,16 +207,23 @@ def _handle_react(args, remove=False):
     if _relay_denial:
         return tool_error(_relay_denial)
 
-    _, adapter = _live_adapter(platform)
+    runner, adapter = _live_adapter(platform)
     if adapter is None:
         return tool_error(f"Reactions require a live {platform_name} adapter in the running "
                           "gateway (not available from cron/standalone contexts).")
-    react_fn = getattr(adapter, "remove_reaction" if remove else "add_reaction", None)
-    if not callable(react_fn):
+    react_fn = _reaction_fn(adapter, remove)
+    if react_fn is None:
         return tool_error(f"Platform '{platform_name}' does not support message reactions.")
     try:
         from model_tools import _run_async
-        result = _run_async(react_fn(chat_id=chat_id, message_id=message_id, **({} if remove else {"emoji": emoji})))
+        # Adapter coroutines touch state bound to the GATEWAY loop (its Bot session, bridge aiohttp
+        # session), so awaiting them from this worker's loop deadlocks — same reason `send` routes
+        # through _dispatch_on_gateway_loop. Authorization above is already done.
+        kwargs = {"chat_id": chat_id, "message_id": message_id}
+        if not remove:
+            kwargs["emoji"] = emoji
+        result = _run_async(_dispatch_on_gateway_loop(
+            runner, lambda: react_fn(**kwargs), "send_message: failed to schedule reaction on gateway loop"))
     except Exception as e:
         return json.dumps(_error(f"Reaction failed: {e}"))
     return json.dumps(result if isinstance(result, dict) else {"success": bool(result)})

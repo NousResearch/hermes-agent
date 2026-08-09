@@ -930,6 +930,27 @@ app.post('/edit', async (req, res) => {
   }
 });
 
+// React to a normal WhatsApp message cached by the bridge.
+// Pass an empty `emoji` ("") to retract a previously-sent reaction.
+app.post('/react', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+  const { chatId, messageId, emoji } = req.body;
+  if (!chatId || !messageId || emoji === undefined) {
+    return res.status(400).json({ error: 'chatId, messageId, and emoji are required' });
+  }
+  const target = messageStore.get(messageId);
+  if (!target) return res.status(404).json({ error: 'Referenced message not found in bridge cache' });
+  try {
+    const sent = await sock.sendMessage(chatId, { react: { text: emoji, key: target.key } });
+    trackSentMessageId(sent);
+    res.json({ success: true, messageId: sent?.key?.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Send media (image, video, document) natively
 app.post('/send-media', async (req, res) => {
   if (!sock || connectionState !== 'connected') {

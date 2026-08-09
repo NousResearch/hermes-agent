@@ -527,6 +527,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     RICH_MESSAGE_MAX_CHARS = 32768  # Bot API 10.1 rich cap; above it use legacy chunking
     _SPLIT_THRESHOLD = 4000  # chunk near this length ⇒ a client-side split continuation is almost certain
+    # set_message_reaction exists here, but the automatic lifecycle 👀/👍 indicators are gated
+    # separately by TELEGRAM_REACTIONS; add_reaction is the unified agent-facing contract.
+    SUPPORTS_REACTIONS = True
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     HELD_INBOUND_MAX = 64  # inbound events held across a disconnect window; oldest dropped first
     _GENERAL_TOPIC_THREAD_ID = "1"
@@ -7171,6 +7174,25 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         if configured is None:
             return False
         return str(configured).lower() not in {"false", "0", "no"}
+
+    # -- Message reactions (unified agent-facing contract) --
+
+    async def add_reaction(self, chat_id: str, emoji: str, message_id: Optional[str] = None) -> dict[str, Any]:
+        """Set the bot's reaction on a message. Telegram replaces all bot reactions in one call and
+        has no "react to the latest" affordance, so an explicit ``message_id`` is required."""
+        if not message_id:
+            return {"success": False, "error": "telegram requires an explicit message_id to react"}
+        if await self._set_reaction(chat_id, message_id, emoji):
+            return {"success": True, "message_id": message_id}
+        return {"success": False, "error": "telegram set_message_reaction failed"}
+
+    async def remove_reaction(self, chat_id: str, message_id: Optional[str] = None) -> dict[str, Any]:
+        """Clear the bot's reactions from a message (explicit ``message_id`` required)."""
+        if not message_id:
+            return {"success": False, "error": "telegram requires an explicit message_id to unreact"}
+        if await self._clear_reactions(chat_id, message_id):
+            return {"success": True, "message_id": message_id}
+        return {"success": False, "error": "telegram clear reactions failed"}
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: Optional[str]) -> bool:
         """Set a single emoji reaction (``None`` clears all bot-set reactions, the documented Bot API way)."""

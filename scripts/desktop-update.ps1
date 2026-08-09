@@ -9,160 +9,330 @@
 # published. In practice binaries go months stale and users hit long-fixed
 # bugs on every update (the 2026-08-09 incident chain).
 #
-# This script inverts that: it lives in the repo checkout, so EVERY
-# `hermes update` refreshes the very code that drives the next update. The
-# Desktop spawns it detached (see resolveUpdateScriptHandoff in
-# apps/desktop/electron/main.ts) and exits; only PowerShell itself -- an OS
-# component -- is "frozen".
+# This script lives in the repo checkout, so EVERY `hermes update` refreshes
+# the very code that drives the next update. The Desktop spawns it through a
+# `cmd start` wrapper (see wrapHandoffForDetachedConsole in
+# apps/desktop/electron/updater-process.ts -- a bare detached+hidden
+# powershell dies before -File runs) and exits; only PowerShell itself -- an
+# OS component -- is "frozen".
 #
 # CONTRACT (keep in sync with apps/desktop/electron/main.ts):
-#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\desktop-update.ps1
+#   cmd /d /s /c start "" /min powershell -NoProfile -ExecutionPolicy Bypass
+#     -File scripts\desktop-update.ps1
 #     -InstallRoot <path>   repo checkout (HERMES_HOME\hermes-agent)
 #     -Branch <ref>         branch to update against
 #     -DesktopPid <pid>     the Electron main process to wait out
 #     [-RelaunchExe <path>] Hermes.exe to start when done (omit = no relaunch)
+#     [-NoUi]               headless (tests); default shows a progress window
 #     [-NoMarkerCleanup]    leave .hermes-update-in-progress in place (tests)
 #
-# The Desktop pre-writes HERMES_HOME\.hermes-update-in-progress with THIS
-# process's pid before quitting. Contracts that already exist make that safe:
-#   * hermes_cli/update_lock.py `acquire` treats a live marker owned by a
-#     process ANCESTOR as its own orchestrator -- our `hermes update` child
-#     adopts the claim instead of refusing (no HANDOFF_PID_ENV needed).
-#   * electron/update-marker.ts gates backend startup on the marker, so a
-#     relaunched Desktop parks instead of spawning a venv-locking backend
-#     into the update window.
-# We delete the marker on every exit path; a crash self-heals via the
-# 20-minute staleness ceiling both readers enforce.
+# SAFETY POSTURE: both preflight gates FAIL CLOSED. A Desktop that never
+# exits, or a venv shim that never unlocks, aborts the hand-off without
+# mutating the install -- a skipped update is recoverable, a half-updated
+# venv is not. Every exit path (success, abort, crash) writes
+# .hermes-update-result.json for the relaunched Desktop to surface, and
+# relaunches the Desktop so the user is never left stranded.
+#
+# Marker: we claim HERMES_HOME\.hermes-update-in-progress with OUR pid as
+# step 0 (the wrapper cmd.exe pid the Desktop saw is useless -- it exits
+# immediately). hermes_cli/update_lock.py's ancestry rule lets our
+# `hermes update` child adopt the claim; electron/update-marker.ts parks a
+# relaunched Desktop on it. Cleanup only removes the marker while WE still
+# own it (a handoff partner that rewrote it keeps its claim).
 
 param(
     [Parameter(Mandatory = $true)][string]$InstallRoot,
     [string]$Branch = "main",
     [int]$DesktopPid = 0,
     [string]$RelaunchExe = "",
+    [switch]$NoUi,
     [switch]$NoMarkerCleanup
 )
 
 $ErrorActionPreference = "Continue"
 $HermesHome = Split-Path -Parent $InstallRoot
 $MarkerPath = Join-Path $HermesHome ".hermes-update-in-progress"
-$LogPath = Join-Path $HermesHome "logs\desktop-update-handoff.log"
+$LogDir = Join-Path $HermesHome "logs"
+$LogPath = Join-Path $LogDir "desktop-update-handoff.log"
+$ResultPath = Join-Path $HermesHome ".hermes-update-result.json"
+$script:Ui = $null
 
 function Write-HandoffLog([string]$Message) {
     $line = "{0:yyyy-MM-ddTHH:mm:ssK} {1}" -f (Get-Date), $Message
     try { Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8 } catch {}
     Write-Host $line
+    if ($script:Ui) {
+        try {
+            $script:Ui.Box.AppendText($Message + "`r`n")
+            [System.Windows.Forms.Application]::DoEvents()
+        } catch {}
+    }
 }
 
-function Remove-Marker {
+function Show-ProgressWindow {
+    if ($NoUi) { return }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms | Out-Null
+        Add-Type -AssemblyName System.Drawing | Out-Null
+        $form = New-Object System.Windows.Forms.Form
+        $form.Text = "Hermes Update"
+        $form.Size = New-Object System.Drawing.Size(720, 420)
+        $form.StartPosition = "CenterScreen"
+        $form.ControlBox = $false
+        $form.TopMost = $true
+        $label = New-Object System.Windows.Forms.Label
+        $label.Text = "Updating Hermes -- do not close this window. Hermes restarts automatically when the update finishes."
+        $label.Dock = "Top"
+        $label.Height = 34
+        $label.Padding = New-Object System.Windows.Forms.Padding(8, 8, 8, 0)
+        $bar = New-Object System.Windows.Forms.ProgressBar
+        $bar.Style = "Marquee"
+        $bar.MarqueeAnimationSpeed = 30
+        $bar.Dock = "Top"
+        $bar.Height = 18
+        $box = New-Object System.Windows.Forms.TextBox
+        $box.Multiline = $true
+        $box.ReadOnly = $true
+        $box.ScrollBars = "Vertical"
+        $box.Dock = "Fill"
+        $box.Font = New-Object System.Drawing.Font("Consolas", 9)
+        $form.Controls.Add($box)
+        $form.Controls.Add($bar)
+        $form.Controls.Add($label)
+        $form.Show()
+        [System.Windows.Forms.Application]::DoEvents()
+        $script:Ui = [pscustomobject]@{ Form = $form; Box = $box }
+    } catch {
+        # Headless session / WinForms unavailable: degrade to log-only.
+        $script:Ui = $null
+    }
+}
+
+function Close-ProgressWindow {
+    if ($script:Ui) {
+        try { $script:Ui.Form.Close() } catch {}
+        $script:Ui = $null
+    }
+}
+
+function Write-Result([bool]$Ok, [int]$Code, [string]$Message) {
+    # Consumed (read + deleted) by the relaunched Desktop on boot so the
+    # user actually SEES how a detached update ended.
+    try {
+        $obj = @{
+            ok         = $Ok
+            exit_code  = $Code
+            message    = $Message
+            branch     = $Branch
+            finished_at = [int][double]::Parse((Get-Date -UFormat %s), [System.Globalization.CultureInfo]::InvariantCulture)
+        } | ConvertTo-Json -Compress
+        [System.IO.File]::WriteAllText($ResultPath, $obj)
+    } catch {}
+}
+
+function Remove-MarkerIfOwned {
     if ($NoMarkerCleanup) { return }
     try {
         if (Test-Path -LiteralPath $MarkerPath) {
-            Remove-Item -LiteralPath $MarkerPath -Force -ErrorAction SilentlyContinue
-            Write-HandoffLog "removed update marker"
+            $firstLine = (Get-Content -LiteralPath $MarkerPath -TotalCount 1 -ErrorAction SilentlyContinue)
+            if ("$firstLine".Trim() -eq "$PID") {
+                Remove-Item -LiteralPath $MarkerPath -Force -ErrorAction SilentlyContinue
+                Write-HandoffLog "removed update marker (owned)"
+            } else {
+                Write-HandoffLog "leaving update marker: owned by pid '$firstLine', not us ($PID)"
+            }
         }
     } catch {}
 }
 
+function Start-DesktopRelaunch {
+    if ($RelaunchExe -and (Test-Path -LiteralPath $RelaunchExe)) {
+        Write-HandoffLog "relaunching desktop: $RelaunchExe"
+        try {
+            Start-Process -FilePath $RelaunchExe -WorkingDirectory (Split-Path -Parent $RelaunchExe) | Out-Null
+        } catch {
+            Write-HandoffLog "WARNING: desktop relaunch failed: $($_.Exception.Message)"
+        }
+    }
+}
+
+function Invoke-StreamedHermes([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
+    # Start-Process + output file + poll keeps the WinForms window pumping
+    # during long silent stretches (pip installs); a blocking pipeline would
+    # freeze the marquee. Returns @{ Code; Output }.
+    $outFile = Join-Path $env:TEMP ("hermes-handoff-{0}-{1}.out" -f $Tag, $PID)
+    $errFile = Join-Path $env:TEMP ("hermes-handoff-{0}-{1}.err" -f $Tag, $PID)
+    Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    # System.Diagnostics.Process directly: Start-Process's .ExitCode is
+    # unreliably $null under PS 5.1 even with the Handle-touch workaround.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Exe
+    # .Arguments string (PS 5.1 / .NET Framework has no ArgumentList).
+    # Args here are fixed flags + a branch ref; quote each defensively.
+    $psi.Arguments = ($HermesArgs | ForEach-Object { '"{0}"' -f ($_ -replace '"', '\"') }) -join ' '
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $outWriter = [System.IO.File]::CreateText($outFile)
+    $errWriter = [System.IO.File]::CreateText($errFile)
+    # Pump synchronously in small reads so the UI stays alive; stderr is
+    # drained at the end (hermes update is stdout-dominant).
+    while (-not $proc.HasExited) {
+        while (-not $proc.StandardOutput.EndOfStream) {
+            $ln = $proc.StandardOutput.ReadLine()
+            if ($null -ne $ln) {
+                $outWriter.WriteLine($ln)
+                if ($ln.Trim()) { Write-HandoffLog ("{0}| {1}" -f $Tag, $ln) }
+            }
+            if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
+        }
+        Start-Sleep -Milliseconds 150
+        if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
+    }
+    while (-not $proc.StandardOutput.EndOfStream) {
+        $ln = $proc.StandardOutput.ReadLine()
+        if ($null -ne $ln) {
+            $outWriter.WriteLine($ln)
+            if ($ln.Trim()) { Write-HandoffLog ("{0}| {1}" -f $Tag, $ln) }
+        }
+    }
+    $errText = $proc.StandardError.ReadToEnd()
+    if ($errText) {
+        $errWriter.Write($errText)
+        foreach ($ln in ($errText -split "`r?`n")) {
+            if ($ln.Trim()) { Write-HandoffLog ("{0}!| {1}" -f $Tag, $ln) }
+        }
+    }
+    $outWriter.Close(); $errWriter.Close()
+    $proc.WaitForExit()
+    $code = $proc.ExitCode
+    $all = ""
+    try { $all = [System.IO.File]::ReadAllText($outFile) } catch {}
+    if ($errText) { $all += "`n" + $errText }
+    Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    return @{ Code = $code; Output = $all }
+}
+
+$finalCode = 1
+$finalMsg = "update did not complete"
 try {
+    New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
+    Remove-Item -LiteralPath $ResultPath -Force -ErrorAction SilentlyContinue
+    Show-ProgressWindow
     Write-HandoffLog "hand-off start: root=$InstallRoot branch=$Branch desktopPid=$DesktopPid pid=$PID"
 
     # -- 0. Claim the update marker with OUR pid ---------------------------
-    # The Desktop spawns us through a `cmd start` wrapper (a console-subsystem
-    # child needs its own console to survive the parent's exit), so the pid
-    # the Desktop observed is the short-lived cmd.exe -- useless as a marker
-    # owner. We claim it ourselves as step 0: `hermes update` (our child)
-    # adopts the claim via update_lock.py's process-ancestry rule, and a
-    # relaunched Desktop parks on it (update-marker.ts) instead of spawning a
-    # backend into the update window. Unix seconds + pid, same format as
-    # every other writer.
     try {
         $epoch = [int][double]::Parse((Get-Date -UFormat %s), [System.Globalization.CultureInfo]::InvariantCulture)
-        # WriteAllText for byte-exact LF framing: Set-Content/Add-Content emit
-        # CRLF, and the marker contract (Rust/TS/Python readers) is "<pid>\n<ts>\n".
+        # WriteAllText for byte-exact LF framing: Set-Content emits CRLF and
+        # the marker contract (Rust/TS/Python readers) is "<pid>\n<ts>\n".
         [System.IO.File]::WriteAllText($MarkerPath, "$PID`n$epoch`n")
         Write-HandoffLog "claimed update marker (pid $PID)"
     } catch {
         Write-HandoffLog "WARNING: could not write update marker: $($_.Exception.Message)"
     }
 
-    # -- 1. Wait for the Desktop to actually exit -------------------------
-    # The Desktop quits right after spawning us, but Electron teardown is
-    # asynchronous. Bounded wait; a Desktop that never exits is a bug we
-    # surface rather than fight.
+    # -- 1. Wait for the Desktop to exit (FAIL CLOSED) ----------------------
     if ($DesktopPid -gt 0) {
         $deadline = (Get-Date).AddSeconds(30)
         while ((Get-Date) -lt $deadline) {
             $proc = Get-Process -Id $DesktopPid -ErrorAction SilentlyContinue
             if (-not $proc) { break }
             Start-Sleep -Milliseconds 300
+            if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
         }
-        $still = Get-Process -Id $DesktopPid -ErrorAction SilentlyContinue
-        if ($still) {
-            Write-HandoffLog "WARNING: desktop pid $DesktopPid still alive after 30s; proceeding (hermes update has its own guards)"
-        } else {
-            Write-HandoffLog "desktop exited"
+        if (Get-Process -Id $DesktopPid -ErrorAction SilentlyContinue) {
+            # A live Desktop means a live backend re-locking the venv at any
+            # moment. Updating under it is how installs brick. Abort.
+            $finalCode = 4
+            $finalMsg = "Update aborted: the Hermes window (pid $DesktopPid) did not exit within 30s. Nothing was changed. Close Hermes fully and try again."
+            Write-HandoffLog $finalMsg
+            exit $finalCode
         }
+        Write-HandoffLog "desktop exited"
     }
 
-    # -- 2. Wait for the venv shim to unlock ------------------------------
-    # Mirrors the Rust updater's is_locked(): a running exe refuses O_RDWR.
+    # -- 2. Wait for the venv shim to unlock (FAIL CLOSED) ------------------
     $shim = Join-Path $InstallRoot "venv\Scripts\hermes.exe"
     if (Test-Path -LiteralPath $shim) {
+        $unlocked = $false
         $deadline = (Get-Date).AddSeconds(20)
         while ((Get-Date) -lt $deadline) {
             try {
                 $fs = [System.IO.File]::Open($shim, 'Open', 'ReadWrite', 'None')
                 $fs.Close()
-                Write-HandoffLog "venv shim unlocked"
+                $unlocked = $true
                 break
             } catch {
                 Start-Sleep -Milliseconds 400
+                if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
             }
         }
+        if (-not $unlocked) {
+            # Something still maps the venv. --force-ing past it guarantees a
+            # half-updated venv (the exact 2026-08-09 Access-denied brick).
+            $finalCode = 5
+            $finalMsg = "Update aborted: another process is still holding the Hermes install open (venv\Scripts\hermes.exe locked after 20s). Nothing was changed. Close other Hermes windows/terminals and try again."
+            Write-HandoffLog $finalMsg
+            exit $finalCode
+        }
+        Write-HandoffLog "venv shim unlocked"
     }
 
-    # -- 3. Run the update from the CURRENT checkout ----------------------
-    # hermes update handles everything downstream: gateway pause, venv-holder
-    # guard (with orphan reap), dep sync, desktop rebuild, skills/config sync,
-    # gateway restart. --force skips only the hermes.exe shim guard, which by
-    # this point is provably unlocked (step 2); the venv-python holder guard
-    # stays active. Our marker claim is adopted by the child via the
-    # process-ancestry rule in hermes_cli/update_lock.py.
+    # -- 3. Run the update from the CURRENT checkout ------------------------
+    # --force skips only the hermes.exe shim guard, which step 2 just PROVED
+    # is unlocked; the venv-python holder guard (orphan reap included) stays
+    # active. Our marker claim is adopted by the child via update_lock.py's
+    # process-ancestry rule.
     $hermesExe = Join-Path $InstallRoot "venv\Scripts\hermes.exe"
     if (-not (Test-Path -LiteralPath $hermesExe)) {
-        Write-HandoffLog "ERROR: $hermesExe missing - install too broken for the script hand-off; falling back is the Desktop's job"
-        exit 3
+        $finalCode = 3
+        $finalMsg = "Update aborted: $hermesExe is missing. The install needs repair (run the Hermes installer or `hermes doctor`)."
+        Write-HandoffLog $finalMsg
+        exit $finalCode
     }
-    Write-HandoffLog "running: hermes update --yes --gateway --force --branch $Branch"
-    & $hermesExe update --yes --gateway --force --branch $Branch 2>&1 | ForEach-Object {
-        Write-HandoffLog ("update| " + $_)
-    }
-    $updateExit = $LASTEXITCODE
-    Write-HandoffLog "hermes update exit code: $updateExit"
+    $updateArgs = @("update", "--yes", "--gateway", "--force", "--branch", $Branch)
+    Write-HandoffLog ("running: hermes " + ($updateArgs -join " "))
+    $res = Invoke-StreamedHermes $hermesExe $updateArgs "update"
+    Write-HandoffLog "hermes update exit code: $($res.Code)"
 
-    if ($updateExit -ne 0) {
+    if ($res.Code -ne 0 -and $res.Code -ne 2) {
         # One retry for the update-boundary class (fresh code on disk, stale
-        # code in memory -- same rationale as the Tauri updater's retry).
-        # Skip for exit 2: "close all Hermes windows" is not retryable.
-        if ($updateExit -ne 2) {
-            Write-HandoffLog "first attempt failed; retrying once (freshly pulled fix loads on the second run)"
-            & $hermesExe update --yes --gateway --force --branch $Branch 2>&1 | ForEach-Object {
-                Write-HandoffLog ("update| " + $_)
-            }
-            $updateExit = $LASTEXITCODE
-            Write-HandoffLog "retry exit code: $updateExit"
-        }
+        # code in memory). Exit 2 ("close all Hermes windows") is not retryable.
+        Write-HandoffLog "first attempt failed; retrying once (freshly pulled fix loads on the second run)"
+        $res = Invoke-StreamedHermes $hermesExe $updateArgs "update"
+        Write-HandoffLog "retry exit code: $($res.Code)"
     }
 
-    # -- 4. Relaunch the Desktop ------------------------------------------
-    # Marker must be gone BEFORE relaunch or the new Desktop parks on it.
-    Remove-Marker
-    if ($RelaunchExe -and (Test-Path -LiteralPath $RelaunchExe)) {
-        Write-HandoffLog "relaunching desktop: $RelaunchExe"
-        Start-Process -FilePath $RelaunchExe -WorkingDirectory (Split-Path -Parent $RelaunchExe) | Out-Null
+    # -- 4. Truthful completion: don't trust exit 0 -------------------------
+    # `hermes update` treats a Desktop GUI build failure as NON-fatal (prints
+    # a one-line warning, exits 0). For a Desktop-DRIVEN update that warning
+    # is fatal: we would relaunch the old exe and call it success. Detect it,
+    # retry the build once, and propagate honestly.
+    $desktopBuildFailed = $false
+    if ($res.Code -eq 0 -and $res.Output -match "Desktop build failed") {
+        Write-HandoffLog "hermes update reported a desktop build failure (non-fatal there, fatal here); retrying build"
+        $rebuild = Invoke-StreamedHermes $hermesExe @("desktop", "--force-build", "--build-only") "rebuild"
+        Write-HandoffLog "desktop rebuild exit code: $($rebuild.Code)"
+        if ($rebuild.Code -ne 0) { $desktopBuildFailed = $true }
     }
 
-    exit $updateExit
+    if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
+        $finalCode = 0
+        $finalMsg = "Update complete."
+    } elseif ($desktopBuildFailed) {
+        $finalCode = 6
+        $finalMsg = "Code and dependencies updated, but the Desktop app REBUILD FAILED - you are running the previous build. Run `hermes desktop --force-build` from a terminal to retry."
+    } else {
+        $finalCode = $res.Code
+        $finalMsg = "hermes update failed (exit $($res.Code)). See logs\desktop-update-handoff.log."
+    }
+    exit $finalCode
 } finally {
-    Remove-Marker
+    Write-Result ($finalCode -eq 0) $finalCode $finalMsg
+    Remove-MarkerIfOwned
+    Close-ProgressWindow
+    Start-DesktopRelaunch
 }

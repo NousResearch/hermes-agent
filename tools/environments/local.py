@@ -357,7 +357,7 @@ _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 # child can set it explicitly in the command.
 #
 # PYTHONPATH is NOT included here — it's handled by
-# _strip_mismatched_site_packages() which removes only Hermes-owned entries,
+# _strip_hermes_owned_pythonpath() which removes only Hermes-owned entries,
 # preserving user-set paths.
 _ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONHOME")
 
@@ -519,7 +519,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         sanitized.pop(_marker, None)
 
-    _strip_mismatched_site_packages(sanitized)
+    _strip_hermes_owned_pythonpath(sanitized)
 
     _apply_windows_msys_bash_env_defaults(sanitized)
 
@@ -650,7 +650,7 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         env.pop(_marker, None)
 
-    _strip_mismatched_site_packages(env)
+    _strip_hermes_owned_pythonpath(env)
 
     _apply_windows_msys_bash_env_defaults(env)
 
@@ -1338,7 +1338,7 @@ def _make_run_env(env: dict) -> dict:
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         run_env.pop(_marker, None)
 
-    _strip_mismatched_site_packages(run_env)
+    _strip_hermes_owned_pythonpath(run_env)
 
     _apply_windows_msys_bash_env_defaults(run_env)
 
@@ -1380,6 +1380,19 @@ _hermes_venv_root: Path = Path(sys.prefix)
 #: etc.  Subprocesses that are NOT the Hermes backend don't need it and it
 #: can shadow local packages.
 _hermes_repo_root: Path = Path(__file__).resolve().parents[2]
+
+#: Alternate spellings of the repo root that Hermes launchers may emit.
+#: ``Path(__file__).resolve()`` canonicalizes symlinks/junctions, but the
+#: Windows gateway launcher deliberately renders Hermes-owned paths under
+#: the configured HERMES_HOME spelling (which may be a junction to another
+#: drive — see ``hermes_cli/gateway_windows.py::_preserve_hermes_home_path``).
+#: ``Path(__file__)`` (unresolved) keeps that spelling, so a PYTHONPATH
+#: entry written by the launcher still matches even though it differs
+#: lexically from the resolved root.
+_hermes_repo_root_aliases: tuple[Path, ...] = (
+    _hermes_repo_root,
+    Path(__file__).parents[2],
+)
 
 #: Whether the current interpreter is running inside a venv.  On Python 3.3+
 #: ``sys.base_prefix != sys.prefix`` indicates a venv (or virtualenv).
@@ -1435,7 +1448,7 @@ def _get_hermes_site_packages() -> list[Path]:
 _SITE_PACKAGES_RE = re.compile(r"(?:^|[\\/])site-packages(?:[\\/]|$)")
 
 
-def _strip_mismatched_site_packages(env: dict) -> None:
+def _strip_hermes_owned_pythonpath(env: dict) -> None:
     """Remove Hermes-owned PYTHONPATH entries from subprocess environments.
 
     The Desktop Electron process (and other Hermes launchers) prepend the
@@ -1454,7 +1467,9 @@ def _strip_mismatched_site_packages(env: dict) -> None:
 
     1. **Hermes repo root** - the path the Electron app prepends so the
        backend can ``import tools``.  Subprocesses don't need it and it can
-       shadow local packages of the same name.
+       shadow local packages of the same name.  Only the exact root is
+       stripped; direct children (``<repo>/tools`` etc.) are never injected
+       by any launcher and are treated as user paths.
 
     2. **Hermes venv site-packages** - entries under the running
        interpreter's own venv site-packages directory.  Redundant for
@@ -1506,18 +1521,20 @@ def _strip_mismatched_site_packages(env: dict) -> None:
         # --- Check 2: Hermes repo root ---
         # The Electron app prepends the repo root so ``import tools`` works
         # in the backend.  Subprocesses don't need it and it can shadow
-        # local packages of the same name.
-        if not should_strip and _is_path_under(entry_path, _hermes_repo_root):
-            # Only strip if the entry IS the repo root or a direct package
-            # dir under it (e.g. ``.../hermes-agent/tools``).  Don't strip
-            # arbitrary user paths that happen to be nested deeper.
-            rel = entry_path.resolve() if entry_path.exists() else entry_path
-            try:
-                depth = len(rel.relative_to(_hermes_repo_root).parts)
-            except (ValueError, OSError):
-                depth = -1
-            if depth <= 1:
-                should_strip = True
+        # local packages of the same name.  Only the EXACT root is stripped:
+        # no launcher injects a direct child (``<repo>/tools`` etc.) as an
+        # independent PYTHONPATH entry, and user paths that merely happen to
+        # live under the repo directory must be preserved.  Both the
+        # resolved and unresolved (HERMES_HOME/junction) spellings count as
+        # Hermes-owned.
+        if not should_strip:
+            for repo_root in _hermes_repo_root_aliases:
+                if _is_path_under(entry_path, repo_root):
+                    # Exact root only (same path), not children.
+                    rel = entry_path.relative_to(repo_root)
+                    if len(rel.parts) == 0:
+                        should_strip = True
+                    break
 
         if should_strip:
             stripped.append(entry)

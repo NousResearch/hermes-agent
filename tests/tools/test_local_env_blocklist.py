@@ -9,6 +9,7 @@ See: https://github.com/NousResearch/hermes-agent/issues/1264
 """
 
 import os
+import sys
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -321,7 +322,7 @@ class TestPythonpathSelectiveStrip:
     venv's site-packages (Python 3.11) into PYTHONPATH.  When this leaks
     into subprocesses running a different Python (e.g. 3.13), 3.11 C
     extensions appear on sys.path and crash with ImportError.
-    ``_strip_mismatched_site_packages`` surgically removes only the
+    ``_strip_hermes_owned_pythonpath`` surgically removes only the
     entries Hermes itself owns (repo root, own venv site-packages),
     preserving user paths — including user paths whose names merely
     contain another Python version.
@@ -329,7 +330,7 @@ class TestPythonpathSelectiveStrip:
 
     def test_hermes_venv_site_packages_stripped(self):
         """A site-packages entry under the Hermes venv is removed."""
-        from tools.environments.local import _strip_mismatched_site_packages
+        from tools.environments.local import _strip_hermes_owned_pythonpath
         import sys
 
         # Construct a path that looks like the Hermes venv site-packages.
@@ -342,7 +343,7 @@ class TestPythonpathSelectiveStrip:
         env = {
             "PYTHONPATH": os.pathsep.join([venv_sp, "/home/user/my-lib"]),
         }
-        _strip_mismatched_site_packages(env)
+        _strip_hermes_owned_pythonpath(env)
         assert "PYTHONPATH" in env
         entries = env["PYTHONPATH"].split(os.pathsep)
         assert venv_sp not in entries
@@ -350,10 +351,10 @@ class TestPythonpathSelectiveStrip:
 
     def test_user_pythonpath_preserved(self):
         """User PYTHONPATH entries pass through untouched."""
-        from tools.environments.local import _strip_mismatched_site_packages
+        from tools.environments.local import _strip_hermes_owned_pythonpath
         user_pp = os.pathsep.join(["/opt/my-lib", "/another/path"])
         env = {"PYTHONPATH": user_pp}
-        _strip_mismatched_site_packages(env)
+        _strip_hermes_owned_pythonpath(env)
         assert env.get("PYTHONPATH") == user_pp
 
     def test_other_version_site_packages_preserved(self):
@@ -365,7 +366,7 @@ class TestPythonpathSelectiveStrip:
         judged against the BACKEND's interpreter version (P2, #74817
         follow-up).  Regression: prior Check 1 stripped these.
         """
-        from tools.environments.local import _strip_mismatched_site_packages
+        from tools.environments.local import _strip_hermes_owned_pythonpath
         import sys
 
         # Use a version different from the running interpreter.
@@ -378,7 +379,7 @@ class TestPythonpathSelectiveStrip:
         env = {
             "PYTHONPATH": os.pathsep.join([other_sp, "/home/user/my-lib"]),
         }
-        _strip_mismatched_site_packages(env)
+        _strip_hermes_owned_pythonpath(env)
         assert "PYTHONPATH" in env
         entries = env["PYTHONPATH"].split(os.pathsep)
         assert other_sp in entries
@@ -388,11 +389,11 @@ class TestPythonpathSelectiveStrip:
         """A user's python2.7/site-packages entry is preserved — path
         ownership, not version, decides stripping (P2, #74817 follow-up).
         """
-        from tools.environments.local import _strip_mismatched_site_packages
+        from tools.environments.local import _strip_hermes_owned_pythonpath
         env = {
             "PYTHONPATH": "/old/lib/python2.7/site-packages:/home/user/lib",
         }
-        _strip_mismatched_site_packages(env)
+        _strip_hermes_owned_pythonpath(env)
         assert "PYTHONPATH" in env
         entries = env["PYTHONPATH"].split(os.pathsep)
         assert "/old/lib/python2.7/site-packages" in entries
@@ -403,14 +404,14 @@ class TestPythonpathSelectiveStrip:
         must never be stripped (P1, #74817 follow-up).  Regression: prior
         Check 1 deleted these because it keyed on the version component alone.
         """
-        from tools.environments.local import _strip_mismatched_site_packages
+        from tools.environments.local import _strip_hermes_owned_pythonpath
         user_pp = os.pathsep.join([
             "/opt/tools/python3.13/bin",
             "/opt/downloads/python3.13",
             "/custom/python3.13",
         ])
         env = {"PYTHONPATH": user_pp}
-        _strip_mismatched_site_packages(env)
+        _strip_hermes_owned_pythonpath(env)
         assert env.get("PYTHONPATH") == user_pp
 
     def test_windows_backslash_paths(self):
@@ -423,9 +424,10 @@ class TestPythonpathSelectiveStrip:
         (including site-packages paths for another Python version) are
         never destroyed.  On a real Windows host, Path splits on
         backslashes and Hermes venv site-packages entries are stripped
-        by the same Hermes-owned check.
+        by the same Hermes-owned check (covered by the Windows-only test
+        below).
         """
-        from tools.environments.local import _strip_mismatched_site_packages
+        from tools.environments.local import _strip_hermes_owned_pythonpath
         import sys
 
         pyver = f"python{sys.version_info[0]}.{sys.version_info[1]}"
@@ -436,7 +438,7 @@ class TestPythonpathSelectiveStrip:
         }
         # Mock os.pathsep to ';' (Windows) just for the strip call.
         with patch("os.pathsep", ";"):
-            _strip_mismatched_site_packages(env)
+            _strip_hermes_owned_pythonpath(env)
         assert "PYTHONPATH" in env
         entries = env["PYTHONPATH"].split(";")
         # Both survive on POSIX: user paths must always be preserved, and
@@ -444,26 +446,106 @@ class TestPythonpathSelectiveStrip:
         assert hermes_win in entries
         assert user_win in entries
 
+    @pytest.mark.windows_only
+    def test_windows_hermes_owned_paths_stripped(self):
+        """On Windows, a Hermes venv site-packages entry written with
+        backslashes is stripped by the same Hermes-owned check, while a
+        user Windows path is preserved.  Windows-only: POSIX ``Path`` does
+        not split on backslashes, so this cannot be meaningfully simulated
+        on a POSIX host."""
+        from tools.environments.local import _strip_hermes_owned_pythonpath
+        import sys
+
+        pyver = f"python{sys.version_info[0]}.{sys.version_info[1]}"
+        venv_sp = str(
+            __import__("pathlib").Path(sys.prefix) / "Lib" / "site-packages"
+        )
+        # Windows form: C:\...\venv\Lib\site-packages (backslashes)
+        hermes_win = venv_sp.replace("\\", "\\\\").replace("/", "\\\\")
+        user_win = "D:\\\\user\\\\lib"
+        env = {
+            "PYTHONPATH": ";".join([hermes_win, user_win]),
+        }
+        _strip_hermes_owned_pythonpath(env)
+        entries = env["PYTHONPATH"].split(";")
+        assert hermes_win not in entries
+        assert user_win in entries
+
     def test_empty_pythonpath_unchanged(self):
         """An empty PYTHONPATH is a no-op (falsy -> early return)."""
-        from tools.environments.local import _strip_mismatched_site_packages
+        from tools.environments.local import _strip_hermes_owned_pythonpath
         env = {"PYTHONPATH": ""}
-        _strip_mismatched_site_packages(env)
+        _strip_hermes_owned_pythonpath(env)
         # Empty string is falsy, so the function returns early without
         # modifying the dict.  The key stays as-is (empty string).
         assert env.get("PYTHONPATH") == ""
 
+    def test_mixed_ordering_user_and_hermes_preserves_user_order(self):
+        """Mixed user/Hermes/user entries: user entries survive in their
+        original relative order after Hermes-owned entries are removed."""
+        from tools.environments.local import _strip_hermes_owned_pythonpath
+        import sys
+
+        pyver = f"python{sys.version_info[0]}.{sys.version_info[1]}"
+        venv_sp = str(
+            __import__("pathlib").Path(sys.prefix) / "lib" / pyver / "site-packages"
+        )
+        local_file = Path(
+            __import__("tools.environments.local", fromlist=["__file__"]).__file__
+        ).resolve()
+        repo_root = str(local_file.parents[2])
+        env = {
+            "PYTHONPATH": os.pathsep.join([
+                "/first/user/lib",
+                repo_root,
+                "/second/user/lib",
+                venv_sp,
+                "/third/user/lib",
+            ]),
+        }
+        _strip_hermes_owned_pythonpath(env)
+        pp = env.get("PYTHONPATH", "")
+        entries = pp.split(os.pathsep) if pp else []
+        assert entries == ["/first/user/lib", "/second/user/lib", "/third/user/lib"]
+
+    def test_duplicate_hermes_entries_all_stripped(self):
+        """Every duplicate Hermes-owned entry is removed; user duplicates
+        follow the existing contract (no unrelated dedup)."""
+        from tools.environments.local import _strip_hermes_owned_pythonpath
+        import sys
+
+        pyver = f"python{sys.version_info[0]}.{sys.version_info[1]}"
+        venv_sp = str(
+            __import__("pathlib").Path(sys.prefix) / "lib" / pyver / "site-packages"
+        )
+        local_file = Path(
+            __import__("tools.environments.local", fromlist=["__file__"]).__file__
+        ).resolve()
+        repo_root = str(local_file.parents[2])
+        env = {
+            "PYTHONPATH": os.pathsep.join([
+                venv_sp,
+                "/user/lib",
+                venv_sp,  # duplicate Hermes entry
+                "/user/lib",  # duplicate user entry — preserved as-is
+            ]),
+        }
+        _strip_hermes_owned_pythonpath(env)
+        pp = env.get("PYTHONPATH", "")
+        entries = pp.split(os.pathsep) if pp else []
+        assert entries == ["/user/lib", "/user/lib"]
+
     def test_no_pythonpath_key(self):
         """Missing PYTHONPATH key is a no-op."""
-        from tools.environments.local import _strip_mismatched_site_packages
+        from tools.environments.local import _strip_hermes_owned_pythonpath
         env = {"PATH": "/usr/bin"}
-        _strip_mismatched_site_packages(env)
+        _strip_hermes_owned_pythonpath(env)
         assert "PYTHONPATH" not in env
 
     def test_all_entries_stripped_removes_key(self):
         """If all entries are Hermes-owned and stripped, PYTHONPATH key is
         removed entirely."""
-        from tools.environments.local import _strip_mismatched_site_packages
+        from tools.environments.local import _strip_hermes_owned_pythonpath
         import sys
 
         pyver = f"python{sys.version_info[0]}.{sys.version_info[1]}"
@@ -472,7 +554,7 @@ class TestPythonpathSelectiveStrip:
         )
 
         env = {"PYTHONPATH": venv_sp}
-        _strip_mismatched_site_packages(env)
+        _strip_hermes_owned_pythonpath(env)
         assert "PYTHONPATH" not in env
 
     def test_make_run_env_strips_hermes_venv_pythonpath(self):
@@ -537,11 +619,11 @@ class TestPythonpathSelectiveStrip:
     def test_scrub_child_env_strips_hermes_venv_pythonpath(self):
         """execute_code's _scrub_child_env path: after scrubbing, Hermes venv
         site-packages entries should be stripped when
-        _strip_mismatched_site_packages is applied (as the spawn path does),
+        _strip_hermes_owned_pythonpath is applied (as the spawn path does),
         while user entries (even for another Python version) are preserved.
         """
         from tools.code_execution_tool import _scrub_child_env
-        from tools.environments.local import _strip_mismatched_site_packages
+        from tools.environments.local import _strip_hermes_owned_pythonpath
         import sys
 
         pyver = f"python{sys.version_info[0]}.{sys.version_info[1]}"
@@ -558,7 +640,7 @@ class TestPythonpathSelectiveStrip:
         # The scrubber passes PYTHONPATH through (it's in _SAFE_ENV_PREFIXES).
         assert "PYTHONPATH" in scrubbed
         # Now apply the selective strip (as the spawn path does).
-        _strip_mismatched_site_packages(scrubbed)
+        _strip_hermes_owned_pythonpath(scrubbed)
         pp = scrubbed.get("PYTHONPATH", "")
         entries = pp.split(os.pathsep) if pp else []
         assert venv_sp not in entries
@@ -577,7 +659,7 @@ class TestPythonpathSelectiveStrip:
         (e.g. ``parents[1]`` resolving to ``tools/``) would cause this test
         to fail instead of silently passing.
         """
-        from tools.environments.local import _strip_mismatched_site_packages
+        from tools.environments.local import _strip_hermes_owned_pythonpath
 
         # Independently compute the real repo root: local.py lives at
         # tools/environments/local.py, so the repo root is parents[2].
@@ -587,22 +669,25 @@ class TestPythonpathSelectiveStrip:
         env = {
             "PYTHONPATH": os.pathsep.join([real_repo_root, "/home/user/my-lib"]),
         }
-        _strip_mismatched_site_packages(env)
+        _strip_hermes_owned_pythonpath(env)
         pp = env.get("PYTHONPATH", "")
         entries = pp.split(os.pathsep) if pp else []
         assert real_repo_root not in entries
         assert "/home/user/my-lib" in entries
 
-    def test_repo_root_direct_child_stripped(self):
-        """A direct child of the repo root (depth=1) is stripped.
+    def test_repo_root_direct_child_preserved(self):
+        """A direct child of the repo root (depth=1) is PRESERVED.
 
-        Check 3's depth rule is ``depth <= 1``: the repo root itself is
-        depth=0 (covered above), and a top-level package directory like
-        ``<repo>/tools`` is depth=1.  Both are stripped because Electron
-        prepends exactly these shallow paths so ``import tools`` works in
-        the backend, and they shadow user packages of the same name.
+        Independent audit of every real launcher producer (Electron
+        ``electron-main.mjs``, ``gateway/run.py::_ensure_windows_gateway_venv_imports``,
+        ``cron/scheduler.py::_windows_cron_python_invocation``,
+        ``tui_gateway/host_supervisor.py``) shows they all inject the exact
+        repo root and/or the venv site-packages — none injects
+        ``<repo>/tools`` or another direct child as an independent
+        PYTHONPATH entry.  A user path that merely happens to live under
+        the repo directory must therefore be preserved.
         """
-        from tools.environments.local import _strip_mismatched_site_packages
+        from tools.environments.local import _strip_hermes_owned_pythonpath
 
         local_file = Path(__import__("tools.environments.local", fromlist=["__file__"]).__file__).resolve()
         real_repo_root = local_file.parents[2]
@@ -611,20 +696,63 @@ class TestPythonpathSelectiveStrip:
         env = {
             "PYTHONPATH": os.pathsep.join([direct_child, "/home/user/my-lib"]),
         }
-        _strip_mismatched_site_packages(env)
+        _strip_hermes_owned_pythonpath(env)
         pp = env.get("PYTHONPATH", "")
         entries = pp.split(os.pathsep) if pp else []
-        assert direct_child not in entries
+        assert direct_child in entries
         assert "/home/user/my-lib" in entries
+
+    def test_repo_root_junction_alias_stripped(self):
+        """A PYTHONPATH entry using the unresolved (HERMES_HOME/junction)
+        spelling of the repo root is stripped.
+
+        On Windows the gateway launcher renders Hermes-owned paths under the
+        configured HERMES_HOME spelling, which may be a symlink/junction to
+        another drive (``_preserve_hermes_home_path`` in
+        ``hermes_cli/gateway_windows.py``).  ``_hermes_repo_root`` is the
+        RESOLVED physical path, so the launcher's spelling differs lexically;
+        the alias set must still recognize it as Hermes-owned.  This test
+        monkeypatches the aliases to a pair whose lexical forms differ, the
+        way a junction would, and verifies the launcher's spelling is
+        stripped while a nested user path under the same prefix is not.
+        """
+        from tools.environments.local import (
+            _strip_hermes_owned_pythonpath,
+            _hermes_repo_root_aliases,
+        )
+        from pathlib import Path as _Path
+
+        resolved_root = _Path("/data/hermes/hermes-agent")
+        junction_root = _Path("/home/u/AppData/Local/hermes/hermes-agent")
+        with patch(
+            "tools.environments.local._hermes_repo_root_aliases",
+            (resolved_root, junction_root),
+        ):
+            # Launcher spelling (junction form) of the exact repo root.
+            env = {"PYTHONPATH": str(junction_root)}
+            _strip_hermes_owned_pythonpath(env)
+            assert "PYTHONPATH" not in env
+
+            # Nested user path under the same junction prefix survives.
+            env = {"PYTHONPATH": os.pathsep.join([
+                str(junction_root / "user-data"),
+                "/home/user/my-lib",
+            ])}
+            _strip_hermes_owned_pythonpath(env)
+            pp = env.get("PYTHONPATH", "")
+            entries = pp.split(os.pathsep) if pp else []
+            assert str(junction_root / "user-data") in entries
+            assert "/home/user/my-lib" in entries
 
     def test_deep_path_under_repo_root_preserved(self):
         """A deeper path under the repo root (depth=2) is preserved.
 
         ``<repo>/tools/environments`` is depth=2, past the ``depth <= 1``
         cutoff.  Such a path is not something Electron injects and may be
-        a legitimate user library path, so it must survive Check 3.
+        a legitimate user library path, so it must survive the repo-root
+        ownership check.
         """
-        from tools.environments.local import _strip_mismatched_site_packages
+        from tools.environments.local import _strip_hermes_owned_pythonpath
 
         local_file = Path(__import__("tools.environments.local", fromlist=["__file__"]).__file__).resolve()
         real_repo_root = local_file.parents[2]
@@ -633,7 +761,7 @@ class TestPythonpathSelectiveStrip:
         env = {
             "PYTHONPATH": os.pathsep.join([deep_path, "/home/user/my-lib"]),
         }
-        _strip_mismatched_site_packages(env)
+        _strip_hermes_owned_pythonpath(env)
         pp = env.get("PYTHONPATH", "")
         entries = pp.split(os.pathsep) if pp else []
         assert deep_path in entries
@@ -695,6 +823,28 @@ class TestPythonhomeSanitized:
         that iterate it drop the variable."""
         from tools.environments.local import _ACTIVE_VENV_MARKER_VARS
         assert "PYTHONHOME" in _ACTIVE_VENV_MARKER_VARS
+
+    def test_build_subprocess_env_no_scrub_preserves_pythonhome(self):
+        """``build_subprocess_env(scrub_secrets=False)`` is the documented
+        byte-for-byte escape hatch: no key is removed, so PYTHONHOME (and
+        everything else) survives there by contract, not by omission.
+
+        Callers that explicitly opt out of scrubbing (git credential flows,
+        secret CLIs) must not have their environment silently altered — this
+        test pins that exception as intentional.
+        """
+        from tools.environments.local import build_subprocess_env
+        base = {
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/home/user",
+            "PYTHONHOME": "/opt/hermes-venv",
+            "VIRTUAL_ENV": "/opt/hermes-venv",
+            "SERVICE_TOKEN": "s3cr3t",
+        }
+        result = build_subprocess_env(base, scrub_secrets=False)
+        assert result.get("PYTHONHOME") == "/opt/hermes-venv"
+        assert result.get("VIRTUAL_ENV") == "/opt/hermes-venv"
+        assert result.get("SERVICE_TOKEN") == "s3cr3t"
 
 
 class TestProfileScopedPassthrough:

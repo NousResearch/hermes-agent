@@ -939,6 +939,26 @@ class GatewayNotificationsMixin:
             logger.error("Watch notification injection error: %s", e)
             return False
 
+    def _completion_route_available(self, evt: dict) -> bool:
+        """Prove route ownership before consuming a durable delivery attempt."""
+        from gateway.wake import adapter_supports_push
+        source = self._build_process_event_source(evt)
+        if source is not None:
+            name = getattr(source.platform, "value", str(source.platform))
+            return self._resolve_injection_adapter(name) is not None
+        if not str(evt.get("origin_session_id") or "").strip():
+            return False
+        adapter = self.adapters.get(Platform.API_SERVER)
+        return adapter is not None and not adapter_supports_push(adapter)
+
+    def _completion_route_preflight(self, evt: dict) -> bool:
+        try:
+            return self._completion_route_available(evt)
+        except Exception:
+            # Preserve the bounded claim/release retry path on resolver errors.
+            logger.exception("Async completion route preflight failed; falling back to normal delivery")
+            return True
+
     @staticmethod
     def _completion_delivery_identity(evt: dict) -> Optional[tuple[str, str, object]]:
         """Return a producer-stable identity when one is available.
@@ -1033,7 +1053,7 @@ class GatewayNotificationsMixin:
         except Exception:
             logger.debug(fail_msg, exc_info=True)
 
-    async def _preflight_completion_delivery(self, evt: dict) -> "_CompletionClaim":
+    async def _preflight_completion_delivery(self, evt: dict, *, durable_claim_id: Optional[str] = None) -> "_CompletionClaim":
         """Claim the durable row (async delegations) and verify the target before adapter acceptance.
 
         Adapter acceptance is not proof of delivery: the inner resolver can still fail closed inside
@@ -1046,7 +1066,12 @@ class GatewayNotificationsMixin:
         # completion; claiming that row here would acknowledge the FINAL result before it exists.
         if evt_type == "async_delegation" and not evt.get("task_failure_notice"):
             claim.delegation_id = str(evt.get("delegation_id") or "")
-            if claim.delegation_id:
+            if durable_claim_id is not None:
+                claim.claim_id = durable_claim_id
+            elif claim.delegation_id:
+                if not self._completion_route_preflight(evt):
+                    claim.proceed = False
+                    return claim
                 try:
                     from tools.async_delegation import claim_completion_delivery
                     claim.claim_id = f"gateway:{id(self)}:{__import__('uuid').uuid4().hex}"
@@ -1093,17 +1118,19 @@ class GatewayNotificationsMixin:
             claim.proceed, claim.early_result = False, False
         return claim
 
-    async def _deliver_completion_notification(self, synth_text: str, evt: dict) -> Optional[bool]:
+    async def _deliver_completion_notification(self, synth_text: str, evt: dict, *, _durable_claim_id: Optional[str] = None) -> Optional[bool]:
         """Deliver once per live gateway, or return False for a retry.
 
         ``True``: adapter accepted; ``False``: injection failed, claim released for retry; ``None``:
         another same-lifecycle caller owns/delivered it, or no route. No cross-process exactly-once.
         """
         identity = self._completion_delivery_identity(evt)
-        claim = await self._preflight_completion_delivery(evt)
+        claim = await self._preflight_completion_delivery(evt, durable_claim_id=_durable_claim_id)
         if not claim.proceed:
             return claim.early_result
         if identity is not None and self._completion_identity_seen(identity, claim=True):
+            if claim.claim_id:
+                self._settle_durable_claim("release", claim.delegation_id, claim.claim_id)
             return None
         accepted = False
         try:
@@ -1308,28 +1335,39 @@ class GatewayNotificationsMixin:
             return await self._deliver_completion_notification(synth_text, evt)
         from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
         primary_evt, primary_text = deliverable[0]
-        blocks = [primary_text]
+        if not self._completion_route_preflight(primary_evt):
+            return None
+        primary_claim_id = claim_event_delivery(primary_evt, f"gateway-batch-primary:{id(self)}")
+        if primary_claim_id is None:
+            return None
+        primary_claim_managed = False
         siblings: list[tuple[dict, str]] = []
-        for evt, synth_text in deliverable[1:]:
-            claim_id = claim_event_delivery(evt, f"gateway-batch:{id(self)}")
-            if claim_id is None:
-                # Another consumer owns this row: keep it out of our text so it is never double-injected.
-                continue
-            siblings.append((evt, claim_id))
-            blocks.append(synth_text)
-        if not siblings:
-            return await self._deliver_completion_notification(primary_text, primary_evt)
-        header = (
-            f"[IMPORTANT: {len(blocks)} background subagent delegations "
-            "completed for this session. Treat these results as one "
-            "completion batch and send at most one consolidated user-facing "
-            "response. If a result does not change the current conclusion, absorb it silently.]"
-        )
-        consolidated = "\n\n".join([header, *blocks])
         delivered: Optional[bool] = False
         try:
-            delivered = await self._deliver_completion_notification(consolidated, primary_evt)
+            blocks = [primary_text]
+            for evt, synth_text in deliverable[1:]:
+                claim_id = claim_event_delivery(evt, f"gateway-batch:{id(self)}")
+                if claim_id is None:
+                    continue
+                siblings.append((evt, claim_id))
+                blocks.append(synth_text)
+            header = (
+                f"[IMPORTANT: {len(blocks)} background subagent delegations "
+                "completed for this session. Treat these results as one "
+                "completion batch and send at most one consolidated user-facing "
+                "response. If a result does not change the current conclusion, absorb it silently.]"
+            )
+            consolidated = "\n\n".join([header, *blocks]) if siblings else primary_text
+            primary_claim_managed = True
+            delivered = await self._deliver_completion_notification(
+                consolidated, primary_evt, _durable_claim_id=primary_claim_id,
+            )
         finally:
+            if not primary_claim_managed:
+                self._settle_sibling_claims(
+                    [(primary_evt, primary_claim_id)], release_event_delivery,
+                    "Could not release coalesced primary durable claim",
+                )
             if delivered is True:
                 self._settle_sibling_claims(
                     siblings, complete_event_delivery, "Could not acknowledge coalesced durable completion",

@@ -884,3 +884,55 @@ def test_sibling_claimed_by_other_consumer_is_not_double_delivered(
     assert "Result for deleg_owned_1" not in delivered.text
     row = async_delegation.get_durable_delegation(events[1]["delegation_id"])
     assert row["delivery_state"] == "pending"
+
+
+@pytest.mark.parametrize('route', ['missing', 'persisted', 'cached', 'relay'])
+@pytest.mark.parametrize('batch_size', [1, 2])
+def test_durable_attempts_require_route_ownership(route, batch_size, isolated_registry):
+    """Real SQLite claims follow route proof, including opaque persisted origins."""
+    from gateway.config import GatewayConfig
+    from tools.async_delegation import get_durable_delegation
+
+    events = [_async_event(f'ownership_{i}') for i in range(batch_size)]
+    for event in events:
+        event['session_key'] = 'opaque-legacy-session'
+        _persist_pending_completion(event)
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    runner.config = GatewayConfig()
+    source = SessionSource(platform=Platform.SLACK if route == 'relay' else Platform.TELEGRAM,
+                           chat_id='12345', chat_type='dm')
+    if route in {'persisted', 'relay'}:
+        runner.session_store._entries[events[0]['session_key']] = SimpleNamespace(origin=source)
+    elif route == 'cached':
+        runner._session_sources = {events[0]['session_key']: source}
+    if route == 'relay':
+        adapter.fronts_platform = lambda platform: platform == Platform.SLACK
+        runner.adapters = {Platform.RELAY: adapter}
+    result = asyncio.run(runner._deliver_async_delegation_group(events))
+    owned = route != 'missing'
+    assert result is (True if owned else None)
+    assert adapter.handle_message.await_count == int(owned)
+    for event in events:
+        row = get_durable_delegation(event['delegation_id'])
+        assert row['delivery_state'] == ('delivered' if owned else 'pending')
+        assert row['delivery_attempts'] == int(owned)
+    assert isolated_registry.completion_queue.empty()
+
+
+def test_competing_primary_claim_leaves_batch_siblings_untouched(isolated_registry):
+    from tools.async_delegation import claim_event_delivery, get_durable_delegation
+
+    events = [_async_event(f'competing_{i}') for i in range(2)]
+    for event in events:
+        _persist_pending_completion(event)
+    owner = claim_event_delivery(events[0], 'other-consumer')
+    assert owner is not None
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    assert asyncio.run(runner._deliver_async_delegation_group(events)) is None
+    adapter.handle_message.assert_not_awaited()
+    sibling = get_durable_delegation(events[1]['delegation_id'])
+    assert sibling['delivery_state'] == 'pending'
+    assert sibling['delivery_attempts'] == 0
+    assert isolated_registry.completion_queue.empty()

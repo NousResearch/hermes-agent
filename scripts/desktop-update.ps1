@@ -50,6 +50,19 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
+# Foreground helpers: the script is spawned via `cmd start /min`, so its
+# WinForms window comes up backgrounded unless we explicitly claim focus --
+# and after the update we must hand focus TO the relaunched Desktop (a
+# WMI-spawned process starts unfocused). AllowSetForegroundWindow lets us
+# pass our foreground right on to the new Hermes.exe pid.
+try {
+    Add-Type -Namespace HermesHandoff -Name Win32 -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool SetForegroundWindow(System.IntPtr hWnd);
+[DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(int dwProcessId);
+[DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
+'@ -ErrorAction Stop
+    $script:Win32 = $true
+} catch { $script:Win32 = $false }
 # Render UTF-8 glyphs (checkmarks, arrows) correctly in our own console echo
 # too; the legacy conhost default OEM codepage shows them as mojibake.
 try {
@@ -106,6 +119,13 @@ function Show-ProgressWindow {
         $form.Controls.Add($bar)
         $form.Controls.Add($label)
         $form.Show()
+        # `cmd start /min` spawned us backgrounded; TopMost keeps the window
+        # above others but does not take activation. Claim it explicitly so
+        # the progress window is what the user sees during the update.
+        try {
+            $form.Activate()
+            if ($script:Win32) { [HermesHandoff.Win32]::SetForegroundWindow($form.Handle) | Out-Null }
+        } catch {}
         [System.Windows.Forms.Application]::DoEvents()
         $script:Ui = [pscustomobject]@{ Form = $form; Box = $box }
     } catch {
@@ -172,6 +192,34 @@ function Start-DesktopRelaunch {
             if ($r -and $r.ReturnValue -eq 0) {
                 Write-HandoffLog "desktop relaunched detached (pid $($r.ProcessId))"
                 $spawned = $true
+                # Hand our foreground rights to the new Desktop and focus its
+                # main window once it exists. A WMI-spawned process starts
+                # unfocused, and Windows only lets the CURRENT foreground
+                # owner (us, while the progress window is up / just closed)
+                # delegate that right. Poll briefly for the window: Electron
+                # takes a couple seconds to create it.
+                try {
+                    if ($script:Win32) {
+                        [HermesHandoff.Win32]::AllowSetForegroundWindow([int]$r.ProcessId) | Out-Null
+                        $deadline = (Get-Date).AddSeconds(20)
+                        while ((Get-Date) -lt $deadline) {
+                            $hwnd = [System.IntPtr]::Zero
+                            try {
+                                $p = Get-Process -Id $r.ProcessId -ErrorAction Stop
+                                $hwnd = $p.MainWindowHandle
+                            } catch { break }  # process died; nothing to focus
+                            if ($hwnd -ne [System.IntPtr]::Zero) {
+                                [HermesHandoff.Win32]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE
+                                [HermesHandoff.Win32]::SetForegroundWindow($hwnd) | Out-Null
+                                Write-HandoffLog "focused relaunched desktop window"
+                                break
+                            }
+                            Start-Sleep -Milliseconds 400
+                        }
+                    }
+                } catch {
+                    Write-HandoffLog "WARNING: could not focus relaunched desktop: $($_.Exception.Message)"
+                }
             } else {
                 Write-HandoffLog "WARNING: WMI relaunch returned $($r.ReturnValue); falling back"
             }

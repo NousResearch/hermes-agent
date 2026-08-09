@@ -161,6 +161,11 @@ with `~/.hermes/.env` containing:
 HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
 HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=choose-a-strong-password
 HERMES_DASHBOARD_BASIC_AUTH_SECRET=<32+ random bytes; openssl rand -base64 32>
+
+# Short aliases (equivalent; long names still preferred if both are set):
+# HERMES_DASHBOARD_USER=admin
+# HERMES_DASHBOARD_PASSWORD=choose-a-strong-password
+# HERMES_DASHBOARD_SECRET=<32+ random bytes; openssl rand -base64 32>
 ```
 
 Then in Desktop enter the **Remote URL** (e.g. `http://VM_IP:9119`) and **Sign in** with that username and password. See the [username/password provider](#usernamepassword-provider-no-oauth-idp) section for the full configuration surface.

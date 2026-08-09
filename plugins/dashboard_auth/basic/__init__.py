@@ -353,9 +353,54 @@ def _load_config_basic_auth_section() -> dict:
     return section if isinstance(section, dict) else {}
 
 
-def _resolve(env_name: str, cfg_section: dict, cfg_key: str) -> str:
-    """Env-wins-over-config resolution; empty env treated as unset."""
-    env = os.environ.get(env_name, "").strip()
+# Canonical env names (long) plus short operator-friendly aliases.
+# Precedence: first non-empty wins; long names are listed first so they
+# beat short aliases when both are set (steipete / docker UX).
+_ENV_ALIASES: dict[str, tuple[str, ...]] = {
+    "username": (
+        "HERMES_DASHBOARD_BASIC_AUTH_USERNAME",
+        "HERMES_DASHBOARD_USER",
+    ),
+    "password": (
+        "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
+        "HERMES_DASHBOARD_PASSWORD",
+    ),
+    "password_hash": (
+        "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH",
+        "HERMES_DASHBOARD_PASSWORD_HASH",
+    ),
+    "secret": (
+        "HERMES_DASHBOARD_BASIC_AUTH_SECRET",
+        "HERMES_DASHBOARD_SECRET",
+    ),
+    "session_ttl_seconds": (
+        "HERMES_DASHBOARD_BASIC_AUTH_TTL_SECONDS",
+        "HERMES_DASHBOARD_TTL_SECONDS",
+    ),
+}
+
+
+def _env_first(*names: str) -> str:
+    """Return the first non-empty stripped env value among *names*."""
+    for name in names:
+        val = os.environ.get(name, "").strip()
+        if val:
+            return val
+    return ""
+
+
+def _resolve(env_names: str | tuple[str, ...], cfg_section: dict, cfg_key: str) -> str:
+    """Env-wins-over-config resolution; empty env treated as unset.
+
+    *env_names* may be a single canonical name or an ordered tuple of
+    aliases (long name first). Config is only consulted when no env alias
+    is set.
+    """
+    if isinstance(env_names, str):
+        names: tuple[str, ...] = (env_names,)
+    else:
+        names = env_names
+    env = _env_first(*names)
     if env:
         return env
     return str(cfg_section.get(cfg_key, "") or "").strip()
@@ -368,16 +413,14 @@ def _resolve_secret(cfg_section: dict) -> bytes:
     generates a random per-process secret (sessions then don't survive a
     restart or span multiple workers — logged at INFO).
     """
-    raw = _resolve(
-        "HERMES_DASHBOARD_BASIC_AUTH_SECRET", cfg_section, "secret"
-    )
+    raw = _resolve(_ENV_ALIASES["secret"], cfg_section, "secret")
     if not raw:
         logger.info(
             "dashboard-auth-basic: no 'secret' configured; generating a "
             "random per-process signing key. Sessions will not survive a "
             "restart or span multiple workers. Set dashboard.basic_auth."
-            "secret (or HERMES_DASHBOARD_BASIC_AUTH_SECRET) for stable "
-            "sessions."
+            "secret (or HERMES_DASHBOARD_BASIC_AUTH_SECRET / "
+            "HERMES_DASHBOARD_SECRET) for stable sessions."
         )
         return secrets.token_bytes(32)
     # Try base64, then hex, then fall back to the raw UTF-8 bytes.
@@ -404,26 +447,23 @@ def register(ctx) -> None:
     LAST_SKIP_REASON = ""
 
     section = _load_config_basic_auth_section()
-    username = _resolve(
-        "HERMES_DASHBOARD_BASIC_AUTH_USERNAME", section, "username"
-    )
+    username = _resolve(_ENV_ALIASES["username"], section, "username")
     password_hash = _resolve(
-        "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH", section, "password_hash"
+        _ENV_ALIASES["password_hash"], section, "password_hash"
     )
-    plaintext = _resolve(
-        "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", section, "password"
-    )
+    plaintext = _resolve(_ENV_ALIASES["password"], section, "password")
     ttl_raw = _resolve(
-        "HERMES_DASHBOARD_BASIC_AUTH_TTL_SECONDS", section, "session_ttl_seconds"
+        _ENV_ALIASES["session_ttl_seconds"], section, "session_ttl_seconds"
     )
 
     if not username:
         LAST_SKIP_REASON = (
             "dashboard.basic_auth.username is not set (and "
-            "HERMES_DASHBOARD_BASIC_AUTH_USERNAME is empty). Set a username "
-            "and a password (or password_hash) under dashboard.basic_auth in "
-            "config.yaml to enable username/password dashboard login, or use "
-            "the OAuth provider, or pass --insecure to skip the auth gate."
+            "HERMES_DASHBOARD_BASIC_AUTH_USERNAME / HERMES_DASHBOARD_USER are "
+            "empty). Set a username and a password (or password_hash) under "
+            "dashboard.basic_auth in config.yaml to enable username/password "
+            "dashboard login, or use the OAuth provider, or pass --insecure "
+            "to skip the auth gate."
         )
         logger.debug("dashboard-auth-basic: %s", LAST_SKIP_REASON)
         return
@@ -439,17 +479,16 @@ def register(ctx) -> None:
         return
 
     # Precedence (env-wins convention): a password supplied via the
-    # HERMES_DASHBOARD_BASIC_AUTH_PASSWORD env var overrides a config.yaml
-    # password_hash, so an operator can rotate the password by setting an
-    # env var without editing config. A password_hash (precomputed) wins
-    # over a config-only plaintext password at the same tier — it's the
-    # preferred at-rest form. Concretely:
+    # HERMES_DASHBOARD_BASIC_AUTH_PASSWORD env var (or short alias
+    # HERMES_DASHBOARD_PASSWORD) overrides a config.yaml password_hash, so
+    # an operator can rotate the password by setting an env var without
+    # editing config. A password_hash (precomputed) wins over a config-only
+    # plaintext password at the same tier — it's the preferred at-rest form.
+    # Concretely:
     #   * env password set        → hash it (overrides any config hash)
     #   * else config password_hash set → use it
     #   * else config plaintext password → hash it in-memory
-    plaintext_from_env = os.environ.get(
-        "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", ""
-    ).strip()
+    plaintext_from_env = _env_first(*_ENV_ALIASES["password"])
     if plaintext_from_env:
         password_hash = hash_password(plaintext_from_env)
         logger.info(

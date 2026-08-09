@@ -640,6 +640,63 @@ class TestPythonpathSelectiveStrip:
         assert "/home/user/my-lib" in entries
 
 
+class TestPythonhomeSanitized:
+    """PYTHONHOME must not leak from the Hermes runtime into subprocesses.
+
+    The gateway inherits/sets PYTHONHOME in its process environment; a child
+    interpreter (system Python, another venv, cron no_agent scripts) that
+    inherits it redirects its stdlib search to the Hermes venv and crashes
+    with version-mismatch errors before importing anything (#75018).
+    """
+
+    def test_make_run_env_strips_pythonhome(self):
+        from tools.environments.local import _make_run_env
+        with patch.dict(os.environ, {
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/home/user",
+            "PYTHONHOME": "/opt/hermes-venv",
+        }, clear=True):
+            run_env = _make_run_env({})
+        assert "PYTHONHOME" not in run_env
+
+    def test_sanitize_subprocess_env_strips_pythonhome(self):
+        from tools.environments.local import _sanitize_subprocess_env
+        result = _sanitize_subprocess_env({
+            "PATH": "/usr/bin",
+            "HOME": "/home/user",
+            "PYTHONHOME": "/opt/hermes-venv",
+        })
+        assert "PYTHONHOME" not in result
+
+    def test_hermes_subprocess_env_strips_pythonhome(self):
+        from tools.environments.local import hermes_subprocess_env
+        with patch.dict(os.environ, {
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/home/user",
+            "PYTHONHOME": "/opt/hermes-venv",
+        }, clear=True):
+            result = hermes_subprocess_env()
+        assert "PYTHONHOME" not in result
+
+    def test_build_subprocess_env_strips_pythonhome(self):
+        """cron no_agent children go through build_subprocess_env; the
+        gateway's PYTHONHOME must not reach them (#75018)."""
+        from tools.environments.local import build_subprocess_env
+        with patch.dict(os.environ, {
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/home/user",
+            "PYTHONHOME": "/opt/hermes-venv",
+        }, clear=True):
+            result = build_subprocess_env()
+        assert "PYTHONHOME" not in result
+
+    def test_pythonhome_removed_from_active_venv_markers(self):
+        """PYTHONHOME is part of _ACTIVE_VENV_MARKER_VARS so all builders
+        that iterate it drop the variable."""
+        from tools.environments.local import _ACTIVE_VENV_MARKER_VARS
+        assert "PYTHONHOME" in _ACTIVE_VENV_MARKER_VARS
+
+
 class TestProfileScopedPassthrough:
     def test_make_run_env_uses_active_profile_for_passthrough(self, monkeypatch):
         """Allowlisted values must come from the routed profile, not os.environ."""

@@ -38,9 +38,9 @@ def _isolated_config_env(monkeypatch, tmp_path):
     [
         _args(query="hello"),
         _args(command=None, query=None, oneshot="hello"),
-        _args(query=None, quiet=True),
+        _args(query="hello", quiet=True),
     ],
-    ids=["single-query", "oneshot", "quiet"],
+    ids=["single-query", "oneshot", "quiet-query"],
 )
 def test_noninteractive_guard_rejects_malformed_yaml(args, tmp_path, caplog, capsys):
     from hermes_cli import main as main_mod
@@ -146,11 +146,19 @@ def test_interactive_chat_keeps_existing_repair_behavior(tmp_path):
     assert list(tmp_path.glob("config.yaml.corrupt.*.bak")) == []
 
 
-def test_empty_query_keeps_interactive_repair_behavior(tmp_path):
+@pytest.mark.parametrize(
+    "args",
+    [
+        _args(query=""),
+        _args(query=None, quiet=True),
+        _args(query="", quiet=True),
+    ],
+    ids=["empty-query", "quiet", "quiet-empty-query"],
+)
+def test_queryless_chat_keeps_interactive_repair_behavior(args, tmp_path):
     from hermes_cli import main as main_mod
 
     (tmp_path / "config.yaml").write_text("model: [unterminated\n")
-    args = _args(query="")
 
     main_mod._guard_noninteractive_user_config(args)
 

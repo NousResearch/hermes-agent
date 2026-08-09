@@ -4017,6 +4017,235 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ).fetchone()
         return self._session_row_dict(row) if row else None
 
+    # ── Orphaned gateway-session repair (#82616) ──────────────────────────
+    # A write-path failure (corrupt FTS, crash between routing publication
+    # and row creation) can leave the live conversation in a session row
+    # that never received its identity columns. Both queries above require
+    # those columns, so the row holding the real transcript is invisible to
+    # recovery: the chat resolves to the last keyed row instead — days older
+    # — and the conversation time-travels. Hardening the write side cannot
+    # reach a row that is *already* damaged; these two methods are the
+    # offline repair path behind ``hermes sessions repair-routing``.
+
+    # Widest plausible gap between a keyed predecessor going quiet and its
+    # unkeyed successor being minted. The reported incident gap was ~60s;
+    # 15 minutes stays generous without spanning unrelated conversations.
+    _ORPHAN_ADOPTION_MAX_GAP_S = 900.0
+
+    def find_orphaned_gateway_sessions(
+        self, *, max_gap_s: Optional[float] = None
+    ) -> List[Dict[str, Any]]:
+        """Report message-bearing session rows that lost their routing identity.
+
+        A row is a candidate orphan when it has messages but no
+        ``session_key``. It is only *adoptable* when exactly one keyed
+        predecessor can be named as the conversation it continues:
+
+        * ``lineage`` — ``parent_session_id`` points at a keyed row of the
+          same source. That is a recorded fact, so no time window applies.
+        * ``contiguity`` — exactly one keyed row of the same source (and
+          compatible ``user_id``) fell quiet within *max_gap_s* of the
+          orphan's start, and is older than the orphan's own last activity.
+
+        Anything ambiguous is reported with ``adoptable=False`` and a reason
+        rather than guessed at: mis-adopting would splice one person's
+        conversation into another person's chat. Branch/delegate/tool rows
+        are excluded outright — they are unkeyed by design, not by damage.
+        """
+        gap = (
+            self._ORPHAN_ADOPTION_MAX_GAP_S
+            if max_gap_s is None
+            else float(max_gap_s)
+        )
+        orphan_active = _sql_session_last_active("o")
+        donor_active = _sql_session_last_active("d")
+        donor_columns = (
+            "d.id, d.session_key, d.chat_id, d.chat_type, d.thread_id, "
+            "d.user_id, d.origin_json, d.display_name, d.end_reason"
+        )
+        records: List[Dict[str, Any]] = []
+
+        with self._lock:
+            orphans = self._conn.execute(
+                f"""
+                SELECT o.id, o.source, o.user_id, o.started_at,
+                       o.parent_session_id,
+                       {orphan_active} AS last_active,
+                       (SELECT COUNT(*) FROM messages m
+                         WHERE m.session_id = o.id) AS message_count
+                FROM sessions o
+                WHERE o.session_key IS NULL
+                  AND EXISTS (SELECT 1 FROM messages m
+                               WHERE m.session_id = o.id)
+                  AND COALESCE(o.source, '') != 'tool'
+                  AND json_extract(COALESCE(o.model_config, '{{}}'),
+                                   '$._branched_from') IS NULL
+                  AND json_extract(COALESCE(o.model_config, '{{}}'),
+                                   '$._delegate_from') IS NULL
+                ORDER BY o.started_at ASC
+                """
+            ).fetchall()
+
+            for orphan in orphans:
+                donor = None
+                evidence = ""
+                reason = ""
+
+                if orphan["parent_session_id"]:
+                    evidence = "lineage"
+                    donor = self._conn.execute(
+                        f"""
+                        SELECT {donor_columns}
+                        FROM sessions d
+                        WHERE d.id = ?
+                          AND d.session_key IS NOT NULL
+                          AND COALESCE(d.source, '') = COALESCE(?, '')
+                        """,
+                        (orphan["parent_session_id"], orphan["source"]),
+                    ).fetchone()
+                    if donor is None:
+                        reason = (
+                            "parent session carries no gateway identity of "
+                            "this source"
+                        )
+                else:
+                    evidence = "contiguity"
+                    candidates = self._conn.execute(
+                        f"""
+                        SELECT {donor_columns}, {donor_active} AS last_active
+                        FROM sessions d
+                        WHERE d.session_key IS NOT NULL
+                          AND d.id != ?
+                          AND COALESCE(d.source, '') = COALESCE(?, '')
+                          AND (COALESCE(d.user_id, '') = ''
+                               OR COALESCE(?, '') = ''
+                               OR d.user_id = ?)
+                          AND {donor_active} BETWEEN ? AND ?
+                          AND {donor_active} < ?
+                        ORDER BY last_active DESC
+                        LIMIT 2
+                        """,
+                        (
+                            orphan["id"],
+                            orphan["source"],
+                            orphan["user_id"],
+                            orphan["user_id"],
+                            (orphan["started_at"] or 0) - gap,
+                            (orphan["started_at"] or 0) + gap,
+                            orphan["last_active"],
+                        ),
+                    ).fetchall()
+                    if not candidates:
+                        reason = (
+                            f"no keyed predecessor fell quiet within {gap:.0f}s "
+                            "of this session's start"
+                        )
+                    elif len(candidates) > 1:
+                        reason = (
+                            "ambiguous: more than one keyed predecessor "
+                            "matches this window"
+                        )
+                    else:
+                        donor = candidates[0]
+
+                records.append(
+                    {
+                        "orphan_id": orphan["id"],
+                        "source": orphan["source"],
+                        "message_count": orphan["message_count"],
+                        "started_at": orphan["started_at"],
+                        "last_active": orphan["last_active"],
+                        "donor_id": donor["id"] if donor else None,
+                        "session_key": donor["session_key"] if donor else None,
+                        "evidence": evidence if donor else "",
+                        "adoptable": donor is not None,
+                        "reason": reason,
+                    }
+                )
+
+        # Two unkeyed successors claiming the same predecessor means at most
+        # one of them continues that chat, and nothing here says which.
+        contested = {
+            r["donor_id"]
+            for r in records
+            if r["adoptable"]
+            and sum(1 for x in records if x["donor_id"] == r["donor_id"]) > 1
+        }
+        for record in records:
+            if record["donor_id"] in contested:
+                record["adoptable"] = False
+                record["reason"] = (
+                    "ambiguous: more than one unkeyed session claims this "
+                    "predecessor"
+                )
+        return records
+
+    def adopt_orphaned_gateway_session(
+        self, orphan_id: str, donor_id: str
+    ) -> bool:
+        """Stamp *orphan_id* with *donor_id*'s routing identity, retire *donor_id*.
+
+        Re-verifies the pair inside the write transaction, so a concurrent
+        gateway that healed either row in the meantime turns this into a
+        no-op instead of a conflicting write. Existing non-NULL columns on
+        the orphan are preserved. Returns True when the adoption applied.
+        """
+        if not orphan_id or not donor_id or orphan_id == donor_id:
+            return False
+
+        def _do(conn):
+            donor = conn.execute(
+                "SELECT session_key, chat_id, chat_type, thread_id, user_id, "
+                "origin_json, display_name, source FROM sessions WHERE id = ?",
+                (donor_id,),
+            ).fetchone()
+            orphan = conn.execute(
+                "SELECT session_key, source FROM sessions WHERE id = ?",
+                (orphan_id,),
+            ).fetchone()
+            if donor is None or orphan is None:
+                return False
+            if not donor["session_key"] or orphan["session_key"]:
+                return False
+            if (donor["source"] or "") != (orphan["source"] or ""):
+                return False
+
+            conn.execute(
+                """UPDATE sessions
+                      SET session_key = ?,
+                          chat_id = COALESCE(chat_id, ?),
+                          chat_type = COALESCE(chat_type, ?),
+                          thread_id = COALESCE(thread_id, ?),
+                          user_id = COALESCE(user_id, ?),
+                          origin_json = COALESCE(origin_json, ?),
+                          display_name = COALESCE(display_name, ?),
+                          parent_session_id = COALESCE(parent_session_id, ?)
+                    WHERE id = ? AND session_key IS NULL""",
+                (
+                    donor["session_key"],
+                    donor["chat_id"],
+                    donor["chat_type"],
+                    donor["thread_id"],
+                    donor["user_id"],
+                    donor["origin_json"],
+                    donor["display_name"],
+                    donor_id,
+                    orphan_id,
+                ),
+            )
+            # Retire the predecessor under a reason recovery does NOT treat
+            # as resumable — 'agent_close'/'ws_orphan_reap' would keep it in
+            # the running, and the newly keyed orphan could lose the chat
+            # again on the next restart.
+            conn.execute(
+                "UPDATE sessions SET ended_at = COALESCE(ended_at, ?), "
+                "end_reason = 'superseded_by_repair' WHERE id = ?",
+                (time.time(), donor_id),
+            )
+            return True
+
+        return self._execute_write(_do)
+
     # Children that carry a ``parent_session_id`` but are NOT compression
     # continuations: branches, delegate/subagent runs, and tool sessions.
     # A marker only disqualifies a child when it points at the parent being

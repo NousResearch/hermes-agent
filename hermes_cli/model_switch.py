@@ -1705,11 +1705,16 @@ def switch_model(
                 or (user_providers or {}).get(target_provider) or {}
             _ukey = str(_ucfg.get("api_key", "") or "").strip()
             if _ukey.startswith("${") and _ukey.endswith("}"):
-                _ukey = os.environ.get(_ukey[2:-1], "").strip()
+                # Same class as the picker reads below: a raw os.environ read
+                # here hands this profile whatever key the process env holds —
+                # another profile's, under the multiplexed gateway. Route
+                # through the per-profile secret scope (identical to
+                # os.getenv when multiplexing is off, fail-closed otherwise).
+                _ukey = _scoped_key_env(_ukey[2:-1])
             if not _ukey:
                 _kenv = str(_ucfg.get("key_env", "") or "").strip()
                 if _kenv:
-                    _ukey = os.environ.get(_kenv, "").strip()
+                    _ukey = _scoped_key_env(_kenv)
             try:
                 runtime = resolve_runtime_provider(
                     requested=target_provider,

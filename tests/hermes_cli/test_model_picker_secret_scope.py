@@ -42,3 +42,58 @@ class TestPickerKeyEnvScope:
         monkeypatch.setenv("ACME_KEY", "  padded  ")
 
         assert _scoped_key_env("ACME_KEY") == "padded"
+
+
+class TestSwitchModelKeyEnvScope:
+    """switch_model's user-provider credential reads (the ${VAR} api_key
+    expansion and the key_env fallback) must go through the same scope —
+    these feed resolve_runtime_provider as explicit_api_key, so a raw
+    environ read here leaks another profile's key into the actual switch,
+    not just the picker listing."""
+
+    def _run_switch(self, monkeypatch, user_cfg):
+        import hermes_cli.model_switch as ms
+
+        captured = {}
+
+        def _fake_runtime(requested, explicit_api_key=None,
+                          explicit_base_url=None, target_model=None, **kw):
+            captured["key"] = explicit_api_key
+            return {"api_key": explicit_api_key or "", "base_url": explicit_base_url, "api_mode": ""}
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider", _fake_runtime
+        )
+        monkeypatch.setattr(ms, "resolve_alias", lambda *a, **k: None)
+        result = ms.switch_model(
+            "some-model",
+            current_provider="openrouter",
+            current_model="x",
+            explicit_provider="acme",
+            user_providers={"acme": user_cfg},
+        )
+        return captured, result
+
+    def test_key_env_read_honors_installed_scope(self, monkeypatch):
+        monkeypatch.setenv("ACME_KEY", "other-profile-key")
+        token = secret_scope.set_secret_scope({"ACME_KEY": "this-profile-key"})
+        try:
+            captured, _ = self._run_switch(
+                monkeypatch,
+                {"base_url": "https://api.acme.test/v1", "key_env": "ACME_KEY"},
+            )
+        finally:
+            secret_scope.reset_secret_scope(token)
+        assert captured["key"] == "this-profile-key"
+
+    def test_dollar_var_expansion_honors_installed_scope(self, monkeypatch):
+        monkeypatch.setenv("ACME_KEY", "other-profile-key")
+        token = secret_scope.set_secret_scope({"ACME_KEY": "this-profile-key"})
+        try:
+            captured, _ = self._run_switch(
+                monkeypatch,
+                {"base_url": "https://api.acme.test/v1", "api_key": "${ACME_KEY}"},
+            )
+        finally:
+            secret_scope.reset_secret_scope(token)
+        assert captured["key"] == "this-profile-key"

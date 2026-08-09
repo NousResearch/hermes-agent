@@ -901,11 +901,20 @@ class HermesACPAgent(acp.Agent):
             def choice_provider(model_id: str) -> str:
                 parts = model_id.split(":")
                 if parts[:1] == ["custom"] and len(parts) > 1:
-                    candidate = f"custom:{parts[1].lower()}"
                     from hermes_cli.models import _configured_custom_provider_ids
 
-                    if candidate in _configured_custom_provider_ids():
-                        return candidate
+                    lowered = model_id.lower()
+                    for candidate in sorted(
+                        (
+                            provider_id
+                            for provider_id in _configured_custom_provider_ids()
+                            if provider_id.startswith("custom:")
+                        ),
+                        key=len,
+                        reverse=True,
+                    ):
+                        if lowered.startswith(candidate + ":"):
+                            return candidate
                     return "custom"
                 return parts[0]
 

@@ -2,9 +2,24 @@ import { renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { _resetLegacyDiscardForTests } from '@/store/session'
+import type * as WindowsStore from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
 
 import { useDesktopIntegrations } from './use-desktop-integrations'
+
+// Mutable HUD-window flag so the restore tests can flip the window kind the
+// hook believes it runs in. Default false keeps the pre-existing restore
+// coverage exercising the real main-window path.
+const { hudWindowMock } = vi.hoisted(() => ({ hudWindowMock: vi.fn(() => false) }))
+
+vi.mock('@/store/windows', async importOriginal => {
+  const actual = await importOriginal<typeof WindowsStore>()
+
+  return {
+    ...actual,
+    isHudWindow: () => hudWindowMock()
+  }
+})
 
 // Pure-jsdom localStorage (no nanostores persistence module needed — the
 // production functions write directly to window.localStorage through the
@@ -42,6 +57,8 @@ describe('useDesktopIntegrations', () => {
     window.localStorage.clear()
     _resetLegacyDiscardForTests()
     navigate = vi.fn()
+    // Every test starts as a main window; only the HUD describe flips this.
+    hudWindowMock.mockReturnValue(false)
 
     // Stub the desktop bridge so the hook's useEffect callbacks don't try to
     // reach real Electron IPC. The established desktop-test pattern assigns a
@@ -234,6 +251,43 @@ describe('useDesktopIntegrations', () => {
       })
 
       // No navigation — coder's remembered route doesn't belong to ops.
+      expect(navigate).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('HUD window (win=hud)', () => {
+    beforeEach(() => {
+      hudWindowMock.mockReturnValue(true)
+    })
+
+    it('does NOT restore remembered navigation on a blank new-chat route', () => {
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'remembered-session')
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
+
+      render({ profileReady: true, sessions: [session({ id: 'remembered-session', profile: 'default' })] })
+
+      // The HUD is a fresh full renderer booting at the default route, but its
+      // destination was chosen explicitly by hudTargetSessionId() at open time
+      // — remembered-navigation restore must not hijack it to the last session.
+      expect(navigate).not.toHaveBeenCalled()
+    })
+
+    it('does NOT write remembered navigation while showing a session', () => {
+      render({
+        profileReady: true,
+        routedSessionId: 'live',
+        sessions: [session({ id: 'live', profile: 'default' })]
+      })
+
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBeNull()
+      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBeNull()
+    })
+
+    it('does not restore the remembered session id either', () => {
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'remembered-session')
+
+      render({ profileReady: true, sessions: [session({ id: 'remembered-session', profile: 'default' })] })
+
       expect(navigate).not.toHaveBeenCalled()
     })
   })

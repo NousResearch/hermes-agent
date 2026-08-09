@@ -14,6 +14,7 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
+from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 
@@ -516,10 +517,14 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     # spawn path (process_registry.spawn_local builds env via this function).
     _inject_session_context_env(sanitized)
 
+    # Filter PYTHONPATH before removing VIRTUAL_ENV: legacy Windows launchers
+    # can run the gateway under a base interpreter while VIRTUAL_ENV identifies
+    # the separate Hermes runtime venv.  The filter validates that relationship
+    # against the repo layout before trusting it.
+    _strip_hermes_owned_pythonpath(sanitized)
+
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         sanitized.pop(_marker, None)
-
-    _strip_hermes_owned_pythonpath(sanitized)
 
     _apply_windows_msys_bash_env_defaults(sanitized)
 
@@ -646,11 +651,11 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(env)
 
+    _strip_hermes_owned_pythonpath(env)
+
     # Active-venv markers must not clobber another project's environment.
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         env.pop(_marker, None)
-
-    _strip_hermes_owned_pythonpath(env)
 
     _apply_windows_msys_bash_env_defaults(env)
 
@@ -1335,10 +1340,10 @@ def _make_run_env(env: dict) -> dict:
     # engaged so a sibling session's os.environ mirror can't leak in).
     _inject_session_context_env(run_env)
 
+    _strip_hermes_owned_pythonpath(run_env)
+
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         run_env.pop(_marker, None)
-
-    _strip_hermes_owned_pythonpath(run_env)
 
     _apply_windows_msys_bash_env_defaults(run_env)
 
@@ -1347,31 +1352,48 @@ def _make_run_env(env: dict) -> dict:
     return run_env
 
 
-def _is_path_under(child: Path, parent: Path) -> bool:
-    """Return True if *child* is the same as or under *parent*.
+def _same_path(left: Path, right: Path) -> bool:
+    """Compare path spellings with host filesystem case semantics."""
+    left_parts = [os.path.normcase(part) for part in left.parts]
+    right_parts = [os.path.normcase(part) for part in right.parts]
+    return left_parts == right_parts
 
-    Uses ``os.path.normcase`` so the comparison is case-insensitive on
-    Windows (NTFS is case-insensitive by default) and case-sensitive on
-    POSIX, matching filesystem semantics.  Paths are NOT resolved against
-    disk (no ``.resolve()``) so non-existent paths - common in test mocks
-    and in PYTHONPATH entries pointing at yet-to-be-created dirs - work
-    correctly.  ``Path.resolve(strict=False)`` would also touch the
-    filesystem to resolve symlinks, which we deliberately avoid.
+
+def _build_hermes_repo_root_aliases(
+    resolved_root: Path,
+    lexical_root: Path,
+    configured_home: Path,
+) -> tuple[Path, ...]:
+    """Return exact repo-root spellings emitted by Hermes launchers.
+
+    ``gateway_windows._preserve_hermes_home_path`` maps a physical path under
+    the resolved HERMES_HOME back onto the configured HERMES_HOME spelling.
+    Mirror that producer contract here so a junction-backed install is matched
+    without treating arbitrary descendants of HERMES_HOME as Hermes-owned.
     """
-    c_parts = [os.path.normcase(p) for p in child.parts]
-    p_parts = [os.path.normcase(p) for p in parent.parts]
-    if len(c_parts) < len(p_parts):
-        return False
-    return c_parts[: len(p_parts)] == p_parts
+    aliases: list[Path] = []
+
+    def add(candidate: Path) -> None:
+        if not any(_same_path(candidate, existing) for existing in aliases):
+            aliases.append(candidate)
+
+    add(resolved_root)
+    add(lexical_root)
+
+    try:
+        resolved_home = configured_home.resolve()
+        home_key = os.path.normcase(str(resolved_home))
+        root_key = os.path.normcase(str(resolved_root))
+        if os.path.commonpath([home_key, root_key]) == home_key:
+            relative_root = os.path.relpath(str(resolved_root), str(resolved_home))
+            add(configured_home / relative_root)
+    except (OSError, ValueError):
+        pass
+
+    return tuple(aliases)
 
 
 # --- Hermes venv / repo-root detection (module-level, computed once) ---
-
-#: The running interpreter's own venv root.  On a venv Python ``sys.prefix``
-#: points at the venv root (e.g. ``.../venv``); on a system Python it points
-#: at ``/usr`` or similar.  We only strip site-packages under this path when
-#: the interpreter is actually inside a venv (``sys.prefix != sys.base_prefix``).
-_hermes_venv_root: Path = Path(sys.prefix)
 
 #: The Hermes repository root - three levels up from this file
 #: (``tools/environments/local.py`` -> ``tools/environments`` -> ``tools``
@@ -1389,9 +1411,10 @@ _hermes_repo_root: Path = Path(__file__).resolve().parents[2]
 #: ``Path(__file__)`` (unresolved) keeps that spelling, so a PYTHONPATH
 #: entry written by the launcher still matches even though it differs
 #: lexically from the resolved root.
-_hermes_repo_root_aliases: tuple[Path, ...] = (
+_hermes_repo_root_aliases: tuple[Path, ...] = _build_hermes_repo_root_aliases(
     _hermes_repo_root,
-    Path(__file__).parents[2],
+    Path(__file__).absolute().parents[2],
+    get_process_hermes_home(),
 )
 
 #: Whether the current interpreter is running inside a venv.  On Python 3.3+
@@ -1409,43 +1432,73 @@ _in_venv: bool = (
 _hermes_site_packages: list[Path] | None = None
 
 
-def _get_hermes_site_packages() -> list[Path]:
-    """Return the site-packages dirs of the running interpreter's venv.
+def _validated_runtime_venv(env: dict) -> Path | None:
+    """Return a producer-owned runtime venv identified by VIRTUAL_ENV.
+
+    A user may carry an unrelated VIRTUAL_ENV, so the variable alone is not
+    provenance.  The legacy Windows base-Python gateway producer uses the exact
+    ``<Hermes repo>/venv`` layout and a real venv marker; require both before
+    accepting its separate runtime venv.
+    """
+    value = env.get("VIRTUAL_ENV")
+    if not value:
+        return None
+
+    candidate = Path(value)
+    if not any(_same_path(candidate, repo_root / "venv") for repo_root in _hermes_repo_root_aliases):
+        return None
+
+    try:
+        if not (candidate / "pyvenv.cfg").is_file():
+            return None
+    except OSError:
+        return None
+
+    return candidate
+
+
+def _get_hermes_site_packages(env: dict) -> list[Path]:
+    """Return exact site-packages dirs owned by the Hermes runtime.
 
     Uses ``site.getsitepackages()`` when available for robustness (it respects
     ``.pth`` rewrites and platform conventions), with a manual fallback that
     constructs the canonical path from ``sys.prefix`` for POSIX and Windows.
+    A validated Windows base-interpreter launch contributes its separate
+    ``VIRTUAL_ENV/Lib/site-packages`` directory as an additional exact entry.
     """
     global _hermes_site_packages
     if _hermes_site_packages is not None:
-        return _hermes_site_packages
+        result = list(_hermes_site_packages)
+    else:
+        result = []
+        if _in_venv:
+            try:
+                import site
+                for sp in site.getsitepackages():
+                    result.append(Path(sp))
+            except Exception:
+                pass
 
-    result: list[Path] = []
-    try:
-        import site
-        for sp in site.getsitepackages():
-            result.append(Path(sp))
-    except Exception:
-        pass
+            # Fallback: construct manually.  On POSIX:
+            #   sys.prefix / lib / python{X.Y} / site-packages
+            # On Windows:
+            #   sys.prefix / Lib / site-packages
+            if not result:
+                if _IS_WINDOWS:
+                    result.append(Path(sys.prefix) / "Lib" / "site-packages")
+                else:
+                    pyver = f"python{sys.version_info[0]}.{sys.version_info[1]}"
+                    result.append(Path(sys.prefix) / "lib" / pyver / "site-packages")
 
-    # Fallback: construct manually.  On POSIX:
-    #   sys.prefix / lib / python{X.Y} / site-packages
-    # On Windows:
-    #   sys.prefix / Lib / site-packages
-    if not result:
-        if _IS_WINDOWS:
-            result.append(Path(sys.prefix) / "Lib" / "site-packages")
-        else:
-            pyver = f"python{sys.version_info[0]}.{sys.version_info[1]}"
-            result.append(Path(sys.prefix) / "lib" / pyver / "site-packages")
+        _hermes_site_packages = list(result)
 
-    _hermes_site_packages = result
+    runtime_venv = _validated_runtime_venv(env)
+    if runtime_venv is not None:
+        runtime_site_packages = runtime_venv / "Lib" / "site-packages"
+        if not any(_same_path(runtime_site_packages, existing) for existing in result):
+            result.append(runtime_site_packages)
+
     return result
-
-
-# Regex to detect ``site-packages`` as a path component (not a substring of
-# a longer directory name).  Same cross-platform separator handling.
-_SITE_PACKAGES_RE = re.compile(r"(?:^|[\\/])site-packages(?:[\\/]|$)")
 
 
 def _strip_hermes_owned_pythonpath(env: dict) -> None:
@@ -1471,11 +1524,12 @@ def _strip_hermes_owned_pythonpath(env: dict) -> None:
        stripped; direct children (``<repo>/tools`` etc.) are never injected
        by any launcher and are treated as user paths.
 
-    2. **Hermes venv site-packages** - entries under the running
-       interpreter's own venv site-packages directory.  Redundant for
+    2. **Hermes venv site-packages** - the exact directories owned by the
+       running interpreter's venv, or by a separately validated Windows
+       base-Python gateway runtime venv.  Redundant for
        subprocesses (they get their packages via ``sys.path``, not an
-       inherited env var) and a common leak vector.  Only checked when
-       running inside a venv.
+       inherited env var) and a common leak vector.  Descendants are not
+       producer-owned entries and are preserved.
 
     User ``PYTHONPATH`` entries (``/opt/my-lib``, Nix plugin paths, a
     ``/custom/lib/python3.13/site-packages`` intended for a child Python 3.13)
@@ -1490,30 +1544,29 @@ def _strip_hermes_owned_pythonpath(env: dict) -> None:
     if not pp:
         return
 
-    hermes_site_packages = _get_hermes_site_packages() if _in_venv else []
+    hermes_site_packages = _get_hermes_site_packages(env)
 
     kept: list[str] = []
     stripped: list[str] = []
 
     for entry in pp.split(os.pathsep):
-        entry = entry.strip()
-        if not entry:
+        # Empty and non-normalized components are user-owned semantics.  In
+        # particular, an empty component means the current working directory.
+        # Preserve raw spelling unless the exact component is Hermes-owned.
+        if entry == "":
+            kept.append(entry)
             continue
 
         entry_path = Path(entry)
         should_strip = False
 
         # --- Check 1: Hermes venv site-packages ---
-        # The entry lives under the running interpreter's own venv
-        # site-packages.  Redundant for subprocesses (they get their packages
-        # via sys.path, not PYTHONPATH) and a common leak vector.
-        # Use the regex (not ``entry_path.parts``) for cross-platform detection
-        # so Windows backslash paths are caught on a POSIX host.
-        if _SITE_PACKAGES_RE.search(entry):
-            for sp in hermes_site_packages:
-                if _is_path_under(entry_path, sp):
-                    should_strip = True
-                    break
+        # Producers inject the exact directory, never a descendant.  Exact
+        # matching avoids deleting a user path nested below site-packages.
+        for sp in hermes_site_packages:
+            if _same_path(entry_path, sp):
+                should_strip = True
+                break
         if should_strip:
             stripped.append(entry)
             continue
@@ -1528,13 +1581,10 @@ def _strip_hermes_owned_pythonpath(env: dict) -> None:
         # resolved and unresolved (HERMES_HOME/junction) spellings count as
         # Hermes-owned.
         if not should_strip:
-            for repo_root in _hermes_repo_root_aliases:
-                if _is_path_under(entry_path, repo_root):
-                    # Exact root only (same path), not children.
-                    rel = entry_path.relative_to(repo_root)
-                    if len(rel.parts) == 0:
-                        should_strip = True
-                    break
+            should_strip = any(
+                _same_path(entry_path, repo_root)
+                for repo_root in _hermes_repo_root_aliases
+            )
 
         if should_strip:
             stripped.append(entry)

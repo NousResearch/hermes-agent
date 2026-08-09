@@ -148,7 +148,7 @@ def apply_tool_request_middleware(
     if not _has_middleware(TOOL_REQUEST_MIDDLEWARE):
         return RequestMiddlewareResult(
             payload=args if not trace else current_args,
-            original_payload=original_args,
+            original_payload=args,
             changed=bool(trace),
             trace=trace,
         )

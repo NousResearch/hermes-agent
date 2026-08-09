@@ -873,7 +873,7 @@ WSL_ENVIRONMENT_HINT = (
 
 # Backends that run commands (and every file tool) in a separate container / remote host: host OS/$HOME/cwd
 # would mislead, so the agent only sees the machine it can touch.
-_REMOTE_TERMINAL_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "ssh", "vercel_sandbox", "managed_modal"})
+_REMOTE_TERMINAL_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "ssh", "vercel_sandbox", "managed_modal", "kubernetes"})
 
 # Used when the live probe fails: only what the backend choice implies — never an invented cwd/user/$HOME.
 _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {

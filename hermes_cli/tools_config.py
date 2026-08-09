@@ -3644,8 +3644,9 @@ def _is_provider_active(
                 and cfg_get(config, "stt", "provider") == provider["stt_provider"]
             )
         if "browser_provider" in provider:
-            if cfg_get(config, "browser", "backend"):
-                return False
+            # Browser Use mode is a driver on top of the provider (it attaches
+            # to the provider's CDP endpoint), so the provider row stays
+            # active alongside the Browser Use row.
             current = cfg_get(config, "browser", "cloud_provider")
             return feature.managed_by_nous and provider["browser_provider"] == current
         if provider.get("web_backend"):
@@ -3660,8 +3661,8 @@ def _is_provider_active(
         current = cfg_get(config, "stt", "provider") or "local"
         return current == provider["stt_provider"]
     if "browser_provider" in provider:
-        if cfg_get(config, "browser", "backend"):
-            return False
+        # Browser Use mode composes with the provider (driver over the
+        # provider's CDP endpoint) — don't deactivate the provider row.
         current = cfg_get(config, "browser", "cloud_provider")
         return provider["browser_provider"] == current
     if provider.get("browser_backend"):
@@ -4123,14 +4124,13 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
         browser_cfg = config.setdefault("browser", {})
         if bp:
             browser_cfg["cloud_provider"] = bp
-        # Leaving Browser Use CLI mode
-        browser_cfg.pop("backend", None)
+        # Browser Use mode (browser.backend) composes with the provider —
+        # switching providers keeps the driver choice intact.
         browser_cfg["use_gateway"] = bool(managed_feature)
 
     if provider.get("browser_backend"):
         browser_cfg = config.setdefault("browser", {})
         browser_cfg["backend"] = provider["browser_backend"]
-        browser_cfg["use_gateway"] = False
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
@@ -4790,14 +4790,13 @@ def _reconfigure_provider(
         elif bp:
             browser_cfg["cloud_provider"] = bp
             _print_success(f"  Browser cloud provider set to: {bp}")
-        # Leaving Browser Use CLI mode
-        browser_cfg.pop("backend", None)
+        # Browser Use mode (browser.backend) composes with the provider —
+        # switching providers keeps the driver choice intact.
         browser_cfg["use_gateway"] = bool(managed_feature)
 
     if provider.get("browser_backend"):
         browser_cfg = config.setdefault("browser", {})
         browser_cfg["backend"] = provider["browser_backend"]
-        browser_cfg["use_gateway"] = False
         _print_success("  Browser set to Browser Use (browser_exec via CLI 3.0)")
 
     # Set web search backend in config if applicable

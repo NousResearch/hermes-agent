@@ -63,7 +63,9 @@ Get your API key at [browser-use.com](https://browser-use.com).
 
 ### Browser Use mode
 
-Browser Use mode uses the [Browser Use CLI 3.0](https://github.com/browser-use/browser-use) — a new browser harness that is state-of-the-art at web tasks — instead of the default browser tools. The agent writes and executes Python in the browser to click, type, drag, scrape, and interact with webpages. It works in your local browser or with Browser Use cloud browsers.
+Browser Use mode uses the [Browser Use CLI 3.0](https://github.com/browser-use/browser-use) — a new browser harness that is state-of-the-art at web tasks — instead of the default browser tools. The agent writes and executes Python in the browser to click, type, drag, scrape, and interact with webpages.
+
+The mode is a **driver** that composes with your configured browser backend: it drives your local Chrome, a Nous-subscription cloud browser, Browserbase, Firecrawl, or Browser Use cloud browsers — whichever browser source is selected in `hermes tools` → Browser Automation. The one exception is Camofox, which has no CDP endpoint for the harness to attach to; Camofox setups automatically keep the built-in browser tools even when Browser Use mode is enabled.
 
 Enable it with `hermes tools` → **Browser Automation → Browser Use** (free · local · cloud), or directly:
 
@@ -73,7 +75,7 @@ browser:
   backend: "browser-use"
 ```
 
-Cloud browsers need `browser-use auth login` or `BROWSER_USE_API_KEY`.
+Browser Use's own cloud browsers need `browser-use auth login` or `BROWSER_USE_API_KEY`; other browser sources use their existing credentials unchanged.
 
 :::note
 Because Browser Use mode executes model-written Python on your machine, the

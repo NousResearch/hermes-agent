@@ -96,7 +96,19 @@ def is_legacy_browser_use_cloud_config(browser_cfg: dict) -> bool:
 
 
 def is_browser_use_cli_mode() -> bool:
-    """True when the Browser Use CLI replaces the built-in browser stack"""
+    """True when the Browser Use CLI replaces the built-in browser stack.
+
+    Camofox always falls back to the built-in tools regardless of
+    ``browser.backend`` — it is Firefox-based with a custom HTTP API and no
+    CDP surface, so the CDP-only browser-use harness cannot drive it.
+    """
+    try:
+        from tools.browser_camofox import is_camofox_mode
+
+        if is_camofox_mode():
+            return False
+    except Exception as e:
+        logger.debug("Camofox activity check failed: %s", e)
     backend = get_browser_backend()
     if backend:
         return backend == _BACKEND_KEY
@@ -186,6 +198,85 @@ def _native_screenshot_result(result: Dict[str, Any], path: str) -> Optional[Dic
         return None
 
 
+def _resolve_backend_cdp(env: dict, task_id: Optional[str]) -> Optional[str]:
+    """Point the harness at the configured browser backend's CDP endpoint.
+
+    Resolution order (first hit wins):
+
+    1. ``BU_CDP_WS`` / ``BU_CDP_URL`` already in the environment — explicit
+       user/operator override, passed through untouched.
+    2. ``BROWSER_CDP_URL`` env / ``browser.cdp_url`` config override — the
+       ``/browser connect`` path, same precedence the built-in tools honor.
+    3. A configured cloud browser provider (Browserbase, Firecrawl, Nous
+       gateway/Browser Use cloud, …): reuse the legacy stack's
+       ``_get_session_info()`` so browser_exec shares the SAME provider
+       session machinery — per-task session cache, expiry replacement,
+       inactivity reaper, and atexit cleanup — instead of duplicating it.
+    4. Nothing configured: return None; the harness attaches to local
+       Chrome (or Browser Use cloud via BU_AUTOSPAWN for legacy configs).
+
+    Returns an error string on provider failure, None on success.
+    """
+    if env.get("BU_CDP_WS") or env.get("BU_CDP_URL"):
+        return None
+
+    try:
+        from tools.browser_tool import (
+            _get_cdp_override,
+            _get_cloud_provider,
+            _get_session_info,
+        )
+    except Exception as e:  # pragma: no cover — stubbed browser_tool in tests
+        logger.debug("browser_tool backend resolution unavailable: %s", e)
+        return None
+
+    try:
+        override = _get_cdp_override()
+    except Exception:
+        override = ""
+    if override:
+        env["BU_CDP_URL" if override.startswith(("http://", "https://")) else "BU_CDP_WS"] = override
+        return None
+
+    try:
+        provider = _get_cloud_provider()
+    except Exception as e:
+        logger.debug("Cloud provider lookup failed: %s", e)
+        provider = None
+    if provider is None:
+        return None
+
+    # Browser Use direct-API configs: the CLI talks to Browser Use cloud
+    # natively (BU_AUTOSPAWN / auth login) — routing through the legacy
+    # provider here would just create a second, redundant session. The
+    # Nous-gateway variant (use_gateway: true) DOES resolve through the
+    # provider: the gateway provisions the cloud browser server-side and
+    # returns its CDP URL, giving subscribers CLI mode with no raw key.
+    provider_key = str(getattr(provider, "name", "") or "").strip().lower()
+    if provider_key == _BACKEND_KEY and not is_truthy_value(
+        _read_browser_cfg().get("use_gateway"), default=False
+    ):
+        return None
+
+    try:
+        session_info = _get_session_info(task_id or "browser-exec-default")
+    except Exception as e:
+        return (
+            f"Cloud browser provider {type(provider).__name__} failed to "
+            f"provide a session: {e}. Fix the provider configuration or "
+            "switch backends via `hermes tools` → Browser Automation."
+        )
+    cdp = str((session_info or {}).get("cdp_url") or "")
+    if not cdp:
+        return (
+            f"Cloud browser provider {type(provider).__name__} returned no "
+            "CDP endpoint, so Browser Use mode cannot drive it. Switch to "
+            "the built-in browser tools for this provider."
+        )
+    env["BU_CDP_URL" if cdp.startswith(("http://", "https://")) else "BU_CDP_WS"] = cdp
+    return None
+
+
 def browser_exec(
     code: str,
     session: str = "",
@@ -219,6 +310,13 @@ def browser_exec(
                 "dashes, or underscores (e.g. 'r7k2')."
             )
         env["BU_NAME"] = session
+    else:
+        # Route through the configured browser backend (Browserbase,
+        # Firecrawl, Nous gateway, CDP override, …). Explicit BU_NAME cloud
+        # sessions manage their own browser and skip backend resolution.
+        backend_err = _resolve_backend_cdp(env, task_id)
+        if backend_err:
+            return tool_error(backend_err)
 
     workspace = _workspace_dir(task_id)
     if workspace:

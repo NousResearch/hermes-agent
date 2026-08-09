@@ -174,6 +174,19 @@ class TestLegacyCloudMigration:
         monkeypatch.setattr(camofox, "is_camofox_mode", lambda: True)
         assert bu_cli.is_browser_use_cli_mode() is False
 
+    def test_camofox_overrides_explicit_backend(self, monkeypatch):
+        """Even with browser.backend: browser-use, an active Camofox setup
+        falls back to the built-in tools (no CDP surface to drive)."""
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config",
+            lambda: {"browser": {"backend": "browser-use"}},
+        )
+        import tools.browser_camofox as camofox
+
+        monkeypatch.setattr(camofox, "is_camofox_mode", lambda: True)
+        assert bu_cli.is_browser_use_cli_mode() is False
+
+
     def test_explicit_other_backend_wins(self, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.config.read_raw_config",
@@ -242,6 +255,93 @@ class TestLegacyCloudMigration:
         assert _is_provider_active(cli_row, dict(self._LEGACY)) is False
 
 
+class TestBackendCdpResolution:
+    """browser_exec routes through the configured browser backend by reusing
+    the legacy stack's provider session machinery (_get_session_info)."""
+
+    def _env(self):
+        return {}
+
+    def test_existing_bu_env_wins(self, monkeypatch):
+        env = {"BU_CDP_WS": "ws://operator-override:9222"}
+        assert bu_cli._resolve_backend_cdp(env, "t1") is None
+        assert env["BU_CDP_WS"] == "ws://operator-override:9222"
+
+    def test_cdp_override_exported(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "http://127.0.0.1:9222")
+        env = self._env()
+        assert bu_cli._resolve_backend_cdp(env, "t1") is None
+        assert env["BU_CDP_URL"] == "http://127.0.0.1:9222"
+
+    def test_ws_override_uses_bu_cdp_ws(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "wss://connect.example/x")
+        env = self._env()
+        assert bu_cli._resolve_backend_cdp(env, "t1") is None
+        assert env["BU_CDP_WS"] == "wss://connect.example/x"
+
+    def test_cloud_provider_session_exported(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
+        monkeypatch.setattr(
+            bt, "_get_session_info",
+            lambda task_id: {"cdp_url": "wss://browser.example/cdp/abc"},
+        )
+        env = self._env()
+        assert bu_cli._resolve_backend_cdp(env, "t1") is None
+        assert env["BU_CDP_WS"] == "wss://browser.example/cdp/abc"
+
+    def test_no_provider_leaves_env_untouched(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
+        env = self._env()
+        assert bu_cli._resolve_backend_cdp(env, "t1") is None
+        assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
+
+    def test_provider_failure_returns_error(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        def boom(task_id):
+            raise RuntimeError("api down")
+
+        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
+        monkeypatch.setattr(bt, "_get_session_info", boom)
+        err = bu_cli._resolve_backend_cdp(self._env(), "t1")
+        assert err and "api down" in err
+
+    def test_provider_without_cdp_returns_error(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
+        monkeypatch.setattr(bt, "_get_session_info", lambda task_id: {"cdp_url": None})
+        err = bu_cli._resolve_backend_cdp(self._env(), "t1")
+        assert err and "no" in err.lower() and "CDP" in err
+
+    def test_named_session_skips_backend_resolution(self, tmp_path, monkeypatch):
+        """session=<name> (BU_NAME cloud browser) must not consume a backend
+        provider session."""
+        import tools.browser_tool as bt
+
+        def fail(task_id):
+            raise AssertionError("backend resolution must be skipped")
+
+        monkeypatch.setattr(bt, "_get_session_info", fail)
+        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "bu:$BU_NAME"\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
+        assert result["success"] is True
+        assert "bu:r7k2" in result["output"]
+
+
 class TestProviderPickerIntegration:
     """The `hermes tools` Browser Automation picker row (browser_backend
     marker) must enter/leave CLI mode cleanly and highlight correctly."""
@@ -275,7 +375,9 @@ class TestProviderPickerIntegration:
         assert config["browser"]["backend"] == "browser-use"
         assert config["browser"]["cloud_provider"] == "browserbase"
 
-    def test_selecting_provider_row_leaves_cli_mode(self):
+    def test_selecting_provider_row_keeps_cli_mode(self):
+        """Backend composes with the provider: switching browser source
+        (local/Browserbase/Firecrawl/gateway) keeps the driver choice."""
         from hermes_cli.tools_config import _write_provider_config
 
         local_row = next(
@@ -283,10 +385,10 @@ class TestProviderPickerIntegration:
         )
         config = {"browser": {"backend": "browser-use"}}
         _write_provider_config(local_row, config, managed_feature=None)
-        assert "backend" not in config["browser"]
+        assert config["browser"]["backend"] == "browser-use"
         assert config["browser"]["cloud_provider"] == "local"
 
-    def test_active_row_highlight_is_mutually_exclusive(self):
+    def test_provider_row_stays_active_alongside_cli_mode(self):
         from hermes_cli.tools_config import _is_provider_active
 
         cli_row = next(r for r in self._rows() if r.get("browser_backend"))
@@ -295,7 +397,9 @@ class TestProviderPickerIntegration:
         )
         cli_config = {"browser": {"cloud_provider": "local", "backend": "browser-use"}}
         assert _is_provider_active(cli_row, cli_config) is True
-        assert _is_provider_active(local_row, cli_config) is False
+        # Provider row remains highlighted: it supplies the browser the CLI
+        # driver attaches to.
+        assert _is_provider_active(local_row, cli_config) is True
 
         local_config = {"browser": {"cloud_provider": "local"}}
         assert _is_provider_active(cli_row, local_config) is False

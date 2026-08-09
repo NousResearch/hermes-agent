@@ -153,7 +153,7 @@ class TestApplyModelSwitchResultPersistsBaseUrl:
             "  provider: opencode-go\n"
             "  base_url: https://opencode.ai/zen/go/v1\n"
         )
-        monkeypatch.setattr(cli_mod, "_hermes_home", tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setattr(cli_mod, "_cprint", lambda *a, **k: None)
 
         result = ModelSwitchResult(
@@ -285,7 +285,7 @@ class TestHandleModelSwitchRealConfigRoundTrip:
             "  provider: opencode-go\n"
             "  base_url: https://opencode.ai/zen/go/v1\n"
         )
-        monkeypatch.setattr(cli_mod, "_hermes_home", tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         result = ModelSwitchResult(
             success=True,
@@ -341,7 +341,7 @@ class TestHandleModelSwitchRealConfigRoundTrip:
             "  provider: custom:mylocal\n"
             "  base_url: http://localhost:1234/v1\n"
         )
-        monkeypatch.setattr(cli_mod, "_hermes_home", tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         result = ModelSwitchResult(
             success=True,
@@ -479,7 +479,7 @@ class TestModelSwitchClearsStaleCredentials:
             "  api_key: sk-stale-local-key\n"
             "  api_mode: chat_completions\n"
         )
-        monkeypatch.setattr(cli_mod, "_hermes_home", tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setattr(cli_mod, "_cprint", lambda *a, **k: None)
 
         result = ModelSwitchResult(

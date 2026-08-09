@@ -11600,7 +11600,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "approvals", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
-        "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
+        "config", "console", "cron", "curator", "dashboard", "serve", "sync-fork", "debug", "doctor",
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
@@ -12448,6 +12448,19 @@ def main():
     # fallback command — manage the fallback provider chain
     # =========================================================================
     from hermes_cli.fallback_cmd import cmd_fallback
+
+    # sync-fork: merge upstream into a DIVERGED fork. `update`'s own
+
+    # upstream sync is fast-forward only and returns early when the fork
+
+    # has local commits, so a fork that has ever committed has no
+
+    # supported update path without this.
+
+    from hermes_cli import sync_fork_cli as _sync_fork_cli
+
+    _sync_fork_cli.register(subparsers)
+
 
     fallback_parser = subparsers.add_parser(
         "fallback",

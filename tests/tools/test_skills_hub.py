@@ -797,6 +797,129 @@ class TestOptionalSkillSourceBinaryAssets:
         assert bundle is None
 
 
+class TestOptionalSkillSourceLiveRepoFallback:
+    """Skills merged to main after the local install was cut must still be
+    searchable and installable without `hermes update` (live-repo fallback)."""
+
+    def _make_source(self, tmp_path, remote_dirs):
+        optional_root = tmp_path / "optional-skills"
+        optional_root.mkdir(exist_ok=True)
+        src = OptionalSkillSource()
+        src._optional_dir = optional_root
+        src._remote_dirs = dict.fromkeys(remote_dirs, True)
+        return src
+
+    @staticmethod
+    def _fake_github_with_tree(remote_dirs, extra_files=()):
+        """MagicMock GitHubSource whose repo tree contains each skill dir's
+        SKILL.md plus any extra files, served byte-exact by _fetch_file_bytes."""
+        entries = []
+        contents = {}
+        for rel_dir in remote_dirs:
+            p = f"optional-skills/{rel_dir}/SKILL.md"
+            entries.append({"type": "blob", "path": p, "mode": "100644"})
+            contents[p] = b"---\nname: " + rel_dir.rsplit("/", 1)[-1].encode() + b"\n---\nBody"
+        for rel_path, data in extra_files:
+            entries.append({"type": "blob", "path": rel_path, "mode": "100644"})
+            contents[rel_path] = data
+        fake = MagicMock()
+        fake._get_repo_tree.return_value = ("main", entries)
+        fake._fetch_file_bytes.side_effect = lambda repo, path: contents.get(path)
+        return fake
+
+    def test_fetch_falls_back_to_live_repo_when_missing_locally(self, tmp_path):
+        src = self._make_source(tmp_path, ["software-development/ast-grep"])
+        src._github = self._fake_github_with_tree(
+            ["software-development/ast-grep"],
+            extra_files=[
+                ("optional-skills/software-development/ast-grep/install.sh", b"#!/bin/sh\n"),
+                ("optional-skills/software-development/ast-grep/LICENSE", b"MIT"),
+            ],
+        )
+
+        bundle = src.fetch("official/software-development/ast-grep")
+
+        assert bundle is not None
+        # Provenance is rewritten to official/builtin
+        assert bundle.source == "official"
+        assert bundle.identifier == "official/software-development/ast-grep"
+        assert bundle.trust_level == "builtin"
+        # FULL directory arrives — including root-level files GitHubSource.fetch drops
+        assert bundle.files["install.sh"] == b"#!/bin/sh\n"
+        assert bundle.files["LICENSE"] == b"MIT"
+
+    def test_fetch_bare_name_resolves_via_remote_tree(self, tmp_path):
+        src = self._make_source(tmp_path, ["software-development/ast-grep"])
+        src._github = self._fake_github_with_tree(["software-development/ast-grep"])
+
+        bundle = src.fetch("official/ast-grep")
+
+        assert bundle is not None
+        assert bundle.identifier == "official/software-development/ast-grep"
+
+    def test_fetch_ambiguous_bare_name_refuses(self, tmp_path):
+        src = self._make_source(
+            tmp_path, ["security/scanner", "devops/scanner"]
+        )
+        fake_github = MagicMock()
+        src._github = fake_github
+
+        assert src.fetch("official/scanner") is None
+        fake_github.fetch.assert_not_called()
+
+    def test_local_checkout_wins_over_remote(self, tmp_path):
+        src = self._make_source(tmp_path, ["research/local-skill"])
+        skill_dir = src._optional_dir / "research" / "local-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: local-skill\ndescription: local\n---\nBody",
+            encoding="utf-8",
+        )
+        fake_github = MagicMock()
+        src._github = fake_github
+
+        bundle = src.fetch("official/research/local-skill")
+
+        assert bundle is not None
+        fake_github.fetch.assert_not_called()
+
+    def test_fallback_rejects_traversal_rel(self, tmp_path):
+        src = self._make_source(tmp_path, ["security/whatever"])
+        fake_github = MagicMock()
+        src._github = fake_github
+
+        assert src._fetch_from_live_repo("../../etc/passwd") is None
+        fake_github.fetch.assert_not_called()
+
+    def test_search_surfaces_remote_only_skills(self, tmp_path):
+        src = self._make_source(tmp_path, ["software-development/ast-grep"])
+
+        results = src.search("ast-grep")
+
+        assert any(
+            r.identifier == "official/software-development/ast-grep"
+            and r.trust_level == "builtin"
+            for r in results
+        )
+
+    def test_inspect_surfaces_remote_only_skill(self, tmp_path):
+        src = self._make_source(tmp_path, ["software-development/ast-grep"])
+
+        meta = src.inspect("official/software-development/ast-grep")
+
+        assert meta is not None
+        assert meta.repo == "NousResearch/hermes-agent"
+        assert meta.path == "optional-skills/software-development/ast-grep"
+
+    def test_offline_degrades_to_local_only(self, tmp_path):
+        src = self._make_source(tmp_path, [])
+        fake_github = MagicMock()
+        src._github = fake_github
+
+        assert src.fetch("official/never-heard-of-it") is None
+        assert src.search("never-heard-of-it") == []
+
+
 class TestQuarantineBundleBinaryAssets:
     def test_quarantine_bundle_writes_binary_files(self, tmp_path):
         import tools.skills_hub as hub

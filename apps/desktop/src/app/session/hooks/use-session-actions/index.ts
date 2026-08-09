@@ -141,7 +141,9 @@ function reconcileAuthoritativeMessages(
   const authoritative = toChatMessages(authoritativeMessages)
   const withLiveProjection = liveProjection ? appendLiveSessionProjection(authoritative, liveProjection) : authoritative
   const reconciled = reconcileResumeMessages(withLiveProjection, previousMessages)
-  const withPendingTurn = preserveLocalPendingTurnMessages(reconciled, previousMessages)
+  const withPendingTurn = preserveLocalPendingTurnMessages(reconciled, previousMessages, {
+    committedMessages: authoritative
+  })
 
   return preserveLocalAssistantErrors(withPendingTurn, previousMessages)
 }

@@ -711,6 +711,86 @@ describe('preserveLocalPendingTurnMessages', () => {
     expect(preserveLocalPendingTurnMessages(compressedAuthority, pollutedWarmCache)).toBe(compressedAuthority)
   })
 
+  it('preserves every structured stage when warm activation supplies only a live inflight projection', () => {
+    const committed: ChatMessage[] = []
+    const cached = [
+      msg('user-local', 'user', 'do the work'),
+      streamingMsg('assistant-stream-stage-1', 'checkpoint one', { interim: true, pending: false }),
+      streamingMsg('assistant-stream-stage-2', '', { interim: true, pending: false }),
+      streamingMsg('assistant-stream-stage-3', '', { pending: true })
+    ]
+
+    const projected = appendLiveSessionProjection(committed, {
+      session_id: 'runtime-a',
+      inflight: { assistant: '', streaming: true, user: 'do the work' }
+    })
+    const reconciled = reconcileResumeMessages(projected, cached)
+
+    const restored = preserveLocalPendingTurnMessages(reconciled, cached, { committedMessages: committed })
+
+    expect(restored.map(message => message.id)).toEqual([
+      'user-inflight-runtime-a',
+      'assistant-stream-stage-1',
+      'assistant-stream-stage-2',
+      'assistant-stream-stage-3'
+    ])
+    expect(restored.some(message => message.id === 'assistant-stream-runtime-a')).toBe(false)
+
+    const reprojected = appendLiveSessionProjection(committed, {
+      session_id: 'runtime-a',
+      inflight: { assistant: '', streaming: true, user: 'do the work' }
+    })
+    const rereconciled = reconcileResumeMessages(reprojected, restored)
+    const restoredAgain = preserveLocalPendingTurnMessages(rereconciled, restored, {
+      committedMessages: committed
+    })
+
+    expect(restoredAgain.map(message => message.id)).toEqual(restored.map(message => message.id))
+  })
+
+  it('converges structured stages once the durable transcript carries the current reply', () => {
+    const committed = [msg('stored-user', 'user', 'do the work'), msg('stored-assistant', 'assistant', 'final answer')]
+    const cached = [
+      msg('user-local', 'user', 'do the work'),
+      streamingMsg('assistant-stream-stage-1', '', { interim: true, pending: false }),
+      streamingMsg('assistant-stream-stage-2', '', { pending: true })
+    ]
+
+    const projected = appendLiveSessionProjection(committed, { session_id: 'runtime-a' })
+    const reconciled = reconcileResumeMessages(projected, cached)
+    const restored = preserveLocalPendingTurnMessages(reconciled, cached, { committedMessages: committed })
+
+    expect(restored.map(message => message.id)).toEqual(['stored-user', 'stored-assistant'])
+  })
+
+  it('keeps the current structured stages when committed authority ends at an earlier turn', () => {
+    const committed = [
+      msg('stored-old-user', 'user', 'earlier task'),
+      msg('stored-old-assistant', 'assistant', 'earlier answer')
+    ]
+    const cached = [
+      ...committed,
+      msg('user-local', 'user', 'do the work'),
+      streamingMsg('assistant-stream-stage-1', '', { interim: true, pending: false }),
+      streamingMsg('assistant-stream-stage-2', '', { pending: true })
+    ]
+
+    const projected = appendLiveSessionProjection(committed, {
+      session_id: 'runtime-a',
+      inflight: { assistant: '', streaming: true, user: 'do the work' }
+    })
+    const reconciled = reconcileResumeMessages(projected, cached)
+    const restored = preserveLocalPendingTurnMessages(reconciled, cached, { committedMessages: committed })
+
+    expect(restored.map(message => message.id)).toEqual([
+      'stored-old-user',
+      'stored-old-assistant',
+      'user-inflight-runtime-a',
+      'assistant-stream-stage-1',
+      'assistant-stream-stage-2'
+    ])
+  })
+
   // A mid-turn redirect inserts its correction as a SECOND optimistic user row
   // for the same turn. Keeping only the newest dropped the prompt that started
   // it, so a resume repainted the thread with the user's message missing.

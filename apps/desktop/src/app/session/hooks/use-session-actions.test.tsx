@@ -1438,6 +1438,89 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
   })
 
+  it('keeps every structured stage when warm activation returns only a live inflight projection', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.busy = true
+    state.messages = [
+      { id: 'user-local', role: 'user', parts: [{ type: 'text', text: 'do the work' }] },
+      {
+        id: 'assistant-stream-stage-1',
+        role: 'assistant',
+        parts: [{ type: 'reasoning', text: 'first checkpoint' }],
+        interim: true,
+        pending: false
+      },
+      {
+        id: 'assistant-stream-stage-2',
+        role: 'assistant',
+        parts: [{ type: 'tool-call', toolCallId: 'call-2', toolName: 'terminal', result: 'done' }],
+        interim: true,
+        pending: false
+      },
+      {
+        id: 'assistant-stream-stage-3',
+        role: 'assistant',
+        parts: [{ type: 'reasoning', text: 'current checkpoint' }],
+        pending: true
+      }
+    ]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+    let resumedState: ClientSessionState | undefined
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-A' } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        return {
+          session_id: 'rt-A',
+          session_key: 'stored-A',
+          resumed: 'stored-A',
+          message_count: 0,
+          messages: [],
+          running: true,
+          inflight: { assistant: '', streaming: true, user: 'do the work' },
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={r => (resume = r)}
+        onStateUpdate={(_sessionId, next) => (resumedState = next)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'session.activate',
+      expect.objectContaining({ omit_messages: true, session_id: 'rt-A' })
+    )
+    expect(requestGateway.mock.calls.map(([method]) => method)).not.toContain('session.resume')
+    expect(getSessionMessages).toHaveBeenCalledWith('stored-A', undefined)
+    expect(resumedState?.messages.map(message => message.id)).toEqual([
+      'user-inflight-rt-A',
+      'assistant-stream-stage-1',
+      'assistant-stream-stage-2',
+      'assistant-stream-stage-3'
+    ])
+    expect(resumedState?.busy).toBe(true)
+  })
+
   it('preserves cached image attachments through an idle persisted transcript refresh', async () => {
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
       current: new Map([['stored-A', 'rt-A']])

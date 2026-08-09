@@ -484,6 +484,18 @@ class TestVoiceReceiver:
         completed = receiver.check_silence()
         assert len(completed) == 0
 
+    def test_flush_pending_returns_recent_utterance_before_silence(self):
+        """Disconnect drains a valid utterance even before silence is detected."""
+        receiver = self._make_receiver()
+        receiver.map_ssrc(100, 42)
+        pcm_data = bytearray(b"\x00" * 96000)
+        receiver._buffers[100] = pcm_data
+        receiver._last_packet_time[100] = time.monotonic()
+
+        assert receiver.flush_pending() == [(42, bytes(pcm_data))]
+        assert 100 not in receiver._buffers
+        assert 100 not in receiver._last_packet_time
+
 
     def test_ffmpeg_resolver_finds_winget_install_when_not_on_path(self, monkeypatch, tmp_path):
         """Windows winget installs ffmpeg outside PATH; Discord voice should still find it."""

@@ -973,6 +973,25 @@ class VoiceReceiver:
 
         return completed
 
+    def flush_pending(self) -> list:
+        """Return buffered utterances that have not yet reached silence."""
+        completed = []
+
+        with self._lock:
+            ssrc_user_map = dict(self._ssrc_to_user)
+            for ssrc, buf in list(self._buffers.items()):
+                # 48kHz, 16-bit, stereo = 192000 bytes/sec
+                buf_duration = len(buf) / (self.SAMPLE_RATE * self.CHANNELS * 2)
+                if buf_duration >= self.MIN_SPEECH_DURATION:
+                    user_id = ssrc_user_map.get(ssrc, 0)
+                    if not user_id:
+                        user_id = self._infer_user_for_ssrc(ssrc)
+                    if user_id:
+                        completed.append((user_id, bytes(buf)))
+                self._cleanup_ssrc(ssrc)
+
+        return completed
+
     # ------------------------------------------------------------------
     # PCM -> WAV conversion (for Whisper STT)
     # ------------------------------------------------------------------
@@ -1110,8 +1129,13 @@ class DiscordAdapter(BasePlatformAdapter):
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
-    # Auto-disconnect from voice channel after this many seconds of inactivity
+    # Auto-disconnect from voice channel after this many seconds of inactivity.
+    # Config key: discord.voice_channel_inactivity_timeout_seconds (0 disables)
     VOICE_TIMEOUT = 300
+    # Minimum seconds to wait for one voice playback. The effective timeout
+    # scales with clip duration so long readbacks are not cut off at two minutes.
+    PLAYBACK_TIMEOUT = 120
+    PLAYBACK_TIMEOUT_PADDING = 30
 
     # ------------------------------------------------------------------
     # Config coercion helpers (must come before __init__)
@@ -1193,10 +1217,28 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_log_only: bool = self._coerce_bool(
             extra.get("voice_log_only"), False
         )
-        self._voice_timeout_seconds: float = float(
-            self._coerce_int(extra.get("voice_timeout_seconds"), self.VOICE_TIMEOUT)
-            or self.VOICE_TIMEOUT
-        )
+        self._voice_timeout_seconds = self._load_voice_timeout()
+        self._playback_timeout_seconds = self._load_playback_timeout()
+        # Preserve the Kensei legacy alias while preferring the documented key.
+        if "voice_channel_inactivity_timeout_seconds" in extra:
+            try:
+                self._voice_timeout_seconds = max(
+                    0, int(extra["voice_channel_inactivity_timeout_seconds"])
+                )
+            except (TypeError, ValueError):
+                pass
+        elif "voice_timeout_seconds" in extra:
+            try:
+                self._voice_timeout_seconds = max(0, int(extra["voice_timeout_seconds"]))
+            except (TypeError, ValueError):
+                pass
+        if "voice_playback_timeout_seconds" in extra:
+            try:
+                self._playback_timeout_seconds = max(
+                    1, int(extra["voice_playback_timeout_seconds"])
+                )
+            except (TypeError, ValueError):
+                pass
 
         # ── Multi-agent voice floor (cross-process, filesystem-lock) ──
         self._multi_agent_voice_channel_id: Optional[int] = self._coerce_int(
@@ -4598,6 +4640,83 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.debug("Could not load discord.voice_fx config: %s", e)
         return defaults
 
+    def _load_discord_int_config(self, key: str, default: int, *, minimum: int = 0) -> int:
+        """Read a non-secret integer from the top-level ``discord`` config."""
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config() or {}
+            raw = (cfg.get("discord") or {}).get(key, default)
+            value = int(raw)
+            return max(minimum, value)
+        except Exception as e:
+            logger.debug("Could not load discord.%s config: %s", key, e)
+            return default
+
+    def _load_voice_timeout(self) -> int:
+        """Return voice-channel inactivity timeout seconds; 0 disables it."""
+        return self._load_discord_int_config(
+            "voice_channel_inactivity_timeout_seconds",
+            self.VOICE_TIMEOUT,
+            minimum=0,
+        )
+
+    def _load_playback_timeout(self) -> int:
+        """Return minimum playback wait seconds for Discord VC audio."""
+        return self._load_discord_int_config(
+            "voice_playback_timeout_seconds",
+            self.PLAYBACK_TIMEOUT,
+            minimum=1,
+        )
+
+    def _voice_timeout_limit(self) -> int:
+        return int(getattr(self, "_voice_timeout_seconds", self.VOICE_TIMEOUT))
+
+    def _playback_timeout_limit(self) -> int:
+        return int(getattr(self, "_playback_timeout_seconds", self.PLAYBACK_TIMEOUT))
+
+    def _probe_audio_duration_seconds(self, audio_path: str) -> Optional[float]:
+        """Best-effort audio duration probe used to size playback timeouts."""
+        try:
+            import importlib
+            mutagen = importlib.import_module("mutagen")
+            audio = mutagen.File(audio_path)
+            length = getattr(getattr(audio, "info", None), "length", None)
+            if length:
+                return float(length)
+        except Exception:
+            pass
+
+        try:
+            proc = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    audio_path,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                stdin=subprocess.DEVNULL,
+            )
+            if proc.returncode == 0:
+                raw = (proc.stdout or "").strip()
+                if raw:
+                    return float(raw)
+        except Exception:
+            pass
+        return None
+
+    async def _playback_timeout_for_audio(self, audio_path: str) -> float:
+        """Return timeout for this clip: configured floor or duration plus padding."""
+        floor = float(self._playback_timeout_limit())
+        duration = await asyncio.to_thread(self._probe_audio_duration_seconds, audio_path)
+        if not duration or duration <= 0:
+            return floor
+        return max(floor, duration + float(self.PLAYBACK_TIMEOUT_PADDING))
+
     def _get_ambient_pcm(self) -> Optional[bytes]:
         """Return decoded 48k/stereo/s16le PCM for the ambient idle bed.
 
@@ -4917,25 +5036,35 @@ class DiscordAdapter(BasePlatformAdapter):
     async def leave_voice_channel(self, guild_id: int) -> None:
         """Disconnect from the voice channel in a guild."""
         async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
-            # Stop the bridge first so its transport releases the voice
-            # client's sink + source before the adapter disconnects.
-            bridge = self._voice_bridges.pop(guild_id, None)
+            # Stop the optional bridge first so its transport releases the
+            # voice client's sink + source before the adapter disconnects.
+            bridges = getattr(self, "_voice_bridges", None)
+            bridge = bridges.pop(guild_id, None) if bridges is not None else None
             if bridge is not None:
                 try:
                     await bridge.stop()
                 except Exception:  # pragma: no cover - best effort
                     logger.debug("bridge.stop raised during leave", exc_info=True)
-            # Bridge is mutually exclusive with VoiceReceiver; clear
-            # the latency log only after stop completes.
-            self._voice_bridge_latency_logs.pop(guild_id, None)
+            # Bridge is mutually exclusive with VoiceReceiver; clear the
+            # latency log only after stop completes.
+            latency_logs = getattr(self, "_voice_bridge_latency_logs", None)
+            if latency_logs is not None:
+                latency_logs.pop(guild_id, None)
 
-            # Stop voice receiver first
+            # Drain recent speech before stopping the receiver or disconnecting.
             receiver = self._voice_receivers.pop(guild_id, None)
+            pending_inputs = []
             if receiver:
+                pending_inputs = receiver.flush_pending()
                 receiver.stop()
             listen_task = self._voice_listen_tasks.pop(guild_id, None)
             if listen_task:
                 listen_task.cancel()
+
+            guild = self._client.get_guild(guild_id) if self._client is not None else None
+            for user_id, pcm_data in pending_inputs:
+                if self._is_allowed_user(str(user_id), guild=guild, is_dm=False):
+                    await self._process_voice_input(guild_id, user_id, pcm_data)
 
             # Tear down the mixer (stops the continuous outgoing stream).
             if getattr(self, "_voice_mixers", None) is not None:
@@ -4955,112 +5084,118 @@ class DiscordAdapter(BasePlatformAdapter):
             self._voice_text_channels.pop(guild_id, None)
             self._voice_sources.pop(guild_id, None)
 
-    # Maximum seconds to wait for voice playback before giving up
-    PLAYBACK_TIMEOUT = 120
-
     async def play_in_voice_channel(self, guild_id: int, audio_path: str) -> bool:
         """Play an audio file in the connected voice channel.
 
         When the continuous mixer is installed for this guild, the clip is
         decoded to PCM and layered over the ambient bed (ducking it) so the
-        reply can overlap the idle "thinking" loop seamlessly.  Otherwise we
+        reply can overlap the idle "thinking" loop seamlessly. Otherwise we
         fall back to the legacy one-shot FFmpegPCMAudio path.
         """
         vc = self._voice_clients.get(guild_id)
         if not vc or not vc.is_connected():
             return False
 
-        # ── KENSEI CUSTOM: multi-agent voice floor ──
-        # In multi-agent VCs, acquire the cross-process floor before playing
-        # so two bots never speak simultaneously. Non-multi-agent channels
-        # skip this (no floor configured = no contention).
-        vc_channel_id = getattr(getattr(vc, "channel", None), "id", None)
-        _multi = getattr(self, '_multi_agent_voice_channel_id', None)
-        is_multi_agent = _multi is not None and vc_channel_id == _multi
+        # Playback is activity. Do not let the inactivity timer disconnect the
+        # bot while duration probing, floor acquisition, decoding, or speaking;
+        # re-arm it when this attempt finishes, including on failure.
+        self._cancel_voice_timeout(guild_id)
         floor_acquired = False
-        if is_multi_agent:
-            wait_start = time.monotonic()
-            while not self._acquire_voice_floor(int(vc_channel_id)):
-                if time.monotonic() - wait_start > self.PLAYBACK_TIMEOUT:
-                    logger.warning(
-                        "[%s] voice floor wait timeout in channel %s; playing anyway",
-                        self.name, vc_channel_id,
-                    )
-                    break
-                await asyncio.sleep(0.2)
-            else:
-                floor_acquired = True
-        # ── END KENSEI CUSTOM ──
-
-        # ── Mixer path (overlap + ducking) ──────────────────────────────
-        mixer = getattr(self, "_voice_mixers", {}).get(guild_id) if getattr(self, "_voice_mixers", None) else None
-        if mixer is not None:
-            try:
-                from voice_mixer import decode_to_pcm
-            except ImportError:
-                from .voice_mixer import decode_to_pcm
-            pcm = await asyncio.to_thread(decode_to_pcm, audio_path)
-            if pcm:
-                speech_gain = float(self._voice_fx_cfg.get("speech_gain", 1.0))
-                mixer.play_speech(pcm, gain=speech_gain)
-                # Block until the speech child drains so callers serialise
-                # replies (mirrors legacy semantics) but the ambient keeps
-                # playing underneath the whole time.
-                wait_start = time.monotonic()
-                while mixer.speech_active:
-                    if time.monotonic() - wait_start > self.PLAYBACK_TIMEOUT:
-                        logger.warning("Mixer speech playback timed out after %ds", self.PLAYBACK_TIMEOUT)
-                        mixer.stop_speech()
-                        break
-                    await asyncio.sleep(0.05)
-                self._reset_voice_timeout(guild_id)
-                if floor_acquired:
-                    self._release_voice_floor(int(vc_channel_id))
-                return True
-            logger.warning("Mixer decode failed for %s; falling back to legacy playback", audio_path)
-
-        # ── Legacy one-shot path (no mixer) ─────────────────────────────
-        # Pause voice receiver while playing (echo prevention)
-        receiver = self._voice_receivers.get(guild_id)
-        if receiver:
-            receiver.pause()
-
+        vc_channel_id = getattr(getattr(vc, "channel", None), "id", None)
         try:
-            # Wait for current playback to finish (with timeout)
-            wait_start = time.monotonic()
-            while vc.is_playing():
-                if time.monotonic() - wait_start > self.PLAYBACK_TIMEOUT:
-                    logger.warning("Timed out waiting for previous playback to finish")
-                    vc.stop()
-                    break
-                await asyncio.sleep(0.1)
+            playback_timeout = await self._playback_timeout_for_audio(audio_path)
 
-            done = asyncio.Event()
-            loop = asyncio.get_running_loop()
+            # ── KENSEI CUSTOM: multi-agent voice floor ──
+            _multi = getattr(self, "_multi_agent_voice_channel_id", None)
+            is_multi_agent = _multi is not None and vc_channel_id == _multi
+            if is_multi_agent:
+                wait_start = time.monotonic()
+                while not self._acquire_voice_floor(int(vc_channel_id)):
+                    if time.monotonic() - wait_start > playback_timeout:
+                        logger.warning(
+                            "[%s] voice floor wait timeout in channel %s; playing anyway",
+                            self.name, vc_channel_id,
+                        )
+                        break
+                    await asyncio.sleep(0.2)
+                else:
+                    floor_acquired = True
+            # ── END KENSEI CUSTOM ──
 
-            def _after(error):
-                if error:
-                    logger.error("Voice playback error: %s", error)
-                loop.call_soon_threadsafe(done.set)
+            # ── Mixer path (overlap + ducking) ──────────────────────────
+            mixer = (
+                getattr(self, "_voice_mixers", {}).get(guild_id)
+                if getattr(self, "_voice_mixers", None)
+                else None
+            )
+            if mixer is not None:
+                try:
+                    from voice_mixer import decode_to_pcm
+                except ImportError:
+                    from .voice_mixer import decode_to_pcm
+                pcm = await asyncio.to_thread(decode_to_pcm, audio_path)
+                if pcm:
+                    speech_gain = float(self._voice_fx_cfg.get("speech_gain", 1.0))
+                    mixer.play_speech(pcm, gain=speech_gain)
+                    # Block until the speech child drains so callers serialise
+                    # replies while ambient audio continues underneath.
+                    wait_start = time.monotonic()
+                    while mixer.speech_active:
+                        if time.monotonic() - wait_start > playback_timeout:
+                            logger.warning(
+                                "Mixer speech playback timed out after %.1fs",
+                                playback_timeout,
+                            )
+                            mixer.stop_speech()
+                            break
+                        await asyncio.sleep(0.05)
+                    return True
+                logger.warning(
+                    "Mixer decode failed for %s; falling back to legacy playback",
+                    audio_path,
+                )
 
-            source = discord.FFmpegPCMAudio(audio_path)
-            source = discord.PCMVolumeTransformer(source, volume=1.0)
-            vc.play(source, after=_after)
+            # ── Legacy one-shot path (no mixer) ─────────────────────────
+            receiver = self._voice_receivers.get(guild_id)
+            if receiver:
+                receiver.pause()
+
             try:
-                await asyncio.wait_for(done.wait(), timeout=self.PLAYBACK_TIMEOUT)
-            except asyncio.TimeoutError:
-                logger.warning("Voice playback timed out after %ds", self.PLAYBACK_TIMEOUT)
-                vc.stop()
-            self._reset_voice_timeout(guild_id)
+                # Wait for current playback to finish (with timeout).
+                wait_start = time.monotonic()
+                while vc.is_playing():
+                    if time.monotonic() - wait_start > playback_timeout:
+                        logger.warning("Timed out waiting for previous playback to finish")
+                        vc.stop()
+                        break
+                    await asyncio.sleep(0.1)
+
+                done = asyncio.Event()
+                loop = asyncio.get_running_loop()
+
+                def _after(error):
+                    if error:
+                        logger.error("Voice playback error: %s", error)
+                    loop.call_soon_threadsafe(done.set)
+
+                source = discord.FFmpegPCMAudio(audio_path)
+                source = discord.PCMVolumeTransformer(source, volume=1.0)
+                vc.play(source, after=_after)
+                try:
+                    await asyncio.wait_for(done.wait(), timeout=playback_timeout)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Voice playback timed out after %.1fs", playback_timeout
+                    )
+                    vc.stop()
+                return True
+            finally:
+                if receiver:
+                    receiver.resume()
+        finally:
             if floor_acquired:
                 self._release_voice_floor(int(vc_channel_id))
-            return True
-        finally:
-            if receiver:
-                if floor_acquired:
-                    self._release_voice_floor(int(vc_channel_id))
-                    floor_acquired = False  # prevent double-release
-                receiver.resume()
+            self._reset_voice_timeout(guild_id)
 
     # ── KENSEI CUSTOM: per-channel bot loop guard ───────────────────────
 
@@ -5353,29 +5488,36 @@ class DiscordAdapter(BasePlatformAdapter):
             return None
         return member.voice.channel
 
-    def _reset_voice_timeout(self, guild_id: int) -> None:
-        """Reset the auto-disconnect inactivity timer."""
+    def _cancel_voice_timeout(self, guild_id: int) -> None:
         task = self._voice_timeout_tasks.pop(guild_id, None)
         if task:
             task.cancel()
+
+    def _reset_voice_timeout(self, guild_id: int) -> None:
+        """Reset the auto-disconnect inactivity timer."""
+        self._cancel_voice_timeout(guild_id)
+        timeout = self._voice_timeout_limit()
+        if timeout <= 0:
+            logger.debug("Voice inactivity timeout disabled (guild=%d)", guild_id)
+            return
         self._voice_timeout_tasks[guild_id] = asyncio.ensure_future(
-            self._voice_timeout_handler(guild_id)
+            self._voice_timeout_handler(guild_id, timeout)
         )
 
-    async def _voice_timeout_handler(self, guild_id: int) -> None:
-        """Auto-disconnect after VOICE_TIMEOUT seconds of inactivity."""
+    async def _voice_timeout_handler(
+        self, guild_id: int, timeout: Optional[int] = None
+    ) -> None:
+        """Auto-disconnect after the configured inactivity timeout."""
+        timeout = self._voice_timeout_limit() if timeout is None else int(timeout)
+        if timeout <= 0:
+            return
         try:
-            await asyncio.sleep(self._voice_timeout_seconds)
+            await asyncio.sleep(timeout)
         except asyncio.CancelledError:
             return
         text_ch_id = self._voice_text_channels.get(guild_id)
         # ``/voice off`` mutes spoken replies but deliberately keeps the bot in
-        # the channel (leaving is ``/voice leave``). The inactivity timer only
-        # counts the bot's OWN audio as activity, so under voice-off mode it
-        # fires every VOICE_TIMEOUT seconds, yanks the bot out, and spams the
-        # text channel with "Left voice channel (inactivity timeout)." Honor the
-        # user's choice: skip the auto-disconnect while voice replies are off.
-        # (The timer re-arms when the bot next speaks or hears a user.)
+        # the channel. Skip auto-disconnect while voice replies are disabled.
         _mode_getter = getattr(self, "_voice_mode_getter", None)
         if text_ch_id is not None and _mode_getter is not None:
             try:
@@ -5384,14 +5526,16 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception:
                 pass
         await self.leave_voice_channel(guild_id)
-        # Notify the runner so it can clean up voice_mode state
-        if self._on_voice_disconnect and text_ch_id:
+        # Notify the runner so it can clean up voice_mode state.
+        disconnect_callback = getattr(self, "_on_voice_disconnect", None)
+        if disconnect_callback and text_ch_id:
             try:
-                self._on_voice_disconnect(str(text_ch_id))
+                disconnect_callback(str(text_ch_id))
             except Exception:
                 pass
-        if text_ch_id and self._client:
-            ch = self._client.get_channel(text_ch_id)
+        client = getattr(self, "_client", None)
+        if text_ch_id and client:
+            ch = client.get_channel(text_ch_id)
             if ch:
                 try:
                     await ch.send("Left voice channel (inactivity timeout).")

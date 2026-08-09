@@ -197,8 +197,10 @@ class TestMemoryStoreAdd:
         assert "Nottinghamshire" not in tight.memory_entries, "Subsumed entry should be removed"
         assert tight._char_count("memory") <= tight.memory_char_limit
 
-        # A replace that blows the budget mirrors the add-overflow shape.
-        result = store.replace("memory", "x" * 490, "y" * 600)
+    def test_replace_exceeding_limit_returns_consolidation_context(self, store):
+        """A replacement overflow returns enough context for an in-turn retry."""
+        store.add("memory", "short")
+        result = store.replace("memory", "short", "y" * 600)
         assert result["success"] is False
         assert "current_entries" in result
         assert "usage" in result

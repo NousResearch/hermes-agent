@@ -320,10 +320,17 @@ export function performScopedFind(
   }
 
   const existingMarks = [...root.querySelectorAll<HTMLElement>(`mark.${HIGHLIGHT_CLASS}`)]
+  // The marks store the ORIGINAL-CASE source slice (`highlightMatches`
+  // writes `mark.textContent = matchText`), so byte-equality against the
+  // typed query fails on the first match whose casing differs — 'Hermes'
+  // for 'hermes', sentence-initial capitals, ALL-CAPS. Without the
+  // case-insensitive comparison, every Enter/⌘G step re-wraps all
+  // highlights, `data-find-active` is lost on the fresh DOM, and the
+  // active ordinal resets to 1 forever (triage finding on #81778).
   const sameQuery =
     options.findNext &&
     existingMarks.length > 0 &&
-    existingMarks.every(mark => mark.textContent === query)
+    existingMarks.every(mark => mark.textContent.toLowerCase() === query.toLowerCase())
 
   let marks = existingMarks
 

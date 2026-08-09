@@ -149,6 +149,24 @@ describe('performScopedFind', () => {
     expect(result.activeOrdinal).toBe(2)
   })
 
+  it('does not re-wrap when the query differs only in case (fast path, triage #81778)', () => {
+    // The marks store the ORIGINAL-CASE source slice, so a byte-equality
+    // fast-path check fails on the first differently-cased match and every
+    // Enter re-wraps, losing `data-find-active` and pinning the ordinal to
+    // 1 forever. Case-insensitive comparison keeps stepping.
+    const surface = plantSurface('surface', '<p>Hermes Hermes</p>')
+    performScopedFind(surface, 'hermes', { forward: true, findNext: false })
+
+    const before = [...surface.querySelectorAll('mark.find-hit')]
+    const result = performScopedFind(surface, 'hermes', { forward: true, findNext: true })
+
+    const after = [...surface.querySelectorAll('mark.find-hit')]
+    expect(after.length).toBe(before.length)
+    expect(after.every(el => before.includes(el))).toBe(true)
+    expect(result.count).toBe(2)
+    expect(result.activeOrdinal).toBe(2)
+  })
+
   it('re-wraps when the query changes (marks are not reused across queries)', () => {
     const surface = plantSurface('surface', '<p>alpha beta alpha</p>')
     performScopedFind(surface, 'alpha', { forward: true, findNext: false })

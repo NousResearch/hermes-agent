@@ -2366,9 +2366,14 @@ def _run_job_script(
     Shell support lets ``no_agent=True`` jobs ship classic bash watchdogs
     (the `memory-watchdog.sh` pattern) without wrapping them in Python.
 
-    Subprocess environment is passed through ``_sanitize_subprocess_env`` so
-    provider credentials and other Hermes-managed secrets are not inherited
-    (SECURITY.md §2.3), matching terminal and MCP child processes.
+    Subprocess environment is built through :func:`build_subprocess_env`
+    (``scrub_secrets=True``), which delegates to ``_sanitize_subprocess_env``
+    so provider credentials and other Hermes-managed secrets are not inherited
+    (SECURITY.md §2.3), matching terminal and MCP child processes.  PATH is
+    then normalised by prepending the Hermes install directory and appending
+    missing sane system entries, so that CLI tools installed in
+    ``~/.local/bin``, venvs, nix, or pipx are visible even when the gateway
+    was launched by systemd or another service manager with a minimal PATH.
 
     Args:
         script_path: Path to the script.  Relative paths are resolved
@@ -2457,7 +2462,7 @@ def _run_job_script(
                 "encoding": "utf-8",
                 "errors": "replace",
             }
-        env = build_subprocess_env()
+        env = build_subprocess_env(normalize_path=True)
         env.update(env_overlay)
         # Use the job's workdir as the subprocess cwd when configured,
         # otherwise default to the scripts-dir parent (back-compat).

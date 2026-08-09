@@ -485,6 +485,7 @@ class AIAgent:
         reaction_callback: Optional[Callable[[str], None]] = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
+        adaptive_reasoning: Dict[str, Any] = None,
         service_tier: str = None,
         request_overrides: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
@@ -576,6 +577,7 @@ class AIAgent:
             reaction_callback=reaction_callback,
             max_tokens=max_tokens,
             reasoning_config=reasoning_config,
+            adaptive_reasoning=adaptive_reasoning,
             service_tier=service_tier,
             request_overrides=request_overrides,
             prefill_messages=prefill_messages,
@@ -795,6 +797,11 @@ class AIAgent:
         # Copilot x-initiator: True for the first API call of a user turn,
         # False for tool-loop follow-ups (#3040).
         self._is_user_initiated_turn = False
+
+        # Adaptive-reasoning per-session state (continuation inheritance +
+        # escalation-notice dedup) does not carry across session boundaries.
+        self._adaptive_prev_effort = None
+        self._adaptive_last_notified_effort = None
 
         # Context engine reset/transition (works for built-in compressor and plugins)
         self._transition_context_engine_session(
@@ -8553,6 +8560,16 @@ class AIAgent:
                 with redirect_lock:
                     _clear_if_owned()
 
+        # Opt-in adaptive reasoning escalation: may raise reasoning_config for
+        # this turn only (restored in the finally below). No-op unless
+        # agent.adaptive_reasoning is enabled and no user override is active.
+        from agent.adaptive_reasoning import (
+            begin_adaptive_reasoning_turn,
+            end_adaptive_reasoning_turn,
+        )
+        _adaptive_token = begin_adaptive_reasoning_turn(
+            self, user_message, moa_config=moa_config
+        )
         try:
             # Serialize the full load -> run -> flush region across Hermes
             # processes. Gateway's asyncio lease closes alias routing inside one
@@ -8934,6 +8951,9 @@ class AIAgent:
                         reset_accounting_context(acct_token)
                     if token is not None:
                         reset_conversation_context(token)
+                    # Escalated turns are strictly turn-scoped: put the
+                    # session's reasoning baseline back on every exit path.
+                    end_adaptive_reasoning_turn(self, _adaptive_token)
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

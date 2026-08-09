@@ -370,6 +370,29 @@ DEFAULT_CONFIG = {
         # ``false`` keeps the historical strict-provider behavior (Mistral,
         # Groq, Cerebras reject the field with HTTP 400).
         "reasoning_echo": False,
+
+        # Opt-in adaptive reasoning adjustment. When enabled, each user turn
+        # is classified by a deterministic local heuristic (no extra LLM
+        # call) and the effort is temporarily raised above the configured
+        # agent.reasoning_effort baseline — up to max_effort — for turns
+        # that warrant it (complex debugging, architecture/security work,
+        # consequential infrastructure changes, in-depth research).
+        # Setting min_effort: low additionally allows clearly simple turns
+        # (casual chatter, short fact lookups, single mechanical steps) to
+        # drop below the baseline; without it the feature is escalation-only.
+        # Requires an explicit agent.reasoning_effort baseline — with no
+        # baseline set, adjusting would toggle thinking presence
+        # mid-conversation and fragment prompt caching, so the feature stays
+        # inert. The baseline is restored after the turn and a one-line
+        # notice is shown whenever the level changes. Explicit session-scoped
+        # /reasoning picks (or the Desktop effort menu) always win. Delegate
+        # subagents inherit the effective level + this policy and reclassify
+        # their own goal; delegation.reasoning_effort pins them.
+        "adaptive_reasoning": {
+            "enabled": False,
+            "max_effort": "xhigh",  # adjustment ceiling: high or xhigh
+            "min_effort": "",  # optional floor; "low" enables downshift
+        },
     },
 
     "terminal": {

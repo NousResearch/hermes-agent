@@ -561,6 +561,7 @@ def init_agent(
     reaction_callback: Optional[Callable[[str], None]] = None,
     max_tokens: int = None,
     reasoning_config: Dict[str, Any] = None,
+    adaptive_reasoning: Dict[str, Any] = None,
     service_tier: str = None,
     request_overrides: Dict[str, Any] = None,
     prefill_messages: List[Dict[str, Any]] = None,
@@ -939,6 +940,21 @@ def init_agent(
     # Read once at init; switch_model / try_activate_fallback / restore
     # keep it in sync with the active provider.
     agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
+    # Opt-in per-turn reasoning adjustment (agent.adaptive_reasoning in
+    # config.yaml). Interactive surfaces (CLI, gateway, TUI/Desktop) pass
+    # the raw config section; the delegate tool passes the parent's parsed
+    # policy so subagents inherit the parent's effective level and
+    # reclassify their own goal (parse is a fixed point, so re-parsing is
+    # safe). Cron and batch runs pass nothing and stay on their configured
+    # effort. reasoning_user_override marks an explicit session-scoped user
+    # pick (/reasoning, Desktop effort menu) or a delegation.reasoning_effort
+    # pin, which disables adaptive adjustment.
+    from agent.adaptive_reasoning import parse_adaptive_reasoning_config
+
+    agent.adaptive_reasoning = parse_adaptive_reasoning_config(adaptive_reasoning)
+    agent.reasoning_user_override = False
+    agent._adaptive_prev_effort = None
+    agent._adaptive_last_notified_effort = None
     agent.service_tier = service_tier
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns

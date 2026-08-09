@@ -3587,6 +3587,10 @@ class CLICommandsMixin:
 
         self.reasoning_config = parsed
         self.agent = None  # Force agent re-init with new reasoning config
+        # A session-scoped pick is an explicit user override and suppresses
+        # adaptive escalation; --global rewrites the baseline instead, so
+        # adaptive escalation (if enabled) keeps working above the new level.
+        self._session_reasoning_override = not explicit_global
 
         if explicit_global and save_config_value("agent.reasoning_effort", arg):
             agent_cfg = CLI_CONFIG.get("agent")

@@ -1819,9 +1819,15 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
-    # Resolve reasoning config: delegation override > parent inherit
+    # Resolve reasoning config: delegation override > parent inherit.
+    # Delegation happens mid-turn, so the parent's reasoning_config here is
+    # its *effective* level — including an adaptive per-turn adjustment —
+    # and becomes the child's starting baseline. An explicit
+    # delegation.reasoning_effort is a hard pin (tracked so the child's own
+    # adaptive classification is suppressed below).
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
+    delegation_reasoning_pinned = False
     try:
         # Keep the raw value — ``str(x or "")`` would coerce a YAML boolean
         # False (``reasoning_effort: false``) to "" and inherit the parent
@@ -1833,6 +1839,7 @@ def _build_child_agent(
             parsed = parse_reasoning_effort(delegation_effort)
             if parsed is not None:
                 child_reasoning = parsed
+                delegation_reasoning_pinned = True
             else:
                 logger.warning(
                     "Unknown delegation.reasoning_effort '%s', inheriting parent level",
@@ -1945,6 +1952,7 @@ def _build_child_agent(
                 max_iterations=max_iterations,
 
                 reasoning_config=child_reasoning,
+                adaptive_reasoning=getattr(parent_agent, "adaptive_reasoning", None),
                 prefill_messages=getattr(parent_agent, "prefill_messages", None),
                 fallback_model=parent_fallback,
                 enabled_toolsets=child_toolsets,
@@ -1991,6 +1999,16 @@ def _build_child_agent(
     # close it out from under a background child (#81267).
     if child_session_db is not None:
         child._owns_session_db = True
+    # An explicit delegation.reasoning_effort (including false/none) pins the
+    # child's level, and a parent-session user pick (/reasoning, --reasoning)
+    # extends to its children — either marks the child as user-overridden so
+    # its adaptive classifier stays inert. A merely inherited effective level
+    # is not a pin: the child reclassifies its own delegated goal within the
+    # propagated adaptive policy.
+    child.reasoning_user_override = bool(
+        delegation_reasoning_pinned
+        or getattr(parent_agent, "reasoning_user_override", False)
+    )
     # Now the child exists, its session id can ride on every relayed event
     # (including the spawn_requested below — first emit happens after this).
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""

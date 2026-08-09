@@ -1648,6 +1648,85 @@ There is no `hermes config set` support for `reasoning_overrides` keys — edit 
 3. Global `agent.reasoning_effort`
 4. Provider default
 
+#### Adaptive Reasoning (opt-in)
+
+Hermes can automatically adjust the reasoning effort for individual tasks
+that warrant it, while keeping your configured baseline for everything else:
+
+```yaml
+agent:
+  reasoning_effort: "medium"   # your baseline — required for adaptive to be active
+  adaptive_reasoning:
+    enabled: true              # off by default
+    max_effort: "xhigh"        # adjustment ceiling: "high" or "xhigh"
+    min_effort: "low"          # optional floor; omit for escalation-only
+```
+
+When enabled, each message is classified by a **deterministic local
+heuristic** — no extra LLM call, no new model tools, and no changes to the
+conversation the model sees. Ordinary and ambiguous turns stay at your
+baseline; substantial multi-step coding/debugging, consequential
+infrastructure changes, and in-depth research escalate to `high`; genuinely
+difficult architecture/security/high-stakes work with corroborating signals
+escalates to `xhigh`. Short follow-ups like "go ahead" inherit the previous
+turn's level, and unrelated trivial turns drop straight back to the baseline.
+
+**Downshift is opt-in and conservative.** Without `min_effort`, adaptive is
+escalation-only and your baseline is the floor. With `min_effort: "low"`,
+turns with *positive* evidence of simplicity — casual chatter, a short
+factual question, a single read-only mechanical step — run at `low`. Any
+complexity signal (error output, code, multiple questions, multi-step or
+compound requests, infrastructure/debugging keywords) keeps the turn at the
+baseline or above, and anything ambiguous stays at the baseline. `none` is
+never selected: thinking stays enabled at every adaptive level. An invalid
+floor (an unknown level, `none`, or a floor above `max_effort`) is ignored
+and the feature stays escalation-only.
+
+**An explicit baseline is required.** If `agent.reasoning_effort` is unset
+(no baseline, provider default), adaptive stays inert: installing a
+reasoning config for a single turn would toggle thinking presence on/off
+mid-conversation, which fragments the provider's prompt-cache namespace and
+multiplies cost. With a baseline set, only the effort *level* changes across
+turns, so thinking presence stays stable. Current adaptive-thinking models
+therefore keep one prompt-cache namespace; legacy budget-token models may
+still re-key their message cache when the budget changes, while system/tool
+caches remain reusable.
+
+The adjusted effort applies for the **full tool-calling loop of that turn
+only** — your configured `agent.reasoning_effort` is restored afterwards and
+is never rewritten. When the level changes, Hermes shows a one-line notice
+so you know it's active (a console line in the CLI, a toast in the desktop
+app, a short message on messaging platforms):
+
+> 🧠 Reasoning raised to High for this task — debugging/diagnosis and an error trace.
+
+> 🧠 Reasoning lowered to Low for this task — simple factual request.
+
+Consecutive adjusted turns at the same level notify only once.
+
+**Explicit choices always win.** A session-scoped `/reasoning <level>` pick,
+a desktop effort selection **distinct from your profile default**, or the
+`--reasoning` CLI flag disables adaptive adjustment for that session;
+`/reasoning <level> --global` sets a new baseline that adaptive continues to
+work around. (The desktop composer pre-fills your profile default for new
+chats; leaving it there counts as inherited, so adaptive stays active —
+picking the default level on purpose is indistinguishable from that pre-fill.
+Use `/reasoning <level>` in the chat when you want to pin the effort
+explicitly.) Adaptive never re-enables thinking you disabled
+(`reasoning_effort: none`), and provider/model-specific effort clamps (e.g.
+models without `xhigh`) still apply to the wire request as usual.
+
+**Subagents inherit and re-adapt.** A delegate subagent spawned during an
+adaptive turn starts from the parent's *effective* level at that moment (an
+escalated parent hands its child the escalated baseline) and receives the
+same adaptive policy, so the child independently reclassifies its own
+delegated goal — a demanding subtask can escalate to `xhigh` even when the
+parent ran at `medium`. An explicit `delegation.reasoning_effort` is a hard
+pin: it sets the child's level (including `false` to disable thinking) and
+turns the child's adaptive classification off, as does an explicit parent
+session override. Cron jobs, batch runs, and auxiliary tasks keep their own
+configured effort.
+
 The override applies automatically everywhere: CLI startup, messaging gateway, Desktop/TUI, cron jobs, `/model` mid-session switches, and fallback model activation.
 
 ## Tool-Use Enforcement

@@ -479,6 +479,13 @@ def load_cli_config() -> Dict[str, Any]:
             "system_prompt": "",
             "prefill_messages_file": "",
             "reasoning_effort": "",
+            # Opt-in per-turn escalation above reasoning_effort — see
+            # DEFAULT_CONFIG in hermes_cli/config_defaults.py for details.
+            "adaptive_reasoning": {
+                "enabled": False,
+                "max_effort": "xhigh",
+                "min_effort": "",
+            },
             "service_tier": "",
             # Built-in personalities live in hermes_cli.personality
             # (BUILTIN_PERSONALITIES) — the single owner. Entries here are
@@ -5320,6 +5327,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # depth without touching the worker profile's config.yaml. An
         # unparseable level is ignored with a warning rather than silently
         # swapping in the default — same contract as the config path.
+        # Explicit user reasoning choices (--reasoning flag, /reasoning
+        # <level>) take precedence over adaptive escalation; the flag is
+        # forwarded to the agent as reasoning_user_override at build time.
+        self._session_reasoning_override = False
         if reasoning is not None and str(reasoning).strip():
             _cli_reasoning = _parse_reasoning_config(reasoning)
             if _cli_reasoning is None:
@@ -5329,6 +5340,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 )
             else:
                 self.reasoning_config = _cli_reasoning
+                self._session_reasoning_override = True
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
         )
@@ -7463,6 +7475,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if not text:
                 return
             level = getattr(notice, "level", "info") or "info"
+            if (getattr(notice, "kind", "sticky") or "sticky") == "ttl":
+                # Timely per-turn notices (e.g. the adaptive-reasoning
+                # escalation line) render immediately — they fire at turn
+                # start, a clean print boundary, and queueing would delay
+                # them until after the response. Sticky notices (credits)
+                # keep the end-of-turn flush below.
+                color = {
+                    "error": "\033[31m",
+                    "warn": "\033[33m",
+                    "success": "\033[32m",
+                    "info": _DIM,
+                }.get(level, _DIM)
+                _cprint(f"  {color}{text}{_RST}")
+                return
             if not hasattr(self, "_pending_credit_notices"):
                 self._pending_credit_notices = []
             self._pending_credit_notices.append((level, text))
@@ -9853,6 +9879,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # forward.  Re-derive model/provider and service tier from config.yaml
         # so a session-only switch never leaks into the next session (#48055,
         # #23131).
+        self._session_reasoning_override = False
         self._pending_one_turn_model_restore = None
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")

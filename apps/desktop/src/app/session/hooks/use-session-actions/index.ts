@@ -9,6 +9,7 @@ import { useI18n } from '@/i18n'
 import { type ChatMessage, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
+import { isInheritedEffortSelection } from '@/lib/reasoning-effort'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { normalizeChoices, setClarifyRequest } from '@/store/clarify'
 import { migrateSessionDraft } from '@/store/composer'
@@ -41,6 +42,7 @@ import {
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
+  $defaultReasoningEffort,
   $messages,
   $newChatWorkspaceTarget,
   $sessions,
@@ -198,6 +200,18 @@ async function desktopSessionCreateParams(cwd: string): Promise<Record<string, u
   // session with a different selection than the one the user submitted.
   const selection = {
     effort: $currentReasoningEffort.get().trim(),
+    // useHermesConfig seeds the composer effort from the profile default, so
+    // a selection that just mirrors it is inherited state — shipping it as an
+    // explicit per-session override would (a) disable adaptive reasoning
+    // escalation for every ordinary new chat and (b) clobber per-model
+    // `agent.reasoning_overrides`. Only a distinct pick rides the wire; the
+    // gateway `/reasoning <level>` path stays the explicit force-baseline
+    // escape hatch (an explicit pick equal to the default is indistinguishable
+    // from the seed here, by design).
+    effortInherited: isInheritedEffortSelection(
+      $currentReasoningEffort.get(),
+      $defaultReasoningEffort.get()
+    ),
     fast: $currentFastMode.get(),
     model: $currentModel.get().trim(),
     provider: $currentProvider.get().trim()
@@ -214,7 +228,7 @@ async function desktopSessionCreateParams(cwd: string): Promise<Record<string, u
     ...(selection.model
       ? { model: selection.model, ...(selection.provider ? { provider: selection.provider } : {}) }
       : {}),
-    ...(selection.effort ? { reasoning_effort: selection.effort } : {}),
+    ...(selection.effort && !selection.effortInherited ? { reasoning_effort: selection.effort } : {}),
     fast: selection.fast
   }
 }

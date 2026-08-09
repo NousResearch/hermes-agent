@@ -142,27 +142,40 @@ def atomic_write_text(
     *,
     encoding: str = "utf-8",
     tmp_prefix: str = ".tmp_",
+    preserve_mode: bool = False,
+    create_mode: "int | None" = None,
 ) -> None:
-    """Write *content* to *path* via temp file + fsync + atomic rename.
+    """Write *content* atomically, with optional target metadata preservation.
 
-    Ensures the target file is never left in a partially-written state if
-    the process crashes or is interrupted.  ``atomic_replace`` preserves
-    symlinks and handles cross-device / busy-file fallbacks.
-
-    Used by the memory store, skill manager, and agent importer so that
-    every destructive file rewrite in the codebase shares one implementation.
+    ``preserve_mode`` carries an existing target's mode and best-effort POSIX
+    owner across replacement. ``create_mode`` applies only when the target does
+    not exist. Known modes are applied to the temp descriptor before the swap,
+    so the visible target never transits through ``mkstemp``'s 0600 mode.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    original_mode = _preserve_file_mode(path) if preserve_mode else None
+    original_owner = _preserve_file_owner(path) if preserve_mode else None
+    effective_mode = original_mode
+    if effective_mode is None and create_mode is not None and not path.exists():
+        effective_mode = create_mode
+
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent), prefix=tmp_prefix, suffix=".tmp"
     )
     try:
         with os.fdopen(fd, "w", encoding=encoding) as handle:
+            if effective_mode is not None and hasattr(os, "fchmod"):
+                os.fchmod(handle.fileno(), effective_mode)
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        atomic_replace(tmp_path, path)
+        real_path = Path(atomic_replace(tmp_path, path))
+        if preserve_mode:
+            _restore_file_owner(real_path, original_owner)
+        if effective_mode is not None and not hasattr(os, "fchmod"):
+            _restore_file_mode(real_path, effective_mode)
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -307,26 +320,21 @@ def atomic_yaml_write(
     default_flow_style: bool = False,
     sort_keys: bool = False,
     extra_content: str | None = None,
+    create_mode: "int | None" = None,
 ) -> None:
-    """Write YAML data to a file atomically.
+    """Write YAML atomically while preserving existing target metadata.
 
-    Uses temp file + fsync + os.replace to ensure the target file is never
-    left in a partially-written state.  If the process crashes mid-write,
-    the previous version of the file remains intact.
-
-    Args:
-        path: Target file path (will be created or overwritten).
-        data: YAML-serializable data to write.
-        default_flow_style: YAML flow style (default False).
-        sort_keys: Whether to sort dict keys (default False).
-        extra_content: Optional string to append after the YAML dump
-            (e.g. commented-out sections for user reference).
+    ``create_mode`` applies only when the target does not exist. Existing mode
+    and best-effort POSIX ownership always win and are preserved across symlink
+    targets and atomic replacement.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     original_mode = _preserve_file_mode(path)
     original_owner = _preserve_file_owner(path)
+    if original_mode is None and create_mode is not None and not path.exists():
+        original_mode = create_mode
 
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
@@ -335,13 +343,8 @@ def atomic_yaml_write(
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            # allow_unicode=True writes emoji/kaomoji (e.g. personalities, skin
-            # cursors) as real UTF-8 instead of fragile escape sequences. Without
-            # it, PyYAML emits astral-plane chars as `\UXXXXXXXX` (8-digit) escapes
-            # inside multi-line double-quoted strings wrapped with `\`
-            # continuations — a structure that stricter/non-PyYAML parsers and
-            # hand-edits routinely break into unclosed quotes, corrupting the whole
-            # config (GitHub #51356).
+            if original_mode is not None and hasattr(os, "fchmod"):
+                os.fchmod(f.fileno(), original_mode)
             yaml.dump(
                 data,
                 f,
@@ -354,14 +357,10 @@ def atomic_yaml_write(
                 f.write(extra_content)
             f.flush()
             os.fsync(f.fileno())
-        # Preserve symlinks — swap in-place on the real file (GitHub #16743).
-        real_path = atomic_replace(tmp_path, path)
-        real_path_obj = Path(real_path)
-        _restore_file_owner(real_path_obj, original_owner)
-        _restore_file_mode(real_path_obj, original_mode)
+        real_path = Path(atomic_replace(tmp_path, path))
+        _restore_file_owner(real_path, original_owner)
+        _restore_file_mode(real_path, original_mode)
     except BaseException:
-        # Match atomic_json_write: cleanup must also happen for process-level
-        # interruptions before we re-raise them.
         try:
             os.unlink(tmp_path)
         except OSError:

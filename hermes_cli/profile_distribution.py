@@ -278,6 +278,7 @@ def write_manifest(profile_dir: Path, manifest: DistributionManifest) -> Path:
         manifest.to_dict(),
         sort_keys=False,
         default_flow_style=False,
+        create_mode=0o644,
     )
     return mf_path
 

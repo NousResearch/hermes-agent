@@ -2,23 +2,27 @@
 """
 Session Search Tool - Long-Term Conversation Recall
 
-Single-shape tool with three calling modes (inferred from args, no explicit
+Single-shape tool with four calling modes (inferred from args, no explicit
 mode parameter):
 
-  1. DISCOVERY — pass ``query``. Runs FTS5, dedupes hits by session lineage,
-     returns top N sessions each with: snippet, ±5 message window around the
-     match, plus bookend_start (first 3 user+assistant msgs of session) and
-     bookend_end (last 3). Zero LLM cost.
+  1. DISCOVERY — pass ``query``. Runs FTS5 and dedupes hits by session lineage.
+     Adaptive detail (the default) fully hydrates the top result with a ±5
+     message window and bookends, while lower-ranked results keep the exact
+     anchor message plus metadata. Pass ``detail="full"`` to fully hydrate
+     every result. Zero LLM cost.
 
   2. SCROLL — pass ``session_id`` + ``around_message_id``. Returns a window
      of ±window messages centered on the anchor, no FTS5, no bookends. To
      scroll forward / backward, re-anchor on the last / first message id of
      the returned window.
 
-  3. BROWSE — no args. Returns recent sessions chronologically (titles,
+  3. READ — pass ``session_id`` without an anchor. Returns the whole session,
+     or a bounded head/tail view for large sessions.
+
+  4. BROWSE — no args. Returns recent sessions chronologically (titles,
      previews, timestamps).
 
-All three modes operate on the SQLite session DB via the FTS5 index and
+All four modes operate on the SQLite session DB via the FTS5 index and
 the get_anchored_view / get_messages_around primitives in hermes_state.
 No LLM calls anywhere — every shape returns actual messages from the DB.
 
@@ -740,6 +744,7 @@ def _title_match_result(
         "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or messages[-3:])],
         "messages_before": view.get("messages_before", 0),
         "messages_after": view.get("messages_after", max(len(messages) - 5, 0)),
+        "detail": "full",
         "_lineage_root": lineage_root,
     }
     if lineage_root and lineage_root != session_id:
@@ -753,10 +758,11 @@ def _discover(
     role_filter: Optional[List[str]],
     limit: int,
     sort: Optional[str],
+    detail: str,
     current_session_id: str = None,
     link_profile: str = None,
 ) -> str:
-    """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
+    """Discovery shape: FTS5 plus adaptive or full result hydration."""
     role_list = role_filter if role_filter else ["user", "assistant"]
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
     title_result = _title_match_result(db, query, current_lineage_root)
@@ -788,6 +794,7 @@ def _discover(
             "success": True,
             "mode": "discover",
             "query": query,
+            "detail": detail,
             "results": [],
             "count": 0,
             "message": "No matching sessions found.",
@@ -864,6 +871,11 @@ def _discover(
         except Exception:
             session_meta = {}
 
+        result_detail = "full" if detail == "full" or not results else "compact"
+        window_messages = view.get("window") or []
+        if result_detail == "compact":
+            window_messages = [m for m in window_messages if m.get("id") == msg_id]
+
         entry = {
             "session_id": hit_sid,
             "when": _format_timestamp(
@@ -875,19 +887,31 @@ def _discover(
             "matched_role": match_info.get("role"),
             "match_message_id": msg_id,
             "snippet": match_info.get("snippet") or "",
-            "bookend_start": [
-                _shape_message(m, max_content_len=1200)
-                for m in (view.get("bookend_start") or [])
-                if not _is_compaction_summary(m.get("content", ""))
+            "bookend_start": (
+                [
+                    _shape_message(m, max_content_len=1200)
+                    for m in (view.get("bookend_start") or [])
+                    if not _is_compaction_summary(m.get("content", ""))
+                ]
+                if result_detail == "full"
+                else []
+            ),
+            "messages": [
+                _shape_message(m, anchor_id=msg_id, max_content_len=4000)
+                for m in window_messages
             ],
-            "messages": [_shape_message(m, anchor_id=msg_id, max_content_len=4000) for m in (view.get("window") or [])],
-            "bookend_end": [
-                _shape_message(m, max_content_len=1200)
-                for m in (view.get("bookend_end") or [])
-                if not _is_compaction_summary(m.get("content", ""))
-            ],
+            "bookend_end": (
+                [
+                    _shape_message(m, max_content_len=1200)
+                    for m in (view.get("bookend_end") or [])
+                    if not _is_compaction_summary(m.get("content", ""))
+                ]
+                if result_detail == "full"
+                else []
+            ),
             "messages_before": view.get("messages_before", 0),
             "messages_after": view.get("messages_after", 0),
+            "detail": result_detail,
         }
         if lineage_root and lineage_root != hit_sid:
             entry["parent_session_id"] = lineage_root
@@ -900,6 +924,7 @@ def _discover(
         "success": True,
         "mode": "discover",
         "query": query,
+        "detail": detail,
         "results": results,
         "count": len(results),
         "sessions_searched": len(seen_sessions),
@@ -922,12 +947,14 @@ def _session_search_impl(
     sort: str = None,
     # Cross-profile (any shape)
     profile: str = None,
+    # Discovery result shaping (appended to preserve positional compatibility)
+    detail: str = "adaptive",
     *,
     _owned_dbs: Optional[List[Any]] = None,
 ) -> str:
     """Single-shape tool. Mode inferred from which args are set.
 
-    Discovery: pass ``query``.
+    Discovery: pass ``query``; ``detail="full"`` hydrates every result.
     Scroll:    pass ``session_id`` + ``around_message_id``.
     Read:      pass ``session_id`` (no anchor) — dumps the whole session.
     Browse:    pass nothing.
@@ -1017,12 +1044,19 @@ def _session_search_impl(
         if candidate in ("newest", "oldest"):
             sort_norm = candidate
 
+    detail_norm = (
+        "full"
+        if isinstance(detail, str) and detail.strip().lower() == "full"
+        else "adaptive"
+    )
+
     return _discover(
         db=db,
         query=query.strip(),
         role_filter=role_list,
         limit=limit,
         sort=sort_norm,
+        detail=detail_norm,
         current_session_id=current_session_id,
         link_profile=profile,
     )
@@ -1108,19 +1142,21 @@ SESSION_SEARCH_SCHEMA = {
         "FOUR CALLING SHAPES\n\n"
         "  1) DISCOVERY — pass `query`:\n"
         "     session_search(query=\"auth refactor\", limit=3)\n"
-        "     Runs FTS5, dedupes hits by session lineage, returns the top N sessions. "
-        "Each result carries:\n"
+        "     Runs FTS5, dedupes hits by session lineage, and returns the top N "
+        "sessions. Adaptive detail is the default: the top-ranked result carries "
+        "full context, while lower-ranked results stay compact. Pass `detail=\"full\"` "
+        "to fully hydrate every result. Every result carries:\n"
         "       - session_id, title, when, source\n"
         "       - snippet: FTS5-highlighted match excerpt\n"
-        "       - bookend_start: first 3 user+assistant messages of the session "
-        "(the goal / kickoff)\n"
-        "       - messages: ±5 messages around the FTS5 match, with the anchor message "
-        "flagged (the hit in context)\n"
-        "       - bookend_end: last 3 user+assistant messages of the session "
-        "(the resolution / decisions)\n"
+        "       - detail: `full` or `compact`\n"
+        "       - bookend_start/bookend_end: the first/last 3 user+assistant messages "
+        "for full results; empty lists for compact results\n"
+        "       - messages: ±5 messages around the FTS5 match for full results; only "
+        "the flagged anchor message for compact results\n"
         "       - match_message_id, messages_before, messages_after\n"
-        "     Bookends + window together let you reconstruct goal → match → resolution "
-        "without paying for the whole transcript.\n\n"
+        "     The top result's bookends + window let you reconstruct goal → match → "
+        "resolution immediately. Scroll a compact result when another session looks "
+        "more promising.\n\n"
         "  2) SCROLL — pass `session_id` + `around_message_id`:\n"
         "     session_search(session_id=\"...\", around_message_id=12345, window=10)\n"
         "     Returns a window of ±`window` messages centered on the anchor. No FTS5, "
@@ -1197,6 +1233,17 @@ SESSION_SEARCH_SCHEMA = {
                     "and browse shapes."
                 ),
             },
+            "detail": {
+                "type": "string",
+                "enum": ["adaptive", "full"],
+                "description": (
+                    "Discovery shape only. 'adaptive' (default) fully hydrates the "
+                    "top-ranked result and returns only the exact anchor message for "
+                    "lower-ranked results. 'full' returns bookends and the complete "
+                    "anchored window for every result."
+                ),
+                "default": "adaptive",
+            },
             "session_id": {
                 "type": "string",
                 "description": (
@@ -1261,6 +1308,7 @@ registry.register(
         around_message_id=args.get("around_message_id"),
         window=args.get("window", 5),
         sort=args.get("sort"),
+        detail=args.get("detail", "adaptive"),
         profile=args.get("profile"),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id"),

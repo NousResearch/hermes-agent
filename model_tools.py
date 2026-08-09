@@ -515,18 +515,6 @@ def _compute_tool_definitions(
     # descriptions that don't actually exist, and hallucinates calls to them.
     available_tool_names = {t["function"]["name"] for t in filtered_tools}
 
-    # Rebuild execute_code schema to only list sandbox tools that are actually
-    # available.  Without this, the model sees "web_search is available in
-    # execute_code" even when the API key isn't configured or the toolset is
-    # disabled (#560-discord).
-    if "execute_code" in available_tool_names:
-        from tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema, _get_execution_mode
-        sandbox_enabled = SANDBOX_ALLOWED_TOOLS & available_tool_names
-        dynamic_schema = build_execute_code_schema(sandbox_enabled, mode=_get_execution_mode())
-        for i, td in enumerate(filtered_tools):
-            if td.get("function", {}).get("name") == "execute_code":
-                filtered_tools[i] = {"type": "function", "function": dynamic_schema}
-                break
 
     # Rebuild discord / discord_admin schemas based on the bot's privileged
     # intents (detected from GET /applications/@me) and the user's action
@@ -599,9 +587,6 @@ def _compute_tool_definitions(
         else:
             print("🛠️  No tools selected (all filtered out or unavailable)")
 
-    global _last_resolved_tool_names
-    _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
-
     # Sanitize schemas for broad backend compatibility. llama.cpp's
     # json-schema-to-grammar converter (used by its OAI server to build
     # GBNF tool-call parsers) rejects some shapes that cloud providers
@@ -648,6 +633,30 @@ def _compute_tool_definitions(
             filtered_tools = assembly.tool_defs
     except Exception as e:  # pragma: no cover — never break tool loading
         logger.warning("Tool search assembly skipped: %s", e)
+
+    # Rebuild execute_code from the final model-facing tool surface. Tool
+    # Search assembly may replace deferred MCP/plugin definitions with its
+    # three bridge tools, and those bridge helpers must be listed inside
+    # execute_code only when the session can actually reach them. Doing this
+    # before assembly would advertise neither the bridge nor its callable
+    # deferred surface.
+    available_tool_names = {t["function"]["name"] for t in filtered_tools}
+    if "execute_code" in available_tool_names:
+        from tools.code_execution_tool import (
+            SANDBOX_ALLOWED_TOOLS,
+            _get_execution_mode,
+            build_execute_code_schema,
+        )
+
+        sandbox_enabled = SANDBOX_ALLOWED_TOOLS & available_tool_names
+        dynamic_schema = build_execute_code_schema(sandbox_enabled, mode=_get_execution_mode())
+        for i, td in enumerate(filtered_tools):
+            if td.get("function", {}).get("name") == "execute_code":
+                filtered_tools[i] = {"type": "function", "function": dynamic_schema}
+                break
+
+    global _last_resolved_tool_names
+    _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
 
     return filtered_tools
 
@@ -1493,13 +1502,19 @@ def handle_function_call(
             if function_name == "execute_code":
                 # Prefer the caller-provided list so subagents can't overwrite
                 # the parent's tool set via the process-global.
-                sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+                explicit_sandbox_scope = enabled_tools is not None
+                sandbox_enabled = (
+                    enabled_tools if explicit_sandbox_scope else _last_resolved_tool_names
+                )
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
                     return registry.dispatch(
                         function_name, next_args,
                         task_id=task_id,
                         session_id=session_id,
                         enabled_tools=sandbox_enabled,
+                        enabled_toolsets=enabled_toolsets,
+                        disabled_toolsets=disabled_toolsets,
+                        allow_deferred_bridges=explicit_sandbox_scope,
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:

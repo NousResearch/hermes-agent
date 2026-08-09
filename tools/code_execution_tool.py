@@ -45,7 +45,7 @@ import time
 import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Collection, Dict, List, Optional, Tuple
 
 from tools.thread_context import propagate_context_to_thread
 from agent.thread_scoped_output import thread_scoped_silence
@@ -58,9 +58,14 @@ logger = logging.getLogger(__name__)
 
 SANDBOX_AVAILABLE = True
 
-# The 7 tools allowed inside the sandbox. The intersection of this list
+# The tools allowed inside the sandbox. The intersection of this list
 # and the session's enabled tools determines which stubs are generated.
-SANDBOX_ALLOWED_TOOLS = frozenset([
+DEFERRED_BRIDGE_TOOLS = frozenset([
+    "tool_search",
+    "tool_describe",
+    "tool_call",
+])
+DIRECT_SANDBOX_TOOLS = frozenset([
     "web_search",
     "web_extract",
     "read_file",
@@ -69,6 +74,7 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
     "patch",
     "terminal",
 ])
+SANDBOX_ALLOWED_TOOLS = DIRECT_SANDBOX_TOOLS | DEFERRED_BRIDGE_TOOLS
 
 # Resource limit defaults (overridable via config.yaml → code_execution.*)
 DEFAULT_TIMEOUT = 300        # 5 minutes
@@ -370,6 +376,24 @@ _TOOL_STUBS = {
         '"""Run a shell command (foreground only). Returns dict with "output" and "exit_code"."""',
         '{"command": command, "timeout": timeout, "workdir": workdir}',
     ),
+    "tool_search": (
+        "tool_search",
+        "query: str, limit: int = 5",
+        '"""Search deferred MCP and plugin tools. Returns a dict with matching tool metadata."""',
+        '{"query": query, "limit": limit}',
+    ),
+    "tool_describe": (
+        "tool_describe",
+        "name: str",
+        '"""Load the full schema for one deferred tool returned by tool_search."""',
+        '{"name": name}',
+    ),
+    "tool_call": (
+        "tool_call",
+        "name: str, arguments: dict = None",
+        '"""Invoke one deferred tool. Policy, hooks, and approvals still apply."""',
+        '{"name": name, "arguments": arguments or {}}',
+    ),
 }
 
 
@@ -649,6 +673,63 @@ def _call(tool_name, args):
 _TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify_on_complete", "watch_patterns"}
 
 
+def _resolve_sandbox_tools(
+    enabled_tools: Optional[List[str]],
+    *,
+    allow_deferred_bridges: bool = False,
+) -> frozenset:
+    """Resolve callable stubs without exposing hidden Tool Search bridges.
+
+    The legacy empty-intersection fallback keeps the original direct sandbox
+    tools available to registry callers that omit ``enabled_tools``. Deferred
+    bridge helpers are different: they are only safe to expose when Tool
+    Search assembly explicitly put them in the session's model-facing list.
+    """
+    session_tools = set(enabled_tools) if enabled_tools else set()
+    allowed_tools = (
+        SANDBOX_ALLOWED_TOOLS if allow_deferred_bridges else DIRECT_SANDBOX_TOOLS
+    )
+    sandbox_tools = frozenset(allowed_tools & session_tools)
+    if sandbox_tools:
+        return sandbox_tools
+
+    return DIRECT_SANDBOX_TOOLS
+
+
+def _sandbox_dispatch_kwargs(
+    tool_name: str,
+    task_id: str,
+    enabled_toolsets: Optional[List[str]],
+    disabled_toolsets: Optional[List[str]],
+) -> Dict[str, Any]:
+    """Build nested dispatch context without changing legacy direct-tool calls.
+
+    Only Tool Search bridge calls need the session's toolset scope. Keeping the
+    extra kwargs off ordinary file/web/terminal calls preserves their existing
+    dispatch contract while preventing a bridge from seeing another session's
+    deferred catalog.
+    """
+    kwargs: Dict[str, Any] = {"task_id": task_id}
+    from tools.tool_search import BRIDGE_TOOL_NAMES
+
+    if tool_name in BRIDGE_TOOL_NAMES:
+        kwargs["enabled_toolsets"] = enabled_toolsets
+        kwargs["disabled_toolsets"] = disabled_toolsets
+    return kwargs
+
+
+def _serialize_rpc_result(result: Any) -> str:
+    """Return an RPC-safe payload for string and multimodal tool results."""
+    if isinstance(result, str):
+        return result
+    try:
+        return json.dumps(result, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return tool_error(
+            f"Tool returned a non-serializable {type(result).__name__} result"
+        )
+
+
 def _rpc_server_loop(
     server_sock: socket.socket,
     task_id: str,
@@ -658,6 +739,8 @@ def _rpc_server_loop(
     allowed_tools: frozenset,
     stop_event: threading.Event,
     rpc_token: str,
+    enabled_toolsets: Optional[List[str]] = None,
+    disabled_toolsets: Optional[List[str]] = None,
 ):
     """
     Accept one client connection and dispatch tool-call requests until
@@ -746,7 +829,14 @@ def _rpc_server_loop(
                 try:
                     with thread_scoped_silence():
                         result = handle_function_call(
-                            tool_name, tool_args, task_id=task_id
+                            tool_name,
+                            tool_args,
+                            **_sandbox_dispatch_kwargs(
+                                tool_name,
+                                task_id,
+                                enabled_toolsets,
+                                disabled_toolsets,
+                            ),
                         )
                 except Exception as exc:
                     logger.error("Tool call failed in sandbox: %s", exc, exc_info=True)
@@ -763,7 +853,7 @@ def _rpc_server_loop(
                     "duration": round(call_duration, 2),
                 })
 
-                conn.sendall((result + "\n").encode())
+                conn.sendall((_serialize_rpc_result(result) + "\n").encode())
 
     except socket.timeout:
         logger.debug("RPC listener socket timeout")
@@ -928,6 +1018,8 @@ def _rpc_poll_loop(
     allowed_tools: frozenset,
     stop_event: threading.Event,
     rpc_token: str,
+    enabled_toolsets: Optional[List[str]] = None,
+    disabled_toolsets: Optional[List[str]] = None,
 ):
     """Poll the remote filesystem for tool call requests and dispatch them.
 
@@ -1021,7 +1113,14 @@ def _rpc_poll_loop(
                     try:
                         with thread_scoped_silence():
                             tool_result = handle_function_call(
-                                tool_name, tool_args, task_id=task_id
+                                tool_name,
+                                tool_args,
+                                **_sandbox_dispatch_kwargs(
+                                    tool_name,
+                                    task_id,
+                                    enabled_toolsets,
+                                    disabled_toolsets,
+                                ),
                             )
                     except Exception as exc:
                         logger.error("Tool call failed in remote sandbox: %s",
@@ -1040,7 +1139,7 @@ def _rpc_poll_loop(
                 # Use echo piping (not stdin_data) because Modal doesn't
                 # reliably deliver stdin to chained commands.
                 encoded_result = base64.b64encode(
-                    tool_result.encode("utf-8")
+                    _serialize_rpc_result(tool_result).encode("utf-8")
                 ).decode("ascii")
                 env.execute(
                     f"echo '{encoded_result}' | base64 -d > {quoted_res_file}.tmp"
@@ -1064,6 +1163,8 @@ def _execute_remote(
     code: str,
     task_id: Optional[str],
     enabled_tools: Optional[List[str]],
+    enabled_toolsets: Optional[List[str]] = None,
+    disabled_toolsets: Optional[List[str]] = None,
 ) -> str:
     """Run a script on the remote terminal backend via file-based RPC.
 
@@ -1076,10 +1177,13 @@ def _execute_remote(
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
-    session_tools = set(enabled_tools) if enabled_tools else set()
-    sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
-    if not sandbox_tools:
-        sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    # File RPC on remote/shared backends is not a session-private capability
+    # channel. Keep deferred host-side tools local until that transport has
+    # stronger isolation; the legacy direct sandbox surface remains unchanged.
+    sandbox_tools = _resolve_sandbox_tools(
+        enabled_tools,
+        allow_deferred_bridges=False,
+    )
 
     effective_task_id = task_id or "default"
     env, env_type = _get_or_create_env(effective_task_id)
@@ -1137,6 +1241,7 @@ def _execute_remote(
                 env, f"{sandbox_dir}/rpc", effective_task_id,
                 tool_call_log, tool_call_counter, max_tool_calls,
                 sandbox_tools, stop_event, rpc_token,
+                enabled_toolsets, disabled_toolsets,
             ),
             daemon=True,
         )
@@ -1256,6 +1361,9 @@ def execute_code(
     code: str,
     task_id: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
+    enabled_toolsets: Optional[List[str]] = None,
+    disabled_toolsets: Optional[List[str]] = None,
+    allow_deferred_bridges: bool = False,
 ) -> str:
     """
     Run a Python script in a sandboxed child process with RPC access
@@ -1269,6 +1377,10 @@ def execute_code(
         task_id:       Session task ID for tool isolation (terminal env, etc.).
         enabled_tools: Tool names enabled in the current session. The sandbox
                        gets the intersection with SANDBOX_ALLOWED_TOOLS.
+        enabled_toolsets: Session toolsets forwarded to deferred-tool bridge calls.
+        disabled_toolsets: Session toolset exclusions forwarded to bridge calls.
+        allow_deferred_bridges: Whether the caller supplied an explicit final
+                                per-session tool list authorizing bridge helpers.
 
     Returns:
         JSON string with execution results.
@@ -1321,7 +1433,13 @@ def execute_code(
         clear_current_thread_interrupt()
 
     if env_type != "local":
-        return _execute_remote(code, task_id, enabled_tools)
+        return _execute_remote(
+            code,
+            task_id,
+            enabled_tools,
+            enabled_toolsets,
+            disabled_toolsets,
+        )
 
     # --- Local execution path (UDS) --- below this line is unchanged ---
 
@@ -1334,11 +1452,10 @@ def execute_code(
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
     # Determine which tools the sandbox can call
-    session_tools = set(enabled_tools) if enabled_tools else set()
-    sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
-
-    if not sandbox_tools:
-        sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    sandbox_tools = _resolve_sandbox_tools(
+        enabled_tools,
+        allow_deferred_bridges=allow_deferred_bridges,
+    )
 
     # --- Set up temp directory with hermes_tools.py and script.py ---
     tmpdir = tempfile.mkdtemp(prefix="hermes_sandbox_")
@@ -1415,7 +1532,8 @@ def execute_code(
             target=propagate_context_to_thread(_rpc_server_loop),
             args=(
                 server_sock, task_id, tool_call_log,
-                tool_call_counter, max_tool_calls, sandbox_tools, stop_event, rpc_token,
+                tool_call_counter, max_tool_calls, sandbox_tools,
+                stop_event, rpc_token, enabled_toolsets, disabled_toolsets,
             ),
             daemon=True,
         )
@@ -2070,11 +2188,24 @@ _TOOL_DOC_LINES = [
     ("terminal",
      "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
      "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),
+    ("tool_search",
+     "  tool_search(query: str, limit: int = 5) -> dict\n"
+     "    Search deferred MCP and plugin tools by capability."),
+    ("tool_describe",
+     "  tool_describe(name: str) -> dict\n"
+     "    Load the full schema for one deferred tool returned by tool_search."),
+    ("tool_call",
+     "  tool_call(name: str, arguments: dict = None) -> dict\n"
+     "    Invoke one deferred tool. Policy, hooks, and approvals still apply."),
 ]
 
 
-def build_execute_code_schema(enabled_sandbox_tools: set = None,
-                              mode: str = None) -> dict:
+def build_execute_code_schema(
+    enabled_sandbox_tools: Optional[Collection[str]] = None,
+    mode: Optional[str] = None,
+    *,
+    allow_deferred_bridges: Optional[bool] = None,
+) -> dict:
     """Build the execute_code schema with description listing only enabled tools.
 
     When tools are disabled via ``hermes tools`` (e.g. web is turned off),
@@ -2088,7 +2219,17 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
     If ``mode`` is None, the current ``code_execution.mode`` config is read.
     """
     if enabled_sandbox_tools is None:
-        enabled_sandbox_tools = SANDBOX_ALLOWED_TOOLS
+        enabled_sandbox_tools = set(DIRECT_SANDBOX_TOOLS)
+    else:
+        enabled_sandbox_tools = set(enabled_sandbox_tools)
+    if allow_deferred_bridges is None:
+        try:
+            from tools.terminal_tool import _get_env_config
+            allow_deferred_bridges = _get_env_config().get("env_type") == "local"
+        except Exception:
+            allow_deferred_bridges = False
+    if not allow_deferred_bridges:
+        enabled_sandbox_tools -= DEFERRED_BRIDGE_TOOLS
     if mode is None:
         mode = _get_execution_mode()
 
@@ -2159,9 +2300,9 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
     }
 
 
-# Default schema used at registration time (all sandbox tools listed,
-# current configured mode).  model_tools.py rebuilds per-session anyway.
-EXECUTE_CODE_SCHEMA = build_execute_code_schema()
+# The registration-time schema is deliberately conservative. model_tools.py
+# rebuilds it from the explicit final session surface after Tool Search assembly.
+EXECUTE_CODE_SCHEMA = build_execute_code_schema(allow_deferred_bridges=False)
 
 
 # --- Registry ---
@@ -2200,6 +2341,9 @@ def _execute_code_handler(args: dict, **kwargs) -> str:
         code=code or "",
         task_id=kwargs.get("task_id"),
         enabled_tools=kwargs.get("enabled_tools"),
+        enabled_toolsets=kwargs.get("enabled_toolsets"),
+        disabled_toolsets=kwargs.get("disabled_toolsets"),
+        allow_deferred_bridges=kwargs.get("allow_deferred_bridges", False),
     )
 
 

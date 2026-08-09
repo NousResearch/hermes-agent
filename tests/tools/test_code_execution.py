@@ -15,6 +15,7 @@ Run with:  python -m pytest tests/test_code_execution.py -v
 import pytest
 # pytestmark removed — tests run fine (61 pass, ~99s)
 
+import base64
 import json
 import os
 import socket
@@ -39,13 +40,17 @@ from unittest.mock import patch, MagicMock
 
 from tools.code_execution_tool import (
     SANDBOX_ALLOWED_TOOLS,
+    DIRECT_SANDBOX_TOOLS,
+    DEFERRED_BRIDGE_TOOLS,
     execute_code,
     generate_hermes_tools_module,
     check_sandbox_requirements,
     build_execute_code_schema,
     EXECUTE_CODE_SCHEMA,
-    _TOOL_DOC_LINES,
     _execute_remote,
+    _rpc_poll_loop,
+    _resolve_sandbox_tools,
+    _execute_code_handler,
 )
 from tools.registry import registry
 
@@ -118,6 +123,101 @@ class TestHermesToolsGeneration(unittest.TestCase):
 
 
 class TestExecuteCodeRemoteTempDir(unittest.TestCase):
+    def test_remote_bridge_dispatch_preserves_session_toolset_scope(self):
+        stop_event = threading.Event()
+        request_path = "/tmp/rpc/req_000001"
+
+        class FakeEnv:
+            def __init__(self):
+                self.response_command = ""
+
+            def execute(self, command, cwd=None, timeout=None):
+                if command.startswith("ls -1"):
+                    return {"output": request_path}
+                if command == f"cat {request_path}":
+                    return {
+                        "output": json.dumps({
+                            "token": "rpc-token",
+                            "tool": "tool_search",
+                            "args": {"query": "calendar"},
+                            "seq": 1,
+                        })
+                    }
+                if "res_000001.tmp" in command:
+                    self.response_command = command
+                    stop_event.set()
+                return {"output": ""}
+
+        env = FakeEnv()
+        multimodal_result = {
+            "_multimodal": True,
+            "content": [{"type": "text", "text": "calendar"}],
+        }
+        with patch("model_tools.handle_function_call",
+                   return_value=multimodal_result) as dispatch:
+            _rpc_poll_loop(
+                env,
+                "/tmp/rpc",
+                "task-remote-scope",
+                [],
+                [0],
+                5,
+                frozenset({"tool_search"}),
+                stop_event,
+                "rpc-token",
+                enabled_toolsets=["plugin_calendar"],
+                disabled_toolsets=["plugin_private"],
+            )
+
+        dispatch.assert_called_once_with(
+            "tool_search",
+            {"query": "calendar"},
+            task_id="task-remote-scope",
+            enabled_toolsets=["plugin_calendar"],
+            disabled_toolsets=["plugin_private"],
+        )
+        encoded = env.response_command.split("echo '", 1)[1].split("' |", 1)[0]
+        self.assertEqual(
+            json.loads(base64.b64decode(encoded).decode("utf-8")),
+            multimodal_result,
+        )
+
+    def test_remote_fallback_does_not_ship_hidden_bridge_stubs(self):
+        class FakeEnv:
+            def get_temp_dir(self):
+                return "/tmp"
+
+            def execute(self, command, cwd=None, timeout=None):
+                if "command -v python3" in command:
+                    return {"output": "OK\n"}
+                if "python3 script.py" in command:
+                    return {"output": "done\n", "returncode": 0}
+                return {"output": ""}
+
+        fake_thread = MagicMock()
+        with patch("tools.code_execution_tool._load_config",
+                   return_value={"timeout": 30, "max_tool_calls": 5}), \
+             patch("tools.code_execution_tool._get_or_create_env",
+                   return_value=(FakeEnv(), "ssh")), \
+             patch("tools.code_execution_tool._ship_file_to_remote") as ship, \
+             patch("tools.code_execution_tool.threading.Thread",
+                   return_value=fake_thread):
+            result = json.loads(_execute_remote(
+                "print('done')",
+                "task-hidden-bridge",
+                ["execute_code"],
+            ))
+
+        self.assertEqual(result["status"], "success")
+        module_source = next(
+            call.args[2]
+            for call in ship.call_args_list
+            if call.args[1].endswith("/hermes_tools.py")
+        )
+        self.assertNotIn("def tool_search(", module_source)
+        self.assertNotIn("def tool_describe(", module_source)
+        self.assertNotIn("def tool_call(", module_source)
+
     def test_execute_remote_uses_backend_temp_dir_for_sandbox(self):
         class FakeEnv:
             def __init__(self):
@@ -249,6 +349,270 @@ print(result.get("output", ""))
         self.assertEqual(result["status"], "success")
         self.assertIn("mock output for: echo hello", result["output"])
         self.assertEqual(result["tool_calls_made"], 1)
+
+    def test_deferred_bridge_tools_preserve_session_toolset_scope(self):
+        """One code run composes deferred tools without crossing session scope."""
+        from model_tools import _clear_tool_defs_cache, handle_function_call
+        from tools.registry import registry
+
+        def schema(name):
+            return {
+                "name": name,
+                "description": "Scope probe",
+                "parameters": {"type": "object", "properties": {}},
+            }
+
+        registry.register(
+            name="scope_probe_alpha",
+            toolset="plugin_scope_alpha",
+            schema=schema("scope_probe_alpha"),
+            handler=lambda _args, **_kwargs: {
+                "_multimodal": True,
+                "content": [{"type": "text", "text": "alpha"}],
+            },
+        )
+        registry.register(
+            name="scope_probe_beta",
+            toolset="plugin_scope_beta",
+            schema=schema("scope_probe_beta"),
+            handler=lambda _args, **_kwargs: json.dumps({"value": "beta"}),
+        )
+        _clear_tool_defs_cache()
+
+        code = """
+import json
+from hermes_tools import tool_search, tool_describe, tool_call
+
+found = tool_search("scope probe", limit=10)
+described = tool_describe("scope_probe_alpha")
+alpha = tool_call("scope_probe_alpha", {})
+beta = tool_call("scope_probe_beta", {})
+print(json.dumps({
+    "found": found,
+    "described": described,
+    "alpha": alpha,
+    "beta": beta,
+}, sort_keys=True))
+"""
+        try:
+            result = json.loads(
+                handle_function_call(
+                    "execute_code",
+                    {"code": code},
+                    task_id="test-deferred-scope",
+                    enabled_tools=[
+                        "execute_code",
+                        "tool_search",
+                        "tool_describe",
+                        "tool_call",
+                    ],
+                    enabled_toolsets=["plugin_scope_alpha"],
+                    disabled_toolsets=["plugin_scope_beta"],
+                )
+            )
+        finally:
+            registry.deregister("scope_probe_alpha")
+            registry.deregister("scope_probe_beta")
+            _clear_tool_defs_cache()
+
+        self.assertEqual(result["status"], "success")
+        payload = json.loads(result["output"])
+        self.assertEqual([item["name"] for item in payload["found"]["matches"]], ["scope_probe_alpha"])
+        self.assertEqual(payload["described"]["name"], "scope_probe_alpha")
+        self.assertEqual(
+            payload["alpha"],
+            {
+                "_multimodal": True,
+                "content": [{"type": "text", "text": "alpha"}],
+            },
+        )
+        self.assertIn("error", payload["beta"])
+        self.assertIn("not available in this session", payload["beta"]["error"])
+
+    def test_execute_code_schema_advertises_deferred_bridge_helpers(self):
+        """The model sees bridge helpers when its session has deferred tools."""
+        from model_tools import _clear_tool_defs_cache, get_tool_definitions
+        from tools.registry import registry
+
+        registry.register(
+            name="schema_probe_deferred",
+            toolset="plugin_schema_probe",
+            schema={
+                "name": "schema_probe_deferred",
+                "description": "Deferred schema probe",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda _args, **_kwargs: json.dumps({"ok": True}),
+        )
+        _clear_tool_defs_cache()
+        try:
+            definitions = get_tool_definitions(
+                enabled_toolsets=["code_execution", "plugin_schema_probe"],
+                quiet_mode=True,
+            )
+        finally:
+            registry.deregister("schema_probe_deferred")
+            _clear_tool_defs_cache()
+
+        execute_schema = next(
+            item["function"] for item in definitions
+            if item["function"]["name"] == "execute_code"
+        )
+        self.assertIn("tool_search(query:", execute_schema["description"])
+        self.assertIn("tool_describe(name:", execute_schema["description"])
+        self.assertIn("tool_call(name:", execute_schema["description"])
+
+    def test_tool_definition_cache_keeps_final_sandbox_scope_consistent(self):
+        """Cache misses and hits publish the same model-facing tool names."""
+        import model_tools
+        from tools.registry import registry
+
+        registry.register(
+            name="cache_scope_probe_deferred",
+            toolset="plugin_cache_scope_probe",
+            schema={
+                "name": "cache_scope_probe_deferred",
+                "description": "Deferred cache scope probe",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda _args, **_kwargs: json.dumps({"ok": True}),
+        )
+        model_tools._clear_tool_defs_cache()
+
+        try:
+            kwargs = {
+                "enabled_toolsets": ["code_execution", "plugin_cache_scope_probe"],
+                "quiet_mode": True,
+            }
+            first = model_tools.get_tool_definitions(**kwargs)
+            first_global = list(model_tools._last_resolved_tool_names)
+            second = model_tools.get_tool_definitions(**kwargs)
+            second_global = list(model_tools._last_resolved_tool_names)
+        finally:
+            registry.deregister("cache_scope_probe_deferred")
+            model_tools._clear_tool_defs_cache()
+
+        expected = [item["function"]["name"] for item in first]
+        self.assertEqual([item["function"]["name"] for item in second], expected)
+        self.assertEqual(first_global, expected)
+        self.assertEqual(second_global, expected)
+
+    def test_execute_code_schema_hides_bridge_helpers_when_tool_search_is_off(self):
+        """The schema does not advertise bridge helpers the session cannot call."""
+        from model_tools import _clear_tool_defs_cache, get_tool_definitions
+        from tools.registry import registry
+        from tools.tool_search import ToolSearchConfig
+
+        registry.register(
+            name="schema_probe_deferred_off",
+            toolset="plugin_schema_probe_off",
+            schema={
+                "name": "schema_probe_deferred_off",
+                "description": "Deferred schema probe",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda _args, **_kwargs: json.dumps({"ok": True}),
+        )
+        _clear_tool_defs_cache()
+
+        try:
+            config = ToolSearchConfig(
+                enabled="off",
+                threshold_pct=5.0,
+                search_default_limit=5,
+                max_search_limit=20,
+            )
+            with patch("tools.tool_search.load_config", return_value=config):
+                definitions = get_tool_definitions(
+                    enabled_toolsets=["code_execution", "plugin_schema_probe_off"],
+                    quiet_mode=True,
+                )
+
+            execute_schema = next(
+                tool["function"]
+                for tool in definitions
+                if tool["function"]["name"] == "execute_code"
+            )
+            description = execute_schema["description"]
+            self.assertNotIn("tool_search(query", description)
+            self.assertNotIn("tool_describe(name", description)
+            self.assertNotIn("tool_call(name", description)
+        finally:
+            registry.deregister("schema_probe_deferred_off")
+            _clear_tool_defs_cache()
+
+    def test_local_fallback_does_not_expose_hidden_bridge_stubs(self):
+        result = self._run(
+            "from hermes_tools import tool_search\nprint(tool_search('calendar'))",
+            enabled_tools=["execute_code"],
+        )
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["tool_calls_made"], 0)
+        self.assertIn("cannot import name 'tool_search'", result["output"])
+
+    def test_unscoped_global_fallback_cannot_authorize_bridge_stubs(self):
+        """A different session's process-global names are never capabilities."""
+        import model_tools
+        from tools.registry import registry
+
+        with patch.object(
+            model_tools,
+            "_last_resolved_tool_names",
+            ["execute_code", "tool_search", "tool_describe", "tool_call"],
+        ), patch.object(registry, "dispatch", return_value="{}") as dispatch:
+            model_tools.handle_function_call(
+                "execute_code",
+                {"code": "print('safe')"},
+                skip_pre_tool_call_hook=True,
+                skip_tool_execution_middleware=True,
+            )
+
+        kwargs = dispatch.call_args.kwargs
+        self.assertFalse(kwargs["allow_deferred_bridges"])
+        resolved = _resolve_sandbox_tools(
+            kwargs["enabled_tools"],
+            allow_deferred_bridges=kwargs["allow_deferred_bridges"],
+        )
+        self.assertTrue(resolved.isdisjoint(DEFERRED_BRIDGE_TOOLS))
+
+    def test_explicit_session_scope_can_authorize_bridge_stubs(self):
+        resolved = _resolve_sandbox_tools(
+            ["tool_search", "tool_describe", "tool_call"],
+            allow_deferred_bridges=True,
+        )
+        self.assertEqual(resolved, DEFERRED_BRIDGE_TOOLS)
+
+    def test_registry_handler_preserves_validation_and_deferred_scope(self):
+        with patch("tools.code_execution_tool.execute_code", return_value="{}") as run:
+            result = _execute_code_handler(
+                {"code": "print('safe')"},
+                task_id="task-1",
+                enabled_tools=["tool_search"],
+                enabled_toolsets=["calendar"],
+                disabled_toolsets=["private"],
+                allow_deferred_bridges=True,
+            )
+
+        self.assertEqual(result, "{}")
+        run.assert_called_once_with(
+            code="print('safe')",
+            task_id="task-1",
+            enabled_tools=["tool_search"],
+            enabled_toolsets=["calendar"],
+            disabled_toolsets=["private"],
+            allow_deferred_bridges=True,
+        )
+
+        invalid = json.loads(_execute_code_handler({"code": {"bad": True}}))
+        self.assertIn("Python source as a string", invalid["error"])
+
+    def test_remote_execution_never_authorizes_bridge_stubs(self):
+        resolved = _resolve_sandbox_tools(
+            list(SANDBOX_ALLOWED_TOOLS),
+            allow_deferred_bridges=False,
+        )
+        self.assertTrue(resolved.isdisjoint(DEFERRED_BRIDGE_TOOLS))
 
 
     def test_concurrent_tool_calls_match_responses(self):
@@ -446,11 +810,13 @@ class TestStubSchemaDrift(unittest.TestCase):
 class TestBuildExecuteCodeSchema(unittest.TestCase):
     """Tests for build_execute_code_schema — the dynamic schema generator."""
 
-    def test_default_includes_all_tools(self):
+    def test_default_schema_is_conservative(self):
         schema = build_execute_code_schema()
         desc = schema["description"]
-        for name, _ in _TOOL_DOC_LINES:
+        for name in DIRECT_SANDBOX_TOOLS:
             self.assertIn(name, desc, f"Default schema should mention '{name}'")
+        for name in DEFERRED_BRIDGE_TOOLS:
+            self.assertNotIn(f"{name}(", desc)
 
     def test_schema_structure(self):
         schema = build_execute_code_schema()
@@ -470,10 +836,28 @@ class TestBuildExecuteCodeSchema(unittest.TestCase):
         self.assertNotIn("write_file(", desc)
 
 
-    def test_none_defaults_to_all_tools(self):
+    def test_none_defaults_to_direct_tools(self):
         schema_none = build_execute_code_schema(None)
-        schema_all = build_execute_code_schema(SANDBOX_ALLOWED_TOOLS)
-        self.assertEqual(schema_none["description"], schema_all["description"])
+        schema_direct = build_execute_code_schema(DIRECT_SANDBOX_TOOLS)
+        self.assertEqual(schema_none["description"], schema_direct["description"])
+
+    def test_remote_schema_hides_deferred_bridge_helpers(self):
+        with patch(
+            "tools.terminal_tool._get_env_config",
+            return_value={"env_type": "ssh"},
+        ):
+            schema = build_execute_code_schema(SANDBOX_ALLOWED_TOOLS)
+        for name in DEFERRED_BRIDGE_TOOLS:
+            self.assertNotIn(f"{name}(", schema["description"])
+
+    def test_local_schema_can_advertise_deferred_bridge_helpers(self):
+        with patch(
+            "tools.terminal_tool._get_env_config",
+            return_value={"env_type": "local"},
+        ):
+            schema = build_execute_code_schema(SANDBOX_ALLOWED_TOOLS)
+        for name in DEFERRED_BRIDGE_TOOLS:
+            self.assertIn(f"{name}(", schema["description"])
 
 
 # ---------------------------------------------------------------------------
@@ -842,9 +1226,14 @@ class TestRpcTokenAuthorization(unittest.TestCase):
                         responses.append(json.loads(line.decode()))
         finally:
             stop_event.set()
+            try:
+                srv.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            t.join(timeout=5)
+            self.assertFalse(t.is_alive(), "RPC server thread did not stop")
             cli.close()
             srv.close()
-            t.join(timeout=5)
         return responses
 
     def test_missing_token_rejected(self):

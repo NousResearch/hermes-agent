@@ -1331,7 +1331,30 @@ class ShellFileOperations(FileOperations):
         hint = None
         if truncated:
             hint = f"Use offset={end_line + 1} to continue reading (showing {offset}-{end_line} of {total_lines} lines)"
-        
+
+        # Ambiguous-silence guards: an empty content string is
+        # indistinguishable, from inside the model, from a broken tool —
+        # it re-reads, widens the window, tries another path. Name the
+        # dead end and its recovery instead.
+        if file_size == 0:
+            return ReadResult(
+                content="",
+                total_lines=0,
+                file_size=0,
+                hint="File is empty (0 bytes).",
+            )
+        if offset > total_lines > 0:
+            return ReadResult(
+                content="",
+                total_lines=total_lines,
+                file_size=file_size,
+                hint=(
+                    f"Note: offset {offset} is beyond the end of the file "
+                    f"({total_lines} lines total). Retry with offset <= "
+                    f"{total_lines}."
+                ),
+            )
+
         return ReadResult(
             content=self._add_line_numbers(read_output, offset),
             total_lines=total_lines,

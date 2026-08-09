@@ -249,3 +249,22 @@ class TestModelStateIncludesNamedProviders:
         provider, model = parse_model_input(choice_id, "bedrock")
         assert provider == "custom:bedrock-mantle"
         assert model == "openai.gpt-5.5"
+
+    def test_selector_choice_id_round_trips_colon_bearing_custom_identity(self):
+        """Configured provider and model IDs may both contain colons."""
+        from hermes_cli.models import parse_model_input
+
+        cfg = {
+            "providers": {
+                "local-127.0.0.1:11434": {
+                    "name": "Local Ollama",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                }
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            provider, model = parse_model_input(
+                "custom:local-127.0.0.1:11434:qwen3:1.7b", "custom"
+            )
+        assert provider == "custom:local-127.0.0.1:11434"
+        assert model == "qwen3:1.7b"

@@ -2439,6 +2439,28 @@ _KNOWN_PROVIDER_NAMES: set[str] = (
 )
 
 
+def _configured_custom_provider_ids() -> set[str]:
+    """Return routable custom-provider IDs configured by the user."""
+    ids = {"custom"}
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.providers import custom_provider_slug
+
+        config = load_config()
+        providers = config.get("providers", {})
+        if isinstance(providers, dict):
+            for key, entry in providers.items():
+                if isinstance(entry, dict):
+                    ids.add(custom_provider_slug(str(entry.get("name") or key), str(key)))
+        legacy = config.get("custom_providers", [])
+        if isinstance(legacy, list):
+            for entry in legacy:
+                if isinstance(entry, dict):
+                    ids.add(custom_provider_slug(str(entry.get("name") or "")))
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+    return ids
+
 def list_available_providers() -> list[dict[str, str]]:
     """Return info about all providers the user could use with ``provider:model``.
 
@@ -2506,6 +2528,16 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
         provider_part = stripped[:colon].strip().lower()
         model_part = stripped[colon + 1:].strip()
         if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
+            if provider_part == "custom":
+                lowered = stripped.lower()
+                for custom_id in sorted(
+                    _configured_custom_provider_ids() - {"custom"},
+                    key=len,
+                    reverse=True,
+                ):
+                    prefix = f"{custom_id.lower()}:"
+                    if lowered.startswith(prefix):
+                        return custom_id, stripped[len(custom_id) + 1 :].strip()
             # Support custom:name:model triple syntax for named custom
             # providers.  ``custom:local:qwen`` → ("custom:local", "qwen").
             # Single colon ``custom:qwen`` → ("custom", "qwen") as before.
@@ -2804,6 +2836,14 @@ def probe_ollama_local_models(
             continue
         seen.add(model_id)
         models.append(model_id)
+    if raw_models and not models:
+        _remember_ollama_cache(
+            _OLLAMA_LOCAL_PROBE_REACHABLE, cache_key, False
+        )
+        _remember_ollama_cache(
+            _OLLAMA_LOCAL_PROBE_FAILURE_CACHE, failure_key, time.monotonic()
+        )
+        return None
     _remember_ollama_cache(_OLLAMA_LOCAL_PROBE_REACHABLE, cache_key, True)
     _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.pop(failure_key, None)
     _remember_ollama_cache(

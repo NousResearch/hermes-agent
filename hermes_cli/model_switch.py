@@ -1926,7 +1926,11 @@ def switch_model(
                     if configured_key.startswith("${") and configured_key.endswith("}"):
                         configured_key = os.environ.get(configured_key[2:-1], "").strip()
                     if not configured_key:
-                        key_env = str(_ollama_cfg.get("key_env") or "").strip()
+                        key_env = str(
+                            _ollama_cfg.get("key_env")
+                            or _ollama_cfg.get("api_key_env")
+                            or ""
+                        ).strip()
                         if key_env:
                             configured_key = os.environ.get(key_env, "").strip()
                     if configured_key:
@@ -3338,7 +3342,7 @@ def list_authenticated_providers(
                         has_explicit_models,
                         headers=_extra_headers_from_config(ep_cfg) or None,
                         timeout=(1.5 if for_picker else 5.0),
-                        api_mode=ep_cfg.get("api_mode"),
+                        api_mode=grp.get("api_mode"),
                     )
                     if isinstance(live_models, _NativePickerModelList):
                         native_catalog_empty = not live_models
@@ -3360,7 +3364,7 @@ def list_authenticated_providers(
                         cache_only=True,
                         timeout=(1.5 if for_picker else 5.0),
                         headers=_extra_headers_from_config(ep_cfg) or None,
-                        api_mode=ep_cfg.get("api_mode"),
+                        api_mode=grp.get("api_mode"),
                     )
                     if cached_models:
                         models_list = cached_models
@@ -3721,7 +3725,7 @@ def list_authenticated_providers(
                     live_models = _fetch_picker_live_models(
                         api_key,
                         api_url,
-                        slug,
+                        native_catalog_provider,
                         bool(grp.get("has_explicit_models")),
                         headers=grp.get("extra_headers") or None,
                         timeout=(1.5 if for_picker else 5.0),

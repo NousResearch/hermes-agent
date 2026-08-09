@@ -17,8 +17,8 @@ import { notifyError } from '@/store/notifications'
 
 export interface AgentPluginRow {
   name: string
-  /** Canonical registry key (e.g. `image_gen/fal`) — names can collide. */
-  key: string
+  /** Canonical registry key (e.g. `image_gen/fal`) — absent on legacy backends. */
+  key?: string
   version: string
   description: string
   /** 'bundled' | 'user' | 'git' | 'project' | 'entrypoint' */
@@ -36,7 +36,7 @@ export type GatewayRequest = <T>(method: string, params?: Record<string, unknown
 export const $agentPlugins = atom<AgentPluginRow[]>([])
 export const $agentPluginsStatus = atom<AgentPluginsStatus>('idle')
 export const $agentPluginsError = atom<string | null>(null)
-/** Key of the row whose toggle RPC is in flight (disables its switch). */
+/** Best available address of the row whose toggle RPC is in flight. */
 export const $agentPluginBusy = atom<string | null>(null)
 
 let inflight: Promise<void> | null = null
@@ -70,20 +70,22 @@ export function loadAgentPlugins(request: GatewayRequest): Promise<void> {
 }
 
 /** Flip a backend plugin on/off and patch the row from the RPC's refreshed
- *  copy. Addressed by canonical key — bare names collide (image_gen/fal vs
- *  video_gen/fal). Returns whether the toggle stuck. */
+ *  copy. Current backends use canonical keys; legacy keyless rows fall back
+ *  to the name-addressed protocol they were returned by. */
 export async function toggleAgentPlugin(
   request: GatewayRequest,
-  key: string,
+  row: Pick<AgentPluginRow, 'key' | 'name'>,
   enable: boolean,
   failMessage: string
 ): Promise<boolean> {
-  $agentPluginBusy.set(key)
+  const address = row.key ?? row.name
+
+  $agentPluginBusy.set(address)
 
   try {
     const result = await request<{ ok?: boolean; plugin?: AgentPluginRow | null }>('plugins.manage', {
       action: 'toggle',
-      key,
+      ...(row.key ? { key: row.key } : { name: row.name }),
       enable
     })
 
@@ -94,7 +96,11 @@ export async function toggleAgentPlugin(
     const refreshed = result.plugin
 
     if (refreshed) {
-      $agentPlugins.set($agentPlugins.get().map(row => (row.key === key ? { ...row, ...refreshed } : row)))
+      $agentPlugins.set(
+        $agentPlugins
+          .get()
+          .map(current => ((current.key ?? current.name) === address ? { ...current, ...refreshed } : current))
+      )
     } else {
       await loadAgentPlugins(request)
     }

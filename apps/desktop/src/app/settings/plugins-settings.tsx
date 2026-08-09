@@ -39,7 +39,11 @@ const SOURCE_ORDER: Record<string, number> = { user: 0, git: 0, project: 1, entr
 // the user-facing control for any of them, so listing them here is noise.
 const HIDDEN_KEY_PREFIXES = ['dashboard_auth/', 'model-providers/', 'platforms/']
 
-const isDesktopRelevant = (row: AgentPluginRow) => !HIDDEN_KEY_PREFIXES.some(prefix => row.key.startsWith(prefix))
+const isDesktopRelevant = (row: AgentPluginRow) => {
+  const key = row.key
+
+  return !key || !HIDDEN_KEY_PREFIXES.some(prefix => key.startsWith(prefix))
+}
 
 function reveal(file: string) {
   void window.hermesDesktop?.revealPath?.(file)?.catch(() => undefined)
@@ -134,10 +138,10 @@ function AgentPluginRowView({ row }: { row: AgentPluginRow }) {
         <Switch
           aria-label={`${row.status === 'enabled' ? p.disable : p.enable} ${row.name}`}
           checked={row.status === 'enabled'}
-          disabled={busy === row.key}
+          disabled={busy === (row.key ?? row.name)}
           onCheckedChange={on => {
             triggerHaptic('selection')
-            void toggleAgentPlugin(requestGateway, row.key, on, p.agent.toggleFailed(row.name))
+            void toggleAgentPlugin(requestGateway, row, on, p.agent.toggleFailed(row.name))
           }}
         />
       }
@@ -180,7 +184,7 @@ function AgentPluginsSection() {
       row =>
         !needle ||
         row.name.toLowerCase().includes(needle) ||
-        row.key.toLowerCase().includes(needle) ||
+        (row.key ?? '').toLowerCase().includes(needle) ||
         row.description.toLowerCase().includes(needle)
     )
     .sort((a, b) => (SOURCE_ORDER[a.source] ?? 9) - (SOURCE_ORDER[b.source] ?? 9) || a.name.localeCompare(b.name))

@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import subprocess
 from unittest.mock import patch
 
 import pytest
@@ -133,6 +134,80 @@ def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
     assert error is None
     assert loaded_homes, "load_hermes_dotenv was not called on the no_agent path"
     assert str(loaded_homes[0]) == str(hermes_env)
+
+
+def test_timed_out_no_agent_script_delivery_is_not_mislabeled_as_provider_failure(
+    hermes_env, monkeypatch,
+):
+    """A watchdog timeout happens before any LLM/provider call.
+
+    The delivery summary must preserve that process-level failure taxonomy and
+    must not claim a provider fallback was attempted or exhausted.
+    """
+    from cron.jobs import create_job
+    import cron.scheduler as scheduler
+
+    (hermes_env / "scripts" / "slow.py").write_text("import time; time.sleep(999)\n")
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="slow.py",
+        no_agent=True,
+        deliver="telegram",
+        name="slow watchdog",
+    )
+    delivered = []
+
+    def _timeout(*_args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="slow.py", timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(scheduler.subprocess, "run", _timeout)
+    monkeypatch.setattr(
+        scheduler,
+        "_deliver_result",
+        lambda _job, content, **_kwargs: delivered.append(content),
+    )
+
+    assert scheduler.run_one_job(job) is True
+    assert len(delivered) == 1
+    assert "script timed out" in delivered[0].lower()
+    assert "provider" not in delivered[0].lower()
+    assert "fallback" not in delivered[0].lower()
+
+
+def test_agent_provider_timeout_delivery_keeps_fallback_guidance(hermes_env, monkeypatch):
+    """Provider timeout classification remains available to agent-backed jobs."""
+    from cron.jobs import create_job
+    import cron.scheduler as scheduler
+
+    job = create_job(
+        prompt="Summarize the overnight logs.",
+        schedule="every 5m",
+        deliver="telegram",
+        name="provider-backed report",
+    )
+    delivered = []
+
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda *_args, **_kwargs: (
+            False,
+            "# Cron Job: provider-backed report\n\nprovider request timed out\n",
+            "",
+            "ReadTimeout: provider request timed out after fallback attempts",
+        ),
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_deliver_result",
+        lambda _job, content, **_kwargs: delivered.append(content),
+    )
+
+    assert scheduler.run_one_job(job) is True
+    assert len(delivered) == 1
+    assert "provider timeout" in delivered[0].lower()
+    assert "fallback chain was exhausted or unavailable" in delivered[0].lower()
 
 
 # ---------------------------------------------------------------------------

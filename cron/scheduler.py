@@ -5852,6 +5852,23 @@ def _run_one_job_body(
 
         interrupted = _consume_interrupted_flag(job["id"], execution_token)
         if interrupted:
+            if delivery_error:
+                # The gateway shutdown already wrote last_status for this run,
+                # so mark_job_run is skipped below — but it could not know that
+                # the notice we just tried to send never left the process (the
+                # adapters were torn down first, #82232). Record the delivery
+                # failure on its own via update_job: mark_job_run also advances
+                # next_run_at and the repeat counter, and running that a second
+                # time for one run would skip a fire or auto-delete the job
+                # early.
+                try:
+                    from cron.jobs import update_job
+                    update_job(job["id"], {"last_delivery_error": delivery_error})
+                except Exception as _rec_err:
+                    logger.debug(
+                        "Failed recording delivery_error for interrupted job %s: %s",
+                        job["id"], _rec_err,
+                    )
             finish_execution(
                 execution_id,
                 success=False,

@@ -85,6 +85,10 @@ class RelayAdapter(BasePlatformAdapter):
         # feedback off SendResult — see send()). Consumed by the gateway's
         # semantic thread-rename lane; bounded like the sibling caches.
         self._auto_thread_by_chat: Dict[str, Tuple[str, str]] = {}
+        # chat_id -> event fired when the entry above lands, so a consumer that
+        # arrives before the send can wait for it instead of polling. See
+        # wait_for_auto_thread_info.
+        self._auto_thread_waiters: Dict[str, asyncio.Event] = {}
         # chat_id -> chat_type (e.g. "dm", "channel", "group") learned from the
         # inbound event. Used to reproduce native Slack's synthetic-DM-thread
         # suppression on the relay lane: a DM streaming reply carries
@@ -993,6 +997,13 @@ class RelayAdapter(BasePlatformAdapter):
                     )
         except Exception:  # noqa: BLE001 - feedback capture must never break send
             pass
+        # Wake the rename lane on EVERY send into this chat, not only the ones
+        # that auto-threaded. It is waiting to learn where this turn's reply
+        # landed, and "nowhere new" is an answer — one it should get now rather
+        # than by outlasting a timeout.
+        waiter = self._auto_thread_waiters.get(str(chat_id))
+        if waiter is not None:
+            waiter.set()
         return SendResult(
             success=bool(result.get("success")),
             message_id=result.get("message_id"),
@@ -1006,6 +1017,42 @@ class RelayAdapter(BasePlatformAdapter):
         for the most recent send into *chat_id*, if any. Consumed by the
         gateway's semantic thread-rename lane (auto session title)."""
         return self._auto_thread_by_chat.get(str(chat_id))
+
+    async def wait_for_auto_thread_info(
+        self, chat_id: str, timeout: float
+    ) -> Optional[Tuple[str, str]]:
+        """``auto_thread_info_for_chat``, but willing to wait for the send.
+
+        The rename lane asks where the reply landed as soon as the session is
+        titled, and the session is titled from the user's opening message —
+        before the model has answered, let alone before we've sent anything. So
+        the question arrives a whole turn early, and a turn is a one-liner or
+        twenty minutes of tool calls.
+
+        Waits for the next send into this chat and then answers, so a reply the
+        connector didn't auto-thread reports its miss as soon as it's sent
+        instead of holding until *timeout* — which is only a backstop for a turn
+        that never sends at all.
+        """
+        info = self.auto_thread_info_for_chat(chat_id)
+        if info is not None:
+            return info
+        key = str(chat_id)
+        waiter = self._auto_thread_waiters.get(key)
+        if waiter is None:
+            waiter = asyncio.Event()
+            self._auto_thread_waiters[key] = waiter
+        try:
+            await asyncio.wait_for(waiter.wait(), timeout)
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            # Only the waiter we may have installed, and only if no later call
+            # replaced it; a fired event must not be left behind to make the
+            # next turn's wait return instantly on stale feedback.
+            if self._auto_thread_waiters.get(key) is waiter:
+                self._auto_thread_waiters.pop(key, None)
+        return self.auto_thread_info_for_chat(chat_id)
 
     def _resolve_reply_to_for_send(
         self,

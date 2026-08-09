@@ -32,7 +32,18 @@ logger = logging.getLogger(__name__)
 # so silent-drops (e.g. OpenRouter 402 exhausting the fallback chain)
 # become visible instead of piling up as NULL session titles.
 FailureCallback = Callable[[str, BaseException], None]
-TitleCallback = Callable[[str], None]
+
+# Callback signature: (title, source) -> None, where source is the provenance
+# the title was persisted under (``derived`` for the instant slice of the user's
+# own words, ``llm`` for the model's upgrade of it).
+#
+# Titling is two-stage, and the stage matters to the consumer. A local surface
+# wants both, so the sidebar renames instantly and sharpens a second later. A
+# consumer that spends a rate-limited remote call per title — renaming a Discord
+# thread, a Telegram topic — wants ``llm`` only: acting on both burns two calls
+# to end up at the same name, and on Discord (2 renames per 10 minutes per
+# channel) the throwaway one can be what survives.
+TitleCallback = Callable[[str, str], None]
 
 # Validation callback: () -> bool. Called right before the LLM request in
 # generate_title(). Return False to skip — e.g. the user switched models
@@ -392,7 +403,7 @@ def generate_title(
         return None
 
 
-def _persist_session_title(session_db, session_id, title, *, source):
+def _persist_session_title(session_db, session_id, title, *, source, dedupe=True):
     """Persist a title at *source* authority, recovering from name collisions.
 
     The write goes through ``set_auto_title`` (precedence check + write in one
@@ -400,6 +411,14 @@ def _persist_session_title(session_db, session_id, title, *, source):
     never overwritten. ``ValueError`` means the name is taken by an unrelated
     session (the unique-title index); rather than leave the session untitled
     (#50537), append a ``#N`` suffix via ``get_next_title_in_lineage``.
+
+    ``dedupe=False`` re-raises that collision instead. The derived title is the
+    one write on the turn's critical path, and it is also the one that collides
+    constantly — it is a slice of the user's own words, and people open sessions
+    with "hi" and "help me debug this". Scanning the lineage for the next free
+    "hi #N" is a widening scan, run inline, for a name the model replaces a
+    second later. The background stage picks the collision back up, so nothing
+    is lost by declining it here.
 
     Returns the title actually persisted, or None when a higher-authority
     title already held the row (nothing was written).
@@ -429,7 +448,7 @@ def _persist_session_title(session_db, session_id, title, *, source):
         return _set(title)
     except ValueError:
         next_title_fn = getattr(session_db, "get_next_title_in_lineage", None)
-        if next_title_fn is None:
+        if not dedupe or next_title_fn is None:
             raise
         deduped = next_title_fn(title)
         if not deduped or deduped == title:
@@ -458,11 +477,11 @@ def apply_instant_title(
         if not title:
             return None
         persisted = _persist_session_title(
-            session_db, session_id, title, source="derived"
+            session_db, session_id, title, source="derived", dedupe=False
         )
         if persisted and title_callback is not None:
             try:
-                title_callback(persisted)
+                title_callback(persisted, "derived")
             except Exception:
                 logger.debug("Instant-title callback failed", exc_info=True)
         return persisted
@@ -573,23 +592,53 @@ def _auto_title_session(
         main_runtime=main_runtime,
         runtime_validator=runtime_validator,
     )
+    source = "llm"
     if not title:
-        return
+        # No model title, so the derived one has to hold — and it may never have
+        # been written, since the inline attempt declines a name collision
+        # rather than scan the lineage on the turn's critical path. Off that
+        # path the scan is affordable, so spend it here and leave the session
+        # named rather than nameless.
+        title = derive_title(user_message)
+        source = "derived"
+        if not title:
+            return
 
     try:
-        persisted = _persist_session_title(
-            session_db, session_id, title, source="llm"
-        )
+        persisted = _persist_session_title(session_db, session_id, title, source=source)
         if persisted is None:
             return
         logger.debug("Auto-generated session title: %s", persisted)
         if title_callback is not None:
             try:
-                title_callback(persisted)
+                title_callback(persisted, source)
             except Exception:
                 logger.debug("Auto-title callback failed", exc_info=True)
     except Exception as e:
         logger.debug("Failed to set auto-generated title: %s", e)
+
+
+def _session_is_untitled(session_db, session_id: str) -> bool:
+    """Whether the session still carries no title of any provenance.
+
+    Titling normally reads the opening message and nothing else, but an opener
+    isn't always titleable: an image with no caption, a compaction handoff, a
+    bare slash command. Those sessions stayed nameless for life — the same guard
+    that stops us re-titling on every turn also stopped us ever trying again.
+    This reopens the question on later turns, and only while the answer is still
+    missing, so a named session asks nothing and pays nothing.
+
+    Answers False when it can't tell: an unreadable title is not a reason to
+    start spending a model call per turn.
+    """
+    getter = getattr(session_db, "get_session_title", None)
+    if not callable(getter):
+        return False
+    try:
+        return not str(getter(session_id) or "").strip()
+    except Exception:
+        logger.debug("Untitled check failed for %s", session_id, exc_info=True)
+        return False
 
 
 def maybe_auto_title(
@@ -624,7 +673,7 @@ def maybe_auto_title(
         for m in (conversation_history or [])
         if isinstance(m, dict) and m.get("role") == "user"
     )
-    if user_msg_count > 1:
+    if user_msg_count > 1 and not _session_is_untitled(session_db, session_id):
         return
 
     if not is_titleable_user_message(user_message):

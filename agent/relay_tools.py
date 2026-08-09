@@ -36,8 +36,17 @@ def execute(
     def invoke(next_args: Any) -> Any:
         nonlocal callback_error, observed_args
         observed_args = next_args if isinstance(next_args, dict) else args
+
+        def guarded(final_args: dict[str, Any]) -> Any:
+            # Everything the tool transitively calls (including auxiliary LLM
+            # calls it forwards to worker threads) must bypass managed Relay
+            # execution — the native pipeline's Futures bind to THIS loop,
+            # which is blocked until the tool returns (#77244).
+            with relay_runtime.managed_callback_guard():
+                return callback(final_args)
+
         try:
-            result = callback_context.copy().run(callback, observed_args)
+            result = callback_context.copy().run(guarded, observed_args)
         except BaseException as exc:
             callback_error = exc
             raise

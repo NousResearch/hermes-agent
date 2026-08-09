@@ -1722,6 +1722,9 @@ DEFAULT_CONFIG = {
     "delegation": {
         "model": "",       # e.g. "google/gemini-3-flash-preview" (empty = inherit parent model)
         "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
+        "fallback_providers": None,  # fallback chain for delegated children, same entry
+                           # format as the top-level fallback_providers list. null =
+                           # inherit the parent agent's chain; [] = disable child fallback.
         "base_url": "",    # direct OpenAI-compatible endpoint for subagents
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
         "api_mode": "",    # wire protocol for delegation.base_url: "chat_completions",

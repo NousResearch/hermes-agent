@@ -2695,6 +2695,7 @@ export const zhHant = defineLocale({
     stopFailed: '停止失敗',
     regenerateFailed: '重新生成失敗',
     editFailed: '編輯失敗',
+    editTurnUnavailable: '此回合已不在伺服器歷史中（可能已被壓縮移除）。',
     resumeFailed: '繼續失敗',
     resumeStrandedTitle: '無法載入此工作階段',
     resumeStrandedBody: '與此工作階段的連線失敗，自動重試已停止。請確認閘道正在執行，然後重試。',

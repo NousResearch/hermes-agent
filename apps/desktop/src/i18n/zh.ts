@@ -3259,6 +3259,7 @@ export const zh: Translations = {
     stopFailed: '停止失败',
     regenerateFailed: '重新生成失败',
     editFailed: '编辑失败',
+    editTurnUnavailable: '此回合已不在服务器历史中（可能已被压缩移除）。',
     resumeFailed: '恢复失败',
     resumeStrandedTitle: '无法加载此会话',
     resumeStrandedBody: '与此会话的连接失败，自动重试已停止。请确认网关正在运行，然后重试。',

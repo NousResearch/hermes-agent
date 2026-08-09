@@ -1,4 +1,5 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
@@ -1003,6 +1004,23 @@ export function usePromptActions({
       setAwaitingResponse(true)
       updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage))
 
+      const isStaleTargetError = (err: unknown) =>
+        /no longer in session history|not in session history/i.test(err instanceof Error ? err.message : String(err))
+
+      const isCompressedAwayError = (err: unknown) => {
+        if (!(err instanceof JsonRpcGatewayError) || err.code !== 4018) {
+          return false
+        }
+
+        const data = err.data
+        if (!data || typeof data !== 'object') {
+          return false
+        }
+
+        const segmentOrdinal = (data as { segment_ordinal?: unknown }).segment_ordinal
+        return typeof segmentOrdinal === 'number' && segmentOrdinal < 0
+      }
+
       try {
         const survivorRowIds = await submitRewindPrompt(
           sessionId,
@@ -1016,6 +1034,46 @@ export function usePromptActions({
 
         applySurvivorRowIds(sessionId, survivorRowIds)
       } catch (err) {
+        let surfaced: unknown = err
+        let unavailable = isCompressedAwayError(err)
+
+        // Stale target after compression/resume drift (the cached rowId and
+        // ordinal address the pre-compression segment): reload server history,
+        // recompute the full edit plan against the refreshed transcript, and
+        // retry the real edit once. Do NOT plain-resubmit without a truncation
+        // address — that drops rewind semantics and silently appends the edit
+        // as a new turn (#82462).
+        if (!plan.isFailedTurn && !unavailable && isStaleTargetError(err)) {
+          try {
+            const storedId = selectedStoredSessionIdRef.current
+            if (storedId) {
+              await resumeStoredSession(storedId)
+            }
+
+            const refreshed = $messages.get()
+            const retryPlan = planEdit(refreshed, edited)
+            if (retryPlan && !retryPlan.isFailedTurn) {
+              const survivorRowIds = await submitRewindPrompt(
+                sessionId,
+                retryPlan.text,
+                retryPlan.truncateOrdinal,
+                retryPlan.truncateMessageId,
+                false,
+                retryPlan.truncateRowId,
+                retryPlan.sourceText
+              )
+
+              applySurvivorRowIds(sessionId, survivorRowIds)
+              return
+            }
+
+            unavailable = true
+          } catch (retryErr) {
+            surfaced = retryErr
+            unavailable = isCompressedAwayError(retryErr) || isStaleTargetError(retryErr)
+          }
+        }
+
         // Roll the optimistic edit/truncation back to the original history so the
         // UI stays in sync with what's persisted instead of stranding a partial
         // timeline.
@@ -1023,10 +1081,20 @@ export function usePromptActions({
         setBusy(false)
         setAwaitingResponse(false)
         updateSessionState(sessionId, state => ({ ...state, busy: false, awaitingResponse: false, messages }))
-        notifyError(err, copy.editFailed)
+        notifyError(surfaced, unavailable ? copy.editTurnUnavailable : copy.editFailed)
       }
     },
-    [activeSessionIdRef, applySurvivorRowIds, busyRef, copy.editFailed, submitRewindPrompt, updateSessionState]
+    [
+      activeSessionIdRef,
+      applySurvivorRowIds,
+      busyRef,
+      copy.editFailed,
+      copy.editTurnUnavailable,
+      resumeStoredSession,
+      selectedStoredSessionIdRef,
+      submitRewindPrompt,
+      updateSessionState
+    ]
   )
 
   const handleThreadMessagesChange = useCallback(

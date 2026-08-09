@@ -11233,6 +11233,223 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_prompt_submit_truncate_translates_display_prefix_ordinal(monkeypatch):
+    """Full-lineage Desktop ordinals must truncate the tip segment (#82462).
+
+    After compression, session["history"] is the tip while display_history_prefix
+    still holds ancestor user turns the UI shows. A client ordinal that includes
+    those ancestors must map into the tip, not 4018.
+    """
+
+    seen = {}
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+            seen["prompt"] = prompt
+            seen["history"] = conversation_history
+            return {
+                "final_response": "edited reply",
+                "messages": [
+                    *(conversation_history or []),
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "edited reply"},
+                ],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    tip_history = [
+        {"role": "user", "content": "post-compress A"},
+        {"role": "assistant", "content": "reply A"},
+        {"role": "user", "content": "post-compress B"},
+        {"role": "assistant", "content": "reply B"},
+    ]
+    display_prefix = [
+        {"role": "user", "content": "pre-compress 1"},
+        {"role": "assistant", "content": "pre reply 1"},
+        {"role": "user", "content": "pre-compress 2"},
+        {"role": "assistant", "content": "pre reply 2"},
+    ]
+    # Desktop lineage: pre1=0, pre2=1, postA=2, postB=3
+    desktop_ordinal_for_post_b = 3
+
+    server._sessions["sid"] = _session(
+        agent=_Agent(),
+        history=tip_history,
+        display_history_prefix=display_prefix,
+    )
+
+    class _StubDb:
+        def __init__(self):
+            self.replaced = []
+
+        def get_messages_as_conversation(self, *_args, **_kwargs):
+            # Empty durable transcript: proves this ephemeral-style session
+            # may take the ordinal-only path past the durability gate.
+            return []
+
+        def replace_messages(self, session_id, messages, active_only=False, archive_dropped=False):
+            self.replaced.append((session_id, list(messages)))
+
+    stub_db = _StubDb()
+
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+        monkeypatch.setattr(server, "_get_db", lambda: stub_db)
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": "edited post B",
+                    "truncate_before_user_ordinal": desktop_ordinal_for_post_b,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert seen["prompt"] == "edited post B"
+        assert seen["history"] == tip_history[:2]
+        assert stub_db.replaced == [("session-key", tip_history[:2])]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_truncate_oor_includes_structured_user_turn_count(monkeypatch):
+    """4018 after compaction must carry recovery fields for Desktop (#82462)."""
+
+    tip_history = [
+        {"role": "user", "content": "post-compress A"},
+        {"role": "assistant", "content": "reply A"},
+    ]
+    display_prefix = [
+        {"role": "user", "content": "pre-compress 1"},
+        {"role": "assistant", "content": "pre reply 1"},
+    ]
+    # Ordinal 0 points at the ancestor prefix — not editable from the tip.
+    server._sessions["sid"] = _session(
+        history=tip_history,
+        display_history_prefix=display_prefix,
+    )
+
+    try:
+        monkeypatch.setattr(
+            server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+        )
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": "edit ancestor",
+                    "truncate_before_user_ordinal": 0,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        err = resp.get("error") or {}
+        assert err.get("code") == 4018
+        assert "no longer in session history" in (err.get("message") or "")
+        data = err.get("data") or {}
+        assert data.get("user_turn_count") == 1
+        assert data.get("ordinal") == 0
+        assert data.get("segment_ordinal") == -1
+        assert data.get("prefix_user_count") == 1
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_row_id_accepts_full_lineage_ordinal(monkeypatch):
+    """Desktop sends rowId + a full-lineage ordinal; both must agree (#82462).
+
+    After compression the client's visible-user ordinal counts the ancestor
+    prefix turns while the gateway resolves the row id tip-relative. The
+    reconcile cross-check must treat `tip_ordinal + prefix_user_count` as
+    agreement, not #82756 drift — and the cut stays aimed by the row id.
+    """
+    tip_history = [
+        {"_row_id": 501, "role": "user", "content": "post-compress A"},
+        {"_row_id": 502, "role": "assistant", "content": "reply A"},
+        {"_row_id": 503, "role": "user", "content": "post-compress B"},
+        {"_row_id": 504, "role": "assistant", "content": "reply B"},
+    ]
+    display_prefix = [
+        {"role": "user", "content": "pre-compress 1"},
+        {"role": "assistant", "content": "pre reply 1"},
+        {"role": "user", "content": "pre-compress 2"},
+        {"role": "assistant", "content": "pre reply 2"},
+    ]
+
+    replaced = []
+
+    class _FakeDB:
+        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+            replaced.append((key, list(messages)))
+
+    sess = _session(history=list(tip_history), display_history_prefix=display_prefix)
+    server._sessions["lineage-row-sid"] = sess
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "lineage-row-sid",
+                    "text": "edited post B",
+                    # Row id resolves to tip ordinal 1; the client counted the
+                    # 2 ancestor user turns, so its lineage ordinal is 3.
+                    "truncate_before_row_id": 503,
+                    "truncate_before_user_ordinal": 3,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert resp.get("error") is None, f"got error: {resp.get('error')}"
+        assert sess["history"] == tip_history[:2]
+    finally:
+        server._sessions.pop("lineage-row-sid", None)
+
+    # A genuinely stale ordinal (matches neither the tip space nor the
+    # lineage space) must still refuse with the #82756 mismatch.
+    sess2 = _session(history=list(tip_history), display_history_prefix=display_prefix)
+    server._sessions["lineage-row-sid-2"] = sess2
+    monkeypatch.setattr(
+        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "2",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "lineage-row-sid-2",
+                    "text": "edited post B",
+                    "truncate_before_row_id": 503,
+                    "truncate_before_user_ordinal": 2,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert resp.get("error") is not None
+        assert resp["error"]["code"] == 4030
+    finally:
+        server._sessions.pop("lineage-row-sid-2", None)
+
+
 # ---------------------------------------------------------------------------
 # session.interrupt must only cancel pending prompts owned by the calling
 # session — it must not blast-resolve clarify/sudo/secret prompts on

@@ -2577,6 +2577,7 @@ export const ar = defineLocale({
     stopFailed: 'فشل الإيقاف',
     regenerateFailed: 'فشلت إعادة التوليد',
     editFailed: 'فشل التحرير',
+    editTurnUnavailable: 'هذه الجولة لم تعد في سجل الخادم (ربما أزيلت بالضغط).',
     resumeFailed: 'فشل الاستئناف',
     resumeStrandedTitle: 'تعذّر تحميل هذه الجلسة',
     resumeStrandedBody:

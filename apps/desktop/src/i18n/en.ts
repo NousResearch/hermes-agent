@@ -3106,6 +3106,7 @@ export const en: Translations = {
     stopFailed: 'Stop failed',
     regenerateFailed: 'Regenerate failed',
     editFailed: 'Edit failed',
+    editTurnUnavailable: 'This turn is no longer in server history (it may have been compressed away).',
     resumeFailed: 'Resume failed',
     resumeStrandedTitle: "Couldn't load this session",
     resumeStrandedBody:

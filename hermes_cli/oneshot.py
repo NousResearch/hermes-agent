@@ -27,11 +27,14 @@ _ALL_TOOLSETS = {"all", "*"}
 # billing-audit field: the tier REQUESTED via request_overrides.extra_body (None when unset), so
 # batch pipelines can verify the tier they pay for went out on the wire. ``partial`` /
 # ``interrupted`` / ``turn_exit_reason`` say WHY ``completed`` is false, so a pipeline can tell
-# an iteration-budget stop from a Ctrl-C without parsing stderr (#111770).
+# an iteration-budget stop from a Ctrl-C without parsing stderr (#111770). ``reasoning_effort`` is
+# the EFFECTIVE effort sent (CLI override, else per-model/agent config; "none" when disabled, None
+# when unset), recorded once resolved so even a failed run reports which identity it asked for.
 _USAGE_KEYS = (
     "estimated_cost_usd", "cost_status", "cost_source", "input_tokens", "output_tokens",
     "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens", "api_calls",
     "model", "provider", "session_id", "completed", "partial", "interrupted", "turn_exit_reason",
+    "reasoning_effort",
 )
 
 # Counters summed per auxiliary task (vision, compression, title_generation, ...) into the
@@ -306,6 +309,7 @@ def run_oneshot(
                 resume=resume,
                 reasoning=reasoning,
                 ledger=bool(usage_file),
+                run_metadata=result,
             )
         except BaseException as exc:  # noqa: BLE001
             # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
@@ -497,6 +501,16 @@ def _apply_stored_session_runtime(
     return choice
 
 
+def _effective_reasoning_effort(reasoning_config: Optional[dict]) -> Optional[str]:
+    """Usage-report label for a resolved reasoning config: its effort, "none" when disabled, None
+    when unset (provider default)."""
+    if not reasoning_config:
+        return None
+    if reasoning_config.get("enabled") is False:
+        return "none"
+    return reasoning_config.get("effort")
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -507,10 +521,13 @@ def _run_agent(
     resume: Optional[str] = None,
     reasoning: object = None,
     ledger: bool = False,
+    run_metadata: Optional[dict] = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
     ``(final_response, run_result)``. Imports are local to keep CLI startup cheap. *ledger* (set when
-    ``--usage-file`` is requested) attaches this run's auxiliary usage to the result."""
+    ``--usage-file`` is requested) attaches this run's auxiliary usage to the result. *run_metadata*
+    receives the effective ``reasoning_effort`` as soon as it resolves, so the caller's usage report
+    keeps it when the run fails before returning."""
     from hermes_cli.config import load_config
     from hermes_cli.runtime_provider import resolve_runtime_with_fallback
     from hermes_cli.tools_config import _get_platform_tools
@@ -549,6 +566,9 @@ def _run_agent(
             logging.warning("Unknown --reasoning '%s', keeping the configured level", reasoning)
         else:
             reasoning_config = parsed_reasoning
+    reasoning_effort = _effective_reasoning_effort(reasoning_config)
+    if run_metadata is not None:
+        run_metadata["reasoning_effort"] = reasoning_effort
 
     # sorted() gives stable ordering for config-derived sets; explicit values preserve user order.
     toolsets_list = _normalize_toolsets(toolsets)
@@ -602,6 +622,7 @@ def _run_agent(
         if ledger:
             _attach_auxiliary_usage(result, session_db, aux_before,
                                     fallback_session_id=agent.session_id or resume_sid)
+        result["reasoning_effort"] = reasoning_effort
         return (result.get("final_response") or "", result)
     finally:
         _close_agent(agent, session_db)

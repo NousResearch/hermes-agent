@@ -9,6 +9,58 @@ export interface UpdaterChild {
   unref: () => void
 }
 
+export interface ResolveUpdateScriptHandoffDeps {
+  isWindows?: boolean
+  fileExists?: (candidate: string) => boolean
+}
+
+export interface UpdateScriptHandoff {
+  command: string
+  args: string[]
+  scriptPath: string
+}
+
+/**
+ * Repo-owned Windows update hand-off (frozen-binary escape hatch).
+ *
+ * The staged Tauri `hermes-setup.exe` has no self-update path, so every
+ * updater-side fix only reaches users when a new binary is built, signed and
+ * published — which historically lags main by months and strands users on
+ * long-fixed bugs (cache resolver #67369, marker self-adopt #74782; the
+ * 2026-08-09 incident chain). `scripts/desktop-update.ps1` lives in the repo
+ * checkout instead: every `hermes update` refreshes the code that drives the
+ * NEXT update, and only PowerShell itself is frozen.
+ *
+ * Returns the spawn recipe when the script exists in the checkout, or null
+ * (caller falls back to the staged binary — old checkouts that predate the
+ * script keep working unchanged). Windows-only by the same policy as
+ * resolveStagedUpdaterBinary: POSIX updates in place via
+ * applyUpdatesPosixInApp and needs no hand-off at all.
+ */
+export function resolveUpdateScriptHandoff(
+  updateRoot: string,
+  deps: ResolveUpdateScriptHandoffDeps = {}
+): UpdateScriptHandoff | null {
+  const isWindows = deps.isWindows ?? process.platform === 'win32'
+
+  if (!isWindows) {
+    return null
+  }
+
+  const scriptPath = path.join(updateRoot, 'scripts', 'desktop-update.ps1')
+  const exists = deps.fileExists ?? stagedFileExists
+
+  if (!exists(scriptPath)) {
+    return null
+  }
+
+  return {
+    command: 'powershell',
+    args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath],
+    scriptPath
+  }
+}
+
 export interface ResolveStagedUpdaterBinaryDeps {
   isWindows?: boolean
   fileExists?: (candidate: string) => boolean

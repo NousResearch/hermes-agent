@@ -3416,12 +3416,12 @@ def run_job(
                 else str(delivery_target["thread_id"])
             )
 
-        # Model resolution precedence: per-job override > HERMES_MODEL env >
-        # config.yaml ``model:`` (string or ``{default: ...}``). The per-job
-        # value is intentionally re-read from storage every tick so a
-        # ``cronjob action=update model=...`` after a failed run takes effect
-        # on the next tick — there is no in-memory cache.
+        # Model resolution precedence: per-job user pin > cron.model fleet
+        # default > HERMES_MODEL env > global config model. The per-job value
+        # is re-read every tick so operator changes take effect immediately.
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+        _cron_default_model = ""
+        _cron_default_provider = ""
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
@@ -3444,8 +3444,18 @@ def run_job(
                 # Coerce null/missing to {} so a falsy default never
                 # clobbers an already-resolved env value with ``None``.
                 _model_cfg = _cfg.get("model") or {}
+                _cron_cfg_for_model = _cfg.get("cron") or {}
+                if isinstance(_cron_cfg_for_model, dict):
+                    _cron_default_model = str(
+                        _cron_cfg_for_model.get("model") or ""
+                    ).strip()
+                    _cron_default_provider = str(
+                        _cron_cfg_for_model.get("model_provider") or ""
+                    ).strip()
                 if not job.get("model"):
-                    if isinstance(_model_cfg, str):
+                    if _cron_default_model:
+                        model = _cron_default_model
+                    elif isinstance(_model_cfg, str):
                         model = _model_cfg
                     elif isinstance(_model_cfg, dict):
                         # Mirror the CLI/oneshot resolution: prefer ``default``,
@@ -3544,7 +3554,7 @@ def run_job(
             # circuits that precedence and can resurrect old providers (for
             # example DeepSeek) for cron jobs that do not pin provider/model.
             runtime_kwargs = {
-                "requested": job.get("provider"),
+                "requested": job.get("provider") or _cron_default_provider or None,
                 # Derive provider-specific api_mode from the model this job
                 # will actually run (per-job pin > env > config default), not
                 # the stale persisted default — mirrors the fallback path
@@ -3627,11 +3637,16 @@ def run_job(
         #
         # Back-compat: an axis with no snapshot (pre-existing jobs, no_agent, or
         # any axis whose creation-time resolution failed) behaves exactly as
-        # before — the guard never engages for it. Pinned axes are unaffected.
+        # before. A cron fleet default explicitly covers its axis, so following
+        # it is not drift and must not trip this guard.
         if cron_model_drift_guard_enabled(_cfg):
             _drift: list[str] = []
             _provider_snapshot = (job.get("provider_snapshot") or "").strip().lower()
-            if _provider_snapshot and not (job.get("provider") or "").strip():
+            if (
+                _provider_snapshot
+                and not (job.get("provider") or "").strip()
+                and not _cron_default_provider
+            ):
                 _current_provider = str(
                     primary_provider_for_drift or runtime.get("provider") or ""
                 ).strip().lower()
@@ -3640,7 +3655,11 @@ def run_job(
                         f"provider '{_provider_snapshot}' -> '{_current_provider}'"
                     )
             _model_snapshot = (job.get("model_snapshot") or "").strip().lower()
-            if _model_snapshot and not (job.get("model") or "").strip():
+            if (
+                _model_snapshot
+                and not (job.get("model") or "").strip()
+                and not _cron_default_model
+            ):
                 _current_model = str(primary_model_for_drift or "").strip().lower()
                 if _current_model and _current_model != _model_snapshot:
                     _drift.append(

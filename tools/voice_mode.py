@@ -190,19 +190,21 @@ def detect_audio_environment() -> dict:
                 "    PipeWire:    -e PIPEWIRE_REMOTE=$XDG_RUNTIME_DIR/pipewire-0"
             )
 
-    # WSL detection — PulseAudio bridge makes audio work in WSL.
-    # Only block if PULSE_SERVER is not configured.
+    # WSL detection — a reachable sound server makes audio work in WSL.
+    # Honor any forwarding (PulseAudio bridge OR a forwarded PipeWire/Pulse
+    # socket), mirroring the SSH and container blocks above. Only block when
+    # no forwarding is configured.
     try:
         with open('/proc/version', 'r', encoding="utf-8") as f:
             if 'microsoft' in f.read().lower():
-                if os.environ.get('PULSE_SERVER'):
-                    notices.append("Running in WSL with PulseAudio bridge")
+                if has_forwarded_audio:
+                    notices.append("Running in WSL with a reachable PulseAudio/PipeWire sound server")
                 else:
                     warnings.append(
-                        "Running in WSL -- audio requires PulseAudio bridge.\n"
-                        "  1. Set PULSE_SERVER=unix:/mnt/wslg/PulseServer\n"
-                        "  2. Create ~/.asoundrc pointing ALSA at PulseAudio\n"
-                        "  3. Verify with: arecord -d 3 /tmp/test.wav && aplay /tmp/test.wav"
+                        "Running in WSL -- audio requires a forwarded sound server.\n"
+                        "  PulseAudio: export PULSE_SERVER=unix:/mnt/wslg/PulseServer\n"
+                        "  PipeWire:   export PIPEWIRE_REMOTE=$XDG_RUNTIME_DIR/pipewire-0\n"
+                        "  Then verify: arecord -d 3 /tmp/test.wav && aplay /tmp/test.wav"
                     )
     except (FileNotFoundError, PermissionError, OSError):
         pass

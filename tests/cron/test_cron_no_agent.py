@@ -27,16 +27,14 @@ def hermes_env(tmp_path, monkeypatch):
 
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    # Reload modules that cache get_hermes_home() at import time.
-    import importlib
-    import hermes_constants
-    importlib.reload(hermes_constants)
-    import cron.jobs
-    importlib.reload(cron.jobs)
-    import cron.scheduler
-    importlib.reload(cron.scheduler)
+    # Route storage dynamically instead of reloading shared modules. Reloading
+    # cron.scheduler replaces exception classes and function globals under
+    # tests that imported them during collection, making the broad suite
+    # collection-order dependent.
+    import cron.jobs as jobs
 
-    return home
+    with jobs.use_cron_store(home):
+        yield home
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +53,7 @@ def test_update_job_roundtrips_no_agent_flag(hermes_env):
     from cron.jobs import create_job, update_job, get_job
 
     script_path = hermes_env / "scripts" / "w.sh"
-    script_path.write_text("echo hi\n")
+    script_path.write_text("echo hi\n", encoding="utf-8")
     job = create_job(prompt=None, schedule="every 5m", script="w.sh", no_agent=True, deliver="local")
 
     update_job(job["id"], {"no_agent": False})
@@ -93,7 +91,9 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     from cron.scheduler import run_job
 
     script_path = hermes_env / "scripts" / "alert.sh"
-    script_path.write_text("#!/bin/bash\necho 'RAM 92% on host'\n")
+    script_path.write_text(
+        "#!/bin/bash\necho 'RAM 92% on host'\n", encoding="utf-8"
+    )
 
     job = create_job(
         prompt=None, schedule="every 5m", script="alert.sh", no_agent=True, deliver="local"

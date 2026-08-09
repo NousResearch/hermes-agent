@@ -260,7 +260,57 @@ What they do:
 
 ## How it works
 
-**Cron execution is handled by the gateway daemon.** The gateway ticks the scheduler every 60 seconds, running any due jobs in isolated agent sessions.
+**Cron execution is handled by the gateway daemon.** The gateway ticks the scheduler every 60 seconds. Jobs use fresh isolated agent sessions by default.
+
+### Opt in to the current conversation
+
+Model-backed jobs created from a live gateway conversation may set
+`session_target: "current"` to continue that same logical conversation when they
+run. Hermes captures an immutable gateway-owned route instance plus the exact
+profile, tenant/workspace, platform, account-bound chat, canonical thread, user,
+and adapter-alias dimensions; callers cannot supply an arbitrary session key or
+route identity through the `cronjob` tool. At each
+occurrence, the gateway resolves the physical transcript currently owned by that
+logical route under the same routing fence used by reset, durably seals the
+route instance, concrete session ID, and routing revision, then serializes the
+turn through the same resolved-session turn lease used by human turns.
+
+A normal `/new` or reset preserves the logical route instance. An occurrence
+admitted afterward therefore follows the new transcript in that same
+conversation. Once an occurrence is admitted, its physical target is immutable:
+a later reset makes that occurrence `stale` rather than retargeting it, while a
+future recurring occurrence may resolve the newer transcript. Deletion,
+recreation, account/chat/thread route drift, authorization loss, or any
+unprovable continuity fails closed. In shared threads, participant activity does
+not redefine the conversation route: each job is reauthorized as its own
+captured creator before execution and transcript application. Hermes never
+follows the currently focused UI conversation and never falls back to an
+isolated session. Existing persisted v1 jobs retain their original strict
+physical-session binding and must be recreated to opt into logical-route
+rollover.
+
+The gateway acquires a persistent cross-process routing-authority lease for each
+session-store scope. Starting another gateway process against the same scope
+fails closed instead of allowing two once-loaded routing caches to disagree
+about reset/admission order.
+
+The scheduled prompt is stored as a hidden
+internal transcript row, progress and streaming output are suppressed, and only
+the final `notify` result goes through the normal cron delivery path. An
+intentional `no_action` result is silent and scheduled turns do not refresh the
+human-interaction timestamp.
+
+Contextual jobs are same-conversation, model-backed jobs only. They cannot use
+script/`no_agent` execution, attached skills, `workdir`, `context_from`, custom
+toolset or model/provider overrides, `attach_to_session`, or fan-out/cross-user
+delivery. Omit `session_target` (or use `"isolated"`) for the existing isolated
+behavior.
+
+The agent-facing `cronjob(action="run")` call is rejected for contextual jobs:
+that tool is executing inside the human turn whose lease the scheduled turn must
+wait for, so a synchronous run would deadlock against itself. Let the scheduler
+fire the job, or use the authenticated REST trigger from outside the conversation
+turn.
 
 ```bash
 hermes gateway install     # Install as a user service
@@ -277,8 +327,10 @@ On each tick Hermes:
 
 1. loads jobs from `~/.hermes/cron/jobs.json`
 2. checks `next_run_at` against the current time
-3. starts a fresh `AIAgent` session for each due job
-4. optionally injects one or more attached skills into that fresh session
+3. starts a fresh `AIAgent` session for each isolated job, or admits an opt-in
+   contextual job into the currently resolved transcript of its immutable
+   logical gateway route
+4. optionally injects one or more attached skills into isolated sessions
 5. runs the prompt to completion
 6. delivers the final response
 7. updates run metadata and the next scheduled time
@@ -290,10 +342,14 @@ A file lock at `~/.hermes/cron/.tick.lock` prevents overlapping scheduler ticks 
 Hermes records each claimed cron attempt in the profile-local
 `~/.hermes/cron/executions.db` before executor or provider dispatch. Attempts
 move through `claimed`, `running`, and one immutable terminal state:
-`completed`, `failed`, or `unknown`. After restart, Hermes marks an abandoned
+`completed`, `failed`, or `unknown`. After restart, Hermes first checks whether
+an abandoned contextual attempt ever acquired its execution-specific jobs-store
+occurrence claim. If it did not, the attempt is rejected and the occurrence
+remains due. If it did, Hermes marks the
 attempt `unknown` only when the original PID and process-start fingerprint prove
-that its owner is gone. Unknown attempts are audit records and are never
-automatically rerun.
+that its owner is gone; that occurrence is intentionally consumed under
+at-most-once semantics and is never automatically rerun. Unknown attempts remain
+inspectable audit records.
 
 Inspect recent attempts with `hermes cron runs [job-id] --limit 20` (alias:
 `history`). Terminal history is bounded; active attempts are never pruned. The

@@ -91,9 +91,14 @@ class TurnContext:
     moa_config: Optional[dict] = None
     persist_user_message: Optional[Any] = None
     persist_user_timestamp: Optional[float] = None
+    persist_user_display_kind: Optional[str] = None
+    suppress_output: bool = False
+    message_type: Optional[str] = None
     user_config: Any = None
     enabled_toolsets: Any = None
     disabled_toolsets: Any = None
+    allowed_tool_names: Any = None
+    execution_policy: Any = None
     log_mode_enabled: bool = False
     interim_assistant_messages_enabled: bool = False
     needs_progress_queue: bool = False

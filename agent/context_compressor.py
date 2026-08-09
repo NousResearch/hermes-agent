@@ -149,6 +149,10 @@ LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 # "is_compressed_summary" would reach the wire and trip exactly that.
 COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
 COMPRESSED_SUMMARY_HAS_USER_TURN_KEY = "_compressed_summary_has_user_turn"
+_HIDDEN_DERIVED_SUMMARY_DISPLAY_METADATA = {
+    "kind": "compression_summary",
+    "contains_hidden": True,
+}
 # Distinguishes rolling micro-compaction markers from batch-compaction
 # markers (both carry COMPRESSED_SUMMARY_METADATA_KEY so resume/handoff
 # treat them alike). Supersede/defrag/rehydration must only ever touch
@@ -6604,6 +6608,31 @@ This compaction should PRIORITISE preserving all information related to the focu
         else:
             self._summary_has_user_turn = real_user_present
 
+        # Privacy-taint summaries derived from internal transcript rows.  The
+        # flag is computed after restart-handoff rehydration has finalized the
+        # exact summarizer window, and it also follows a previously persisted
+        # tainted handoff across iterative compression.  ``display_metadata``
+        # is part of the durable message schema; the private ``_compressed_*``
+        # process markers are intentionally not.
+        _summary_contains_hidden = any(
+            message.get("display_kind") == "hidden"
+            for message in turns_to_summarize
+        )
+        if not _summary_contains_hidden:
+            for _summary_idx, _summary_body in summary_hits:
+                _summary_message = messages[_summary_idx]
+                _display_metadata = _summary_message.get("display_metadata")
+                if (
+                    _summary_message.get("display_kind") == "hidden"
+                    or (
+                        isinstance(_display_metadata, dict)
+                        and _display_metadata.get("kind") == "compression_summary"
+                        and _display_metadata.get("contains_hidden") is True
+                    )
+                ):
+                    _summary_contains_hidden = True
+                    break
+
         self._record_compression_regions(
             head_messages=messages[:compress_start],
             middle_messages=turns_to_summarize,
@@ -7008,14 +7037,20 @@ This compaction should PRIORITISE preserving all information related to the focu
             summary = summary + "\n\n" + _SUMMARY_END_MARKER
 
         if not _merge_summary_into_tail:
-            compressed.append({
+            _summary_message: Dict[str, Any] = {
                 "role": summary_role,
                 "content": summary,
                 COMPRESSED_SUMMARY_METADATA_KEY: True,
                 COMPRESSED_SUMMARY_HAS_USER_TURN_KEY: bool(
                     self._summary_has_user_turn
                 ),
-            })
+            }
+            if _summary_contains_hidden:
+                _summary_message["display_kind"] = "hidden"
+                _summary_message["display_metadata"] = dict(
+                    _HIDDEN_DERIVED_SUMMARY_DISPLAY_METADATA
+                )
+            compressed.append(_summary_message)
 
         # Default merge target: literal tail index 0. For an ordinary
         # alternation collision the summary only has to stay *invisible* to
@@ -7076,6 +7111,16 @@ This compaction should PRIORITISE preserving all information related to the focu
                 msg[COMPRESSED_SUMMARY_HAS_USER_TURN_KEY] = bool(
                     self._summary_has_user_turn
                 )
+                if _summary_contains_hidden:
+                    # A merged carrier can contain genuine tail content as
+                    # well as the derived summary.  Until the durable schema
+                    # has a separate safe public-content sidecar, fail closed:
+                    # hide the whole carrier rather than declassify internal
+                    # scheduled input through a visible summary.
+                    msg["display_kind"] = "hidden"
+                    msg["display_metadata"] = dict(
+                        _HIDDEN_DERIVED_SUMMARY_DISPLAY_METADATA
+                    )
                 # Content rewritten → the api_content sidecar (exact bytes
                 # previously sent) is stale; drop it so replay can't resend
                 # the pre-merge bytes without the summary.

@@ -38,7 +38,8 @@ needs to replace the import + call site:
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Iterator
+from dataclasses import dataclass
+from typing import Any, Iterator, Optional
 
 # Sentinel to distinguish "never set in this context" from "explicitly set to empty".
 # When a contextvar holds _UNSET, we fall back to os.environ (CLI/cron compat).
@@ -81,6 +82,15 @@ _SESSION_USER_ID: ContextVar = ContextVar("HERMES_SESSION_USER_ID", default=_UNS
 _SESSION_USER_NAME: ContextVar = ContextVar("HERMES_SESSION_USER_NAME", default=_UNSET)
 _SESSION_KEY: ContextVar = ContextVar("HERMES_SESSION_KEY", default=_UNSET)
 _SESSION_ID: ContextVar = ContextVar("HERMES_SESSION_ID", default=_UNSET)
+_SESSION_ROUTE_INSTANCE_ID: ContextVar = ContextVar(
+    "hermes_session_route_instance_id", default=_UNSET
+)
+_SESSION_ROUTE_PRINCIPAL: ContextVar = ContextVar(
+    "hermes_session_route_principal", default=_UNSET
+)
+_SESSION_ROUTING_REVISION: ContextVar = ContextVar(
+    "hermes_session_routing_revision", default=_UNSET
+)
 # In-process UI session/window id for multi-session desktop/TUI hosts. This is
 # intentionally separate from HERMES_SESSION_ID: the latter is the durable
 # conversation/session-db id, while the UI id is the live frontend tab/window
@@ -126,6 +136,53 @@ _SESSION_ASYNC_DELIVERY: ContextVar = ContextVar("HERMES_SESSION_ASYNC_DELIVERY"
 _CRON_AUTO_DELIVER_PLATFORM: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
 _CRON_AUTO_DELIVER_CHAT_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
 _CRON_AUTO_DELIVER_THREAD_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_THREAD_ID", default=_UNSET)
+
+
+@dataclass(frozen=True)
+class _ContextualTurnAuthority:
+    execution_id: str
+    session_key: str
+    admitted_session_id: str
+    admitted_routing_revision: int
+    admitted_route_instance_id: Optional[str] = None
+    creator_source: Any = None
+
+
+_CONTEXTUAL_TURN_AUTHORITY: ContextVar = ContextVar(
+    "HERMES_CONTEXTUAL_TURN_AUTHORITY", default=None
+)
+
+
+@contextmanager
+def _bind_contextual_turn_authority(
+    *,
+    execution_id: str,
+    session_key: str,
+    admitted_session_id: str,
+    admitted_routing_revision: int,
+    admitted_route_instance_id: Optional[str] = None,
+    creator_source: Any = None,
+):
+    """Bind immutable gateway-owned contextual authority to this task only."""
+    authority = _ContextualTurnAuthority(
+        execution_id=str(execution_id),
+        session_key=str(session_key),
+        admitted_session_id=str(admitted_session_id),
+        admitted_routing_revision=int(admitted_routing_revision),
+        admitted_route_instance_id=(
+            str(admitted_route_instance_id) if admitted_route_instance_id else None
+        ),
+        creator_source=creator_source,
+    )
+    token = _CONTEXTUAL_TURN_AUTHORITY.set(authority)
+    try:
+        yield authority
+    finally:
+        _CONTEXTUAL_TURN_AUTHORITY.reset(token)
+
+
+def _get_contextual_turn_authority():
+    return _CONTEXTUAL_TURN_AUTHORITY.get()
 
 _VAR_MAP = {
     "HERMES_SESSION_PLATFORM": _SESSION_PLATFORM,
@@ -214,6 +271,9 @@ def set_session_vars(
     user_name: str = "",
     session_key: str = "",
     session_id: str = "",
+    route_instance_id: str = "",
+    route_principal: Optional[dict[str, str]] = None,
+    routing_revision: int = 0,
     message_id: str = "",
     profile: str = "",
     cwd: str = "",
@@ -256,6 +316,9 @@ def set_session_vars(
         _SESSION_USER_NAME.set(user_name),
         _SESSION_KEY.set(session_key),
         _SESSION_ID.set(session_id),
+        _SESSION_ROUTE_INSTANCE_ID.set(route_instance_id),
+        _SESSION_ROUTE_PRINCIPAL.set(dict(route_principal or {})),
+        _SESSION_ROUTING_REVISION.set(int(routing_revision)),
         _SESSION_UI_SESSION_ID.set(ui_session_id),
         _SESSION_MESSAGE_ID.set(message_id),
         _SESSION_PROFILE.set(profile),
@@ -293,6 +356,9 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_USER_NAME,
         _SESSION_KEY,
         _SESSION_ID,
+        _SESSION_ROUTE_INSTANCE_ID,
+        _SESSION_ROUTE_PRINCIPAL,
+        _SESSION_ROUTING_REVISION,
         _SESSION_UI_SESSION_ID,
         _SESSION_MESSAGE_ID,
         _SESSION_PROFILE,
@@ -348,6 +414,9 @@ def reset_session_vars() -> None:
     """
     for var in _VAR_MAP.values():
         var.set(_UNSET)
+    _SESSION_ROUTE_INSTANCE_ID.set(_UNSET)
+    _SESSION_ROUTE_PRINCIPAL.set(_UNSET)
+    _SESSION_ROUTING_REVISION.set(_UNSET)
     # Reset the async-delivery capability to "never bound here" (_UNSET) for the
     # same inheritance-leak reason as the mapped vars above — see clear_session_vars,
     # which resets this var on the handler-exit path for the symmetric concern.
@@ -384,6 +453,48 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+def get_bound_session_context() -> dict[str, Any] | None:
+    """Return the explicitly task-bound gateway identity without env fallback.
+
+    Contextual cron is a security boundary: a process-level
+    ``HERMES_SESSION_KEY`` must never be accepted as proof that a model tool is
+    running inside a live gateway turn.  This accessor reads the ContextVars
+    directly and therefore returns ``None`` for CLI/scheduler/process-only
+    environments even when similarly named environment variables exist.
+    """
+    values = {
+        "platform": _SESSION_PLATFORM.get(),
+        "source": _SESSION_SOURCE.get(),
+        "chat_id": _SESSION_CHAT_ID.get(),
+        "chat_type": _SESSION_CHAT_TYPE.get(),
+        "thread_id": _SESSION_THREAD_ID.get(),
+        "user_id": _SESSION_USER_ID.get(),
+        "session_key": _SESSION_KEY.get(),
+        "session_id": _SESSION_ID.get(),
+        "route_instance_id": _SESSION_ROUTE_INSTANCE_ID.get(),
+        "route_principal": _SESSION_ROUTE_PRINCIPAL.get(),
+        "routing_revision": _SESSION_ROUTING_REVISION.get(),
+        "profile": _SESSION_PROFILE.get(),
+    }
+    if any(value is _UNSET for value in values.values()):
+        return None
+    routing_revision = int(values.pop("routing_revision") or 0)
+    route_principal = values.pop("route_principal")
+    if not isinstance(route_principal, dict):
+        return None
+    normalized: dict[str, Any] = {
+        name: str(value or "").strip() for name, value in values.items()
+    }
+    normalized["route_principal"] = {
+        str(name): str(value or "").strip()
+        for name, value in route_principal.items()
+    }
+    normalized["routing_revision"] = routing_revision
+    if not all(normalized.get(name) for name in ("platform", "chat_id", "user_id", "session_key")):
+        return None
+    return normalized
 
 
 # Surfaces that are not a human chat channel. The gateway binds a platform

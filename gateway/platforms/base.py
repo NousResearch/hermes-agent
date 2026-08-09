@@ -3014,6 +3014,10 @@ class BasePlatformAdapter(ABC):
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
+        # FIFO waiters for gateway-owned contextual turns. They share the
+        # adapter's existing routing-key guard instead of creating a third lock
+        # domain beside the adapter guard and resolved-session turn lease.
+        self._contextual_cron_waiters: Dict[str, list[asyncio.Future]] = {}
         # Legacy busy_text_mode env var; when unset the runner syncs the
         # resolved value (driven by busy_input_mode) onto the adapter after
         # construction (gateway/run.py). Default to "interrupt" so a stray
@@ -5653,6 +5657,87 @@ class BasePlatformAdapter(ABC):
         if guard is not None and current_guard is not guard:
             return
         del self._active_sessions[session_key]
+        self._wake_next_contextual_cron_waiter(session_key)
+
+    def _wake_next_contextual_cron_waiter(self, session_key: str) -> None:
+        waiters = self._contextual_cron_waiters.get(session_key) or []
+        while waiters:
+            waiter = waiters.pop(0)
+            if not waiter.done():
+                waiter.set_result(None)
+                break
+        if not waiters:
+            self._contextual_cron_waiters.pop(session_key, None)
+
+    async def acquire_contextual_cron_guard(
+        self, session_key: str
+    ) -> asyncio.Event:
+        """Wait for and atomically claim the normal adapter serialization lane.
+
+        Human pending/debounced input is handed off first. The wait is
+        event-driven and cancellation-safe; no scheduler polling is involved.
+        """
+        while True:
+            await self._flush_text_debounce_now(session_key)
+            if session_key not in self._active_sessions:
+                pending = self._pending_messages.pop(session_key, None)
+                if pending is not None:
+                    if self._start_session_processing(pending, session_key):
+                        continue
+                    self._pending_messages[session_key] = pending
+                else:
+                    guard = self.claim_contextual_cron_guard(session_key)
+                    if guard is not None:
+                        return guard
+
+            waiter = asyncio.get_running_loop().create_future()
+            self._contextual_cron_waiters.setdefault(session_key, []).append(waiter)
+            # Close the check→enqueue race if the previous owner released just
+            # before this future became visible.
+            if session_key not in self._active_sessions:
+                self._wake_next_contextual_cron_waiter(session_key)
+            try:
+                await waiter
+            except asyncio.CancelledError:
+                waiters = self._contextual_cron_waiters.get(session_key) or []
+                if waiter in waiters:
+                    waiters.remove(waiter)
+                if not waiters:
+                    self._contextual_cron_waiters.pop(session_key, None)
+                raise
+
+    def claim_contextual_cron_guard(self, session_key: str) -> Optional[asyncio.Event]:
+        """Claim the adapter serialization lane for a gateway-owned cron item."""
+        if session_key in self._active_sessions:
+            return None
+        guard = asyncio.Event()
+        self._active_sessions[session_key] = guard
+        task = asyncio.current_task()
+        if task is not None:
+            self._session_tasks[session_key] = task
+        return guard
+
+    async def release_contextual_cron_guard(
+        self, session_key: str, guard: asyncio.Event
+    ) -> None:
+        """Release a cron lane and hand the oldest queued user turn to the adapter."""
+        if self._active_sessions.get(session_key) is not guard:
+            return
+        # Transfer any late debounce burst while contextual ownership is still
+        # installed, so input cannot be stranded between flush and release.
+        await self._flush_text_debounce_now(session_key)
+        if self._session_tasks.get(session_key) is asyncio.current_task():
+            self._session_tasks.pop(session_key, None)
+        pending = self._pending_messages.pop(session_key, None)
+        if pending is not None:
+            # Human input has priority. Avoid waking a cron waiter in the tiny
+            # handoff gap between deleting the old guard and installing the new.
+            self._active_sessions.pop(session_key, None)
+            if not self._start_session_processing(pending, session_key):
+                self._pending_messages[session_key] = pending
+                self._wake_next_contextual_cron_waiter(session_key)
+            return
+        self._release_session_guard(session_key, guard=guard)
 
     def _session_task_is_stale(self, session_key: str) -> bool:
         """Return True if the owner task for ``session_key`` is done/cancelled.

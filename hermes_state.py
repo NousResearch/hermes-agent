@@ -2026,6 +2026,10 @@ class SessionCompressionInProgressError(CompressionSessionBusyError):
     """
 
 
+class ContextualTranscriptCASMismatch(RuntimeError):
+    """A contextual outbox no longer matches its immutable transcript fence."""
+
+
 def _connect_tracked_db(path, tracking_path=None, **kwargs):
     """``sqlite3.connect`` that registers the open fd for lock-safety.
 
@@ -6610,7 +6614,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             where_clauses.append(clause)
             params.extend(clause_params)
         if min_message_count > 0:
-            where_clauses.append("s.message_count >= ?")
+            where_clauses.append(
+                "(SELECT COUNT(*) FROM messages _visible_count "
+                "WHERE _visible_count.session_id = s.id "
+                "AND COALESCE(_visible_count.display_kind, '') != 'hidden') >= ?"
+            )
             params.append(min_message_count)
         if archived_only:
             where_clauses.append("s.archived = 1")
@@ -6727,6 +6735,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         (SELECT {_PREVIEW_RAW_SELECT}
                          FROM messages m
                          WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                           AND COALESCE(m.display_kind, '') != 'hidden'
                          ORDER BY m.timestamp, m.id LIMIT 1),
                         ''
                     ) AS _preview_raw,
@@ -6750,6 +6759,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         (SELECT {_PREVIEW_RAW_SELECT}
                          FROM messages m
                          WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                           AND COALESCE(m.display_kind, '') != 'hidden'
                          ORDER BY m.timestamp, m.id LIMIT 1),
                         ''
                     ) AS _preview_raw,
@@ -6789,13 +6799,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         (SELECT {_PREVIEW_RAW_SELECT}
                          FROM messages m
                          WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                           AND COALESCE(m.display_kind, '') != 'hidden'
                          ORDER BY m.timestamp, m.id LIMIT 1),
                         ''
                     ) AS _preview_raw,
-                    COALESCE(
-                        (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                        s.started_at
-                    ) AS last_active
+                    {_sql_session_last_active("s")} AS last_active
                 FROM sessions s
                 {prompt_join}
                 {pinned_where}
@@ -6860,6 +6868,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 merged["_lineage_root_id"] = s["id"]
                 projected.append(merged)
             sessions = projected
+
+        # Durable counters include hidden model-context rows for transcript
+        # fencing. Public listings replace them in one batch after tip
+        # projection so every count corresponds to the surfaced session ID.
+        self._apply_visible_session_counts(sessions)
 
         # Derive read state per surfaced conversation. ``last_read_at`` is
         # lineage-stamped by set_session_read, so a projected row's root
@@ -7014,6 +7027,192 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return None
         return meta
 
+    def get_transcript_fence(self, session_id: str) -> tuple[int, int]:
+        """Return the active message count and monotonic model-transcript revision."""
+        with self._lock:
+            conn = self._conn
+            if conn is None:
+                raise RuntimeError("Session database is unavailable")
+            row = conn.execute(
+                "SELECT transcript_revision FROM sessions "
+                "WHERE id = ? AND ended_at IS NULL",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Unknown or ended session: {session_id}")
+            count_row = conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 1",
+                (session_id,),
+            ).fetchone()
+        return int(count_row[0]), int(row[0])
+
+    def get_contextual_transcript_application(
+        self, execution_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return the durable state-db application receipt, if one exists."""
+        with self._lock:
+            conn = self._conn
+            if conn is None:
+                raise RuntimeError("Session database is unavailable")
+            row = conn.execute(
+                "SELECT * FROM contextual_transcript_applications WHERE execution_id = ?",
+                (execution_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def apply_contextual_transcript_outbox(
+        self,
+        *,
+        execution_id: str,
+        session_id: str,
+        entries: List[Dict[str, Any]],
+        base_count: int,
+        base_revision: int,
+        last_prompt_tokens: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """CAS-apply one contextual outbox and its durable receipt atomically.
+
+        The state-db receipt is authoritative after a crash between this commit
+        and the separate cron-ledger acknowledgement. Ordinary human rows may
+        advance the session afterwards without making that completed application
+        ambiguous on recovery.
+        """
+        entry_ids = []
+        for index, entry in enumerate(entries):
+            identity = entry.get("platform_message_id") or entry.get("message_id")
+            expected_identity = f"contextual-cron:{execution_id}:{index}"
+            if identity != expected_identity:
+                raise ValueError("contextual transcript rows require their deterministic identity")
+            entry_ids.append(identity)
+        entry_ids_json = json.dumps(entry_ids, separators=(",", ":"))
+        entries_digest = hashlib.sha256(
+            json.dumps(
+                entries,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+        def _do(conn):
+            receipt = conn.execute(
+                "SELECT * FROM contextual_transcript_applications WHERE execution_id = ?",
+                (execution_id,),
+            ).fetchone()
+            if receipt is not None:
+                if (
+                    str(receipt["session_id"]) != session_id
+                    or int(receipt["base_revision"]) != int(base_revision)
+                    or int(receipt["base_count"]) != int(base_count)
+                    or str(receipt["entry_ids_json"]) != entry_ids_json
+                    or str(receipt["entries_digest"]) != entries_digest
+                ):
+                    raise ContextualTranscriptCASMismatch(
+                        "Contextual transcript receipt does not match the immutable outbox."
+                    )
+                return {
+                    "status": "already_applied",
+                    "applied_revision": int(receipt["applied_revision"]),
+                    "last_prompt_tokens": receipt["last_prompt_tokens"],
+                }
+
+            session = conn.execute(
+                "SELECT ended_at, end_reason, transcript_revision FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if session is None:
+                raise ContextualTranscriptCASMismatch(
+                    "Contextual transcript session no longer exists."
+                )
+            if session["ended_at"] is not None:
+                raise ContextualTranscriptCASMismatch(
+                    "Contextual transcript session is no longer active."
+                )
+            active_lock = conn.execute(
+                "SELECT holder FROM compression_locks WHERE session_id = ? AND expires_at > ?",
+                (session_id, time.time()),
+            ).fetchone()
+            if active_lock is not None:
+                raise ContextualTranscriptCASMismatch(
+                    "Contextual transcript session is being compressed."
+                )
+
+            tail = conn.execute(
+                "SELECT platform_message_id FROM messages "
+                "WHERE session_id = ? AND active = 1 ORDER BY id LIMIT ? OFFSET ?",
+                (session_id, len(entry_ids) + 1, int(base_count)),
+            ).fetchall()
+            tail_ids = [str(row[0] or "") for row in tail]
+            current_count = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 1",
+                    (session_id,),
+                ).fetchone()[0]
+            )
+            current_revision = int(session["transcript_revision"])
+            revision_delta = current_revision - int(base_revision)
+            count_delta = current_count - int(base_count)
+            if revision_delta != count_delta or revision_delta < 0:
+                raise ContextualTranscriptCASMismatch(
+                    "Contextual transcript revision no longer matches the admitted base."
+                )
+
+            prefix = 0
+            for actual, expected in zip(tail_ids, entry_ids):
+                if actual != expected:
+                    break
+                prefix += 1
+            if prefix != min(len(tail_ids), len(entry_ids)):
+                raise ContextualTranscriptCASMismatch(
+                    "Contextual transcript advanced before the pending outbox was applied."
+                )
+            if len(tail_ids) > len(entry_ids):
+                # A receipt-less legacy application may be followed by humans,
+                # but only after the entire deterministic outbox.
+                prefix = len(entry_ids)
+            elif prefix < len(tail_ids):
+                raise ContextualTranscriptCASMismatch(
+                    "Contextual transcript outbox is interleaved with another writer."
+                )
+
+            missing = entries[prefix:]
+            inserted, tool_calls = self._insert_message_rows(conn, session_id, missing)
+            if inserted:
+                conn.execute(
+                    "UPDATE sessions SET message_count = message_count + ?, "
+                    "tool_call_count = tool_call_count + ? WHERE id = ?",
+                    (inserted, tool_calls, session_id),
+                )
+            applied_revision = int(
+                conn.execute(
+                    "SELECT transcript_revision FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()[0]
+            )
+            conn.execute(
+                "INSERT INTO contextual_transcript_applications "
+                "(execution_id, session_id, base_revision, base_count, entry_ids_json, "
+                "entries_digest, applied_revision, last_prompt_tokens, applied_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    execution_id,
+                    session_id,
+                    int(base_revision),
+                    int(base_count),
+                    entry_ids_json,
+                    entries_digest,
+                    applied_revision,
+                    int(last_prompt_tokens) if last_prompt_tokens is not None else None,
+                    time.time(),
+                ),
+            )
+            return {
+                "status": "applied",
+                "applied_revision": applied_revision,
+                "last_prompt_tokens": last_prompt_tokens,
+            }
+
+        return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
     def append_message(
         self,
         session_id: str,
@@ -7101,8 +7300,22 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         num_tool_calls = 0
         if tool_calls is not None:
             num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
+        contextual_identity = (
+            platform_message_id
+            if isinstance(platform_message_id, str)
+            and platform_message_id.startswith("contextual-cron:")
+            else None
+        )
 
         def _do(conn):
+            if contextual_identity is not None:
+                existing = conn.execute(
+                    "SELECT id FROM messages WHERE session_id = ? "
+                    "AND platform_message_id = ? LIMIT 1",
+                    (session_id, contextual_identity),
+                ).fetchone()
+                if existing is not None:
+                    return int(existing["id"])
             self._check_transcript_write_guards(
                 conn, session_id, compression_lock_holder
             )
@@ -7760,6 +7973,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         offset: int = 0,
         latest: bool = False,
         after_id: Optional[int] = None,
+        include_hidden: bool = False,
     ) -> List[Dict[str, Any]]:
         """Load messages for a session in insertion order.
 
@@ -7787,10 +8001,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if after_id is not None and (latest or offset):
             raise ValueError("after_id is incompatible with latest/offset paging")
         active_clause = "" if include_inactive else " AND active = 1"
+        hidden_clause = (
+            "" if include_hidden else " AND COALESCE(display_kind, '') != 'hidden'"
+        )
         keyset_clause = " AND id > ?" if after_id is not None else ""
         sql = (
             "SELECT * FROM messages WHERE session_id = ?"
-            f"{active_clause}{keyset_clause} ORDER BY id {'DESC' if latest else 'ASC'}"
+            f"{active_clause}{hidden_clause}{keyset_clause} "
+            f"ORDER BY id {'DESC' if latest else 'ASC'}"
         )
         params: list = [session_id]
         if after_id is not None:
@@ -7825,6 +8043,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session_id: str,
         around_message_id: int,
         window: int = 5,
+        include_hidden: bool = False,
     ) -> Dict[str, Any]:
         """Load a window of messages anchored on a specific message id.
 
@@ -7847,10 +8066,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         if window < 0:
             window = 0
+        hidden_clause = (
+            "" if include_hidden else " AND COALESCE(display_kind, '') != 'hidden'"
+        )
         with self._read_ctx() as conn:
             # Confirm the anchor exists in this session.
             anchor_exists = conn.execute(
-                "SELECT 1 FROM messages WHERE id = ? AND session_id = ? LIMIT 1",
+                "SELECT 1 FROM messages WHERE id = ? AND session_id = ?"
+                f"{hidden_clause} LIMIT 1",
                 (around_message_id, session_id),
             ).fetchone()
             if not anchor_exists:
@@ -7860,13 +8083,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # (ASC, take window). Final order is id ASC.
             before_rows = conn.execute(
                 "SELECT * FROM messages "
-                "WHERE session_id = ? AND id <= ? "
+                f"WHERE session_id = ? AND id <= ?{hidden_clause} "
                 "ORDER BY id DESC LIMIT ?",
                 (session_id, around_message_id, window + 1),
             ).fetchall()
             after_rows = conn.execute(
                 "SELECT * FROM messages "
-                "WHERE session_id = ? AND id > ? "
+                f"WHERE session_id = ? AND id > ?{hidden_clause} "
                 "ORDER BY id ASC LIMIT ?",
                 (session_id, around_message_id, window),
             ).fetchall()
@@ -7996,6 +8219,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_inactive: bool = False,
         repair_alternation: bool = False,
         include_row_ids: bool = False,
+        include_hidden: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
@@ -8020,6 +8244,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             session_ids = self._session_lineage_root_to_tip(session_id)
 
         active_clause = "" if include_inactive else " AND active = 1"
+        hidden_clause = (
+            "" if include_hidden else " AND COALESCE(display_kind, '') != 'hidden'"
+        )
         with self._read_ctx() as conn:
             placeholders = ",".join("?" for _ in session_ids)
             rows = conn.execute(
@@ -8033,7 +8260,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # after its tool response, breaking tool-call/response adjacency
                 # and triggering an HTTP 400 on replay. This matches get_messages
                 # — see c03acca50 for the original fix.
-                f"{active_clause} ORDER BY id",
+                f"{active_clause}{hidden_clause} ORDER BY id",
                 tuple(session_ids),
             ).fetchall()
 
@@ -8230,8 +8457,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             repair_alternation=True,
             include_row_ids=True,
         )
+        display_rows = [
+            row
+            for row in rows
+            if (row["display_kind"] or "") != "hidden"
+        ]
         display_history = self._rows_to_conversation(
-            rows,
+            display_rows,
             session_id=session_id,
             include_ancestors=True,
             repair_alternation=False,
@@ -8354,7 +8586,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 "ORDER BY id",
                 tuple(session_ids),
             ).fetchall()
-        ancestor_rows = [r for r in rows if r["session_id"] != session_id]
+        ancestor_rows = [
+            r
+            for r in rows
+            if r["session_id"] != session_id
+            and (r["display_kind"] or "") != "hidden"
+        ]
         if not ancestor_rows:
             return []
         return self._rows_to_conversation(
@@ -8630,7 +8867,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             where_clauses.append(clause)
             params.extend(clause_params)
         if min_message_count > 0:
-            where_clauses.append("s.message_count >= ?")
+            where_clauses.append(
+                "(SELECT COUNT(*) FROM messages _visible_count "
+                "WHERE _visible_count.session_id = s.id "
+                "AND COALESCE(_visible_count.display_kind, '') != 'hidden') >= ?"
+            )
             params.append(min_message_count)
         if archived_only:
             where_clauses.append("s.archived = 1")
@@ -10112,6 +10353,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                             (SELECT {_PREVIEW_RAW_SELECT}
                              FROM messages m
                              WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                           AND COALESCE(m.display_kind, '') != 'hidden'
                              ORDER BY m.timestamp, m.id LIMIT 1),
                             ''
                         ) AS _preview_raw,
@@ -10142,6 +10384,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                             (SELECT {_PREVIEW_RAW_SELECT}
                              FROM messages m
                              WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                           AND COALESCE(m.display_kind, '') != 'hidden'
                              ORDER BY m.timestamp, m.id LIMIT 1),
                             ''
                         ) AS _preview_raw,

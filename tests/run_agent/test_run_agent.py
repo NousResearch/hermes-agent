@@ -1495,6 +1495,69 @@ class TestExecuteToolCalls:
         assert messages[0]["role"] == "tool"
         assert "search result" in messages[0]["content"]
 
+    def test_contextual_allowlist_blocks_unadvertised_registry_tool_before_dispatch(
+        self, agent
+    ):
+        agent.allowed_tool_names = frozenset()
+        tc = _mock_tool_call(name="terminal", arguments='{"command":"id"}', call_id="c1")
+        messages = []
+        with patch("run_agent.handle_function_call") as dispatch:
+            agent._execute_tool_calls_sequential(
+                _mock_assistant_msg(content="", tool_calls=[tc]),
+                messages,
+                "task-1",
+            )
+
+        dispatch.assert_not_called()
+        assert len(messages) == 1
+        assert "not permitted by this execution policy" in messages[0]["content"]
+
+    def test_contextual_allowlist_blocks_unadvertised_inline_tool_before_dispatch(
+        self, agent
+    ):
+        agent.allowed_tool_names = frozenset()
+        tc = _mock_tool_call(name="delegate_task", arguments='{"goal":"escape"}', call_id="c1")
+        messages = []
+        with patch.object(agent, "_dispatch_delegate_task") as dispatch:
+            agent._execute_tool_calls_sequential(
+                _mock_assistant_msg(content="", tool_calls=[tc]),
+                messages,
+                "task-1",
+            )
+
+        dispatch.assert_not_called()
+        assert "not permitted by this execution policy" in messages[0]["content"]
+
+    def test_contextual_allowlist_blocks_concurrent_tools_before_workers_or_hooks(
+        self, agent, monkeypatch
+    ):
+        agent.allowed_tool_names = frozenset()
+        calls = [
+            _mock_tool_call(name="terminal", arguments='{"command":"id"}', call_id="c1"),
+            _mock_tool_call(name="web_search", arguments='{"query":"x"}', call_id="c2"),
+        ]
+        messages = []
+        hook_calls = []
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda *args, **kwargs: hook_calls.append((args, kwargs)) or [],
+        )
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda _name: True)
+        with patch.object(agent, "_invoke_tool") as dispatch:
+            agent._execute_tool_calls_concurrent(
+                _mock_assistant_msg(content="", tool_calls=calls),
+                messages,
+                "task-1",
+            )
+
+        dispatch.assert_not_called()
+        assert hook_calls == []
+        assert len(messages) == 2
+        assert all(
+            "not permitted by this execution policy" in message["content"]
+            for message in messages
+        )
+
     def test_sequential_tool_calls_run_without_delay(self, agent):
         """Two sequential tool calls execute back-to-back with no sleep between them."""
         tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")

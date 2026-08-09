@@ -447,6 +447,7 @@ class AIAgent:
         tool_delay: float = None,  # Deprecated: accepted for compatibility, ignored
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
+        allowed_tool_names: List[str] | set[str] | frozenset[str] | None = None,
         save_trajectories: bool = False,
         verbose_logging: bool = False,
         quiet_mode: bool = False,
@@ -509,6 +510,7 @@ class AIAgent:
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
         requested_provider: str = None,
+        contextual_execution: bool = False,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         if tool_delay is not None:
@@ -525,6 +527,7 @@ class AIAgent:
             api_key=api_key,
             provider=provider,
             requested_provider=requested_provider,
+            contextual_execution=contextual_execution,
             api_mode=api_mode,
             acp_command=acp_command,
             acp_args=acp_args,
@@ -534,6 +537,7 @@ class AIAgent:
             max_iterations=max_iterations,
             enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets,
+            allowed_tool_names=allowed_tool_names,
             save_trajectories=save_trajectories,
             verbose_logging=verbose_logging,
             quiet_mode=quiet_mode,

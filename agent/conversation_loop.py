@@ -157,6 +157,21 @@ _HANDOFF_SKIP_FINAL_RESPONSE = (
 )
 
 
+def _is_contextual_execution(agent: Any) -> bool:
+    """Return the gateway-owned contextual mode; callers cannot widen it."""
+    # Treat only the concrete private boolean as authority. Dynamic proxy/test
+    # objects (for example MagicMock) synthesize truthy missing attributes and
+    # must not accidentally suppress ordinary context-engine behavior.
+    if getattr(agent, "_contextual_execution", False) is True:
+        return True
+    try:
+        from gateway.session_context import _get_contextual_turn_authority
+
+        return _get_contextual_turn_authority() is not None
+    except Exception:
+        return False
+
+
 # Stable prefix of the local interrupt status string emitted when a turn is
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
 # to treat it as cancellation metadata rather than assistant prose.
@@ -1251,6 +1266,8 @@ def _apply_context_engine_selection(
     value yields the unmodified ``api_messages``. The result is request-only —
     persisted conversation history is never mutated here.
     """
+    if _is_contextual_execution(agent):
+        return api_messages
     engine = getattr(agent, "context_compressor", None)
     if engine is None or not hasattr(engine, "select_context"):
         return api_messages
@@ -1336,6 +1353,8 @@ def _notify_context_engine_turn_complete(
     ``messages`` is passed as a shallow copy so the engine cannot mutate the
     persisted transcript.
     """
+    if _is_contextual_execution(agent):
+        return
     engine = getattr(agent, "context_compressor", None)
     hook = getattr(engine, "on_turn_complete", None)
     if engine is None or not callable(hook):
@@ -1409,7 +1428,13 @@ def run_conversation(
     Returns:
         Dict: Complete conversation result with final response and message history
     """
-    if moa_config is None:
+    _contextual_execution = _is_contextual_execution(agent)
+    if _contextual_execution:
+        # Contextual prompts are canonical internal text. They may not activate
+        # encoded MoA/delegation or streaming callback planes.
+        moa_config = None
+        stream_callback = None
+    elif moa_config is None:
         try:
             from hermes_cli.moa_config import decode_moa_turn
 
@@ -1466,6 +1491,7 @@ def run_conversation(
         # MoA turns append per-call aggregated context to the API copy of the
         # user message, so no byte-stable api_content sidecar can be stamped.
         moa_active=bool(moa_config),
+        contextual_execution=_contextual_execution,
     )
     user_message = _ctx.user_message
     original_user_message = _ctx.original_user_message
@@ -1501,6 +1527,18 @@ def run_conversation(
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
+
+    def _contextual_compression_failure(reason: str) -> Dict[str, Any]:
+        """Fail closed instead of crossing into any compression provider/engine."""
+        return {
+            "final_response": "",
+            "messages": messages,
+            "api_calls": api_call_count,
+            "failed": True,
+            "error": reason,
+            "contextual_failure": True,
+        }
+
     # One resolved per-turn compression attempt cap, shared by every site that
     # consumes ``compression_attempts``: the pre-API pressure gate, the
     # overflow/413 retry handlers, and the post-tool compaction gate.
@@ -1547,6 +1585,10 @@ def run_conversation(
     # See agent/transports/codex_app_server_session.py for the adapter
     # and references/codex-app-server-runtime.md for the rationale.
     if agent.api_mode == "codex_app_server":
+        if _contextual_execution:
+            raise RuntimeError(
+                "Contextual execution cannot use an alternate provider runtime."
+            )
         return agent._run_codex_app_server_turn(
             user_message=user_message,
             original_user_message=original_user_message,
@@ -2191,6 +2233,11 @@ def run_conversation(
                 agent._emit_status(_pre_api_status)
             _last_preflight_pressure = request_pressure_tokens
             _pre_api_input = messages
+            if _contextual_execution:
+                return _contextual_compression_failure(
+                    "Contextual cron request exceeded the direct provider context "
+                    "budget; compression is forbidden for hidden turns."
+                )
             messages, active_system_prompt = agent._compress_context(
                 messages,
                 system_message,
@@ -2431,35 +2478,38 @@ def run_conversation(
                     _xh["x-initiator"] = "user"
                     api_kwargs["extra_headers"] = _xh
                     agent._is_user_initiated_turn = False
-                try:
-                    from hermes_cli.middleware import apply_llm_request_middleware
+                _original_api_kwargs = dict(api_kwargs)
+                _llm_middleware_trace: list[dict[str, Any]] = []
+                if not _contextual_execution:
+                    try:
+                        from hermes_cli.middleware import apply_llm_request_middleware
 
-                    _llm_request_mw = apply_llm_request_middleware(
-                        api_kwargs,
-                        task_id=effective_task_id,
-                        turn_id=turn_id,
-                        api_request_id=api_request_id,
-                        session_id=agent.session_id or "",
-                        platform=agent.platform or "",
-                        model=agent.model,
-                        provider=agent.provider,
-                        base_url=agent.base_url,
-                        api_mode=agent.api_mode,
-                        api_call_count=api_call_count,
-                    )
-                    api_kwargs = _llm_request_mw.payload
-                    _original_api_kwargs = _llm_request_mw.original_payload
-                    _llm_middleware_trace = _llm_request_mw.trace
-                except Exception:
-                    _original_api_kwargs = dict(api_kwargs)
-                    _llm_middleware_trace = []
+                        _llm_request_mw = apply_llm_request_middleware(
+                            api_kwargs,
+                            task_id=effective_task_id,
+                            turn_id=turn_id,
+                            api_request_id=api_request_id,
+                            session_id=agent.session_id or "",
+                            platform=agent.platform or "",
+                            model=agent.model,
+                            provider=agent.provider,
+                            base_url=agent.base_url,
+                            api_mode=agent.api_mode,
+                            api_call_count=api_call_count,
+                        )
+                        api_kwargs = _llm_request_mw.payload
+                        _original_api_kwargs = _llm_request_mw.original_payload
+                        _llm_middleware_trace = _llm_request_mw.trace
+                    except Exception:
+                        _original_api_kwargs = dict(api_kwargs)
+                        _llm_middleware_trace = []
 
                 try:
                     from hermes_cli.lifecycle import (
                         has_hook,
                         invoke_hook as _invoke_hook,
                     )
-                    if has_hook("pre_api_request"):
+                    if not _contextual_execution and has_hook("pre_api_request"):
                         request_messages = api_kwargs.get("messages")
                         if not isinstance(request_messages, list):
                             request_messages = api_kwargs.get("input")
@@ -2540,7 +2590,7 @@ def run_conversation(
                     if agent.thinking_callback:
                         agent.thinking_callback("")
 
-                _use_streaming = True
+                _use_streaming = not _contextual_execution
                 # Provider signaled "stream not supported" on a previous
                 # attempt — switch to non-streaming for the rest of this
                 # session instead of re-failing every retry.
@@ -2587,6 +2637,8 @@ def run_conversation(
                         return agent._interruptible_streaming_api_call(
                             next_api_kwargs, on_first_delta=_stop_spinner
                         )
+                    if _contextual_execution:
+                        return agent._interruptible_api_call(next_api_kwargs)
                     from agent import relay_llm
 
                     return relay_llm.execute(
@@ -2610,8 +2662,6 @@ def run_conversation(
                         defer_logical_completion=True,
                     )
 
-                from hermes_cli.middleware import run_llm_execution_middleware
-
                 _model_request_active = getattr(agent, "_model_request_active", None)
                 _redirect_lock = getattr(agent, "_pending_redirect_lock", None)
                 if _redirect_lock is not None:
@@ -2622,22 +2672,27 @@ def run_conversation(
                     _model_request_active.set()
                 _redirect_crossed_response = False
                 try:
-                    response = run_llm_execution_middleware(
-                        api_kwargs,
-                        _perform_api_call,
-                        original_request=_original_api_kwargs,
-                        task_id=effective_task_id,
-                        turn_id=turn_id,
-                        api_request_id=api_request_id,
-                        session_id=agent.session_id or "",
-                        platform=agent.platform or "",
-                        model=agent.model,
-                        provider=agent.provider,
-                        base_url=agent.base_url,
-                        api_mode=agent.api_mode,
-                        api_call_count=api_call_count,
-                        middleware_trace=list(_llm_middleware_trace),
-                    )
+                    if _contextual_execution:
+                        response = _perform_api_call(api_kwargs)
+                    else:
+                        from hermes_cli.middleware import run_llm_execution_middleware
+
+                        response = run_llm_execution_middleware(
+                            api_kwargs,
+                            _perform_api_call,
+                            original_request=_original_api_kwargs,
+                            task_id=effective_task_id,
+                            turn_id=turn_id,
+                            api_request_id=api_request_id,
+                            session_id=agent.session_id or "",
+                            platform=agent.platform or "",
+                            model=agent.model,
+                            provider=agent.provider,
+                            base_url=agent.base_url,
+                            api_mode=agent.api_mode,
+                            api_call_count=api_call_count,
+                            middleware_trace=list(_llm_middleware_trace),
+                        )
                 finally:
                     if _redirect_lock is not None:
                         with _redirect_lock:
@@ -4662,6 +4717,11 @@ def run_conversation(
                         original_len = len(messages)
                         # Option A (LCM issue 441): overhead-aware request size so recovery arms on
                         # the true request (msgs + tools + system), not the tool-blind message count.
+                        if _contextual_execution:
+                            return _contextual_compression_failure(
+                                "Contextual cron provider reported a context limit; "
+                                "compression is forbidden for hidden turns."
+                            )
                         messages, active_system_prompt = agent._compress_context(
                             messages, system_message,
                             approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
@@ -4921,6 +4981,11 @@ def run_conversation(
                     _overflow_input = messages
                     # Option A (LCM issue 441): overhead-aware request size so recovery arms on the
                     # true request (msgs + tools + system), not the tool-blind message count.
+                    if _contextual_execution:
+                        return _contextual_compression_failure(
+                            "Contextual cron request was too large; compression is "
+                            "forbidden for hidden turns."
+                        )
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message,
                         approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
@@ -5068,6 +5133,11 @@ def run_conversation(
                             original_len = len(messages)
                             original_tokens = estimate_messages_tokens_rough(messages)
                             _overflow_input = messages
+                            if _contextual_execution:
+                                return _contextual_compression_failure(
+                                    "Contextual cron output-limit recovery would require "
+                                    "compression, which is forbidden for hidden turns."
+                                )
                             messages, active_system_prompt = agent._compress_context(
                                 messages, system_message,
                                 approx_tokens=request_input_estimate,
@@ -5222,6 +5292,11 @@ def run_conversation(
                     # schemas + system), not the tool-blind message count, so LCM forced-overflow
                     # recovery arms on the TRUE request that overflowed. See hermes-lcm engine
                     # _should_force_overflow_recovery. (approx_tokens stays for the status display.)
+                    if _contextual_execution:
+                        return _contextual_compression_failure(
+                            "Contextual cron overflow recovery would require compression, "
+                            "which is forbidden for hidden turns."
+                        )
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message,
                         approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
@@ -6004,7 +6079,7 @@ def run_conversation(
                     has_hook,
                     invoke_hook as _invoke_hook,
                 )
-                if has_hook("post_api_request"):
+                if not _contextual_execution and has_hook("post_api_request"):
                     _assistant_tool_calls = (
                         getattr(assistant_message, "tool_calls", None) or []
                     )
@@ -6772,6 +6847,11 @@ def run_conversation(
                     # Route the overhead-aware _real_tokens (computed above) into compression, not
                     # the bare last_prompt_tokens — which is 0 in the no-usage fallback, hiding the
                     # true request size from the engine's overflow guard (upstream PR #77169 review).
+                    if _contextual_execution:
+                        return _contextual_compression_failure(
+                            "Contextual cron post-tool context exceeded the provider "
+                            "budget; compression is forbidden for hidden turns."
+                        )
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message,
                         approx_tokens=_real_tokens,
@@ -7357,7 +7437,7 @@ def run_conversation(
                         verify_on_stop_enabled,
                     )
 
-                    if verify_on_stop_enabled():
+                    if not _contextual_execution and verify_on_stop_enabled():
                         _verify_nudge = build_verify_on_stop_nudge(
                             session_id=getattr(agent, "session_id", None),
                             changed_paths=getattr(agent, "_turn_file_mutation_paths", set()),
@@ -7423,7 +7503,12 @@ def run_conversation(
                     from hermes_cli.lifecycle import has_hook
                     from hermes_cli.plugins import get_pre_verify_continue_message
 
-                    if _edited and has_hook("pre_verify") and _attempt < max_verify_nudges():
+                    if (
+                        not _contextual_execution
+                        and _edited
+                        and has_hook("pre_verify")
+                        and _attempt < max_verify_nudges()
+                    ):
                         # Posture is fixed for the session — resolve once + cache.
                         coding = getattr(agent, "_resolved_is_coding", None)
                         if coding is None:

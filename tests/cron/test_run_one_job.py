@@ -27,7 +27,7 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         calls.append(("save", jid))
         return f"/tmp/{jid}.txt"
 
-    def fake_deliver(job, content, adapters=None, loop=None):
+    def fake_deliver(job, content, adapters=None, loop=None, at_most_once=False):
         calls.append(("deliver", job["id"]))
         return None
 
@@ -78,7 +78,9 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     from agent import secret_scope as ss
 
     # Point cron's home resolution at a profile whose .env carries a secret.
-    (tmp_path / ".env").write_text("OPENROUTER_BASE_URL=https://openrouter.ai/api/v1\n")
+    (tmp_path / ".env").write_text(
+        "OPENROUTER_BASE_URL=https://openrouter.ai/api/v1\n", encoding="utf-8"
+    )
     monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
 
     scope_during_run = {}

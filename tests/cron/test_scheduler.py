@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
+from cron.scheduler import ContextualDeliveryUnknown, _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -595,6 +595,44 @@ class TestRunJobSessionPersistence:
         advance.assert_not_called()
         run_one.assert_not_called()
 
+    def test_tick_does_not_dispatch_contextual_recurring_job_when_schedule_claim_fails(
+        self, tmp_path
+    ):
+        from cron.scheduler import tick
+
+        job = {
+            "id": "unclaimed-recurring-job",
+            "name": "unclaimed recurring job",
+            "schedule": {"kind": "interval", "seconds": 60},
+            "next_run_at": "2020-01-01T00:00:00+00:00",
+            "enabled": True,
+            "session_target": "current",
+        }
+        lock_dir = tmp_path / "locks"
+        with patch("cron.scheduler._get_lock_paths", return_value=(lock_dir, lock_dir / "tick.lock")), patch(
+            "cron.scheduler.get_due_jobs", return_value=[job]
+        ), patch(
+            "cron.scheduler.create_execution", return_value={"id": "execution-1"}
+        ), patch(
+            "cron.scheduler.seal_contextual_delivery_target", return_value=True
+        ), patch(
+            "cron.scheduler.claim_contextual_occurrence", return_value=False
+        ) as claim, patch(
+            "cron.scheduler.finish_contextual_execution", return_value={}
+        ), patch(
+            "cron.scheduler.claim_contextual_job_accounting", return_value=True
+        ), patch(
+            "cron.scheduler.run_one_job"
+        ) as run_one:
+            assert tick(verbose=False, sync=True) == 0
+
+        claim.assert_called_once_with(
+            job["id"],
+            execution_id="execution-1",
+            expected_next_run_at=job["next_run_at"],
+        )
+        run_one.assert_not_called()
+
 
 class TestRunJobConfigLogging:
     """Verify that config.yaml parse failures are logged, not silently swallowed."""
@@ -602,7 +640,7 @@ class TestRunJobConfigLogging:
     def test_bad_config_yaml_is_logged(self, caplog, tmp_path):
         """When config.yaml is malformed, a warning should be logged."""
         bad_yaml = tmp_path / "config.yaml"
-        bad_yaml.write_text("invalid: yaml: [[[bad")
+        bad_yaml.write_text("invalid: yaml: [[[bad", encoding="utf-8")
 
         job = {
             "id": "test-job",
@@ -648,7 +686,9 @@ class TestRunJobConfigEnvVarExpansion:
 
     def test_model_env_ref_in_config_yaml_is_expanded(self, tmp_path, monkeypatch):
         """${VAR} in config.yaml model: is expanded using env after .env is loaded."""
-        (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_MODEL}\n")
+        (tmp_path / "config.yaml").write_text(
+            "model: ${_HERMES_TEST_CRON_MODEL}\n", encoding="utf-8"
+        )
         monkeypatch.setenv("_HERMES_TEST_CRON_MODEL", "gpt-4o-mini-cron-test")
 
         job = {"id": "env-job", "name": "env test", "prompt": "hi"}
@@ -734,7 +774,9 @@ class TestRunJobConfigEnvVarExpansion:
 
     def test_unexpanded_ref_passthrough_when_var_unset(self, tmp_path, monkeypatch):
         """When the env var is not set, the literal ${VAR} is kept verbatim (not crashed)."""
-        (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_UNSET_VAR}\n")
+        (tmp_path / "config.yaml").write_text(
+            "model: ${_HERMES_TEST_CRON_UNSET_VAR}\n", encoding="utf-8"
+        )
         monkeypatch.delenv("_HERMES_TEST_CRON_UNSET_VAR", raising=False)
 
         job = {"id": "unset-job", "name": "unset var test", "prompt": "hi"}
@@ -779,7 +821,7 @@ class TestRunJobModelResolution:
 
     def test_null_job_model_falls_back_to_env(self, tmp_path, monkeypatch):
         """``model: null`` on the job uses HERMES_MODEL when set."""
-        (tmp_path / "config.yaml").write_text("")
+        (tmp_path / "config.yaml").write_text("", encoding="utf-8")
         monkeypatch.setenv("HERMES_MODEL", "env-model")
 
         job = {"id": "null-model-job", "name": "null model", "prompt": "hi", "model": None}
@@ -805,7 +847,7 @@ class TestRunJobModelResolution:
 
     def test_no_model_anywhere_fails_with_actionable_error(self, tmp_path, monkeypatch):
         """All three sources empty → fail fast with a clear message, not an opaque 400."""
-        (tmp_path / "config.yaml").write_text("")
+        (tmp_path / "config.yaml").write_text("", encoding="utf-8")
         monkeypatch.delenv("HERMES_MODEL", raising=False)
 
         job = {"id": "no-model-job", "name": "no model anywhere", "prompt": "hi", "model": None}
@@ -837,7 +879,9 @@ class TestRunJobModelResolution:
         resolver mirrors that so a config that works in the CLI also works in
         cron.
         """
-        (tmp_path / "config.yaml").write_text("model:\n  model: alias-key-model\n")
+        (tmp_path / "config.yaml").write_text(
+            "model:\n  model: alias-key-model\n", encoding="utf-8"
+        )
         monkeypatch.delenv("HERMES_MODEL", raising=False)
 
         job = {"id": "alias-job", "name": "alias", "prompt": "hi", "model": None}
@@ -862,7 +906,9 @@ class TestRunJobModelResolution:
 
     def test_corrupt_config_yaml_does_not_crash_with_job_model(self, tmp_path, monkeypatch):
         """A malformed config.yaml degrades gracefully when the job has a model."""
-        (tmp_path / "config.yaml").write_text("{{{invalid yaml!!!")
+        (tmp_path / "config.yaml").write_text(
+            "{{{invalid yaml!!!", encoding="utf-8"
+        )
         monkeypatch.delenv("HERMES_MODEL", raising=False)
 
         job = {"id": "corrupt-job", "name": "corrupt", "prompt": "hi", "model": "explicit-model"}
@@ -1163,7 +1209,9 @@ class TestBuildJobPromptAbsoluteSkillPath:
         skills_dir = tmp_path / "skills"
         skill_dir = skills_dir / "alpha-skill"
         skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text("# Alpha\nDo alpha.")
+        (skill_dir / "SKILL.md").write_text(
+            "# Alpha\nDo alpha.", encoding="utf-8"
+        )
         absolute_path = str(skill_dir)
         seen_names: list[str] = []
 
@@ -1414,6 +1462,46 @@ class TestDeliverResultTimeoutCancelsFuture:
         #    an in-flight confirmation timeout is assume-delivered, not a resend.
         standalone_send.assert_not_awaited()
 
+    def test_contextual_timeout_is_unknown_and_never_falls_back(self):
+        from gateway.config import Platform
+
+        adapter = AsyncMock()
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        loop = MagicMock()
+        loop.is_running.return_value = True
+        captured_future = MagicMock()
+        captured_future.cancel.return_value = True
+        captured_future.result.side_effect = TimeoutError("timed out")
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return captured_future
+
+        job = {
+            "id": "contextual-timeout",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+        standalone_send = AsyncMock(return_value={"success": True})
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            with pytest.raises(ContextualDeliveryUnknown, match="acknowledgement is unknown"):
+                _deliver_result(
+                    job,
+                    "Hello world",
+                    adapters={Platform.TELEGRAM: adapter},
+                    loop=loop,
+                    at_most_once=True,
+                )
+
+        captured_future.cancel.assert_called_once()
+        standalone_send.assert_not_awaited()
+
 
 class TestDeliverResultLiveAdapterUnconfirmed:
     """Regression for #47056.
@@ -1476,6 +1564,81 @@ class TestDeliverResultLiveAdapterUnconfirmed:
         result, standalone_send = self._run(None)
         assert result is None, f"standalone should have delivered, got: {result!r}"
         standalone_send.assert_awaited_once()
+
+    def test_contextual_confirmed_send_with_malformed_metadata_never_resends(self):
+        from concurrent.futures import Future
+        from gateway.config import Platform
+
+        confirmed = MagicMock(success=True)
+        confirmed.raw_response = "malformed-success-response"
+        completed_future = Future()
+        completed_future.set_result(confirmed)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return completed_future
+
+        standalone_send = AsyncMock(return_value={"success": True})
+        job = {
+            "id": "confirmed-malformed-metadata",
+            "deliver": "origin",
+            "origin": {
+                "platform": "telegram",
+                "chat_id": "123",
+                "thread_id": "7",
+            },
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: AsyncMock()},
+                loop=loop,
+                at_most_once=True,
+            )
+
+        assert result is None
+        standalone_send.assert_not_awaited()
+
+    def test_contextual_never_uses_standalone_transport(self):
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        standalone_send = AsyncMock(return_value={"success": True})
+        job = {
+            "id": "standalone-forbidden",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            with pytest.raises(
+                ContextualDeliveryUnknown, match="standalone fallback is forbidden"
+            ):
+                _deliver_result(
+                    job,
+                    "Hello world",
+                    adapters={},
+                    at_most_once=True,
+                )
+
+        standalone_send.assert_not_awaited()
 
 
 class TestDeliverOriginUnresolvableIsLocal:

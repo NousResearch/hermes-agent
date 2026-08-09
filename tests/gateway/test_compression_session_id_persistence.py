@@ -25,6 +25,7 @@ import textwrap
 from unittest.mock import MagicMock, call
 
 from gateway import run as gateway_run
+from gateway.session import SessionStore
 from gateway.session_context import set_current_session_id, get_session_env
 
 
@@ -110,10 +111,15 @@ def test_every_post_compression_session_id_assignment_persists():
     """
     source = inspect.getsource(gateway_run)
     assignments = _session_id_assignments_followed_by_save(source)
-    assert assignments, (
-        "No ``session_entry.session_id = ...`` assignments found in gateway/run.py — "
-        "either the structure changed or the AST walker is broken."
-    )
+    if not assignments:
+        # Newer gateways centralize route publication in SessionStore so the
+        # route CAS, routing-revision bump, and durable save share one lock.
+        # This is stronger than scattered run.py assignment/save pairs.
+        assert "_publish_gateway_compression_route(" in source
+        publisher = inspect.getsource(SessionStore.advance_compression_session)
+        assert "entry.session_id != expected_session_id" in publisher
+        assert "self._save()" in publisher
+        return
     missing = [lineno for lineno, saved in assignments if not saved]
     assert not missing, (
         f"{len(missing)} ``session_entry.session_id = ...`` site(s) in gateway/run.py "

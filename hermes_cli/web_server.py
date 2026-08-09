@@ -11841,9 +11841,16 @@ def _call_cron_for_profile(target_profile: Optional[str], func_name: str, *args,
         reset_hermes_home_override(token)
 
     if isinstance(result, list):
-        return [_annotate_cron_job(j, profile_name, home) for j in result]
+        return [
+            _annotate_cron_job(
+                cron_jobs.public_job_record(job), profile_name, home
+            )
+            for job in result
+        ]
     if isinstance(result, dict):
-        return _annotate_cron_job(result, profile_name, home)
+        return _annotate_cron_job(
+            cron_jobs.public_job_record(result), profile_name, home
+        )
     return result
 
 

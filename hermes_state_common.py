@@ -126,7 +126,8 @@ def _sql_session_last_active(alias: str = "s") -> str:
     """
     msg_max = (
         f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m "
-        f"WHERE _act_m.session_id = {alias}.id)"
+        f"WHERE _act_m.session_id = {alias}.id "
+        f"AND COALESCE(_act_m.display_kind, '') != 'hidden')"
     )
     return (
         f"COALESCE("
@@ -143,7 +144,8 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
     """Same freshest-of expression keyed by a session-id SQL expression."""
     msg_max = (
         f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m "
-        f"WHERE _act_m.session_id = {session_id_expr})"
+        f"WHERE _act_m.session_id = {session_id_expr} "
+        f"AND COALESCE(_act_m.display_kind, '') != 'hidden')"
     )
     activity = (
         f"(SELECT last_activity_at FROM sessions _act_s "
@@ -164,7 +166,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
     )
 
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
@@ -256,6 +258,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     compression_ineffective_count INTEGER NOT NULL DEFAULT 0,
     profile_name TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
+    transcript_revision INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
     pinned INTEGER NOT NULL DEFAULT 0,
     last_read_at REAL,
@@ -331,6 +334,18 @@ CREATE TABLE IF NOT EXISTS compression_locks (
     expires_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS contextual_transcript_applications (
+    execution_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    base_revision INTEGER NOT NULL,
+    base_count INTEGER NOT NULL,
+    entry_ids_json TEXT NOT NULL,
+    entries_digest TEXT NOT NULL,
+    applied_revision INTEGER NOT NULL,
+    last_prompt_tokens INTEGER,
+    applied_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS async_delegations (
     delegation_id TEXT PRIMARY KEY,
     origin_session TEXT NOT NULL,
@@ -383,6 +398,33 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_active_null
     ON messages(active) WHERE active IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_contextual_cron_identity
+    ON messages(session_id, platform_message_id)
+    WHERE platform_message_id LIKE 'contextual-cron:%';
+CREATE TRIGGER IF NOT EXISTS messages_transcript_revision_insert
+AFTER INSERT ON messages
+BEGIN
+    UPDATE sessions SET transcript_revision = transcript_revision + 1
+    WHERE id = new.session_id;
+END;
+CREATE TRIGGER IF NOT EXISTS messages_transcript_revision_delete
+AFTER DELETE ON messages
+BEGIN
+    UPDATE sessions SET transcript_revision = transcript_revision + 1
+    WHERE id = old.session_id;
+END;
+CREATE TRIGGER IF NOT EXISTS messages_transcript_revision_update
+AFTER UPDATE OF session_id, role, content, tool_call_id, tool_calls, tool_name,
+    effect_disposition, token_count, finish_reason, reasoning,
+    reasoning_content, reasoning_details, codex_reasoning_items,
+    codex_message_items, platform_message_id, active, compacted, api_content
+ON messages
+BEGIN
+    UPDATE sessions SET transcript_revision = transcript_revision + 1
+    WHERE id = old.session_id;
+    UPDATE sessions SET transcript_revision = transcript_revision + 1
+    WHERE id = new.session_id AND new.session_id IS NOT old.session_id;
+END;
 CREATE INDEX IF NOT EXISTS idx_sessions_session_key
     ON sessions(session_key, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer

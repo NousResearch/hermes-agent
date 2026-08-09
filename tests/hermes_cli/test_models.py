@@ -2,6 +2,8 @@
 
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 from hermes_cli.nous_account import NousPortalAccountInfo
 from hermes_cli.models import (
     OPENROUTER_MODELS, fetch_openrouter_models, model_ids, detect_provider_for_model,
@@ -11,6 +13,36 @@ from hermes_cli.models import (
     union_with_portal_paid_recommendations,
 )
 import hermes_cli.models as _models_mod
+
+
+@pytest.fixture(autouse=True)
+def _bind_current_models_module(monkeypatch):
+    """Keep module-level imports aligned after broad-suite module eviction.
+
+    Some earlier integration tests deliberately remove and re-import Hermes
+    modules.  Pytest collected this file before those tests ran, so its direct
+    imports can otherwise point at a detached ``hermes_cli.models`` object
+    while ``patch("hermes_cli.models…")`` targets the replacement object.
+    Rebind every imported symbol to the currently registered module for each
+    test, keeping mocks and the code under test on the same globals.
+    """
+    import importlib
+
+    current = importlib.import_module("hermes_cli.models")
+    monkeypatch.setitem(globals(), "_models_mod", current)
+    for name in (
+        "OPENROUTER_MODELS",
+        "fetch_openrouter_models",
+        "model_ids",
+        "detect_provider_for_model",
+        "is_nous_free_tier",
+        "partition_nous_models_by_tier",
+        "check_nous_free_tier",
+        "_FREE_TIER_CACHE_TTL",
+        "union_with_portal_free_recommendations",
+        "union_with_portal_paid_recommendations",
+    ):
+        monkeypatch.setitem(globals(), name, getattr(current, name))
 
 LIVE_OPENROUTER_MODELS = [
     ("anthropic/claude-opus-4.6", "recommended"),

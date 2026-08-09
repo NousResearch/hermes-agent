@@ -19,9 +19,14 @@ from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 # ---------------------------------------------------------------------------
 
 def _ensure_teams_mock():
-    """Install a teams SDK mock in sys.modules if the real package isn't present."""
-    if "microsoft_teams" in sys.modules and hasattr(sys.modules["microsoft_teams"], "__file__"):
-        return
+    """Install a deterministic Teams SDK mock in ``sys.modules``.
+
+    Other gateway test modules import plugin discovery during collection.  If
+    the optional Teams SDK is present but incomplete for this interpreter,
+    that can leave a partial real module tree behind before this file is
+    collected.  These unit tests must not depend on that collection order or
+    attempt a live lazy install, so replace the hierarchy unconditionally.
+    """
 
     # Build the module hierarchy
     microsoft_teams = types.ModuleType("microsoft_teams")
@@ -159,7 +164,7 @@ def _ensure_teams_mock():
         "microsoft_teams.apps.http": microsoft_teams_apps_http,
         "microsoft_teams.apps.http.adapter": microsoft_teams_apps_http_adapter,
     }.items():
-        sys.modules.setdefault(name, mod)
+        sys.modules[name] = mod
 
 
 _ensure_teams_mock()

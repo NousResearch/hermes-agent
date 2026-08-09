@@ -38,18 +38,15 @@ def hermes_env(tmp_path, monkeypatch):
 
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    # Reload modules that cache get_hermes_home() at import time.
-    import importlib
-    import hermes_constants
-    importlib.reload(hermes_constants)
-    import cron.jobs
-    importlib.reload(cron.jobs)
-    import cron.monitor
-    importlib.reload(cron.monitor)
-    import cron.scheduler
-    importlib.reload(cron.scheduler)
+    # Route storage dynamically instead of reloading shared modules. Reloading
+    # cron.scheduler replaces exception classes and function globals underneath
+    # already-collected test modules, making later tests depend on file order.
+    import cron.jobs as jobs
+    import cron.scheduler as scheduler
 
-    return home
+    monkeypatch.setattr(scheduler, "_hermes_home", home)
+    with jobs.use_cron_store(home):
+        yield home
 
 
 def _write_script(home, name: str, body: str) -> str:
@@ -337,9 +334,10 @@ def test_changed_output_injects_diff(hermes_env, monkeypatch):
 
 
 def test_hash_persists_across_scheduler_restart(hermes_env, monkeypatch):
-    """Suppression state must survive a scheduler restart (module reload)."""
-    import importlib
+    """Suppression state must survive a fresh interpreter restart."""
+    import subprocess
 
+    from cron.jobs import get_job
     from cron.scheduler import run_job
 
     job = _make_monitor_job(hermes_env, "echo 'state A'\n")
@@ -349,20 +347,33 @@ def test_hash_persists_across_scheduler_restart(hermes_env, monkeypatch):
     run_job(job)
     assert observed["agent_runs"] == 1
 
-    # Simulate restart: reload the cron modules, dropping in-memory state.
-    import cron.jobs
-    importlib.reload(cron.jobs)
-    import cron.monitor
-    importlib.reload(cron.monitor)
-    import cron.scheduler
-    importlib.reload(cron.scheduler)
-    _install_agent_stubs(monkeypatch, observed)
+    # A fresh interpreter must observe the durable hash without mutating the
+    # shared module identities used by later tests in this pytest process.
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from cron.jobs import get_job; "
+                "from cron.monitor import check_monitor; "
+                f"job=get_job({job['id']!r}); "
+                "outcome=check_monitor(job); "
+                "assert outcome.ok and not outcome.changed"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert probe.returncode == 0, probe.stderr
 
-    job = cron.jobs.get_job(job["id"])
+    job = get_job(job["id"])
+    assert job is not None
     assert job["monitor_state"]["last_output_hash"]
-    success, doc, final, error = cron.scheduler.run_job(job)
+    success, doc, final, error = run_job(job)
     assert success is True
-    assert final == cron.scheduler.SILENT_MARKER
+    from cron.scheduler import SILENT_MARKER
+    assert final == SILENT_MARKER
     assert observed["agent_runs"] == 1  # still suppressed after restart
 
 

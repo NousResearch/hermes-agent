@@ -542,7 +542,7 @@ class SessionManager:
         # for the rest of the session (see hermes_state.get_messages_as_conversation).
         try:
             history = db.get_messages_as_conversation(
-                session_id, repair_alternation=True
+                session_id, repair_alternation=True, include_hidden=True
             )
         except Exception:
             logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
@@ -621,7 +621,7 @@ class SessionManager:
             if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
         ]
 
-        kwargs = {
+        kwargs: Dict[str, Any] = {
             "platform": "acp",
             "enabled_toolsets": _expand_acp_enabled_toolsets(
                 ["hermes-acp"],

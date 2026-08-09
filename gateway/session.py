@@ -18,14 +18,100 @@ import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, replace
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Callable, cast
 
 logger = logging.getLogger(__name__)
+
+_ROUTING_AUTHORITY_LEASES_LOCK = threading.Lock()
+_ROUTING_AUTHORITY_LEASES: Dict[str, tuple[int, Any]] = {}
+
+
+def _acquire_routing_authority_lease(sessions_dir: Path) -> None:
+    """Hold one cross-process routing authority lease for this process lifetime."""
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = sessions_dir.resolve() / ".routing-authority.lock"
+    key = str(lock_path)
+    pid = os.getpid()
+    with _ROUTING_AUTHORITY_LEASES_LOCK:
+        existing = _ROUTING_AUTHORITY_LEASES.get(key)
+        if existing is not None:
+            existing_pid, existing_fd = existing
+            if existing_pid == pid:
+                return
+            try:
+                existing_fd.close()
+            except Exception:
+                pass
+            _ROUTING_AUTHORITY_LEASES.pop(key, None)
+
+        lock_fd = open(lock_path, "a+b")
+        try:
+            if os.name == "posix":
+                import fcntl
+
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            elif os.name == "nt":  # pragma: no cover - exercised on Windows CI
+                import msvcrt
+
+                if os.fstat(lock_fd.fileno()).st_size == 0:
+                    lock_fd.write(b"\0")
+                    lock_fd.flush()
+                lock_fd.seek(0)
+                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
+            else:  # pragma: no cover - supported hosts are POSIX or Windows
+                raise RuntimeError("No routing-authority lock primitive is available")
+        except (OSError, IOError) as exc:
+            lock_fd.close()
+            raise RuntimeError(
+                f"Another gateway process owns routing authority for {sessions_dir}"
+            ) from exc
+        except Exception:
+            lock_fd.close()
+            raise
+
+        lock_fd.seek(0)
+        lock_fd.truncate()
+        lock_fd.write(f"{pid}\n".encode("ascii"))
+        lock_fd.flush()
+        os.fsync(lock_fd.fileno())
+        _ROUTING_AUTHORITY_LEASES[key] = (pid, lock_fd)
+
+
+def _reset_routing_authority_leases_after_fork() -> None:
+    """Drop inherited lock descriptors immediately in a passive fork child."""
+    global _ROUTING_AUTHORITY_LEASES_LOCK, _ROUTING_AUTHORITY_LEASES
+    for _, handle in list(_ROUTING_AUTHORITY_LEASES.values()):
+        try:
+            handle.close()
+        except Exception:
+            pass
+    _ROUTING_AUTHORITY_LEASES = {}
+    _ROUTING_AUTHORITY_LEASES_LOCK = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_routing_authority_leases_after_fork)
+
+
+class ContextualRouteInstanceMismatch(RuntimeError):
+    """A contextual job's logical route was deleted, recreated, or rebound."""
 
 
 def _now() -> datetime:
     """Return the current local time."""
     return datetime.now()
+
+
+def _legacy_route_instance_id(data: Dict[str, Any]) -> str:
+    """Derive a restart-stable identity for pre-v2 persisted route records."""
+    seed = "\x00".join(
+        (
+            str(data.get("session_key") or ""),
+            str(data.get("session_id") or ""),
+            str(data.get("created_at") or ""),
+        )
+    )
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"hermes-logical-route:{seed}").hex
 
 
 # Default auto-continue freshness window in seconds (1 hour).  A session
@@ -307,7 +393,51 @@ class SessionSource:
             auto_thread_initial_name=data.get("auto_thread_initial_name"),
             prospective_thread_id=data.get("prospective_thread_id"),
         )
-    
+
+
+def canonical_route_coordinates(
+    source: SessionSource,
+) -> tuple[str, str, str, str]:
+    """Canonical chat/thread coordinates shared by routing and cron authority."""
+    effective_thread_id = source.thread_id or source.prospective_thread_id
+    chat_type = str(source.chat_type or "")
+    chat_id = str(source.chat_id or "")
+    parent_chat_id = str(source.parent_chat_id or "")
+    if source.platform == Platform.DISCORD and effective_thread_id:
+        if source.prospective_thread_id and not source.thread_id:
+            parent_chat_id = parent_chat_id or chat_id
+        chat_type = "thread"
+        chat_id = str(effective_thread_id)
+    elif source.prospective_thread_id and not source.thread_id:
+        chat_type = "thread"
+    return chat_type, chat_id, str(effective_thread_id or ""), parent_chat_id
+
+
+def _route_principal_identity(source: Optional[SessionSource]) -> tuple[str, ...]:
+    """Return conversation/account dimensions that may retain a route UUID."""
+    if source is None:
+        return ()
+    canonical_chat_type, canonical_chat_id, effective_thread_id, parent_chat_id = (
+        canonical_route_coordinates(source)
+    )
+    return (
+        str(getattr(source.platform, "value", source.platform) or ""),
+        canonical_chat_type,
+        canonical_chat_id,
+        effective_thread_id,
+        str(source.profile or ""),
+        str(source.scope_id or ""),
+        parent_chat_id,
+        str(source.chat_id_alt or ""),
+    )
+
+
+def _same_route_identity(
+    existing: Optional[SessionSource], incoming: Optional[SessionSource]
+) -> bool:
+    return bool(existing is not None and incoming is not None) and (
+        _route_principal_identity(existing) == _route_principal_identity(incoming)
+    )
 
 
 @dataclass
@@ -328,6 +458,8 @@ class SessionContext:
     # Session metadata
     session_key: str = ""
     session_id: str = ""
+    route_instance_id: str = ""
+    routing_revision: int = 0
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
@@ -790,6 +922,17 @@ class SessionEntry:
     platform: Optional[Platform] = None
     chat_type: str = "dm"
 
+    # Stable identity of this authenticated logical route. It survives physical
+    # transcript rollover (/new, reset, resume, verified compression) but a
+    # newly created/rebound route receives a new value, fencing delete/recreate
+    # ABA from reviving durable contextual jobs.
+    route_instance_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+
+    # Monotonic revision of the stable-key → concrete-session route. Metadata
+    # and token updates do not change it. Reset/resume/compression publication
+    # do, preventing an ABA route (old→new→old) from satisfying a sealed cron.
+    routing_revision: int = 0
+
     # Lightweight persisted key/value state scoped to this session entry
     # (e.g. Slack thread-context watermarks). Survives gateway restarts via
     # the routing index; must stay small and JSON-serializable.
@@ -877,6 +1020,7 @@ class SessionEntry:
             "display_name": self.display_name,
             "platform": self.platform.value if self.platform else None,
             "chat_type": self.chat_type,
+            "route_instance_id": self.route_instance_id,
             "metadata": self.metadata,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
@@ -907,6 +1051,11 @@ class SessionEntry:
             "reset_had_activity": self.reset_had_activity,
             "prev_session_id": self.prev_session_id,
         }
+        # Keep legacy/default session records byte-compatible. Revision zero
+        # is the implicit pre-contextual value; only routes that have actually
+        # moved need the persisted field.
+        if self.routing_revision:
+            result["routing_revision"] = self.routing_revision
         if self.model_override:
             # Defence-in-depth: strip credentials even if a caller stored an
             # unsanitized dict directly on the entry.
@@ -978,6 +1127,10 @@ class SessionEntry:
             display_name=data.get("display_name"),
             platform=platform,
             chat_type=data.get("chat_type", "dm"),
+            route_instance_id=str(
+                data.get("route_instance_id") or _legacy_route_instance_id(data)
+            ),
+            routing_revision=int(data.get("routing_revision", 0) or 0),
             metadata=dict(data.get("metadata") or {}),
             input_tokens=data.get("input_tokens", 0),
             output_tokens=data.get("output_tokens", 0),
@@ -1182,16 +1335,15 @@ def build_session_key(
     # when keying on a prospective id so the two byte-match. (Real-thread events
     # already carry chat_type="thread", so this only rewrites the initiating
     # channel message's slot.)
-    effective_thread_id = source.thread_id or source.prospective_thread_id
-    chat_type_slot = source.chat_type
-    if source.prospective_thread_id and not source.thread_id:
-        chat_type_slot = "thread"
+    chat_type_slot, canonical_chat_id, effective_thread_id, _ = (
+        canonical_route_coordinates(source)
+    )
     key_parts = [ns, platform, chat_type_slot]
 
     if slack_scope_id:
         key_parts.append(slack_scope_id)
-    if source.chat_id:
-        key_parts.append(source.chat_id)
+    if canonical_chat_id:
+        key_parts.append(canonical_chat_id)
     if effective_thread_id:
         key_parts.append(effective_thread_id)
 
@@ -1244,6 +1396,7 @@ class SessionStore:
                  has_active_processes_fn=None):
         self.sessions_dir = sessions_dir
         self.config = config
+        _acquire_routing_authority_lease(self.sessions_dir)
         self._entries: Dict[str, SessionEntry] = {}
         self._loaded = False
         self._lock = threading.Lock()
@@ -2492,6 +2645,8 @@ class SessionStore:
         db_create_kwargs = None
         existing_session_id = None
         force_new_observed_entry = None
+        replacement_routing_revision = 0
+        replacement_route_instance_id: Optional[str] = None
 
         # ---- Phase 0: lock read -- existing session_id for compression tip ----
         if not force_new:
@@ -2515,6 +2670,16 @@ class SessionStore:
             self._ensure_loaded_locked()
             if force_new:
                 force_new_observed_entry = self._entries.get(session_key)
+                if force_new_observed_entry is not None:
+                    replacement_routing_revision = (
+                        int(force_new_observed_entry.routing_revision) + 1
+                    )
+                    if _same_route_identity(
+                        force_new_observed_entry.origin, source
+                    ):
+                        replacement_route_instance_id = (
+                            force_new_observed_entry.route_instance_id
+                        )
             if session_key in self._entries and not force_new:
                 _entry_for_checks = self._entries[session_key]
                 _stale_session_id = _entry_for_checks.session_id
@@ -2575,6 +2740,9 @@ class SessionStore:
                 _healed = self._heal_compression_tip_locked(
                     entry, existing_session_id, canonical_existing_session_id
                 )
+                if _healed:
+                    entry.routing_revision += 1
+                    _needs_save = True
 
                 if _is_stale and entry.session_id == _stale_session_id:
                     # Stale routing self-heal (#54878): the in-memory entry
@@ -2592,6 +2760,12 @@ class SessionStore:
                         session_key, entry.session_id,
                     )
                     self._entries.pop(session_key, None)
+                    replacement_routing_revision = max(
+                        replacement_routing_revision,
+                        int(entry.routing_revision) + 1,
+                    )
+                    if _same_route_identity(entry.origin, source):
+                        replacement_route_instance_id = entry.route_instance_id
                     # If an expiry watcher (daily/idle reset) already finalized
                     # this session, honour the reset decision instead of silently
                     # reopening it via recovery.
@@ -2618,6 +2792,12 @@ class SessionStore:
                         db_end_session_id = entry.session_id
                         prev_session_id = entry.session_id
                         self._entries.pop(session_key, None)
+                        replacement_routing_revision = max(
+                            replacement_routing_revision,
+                            int(entry.routing_revision) + 1,
+                        )
+                        if _same_route_identity(entry.origin, source):
+                            replacement_route_instance_id = entry.route_instance_id
                         entry = None
                         _needs_recover = True
                     else:
@@ -2638,6 +2818,12 @@ class SessionStore:
                 session_key=session_key, source=source, now=now,
             )
             if recovered is not None:
+                recovered.routing_revision = max(
+                    int(recovered.routing_revision),
+                    replacement_routing_revision,
+                )
+                if replacement_route_instance_id:
+                    recovered.route_instance_id = replacement_route_instance_id
                 with self._lock:
                     published = self._entries.get(session_key)
                     if published is None:
@@ -2650,6 +2836,9 @@ class SessionStore:
             # Create a candidate outside the lock, then publish only if another
             # worker has not already populated this routing key.
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+            candidate_route_instance_id = (
+                replacement_route_instance_id or uuid.uuid4().hex
+            )
             candidate = SessionEntry(
                 session_key=session_key,
                 session_id=session_id,
@@ -2659,6 +2848,8 @@ class SessionStore:
                 display_name=source.chat_name,
                 platform=source.platform,
                 chat_type=source.chat_type,
+                route_instance_id=candidate_route_instance_id,
+                routing_revision=replacement_routing_revision,
                 was_auto_reset=was_auto_reset,
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
@@ -2678,6 +2869,7 @@ class SessionStore:
             entry = published
             _needs_save = True
             if entry is candidate:
+                assert session_id is not None
                 db_create_kwargs = {
                     "session_id": session_id,
                     "source": source.platform.value,
@@ -2717,7 +2909,7 @@ class SessionStore:
 
         if self._db and db_create_kwargs:
             try:
-                self._db.create_session(**db_create_kwargs)
+                cast(Any, self._db.create_session)(**db_create_kwargs)
                 self._record_gateway_session_peer(
                     session_id,
                     session_key,
@@ -2733,14 +2925,21 @@ class SessionStore:
         self,
         session_key: str,
         last_prompt_tokens: int = None,
+        *,
+        touch_activity: bool = True,
     ) -> None:
-        """Update lightweight session metadata after an interaction."""
+        """Update lightweight session metadata after an interaction.
+
+        Internal contextual cron turns pass ``touch_activity=False`` so they do
+        not move the human-idle reset clock.
+        """
         with self._lock:
             self._ensure_loaded_locked()
             entry = self._entries.get(session_key)
             if entry is None:
                 return
-            entry.updated_at = _now()
+            if touch_activity:
+                entry.updated_at = _now()
             if last_prompt_tokens is not None:
                 entry.last_prompt_tokens = last_prompt_tokens
             # Snapshot peer fields while still holding _lock: a concurrent
@@ -3140,11 +3339,14 @@ class SessionStore:
                 display_name=display_name if display_name is not None else old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                route_instance_id=old_entry.route_instance_id,
+                routing_revision=old_entry.routing_revision + 1,
                 is_fresh_reset=True,
             )
 
             self._entries[session_key] = new_entry
             self._save()
+            assert session_id is not None
             db_create_kwargs = {
                 "session_id": session_id,
                 "source": old_entry.platform.value if old_entry.platform else "unknown",
@@ -3172,7 +3374,7 @@ class SessionStore:
 
         if self._db and db_create_kwargs:
             try:
-                self._db.create_session(**db_create_kwargs)
+                cast(Any, self._db.create_session)(**db_create_kwargs)
                 self._record_gateway_session_peer(
                     session_id,
                     session_key,
@@ -3210,14 +3412,25 @@ class SessionStore:
                 return entry
             if entry.session_id != expected_session_id:
                 return None
+            old_session_id = entry.session_id
+            old_revision = entry.routing_revision
+            old_updated_at = entry.updated_at
             if not self._heal_compression_tip_locked(
                 entry,
                 expected_session_id,
                 target_session_id,
             ):
                 return None
+            entry.routing_revision += 1
             entry.updated_at = _now()
-            self._save()
+            try:
+                self._save()
+            except BaseException:
+                entry.session_id = old_session_id
+                entry.routing_revision = old_revision
+                entry.updated_at = old_updated_at
+                self._routing_generation += 1
+                raise
             return entry
 
     def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
@@ -3256,6 +3469,8 @@ class SessionStore:
                 display_name=old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                route_instance_id=old_entry.route_instance_id,
+                routing_revision=old_entry.routing_revision + 1,
             )
 
             self._entries[session_key] = new_entry
@@ -3330,6 +3545,97 @@ class SessionStore:
             self._ensure_loaded_locked()
             entry = self._entries.get(session_key)
             return getattr(entry, "session_id", None) if entry else None
+
+    def peek_session_entry(self, session_key: str) -> Optional[SessionEntry]:
+        """Snapshot a live routing entry without creating/resetting/touching it."""
+        if not session_key:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return None
+            origin = replace(entry.origin) if entry.origin is not None else None
+            return replace(entry, origin=origin, metadata=dict(entry.metadata))
+
+    def seal_contextual_admission(
+        self,
+        session_key: str,
+        execution_id: str,
+        seal: Callable[[str, str, str, int], bool],
+        expected_route_instance_id: Optional[str] = None,
+    ) -> Optional[SessionEntry]:
+        """Linearize durable cron admission with reset/resume route mutations.
+
+        The short ledger CAS runs while the existing routing lock is held. Thus
+        either a reset publishes first and admission seals the new route, or
+        admission seals first and the later revision change makes it stale.
+        A v2 logical binding also verifies its stable route instance under this
+        same fence, preventing delete/recreate ABA from sealing the wrong route.
+        """
+        if not session_key or not execution_id:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None or entry.origin is None:
+                return None
+            if (
+                expected_route_instance_id is not None
+                and entry.route_instance_id != expected_route_instance_id
+            ):
+                raise ContextualRouteInstanceMismatch(
+                    "the originating logical route was deleted, recreated, or rebound"
+                )
+            if not seal(
+                execution_id,
+                session_key,
+                entry.session_id,
+                int(entry.routing_revision),
+            ):
+                return None
+            origin = replace(entry.origin)
+            return replace(entry, origin=origin, metadata=dict(entry.metadata))
+
+    def claim_contextual_delivery_authority(
+        self,
+        session_key: str,
+        *,
+        source: SessionSource,
+        binding_version: int,
+        expected_route_instance_id: Optional[str],
+        expected_session_id: str,
+        expected_routing_revision: int,
+        authorize: Callable[[], bool],
+        claim: Callable[[], bool],
+    ) -> tuple[bool, bool]:
+        """Linearize destination authorization and the durable send claim.
+
+        Route deletion/reset/rebind takes the same lock, so a successful claim
+        is ordered before any later mutation. The transport may run after the
+        lock is released without reopening a check-then-send race.
+        """
+        if not session_key or binding_version not in (1, 2):
+            return False, False
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None or entry.origin is None:
+                return False, False
+            if not _same_route_identity(entry.origin, source):
+                return False, False
+            if entry.session_id != expected_session_id:
+                return False, False
+            if int(entry.routing_revision) != int(expected_routing_revision):
+                return False, False
+            if (
+                binding_version == 2
+                and entry.route_instance_id != expected_route_instance_id
+            ):
+                return False, False
+            if not authorize():
+                return False, False
+            return True, bool(claim())
     
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
         """Serialize transcript draining across queue migration boundaries."""
@@ -3481,6 +3787,25 @@ class SessionStore:
                     msg = pending[0]
                 continue
 
+    def append_contextual_transcript_message_once(
+        self, session_id: str, message: Dict[str, Any]
+    ) -> None:
+        """Durably append one contextual-outbox row without a memory retry queue.
+
+        Contextual executions retry from their SQLite outbox. Enqueuing the same
+        row in the generic in-memory retry buffer creates a second, independent
+        replay authority and permits duplicate rows after a crash. The
+        ``contextual-cron:`` message identity is protected by a partial UNIQUE
+        index in ``SessionDB`` and ``append_message`` returns the existing row
+        for a duplicate identity.
+        """
+        message_id = message.get("platform_message_id") or message.get("message_id")
+        if not isinstance(message_id, str) or not message_id.startswith(
+            "contextual-cron:"
+        ):
+            raise ValueError("contextual transcript rows require a stable identity")
+        self._append_transcript_message(session_id, message)
+
     def _append_transcript_message(self, session_id: str, message: Dict[str, Any]) -> None:
         """Write one transcript row. Caller handles retry queuing."""
         self._db.append_message(
@@ -3503,6 +3828,8 @@ class SessionStore:
             # any gateway-side persistence path or the next turn's
             # replay diverges at this row.
             api_content=extract_api_content_sidecar(message),
+            display_kind=message.get("display_kind"),
+            display_metadata=message.get("display_metadata"),
         )
 
     # Maximum in-memory pending messages per session before dropping the
@@ -3565,6 +3892,14 @@ class SessionStore:
             self._dirty_transcripts.pop(session_id, None)
             self._transcript_append_failures.pop(session_id, None)
     
+    def has_platform_message_id_strict(
+        self, session_id: str, platform_message_id: str
+    ) -> bool:
+        """Durably query transcript identity or raise when it cannot be proved."""
+        if not self._db:
+            raise RuntimeError("durable session database is unavailable")
+        return self._db.has_platform_message_id(session_id, platform_message_id)
+
     def has_platform_message_id(
         self, session_id: str, platform_message_id: str
     ) -> bool:
@@ -3635,11 +3970,67 @@ class SessionStore:
             # would otherwise re-trigger the pre-request repair on every
             # request forever — heal it once at the restore boundary.
             return self._db.get_messages_as_conversation(
-                session_id, repair_alternation=True
+                session_id, repair_alternation=True, include_hidden=True
             )
         except Exception as e:
             logger.debug("Could not load messages from DB: %s", e)
             return []
+
+    def load_transcript_with_fence_strict(
+        self, session_id: str
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """Load one self-consistent transcript snapshot and its durable revision."""
+        if not self._db:
+            raise RuntimeError("Session database is unavailable")
+        for _attempt in range(3):
+            before_count, before_revision = self._db.get_transcript_fence(session_id)
+            messages = self._db.get_messages_as_conversation(
+                session_id, include_ancestors=False, include_hidden=True
+            )
+            after_count, after_revision = self._db.get_transcript_fence(session_id)
+            if (
+                before_count == after_count == len(messages)
+                and before_revision == after_revision
+            ):
+                return messages, after_revision
+        raise RuntimeError("Session transcript changed while its causal fence was loaded")
+
+    def get_contextual_transcript_application(
+        self, execution_id: str
+    ) -> Optional[Dict[str, Any]]:
+        if not self._db:
+            raise RuntimeError("Session database is unavailable")
+        return self._db.get_contextual_transcript_application(execution_id)
+
+    def apply_contextual_transcript_outbox(
+        self,
+        *,
+        execution_id: str,
+        session_id: str,
+        entries: List[Dict[str, Any]],
+        base_count: int,
+        base_revision: int,
+        last_prompt_tokens: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Atomically apply a fenced contextual outbox in the canonical state DB."""
+        if not self._db:
+            raise RuntimeError("Session database is unavailable")
+        return self._db.apply_contextual_transcript_outbox(
+            execution_id=execution_id,
+            session_id=session_id,
+            entries=entries,
+            base_count=base_count,
+            base_revision=base_revision,
+            last_prompt_tokens=last_prompt_tokens,
+        )
+
+    def load_transcript_strict(self, session_id: str) -> List[Dict[str, Any]]:
+        """Load the durable transcript or raise when its causal base is unknown."""
+        if not self._db:
+            raise RuntimeError("durable session database is unavailable")
+        return self._db.get_messages_as_conversation(
+            session_id, repair_alternation=False, include_hidden=True
+        )
 
     def rewind_session(self, session_id: str, n: int = 1) -> Optional[Dict[str, Any]]:
         """Back up ``n`` user turns via soft-delete, keeping rows for audit.
@@ -3727,6 +4118,8 @@ def build_session_context(
     if session_entry:
         context.session_key = session_entry.session_key
         context.session_id = session_entry.session_id
+        context.route_instance_id = session_entry.route_instance_id
+        context.routing_revision = int(getattr(session_entry, "routing_revision", 0))
         context.created_at = session_entry.created_at
         context.updated_at = session_entry.updated_at
     

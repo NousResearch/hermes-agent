@@ -594,6 +594,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    result["session_target"] = job.get("session_target", "isolated")
     return result
 
 
@@ -1052,6 +1053,7 @@ def cronjob(
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
+    session_target: Optional[str] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
 ) -> str:
@@ -1140,6 +1142,7 @@ def cronjob(
                     attach_to_session=attach_to_session,
                     monitor_script=_normalize_optional_job_value(monitor_script),
                     monitor_url=_normalize_optional_job_value(monitor_url),
+                    session_target=session_target or "isolated",
                 )
             except CronSchedulerRegistrationError as exc:
                 _partial = exc.to_dict()
@@ -1228,6 +1231,21 @@ def cronjob(
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         if normalized in {"run", "run_now", "trigger"}:
+            # This model tool executes synchronously inside the current agent
+            # turn. A contextual occurrence deliberately waits for that human
+            # turn's adapter guard and session lease, so running it here would
+            # deadlock the caller against itself. Scheduled fires and the
+            # authenticated REST trigger are outside the owning turn and remain
+            # supported.
+            if job.get("session_target", "isolated") == "current":
+                return tool_error(
+                    "A current-session cron job cannot be run synchronously "
+                    "from the cronjob model tool because contextual execution "
+                    "starts only after the active human turn finishes. Let the "
+                    "scheduler fire it, or trigger it through the REST API "
+                    "outside the conversation turn.",
+                    success=False,
+                )
             # Per-run context (#57331, salvaged from #57342/@liuhao1024 and
             # #57360/@ghedeselmabot): `prompt` on the run action is transient
             # context appended to the stored prompt for THIS fire only, never
@@ -1413,6 +1431,8 @@ def cronjob(
                             success=False,
                         )
                 updates["no_agent"] = target_no_agent
+            if session_target is not None:
+                updates["session_target"] = session_target
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -1451,7 +1471,10 @@ action='run' fires the job immediately in the BACKGROUND (like delegate_task): t
 
 To stop a job the user no longer wants: first action='list' to find the job_id, then action='remove' with that job_id. Never guess job IDs — always list first.
 
-Jobs run in a fresh session with no current-chat context, so prompts must be self-contained.
+Jobs run in a fresh isolated session by default, so prompts must be self-contained.
+Set session_target='current' only when the user explicitly wants the scheduled turn
+to continue this live conversation; the gateway captures the current routing key and
+fails closed if the session is reset, missing, or no longer authorized.
 If skills are provided on create, the future cron run loads those skills in order, then follows the prompt as the task instruction.
 On update, passing skills=[] clears attached skills.
 
@@ -1552,6 +1575,12 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "boolean",
                 "description": "When True, this job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context instead of asking 'what is that?'. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread is opened for the job and its replies; on DM-only platforms (WhatsApp/Signal) the brief is mirrored into the origin DM session. Use this for conversational recurring jobs the user will reply to — daily briefings, reminders that kick off follow-up work. Leave unset for fire-and-forget alerts/watchdogs. Overrides the global cron.mirror_delivery config for this one job. Only the origin chat is touched (never fan-out targets); no effect when deliver='local'."
             },
+            "session_target": {
+                "type": "string",
+                "enum": ["isolated", "current"],
+                "default": "isolated",
+                "description": "Opt in to the live conversation with 'current'. The gateway captures the current stable session key; callers cannot provide one. Omit for the legacy isolated cron session. Contextual jobs must be model-backed, use origin/local delivery, and cannot set skills, workdir, context_from, enabled_toolsets, model/provider/base_url, monitor_script/monitor_url, or attach_to_session."
+            },
         },
         "required": ["action"]
     }
@@ -1611,6 +1640,7 @@ registry.register(
         no_agent=args.get("no_agent"),
         monitor_script=args.get("monitor_script"),
         monitor_url=args.get("monitor_url"),
+        session_target=args.get("session_target"),
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
     ),

@@ -470,6 +470,7 @@ def init_agent(
     max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
+    allowed_tool_names: List[str] | set[str] | frozenset[str] | None = None,
     save_trajectories: bool = False,
     verbose_logging: bool = False,
     quiet_mode: bool = False,
@@ -532,6 +533,7 @@ def init_agent(
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
     requested_provider: str = None,
+    contextual_execution: bool = False,
 ):
     """
     Initialize the AI Agent.
@@ -620,6 +622,14 @@ def init_agent(
     # flag is the explicit single-switch off for both review paths.
     agent.skip_background_review = bool(skip_background_review)
     agent.pass_session_id = pass_session_id
+    # Private fail-closed execution mode for gateway-owned contextual cron.
+    # Provider middleware and alternate runtimes also consult this flag.
+    agent._contextual_execution = bool(contextual_execution)
+    if agent._contextual_execution:
+        # Contextual V1 is bound to the admitted direct provider route. Drop
+        # fallback configuration before both init-time recovery and runtime
+        # fallback-chain construction, regardless of which host created us.
+        fallback_model = None  # type: ignore[assignment]
     agent.log_prefix_chars = log_prefix_chars
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
     # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -842,6 +852,9 @@ def init_agent(
     # Store toolset filtering options
     agent.enabled_toolsets = enabled_toolsets
     agent.disabled_toolsets = disabled_toolsets
+    agent.allowed_tool_names = (
+        frozenset(allowed_tool_names) if allowed_tool_names is not None else None
+    )
     
     # Model response configuration
     agent.max_tokens = max_tokens  # None = use model default
@@ -2426,11 +2439,12 @@ def init_agent(
     _selected_engine = None
     _copy_failed = False
     _engine_name = "compressor"  # default
-    try:
-        _ctx_cfg = _agent_cfg.get("context", {}) if isinstance(_agent_cfg, dict) else {}
-        _engine_name = _ctx_cfg.get("engine", "compressor") or "compressor"
-    except Exception:
-        pass
+    if not agent._contextual_execution:
+        try:
+            _ctx_cfg = _agent_cfg.get("context", {}) if isinstance(_agent_cfg, dict) else {}
+            _engine_name = _ctx_cfg.get("engine", "compressor") or "compressor"
+        except Exception:
+            pass
 
     if _engine_name != "compressor":
         # Try loading from plugins/context_engine/<name>/
@@ -2662,8 +2676,31 @@ def init_agent(
             agent._context_engine_tool_names.add(_tname)
             _existing_tool_names.add(_tname)
 
+    # Final-schema capability gate. This runs after dynamic memory/context
+    # engine schemas were appended, so plugin or provider-added tools cannot
+    # bypass an unattended execution policy by appearing after toolset
+    # resolution.
+    if agent.allowed_tool_names is not None:
+        agent.tools = [
+            schema
+            for schema in (agent.tools or [])
+            if isinstance(schema, dict)
+            and isinstance(schema.get("function"), dict)
+            and schema["function"].get("name") in agent.allowed_tool_names
+        ]
+        agent.valid_tool_names = {
+            schema["function"]["name"] for schema in agent.tools
+        }
+        agent._context_engine_tool_names.intersection_update(
+            agent.allowed_tool_names
+        )
+
     # Notify context engine of session start
-    if hasattr(agent, "context_compressor") and agent.context_compressor:
+    if (
+        not agent._contextual_execution
+        and hasattr(agent, "context_compressor")
+        and agent.context_compressor
+    ):
         try:
             agent.context_compressor.on_session_start(
                 agent.session_id,

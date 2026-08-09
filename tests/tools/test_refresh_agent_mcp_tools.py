@@ -27,6 +27,34 @@ def _agent(tool_names, *, enabled=None, disabled=None):
     return a
 
 
+def test_refresh_keeps_agent_capability_allowlist_fail_closed(monkeypatch):
+    """Late plugin/MCP discovery cannot widen an unattended agent's tools."""
+    agent = _agent(["read_file"], enabled=["file", "web"])
+    agent.allowed_tool_names = frozenset({"read_file", "web_search"})
+
+    import model_tools
+
+    monkeypatch.setattr(
+        model_tools,
+        "get_tool_definitions",
+        lambda **kw: [
+            _tool("read_file"),
+            _tool("web_search"),
+            _tool("terminal"),
+            _tool("mcp_late_side_channel"),
+        ],
+    )
+
+    added = mcp_tool.refresh_agent_mcp_tools(agent)
+
+    assert added == {"web_search"}
+    assert agent.valid_tool_names == {"read_file", "web_search"}
+    assert [tool["function"]["name"] for tool in agent.tools] == [
+        "read_file",
+        "web_search",
+    ]
+
+
 def test_refresh_adds_late_landing_tools(monkeypatch):
     """A server that registers after build → its tools land in the snapshot."""
     agent = _agent(["read_file", "terminal"])

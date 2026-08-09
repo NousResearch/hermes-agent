@@ -201,6 +201,234 @@ class TestConnectionLifecycle:
 
 
 # =========================================================================
+# Contextual transcript causal fencing
+# =========================================================================
+
+
+class TestContextualTranscriptCausalFence:
+    @staticmethod
+    def _entries(execution_id="exec-1"):
+        return [
+            {
+                "role": "user",
+                "content": "hidden prompt",
+                "message_id": f"contextual-cron:{execution_id}:0",
+                "display_kind": "hidden",
+            },
+            {
+                "role": "assistant",
+                "content": "scheduled answer",
+                "message_id": f"contextual-cron:{execution_id}:1",
+            },
+        ]
+
+    def test_same_count_rewrite_invalidates_the_durable_revision(self, db):
+        from hermes_state import ContextualTranscriptCASMismatch
+
+        db.create_session(session_id="s1", source="telegram")
+        db.append_message("s1", role="user", content="original user")
+        db.append_message("s1", role="assistant", content="original answer")
+        base_count, base_revision = db.get_transcript_fence("s1")
+
+        db.replace_messages(
+            "s1",
+            [
+                {"role": "user", "content": "rewritten user"},
+                {"role": "assistant", "content": "rewritten answer"},
+            ],
+        )
+
+        assert db.get_transcript_fence("s1")[0] == base_count
+        with pytest.raises(ContextualTranscriptCASMismatch, match="revision"):
+            db.apply_contextual_transcript_outbox(
+                execution_id="exec-rewrite",
+                session_id="s1",
+                entries=self._entries("exec-rewrite"),
+                base_count=base_count,
+                base_revision=base_revision,
+            )
+
+    def test_atomic_receipt_survives_later_human_rows_and_preserves_hidden_kind(self, db):
+        db.create_session(session_id="s1", source="telegram")
+        db.append_message("s1", role="user", content="existing")
+        base_count, base_revision = db.get_transcript_fence("s1")
+        entries = self._entries()
+
+        first = db.apply_contextual_transcript_outbox(
+            execution_id="exec-1",
+            session_id="s1",
+            entries=entries,
+            base_count=base_count,
+            base_revision=base_revision,
+            last_prompt_tokens=77,
+        )
+        db.append_message("s1", role="user", content="later human")
+        replay = db.apply_contextual_transcript_outbox(
+            execution_id="exec-1",
+            session_id="s1",
+            entries=entries,
+            base_count=base_count,
+            base_revision=base_revision,
+            last_prompt_tokens=77,
+        )
+
+        assert first["status"] == "applied"
+        assert replay["status"] == "already_applied"
+        changed_entries = [dict(entry) for entry in entries]
+        changed_entries[1]["content"] = "tampered answer"
+        from hermes_state import ContextualTranscriptCASMismatch
+
+        with pytest.raises(ContextualTranscriptCASMismatch, match="receipt"):
+            db.apply_contextual_transcript_outbox(
+                execution_id="exec-1",
+                session_id="s1",
+                entries=changed_entries,
+                base_count=base_count,
+                base_revision=base_revision,
+                last_prompt_tokens=77,
+            )
+        messages = db.get_messages_as_conversation("s1", include_hidden=True)
+        assert [row["content"] for row in messages] == [
+            "existing",
+            "hidden prompt",
+            "scheduled answer",
+            "later human",
+        ]
+        assert messages[1]["display_kind"] == "hidden"
+        assert [
+            row["content"] for row in db.get_messages_as_conversation("s1")
+        ] == ["existing", "scheduled answer", "later human"]
+        receipt = db.get_contextual_transcript_application("exec-1")
+        assert receipt is not None
+        assert receipt["last_prompt_tokens"] == 77
+
+    def test_ended_session_rejects_fence_and_new_atomic_application(self, db):
+        from hermes_state import ContextualTranscriptCASMismatch
+
+        db.create_session(session_id="s1", source="telegram")
+        db.append_message("s1", role="user", content="before")
+        base_count, base_revision = db.get_transcript_fence("s1")
+        db.end_session("s1", end_reason="session_reset")
+        entries = [
+            {
+                "role": "user",
+                "content": "must not land",
+                "platform_message_id": "contextual-cron:exec-ended:0",
+            }
+        ]
+
+        with pytest.raises(KeyError, match="ended session"):
+            db.get_transcript_fence("s1")
+        with pytest.raises(ContextualTranscriptCASMismatch, match="no longer active"):
+            db.apply_contextual_transcript_outbox(
+                execution_id="exec-ended",
+                session_id="s1",
+                entries=entries,
+                base_count=base_count,
+                base_revision=base_revision,
+            )
+
+        assert db.get_contextual_transcript_application("exec-ended") is None
+        assert [
+            message["content"] for message in db.get_messages_as_conversation("s1")
+        ] == ["before"]
+
+    def test_multirow_application_is_contiguous_against_an_ordinary_writer(self, db):
+        import threading
+
+        db.create_session(session_id="s1", source="telegram")
+        base_count, base_revision = db.get_transcript_fence("s1")
+        paused = threading.Event()
+        release = threading.Event()
+        errors = []
+        peer = SessionDB(db_path=db.db_path)
+
+        def pause_after_first_row():
+            paused.set()
+            if not release.wait(timeout=5):
+                raise RuntimeError("test barrier timed out")
+            return 0
+
+        assert db._conn is not None
+        assert peer._conn is not None
+        db._conn.create_function("pause_contextual_apply", 0, pause_after_first_row)
+        peer._conn.create_function("pause_contextual_apply", 0, lambda: 0)
+        db._conn.execute(
+            """CREATE TRIGGER pause_first_contextual AFTER INSERT ON messages
+               WHEN NEW.platform_message_id = 'contextual-cron:exec-race:0'
+               BEGIN SELECT pause_contextual_apply(); END"""
+        )
+
+        def apply_outbox():
+            try:
+                db.apply_contextual_transcript_outbox(
+                    execution_id="exec-race",
+                    session_id="s1",
+                    entries=self._entries("exec-race"),
+                    base_count=base_count,
+                    base_revision=base_revision,
+                )
+            except BaseException as exc:
+                errors.append(exc)
+
+        def append_human():
+            try:
+                peer.append_message("s1", role="user", content="racing human")
+            except BaseException as exc:
+                errors.append(exc)
+
+        apply_thread = threading.Thread(target=apply_outbox)
+        human_thread = threading.Thread(target=append_human)
+        try:
+            apply_thread.start()
+            assert paused.wait(timeout=5)
+            human_thread.start()
+            assert human_thread.is_alive()
+            release.set()
+            apply_thread.join(timeout=5)
+            human_thread.join(timeout=5)
+        finally:
+            release.set()
+            peer.close()
+
+        assert not errors
+        assert not apply_thread.is_alive()
+        assert not human_thread.is_alive()
+        assert [
+            row["content"]
+            for row in db.get_messages_as_conversation("s1", include_hidden=True)
+        ] == [
+            "hidden prompt",
+            "scheduled answer",
+            "racing human",
+        ]
+        assert [
+            row["content"] for row in db.get_messages_as_conversation("s1")
+        ] == ["scheduled answer", "racing human"]
+
+    def test_multirow_application_rolls_back_without_a_receipt(self, db):
+        db.create_session(session_id="s1", source="telegram")
+        base_count, base_revision = db.get_transcript_fence("s1")
+        db._conn.execute(
+            """CREATE TRIGGER reject_second_contextual BEFORE INSERT ON messages
+               WHEN NEW.platform_message_id = 'contextual-cron:exec-fail:1'
+               BEGIN SELECT RAISE(ABORT, 'injected second-row failure'); END"""
+        )
+
+        with pytest.raises(sqlite3.IntegrityError, match="second-row"):
+            db.apply_contextual_transcript_outbox(
+                execution_id="exec-fail",
+                session_id="s1",
+                entries=self._entries("exec-fail"),
+                base_count=base_count,
+                base_revision=base_revision,
+            )
+
+        assert db.get_messages_as_conversation("s1") == []
+        assert db.get_contextual_transcript_application("exec-fail") is None
+
+
+# =========================================================================
 # Session lifecycle
 # =========================================================================
 
@@ -1269,8 +1497,8 @@ class TestBulkDeleteSessions:
         bulk-delete CLI / web flows don't leak files."""
         db.create_session(session_id="s1", source="cli")
         db.create_session(session_id="s2", source="cli")
-        (tmp_path / "s1.jsonl").write_text("")
-        (tmp_path / "s2.json").write_text("{}")
+        (tmp_path / "s1.jsonl").write_text("", encoding="utf-8")
+        (tmp_path / "s2.json").write_text("{}", encoding="utf-8")
 
         deleted = db.delete_sessions(["s1", "s2"], sessions_dir=tmp_path)
         assert deleted == 2
@@ -1333,9 +1561,9 @@ class TestDeleteEmptySessions:
         db.end_session("empty_with_dump", end_reason="done")
 
         dump = tmp_path / "request_dump_empty_with_dump_0.json"
-        dump.write_text("{}")
+        dump.write_text("{}", encoding="utf-8")
         transcript = tmp_path / "empty_with_dump.jsonl"
-        transcript.write_text("")
+        transcript.write_text("", encoding="utf-8")
 
         deleted = db.delete_empty_sessions(sessions_dir=tmp_path)
         assert deleted == 1
@@ -2419,11 +2647,15 @@ class TestAutoMaintenance:
         db.create_session(session_id="new", source="cli")  # active
 
         # Transcript files mimicking real gateway/CLI layout
-        (sessions_dir / "old1.json").write_text("{}")
-        (sessions_dir / "old1.jsonl").write_text("{}\n")
-        (sessions_dir / "old2.jsonl").write_text("{}\n")
-        (sessions_dir / "request_dump_old1_001.json").write_text("{}")
-        (sessions_dir / "new.jsonl").write_text("{}\n")  # active, must survive
+        (sessions_dir / "old1.json").write_text("{}", encoding="utf-8")
+        (sessions_dir / "old1.jsonl").write_text("{}\n", encoding="utf-8")
+        (sessions_dir / "old2.jsonl").write_text("{}\n", encoding="utf-8")
+        (sessions_dir / "request_dump_old1_001.json").write_text(
+            "{}", encoding="utf-8"
+        )
+        (sessions_dir / "new.jsonl").write_text(
+            "{}\n", encoding="utf-8"
+        )  # active, must survive
 
         result = db.maybe_auto_prune_and_vacuum(
             retention_days=90, sessions_dir=sessions_dir
@@ -4447,7 +4679,7 @@ class TestPerformancePragmasEndToEnd:
         home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(home))
         if config_text is not None:
-            (home / "config.yaml").write_text(config_text)
+            (home / "config.yaml").write_text(config_text, encoding="utf-8")
         return home
 
     def test_configured_pragmas_reach_all_connection_types(

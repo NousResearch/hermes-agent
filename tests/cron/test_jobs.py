@@ -20,6 +20,7 @@ from cron.jobs import (
     mark_job_run,
     advance_next_run,
     claim_dispatch,
+    claim_contextual_occurrence,
     claim_job_for_fire,
     heartbeat_run_claim,
     get_due_jobs,
@@ -73,6 +74,36 @@ class TestParseSchedule:
         result = parse_schedule("every 2h")
         assert result["kind"] == "interval"
         assert result["minutes"] == 120
+
+    def test_legacy_string_interval_survives_builtin_and_external_paths(
+        self, tmp_cron_dir
+    ):
+        fire_at = "2000-01-01T00:00:00+00:00"
+        legacy = {
+            "id": "legacy-string",
+            "name": "legacy",
+            "prompt": "check",
+            "schedule": "every 5m",
+            "next_run_at": fire_at,
+            "enabled": True,
+            "repeat": {"times": 0, "completed": 0},
+        }
+        save_jobs([legacy])
+
+        assert [row["id"] for row in get_due_jobs()] == ["legacy-string"]
+        assert load_jobs()[0]["schedule"] == "every 5m"
+        mark_job_run("legacy-string", True)
+        persisted = load_jobs()[0]
+        assert persisted["schedule"] == "every 5m"
+        assert persisted["enabled"] is True
+        assert persisted["next_run_at"] is not None
+
+        legacy["next_run_at"] = fire_at
+        save_jobs([legacy])
+        assert claim_job_for_fire("legacy-string") is True
+        external = load_jobs()[0]
+        assert external["schedule"] == "every 5m"
+        assert external["next_run_at"] != fire_at
 
 
     def test_cron_expression(self):
@@ -986,7 +1017,7 @@ class TestSaveJobOutput:
     def test_creates_output_file(self, tmp_cron_dir):
         output_file = save_job_output("test123", "# Results\nEverything ok.")
         assert output_file.exists()
-        assert output_file.read_text() == "# Results\nEverything ok."
+        assert output_file.read_text(encoding="utf-8") == "# Results\nEverything ok."
         assert "test123" in str(output_file)
 
 
@@ -998,7 +1029,7 @@ class TestCronOutputRetention:
         d.mkdir(parents=True, exist_ok=True)
         names = [f"2026-06-25_10-00-{i:02d}.md" for i in range(count)]
         for n in names:
-            (d / n).write_text("x")
+            (d / n).write_text("x", encoding="utf-8")
         return names
 
     def test_prune_keeps_newest_n(self, tmp_path):
@@ -1032,6 +1063,30 @@ class TestClaimDispatch:
         assert claim_dispatch("os1") is True
         # Persisted BEFORE any side effect — survives a crash.
         assert load_jobs()[0]["repeat"]["completed"] == 1
+
+    def test_durable_one_shot_claim_does_not_expire_while_run_is_unacknowledged(
+        self, tmp_cron_dir
+    ):
+        job = self._oneshot(times=2, completed=0)
+        job["session_target"] = "current"
+        job["schedule"]["run_at"] = "2000-01-01T00:00:00+00:00"
+        job["next_run_at"] = "2000-01-01T00:00:00+00:00"
+        save_jobs([job])
+
+        assert [row["id"] for row in get_due_jobs()] == ["os1"]
+        assert claim_contextual_occurrence(
+            "os1",
+            execution_id="execution-1",
+            expected_next_run_at="2000-01-01T00:00:00+00:00",
+        )
+        jobs = load_jobs()
+        jobs[0]["run_claim"]["at"] = "2000-01-01T00:00:00+00:00"
+        save_jobs(jobs)
+
+        assert get_due_jobs() == []
+        persisted = load_jobs()[0]
+        assert persisted["repeat"]["completed"] == 0
+        assert persisted["run_claim"]["durable"] is True
 
     def test_already_dispatched_oneshot_is_removed(self, tmp_cron_dir):
         # A prior tick claimed (completed==times) then died before mark_job_run

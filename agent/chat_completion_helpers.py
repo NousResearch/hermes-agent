@@ -2311,6 +2311,11 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     summary_call_outcome = "failed"
 
     def _managed_summary_call(request, callback, *, retry_count: int):
+        if getattr(agent, "_contextual_execution", False) is True:
+            # Contextual turns are admitted to one concrete provider route and
+            # must not re-enter the deferred Relay plane in the finalizer.
+            return callback(request)
+
         from agent import relay_llm
 
         return relay_llm.execute_current(

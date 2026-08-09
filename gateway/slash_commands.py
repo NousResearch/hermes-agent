@@ -31,7 +31,7 @@ from typing import Any, Optional, Union
 
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
-from agent.turn_context import extract_api_content_sidecar
+from agent.turn_context import clone_transcript_message_for_branch
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import (
@@ -4808,27 +4808,7 @@ class GatewaySlashCommandsMixin:
         try:
             await self._session_db.append_messages_batch(
                 new_session_id,
-                [
-                    {
-                        "role": msg.get("role", "user"),
-                        "content": msg.get("content"),
-                        "tool_name": msg.get("tool_name") or msg.get("name"),
-                        "tool_calls": msg.get("tool_calls"),
-                        "tool_call_id": msg.get("tool_call_id"),
-                        "finish_reason": msg.get("finish_reason"),
-                        "reasoning": msg.get("reasoning"),
-                        "reasoning_content": msg.get("reasoning_content"),
-                        "reasoning_details": msg.get("reasoning_details"),
-                        "codex_reasoning_items": msg.get("codex_reasoning_items"),
-                        "codex_message_items": msg.get("codex_message_items"),
-                        # Keep the api_content sidecar so the branch's first turn
-                        # replays the parent's exact wire bytes (warm provider
-                        # prompt cache) instead of a full cold prefill.
-                        "api_content": extract_api_content_sidecar(msg),
-                        "timestamp": msg.get("timestamp"),
-                    }
-                    for msg in history
-                ],
+                [clone_transcript_message_for_branch(msg) for msg in history],
                 chunk_rows=500,
             )
         except Exception:

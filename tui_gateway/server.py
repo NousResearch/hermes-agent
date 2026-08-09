@@ -37,6 +37,7 @@ from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
 from agent.skill_commands import describe_skill_invocation
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+from agent.turn_context import clone_transcript_message_for_branch
 from tui_gateway import git_probe
 from tui_gateway.turn_marker import (
     clear_turn_marker,
@@ -2860,17 +2861,7 @@ def _persist_branch_seed(session: dict) -> None:
             # _branch_seed_persisted unset).
             db.append_messages_batch(
                 key,
-                [
-                    {
-                        "role": msg.get("role", "user"),
-                        "content": msg.get("content"),
-                        # Preserve the parent's original message timestamps —
-                        # append_message would otherwise stamp time.time() and the
-                        # branch's copied history would all appear authored "now".
-                        "timestamp": msg.get("timestamp"),
-                    }
-                    for msg in seed
-                ],
+                [clone_transcript_message_for_branch(msg) for msg in seed],
                 chunk_rows=500,
             )
             session["_branch_seed_persisted"] = True

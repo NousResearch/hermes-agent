@@ -2390,6 +2390,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_channel_continuity_note,
     build_session_key,
+    canonical_route_coordinates,
     is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
 )
@@ -3612,6 +3613,24 @@ def _is_gateway_hidden_reasoning_incomplete_turn(agent_result: dict) -> bool:
     return not final_response or final_response == error_text
 
 
+def _apply_contextual_transcript_visibility(
+    entry: Dict[str, Any],
+    *,
+    contextual: bool,
+    intentional_silence: bool,
+) -> Dict[str, Any]:
+    """Apply the public-display policy for one generated gateway row.
+
+    Contextual user prompts are always privileged internal input.  When the
+    typed turn outcome is intentional silence/no-action, every generated row
+    is also internal: assistant tool-call envelopes and tool results can carry
+    prompt-derived arguments or output even though no final answer is shown.
+    """
+    if contextual and (intentional_silence or entry.get("role") == "user"):
+        entry["display_kind"] = "hidden"
+    return entry
+
+
 def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     """Return True only when a gateway turn really completed successfully.
 
@@ -4557,6 +4576,7 @@ class TurnRunner:
                 source=ctx.source,
                 session_key=ctx.session_key,
                 user_config=ctx.user_config,
+                ignore_one_turn_override=ctx.suppress_output,
             )
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
@@ -4608,7 +4628,7 @@ class TurnRunner:
         _want_stream_deltas = _streaming_enabled
         _want_interim_messages = ctx.interim_assistant_messages_enabled
         _want_interim_consumer = _want_interim_messages
-        if _want_stream_deltas or _want_interim_consumer:
+        if not ctx.suppress_output and (_want_stream_deltas or _want_interim_consumer):
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
                 _adapter = self._runner._adapter_for_source(ctx.source)
@@ -4676,6 +4696,21 @@ class TurnRunner:
             )
 
         turn_route = self._runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
+        if ctx.suppress_output:
+            contextual_runtime = dict(turn_route.get("runtime") or {})
+            api_mode = str(contextual_runtime.get("api_mode") or "").strip().lower()
+            provider = str(contextual_runtime.get("provider") or "").strip().lower()
+            base_url = str(contextual_runtime.get("base_url") or "").strip().lower()
+            if (
+                api_mode == "codex_app_server"
+                or contextual_runtime.get("command")
+                or contextual_runtime.get("acp_command")
+                or provider in {"moa", "copilot-acp"}
+                or base_url.startswith(("acp://", "acp+tcp://"))
+            ):
+                raise RuntimeError(
+                    "Contextual execution requires a direct provider runtime."
+                )
 
         # Per-platform skip_context_files — messaging platforms can opt out
         # of filesystem-heavy context-file discovery (SOUL.md, AGENTS.md,
@@ -4703,8 +4738,16 @@ class TurnRunner:
         )
         agent = None
         reused_cached_agent = False
-        _cache_lock = getattr(self._runner, "_agent_cache_lock", None)
-        _cache = getattr(self._runner, "_agent_cache", None)
+        _cache_allowed = not ctx.suppress_output and bool(
+            ctx.execution_policy is None
+            or getattr(ctx.execution_policy, "use_agent_cache", True)
+        )
+        _cache_lock = (
+            getattr(self._runner, "_agent_cache_lock", None)
+            if _cache_allowed
+            else None
+        )
+        _cache = getattr(self._runner, "_agent_cache", None) if _cache_allowed else None
 
         # Peek at the cached entry's snapshot session_id (if any) so we can
         # check, OUTSIDE the cache lock, whether THAT session_id is a DEAD
@@ -4911,6 +4954,7 @@ class TurnRunner:
                 verbose_logging=False,
                 enabled_toolsets=ctx.enabled_toolsets,
                 disabled_toolsets=ctx.disabled_toolsets,
+                allowed_tool_names=ctx.allowed_tool_names,
                 ephemeral_system_prompt=combined_ephemeral or None,
                 prefill_messages=self._runner._prefill_messages or None,
                 reasoning_config=reasoning_config,
@@ -4932,8 +4976,15 @@ class TurnRunner:
                 chat_type=ctx.source.chat_type,
                 thread_id=ctx.source.thread_id,
                 gateway_session_key=ctx.session_key,
-                session_db=getattr(self._runner._session_db, "_db", self._runner._session_db),
-                # Reload from disk — do not reuse the startup snapshot (#60955).
+                session_db=(
+                    None
+                    if ctx.suppress_output
+                    else getattr(self._runner._session_db, "_db", self._runner._session_db)
+                ),
+                skip_memory=bool(ctx.suppress_output),
+                contextual_execution=bool(ctx.suppress_output),
+                # Always refresh the ordinary gateway chain at construction.
+                # create_agent() centrally discards it for contextual turns.
                 fallback_model=self._runner._refresh_fallback_model(),
                 skip_context_files=skip_context_files,
                 # Keep the persona even with minimal context: soul identity is
@@ -4963,7 +5014,7 @@ class TurnRunner:
         # who set thinking_progress:true but kept tool_progress:off got a
         # None callback — so _thinking scratch bubbles never relayed even
         # though the progress queue was created for them.
-        agent.tool_progress_callback = (
+        agent.tool_progress_callback = (None if ctx.suppress_output else (
             ctx.progress_callback
             if (
                 ctx.needs_progress_queue
@@ -4971,16 +5022,22 @@ class TurnRunner:
                 or ctx._live_status_adapter is not None
             )
             else None
-        )
+        ))
         # Discord voice verbal-ack hook (fires once per turn on first tool
         # call; armed only when in a voice channel with the mixer running).
-        agent.tool_start_callback = (
+        agent.tool_start_callback = (None if ctx.suppress_output else (
             ctx.voice_ack_callback if ctx._voice_ack_guild[0] is not None else None
+        ))
+        agent.step_callback = (
+            ctx._step_callback_sync
+            if not ctx.suppress_output and ctx._hooks_ref.loaded_hooks
+            else None
         )
-        agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
-        agent.stream_delta_callback = _stream_delta_cb
-        agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
-        agent.status_callback = ctx._status_callback_sync
+        agent.stream_delta_callback = (None if ctx.suppress_output else _stream_delta_cb)
+        agent.interim_assistant_callback = (None if ctx.suppress_output else (
+            _interim_assistant_cb if _want_interim_messages else None
+        ))
+        agent.status_callback = (None if ctx.suppress_output else ctx._status_callback_sync)
         # Credits / out-of-band notices (usage bands, depletion, restored).
         # Messaging has no persistent status bar, so each notice is a
         # standalone push: render to a single plaintext line and deliver via
@@ -5010,9 +5067,9 @@ class TurnRunner:
                 log_message="notice_callback delivery scheduling error",
             )
 
-        agent.notice_callback = _notice_callback_sync
+        agent.notice_callback = None if ctx.suppress_output else _notice_callback_sync
         agent.notice_clear_callback = None
-        agent.event_callback = ctx._event_callback_sync
+        agent.event_callback = None if ctx.suppress_output else ctx._event_callback_sync
         agent.reasoning_config = reasoning_config
         agent.service_tier = self._runner._service_tier
         agent.request_overrides = turn_route.get("request_overrides") or {}
@@ -5021,8 +5078,12 @@ class TurnRunner:
         # _handle_message_with_agent (auto-reset note, first-contact
         # intro, voice-channel change).  Assigned unconditionally so a
         # reused cached agent never replays a stale note.
-        agent._gateway_turn_context_notes = "\n\n".join(
-            self._runner._consume_pending_turn_sidecar_notes(ctx.session_key)
+        agent._gateway_turn_context_notes = (
+            ""
+            if ctx.suppress_output
+            else "\n\n".join(
+                self._runner._consume_pending_turn_sidecar_notes(ctx.session_key)
+            )
         )
 
         _bg_review_release = threading.Event()
@@ -5062,10 +5123,10 @@ class TurnRunner:
                         return
             _deliver_bg_review_message(message)
 
-        agent.background_review_callback = _bg_review_send
+        agent.background_review_callback = None if ctx.suppress_output else _bg_review_send
         # Register the release hook on the adapter so base.py's finally
         # block can fire it after delivering the main response.
-        if ctx._status_adapter and ctx.session_key:
+        if not ctx.suppress_output and ctx._status_adapter and ctx.session_key:
             if getattr(type(ctx._status_adapter), "register_post_delivery_callback", None) is not None:
                 ctx._status_adapter.register_post_delivery_callback(
                     ctx.session_key,
@@ -5178,12 +5239,12 @@ class TurnRunner:
                 return f"[user did not respond within {int(timeout / 60)}m]"
             return response
 
-        agent.clarify_callback = _clarify_callback_sync
+        agent.clarify_callback = None if ctx.suppress_output else _clarify_callback_sync
 
         # Show assistant thinking between tool calls — independent of
         # tool_progress mode. Mattermost needs an explicit per-platform
         # opt-in so global scratch-text display does not leak into threads.
-        agent.thinking_progress = ctx._thinking_enabled
+        agent.thinking_progress = False if ctx.suppress_output else ctx._thinking_enabled
         # Store agent reference for interrupt support
         ctx.agent_holder[0] = agent
         # Wire the platform thread-rename lane onto the agent, because the
@@ -5361,7 +5422,11 @@ class TurnRunner:
 
         # Prepend pending model switch note so the model knows about the switch
         _pending_notes = getattr(self._runner, '_pending_model_notes', {})
-        _msn = _pending_notes.pop(ctx.session_key, None) if ctx.session_key else None
+        _msn = (
+            _pending_notes.pop(ctx.session_key, None)
+            if ctx.session_key and not ctx.suppress_output
+            else None
+        )
         if _msn:
             ctx.message = _msn + "\n\n" + ctx.message
 
@@ -5394,7 +5459,7 @@ class TurnRunner:
         )
 
         _resume_entry = None
-        if ctx.session_key:
+        if ctx.session_key and not ctx.suppress_output:
             try:
                 _resume_entry = self._runner.session_store._entries.get(ctx.session_key)
             except Exception:
@@ -5430,7 +5495,7 @@ class TurnRunner:
             and _interruption_is_fresh
         )
 
-        if _is_resume_pending:
+        if _is_resume_pending and not ctx.suppress_output:
             _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
             _persist_user_message_override = ctx.message
             # The empty-message case is the auto-resume startup turn
@@ -5448,7 +5513,7 @@ class TurnRunner:
             ctx.message = build_resume_recovery_note(
                 _reason, ctx.message, interactive=_interactive_resume,
             )
-        elif _has_fresh_tool_tail:
+        elif _has_fresh_tool_tail and not ctx.suppress_output:
             _persist_user_message_override = ctx.message
             ctx.message = (
                 "[System note: A new message has arrived. The conversation "
@@ -5464,7 +5529,12 @@ class TurnRunner:
         # clear. Nothing was written to the transcript out-of-band, so
         # message alternation stays intact.
         _pending_notes = getattr(self._runner, "_pending_skills_reload_notes", None)
-        if _pending_notes and ctx.session_key and ctx.session_key in _pending_notes:
+        if (
+            not ctx.suppress_output
+            and _pending_notes
+            and ctx.session_key
+            and ctx.session_key in _pending_notes
+        ):
             _srn = _pending_notes.pop(ctx.session_key, None)
             if _srn:
                 ctx.message = _srn + "\n\n" + ctx.message
@@ -5498,13 +5568,18 @@ class TurnRunner:
 
         _approval_session_key = ctx.session_key or ""
         _approval_session_token = set_current_session_key(_approval_session_key)
-        register_gateway_notify(_approval_session_key, _approval_notify_sync)
+        if not ctx.suppress_output:
+            register_gateway_notify(_approval_session_key, _approval_notify_sync)
         try:
             # If _prepare_inbound_message_text buffered image paths for native
             # attachment, wrap the user turn as an OpenAI-style multimodal
             # content list. Consume-and-clear so subsequent turns on the same
             # runner instance don't re-attach stale images.
-            _native_imgs = self._runner._consume_pending_native_image_paths(ctx.session_key)
+            _native_imgs = (
+                []
+                if ctx.suppress_output
+                else self._runner._consume_pending_native_image_paths(ctx.session_key)
+            )
             if _native_imgs:
                 try:
                     from agent.image_routing import build_native_content_parts
@@ -5547,17 +5622,21 @@ class TurnRunner:
                 _conversation_kwargs["moa_config"] = ctx.moa_config
             if _persist_user_timestamp_override is not None:
                 _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
+            if ctx.persist_user_display_kind is not None:
+                _conversation_kwargs["persist_user_display_kind"] = ctx.persist_user_display_kind
             result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
         finally:
-            unregister_gateway_notify(_approval_session_key)
-            # Cancel any pending clarify entries so blocked agent
-            # threads don't hang past the end of the run (interrupt,
-            # completion, gateway shutdown).  Idempotent.
-            try:
-                from tools.clarify_gateway import clear_session as _clear_clarify_session
-                _clear_clarify_session(_approval_session_key)
-            except Exception:
-                pass
+            if not ctx.suppress_output:
+                unregister_gateway_notify(_approval_session_key)
+            # Cancel only clarify entries owned by an interactive run. A
+            # contextual turn cannot register clarify and must not consume
+            # pending human-turn state left on the same stable session key.
+            if not ctx.suppress_output:
+                try:
+                    from tools.clarify_gateway import clear_session as _clear_clarify_session
+                    _clear_clarify_session(_approval_session_key)
+                except Exception:
+                    pass
             reset_current_session_key(_approval_session_token)
         ctx.result_holder[0] = result
 
@@ -5600,80 +5679,23 @@ class TurnRunner:
         _compacted_in_place = bool(getattr(agent, "_last_compaction_in_place", False)) if agent else False
         agent_session_id = getattr(agent, 'session_id', ctx.session_id) if agent else ctx.session_id
         if agent and ctx.session_key and agent_session_id != ctx.session_id:
+            if ctx.suppress_output:
+                # Contextual admission is immutable. Never publish a compression
+                # child into the shared route; the durable outbox stays bound to
+                # the admitted physical session and this occurrence fails closed.
+                raise RuntimeError(
+                    "Contextual execution attempted to rotate its admitted session."
+                )
             _session_was_split = True
             logger.info(
                 "Session split detected: %s → %s (compression)",
                 ctx.session_id, agent_session_id,
             )
-            entry = self._runner.session_store._entries.get(ctx.session_key)
-            _session_split_entry_persisted = False
-            if entry:
-                entry_session_id = getattr(entry, "session_id", None)
-                if not ctx._run_still_current():
-                    logger.info(
-                        "Skipping session split sync for stale run %s — "
-                        "generation %s is no longer current",
-                        ctx.session_key or "?",
-                        ctx.run_generation,
-                    )
-                elif entry_session_id == agent_session_id:
-                    _session_split_entry_persisted = True
-                elif entry_session_id != ctx.session_id:
-                    logger.info(
-                        "Skipping session split sync for %s because the "
-                        "session binding moved from %s to %s before "
-                        "compression finished",
-                        ctx.session_key or "?",
-                        ctx.session_id,
-                        entry_session_id,
-                    )
-                else:
-                    entry.session_id = agent_session_id
-                    self._runner.session_store._save()
-                    self._runner.session_store._record_gateway_session_peer(
-                        agent_session_id,
-                        ctx.session_key,
-                        ctx.source,
-                    )
-                    _session_split_entry_persisted = True
-
-            # If this is a Telegram DM and source.thread_id was lost during
-            # the session split (synthetic / recovered event), restore it
-            # from the binding so _thread_metadata_for_source produces the
-            # correct message_thread_id instead of routing to the General
-            # thread.  Failure here is non-fatal — we log and continue;
-            # worst case the message lands in General, which is the
-            # pre-fix behaviour. Only do this after this run successfully
-            # published its session split; a stale /stop→/new predecessor
-            # must not mutate routing/binding state for the fresh session.
-            if _session_split_entry_persisted and (
-                getattr(ctx.source, "platform", None) == Platform.TELEGRAM
-                and getattr(ctx.source, "chat_type", None) == "dm"
-                and getattr(ctx.source, "thread_id", None) is None
-                and self._runner._session_db is not None
-            ):
-                try:
-                    # run_sync is off-loop (executor); sync DB is fine.
-                    _binding = self._runner._session_db._db.get_telegram_topic_binding_by_session(
-                        session_id=agent_session_id,
-                    )
-                    if _binding and _binding.get("thread_id"):
-                        ctx.source.thread_id = str(_binding["thread_id"])
-                        logger.debug(
-                            "Restored source.thread_id=%s from binding after session split %s → %s",
-                            ctx.source.thread_id,
-                            ctx.session_id,
-                            agent_session_id,
-                        )
-                except Exception:
-                    logger.debug(
-                        "Failed to restore thread_id from binding after session split",
-                        exc_info=True,
-                    )
-            if _session_split_entry_persisted:
-                self._runner._sync_telegram_topic_binding(
-                    ctx.source, entry, reason="agent-run-compression",
-                )
+            # Do not mutate the shared route from this executor thread. The event
+            # loop publishes ``agent_session_id`` only through
+            # ``_publish_gateway_compression_route()``, which atomically couples
+            # the SessionStore CAS, routing-revision increment, and turn-lease
+            # rebind before any topic binding is updated.
 
         effective_session_id = agent_session_id
         self._runner._sync_session_model_from_agent(effective_session_id, agent)
@@ -5808,6 +5830,18 @@ class TurnRunner:
             "agent_persisted": (ctx.result_holder[0].get("agent_persisted", True) if ctx.result_holder[0] else True),
         }
 
+
+
+def _ensure_contextual_user_delta(
+    messages: List[Dict[str, Any]], *, content: str, timestamp: Any
+) -> List[Dict[str, Any]]:
+    """Preserve the scheduled user turn when agent-side DB persistence is fenced."""
+    if any(str(item.get("role") or "").lower() == "user" for item in messages):
+        return messages
+    return [
+        {"role": "user", "content": content, "timestamp": timestamp},
+        *messages,
+    ]
 
 
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
@@ -5986,6 +6020,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Sync helpers keep using ``session_store`` directly; async gateway
         # handlers call this facade and await every operation.
         self._async_session_store = AsyncSessionStore(self.session_store)
+        from gateway.contextual_cron import ContextualCronGateway
+        self.contextual_cron = ContextualCronGateway(self)
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -6990,14 +7026,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         source: Optional[SessionSource] = None,
         session_key: Optional[str] = None,
         user_config: Optional[dict] = None,
+        ignore_one_turn_override: bool = False,
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
 
         Priority (highest first): session ``/model`` → ``channel_overrides`` →
         global config/env (``_resolve_gateway_model(user_config)`` and default
-        provider resolution).
+        provider resolution). Contextual turns use the pre-``--once`` runtime.
         """
         resolved_session_key = session_key
+        if not ignore_one_turn_override:
+            try:
+                from gateway.session_context import _get_contextual_turn_authority
+
+                ignore_one_turn_override = _get_contextual_turn_authority() is not None
+            except Exception:
+                ignore_one_turn_override = False
         if not resolved_session_key and source is not None:
             try:
                 resolved_session_key = self._session_key_for_source(source)
@@ -7012,9 +7056,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if resolved_session_key
             else None
         )
-        override = (
-            _override_state.conversation.model_override if _override_state else None
-        )
+        override = _override_state.conversation.model_override if _override_state else None
+        if ignore_one_turn_override and _override_state is not None:
+            _restore = _override_state.conversation.one_turn_restore
+            if _restore:
+                override = (
+                    _restore.get("override")
+                    if _restore.get("had_override")
+                    else None
+                )
         if override:
             override_model = override.get("model", model)
             override_runtime = {
@@ -11638,9 +11688,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # in the ledger — redelivering it (and clearing resume_pending for
         # that session) is strictly cheaper and more correct than re-running
         # the whole turn.
-        await self._redeliver_pending_obligations()
-        self._schedule_resume_pending_sessions()
-        await self._finish_startup_restore()
+        # Contextual transcript rows are per-profile execution-ledger outboxes.
+        # Keep every startup resume/redelivery fence closed until all served
+        # profile homes have recovered; the periodic watcher retries this gate.
+        self._contextual_startup_recovery_pending = not (
+            await self._release_startup_restore_after_contextual_recovery()
+        )
+        if self._contextual_startup_recovery_pending:
+            logger.error(
+                "Startup redelivery and resume remain fenced until every served "
+                "profile's contextual transcript outbox recovers"
+            )
 
         # Drain any recovered process watchers (from crash recovery checkpoint)
         try:
@@ -11664,6 +11722,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await asyncio.sleep(0)
         except Exception as e:
             logger.error("Recovered watcher setup error: %s", e)
+
+        # Retry contextual execution-ledger transcript outboxes independently
+        # of the selected cron trigger provider. This covers secondary profiles
+        # and transient startup failures without waiting for another restart.
+        self._spawn_supervised(
+            self._contextual_transcript_recovery_watcher,
+            "contextual_transcript_recovery_watcher",
+        )
 
         # Start background session expiry watcher to finalize expired sessions
         self._spawn_supervised(self._session_expiry_watcher, "session_expiry_watcher")
@@ -16619,6 +16685,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._async_session_store = facade
         return facade
 
+
     async def _mark_durable_active_turn(
         self,
         event: "MessageEvent",
@@ -16685,6 +16752,904 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except AttributeError:
                     pass
 
+    def _contextual_cron_session_busy(self, session_key: str) -> bool:
+        state = self._peek_session_state(session_key)
+        if state is not None and state.turn.agent is not None:
+            return True
+        entry = self.session_store.peek_session_entry(session_key)
+        adapter = self._adapter_for_source(entry.origin) if entry and entry.origin else None
+        return bool(adapter and session_key in getattr(adapter, "_active_sessions", {}))
+
+    def _dispatch_contextual_cron_from_scheduler(self, job, *, execution_id):
+        loop = self._gateway_loop
+        if loop is None or loop.is_closed():
+            from gateway.contextual_cron import ContextualCronOutcome
+            return ContextualCronOutcome.rejected(
+                "The live gateway event loop is unavailable; no fallback was attempted."
+            )
+        return self.contextual_cron.dispatch_from_scheduler(
+            job,
+            execution_id=execution_id,
+            loop=loop,
+        )
+
+    def _authorize_contextual_delivery_from_scheduler(self, target) -> bool:
+        """Reauthorize and claim delivery under the live routing fence."""
+        from gateway.session import SessionSource
+
+        origin = target.get("origin") if isinstance(target, dict) else None
+        authority = (
+            target.get("_contextual_authority")
+            if isinstance(target, dict)
+            else None
+        )
+        if not isinstance(origin, dict) or not isinstance(authority, dict):
+            return False
+        try:
+            source = SessionSource.from_dict(origin)
+            execution_id = str(authority.get("execution_id") or "").strip()
+            session_key = str(authority.get("session_key") or "").strip()
+            binding_version = int(authority.get("binding_version") or 0)
+            route_instance_id = str(
+                authority.get("route_instance_id") or ""
+            ).strip()
+            session_id = str(authority.get("session_id") or "").strip()
+            routing_revision = int(authority.get("routing_revision") or 0)
+        except (KeyError, TypeError, ValueError):
+            return False
+        if (
+            not execution_id
+            or not session_key
+            or binding_version not in (1, 2)
+            or not session_id
+            or (binding_version == 2 and not route_instance_id)
+        ):
+            return False
+        claim_authority = getattr(
+            self.session_store, "claim_contextual_delivery_authority", None
+        )
+        if not callable(claim_authority):
+            return False
+
+        from cron.executions import claim_contextual_delivery
+
+        authorization_result = claim_authority(
+            session_key,
+            source=source,
+            binding_version=binding_version,
+            expected_route_instance_id=(route_instance_id or None),
+            expected_session_id=session_id,
+            expected_routing_revision=routing_revision,
+            authorize=lambda: bool(self._is_user_authorized(source)),
+            claim=lambda: claim_contextual_delivery(execution_id) is not None,
+        )
+        if (
+            not isinstance(authorization_result, tuple)
+            or len(authorization_result) != 2
+        ):
+            return False
+        authorized, claimed = authorization_result
+        if authorized:
+            # This was the one route-locked claim attempt.  The scheduler must
+            # not retry a lost CAS after the route lock is released because a
+            # reset/recreate can occur in that gap.
+            target["_contextual_delivery_claim_attempted"] = True
+        if claimed:
+            target["_contextual_delivery_claimed"] = True
+        return bool(authorized)
+
+    async def _write_or_stage_transcript_entry(
+        self,
+        event,
+        session_id: str,
+        entry: Dict[str, Any],
+        *,
+        skip_db: bool,
+        contextual_execution_id: Optional[str],
+    ) -> None:
+        """Stage contextual rows in the execution outbox; write ordinary rows now."""
+        if contextual_execution_id:
+            metadata = getattr(event, "metadata", None)
+            if not isinstance(metadata, dict):
+                raise RuntimeError("contextual event metadata is unavailable")
+            staged_session = metadata.get("contextual_cron_transcript_session_id")
+            if staged_session is not None and staged_session != session_id:
+                raise RuntimeError("contextual transcript session changed while staging")
+            staged = metadata.setdefault("contextual_cron_transcript_entries", [])
+            if not isinstance(staged, list):
+                raise RuntimeError("contextual transcript staging state is invalid")
+            durable_entry = dict(entry)
+            durable_entry["message_id"] = (
+                f"contextual-cron:{contextual_execution_id}:{len(staged)}"
+            )
+            metadata["contextual_cron_transcript_session_id"] = session_id
+            staged.append(durable_entry)
+            return
+        store = getattr(self, "_async_session_store", None)
+        if store is None:
+            store = self.async_session_store
+        await store.append_to_transcript(session_id, entry, skip_db=skip_db)
+
+    @staticmethod
+    def _contextual_transcript_applied_prefix(item, history) -> int:
+        """Prove the outbox is the exact tail after its immutable causal base."""
+        from gateway.contextual_cron import ContextualCronTranscriptConflict
+
+        entries = getattr(item, "transcript_entries", None)
+        base_count = getattr(item, "transcript_base_message_count", None)
+        if not isinstance(entries, list):
+            raise ContextualCronTranscriptConflict(
+                "Contextual transcript outbox entries are invalid."
+            )
+        if (
+            not isinstance(base_count, int)
+            or isinstance(base_count, bool)
+            or base_count < 0
+        ):
+            raise ContextualCronTranscriptConflict(
+                "Contextual transcript has no valid durable causal base."
+            )
+        if not isinstance(history, list):
+            raise RuntimeError("session transcript lookup returned an invalid value")
+        expected_ids = [
+            f"contextual-cron:{item.execution_id}:{index}"
+            for index in range(len(entries))
+        ]
+        for index, raw_entry in enumerate(entries):
+            if not isinstance(raw_entry, dict):
+                raise ContextualCronTranscriptConflict(
+                    "Contextual transcript outbox entry is invalid."
+                )
+            if str(raw_entry.get("message_id") or "") != expected_ids[index]:
+                raise ContextualCronTranscriptConflict(
+                    "Contextual transcript outbox identity is invalid."
+                )
+        if len(history) < base_count:
+            raise ContextualCronTranscriptConflict(
+                "Contextual transcript was rewritten before outbox recovery."
+            )
+        base_ids = {
+            str(row.get("message_id") or row.get("platform_message_id") or "")
+            for row in history[:base_count]
+            if isinstance(row, dict)
+        }
+        if any(message_id in base_ids for message_id in expected_ids):
+            raise ContextualCronTranscriptConflict(
+                "Contextual transcript outbox identity predates its causal base."
+            )
+        tail = history[base_count:]
+        if len(tail) > len(expected_ids):
+            raise ContextualCronTranscriptConflict(
+                "Contextual transcript advanced before the pending outbox was applied."
+            )
+        for index, row in enumerate(tail):
+            actual_id = (
+                str(row.get("message_id") or row.get("platform_message_id") or "")
+                if isinstance(row, dict)
+                else ""
+            )
+            if actual_id != expected_ids[index]:
+                raise ContextualCronTranscriptConflict(
+                    "Contextual transcript advanced before the pending outbox was applied."
+                )
+        return len(tail)
+
+    def _apply_contextual_cron_transcript_sync(self, store, item) -> None:
+        """Apply one outbox under the profile's fail-closed process/file lock."""
+        from cron.executions import (
+            get_execution,
+            mark_contextual_transcript_applied,
+        )
+        from cron.jobs import contextual_transcript_lock
+
+        session_id = str(getattr(item, "transcript_session_id", "") or "").strip()
+        if not session_id or session_id != str(item.admitted_session_id):
+            from gateway.contextual_cron import ContextualCronTranscriptConflict
+
+            raise ContextualCronTranscriptConflict(
+                "Contextual transcript outbox session binding is invalid."
+            )
+        entries = getattr(item, "transcript_entries", None)
+        if not isinstance(entries, list):
+            from gateway.contextual_cron import ContextualCronTranscriptConflict
+
+            raise ContextualCronTranscriptConflict(
+                "Contextual transcript outbox entries are invalid."
+            )
+
+        with contextual_transcript_lock():
+            atomic_apply = getattr(store, "apply_contextual_transcript_outbox", None)
+            if callable(atomic_apply):
+                from hermes_state import ContextualTranscriptCASMismatch
+
+                base_revision = getattr(item, "transcript_base_revision", None)
+                if (
+                    not isinstance(base_revision, int)
+                    or isinstance(base_revision, bool)
+                    or base_revision < 0
+                ):
+                    from gateway.contextual_cron import ContextualCronTranscriptConflict
+
+                    raise ContextualCronTranscriptConflict(
+                        "Contextual transcript has no valid durable revision."
+                    )
+                try:
+                    application = atomic_apply(
+                        execution_id=item.execution_id,
+                        session_id=session_id,
+                        entries=entries,
+                        base_count=item.transcript_base_message_count,
+                        base_revision=base_revision,
+                        last_prompt_tokens=getattr(item, "last_prompt_tokens", None),
+                    )
+                except ContextualTranscriptCASMismatch as exc:
+                    from gateway.contextual_cron import ContextualCronTranscriptConflict
+
+                    raise ContextualCronTranscriptConflict(str(exc)) from exc
+
+                last_prompt_tokens = getattr(item, "last_prompt_tokens", None)
+                route_current = bool(
+                    getattr(item, "contextual_route_current", True)
+                )
+                application_status = (
+                    str(application.get("status") or "")
+                    if isinstance(application, dict)
+                    else ""
+                )
+                if last_prompt_tokens is not None and (
+                    application_status == "applied" or route_current
+                ):
+                    store.update_session(
+                        item.session_key,
+                        last_prompt_tokens=int(last_prompt_tokens),
+                        touch_activity=False,
+                    )
+                marked = mark_contextual_transcript_applied(item.execution_id)
+                if not marked:
+                    record = get_execution(item.execution_id)
+                    if not record or record.get("transcript_state") != "applied":
+                        raise RuntimeError(
+                            "contextual transcript outbox acknowledgement failed"
+                        )
+                return
+
+            # Compatibility fallback for non-production stores. Production uses
+            # one state.db transaction plus a durable application receipt above.
+            history = store.load_transcript_strict(session_id)
+            applied_prefix = self._contextual_transcript_applied_prefix(
+                item, history
+            )
+            for index, raw_entry in enumerate(entries):
+                if not isinstance(raw_entry, dict):
+                    raise RuntimeError("contextual transcript outbox entry is invalid")
+                entry = dict(raw_entry)
+                expected_id = f"contextual-cron:{item.execution_id}:{index}"
+                if str(entry.get("message_id") or "") != expected_id:
+                    raise RuntimeError("contextual transcript outbox identity is invalid")
+                if index >= applied_prefix:
+                    store.append_contextual_transcript_message_once(session_id, entry)
+                    if not store.has_platform_message_id_strict(session_id, expected_id):
+                        raise RuntimeError(
+                            "contextual transcript row was not durably persisted"
+                        )
+
+            final_history = store.load_transcript_strict(session_id)
+            if self._contextual_transcript_applied_prefix(item, final_history) != len(
+                entries
+            ):
+                raise RuntimeError("contextual transcript turn was not fully persisted")
+
+            last_prompt_tokens = getattr(item, "last_prompt_tokens", None)
+            if last_prompt_tokens is not None:
+                store.update_session(
+                    item.session_key,
+                    last_prompt_tokens=int(last_prompt_tokens),
+                    touch_activity=False,
+                )
+            marked = mark_contextual_transcript_applied(item.execution_id)
+            if not marked:
+                record = get_execution(item.execution_id)
+                if not record or record.get("transcript_state") != "applied":
+                    raise RuntimeError(
+                        "contextual transcript outbox acknowledgement failed"
+                    )
+
+    async def _apply_contextual_cron_transcript_async_fake(self, store, item) -> None:
+        """Async-store fallback used by tests and nonstandard store facades."""
+        from cron.executions import (
+            get_execution,
+            mark_contextual_transcript_applied,
+        )
+
+        session_id = str(getattr(item, "transcript_session_id", "") or "").strip()
+        if not session_id or session_id != str(item.admitted_session_id):
+            from gateway.contextual_cron import ContextualCronTranscriptConflict
+
+            raise ContextualCronTranscriptConflict(
+                "Contextual transcript outbox session binding is invalid."
+            )
+        entries = getattr(item, "transcript_entries", None)
+        if not isinstance(entries, list):
+            from gateway.contextual_cron import ContextualCronTranscriptConflict
+
+            raise ContextualCronTranscriptConflict(
+                "Contextual transcript outbox entries are invalid."
+            )
+        strict_lookup = getattr(store, "has_platform_message_id_strict", None)
+        lookup = strict_lookup if callable(strict_lookup) else getattr(
+            store, "has_platform_message_id", None
+        )
+        if not callable(lookup):
+            raise RuntimeError("session store cannot verify transcript identities")
+        strict_load = getattr(store, "load_transcript_strict", None)
+        if not callable(strict_load):
+            raise RuntimeError("session store cannot verify transcript causal position")
+        history = strict_load(session_id)
+        if inspect.isawaitable(history):
+            history = await history
+        applied_prefix = self._contextual_transcript_applied_prefix(item, history)
+
+        for index, raw_entry in enumerate(entries):
+            if not isinstance(raw_entry, dict):
+                raise RuntimeError("contextual transcript outbox entry is invalid")
+            entry = dict(raw_entry)
+            expected_id = f"contextual-cron:{item.execution_id}:{index}"
+            if str(entry.get("message_id") or "") != expected_id:
+                raise RuntimeError("contextual transcript outbox identity is invalid")
+            if index >= applied_prefix:
+                await store.append_to_transcript(session_id, entry, skip_db=False)
+                if not await lookup(session_id, expected_id):
+                    raise RuntimeError(
+                        "contextual transcript row was not durably persisted"
+                    )
+
+        final_history = strict_load(session_id)
+        if inspect.isawaitable(final_history):
+            final_history = await final_history
+        if self._contextual_transcript_applied_prefix(item, final_history) != len(entries):
+            raise RuntimeError("contextual transcript turn was not fully persisted")
+
+        last_prompt_tokens = getattr(item, "last_prompt_tokens", None)
+        if last_prompt_tokens is not None:
+            await store.update_session(
+                item.session_key,
+                last_prompt_tokens=int(last_prompt_tokens),
+                touch_activity=False,
+            )
+        marked = await asyncio.to_thread(
+            mark_contextual_transcript_applied, item.execution_id
+        )
+        if not marked:
+            record = await asyncio.to_thread(get_execution, item.execution_id)
+            if not record or record.get("transcript_state") != "applied":
+                raise RuntimeError("contextual transcript outbox acknowledgement failed")
+
+    async def _apply_contextual_cron_transcript(self, item) -> None:
+        """Idempotently apply one already-durable contextual transcript outbox."""
+        store = getattr(self, "_async_session_store", None)
+        if store is None:
+            store = self.async_session_store
+        sync_store = getattr(store, "_store", None)
+        if sync_store is not None:
+            await asyncio.to_thread(
+                self._apply_contextual_cron_transcript_sync,
+                sync_store,
+                item,
+            )
+            return
+
+        # Test doubles and custom facades do not expose the synchronous backing
+        # store. Serialize those in-process so the same identity-check/append
+        # race is still closed; production additionally holds the file lock.
+        apply_lock = getattr(self, "_contextual_transcript_apply_lock", None)
+        if apply_lock is None:
+            apply_lock = asyncio.Lock()
+            self._contextual_transcript_apply_lock = apply_lock
+        async with apply_lock:
+            await self._apply_contextual_cron_transcript_async_fake(store, item)
+
+    async def _apply_contextual_cron_transcript_with_recovery_fence(self, item) -> None:
+        """Join recovery to the same adapter/turn serialization domain as humans."""
+        from gateway.contextual_cron import (
+            ContextualCronGuardBusy,
+            ContextualCronTranscriptConflict,
+        )
+
+        adapter = None
+        adapter_guard = None
+        lease_token = None
+        session_key = str(getattr(item, "session_key", "") or "")
+        session_id = str(getattr(item, "admitted_session_id", "") or "")
+        route_instance_id = str(
+            getattr(item, "admitted_route_instance_id", "") or ""
+        )
+        try:
+            session_store = getattr(self, "session_store", None)
+            receipt_lookup = getattr(
+                session_store, "get_contextual_transcript_application", None
+            )
+            receipt = (
+                receipt_lookup(item.execution_id)
+                if callable(receipt_lookup)
+                else None
+            )
+            peek = getattr(session_store, "peek_session_entry", None)
+            entry = peek(session_key) if callable(peek) else None
+            route_current = bool(
+                entry is not None
+                and (
+                    not route_instance_id
+                    or str(getattr(entry, "route_instance_id", ""))
+                    == route_instance_id
+                )
+                and str(getattr(entry, "session_id", "")) == session_id
+                and int(getattr(entry, "routing_revision", 0))
+                == int(getattr(item, "admitted_routing_revision", 0))
+            )
+            item.contextual_route_current = route_current
+            if receipt is None and not route_current:
+                raise ContextualCronTranscriptConflict(
+                    "Contextual transcript route changed before its outbox was applied."
+                )
+            if route_current:
+                adapter_for_source = getattr(self, "_adapter_for_source", None)
+                recovery_source = getattr(item, "source", None) or getattr(
+                    entry, "origin", None
+                )
+                adapter = (
+                    adapter_for_source(recovery_source)
+                    if callable(adapter_for_source)
+                    else None
+                )
+            if adapter is not None:
+                acquire_guard = getattr(adapter, "acquire_contextual_cron_guard", None)
+                if callable(acquire_guard):
+                    pending_guard = acquire_guard(session_key)
+                    adapter_guard = (
+                        await pending_guard
+                        if inspect.isawaitable(pending_guard)
+                        else pending_guard
+                    )
+                else:
+                    claim_guard = getattr(adapter, "claim_contextual_cron_guard", None)
+                    if not callable(claim_guard):
+                        raise RuntimeError(
+                            "session adapter cannot fence contextual transcript recovery"
+                        )
+                    adapter_guard = claim_guard(session_key)
+                    if adapter_guard is None:
+                        raise ContextualCronGuardBusy()
+
+            lease_registry = getattr(self, "_turn_leases", None)
+            if lease_registry is not None:
+                lease_token = await lease_registry.acquire(
+                    session_id,
+                    owner_key=f"contextual-cron-recovery:{item.execution_id}",
+                    generation=0,
+                )
+                if getattr(lease_token, "degraded", False):
+                    raise TimeoutError(
+                        "contextual transcript recovery turn lease timed out"
+                    )
+
+            # Both serialization fences are now held. Re-read the durable
+            # receipt and live route inside those fences: a reset may have won
+            # while recovery waited for either guard. A pre-existing receipt is
+            # still safe to acknowledge idempotently after a later route move.
+            receipt = (
+                receipt_lookup(item.execution_id)
+                if callable(receipt_lookup)
+                else None
+            )
+            entry = peek(session_key) if callable(peek) else None
+            route_current = bool(
+                entry is not None
+                and (
+                    not route_instance_id
+                    or str(getattr(entry, "route_instance_id", ""))
+                    == route_instance_id
+                )
+                and str(getattr(entry, "session_id", "")) == session_id
+                and int(getattr(entry, "routing_revision", 0))
+                == int(getattr(item, "admitted_routing_revision", 0))
+            )
+            item.contextual_route_current = route_current
+            if receipt is None and not route_current:
+                raise ContextualCronTranscriptConflict(
+                    "Contextual transcript route changed while recovery waited for its fences."
+                )
+            if receipt is None:
+                source = getattr(item, "source", None) or getattr(entry, "origin", None)
+                authorize = getattr(self, "_is_user_authorized", None)
+                if source is None or not callable(authorize) or not authorize(source):
+                    raise ContextualCronTranscriptConflict(
+                        "Contextual cron authorization was revoked before "
+                        "transcript recovery."
+                    )
+            await self._apply_contextual_cron_transcript(item)
+        finally:
+            if lease_token is not None:
+                lease_registry = getattr(self, "_turn_leases", None)
+                if (
+                    lease_registry is not None
+                    and not getattr(lease_token, "degraded", False)
+                ):
+                    lease_registry.release(lease_token)
+            if adapter is not None and adapter_guard is not None:
+                release_guard = getattr(adapter, "release_contextual_cron_guard", None)
+                if callable(release_guard):
+                    released = release_guard(session_key, adapter_guard)
+                    if inspect.isawaitable(released):
+                        await released
+
+    def _recover_contextual_cron_transcripts_from_scheduler(self) -> int:
+        """Bridge the profile-scoped ticker thread into the gateway event loop."""
+        from hermes_constants import get_hermes_home
+
+        loop = self._gateway_loop
+        if loop is None or loop.is_closed():
+            raise RuntimeError("gateway loop is unavailable for transcript recovery")
+        profile_home = get_hermes_home()
+        future = asyncio.run_coroutine_threadsafe(
+            self._recover_contextual_cron_transcripts(cron_home=profile_home),
+            loop,
+        )
+        return int(future.result(timeout=30.0))
+
+    async def _recover_contextual_cron_transcripts(self, *, cron_home=None) -> int:
+        """Replay durable transcript outboxes without re-running model turns."""
+        from contextlib import nullcontext
+        from types import SimpleNamespace
+
+        from cron.executions import (
+            list_pending_contextual_transcripts,
+            mark_contextual_transcript_conflict,
+        )
+        from cron.jobs import use_cron_store
+        from cron.contextual import validate_contextual_origin
+        from gateway.contextual_cron import ContextualCronTranscriptConflict
+
+        scope = use_cron_store(cron_home) if cron_home is not None else nullcontext()
+        with scope:
+            records = await asyncio.to_thread(list_pending_contextual_transcripts)
+            recovered = 0
+            deferred = 0
+            for record in records:
+                try:
+                    try:
+                        entries = json.loads(record.get("transcript_json") or "")
+                    except (TypeError, ValueError) as exc:
+                        raise ContextualCronTranscriptConflict(
+                            "Contextual transcript outbox payload is invalid."
+                        ) from exc
+                    if not isinstance(entries, list):
+                        raise ContextualCronTranscriptConflict(
+                            "Contextual transcript outbox payload is invalid."
+                        )
+                    admitted_route_instance_id = (
+                        str(record.get("admitted_route_instance_id") or "") or None
+                    )
+                    admitted_binding_version = int(
+                        record.get("admitted_binding_version") or 1
+                    )
+                    if admitted_binding_version not in (1, 2):
+                        raise ContextualCronTranscriptConflict(
+                            "Contextual binding-version receipt is invalid."
+                        )
+                    creator_source = None
+                    raw_delivery_target = record.get("delivery_target_json")
+                    if raw_delivery_target:
+                        try:
+                            delivery_target = json.loads(raw_delivery_target)
+                            creator_origin = delivery_target.get("origin")
+                            if not isinstance(creator_origin, dict):
+                                raise TypeError("missing creator origin")
+                            creator_source = SessionSource.from_dict(
+                                validate_contextual_origin(creator_origin)
+                            )
+                        except (AttributeError, TypeError, ValueError) as exc:
+                            raise ContextualCronTranscriptConflict(
+                                "Contextual creator authority receipt is invalid."
+                            ) from exc
+                    if admitted_binding_version == 2 and (
+                        admitted_route_instance_id is None or creator_source is None
+                    ):
+                        raise ContextualCronTranscriptConflict(
+                            "Contextual v2 authority receipt is incomplete."
+                        )
+                    item = SimpleNamespace(
+                        job_id=str(record.get("job_id") or ""),
+                        execution_id=str(record.get("id") or ""),
+                        session_key=str(record.get("session_key") or ""),
+                        admitted_session_id=str(
+                            record.get("admitted_session_id") or ""
+                        ),
+                        admitted_routing_revision=int(
+                            record.get("admitted_routing_revision") or 0
+                        ),
+                        admitted_route_instance_id=admitted_route_instance_id,
+                        admitted_binding_version=admitted_binding_version,
+                        source=creator_source,
+                        transcript_session_id=str(
+                            record.get("transcript_session_id") or ""
+                        ),
+                        transcript_entries=entries,
+                        transcript_base_message_count=record.get(
+                            "transcript_base_message_count"
+                        ),
+                        transcript_base_revision=record.get(
+                            "transcript_base_revision"
+                        ),
+                        last_prompt_tokens=record.get(
+                            "transcript_last_prompt_tokens"
+                        ),
+                    )
+                    await self._apply_contextual_cron_transcript_with_recovery_fence(
+                        item
+                    )
+                    recovered += 1
+                except ContextualCronTranscriptConflict as conflict:
+                    try:
+                        await asyncio.to_thread(
+                            mark_contextual_transcript_conflict,
+                            str(record.get("id") or ""),
+                            error=str(conflict),
+                        )
+                    except Exception:
+                        deferred += 1
+                        logger.exception(
+                            "Contextual transcript conflict acknowledgement deferred"
+                        )
+                except Exception:
+                    deferred += 1
+                    logger.exception(
+                        "Contextual transcript recovery deferred"
+                    )
+            if deferred:
+                raise RuntimeError(
+                    f"{deferred} contextual transcript recovery obligation(s) "
+                    "remain deferred"
+                )
+            return recovered
+
+    def _served_contextual_cron_profile_homes(self) -> list[str]:
+        """Return each profile home served by this gateway exactly once."""
+        from hermes_constants import get_hermes_home
+
+        homes = [get_hermes_home()]
+        if getattr(self.config, "multiplex_profiles", False):
+            from hermes_cli.profiles import profiles_to_serve
+
+            homes.extend(
+                entry[1] if isinstance(entry, tuple) else entry
+                for entry in profiles_to_serve(multiplex=True)
+            )
+        resolved_homes: list[str] = []
+        seen: set[str] = set()
+        for home in homes:
+            resolved = str(Path(home).resolve())
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            resolved_homes.append(resolved)
+        return resolved_homes
+
+    async def _recover_served_contextual_cron_transcripts(self) -> bool:
+        """Recover every served profile; false keeps startup work fenced."""
+        all_recovered = True
+        try:
+            homes = self._served_contextual_cron_profile_homes()
+        except Exception:
+            logger.exception("Contextual transcript profile discovery deferred")
+            return False
+        for home in homes:
+            try:
+                recovered = await self._recover_contextual_cron_transcripts(
+                    cron_home=home
+                )
+                if recovered:
+                    logger.info(
+                        "Recovered %d contextual cron transcript outbox(es) from %s",
+                        recovered,
+                        home,
+                    )
+            except Exception:
+                all_recovered = False
+                logger.exception(
+                    "Contextual transcript recovery deferred for profile home %s",
+                    home,
+                )
+        return all_recovered
+
+    async def _release_startup_restore_after_contextual_recovery(self) -> bool:
+        """Release redelivery/resume work only after all profile outboxes recover."""
+        if not await self._recover_served_contextual_cron_transcripts():
+            return False
+        await self._redeliver_pending_obligations()
+        self._schedule_resume_pending_sessions()
+        await self._finish_startup_restore()
+        return True
+
+    async def _contextual_transcript_recovery_watcher(self) -> None:
+        """Retry every profile's durable transcript outbox independent of provider."""
+        while self._running:
+            if getattr(self, "_contextual_startup_recovery_pending", False):
+                if await self._release_startup_restore_after_contextual_recovery():
+                    self._contextual_startup_recovery_pending = False
+            else:
+                await self._recover_served_contextual_cron_transcripts()
+            await asyncio.sleep(30.0)
+
+    async def _run_contextual_cron_turn(self, item, entry, history):
+        """Execute one admitted hidden turn without the incoming-message handler."""
+        from gateway.contextual_cron import ContextualCronOutcome
+        from cron.scheduler import _is_cron_silence_response
+
+        # V1 cannot preserve the contextual contract through the remote proxy
+        # protocol (hidden prompt, restricted tools, no interim/asynchronous
+        # output, role repair, activity fencing).  Reject before constructing an
+        # event or touching an adapter; isolation fallback is forbidden.
+        if self._get_proxy_url():
+            return ContextualCronOutcome.rejected(
+                "Contextual cron does not support gateway proxy mode in V1."
+            )
+
+        preheld_turn_lease = getattr(item, "turn_lease_token", None)
+        lease_registry = getattr(self, "_turn_leases", None)
+        validate_lease = getattr(lease_registry, "is_current_holder", None)
+        if not callable(validate_lease) or not validate_lease(
+            preheld_turn_lease,
+            session_id=item.admitted_session_id,
+            owner_key=f"contextual-cron:{item.execution_id}",
+            generation=0,
+        ):
+            return ContextualCronOutcome.rejected(
+                "Contextual cron lost its admitted live-session turn lease."
+            )
+
+        internal_prompt = (
+            "[Internal scheduled turn: execute the task below using this "
+            "conversation's existing context. Do not mention this wrapper.]\n\n"
+            + item.prompt
+        )
+        creator_source = getattr(item, "source", None) or entry.origin
+        event = MessageEvent(
+            text=internal_prompt,
+            source=creator_source,
+            internal=True,
+            metadata={
+                "contextual_cron": True,
+                "contextual_cron_execution_id": item.execution_id,
+                "contextual_cron_admitted_session_id": item.admitted_session_id,
+                "contextual_cron_admitted_routing_revision": int(
+                    item.admitted_routing_revision
+                ),
+                # The dedicated FIFO owns the resolved-session lease. The agent
+                # path adopts that exact token for compression rebind/cleanup.
+                "contextual_cron_lease_preheld": True,
+                "contextual_cron_lease_token": getattr(
+                    item, "turn_lease_token", None
+                ),
+            },
+        )
+        adapter = self._adapter_for_source(creator_source)
+        guard = getattr(item, "adapter_guard", None)
+        guard_owned_by_lane = guard is not None
+        if adapter is not None and guard is None:
+            acquire_guard = getattr(adapter, "acquire_contextual_cron_guard", None)
+            if callable(acquire_guard):
+                guard = await acquire_guard(item.session_key)
+            else:
+                guard = adapter.claim_contextual_cron_guard(item.session_key)
+                if guard is None:
+                    from gateway.contextual_cron import ContextualCronGuardBusy
+
+                    raise ContextualCronGuardBusy()
+
+        active_lease, limit_message = self._claim_active_session_slot(
+            item.session_key, creator_source
+        )
+        if limit_message is not None:
+            if adapter is not None and guard is not None and not guard_owned_by_lane:
+                released = adapter.release_contextual_cron_guard(item.session_key, guard)
+                if inspect.isawaitable(released):
+                    await released
+            return ContextualCronOutcome.retryable(limit_message)
+        state = self._session_state(item.session_key)
+        if active_lease is not None:
+            state.turn.lease = active_lease
+        state.turn.agent = _AGENT_PENDING_SENTINEL
+        state.turn.started_ts = time.time()
+        self._persist_active_agents()
+        run_generation = self._begin_session_run_generation(item.session_key)
+        if preheld_turn_lease is not None:
+            # The contextual lane acquired the shared concrete-session lease
+            # before entering the runner. Publish that exact token into the
+            # normal turn state so compression can atomically rebind it.
+            state.turn.lease_token = preheld_turn_lease
+            state.turn.lease_generation = run_generation
+
+        try:
+            from gateway.session_context import _bind_contextual_turn_authority
+            from hermes_cli.lifecycle import suppress_lifecycle_hooks
+
+            with _bind_contextual_turn_authority(
+                execution_id=item.execution_id,
+                session_key=item.session_key,
+                admitted_session_id=item.admitted_session_id,
+                admitted_routing_revision=item.admitted_routing_revision,
+                admitted_route_instance_id=getattr(
+                    item, "admitted_route_instance_id", None
+                ),
+                creator_source=creator_source,
+            ), suppress_lifecycle_hooks():
+                response = await self._handle_message_with_agent(
+                    event, creator_source, item.session_key, run_generation
+                )
+        finally:
+            self._restore_moa_one_shot(event, item.session_key)
+            # A pending /model --once restore belongs to the next human turn.
+            # Contextual cron never consumes that override, so it must not
+            # restore/pop it during its own unwind.
+            self._release_running_agent_state(
+                item.session_key,
+                run_generation=run_generation,
+            )
+            if preheld_turn_lease is None:
+                self._release_turn_lease(item.session_key, run_generation)
+            else:
+                # The contextual FIFO owns this token until its durable
+                # transcript outbox is applied.  Detach it from the ordinary
+                # turn state without releasing the registry lease here; the
+                # lane releases the exact token after transcript acknowledgement.
+                self._detach_preheld_turn_lease(
+                    item.session_key,
+                    run_generation,
+                    preheld_turn_lease,
+                )
+            if adapter is not None and guard is not None and not guard_owned_by_lane:
+                released = adapter.release_contextual_cron_guard(item.session_key, guard)
+                if inspect.isawaitable(released):
+                    await released
+        staged_entries = event.metadata.get("contextual_cron_transcript_entries")
+        if staged_entries is not None:
+            item.transcript_session_id = str(
+                event.metadata.get("contextual_cron_transcript_session_id") or ""
+            )
+            item.transcript_entries = [dict(entry) for entry in staged_entries]
+            item.last_prompt_tokens = int(
+                event.metadata.get("contextual_cron_last_prompt_tokens") or 0
+            )
+        text = str(response or "").strip()
+        details = event.metadata.get("contextual_cron_result") or {}
+        if details.get("outcome") == "stale":
+            return ContextualCronOutcome.stale(
+                str(details.get("error") or "The admitted session route changed.")
+            )
+        if details.get("outcome") == "rejected":
+            return ContextualCronOutcome.rejected(
+                str(details.get("error") or "The contextual turn was rejected.")
+            )
+        if details.get("completed") is not True:
+            return ContextualCronOutcome.failure(
+                str(details.get("error") or "Contextual cron model turn failed closed.")
+            )
+        if details.get("intentional_silence") or _is_cron_silence_response(text):
+            return ContextualCronOutcome.no_action()
+        if not text:
+            return ContextualCronOutcome.failure(
+                "Contextual cron turn completed without a final response."
+            )
+        if any(
+            marker in text
+            for marker in ("MEDIA:", "[[audio_as_voice]]", "[[audio_as_file]]")
+        ):
+            return ContextualCronOutcome.failure(
+                "Contextual cron final responses cannot contain media directives."
+            )
+        return ContextualCronOutcome.notify(text)
+
+
     def _get_cached_session_source(self, session_key: str):
         if not session_key:
             return None
@@ -16701,34 +17666,104 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
+        from gateway.session_context import _get_contextual_turn_authority
+
+        _contextual_authority = _get_contextual_turn_authority()
+        _is_contextual_cron = _contextual_authority is not None
+
+        def _route_log_value(value):
+            return "[contextual]" if _is_contextual_cron else value
+
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
-        _msg_preview = (event.text or "")[:80].replace("\n", " ")
-        _reply_id = getattr(event, "reply_to_message_id", None)
-        _reply_txt = (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " ")
+        if _is_contextual_cron:
+            _log_user = "[contextual]"
+            _log_chat = "[contextual]"
+            _msg_preview = "[hidden contextual cron turn]"
+            _reply_id = None
+            _reply_txt = ""
+        else:
+            _log_user = source.user_name or source.user_id or "unknown"
+            _log_chat = source.chat_id or "unknown"
+            _msg_preview = (event.text or "")[:80].replace("\n", " ")
+            _reply_id = getattr(event, "reply_to_message_id", None)
+            _reply_txt = (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " ")
         logger.info(
             "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
-            _platform_name, source.user_name or source.user_id or "unknown",
-            source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
+            _platform_name, _log_user, _log_chat, _msg_preview, _reply_id, _reply_txt,
         )
 
-        # Get or create session
-        # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's
-        # last-active topic so a cross-topic Reply or stripped plain reply
-        # doesn't fragment the conversation across sessions.
-        recovered = await asyncio.to_thread(self._recover_telegram_topic_thread_id, source)
-        if recovered is not None:
-            logger.info(
-                "telegram topic recovery: chat=%s user=%s %r -> %s",
-                source.chat_id, source.user_id, source.thread_id, recovered,
-            )
-            source = dataclasses.replace(source, thread_id=recovered)
-            try:
-                event.source = source
-            except Exception:
-                pass
+        # Get or create session. Contextual cron is admitted against a live
+        # mapping and must only peek that exact mapping: never create, reset,
+        # topic-recover, or fall back to a new isolated session.
+        _event_metadata = getattr(event, "metadata", None) or {}
+        _admitted_session_id = (
+            _contextual_authority.admitted_session_id if _contextual_authority else ""
+        )
+        _admitted_routing_revision = (
+            _contextual_authority.admitted_routing_revision
+            if _contextual_authority
+            else None
+        )
+        _admitted_route_instance_id = (
+            _contextual_authority.admitted_route_instance_id
+            if _contextual_authority
+            else None
+        )
+        if _is_contextual_cron:
+            if (
+                _contextual_authority.session_key != _quick_key
+                or not _contextual_authority.execution_id
+            ):
+                _event_metadata["contextual_cron_result"] = {
+                    "completed": False,
+                    "outcome": "rejected",
+                    "error": "Contextual cron task-local authority is invalid.",
+                }
+                return None
+            session_entry = await self.async_session_store.peek_session_entry(_quick_key)
+            creator_source = _contextual_authority.creator_source or source
+            if (
+                session_entry is None
+                or session_entry.session_id != _admitted_session_id
+                or (
+                    _admitted_route_instance_id is not None
+                    and session_entry.route_instance_id
+                    != _admitted_route_instance_id
+                )
+                or session_entry.routing_revision != _admitted_routing_revision
+                or session_entry.origin is None
+                or self._session_key_for_source(session_entry.origin) != _quick_key
+                or not isinstance(creator_source, SessionSource)
+                or self._session_key_for_source(creator_source) != _quick_key
+                or not self._is_user_authorized(creator_source)
+            ):
+                logger.info("contextual cron stale before turn: admitted route is no longer valid")
+                _event_metadata["contextual_cron_result"] = {
+                    "completed": False,
+                    "outcome": "stale",
+                    "error": "The target session route changed after admission.",
+                }
+                return None
+            source = creator_source
+            event.source = source
+        else:
+            # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's
+            # last-active topic so a cross-topic Reply or stripped plain reply
+            # doesn't fragment the conversation across sessions.
+            recovered = await asyncio.to_thread(self._recover_telegram_topic_thread_id, source)
+            if recovered is not None:
+                logger.info(
+                    "telegram topic recovery: chat=%s user=%s %r -> %s",
+                    source.chat_id, source.user_id, source.thread_id, recovered,
+                )
+                source = dataclasses.replace(source, thread_id=recovered)
+                try:
+                    event.source = source
+                except Exception:
+                    pass
 
-        session_entry = await self.async_session_store.get_or_create_session(source)
+            session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
         pinned_session_id = str(
             (getattr(event, "metadata", None) or {}).get("gateway_session_id") or ""
@@ -16742,7 +17777,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
             session_entry = resolved_entry
         self._cache_session_source(session_key, source)
-        if await asyncio.to_thread(self._is_telegram_topic_lane, source):
+        if (
+            not _is_contextual_cron
+            and await asyncio.to_thread(self._is_telegram_topic_lane, source)
+        ):
             try:
                 binding = (await self._session_db.get_telegram_topic_binding(
                     chat_id=str(source.chat_id),
@@ -16802,7 +17840,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Capture and immediately consume was_auto_reset so it does not
         # re-fire on subsequent messages — preventing the cleanup from
         # wiping model/reasoning overrides set between turns (Closes #48031).
-        _was_auto_reset = getattr(session_entry, "was_auto_reset", False)
+        _was_auto_reset = (
+            False if _is_contextual_cron
+            else getattr(session_entry, "was_auto_reset", False)
+        )
         if _was_auto_reset:
             # Treat auto-reset as a full conversation boundary — clear every
             # conversation-scoped per-session dict in one funnel call so the
@@ -16819,16 +17860,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # path (#9893). Covers daily/idle/suspended auto-reset.
             self._evict_cached_agent(session_key)
             session_entry.was_auto_reset = False
-        
+
         # Emit session:start for new or auto-reset sessions
-        _is_new_session = (
+        _is_new_session = (not _is_contextual_cron) and (
             session_entry.created_at == session_entry.updated_at
             or _was_auto_reset
             or getattr(session_entry, "is_fresh_reset", False)
         )
         # Consume the is_fresh_reset flag immediately so it doesn't leak
         # onto subsequent messages in the same session (issue #6508).
-        if getattr(session_entry, "is_fresh_reset", False):
+        if not _is_contextual_cron and getattr(session_entry, "is_fresh_reset", False):
             session_entry.is_fresh_reset = False
         if _is_new_session:
             await self.hooks.emit("session:start", {
@@ -16837,13 +17878,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "session_id": session_entry.session_id,
                 "session_key": session_key,
             })
-        
+
         # Build session context
         context = build_session_context(source, self.config, session_entry)
-        
+
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
-        
+
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
         persist_user_message = None
@@ -17007,7 +18048,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # _release_turn_lease — granted per (routing key, run generation) so a
         # stale unwind can't release a newer turn's lease.
         _lease_registry = getattr(self, "_turn_leases", None)
-        if _lease_registry is not None:
+        _preheld_turn_lease = (
+            _event_metadata.get("contextual_cron_lease_token")
+            if _is_contextual_cron
+            and _event_metadata.get("contextual_cron_lease_preheld")
+            else None
+        )
+        if _preheld_turn_lease is not None:
+            _validate_preheld_lease = getattr(
+                _lease_registry, "is_current_holder", None
+            )
+            if not callable(_validate_preheld_lease) or not _validate_preheld_lease(
+                _preheld_turn_lease,
+                session_id=session_entry.session_id,
+                owner_key=f"contextual-cron:{_contextual_authority.execution_id}",
+                generation=0,
+            ):
+                # The broad session-context cleanup finally starts later in
+                # this method, so this early authority rejection owns cleanup.
+                self._clear_session_env(_session_env_tokens)
+                _event_metadata["contextual_cron_result"] = {
+                    "completed": False,
+                    "outcome": "rejected",
+                    "error": (
+                        "Contextual cron lost its admitted live-session turn lease."
+                    ),
+                }
+                return None
+            _lease_state = self._session_state(_quick_key).turn
+            _lease_state.lease_token = _preheld_turn_lease
+            _lease_state.lease_generation = run_generation
+        elif _lease_registry is not None:
             try:
                 _lease_token = await _lease_registry.acquire(
                     session_entry.session_id,
@@ -17052,7 +18123,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         #    by 30-50% on code/JSON-heavy sessions, but that just
         #    means hygiene fires a bit early — safe and harmless.
         # -----------------------------------------------------------------
-        if history and len(history) >= 4:
+        if not _is_contextual_cron and history and len(history) >= 4:
             from agent.model_metadata import (
                 estimate_messages_tokens_rough,
                 get_model_context_length_async,
@@ -17341,6 +18412,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     quiet_mode=True,
                                     skip_memory=True,
                                     enabled_toolsets=["memory"],
+                                    allowed_tool_names=(
+                                        frozenset() if _is_contextual_cron else None
+                                    ),
                                     session_id=session_entry.session_id,
                                     session_db=_hyg_session_db,
                                 )
@@ -17556,8 +18630,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # a new session_id.  Write compressed messages into
                                     # the NEW session so the old transcript stays intact
                                     # and searchable via session_search.
+                                    _hyg_old_sid = session_entry.session_id
                                     _hyg_new_sid = _hyg_agent.session_id
-                                    _hyg_rotated = _hyg_new_sid != session_entry.session_id
+                                    _hyg_rotated = _hyg_new_sid != _hyg_old_sid
                                     _hyg_in_place = bool(
                                         getattr(_hyg_agent, "_last_compaction_in_place", False)
                                     )
@@ -17606,20 +18681,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             _hyg_rotated = False
                                             _hyg_in_place = False
                                         else:
-                                            session_entry.session_id = _hyg_new_sid
-                                            # The held turn lease follows the
-                                            # rotation so an alias key resolving
-                                            # the fresh child still serializes
-                                            # against this turn (#64934).
-                                            self._rebind_turn_lease(
-                                                _quick_key, run_generation, _hyg_new_sid
+                                            _advanced_entry = await self._publish_gateway_compression_route(
+                                                _quick_key,
+                                                _hyg_old_sid,
+                                                _hyg_new_sid,
+                                                run_generation,
                                             )
-                                            await self.async_session_store._save()
-                                            await asyncio.to_thread(
-                                                self._sync_telegram_topic_binding,
-                                                source, session_entry,
-                                                reason="hygiene-compression",
-                                            )
+                                            if _advanced_entry is None:
+                                                logger.error(
+                                                    "Session hygiene: compression child %s was persisted, "
+                                                    "but the stable route/lease CAS from %s failed; keeping "
+                                                    "the live session on the parent",
+                                                    _hyg_new_sid,
+                                                    _hyg_old_sid,
+                                                )
+                                                _hyg_rotated = False
+                                                _hyg_in_place = False
+                                            else:
+                                                session_entry = _advanced_entry
+                                                await asyncio.to_thread(
+                                                    self._sync_telegram_topic_binding,
+                                                    source,
+                                                    session_entry,
+                                                    reason="hygiene-compression",
+                                                )
 
                                     if _hyg_rotated:
                                         # Reset stored token count — transcript rewritten
@@ -17790,7 +18875,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Delivered on the current user message (sidecar), NOT the ephemeral
         # system prompt: present-on-turn-1/absent-on-turn-2 was a guaranteed
         # system-prompt diff and agent rebuild.
-        if not history and not await self.async_session_store.has_any_sessions():
+        if (
+            not _is_contextual_cron
+            and not history
+            and not await self.async_session_store.has_any_sessions()
+        ):
             # Default first-contact note: a brief self-introduction.
             _intro_note = (
                 "[System note: This is the user's very first message ever. "
@@ -17829,7 +18918,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         # One-time prompt if no home channel is set for this platform
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
-        if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
+        if (
+            not _is_contextual_cron
+            and not history
+            and source.platform
+            and source.platform != Platform.LOCAL
+            and source.platform != Platform.WEBHOOK
+        ):
             platform_name = source.platform.value
             env_key = _home_target_env_var(platform_name)
             # Multiplex: home channel may live only in the profile secret
@@ -17907,12 +19002,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # attachments (documents, audio, etc.) are not sent to the vision
         # tool even when they appear in the same message.
         # -----------------------------------------------------------------
-        message_text = await self._prepare_profile_scoped_inbound_message_text(
-            event=event,
-            source=source,
-            history=history,
-            session_key=session_key,
-        )
+        if _is_contextual_cron:
+            # V1 contextual prompts are already internal, canonical task text.
+            # Generic inbound preprocessing can read files, run Git, fetch URLs,
+            # invoke vision, or send adapter warnings outside the durable
+            # scheduler-owned delivery path, so it is not an admissible part of
+            # a zero-capability contextual turn.
+            message_text = event.text or ""
+        else:
+            message_text = await self._prepare_profile_scoped_inbound_message_text(
+                event=event,
+                source=source,
+                history=history,
+                session_key=session_key,
+            )
         if message_text is None:
             return
 
@@ -17962,11 +19065,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the
         # same run that registered them.
-        self._bind_adapter_run_generation(
-            self._adapter_for_source(source),
-            session_key,
-            run_generation,
-        )
+        if not _is_contextual_cron:
+            self._bind_adapter_run_generation(
+                self._adapter_for_source(source),
+                session_key,
+                run_generation,
+            )
 
         try:
             # Emit agent:start hook
@@ -17977,9 +19081,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "thread_id": str(getattr(source, "thread_id", None)) if getattr(source, "thread_id", None) else "",
                 "chat_type": getattr(source, "chat_type", "") or "",
                 "session_id": session_entry.session_id,
-                "message": message_text[:500],
+                "message": ("[contextual cron]" if _is_contextual_cron else message_text[:500]),
             }
-            await self.hooks.emit("agent:start", hook_ctx)
+            if not _is_contextual_cron:
+                await self.hooks.emit("agent:start", hook_ctx)
 
             # Run the agent. Capture the session id that this run was launched
             # against so post-run compression publication can be identity-guarded
@@ -18001,6 +19106,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
                 message_type=event.message_type,
+                persist_user_display_kind=("hidden" if _is_contextual_cron else None),
+                suppress_output=_is_contextual_cron,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -18008,7 +19115,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Slack AI status is scoped to a thread/workspace, so preserve the
             # same routing metadata used by the response delivery path.
             try:
-                _typing_adapter = self._adapter_for_source(source)
+                _typing_adapter = (
+                    None if _is_contextual_cron else self._adapter_for_source(source)
+                )
                 _stop_with_metadata = getattr(
                     type(_typing_adapter), "_stop_typing_with_metadata", None
                 )
@@ -18028,17 +19137,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not self._is_session_run_current(_quick_key, run_generation):
                 logger.info(
                     "Discarding stale agent result for %s — generation %d is no longer current",
-                    _quick_key or "?",
+                    _route_log_value(_quick_key or "?"),
                     run_generation,
                 )
-                _stale_adapter = self._adapter_for_source(source)
-                if getattr(type(_stale_adapter), "pop_post_delivery_callback", None) is not None:
-                    _stale_adapter.pop_post_delivery_callback(
-                        _quick_key,
-                        generation=run_generation,
-                    )
-                elif _stale_adapter and hasattr(_stale_adapter, "_post_delivery_callbacks"):
-                    _stale_adapter._post_delivery_callbacks.pop(_quick_key, None)
+                if not _is_contextual_cron:
+                    _stale_adapter = self._adapter_for_source(source)
+                    if getattr(type(_stale_adapter), "pop_post_delivery_callback", None) is not None:
+                        _stale_adapter.pop_post_delivery_callback(
+                            _quick_key,
+                            generation=run_generation,
+                        )
+                    elif _stale_adapter and hasattr(_stale_adapter, "_post_delivery_callbacks"):
+                        _stale_adapter._post_delivery_callbacks.pop(_quick_key, None)
                 return None
 
             response = agent_result.get("final_response") or ""
@@ -18075,7 +19185,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _resp_len = len(response)
             logger.info(
                 "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
-                _platform_name, source.chat_id or "unknown",
+                _platform_name, _route_log_value(source.chat_id or "unknown"),
                 _response_time, _api_calls, _resp_len,
             )
 
@@ -18094,7 +19204,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # shutdown) — the turn ran to completion, so recovery
             # succeeded and subsequent messages should no longer receive
             # the restart-interruption system note.
-            if session_key and _should_clear_resume_pending_after_turn(agent_result):
+            if (
+                session_key
+                and not _is_contextual_cron
+                and _should_clear_resume_pending_after_turn(agent_result)
+            ):
                 self._clear_restart_failure_count(session_key)
                 try:
                     await self.async_session_store.clear_resume_pending(session_key)
@@ -18111,39 +19225,90 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     agent_result, response, history_len=len(history),
                 )
                 response = _sanitize_gateway_final_response(source.platform, response)
+            if _is_contextual_cron:
+                event.metadata["contextual_cron_result"] = {
+                    "completed": agent_result.get("completed") is True,
+                    "intentional_silence": bool(_intentional_silence),
+                    "error": agent_result.get("error"),
+                }
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
+            # The contextual runner has no live SessionDB authority, so any
+            # agent-result route rotation is unverified and cannot produce a
+            # replayable transcript binding. In-memory compression remains
+            # available; V1 fails closed rather than publishing a new session.
+            if (
+                _is_contextual_cron
+                and agent_result.get("session_id")
+                and agent_result["session_id"] != session_entry.session_id
+            ):
+                raise RuntimeError(
+                    "Contextual cron cannot publish an in-turn session rotation."
+                )
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 if session_entry.session_id == _run_start_session_id:
-                    session_entry.session_id = agent_result["session_id"]
-                    # The held turn lease follows the rotation: the transcript
-                    # persistence below writes to the NEW id, so the
-                    # serialization boundary must move with it or an alias
-                    # key resolving the fresh child could interleave (#64934).
-                    self._rebind_turn_lease(
-                        _quick_key, run_generation, session_entry.session_id
+                    _compressed_sid = str(agent_result["session_id"])
+                    _advanced_entry = await self._publish_gateway_compression_route(
+                        _quick_key,
+                        _run_start_session_id,
+                        _compressed_sid,
+                        run_generation,
                     )
-                    await self.async_session_store._save()
-                    await self.async_session_store._record_gateway_session_peer(
-                        session_entry.session_id,
-                        session_key,
-                        source,
-                    )
-                    await asyncio.to_thread(
-                        self._sync_telegram_topic_binding,
-                        source, session_entry, reason="agent-result-compression",
-                    )
+                    if _advanced_entry is None:
+                        logger.error(
+                            "Refusing agent-result compression route %s -> %s: "
+                            "lease rebind or backing-store CAS failed",
+                            _route_log_value(_run_start_session_id),
+                            _route_log_value(_compressed_sid),
+                        )
+                        raise RuntimeError(
+                            "Compressed session could not be published atomically"
+                        )
+                    else:
+                        session_entry = _advanced_entry
+                        # Preserve upstream's Telegram-DM thread restoration, but
+                        # only after the compression route CAS and lease rebind
+                        # succeeded. A stale worker must never mutate routing state.
+                        if (
+                            getattr(source, "platform", None) == Platform.TELEGRAM
+                            and getattr(source, "chat_type", None) == "dm"
+                            and getattr(source, "thread_id", None) is None
+                            and self._session_db is not None
+                        ):
+                            try:
+                                _binding = await asyncio.to_thread(
+                                    self._session_db._db.get_telegram_topic_binding_by_session,
+                                    session_id=session_entry.session_id,
+                                )
+                                if _binding and _binding.get("thread_id"):
+                                    source.thread_id = str(_binding["thread_id"])
+                            except Exception:
+                                logger.debug(
+                                    "Failed to restore thread_id after compression route publication",
+                                    exc_info=True,
+                                )
+                        await self.async_session_store._record_gateway_session_peer(
+                            session_entry.session_id,
+                            session_key,
+                            source,
+                        )
+                        await asyncio.to_thread(
+                            self._sync_telegram_topic_binding,
+                            source,
+                            session_entry,
+                            reason="agent-result-compression",
+                        )
                 else:
                     logger.info(
                         "Skipping agent-result session split sync for %s because "
                         "the session binding moved from %s to %s before "
                         "compression finished",
-                        session_key or "?",
-                        _run_start_session_id,
-                        session_entry.session_id,
+                        _route_log_value(session_key or "?"),
+                        _route_log_value(_run_start_session_id),
+                        _route_log_value(session_entry.session_id),
                     )
 
             # Prepend reasoning/thinking if display is enabled (per-platform).
@@ -18164,6 +19329,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if source.platform == Platform.MATTERMOST
                     else getattr(self, "_show_reasoning", False)
                 )
+            if _is_contextual_cron:
+                _show_reasoning_effective = False
             if _show_reasoning_effective and response and not _intentional_silence:
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
@@ -18223,29 +19390,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
                 _footer_line = ""
-            if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
+            if (
+                not _is_contextual_cron
+                and _footer_line
+                and response
+                and not agent_result.get("already_sent")
+                and not _intentional_silence
+            ):
                 response = f"{response}\n\n{_footer_line}"
 
             # Emit agent:end hook
-            await self.hooks.emit("agent:end", {
-                **hook_ctx,
-                "response": (response or "")[:500],
-                "model": agent_result.get("model", ""),
-                "provider": agent_result.get("provider", ""),
-            })
-            
+            if not _is_contextual_cron:
+                await self.hooks.emit("agent:end", {
+                    **hook_ctx,
+                    "response": (response or "")[:500],
+                    "model": agent_result.get("model", ""),
+                    "provider": agent_result.get("provider", ""),
+                })
+
             # Check for pending process watchers (check_interval on background processes)
             try:
-                from tools.process_registry import process_registry
-                # Detach the current batch atomically (see crash-recovery drain
-                # above): reassign to a fresh list so a watcher appended by a
-                # concurrent session during the yield isn't dropped by clear().
-                watchers = process_registry.pending_watchers
-                process_registry.pending_watchers = []
-                for i, watcher in enumerate(watchers):
-                    asyncio.create_task(self._run_process_watcher(watcher))
-                    if i % 100 == 99:
-                        await asyncio.sleep(0)
+                if not _is_contextual_cron:
+                    from tools.process_registry import process_registry
+                    # Detach the current batch atomically (see crash-recovery drain
+                    # above): reassign to a fresh list so a watcher appended by a
+                    # concurrent session during the yield isn't dropped by clear().
+                    watchers = process_registry.pending_watchers
+                    process_registry.pending_watchers = []
+                    for i, watcher in enumerate(watchers):
+                        asyncio.create_task(self._run_process_watcher(watcher))
+                        if i % 100 == 99:
+                            await asyncio.sleep(0)
             except Exception as e:
                 logger.error("Process watcher setup error: %s", e)
 
@@ -18259,15 +19434,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # boot), which covers both the idle and post-turn cases with a
             # single consumer — so we leave them on the queue here.
             try:
-                from tools.process_registry import process_registry as _pr
-                _watch_events = _drain_gateway_watch_events(_pr.completion_queue)
-                for evt in _watch_events:
-                    synth_text = _format_gateway_process_notification(evt)
-                    if synth_text:
-                        try:
-                            await self._inject_watch_notification(synth_text, evt)
-                        except Exception as e2:
-                            logger.error("Watch notification injection error: %s", e2)
+                if not _is_contextual_cron:
+                    from tools.process_registry import process_registry as _pr
+                    _watch_events = _drain_gateway_watch_events(_pr.completion_queue)
+                    for evt in _watch_events:
+                        synth_text = _format_gateway_process_notification(evt)
+                        if synth_text:
+                            try:
+                                await self._inject_watch_notification(synth_text, evt)
+                            except Exception as e2:
+                                logger.error("Watch notification injection error: %s", e2)
             except Exception as e:
                 logger.debug("Watch queue drain error: %s", e)
 
@@ -18317,20 +19493,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.info(
                     "Skipping transcript persistence for context-overflow "
                     "failure in session %s to prevent session growth loop.",
-                    session_entry.session_id,
+                    _route_log_value(session_entry.session_id),
                 )
             elif agent_failed_early:
                 logger.info(
                     "Transient agent failure in session %s — persisting user "
                     "message so conversation context is preserved on retry.",
-                    session_entry.session_id,
+                    _route_log_value(session_entry.session_id),
                 )
             elif hidden_reasoning_incomplete:
                 logger.warning(
                     "Suppressing hidden-reasoning-only incomplete gateway turn "
                     "for session %s: %s",
-                    session_entry.session_id,
-                    agent_result.get("error", "processing incomplete"),
+                    _route_log_value(session_entry.session_id),
+                    (
+                        "[contextual]"
+                        if _is_contextual_cron
+                        else agent_result.get("error", "processing incomplete")
+                    ),
                 )
 
             # When compression is exhausted, the session is permanently too
@@ -18348,9 +19528,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "Compression deferred for session %s — the compression "
                     "lock is held by a concurrent compressor. Keeping the "
                     "session intact; the next message retries normally.",
-                    session_entry.session_id if session_entry else "?",
+                    _route_log_value(
+                        session_entry.session_id if session_entry else "?"
+                    ),
                 )
-            elif agent_result.get("compression_exhausted") and session_entry and session_key:
+            elif (
+                not _is_contextual_cron
+                and agent_result.get("compression_exhausted")
+                and session_entry
+                and session_key
+            ):
                 logger.info(
                     "Auto-resetting session %s after compression exhaustion.",
                     session_entry.session_id,
@@ -18396,7 +19583,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass  # Skip all transcript writes — don't grow a broken session
             elif not history:
                 tool_defs = agent_result.get("tools", [])
-                await self.async_session_store.append_to_transcript(
+                await self._write_or_stage_transcript_entry(
+                    event,
                     session_entry.session_id,
                     {
                         "role": "session_meta",
@@ -18404,7 +19592,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "model": _resolve_gateway_model(),
                         "platform": source.platform.value if source.platform else "",
                         "timestamp": ts,
-                    }
+                    },
+                    skip_db=False,
+                    contextual_execution_id=(
+                        _contextual_authority.execution_id
+                        if _is_contextual_cron
+                        else None
+                    ),
                 )
             
             # The agent already persisted these messages to SQLite via
@@ -18417,7 +19611,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # the flag (default = self._session_db is not None) keeps the
             # persistence contract explicit and lets any future non-persisting
             # runtime opt into a gateway-side write by returning False.
-            agent_persisted = agent_result.get("agent_persisted", self._session_db is not None)
+            agent_persisted = (
+                False
+                if _is_contextual_cron
+                else agent_result.get("agent_persisted", self._session_db is not None)
+            )
 
             # Find only the NEW messages from this turn (skip history we loaded).
             # Use the filtered history length (history_offset) that was actually
@@ -18446,6 +19644,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         else ts
                     ),
                 }
+                if _is_contextual_cron:
+                    _user_entry["display_kind"] = "hidden"
                 if event.message_id:
                     _user_entry["message_id"] = str(event.message_id)
                 # Dedupe: skip if this platform message_id is already in the
@@ -18464,11 +19664,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         event.message_id, session_entry.session_id,
                     )
                 else:
-                    await self.async_session_store.append_to_transcript(
+                    await self._write_or_stage_transcript_entry(
+                        event,
                         session_entry.session_id,
                         _user_entry,
                         skip_db=agent_persisted,
+                        contextual_execution_id=(
+                            _contextual_authority.execution_id
+                            if _is_contextual_cron
+                            else None
+                        ),
                     )
+                    if _is_contextual_cron:
+                        await self._write_or_stage_transcript_entry(
+                            event,
+                            session_entry.session_id,
+                            {
+                                "role": "assistant",
+                                "content": "[contextual cron failed before producing a response]",
+                                "display_kind": "hidden",
+                                "timestamp": ts,
+                            },
+                            skip_db=False,
+                            contextual_execution_id=_contextual_authority.execution_id,
+                        )
             else:
                 history_len = agent_result.get("history_offset", len(history))
                 new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
@@ -18488,20 +19707,61 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             else ts
                         ),
                     }
+                    _apply_contextual_transcript_visibility(
+                        _user_entry,
+                        contextual=_is_contextual_cron,
+                        intentional_silence=_intentional_silence,
+                    )
                     if event.message_id:
                         _user_entry["message_id"] = str(event.message_id)
-                    await self.async_session_store.append_to_transcript(
+                    await self._write_or_stage_transcript_entry(
+                        event,
                         session_entry.session_id,
                         _user_entry,
                         skip_db=agent_persisted,
+                        contextual_execution_id=(
+                            _contextual_authority.execution_id
+                            if _is_contextual_cron
+                            else None
+                        ),
                     )
                     if response:
-                        await self.async_session_store.append_to_transcript(
+                        _assistant_entry = {
+                            "role": "assistant",
+                            "content": response,
+                            "timestamp": ts,
+                        }
+                        _apply_contextual_transcript_visibility(
+                            _assistant_entry,
+                            contextual=_is_contextual_cron,
+                            intentional_silence=_intentional_silence,
+                        )
+                        await self._write_or_stage_transcript_entry(
+                            event,
                             session_entry.session_id,
-                            {"role": "assistant", "content": response, "timestamp": ts},
+                            _assistant_entry,
                             skip_db=agent_persisted,
+                            contextual_execution_id=(
+                                _contextual_authority.execution_id
+                                if _is_contextual_cron
+                                else None
+                            ),
                         )
                 else:
+                    if _is_contextual_cron:
+                        new_messages = _ensure_contextual_user_delta(
+                            new_messages,
+                            content=(
+                                persist_user_message
+                                if persist_user_message is not None
+                                else message_text
+                            ),
+                            timestamp=(
+                                persist_user_timestamp
+                                if persist_user_timestamp is not None
+                                else ts
+                            ),
+                        )
                     # Attach the inbound platform message_id to the first user
                     # entry written this turn so platform-level quote-resolution
                     # (e.g. Yuanbao QuoteContextMiddleware's transcript fallback)
@@ -18513,6 +19773,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             continue
                         # Add timestamp to each message for debugging
                         entry = {**msg, "timestamp": ts}
+                        _apply_contextual_transcript_visibility(
+                            entry,
+                            contextual=_is_contextual_cron,
+                            intentional_silence=_intentional_silence,
+                        )
                         if (
                             not _user_msg_id_attached
                             and msg.get("role") == "user"
@@ -18521,18 +19786,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         ):
                             entry["message_id"] = str(event.message_id)
                             _user_msg_id_attached = True
-                        await self.async_session_store.append_to_transcript(
-                            session_entry.session_id, entry,
+                        await self._write_or_stage_transcript_entry(
+                            event,
+                            session_entry.session_id,
+                            entry,
                             skip_db=agent_persisted,
+                            contextual_execution_id=(
+                                _contextual_authority.execution_id
+                                if _is_contextual_cron
+                                else None
+                            ),
                         )
             
             # Token counts and model are now persisted by the agent directly.
             # Keep only last_prompt_tokens here for context-window tracking and
             # compression decisions.
-            await self.async_session_store.update_session(
-                session_entry.session_key,
-                last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
-            )
+            if _is_contextual_cron:
+                event.metadata["contextual_cron_last_prompt_tokens"] = int(
+                    agent_result.get("last_prompt_tokens", 0) or 0
+                )
+            else:
+                await self.async_session_store.update_session(
+                    session_entry.session_key,
+                    last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
+                    touch_activity=True,
+                )
 
             # Re-baseline the cached agent's message_count snapshot now that
             # ALL of this turn's transcript writes are done — the agent's
@@ -18564,20 +19842,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _intentional_silence:
                 logger.info(
                     "Suppressing intentional silence marker for session %s",
-                    session_entry.session_id,
+                    _route_log_value(session_entry.session_id),
                 )
                 response = ""
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
             # Skip when streaming TTS already delivered audio for this turn (#60671).
-            _stts_adapter = self._adapter_for_source(source)
+            _stts_adapter = (
+                None if _is_contextual_cron else self._adapter_for_source(source)
+            )
             _streaming_tts_done = (
                 _stts_adapter is not None
                 and bool(getattr(_stts_adapter, "_streaming_tts_turn_completed", lambda *_a, **_k: False)(session_key, run_generation))
             )
             if (
-                not _streaming_tts_done
+                not _is_contextual_cron
+                and not _streaming_tts_done
                 and self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent)
             ):
                 await self._send_voice_reply(event, response)
@@ -18593,7 +19874,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # content the user hasn't seen (streaming only sent earlier
             # partial output before the failure).  Without this guard,
             # users see the agent "stop responding without explanation."
-            if agent_result.get("already_sent") and not agent_result.get("failed"):
+            if (
+                not _is_contextual_cron
+                and agent_result.get("already_sent")
+                and not agent_result.get("failed")
+            ):
                 if response:
                     _media_adapter = self._adapter_for_source(source)
                     if _media_adapter:
@@ -18623,7 +19908,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Stop typing indicator on error too, retaining Slack thread/workspace
             # routing so a failed turn cannot leave its status visible.
             try:
-                _err_adapter = self._adapter_for_source(source)
+                _err_adapter = (
+                    None if _is_contextual_cron else self._adapter_for_source(source)
+                )
                 _stop_with_metadata = getattr(
                     type(_err_adapter), "_stop_typing_with_metadata", None
                 )
@@ -18639,7 +19926,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await _err_adapter.stop_typing(source.chat_id)
             except Exception:
                 pass
-            logger.exception("Agent error in session %s", session_key)
+            if _is_contextual_cron:
+                logger.error("Contextual cron agent execution failed.")
+            else:
+                logger.exception(
+                    "Agent error in session %s",
+                    _route_log_value(session_key),
+                )
             # Crash-resilience for failures that happen before AIAgent enters
             # run_conversation() (for example: provider/httpx client init
             # failures). In that path the agent cannot persist the current
@@ -18649,10 +19942,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 if 'message_text' in locals() and message_text is not None and session_entry is not None:
                     _already_persisted = False
-                    try:
-                        _recent_transcript = await self.async_session_store.load_transcript(session_entry.session_id)
-                    except Exception:
-                        _recent_transcript = []
+                    if _is_contextual_cron:
+                        _recent_transcript = _event_metadata.get(
+                            "contextual_cron_transcript_entries", []
+                        )
+                        if not isinstance(_recent_transcript, list):
+                            _recent_transcript = []
+                    else:
+                        try:
+                            _recent_transcript = await self.async_session_store.load_transcript(
+                                session_entry.session_id
+                            )
+                        except Exception:
+                            _recent_transcript = []
                     for _msg in reversed(_recent_transcript[-10:]):
                         if _msg.get("role") == "user":
                             _expected_user_content = (
@@ -18676,14 +19978,56 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 else time.time()
                             ),
                         }
+                        if _is_contextual_cron:
+                            _user_entry["display_kind"] = "hidden"
                         if getattr(event, "message_id", None):
                             _user_entry["message_id"] = str(event.message_id)
-                        await self.async_session_store.append_to_transcript(
+                        await self._write_or_stage_transcript_entry(
+                            event,
                             session_entry.session_id,
                             _user_entry,
+                            skip_db=False,
+                            contextual_execution_id=(
+                                _contextual_authority.execution_id
+                                if _is_contextual_cron
+                                else None
+                            ),
                         )
             except Exception:
                 logger.debug("Failed to persist inbound user message after agent exception", exc_info=True)
+            if _is_contextual_cron:
+                _event_metadata["contextual_cron_result"] = {
+                    "completed": False,
+                    "outcome": "failure",
+                    "error": "Contextual cron agent execution failed.",
+                }
+                # Preserve transcript alternation without exposing provider or
+                # exception details to the next human turn.
+                try:
+                    _recent_transcript = _event_metadata.get(
+                        "contextual_cron_transcript_entries", []
+                    )
+                    if not isinstance(_recent_transcript, list):
+                        _recent_transcript = []
+                    if _recent_transcript and _recent_transcript[-1].get("role") == "user":
+                        await self._write_or_stage_transcript_entry(
+                            event,
+                            session_entry.session_id,
+                            {
+                                "role": "assistant",
+                                "content": "[Scheduled contextual turn failed.]",
+                                "display_kind": "hidden",
+                                "timestamp": time.time(),
+                            },
+                            skip_db=False,
+                            contextual_execution_id=_contextual_authority.execution_id,
+                        )
+                except Exception:
+                    logger.debug(
+                        "Failed to repair contextual transcript alternation",
+                        exc_info=True,
+                    )
+                return None
             # Log full details server-side only; never expose raw exception
             # types or messages to end users (info-leakage risk).
             status_hint = ""
@@ -21809,32 +23153,75 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Returns a list of reset tokens; pass them to ``_clear_session_env``
         in a ``finally`` block.
         """
-        from gateway.session_context import set_session_vars
-        # Propagate the adapter's async-delivery capability so async tools
-        # (terminal notify_on_complete / watch_patterns, delegate_task
-        # background=True) know whether this channel can wake a later turn.
-        # Default True keeps CLI / unknown paths working; stateless adapters
-        # (api_server) declare supports_async_delivery=False. Use getattr so
-        # bare runners built via object.__new__ (tests) without self.adapters
-        # don't blow up — they simply default to supported.
-        _adapters = getattr(self, "adapters", None) or {}
-        _adapter = _adapters.get(context.source.platform)
-        _async_delivery = getattr(_adapter, "supports_async_delivery", True)
+        from gateway.session_context import (
+            _get_contextual_turn_authority,
+            set_session_vars,
+        )
+
+        # Contextual status comes only from the gateway-owned task-local
+        # admission authority.  Event metadata and the human adapter are not
+        # capability authorities for an unattended scheduled turn.
+        _contextual_authority = _get_contextual_turn_authority()
+        _is_contextual = _contextual_authority is not None
+        if _is_contextual:
+            if (
+                _contextual_authority.session_key != context.session_key
+                or _contextual_authority.admitted_session_id != context.session_id
+                or (
+                    _contextual_authority.admitted_route_instance_id is not None
+                    and _contextual_authority.admitted_route_instance_id
+                    != context.route_instance_id
+                )
+                or _contextual_authority.admitted_routing_revision
+                != int(context.routing_revision)
+            ):
+                raise RuntimeError(
+                    "contextual session environment does not match admitted authority"
+                )
+            from cron.contextual import CONTEXTUAL_EXECUTION_POLICY
+
+            _async_delivery = CONTEXTUAL_EXECUTION_POLICY.async_delivery
+            _cron_session = "1"
+        else:
+            # Propagate the adapter's async-delivery capability so async tools
+            # (terminal notify_on_complete / watch_patterns, delegate_task
+            # background=True) know whether this channel can wake a later turn.
+            # Default True keeps CLI / unknown paths working; stateless adapters
+            # (api_server) declare supports_async_delivery=False. Use getattr so
+            # bare runners built via object.__new__ (tests) without self.adapters
+            # don't blow up — they simply default to supported.
+            _adapters = getattr(self, "adapters", None) or {}
+            _adapter = _adapters.get(context.source.platform)
+            _async_delivery = getattr(_adapter, "supports_async_delivery", True)
+            _cron_session = ""
+        (
+            canonical_chat_type,
+            canonical_chat_id,
+            canonical_thread_id,
+            canonical_parent_chat_id,
+        ) = canonical_route_coordinates(context.source)
         return set_session_vars(
             platform=context.source.platform.value,
-            chat_id=context.source.chat_id,
-            chat_type=(
-                str(context.source.chat_type) if context.source.chat_type else ""
-            ),
+            chat_id=canonical_chat_id,
+            chat_type=canonical_chat_type,
             chat_name=context.source.chat_name or "",
-            thread_id=str(context.source.thread_id) if context.source.thread_id else "",
+            thread_id=canonical_thread_id,
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
+            session_id=context.session_id,
+            route_instance_id=context.route_instance_id,
+            route_principal={
+                "scope_id": str(context.source.scope_id or ""),
+                "parent_chat_id": canonical_parent_chat_id,
+                "user_id_alt": str(context.source.user_id_alt or ""),
+                "chat_id_alt": str(context.source.chat_id_alt or ""),
+            },
+            routing_revision=context.routing_revision,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
-            cron_session="",
+            cron_session=_cron_session,
         )
 
     def _clear_session_env(self, tokens: list) -> None:
@@ -23328,6 +24715,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._persist_active_agents()
         return True
 
+    def _detach_preheld_turn_lease(
+        self,
+        session_key: str,
+        run_generation: int,
+        expected_token: object,
+    ) -> bool:
+        """Clear turn-local ownership without releasing a lane-owned lease."""
+        if not session_key:
+            return False
+        state = self._peek_session_state(session_key)
+        if state is None:
+            return False
+        turn = state.turn
+        if (
+            turn.lease_token is not expected_token
+            or turn.lease_generation != run_generation
+        ):
+            return False
+        turn.lease_token = None
+        turn.lease_generation = None
+        return True
+
     def _release_turn_lease(self, session_key: str, run_generation: int) -> bool:
         """Release the turn lease acquired by (``session_key``, ``run_generation``).
 
@@ -23385,6 +24794,145 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("Failed to rebind turn lease", exc_info=True)
             return False
+
+    async def _publish_gateway_compression_route(
+        self,
+        session_key: str,
+        expected_session_id: str,
+        new_session_id: str,
+        run_generation: Optional[int],
+    ) -> Optional[Any]:
+        """Move lease then CAS the backing route, rolling the lease back on failure."""
+        if run_generation is None:
+            # Compatibility for direct ``_run_agent`` callers outside the gateway
+            # turn lifecycle. Real admitted gateway turns always carry a generation
+            # and use the strict lease/revision CAS path below.
+            entries = getattr(self.session_store, "_entries", {})
+            entry = entries.get(session_key) if isinstance(entries, dict) else None
+            if entry is None or str(getattr(entry, "session_id", "")) != str(
+                expected_session_id
+            ):
+                return None
+            entry.session_id = new_session_id
+            if hasattr(entry, "routing_revision"):
+                entry.routing_revision = int(getattr(entry, "routing_revision", 0)) + 1
+            save = getattr(self.session_store, "_save", None)
+            if callable(save):
+                save()
+            return entry
+
+        state = self._peek_session_state(session_key)
+        turn = state.turn if state is not None else None
+        lease_token = turn.lease_token if turn is not None else None
+        held_token = bool(
+            turn is not None
+            and lease_token is not None
+            and turn.lease_generation == run_generation
+        )
+        route_before = None
+        peek_route = getattr(self.session_store, "peek_session_entry", None)
+        if callable(peek_route):
+            route_before = peek_route(session_key)
+        expected_revision = (
+            int(getattr(route_before, "routing_revision", 0))
+            if route_before is not None
+            and str(getattr(route_before, "session_id", "")) == expected_session_id
+            else None
+        )
+        lease_rebound = False
+        if held_token:
+            lease_rebound = self._rebind_turn_lease(
+                session_key,
+                run_generation,
+                new_session_id,
+            )
+            if not lease_rebound:
+                logger.error(
+                    "Refusing session compression route %s -> %s: the held turn "
+                    "lease could not be rebound without merging live domains",
+                    expected_session_id,
+                    new_session_id,
+                )
+                return None
+        try:
+            advanced = await self.async_session_store.advance_compression_session(
+                session_key,
+                expected_session_id,
+                new_session_id,
+            )
+        except BaseException:
+            if lease_rebound and not self._rebind_turn_lease(
+                session_key,
+                run_generation,
+                expected_session_id,
+            ):
+                logger.critical(
+                    "Compression route publication failed and the lease could not "
+                    "be rolled back from %s to %s",
+                    new_session_id,
+                    expected_session_id,
+                )
+            raise
+        if advanced is None and lease_rebound:
+            if not self._rebind_turn_lease(
+                session_key,
+                run_generation,
+                expected_session_id,
+            ):
+                raise RuntimeError(
+                    "Compression route CAS failed and turn-lease rollback failed"
+                )
+        if advanced is None:
+            return None
+
+        advanced_revision = int(getattr(advanced, "routing_revision", -1))
+        publication_matches = bool(
+            str(getattr(advanced, "session_key", "")) == session_key
+            and str(getattr(advanced, "session_id", "")) == new_session_id
+            and (
+                expected_revision is None
+                or advanced_revision == expected_revision + 1
+            )
+        )
+        live_route = peek_route(session_key) if callable(peek_route) else None
+        route_still_current = bool(
+            live_route is not None
+            and str(getattr(live_route, "session_id", "")) == new_session_id
+            and int(getattr(live_route, "routing_revision", -1))
+            == advanced_revision
+        )
+
+        ownership_current = True
+        if held_token:
+            current_state = self._peek_session_state(session_key)
+            current_turn = current_state.turn if current_state is not None else None
+            registry = getattr(self, "_turn_leases", None)
+            validate_holder = getattr(registry, "is_current_holder", None)
+            ownership_current = bool(
+                current_turn is not None
+                and current_turn.lease_token is lease_token
+                and current_turn.lease_generation == run_generation
+                and callable(validate_holder)
+                and validate_holder(
+                    lease_token,
+                    session_id=new_session_id,
+                    owner_key=getattr(lease_token, "owner_key", ""),
+                    generation=int(getattr(lease_token, "generation", -1)),
+                )
+            )
+
+        if not (publication_matches and route_still_current and ownership_current):
+            logger.error(
+                "Discarding stale compression route publication %s -> %s: "
+                "publication=%s route=%s owner=%s",
+                expected_session_id,
+                new_session_id,
+                publication_matches,
+                route_still_current,
+                ownership_current,
+            )
+            return None
+        return advanced
 
     def _clear_conversation_scope(self, session_key: str, *, reason: str) -> None:
         """Clear ALL conversation-scoped per-session state for ``session_key``.
@@ -24786,6 +26334,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
         message_type: Optional[str] = None,
+        persist_user_display_kind: Optional[str] = None,
+        suppress_output: bool = False,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -24797,7 +26347,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         change for single-profile gateways.
         """
         if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            return await self._run_agent_inner(
+            result = await self._run_agent_inner(
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
@@ -24805,19 +26355,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
                 message_type=message_type,
+                persist_user_display_kind=persist_user_display_kind,
+                suppress_output=suppress_output,
             )
+        else:
+            profile_home = self._resolve_profile_home_for_source(source)
+            with _profile_runtime_scope(profile_home):
+                result = await self._run_agent_inner(
+                    message, context_prompt, history, source, session_id,
+                    session_key=session_key, run_generation=run_generation,
+                    _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
+                    channel_prompt=channel_prompt, moa_config=moa_config,
+                    persist_user_message=persist_user_message,
+                    persist_user_timestamp=persist_user_timestamp,
+                    message_type=message_type,
+                    persist_user_display_kind=persist_user_display_kind,
+                    suppress_output=suppress_output,
+                )
 
-        profile_home = self._resolve_profile_home_for_source(source)
-        with _profile_runtime_scope(profile_home):
-            return await self._run_agent_inner(
-                message, context_prompt, history, source, session_id,
-                session_key=session_key, run_generation=run_generation,
-                _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
-                channel_prompt=channel_prompt, moa_config=moa_config,
-                persist_user_message=persist_user_message,
-                persist_user_timestamp=persist_user_timestamp,
-                message_type=message_type,
+        legacy_session_id = result.get("session_id")
+        if (
+            run_generation is None
+            and session_key
+            and legacy_session_id
+            and str(legacy_session_id) != str(session_id)
+        ):
+            advanced = await self._publish_gateway_compression_route(
+                session_key,
+                session_id,
+                str(legacy_session_id),
+                None,
             )
+            if advanced is not None:
+                record_peer = getattr(
+                    self.session_store,
+                    "_record_gateway_session_peer",
+                    None,
+                )
+                if callable(record_peer):
+                    record_peer(str(legacy_session_id), session_key, source)
+                self._sync_telegram_topic_binding(
+                    source,
+                    advanced,
+                    reason="agent-run-compression",
+                )
+        return result
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
         """Resolve the profile name for an inbound source via configured routes.
@@ -24939,6 +26521,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
         message_type: Optional[str] = None,
+        persist_user_display_kind: Optional[str] = None,
+        suppress_output: bool = False,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -24954,6 +26538,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         # ---- Proxy mode: delegate to remote API server ----
         if self._get_proxy_url():
+            if suppress_output:
+                return {
+                    "final_response": "",
+                    "messages": [],
+                    "api_calls": 0,
+                    "tools": [],
+                    "completed": False,
+                    "error": "Contextual/internal turns cannot execute through gateway proxy mode.",
+                }
             return await self._run_agent_via_proxy(
                 message=message,
                 context_prompt=context_prompt,
@@ -24980,6 +26573,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
+        execution_policy = None
+        allowed_tool_names = None
+        if suppress_output:
+            from cron.contextual import (
+                CONTEXTUAL_EXECUTION_POLICY,
+                contextual_allowed_tool_names,
+                contextual_live_tool_policy,
+            )
+
+            execution_policy = CONTEXTUAL_EXECUTION_POLICY
+            enabled_toolsets, disabled_toolsets = contextual_live_tool_policy(
+                enabled_toolsets, disabled_toolsets
+            )
+            allowed_tool_names = contextual_allowed_tool_names()
 
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):
@@ -25086,7 +26693,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _live_status_mode = resolve_display_setting(
             user_config, platform_key, "live_status", "full"
         )
-        _live_status_adapter = self._adapter_for_source(source)
+        _live_status_adapter = (
+            None if suppress_output else self._adapter_for_source(source)
+        )
         if not getattr(_live_status_adapter, "supports_status_text", False):
             _live_status_adapter = None
         if _live_status_mode == "off":
@@ -25118,6 +26727,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         _thinking_enabled = _thinking_mode != "off"
         needs_progress_queue = tool_progress_enabled or _thinking_enabled
+        if suppress_output:
+            progress_mode = "off"
+            tool_progress_enabled = False
+            log_mode_enabled = False
+            log_queue = None
+            interim_assistant_messages_enabled = False
+            _thinking_enabled = False
+            needs_progress_queue = False
+            _live_status_adapter = None
 
 
         # Queue for progress messages (thread-safe)
@@ -25139,7 +26757,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # other platform / when not in a voice channel.
         _voice_ack_fired = [False]
         _voice_ack_guild: List[Optional[int]] = [None]
-        if source.platform == Platform.DISCORD:
+        if not suppress_output and source.platform == Platform.DISCORD:
             _va = self.adapters.get(Platform.DISCORD)
             # source.chat_id is the linked text channel; resolve the guild whose
             # voice connection is bound to it (mirrors DiscordAdapter.play_tts).
@@ -25160,7 +26778,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # from the tool-progress / "⏳ Working — N min" / status-callback bubbles
         # are collected here and deleted after the final response lands.
         # Failed runs skip cleanup so the bubbles remain as breadcrumbs.
-        _cleanup_progress = bool(
+        _cleanup_progress = (not suppress_output) and bool(
             resolve_display_setting(user_config, platform_key, "cleanup_progress")
         )
         _cleanup_adapter = self._adapter_for_source(source) if _cleanup_progress else None
@@ -25206,6 +26824,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_config=user_config,
             enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets,
+            allowed_tool_names=allowed_tool_names,
+            execution_policy=execution_policy,
             log_mode_enabled=log_mode_enabled,
             interim_assistant_messages_enabled=interim_assistant_messages_enabled,
             needs_progress_queue=needs_progress_queue,
@@ -25220,9 +26840,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             run_generation=run_generation,
             _interrupt_depth=_interrupt_depth,
             event_message_id=event_message_id,
-            moa_config=moa_config,
+            moa_config=None if suppress_output else moa_config,
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
+            persist_user_display_kind=persist_user_display_kind,
+            suppress_output=suppress_output,
+            message_type=message_type,
         )
         turn_runner = TurnRunner(self, turn_ctx)
         # Callback invoked by agent on tool lifecycle events — extracted to
@@ -25247,7 +26870,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # would otherwise create a thread that all subsequent replies
         # (including the final answer) would inherit (#18859).
         _progress_reply_in_thread = True
-        if source.platform == Platform.SLACK:
+        if not suppress_output and source.platform == Platform.SLACK:
             _slack_adapter_for_progress = self._adapter_for_source(source)
             if _slack_adapter_for_progress is not None:
                 try:
@@ -25411,7 +27034,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         turn_ctx._event_callback_sync = turn_runner._event_callback_sync
 
         # Bridge sync status_callback → async adapter.send for context pressure
-        _status_adapter = self._adapter_for_source(source)
+        _status_adapter = None if suppress_output else self._adapter_for_source(source)
         _status_chat_id = source.chat_id
         if source.platform == Platform.FEISHU and source.thread_id and event_message_id:
             # Feishu topics only keep messages inside the topic when they are
@@ -25458,13 +27081,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         #
         # Gates: voice input, auto-TTS enabled for this chat, adapter
         # supports streaming, and a usable streaming TTS provider configured.
-        _stts_adapter = self._adapter_for_source(source)
+        _stts_adapter = None if suppress_output else self._adapter_for_source(source)
         _is_voice_input = (
             message_type is not None
             and str(getattr(message_type, "value", message_type)).lower() == "voice"
         )
         if (
-            _stts_adapter is not None
+            not suppress_output
+            and _stts_adapter is not None
             and _is_voice_input
             and _stts_adapter._should_auto_tts_for_chat(source.chat_id)
         ):
@@ -25520,7 +27144,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return
                 await asyncio.sleep(0.05)
 
-        stream_task = asyncio.create_task(_start_stream_consumer())
+        if not suppress_output:
+            stream_task = asyncio.create_task(_start_stream_consumer())
         
         # Track this agent as running for this session (for interrupt support)
         # We do this in a callback after the agent is created
@@ -25619,7 +27244,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as _mon_err:
                     logger.debug("monitor_for_interrupt error (will retry): %s", _mon_err)
         
-        interrupt_monitor = asyncio.create_task(monitor_for_interrupt())
+        interrupt_monitor = (
+            None
+            if suppress_output
+            else asyncio.create_task(monitor_for_interrupt())
+        )
 
         # Periodic "still working" notifications for long-running tasks.
         # Fires every N seconds so the user knows the agent hasn't died.
@@ -25727,7 +27356,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
 
-        _notify_task = asyncio.create_task(_notify_long_running())
+        _notify_task = (
+            None if suppress_output else asyncio.create_task(_notify_long_running())
+        )
 
         def _stream_confirmed_final_delivery(
             consumer,
@@ -25867,7 +27498,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         break
                     # Backup interrupt check: if the monitor task died or
                     # missed the interrupt, catch it here.
-                    if not _interrupt_detected.is_set() and session_key:
+                    if (
+                        not suppress_output
+                        and not _interrupt_detected.is_set()
+                        and session_key
+                    ):
                         _backup_adapter = self._adapter_for_source(source)
                         _backup_agent = agent_holder[0]
                         if (_backup_adapter and _backup_agent
@@ -25892,7 +27527,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "Backup interrupt detected for session %s "
                                 "(monitor task state: %s)",
                                 session_key,
-                                "done" if interrupt_monitor.done() else "running",
+                                "done"
+                                if interrupt_monitor is not None and interrupt_monitor.done()
+                                else "running",
                             )
                             _backup_agent.interrupt(_bp_text)
                             _interrupt_detected.set()
@@ -25933,7 +27570,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         except Exception:
                             pass
                     # Staged warning: fire once before escalating to full timeout.
-                    if (not _warning_fired and _agent_warning is not None
+                    if (not suppress_output and not _warning_fired and _agent_warning is not None
                             and _idle_secs >= _agent_warning):
                         _warning_fired = True
                         _warn_adapter = self._adapter_for_source(source)
@@ -25969,7 +27606,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         ).start()
                         break
                     # Backup interrupt check (same as unlimited path).
-                    if not _interrupt_detected.is_set() and session_key:
+                    if (
+                        not suppress_output
+                        and not _interrupt_detected.is_set()
+                        and session_key
+                    ):
                         _backup_adapter = self._adapter_for_source(source)
                         _backup_agent = agent_holder[0]
                         if (_backup_adapter and _backup_agent
@@ -25994,7 +27635,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "Backup interrupt detected for session %s "
                                 "(monitor task state: %s)",
                                 session_key,
-                                "done" if interrupt_monitor.done() else "running",
+                                "done"
+                                if interrupt_monitor is not None and interrupt_monitor.done()
+                                else "running",
                             )
                             _backup_agent.interrupt(_bp_text)
                             _interrupt_detected.set()
@@ -26137,7 +27780,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Use session_key (not source.chat_id) to match adapter's storage keys.
             pending_event = None
             pending = None
-            if result and adapter and session_key:
+            if not suppress_output and result and adapter and session_key:
                 pending_event = _dequeue_pending_event(adapter, session_key)
                 # /queue overflow: after consuming the adapter's "next-up"
                 # slot, promote the next queued event into it so the
@@ -26443,8 +28086,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 progress_task.cancel()
             if log_task:
                 log_task.cancel()
-            interrupt_monitor.cancel()
-            _notify_task.cancel()
+            if interrupt_monitor:
+                interrupt_monitor.cancel()
+            if _notify_task:
+                _notify_task.cancel()
 
             # Wait for stream consumer to finish its final edit
             if stream_task:
@@ -27534,9 +29179,20 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # may arm a schedule and return. Pass the event loop so cron delivery can
     # use live adapters (E2EE support).
     from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
+    from cron.scheduler import set_contextual_authorizer, set_contextual_dispatcher
     cron_stop = threading.Event()
     cron_provider = resolve_cron_scheduler()
-    cron_start_kwargs: Dict[str, Any] = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
+    set_contextual_dispatcher(runner._dispatch_contextual_cron_from_scheduler)
+    set_contextual_authorizer(runner._authorize_contextual_delivery_from_scheduler)
+    gateway_loop = asyncio.get_running_loop()
+    cron_start_kwargs: Dict[str, Any] = {
+        "adapters": runner.adapters,
+        "loop": gateway_loop,
+    }
+    if isinstance(cron_provider, InProcessCronScheduler):
+        cron_start_kwargs["contextual_transcript_recover"] = (
+            runner._recover_contextual_cron_transcripts_from_scheduler
+        )
 
     # Multiplex profiles: tell the built-in ticker which profile homes to
     # tick so secondary-profile cron jobs actually fire (#69377).
@@ -27549,11 +29205,15 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         and getattr(runner.config, "multiplex_profiles", False)
     ):
         try:
-            from hermes_cli.profiles import profiles_to_serve
+            from hermes_cli.profiles import get_active_profile_name, profiles_to_serve
 
             profile_homes = list(profiles_to_serve(multiplex=True))
             if profile_homes:
                 cron_start_kwargs["profile_homes"] = profile_homes
+                active_profile = get_active_profile_name() or "default"
+                profile_adapters = dict(runner._profile_adapters)
+                profile_adapters[active_profile] = runner.adapters
+                cron_start_kwargs["profile_adapters"] = profile_adapters
                 logger.info(
                     "Cron scheduler will tick %d profile(s) under multiplex: %s",
                     len(profile_homes),
@@ -27634,6 +29294,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             "Cron ticker did not exit within %.0fs of shutdown — an in-flight "
             "delivery may have been dropped.", _CRON_SHUTDOWN_DRAIN_TIMEOUT,
         )
+    set_contextual_dispatcher(None)
+    set_contextual_authorizer(None)
     await _await_thread_exit(
         housekeeping_thread, timeout=_HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT
     )

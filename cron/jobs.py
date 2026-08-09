@@ -9,6 +9,7 @@ import contextlib
 import copy
 from contextvars import ContextVar
 from dataclasses import dataclass
+import hashlib
 import json
 import logging
 import shutil
@@ -103,6 +104,8 @@ TICKER_INTERVAL_SECONDS = 60
 # concurrent mark_job_run / advance_next_run calls can clobber each other.
 _jobs_file_lock = threading.RLock()
 _jobs_lock_state = threading.local()
+_contextual_accounting_thread_lock = threading.RLock()
+_contextual_authority_thread_lock = threading.RLock()
 
 # Upper bound on waiting for the cross-process .jobs.lock flock (#60703).
 # Every cron function in the process funnels through _jobs_lock(), and the
@@ -112,6 +115,8 @@ _jobs_lock_state = threading.local()
 # legitimate critical section (field updates only) while keeping the ticker's
 # worst-case stall well under one status-alarm threshold.
 _JOBS_LOCK_TIMEOUT_SECONDS = 30.0
+_CONTEXTUAL_ACCOUNTING_LOCK_TIMEOUT_SECONDS = 30.0
+_CONTEXTUAL_AUTHORITY_LOCK_TIMEOUT_SECONDS = 30.0
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
@@ -291,7 +296,7 @@ def _jobs_lock():
     if depth:
         _jobs_lock_state.depth = depth + 1
         try:
-            yield
+            yield bool(getattr(_jobs_lock_state, "cross_process_acquired", False))
         finally:
             _jobs_lock_state.depth -= 1
         return
@@ -304,6 +309,7 @@ def _jobs_lock():
         # section read it. Reset on entry/exit so stale stamps from unlocked
         # loads or prior sections can never suppress a needed merge.
         _jobs_lock_state.load_stamp = None
+        _jobs_lock_state.cross_process_acquired = False
         lock_fd = None
         try:
             try:
@@ -329,6 +335,7 @@ def _jobs_lock():
                     while True:
                         try:
                             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            _jobs_lock_state.cross_process_acquired = True
                             break
                         except (OSError, IOError):
                             if time.monotonic() >= _deadline:
@@ -349,13 +356,14 @@ def _jobs_lock():
                             time.sleep(0.1)
                 elif msvcrt is not None:
                     getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
+                    _jobs_lock_state.cross_process_acquired = True
             except (OSError, IOError) as e:
                 # Never let a locking failure take down cron writes — fall back to
                 # in-process-only protection (still held via _jobs_file_lock).
                 logger.warning("jobs.json cross-process lock unavailable (%s); "
                                "proceeding with in-process lock only", e)
             try:
-                yield
+                yield bool(_jobs_lock_state.cross_process_acquired)
             finally:
                 if lock_fd is not None:
                     try:
@@ -370,12 +378,167 @@ def _jobs_lock():
         finally:
             _jobs_lock_state.depth = 0
             _jobs_lock_state.load_stamp = None
+            _jobs_lock_state.cross_process_acquired = False
+
+
+@contextlib.contextmanager
+def contextual_accounting_lock():
+    """Serialize the jobs-file + execution-ledger accounting transaction.
+
+    Unlike the general jobs lock this lock fails closed on acquisition errors.
+    Proceeding without cross-process exclusion can consume a finite repeat
+    twice, so reconciliation must retry later instead of degrading safety.
+    """
+    with _contextual_accounting_thread_lock:
+        ensure_dirs()
+        lock_path = _current_cron_store().cron_dir / ".contextual-accounting.lock"
+        lock_fd = open(lock_path, "a+b")
+        acquired = False
+        try:
+            if fcntl is not None:
+                deadline = time.monotonic() + _CONTEXTUAL_ACCOUNTING_LOCK_TIMEOUT_SECONDS
+                while True:
+                    try:
+                        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        acquired = True
+                        break
+                    except (OSError, IOError) as exc:
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError(
+                                f"Timed out acquiring contextual accounting lock {lock_path}"
+                            ) from exc
+                        time.sleep(0.1)
+            elif msvcrt is not None:
+                if os.fstat(lock_fd.fileno()).st_size == 0:
+                    lock_fd.write(b"\0")
+                    lock_fd.flush()
+                lock_fd.seek(0)
+                deadline = time.monotonic() + _CONTEXTUAL_ACCOUNTING_LOCK_TIMEOUT_SECONDS
+                while True:
+                    try:
+                        getattr(msvcrt, "locking")(
+                            lock_fd.fileno(), getattr(msvcrt, "LK_NBLCK"), 1
+                        )
+                        acquired = True
+                        break
+                    except (OSError, IOError) as exc:
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError(
+                                f"Timed out acquiring contextual accounting lock {lock_path}"
+                            ) from exc
+                        time.sleep(0.1)
+            else:  # pragma: no cover - supported hosts provide one primitive
+                raise RuntimeError("No cross-process file-lock primitive is available")
+
+            yield
+        finally:
+            if acquired:
+                try:
+                    if fcntl is not None:
+                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    elif msvcrt is not None:
+                        lock_fd.seek(0)
+                        getattr(msvcrt, "locking")(
+                            lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1
+                        )
+                except (OSError, IOError):
+                    logger.error(
+                        "Failed to release contextual accounting lock %s",
+                        lock_path,
+                        exc_info=True,
+                    )
+            lock_fd.close()
+
+
+@contextlib.contextmanager
+def contextual_authority_lock():
+    """Serialize contextual-authority publication with every jobs replace.
+
+    This lock is intentionally separate from the ordinary jobs lock. The jobs
+    lock may degrade to process-local protection to keep legacy cron alive;
+    this transition lock never degrades because a check/replace race could
+    erase the first contextual job.
+    """
+    with _contextual_authority_thread_lock:
+        ensure_dirs()
+        lock_path = _current_cron_store().cron_dir / ".contextual-authority.lock"
+        lock_fd = open(lock_path, "a+b")
+        acquired = False
+        try:
+            if fcntl is not None:
+                deadline = time.monotonic() + _CONTEXTUAL_AUTHORITY_LOCK_TIMEOUT_SECONDS
+                while True:
+                    try:
+                        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        acquired = True
+                        break
+                    except (OSError, IOError) as exc:
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError(
+                                f"Timed out acquiring contextual authority lock {lock_path}"
+                            ) from exc
+                        time.sleep(0.1)
+            elif msvcrt is not None:
+                if os.fstat(lock_fd.fileno()).st_size == 0:
+                    lock_fd.write(b"\0")
+                    lock_fd.flush()
+                lock_fd.seek(0)
+                deadline = time.monotonic() + _CONTEXTUAL_AUTHORITY_LOCK_TIMEOUT_SECONDS
+                while True:
+                    try:
+                        getattr(msvcrt, "locking")(
+                            lock_fd.fileno(), getattr(msvcrt, "LK_NBLCK"), 1
+                        )
+                        acquired = True
+                        break
+                    except (OSError, IOError) as exc:
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError(
+                                f"Timed out acquiring contextual authority lock {lock_path}"
+                            ) from exc
+                        time.sleep(0.1)
+            else:  # pragma: no cover - supported hosts provide one primitive
+                raise RuntimeError("No cross-process file-lock primitive is available")
+
+            yield
+        finally:
+            if acquired:
+                try:
+                    if fcntl is not None:
+                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    elif msvcrt is not None:
+                        lock_fd.seek(0)
+                        getattr(msvcrt, "locking")(
+                            lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1
+                        )
+                except (OSError, IOError):
+                    logger.error(
+                        "Failed to release contextual authority lock %s",
+                        lock_path,
+                        exc_info=True,
+                    )
+            lock_fd.close()
+
+
+@contextlib.contextmanager
+def contextual_transcript_lock():
+    """Serialize transcript identity-check, append, and outbox acknowledgement.
+
+    The accounting lock is deliberately shared: both operations bridge the
+    execution ledger and another durable store, and neither critical section
+    calls the other. Reusing one fail-closed cross-process lock avoids a second
+    lock-order domain while keeping both crash gaps linearizable.
+    """
+    with contextual_accounting_lock():
+        yield
 
 # Fields on a cron job that must never change after creation. ``id`` is used
 # as a filesystem path component under ``OUTPUT_DIR``; allowing it to be
 # updated lets an unsafe value (``../escape``, absolute path, nested) leak
 # into output writes/deletes.
-_IMMUTABLE_JOB_FIELDS = frozenset({"id"})
+_IMMUTABLE_JOB_FIELDS = frozenset(
+    {"id", "session_key", "context_binding", "origin", "_contextual_binding_version"}
+)
 
 
 def _job_output_dir(job_id: str) -> Path:
@@ -452,6 +615,14 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
     ensure consumers never crash while formatting or running those records.
     """
     normalized = _apply_skill_fields(job)
+    # Migration-safe public default: jobs written before contextual cron are
+    # ordinary isolated jobs. Never infer context from a stray legacy key.
+    from cron.contextual import normalize_session_target
+    normalized["session_target"] = normalize_session_target(
+        normalized.get("session_target")
+    )
+    if normalized["session_target"] != "current":
+        normalized.pop("session_key", None)
     job_id = _coerce_job_text(normalized.get("id"), "unknown")
     prompt = _coerce_job_text(normalized.get("prompt"))
     normalized["id"] = job_id
@@ -520,6 +691,66 @@ def effective_job_state(job: Dict[str, Any]) -> str:
     return stored or "scheduled"
 
 
+_PRIVATE_CONTEXTUAL_JOB_FIELDS = frozenset(
+    {
+        "session_key",
+        "context_binding",
+        "_contextual_binding_version",
+        "_contextual_occurrence_claim",
+        "_pending_accounting_execution_ids",
+        "_last_accounted_execution_id",
+    }
+)
+_PUBLIC_EXECUTION_FIELDS = frozenset(
+    {
+        "id",
+        "status",
+        "outcome",
+        "phase",
+        "created_at",
+        "started_at",
+        "finished_at",
+        "updated_at",
+    }
+)
+
+
+def public_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the stable public API shape without routing or ledger authority.
+
+    Internal bindings, concrete session identities, result payloads, claims,
+    and delivery state are scheduler authority and must never cross a public
+    list/get/create/update boundary.
+    """
+    from cron.contextual import normalize_session_target
+
+    source = copy.deepcopy(dict(job))
+    public = source
+    for key in _PRIVATE_CONTEXTUAL_JOB_FIELDS:
+        public.pop(key, None)
+    public_target = normalize_session_target(source.get("session_target"))
+    if public_target == "current":
+        public["session_target"] = "current"
+        public.pop("origin", None)
+        # Contextual claim payloads are feature-private authority. Isolated
+        # jobs retain their legacy run/fire claim projection unchanged.
+        public.pop("run_claim", None)
+        public.pop("fire_claim", None)
+    else:
+        public.pop("session_target", None)
+    execution = source.get("latest_execution")
+    if public_target == "current":
+        if isinstance(execution, dict):
+            public["latest_execution"] = {
+                key: execution.get(key)
+                for key in _PUBLIC_EXECUTION_FIELDS
+                if execution.get(key) is not None
+            }
+        else:
+            public.pop("latest_execution", None)
+    return public
+
+
 def _secure_dir(path: Path):
     """Set directory to owner-only access (0700). No-op on Windows."""
     try:
@@ -582,6 +813,123 @@ def ensure_dirs():
     store.output_dir.mkdir(parents=True, exist_ok=True)
     _secure_dir(store.cron_dir)
     _secure_dir(store.output_dir)
+
+
+def _contextual_jobs_authority_marker() -> Path:
+    """Permanent profile marker that makes degraded whole-file writes strict."""
+    return _current_cron_store().cron_dir / ".contextual-jobs-authority"
+
+
+def _contextual_jobs_authority_pending_marker() -> Path:
+    """Crash-recovery receipt for the first contextual jobs-file commit."""
+    return _current_cron_store().cron_dir / ".contextual-jobs-authority.pending"
+
+
+def _fsync_contextual_authority_dir_unlocked() -> None:
+    """Best-effort durability barrier for authority sidecar changes."""
+    marker = _contextual_jobs_authority_marker()
+    try:
+        dir_fd = os.open(marker.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        # Directory fsync is unavailable on some platforms/filesystems.
+        pass
+
+
+def _jobs_payload_sha256(path: Union[str, Path]) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _publish_contextual_jobs_authority_pending_unlocked(tmp_path: str) -> None:
+    """Durably record the exact payload expected to complete first authority."""
+    pending = _contextual_jobs_authority_pending_marker()
+    atomic_write_text(
+        pending,
+        json.dumps(
+            {
+                "version": 1,
+                "jobs_payload_sha256": _jobs_payload_sha256(tmp_path),
+            },
+            sort_keys=True,
+        ),
+        create_mode=0o600,
+    )
+    _fsync_contextual_authority_dir_unlocked()
+
+
+def _remove_contextual_authority_path_unlocked(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    _fsync_contextual_authority_dir_unlocked()
+
+
+def _recover_contextual_jobs_authority_unlocked(jobs_file: Path) -> bool:
+    """Resolve a crash-interrupted first-authority transition.
+
+    The pending receipt is durable before the permanent marker is published.
+    Therefore a matching jobs payload proves the first contextual commit
+    crossed the atomic replacement boundary; a mismatch proves that it did
+    not and both sidecars must be rolled back.
+    """
+    marker = _contextual_jobs_authority_marker()
+    pending = _contextual_jobs_authority_pending_marker()
+    if not pending.exists():
+        return marker.exists()
+
+    try:
+        payload = json.loads(pending.read_text(encoding="utf-8"))
+        expected = payload.get("jobs_payload_sha256")
+    except (OSError, ValueError, TypeError) as exc:
+        raise RuntimeError(
+            f"Unreadable contextual authority transition receipt {pending}"
+        ) from exc
+    if not isinstance(expected, str) or len(expected) != 64:
+        raise RuntimeError(
+            f"Invalid contextual authority transition receipt {pending}"
+        )
+
+    try:
+        committed = _jobs_payload_sha256(jobs_file) == expected
+    except FileNotFoundError:
+        committed = False
+
+    if committed:
+        if not marker.exists():
+            _publish_contextual_jobs_authority_unlocked()
+        _remove_contextual_authority_path_unlocked(pending)
+        return True
+
+    _remove_contextual_authority_path_unlocked(marker)
+    _remove_contextual_authority_path_unlocked(pending)
+    return False
+
+
+def _contextual_jobs_authority_enabled(jobs_file: Optional[Path] = None) -> bool:
+    """Return committed authority after resolving any interrupted transition."""
+    target = jobs_file or _current_cron_store().jobs_file
+    with contextual_authority_lock():
+        return _recover_contextual_jobs_authority_unlocked(target)
+
+
+def _publish_contextual_jobs_authority_unlocked() -> None:
+    """Publish the marker while the caller holds contextual_authority_lock()."""
+    marker = _contextual_jobs_authority_marker()
+    fd = os.open(marker, os.O_CREAT | os.O_WRONLY, 0o600)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    _secure_file(marker)
+    _fsync_contextual_authority_dir_unlocked()
 
 
 # =============================================================================
@@ -707,6 +1055,19 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         f"  - Cron: '0 9 * * *' (cron expression)\n"
         f"  - Timestamp: '2026-02-03T14:00:00' (one-shot at time)"
     )
+
+
+def _schedule_dict(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a structured schedule without mutating legacy persisted strings."""
+    value = job.get("schedule")
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            return parse_schedule(value)
+        except ValueError:
+            return {}
+    return {}
 
 
 def _ensure_aware(dt: datetime) -> datetime:
@@ -1246,6 +1607,54 @@ def _merge_unexpected_disk_jobs(
     return jobs + recovered
 
 
+def _replace_jobs_payload_with_authority(
+    tmp_path: str,
+    jobs_file: Path,
+    jobs: List[Dict[str, Any]],
+) -> None:
+    """Replace jobs.json while atomically enforcing contextual authority."""
+    publishes_contextual = any(
+        isinstance(job, dict)
+        and job.get("session_target", "isolated") == "current"
+        for job in jobs
+    )
+    marker = _contextual_jobs_authority_marker()
+    pending = _contextual_jobs_authority_pending_marker()
+    with contextual_authority_lock():
+        cross_process_acquired = bool(
+            getattr(_jobs_lock_state, "cross_process_acquired", False)
+        )
+        marker_preexisting = _recover_contextual_jobs_authority_unlocked(jobs_file)
+        if not cross_process_acquired and (marker_preexisting or publishes_contextual):
+            raise RuntimeError(
+                "Refusing a degraded jobs.json write after contextual jobs "
+                "authority was enabled for this profile"
+            )
+
+        marker_created = publishes_contextual and not marker_preexisting
+        payload_replaced = False
+        try:
+            if marker_created:
+                _publish_contextual_jobs_authority_pending_unlocked(tmp_path)
+                _publish_contextual_jobs_authority_unlocked()
+            atomic_replace(tmp_path, jobs_file)
+            payload_replaced = True
+            if marker_created:
+                _remove_contextual_authority_path_unlocked(pending)
+        except BaseException:
+            if marker_created and not payload_replaced:
+                try:
+                    _remove_contextual_authority_path_unlocked(marker)
+                    _remove_contextual_authority_path_unlocked(pending)
+                except OSError:
+                    logger.error(
+                        "Failed to roll back contextual authority transition %s",
+                        pending,
+                        exc_info=True,
+                    )
+            raise
+
+
 def _save_jobs_unlocked(
     jobs: List[Dict[str, Any]],
     *,
@@ -1337,7 +1746,7 @@ def _save_jobs_unlocked(
                         tmp_path = None
                         continue
 
-            atomic_replace(tmp_path, jobs_file)
+            _replace_jobs_payload_with_authority(tmp_path, jobs_file, jobs)
             tmp_path = None
             _secure_file(jobs_file)
             _preserve_file_ownership(jobs_file, _stat_before)
@@ -1367,7 +1776,7 @@ def _save_jobs_unlocked(
             )
             f.flush()
             os.fsync(f.fileno())
-        atomic_replace(tmp_path, jobs_file)
+        _replace_jobs_payload_with_authority(tmp_path, jobs_file, jobs)
         tmp_path = None
         _secure_file(jobs_file)
         _preserve_file_ownership(jobs_file, _stat_before)
@@ -1391,7 +1800,19 @@ def save_jobs(
     See ``_save_jobs_unlocked`` for ``removed_ids`` / ``replace`` semantics
     (shrink-merge guard against concurrent-create clobber, #80624).
     """
-    with _jobs_lock():
+    publishes_contextual = any(
+        isinstance(job, dict)
+        and job.get("session_target", "isolated") == "current"
+        for job in jobs
+    )
+    with _jobs_lock() as cross_process_locked:
+        if not cross_process_locked and (
+            publishes_contextual or _contextual_jobs_authority_enabled()
+        ):
+            raise RuntimeError(
+                "Refusing a degraded jobs.json write for a profile with "
+                "contextual jobs authority"
+            )
         _save_jobs_unlocked(jobs, removed_ids=removed_ids, replace=replace)
 
 
@@ -1586,6 +2007,7 @@ def create_job(
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
+    session_target: str = "isolated",
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1643,6 +2065,9 @@ def create_job(
         monitor_url: Optional http(s) URL used as the monitor source instead
                 of a script — fetched with a bounded GET each tick. Same
                 hash-suppression semantics as ``monitor_script``.
+        session_target: ``isolated`` (default) or explicit ``current`` to bind
+                the job immutably to the live gateway conversation. Contextual
+                jobs cannot use monitor mode or other isolated-run overrides.
 
     Returns:
         The created job dict
@@ -1681,17 +2106,26 @@ def create_job(
     normalized_monitor_url = normalized_monitor_url or None
 
     # Monitor-mode validation: exactly one source, and monitor mode only
-    # makes sense when there IS an agent to suppress/wake.
-    # no_agent jobs are meaningless without a script — the script IS the job.
-    # Surface these as clear ValueErrors at create time so bad configs never
-    # reach the scheduler (shared with update_job, see
-    # _validate_job_mode_invariants).
+    # makes sense when there IS an agent to suppress/wake. Surface failures at
+    # create time so bad configs never reach the scheduler.
     _validate_job_mode_invariants(
         normalized_monitor_script,
         normalized_monitor_url,
         normalized_no_agent,
         normalized_script,
     )
+
+    from cron.contextual import (
+        contextual_fields_for_write,
+        validate_contextual_job_shape,
+    )
+    contextual_fields = contextual_fields_for_write(session_target)
+    if contextual_fields.get("session_target") == "current":
+        from cron.contextual import contextual_origin_from_binding
+
+        # Execution identity and delivery identity are one atomic binding. A
+        # stale/caller-supplied origin may never diverge from the live key.
+        origin = contextual_origin_from_binding(contextual_fields["context_binding"])
 
     # Normalize context_from: accept str or list of str, store as list or None
     if isinstance(context_from, str):
@@ -1777,12 +2211,15 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        **contextual_fields,
     }
     # Only persist attach_to_session when explicitly set, so existing jobs and
     # the common case stay byte-identical (absent key => fall back to the
     # global cron.mirror_delivery config, default off).
     if normalized_attach is not None:
         job["attach_to_session"] = normalized_attach
+
+    validate_contextual_job_shape(job)
 
     with _jobs_lock():
         jobs = load_jobs()
@@ -1889,16 +2326,25 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     _mv = str(_mv).strip() if isinstance(_mv, str) else None
                     updates[_mon_field] = _mv or None
 
+            # Only an explicit session-target edit re-captures the trusted
+            # task-local gateway key. Ordinary edits (including pause/resume)
+            # preserve the original binding so they remain safe outside a live
+            # request context.
+            from cron.contextual import (
+                contextual_fields_for_write,
+                normalize_session_target,
+                validate_contextual_job_shape,
+            )
+            requested_target = normalize_session_target(
+                updates.get("session_target", job.get("session_target"))
+            )
+
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})
 
             # Re-check execution-mode invariants on the MERGED record when
             # any participating field changes, so create-time invariants
-            # can't be violated through the update door (e.g. flipping
-            # no_agent=True on a monitor job would silently disable the
-            # monitor: the scheduler's no_agent short-circuit runs before
-            # the monitor gate). Scoped to changed fields so legacy records
-            # untouched by this update keep loading.
+            # cannot be violated through the update door.
             if {"monitor_script", "monitor_url", "no_agent", "script"}.intersection(updates):
                 _upd_script = updated.get("script")
                 _upd_script = str(_upd_script).strip() if isinstance(_upd_script, str) else None
@@ -1908,6 +2354,40 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     bool(updated.get("no_agent")),
                     _upd_script or None,
                 )
+
+            previous_target = normalize_session_target(job.get("session_target"))
+            was_contextual = bool(
+                job.get("_contextual_binding_version")
+                or previous_target == "current"
+                or job.get("session_key")
+                or job.get("context_binding")
+            )
+            if was_contextual and requested_target != "current":
+                raise ValueError(
+                    "A contextual cron job's session binding is permanent. "
+                    "Delete it and create a new isolated job instead."
+                )
+            if requested_target == "current":
+                if previous_target == "current" and job.get("session_key"):
+                    # V1 bindings are immutable. An explicit no-op current
+                    # update validates the shape but does not silently move the
+                    # job to the editing chat.
+                    updated["session_target"] = "current"
+                else:
+                    fields = contextual_fields_for_write("current")
+                    updated.update(fields)
+                    from cron.contextual import contextual_origin_from_binding
+
+                    updated["origin"] = contextual_origin_from_binding(
+                        fields["context_binding"]
+                    )
+            else:
+                updated.pop("session_target", None)
+                updated.pop("session_key", None)
+                updated.pop("context_binding", None)
+                updated.pop("_contextual_binding_version", None)
+            validate_contextual_job_shape(updated)
+
             schedule_changed = "schedule" in updates
             inference_fields_changed = bool(
                 {"provider", "model", "base_url", "no_agent"}.intersection(updates)
@@ -2003,9 +2483,10 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
     if not job:
         return None
 
-    next_run_at = compute_next_run(job["schedule"])
-    if next_run_at is None and job["schedule"].get("kind") == "once":
-        run_at = job["schedule"].get("run_at", "unknown")
+    schedule = _schedule_dict(job)
+    next_run_at = compute_next_run(schedule)
+    if next_run_at is None and schedule.get("kind") == "once":
+        run_at = schedule.get("run_at", "unknown")
         raise ValueError(
             f"Cannot resume: one-shot time {run_at} is in the past "
             f"(grace window: {ONESHOT_GRACE_SECONDS}s) and will never fire."
@@ -2108,9 +2589,16 @@ def clear_preflight_alerted(job_id: str) -> None:
     _set_preflight_alerted(job_id, False)
 
 
-def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None,
-                 status: Optional[str] = None):
+def mark_job_run(
+    job_id: str,
+    success: bool,
+    error: Optional[str] = None,
+    delivery_error: Optional[str] = None,
+    status: Optional[str] = None,
+    *,
+    execution_id: Optional[str] = None,
+    require_cross_process_lock: bool = False,
+) -> bool:
     """
     Mark a job as having been run.
     
@@ -2126,10 +2614,27 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
     (T1-26), so `cronjob list` distinguishes "your config is broken" from
     "the run itself failed".
     """
-    with _jobs_lock():
+    with _jobs_lock() as cross_process_locked:
+        if require_cross_process_lock and not cross_process_locked:
+            logger.error(
+                "mark_job_run for contextual execution %s refused because the "
+                "jobs cross-process lock is unavailable",
+                execution_id or job_id,
+            )
+            return False
         jobs = load_jobs()
         for i, job in enumerate(jobs):
             if job["id"] == job_id:
+                if execution_id:
+                    markers = {
+                        str(item)
+                        for item in (job.get("_pending_accounting_execution_ids") or [])
+                        if str(item)
+                    }
+                    if str(execution_id) in markers:
+                        return True
+                    markers.add(str(execution_id))
+                    job["_pending_accounting_execution_ids"] = sorted(markers)
                 now = _hermes_now().isoformat()
                 job["last_run_at"] = now
                 job["last_status"] = status or ("ok" if success else "error")
@@ -2141,6 +2646,12 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                     job.pop("preflight_alerted", None)
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
+                if execution_id:
+                    # The job file is the counter authority. Persist the
+                    # occurrence marker in the same atomic save as the counters
+                    # so restart recovery can replay accounting without double
+                    # incrementing repeat/completion state.
+                    job["_last_accounted_execution_id"] = str(execution_id)
                 # Clear any external-fire claim so a re-armed recurring job can
                 # be claimed again on its next fire (Phase 4C CAS).
                 job["fire_claim"] = None
@@ -2149,6 +2660,10 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # is claimable again. No-op if the job never carried a claim.
                 if job.get("run_claim") is not None:
                     job["run_claim"] = None
+                # The execution-specific admission marker has served its purpose;
+                # clear it in the same durable accounting write that re-anchors
+                # the job so a later occurrence may claim the cursor.
+                job.pop("_contextual_occurrence_claim", None)
                 
                 # Increment completed count.  Finite one-shot jobs are
                 # pre-claimed by claim_dispatch() BEFORE the side effect runs
@@ -2159,7 +2674,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                     repeat = job["repeat"]
                     times = repeat.get("times")
                     completed = repeat.get("completed", 0)
-                    kind = job.get("schedule", {}).get("kind")
+                    kind = _schedule_dict(job).get("kind")
                     preclaimed_oneshot = (
                         kind == "once"
                         and times is not None
@@ -2186,10 +2701,10 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                         job["state"] = "completed"
                         job["next_run_at"] = None
                         save_jobs(jobs)
-                        return
+                        return True
                 
                 # Compute next run
-                job["next_run_at"] = compute_next_run(job["schedule"], now)
+                job["next_run_at"] = compute_next_run(_schedule_dict(job), now)
 
                 # If no next run, decide whether this is terminal completion
                 # (one-shot) or a transient failure (recurring schedule couldn't
@@ -2198,7 +2713,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # missing runtime dep into "job completed" and the user's
                 # schedule quietly goes off. See issue #16265.
                 if job["next_run_at"] is None:
-                    kind = job.get("schedule", {}).get("kind")
+                    kind = _schedule_dict(job).get("kind")
                     if kind in {"cron", "interval"}:
                         job["state"] = "error"
                         if not job.get("last_error"):
@@ -2221,9 +2736,39 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                     job["state"] = "scheduled"
 
                 save_jobs(jobs)
-                return
+                return True
 
         logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
+        return False
+
+
+def clear_job_accounting_marker(job_id: str, execution_id: str) -> bool:
+    """Remove a crash-gap marker after the ledger confirms accounting."""
+    with _jobs_lock() as cross_process_locked:
+        if not cross_process_locked:
+            logger.error(
+                "Accounting marker cleanup for execution %s deferred because "
+                "the jobs cross-process lock is unavailable",
+                execution_id,
+            )
+            return False
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            if job["id"] != job_id:
+                continue
+            markers = [
+                str(item)
+                for item in (job.get("_pending_accounting_execution_ids") or [])
+                if str(item) and str(item) != str(execution_id)
+            ]
+            if markers:
+                job["_pending_accounting_execution_ids"] = sorted(set(markers))
+            else:
+                job.pop("_pending_accounting_execution_ids", None)
+            jobs[i] = job
+            save_jobs(jobs)
+            return True
+        return False
 
 
 def _write_wedged_oneshot_diagnostic(job: Dict[str, Any]) -> None:
@@ -2287,12 +2832,15 @@ def claim_dispatch(job_id: str) -> bool:
     Recurring jobs (they use ``advance_next_run``) and infinite-repeat / no-repeat
     jobs are left unchanged and always allowed to proceed.
     """
-    with _jobs_lock():
+    with _jobs_lock() as cross_process_locked:
+        if not cross_process_locked:
+            logger.error("claim_dispatch failed closed: jobs lock unavailable")
+            return False
         jobs = load_jobs()
         for i, job in enumerate(jobs):
             if job["id"] != job_id:
                 continue
-            if job.get("schedule", {}).get("kind") != "once":
+            if _schedule_dict(job).get("kind") != "once":
                 return True  # recurring jobs use advance_next_run(), not dispatch claims
             repeat = job.get("repeat")
             if not repeat:
@@ -2352,6 +2900,110 @@ def claim_dispatch(job_id: str) -> bool:
         return True
 
 
+def claim_contextual_occurrence(
+    job_id: str,
+    *,
+    execution_id: str,
+    expected_next_run_at: str,
+) -> bool:
+    """CAS one built-in contextual occurrence after its ledger row exists.
+
+    The execution id is persisted with the jobs-file claim so a worker can
+    prove it owns the exact occurrence it was handed. Recurring jobs advance
+    their cursor here; one-shots acquire their durable in-flight ``run_claim``
+    here. Finite repeat accounting remains the responsibility of
+    :func:`claim_dispatch` immediately before the worker side effect.
+    """
+    occurrence_id = str(execution_id or "").strip()
+    expected_cursor = str(expected_next_run_at or "").strip()
+    if not occurrence_id or not expected_cursor:
+        return False
+    with _jobs_lock() as cross_process_locked:
+        if not cross_process_locked:
+            logger.error(
+                "Contextual occurrence claim for job %s failed closed: jobs "
+                "lock unavailable",
+                job_id,
+            )
+            return False
+        jobs = load_jobs()
+        for job in jobs:
+            if job.get("id") != job_id:
+                continue
+            if job.get("session_target", "isolated") != "current":
+                return False
+            existing = job.get("_contextual_occurrence_claim")
+            if isinstance(existing, dict):
+                return (
+                    existing.get("execution_id") == occurrence_id
+                    and existing.get("scheduled_for") == expected_cursor
+                )
+            if str(job.get("next_run_at") or "") != expected_cursor:
+                return False
+            schedule = _schedule_dict(job)
+            kind = schedule.get("kind")
+            claimed_at = _hermes_now().isoformat()
+            if kind in {"cron", "interval"}:
+                new_next = compute_next_run(schedule, claimed_at)
+                if not new_next or new_next == expected_cursor:
+                    return False
+                job["next_run_at"] = new_next
+            elif kind == "once":
+                existing_run_claim = job.get("run_claim")
+                if isinstance(existing_run_claim, dict):
+                    return existing_run_claim.get("execution_id") == occurrence_id
+                job["run_claim"] = {
+                    "at": claimed_at,
+                    "by": _machine_id(),
+                    "durable": True,
+                    "execution_id": occurrence_id,
+                }
+            else:
+                return False
+            job["_contextual_occurrence_claim"] = {
+                "execution_id": occurrence_id,
+                "scheduled_for": expected_cursor,
+                "claimed_at": claimed_at,
+            }
+            save_jobs(jobs)
+            return True
+    return False
+
+
+def contextual_occurrence_claim_state(
+    job_id: str, *, execution_id: str
+) -> Optional[bool]:
+    """Return True/False for a definitive claim check, or None when unavailable."""
+    occurrence_id = str(execution_id or "").strip()
+    if not occurrence_id:
+        return False
+    with _jobs_lock() as cross_process_locked:
+        if not cross_process_locked:
+            return None
+        for job in load_jobs():
+            if job.get("id") != job_id:
+                continue
+            claim = job.get("_contextual_occurrence_claim")
+            if not isinstance(claim, dict) or claim.get("execution_id") != occurrence_id:
+                return False
+            if _schedule_dict(job).get("kind") == "once":
+                run_claim = job.get("run_claim")
+                return bool(
+                    isinstance(run_claim, dict)
+                    and run_claim.get("durable") is True
+                    and run_claim.get("execution_id") == occurrence_id
+                )
+            return True
+        return False
+
+
+def verify_contextual_occurrence_claim(job_id: str, *, execution_id: str) -> bool:
+    """Return whether ``execution_id`` still owns the live contextual occurrence."""
+    return contextual_occurrence_claim_state(
+        job_id, execution_id=execution_id
+    ) is True
+
+
 def heartbeat_run_claim(job_id: str, *, expected_owner: str) -> bool:
     """Refresh a one-shot's ``run_claim`` timestamp while its run is alive.
 
@@ -2368,12 +3020,14 @@ def heartbeat_run_claim(job_id: str, *, expected_owner: str) -> bool:
     Returns True if this owner's one-shot claim was refreshed; False when the
     job, claim, or ownership no longer matches.
     """
-    with _jobs_lock():
+    with _jobs_lock() as cross_process_locked:
+        if not cross_process_locked:
+            return False
         jobs = load_jobs()
         for job in jobs:
             if job.get("id") != job_id:
                 continue
-            if job.get("schedule", {}).get("kind") != "once":
+            if _schedule_dict(job).get("kind") != "once":
                 return False
             claim = job.get("run_claim")
             if not isinstance(claim, dict) or claim.get("by") != expected_owner:
@@ -2384,7 +3038,9 @@ def heartbeat_run_claim(job_id: str, *, expected_owner: str) -> bool:
     return False
 
 
-def advance_next_runs(job_ids) -> int:
+def advance_next_runs(
+    job_ids, *, require_cross_process_lock: bool = False
+) -> int:
     """Batch form of :func:`advance_next_run` for the due-dispatch loop.
 
     One ``load_jobs()`` + at most one ``save_jobs()`` for the whole due
@@ -2402,7 +3058,12 @@ def advance_next_runs(job_ids) -> int:
     ids = set(job_ids)
     if not ids:
         return 0
-    with _jobs_lock():
+    with _jobs_lock() as cross_process_locked:
+        if require_cross_process_lock and not cross_process_locked:
+            logger.error(
+                "advance_next_runs failed closed: jobs lock unavailable"
+            )
+            return 0
         jobs = load_jobs()
         now = _hermes_now().isoformat()
         advanced = 0
@@ -2421,7 +3082,9 @@ def advance_next_runs(job_ids) -> int:
         return advanced
 
 
-def advance_next_run(job_id: str) -> bool:
+def advance_next_run(
+    job_id: str, *, require_cross_process_lock: bool = False
+) -> bool:
     """Preemptively advance next_run_at for a recurring job before execution.
 
     Call this BEFORE run_job() so that if the process crashes mid-execution,
@@ -2435,7 +3098,12 @@ def advance_next_run(job_id: str) -> bool:
     """
     # >= 1 (not == 1): a corrupted jobs file with duplicate ids advances
     # every matching record; the wrapper still reports the advance.
-    return advance_next_runs([job_id]) >= 1
+    return (
+        advance_next_runs(
+            [job_id], require_cross_process_lock=require_cross_process_lock
+        )
+        >= 1
+    )
 
 
 def _machine_id() -> str:
@@ -2456,27 +3124,16 @@ def _machine_id() -> str:
 
 
 def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
-    """Atomically claim a job for a single external 'fire' (multi-machine
-    at-most-once). Returns True iff THIS caller won the claim.
+    """Atomically claim a job for one existing external-provider fire.
 
-    Used by the external-provider fire path (``CronScheduler.fire_due``) when an
-    external scheduler (Chronos) signals a job is due across N gateway replicas:
-    exactly one wins. Single-machine deployments always win.
-
-    Under the file lock: reject if the job is missing/disabled/paused. If a
-    fresh claim (younger than ``claim_ttl_seconds``) already exists, lose.
-    Otherwise stamp a ``fire_claim`` and, for recurring jobs, advance
-    ``next_run_at`` (mirrors ``advance_next_run``'s at-most-once bump so a stale
-    re-delivery for the old time can't re-fire). One-shots keep ``next_run_at``
-    but the fresh ``fire_claim`` blocks a duplicate retry for the same fire.
-    ``mark_job_run`` clears the claim on completion so a re-armed recurring job
-    is claimable again next fire.
-
-    The stale-claim TTL means a machine that crashed after claiming but before
-    completing doesn't wedge the job forever — after the TTL another fire can
-    reclaim it.
+    Contextual jobs are rejected at creation whenever an external provider is
+    configured; this function therefore preserves the isolated-cron behavior
+    that predates contextual V1.
     """
-    with _jobs_lock():
+    with _jobs_lock() as cross_process_locked:
+        if not cross_process_locked:
+            logger.error("claim_job_for_fire failed closed: jobs lock unavailable")
+            return False
         jobs = load_jobs()
         for job in jobs:
             if job["id"] != job_id:
@@ -2490,21 +3147,15 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
             if existing:
                 try:
                     claimed_at = _ensure_aware(datetime.fromisoformat(existing["at"]))
-                    # Bounded on BOTH sides (#60703): a claim stamped in the
-                    # future (clock/TZ skew across a restart, or a corrupted
-                    # timestamp) would otherwise have a negative age and stay
-                    # "fresh" forever — the job becomes permanently unfireable
-                    # and every manual `cron run` reports "already being
-                    # fired". Treat future-dated claims as stale/overwritable.
-                    _age = (now - claimed_at).total_seconds()
-                    if 0 <= _age < claim_ttl_seconds:
-                        return False  # someone holds a fresh claim
+                    age = (now - claimed_at).total_seconds()
+                    if 0 <= age < claim_ttl_seconds:
+                        return False
                 except Exception:
-                    pass  # malformed claim → overwrite
+                    pass
             job["fire_claim"] = {"at": now.isoformat(), "by": _machine_id()}
-            kind = job.get("schedule", {}).get("kind")
-            if kind in {"cron", "interval"}:
-                nxt = compute_next_run(job["schedule"], now.isoformat())
+            schedule = _schedule_dict(job)
+            if schedule.get("kind") in {"cron", "interval"}:
+                nxt = compute_next_run(schedule, now.isoformat())
                 if nxt:
                     job["next_run_at"] = nxt
             save_jobs(jobs)
@@ -2612,7 +3263,32 @@ def get_due_jobs() -> List[Dict[str, Any]]:
     Note: firing once on catch-up flows through ``mark_job_run``, so a job with
     a ``repeat.times`` limit consumes one of its runs on that catch-up fire.
     """
-    with _jobs_lock():
+    with _jobs_lock() as cross_process_locked:
+        if not cross_process_locked:
+            # jobs.json is a whole-file authority.  A degraded ordinary writer
+            # could otherwise rewrite stale contextual state even when it does
+            # not touch that job directly, so any store containing contextual
+            # records becomes read-only until cross-process exclusion recovers.
+            try:
+                contains_contextual = any(
+                    isinstance(job, dict)
+                    and job.get("session_target", "isolated") == "current"
+                    for job in load_jobs()
+                )
+            except Exception:
+                # Failure to inspect a potentially mixed store cannot authorize
+                # a whole-file rewrite without the advisory lock.
+                logger.exception(
+                    "Cron due scan skipped because degraded lock mode could not "
+                    "prove the store contains only isolated jobs"
+                )
+                return []
+            if contains_contextual:
+                logger.error(
+                    "Cron due scan skipped because jobs cross-process locking is "
+                    "unavailable for a store containing contextual jobs"
+                )
+                return []
         return _get_due_jobs_locked()
 
 
@@ -2641,22 +3317,27 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
     due = []
 
-    # Normalize malformed "schedule" records (direct jobs.json edit, old writers,
-    # corruption, etc.). "schedule" must be a dict; a null/string/etc. value
-    # makes `schedule.get("kind")` or direct `schedule["kind"]` / ["expr"] /
-    # ["minutes"] later raise and abort the entire scan *before* save_jobs().
-    # Healthy jobs then lose their fast-forwarded next_run_at (exactly the
-    # failure mode of the id-less job bug fixed above). Repair early at the
-    # source so the rest of the tick can proceed and persist progress for
-    # siblings.
+    # Normalize schedules for execution without destroying supported legacy
+    # string schedules. Valid strings are parsed only in the working copy; the
+    # persisted public shape remains byte-for-byte compatible.
     for j in jobs:
-        if not isinstance(j.get("schedule"), dict):
+        value = j.get("schedule")
+        if isinstance(value, dict):
+            continue
+        parsed = _schedule_dict(j)
+        if parsed:
+            j["schedule"] = parsed
+        else:
             j["schedule"] = {}
             needs_save = True
     for rj in raw_jobs:
-        if not isinstance(rj.get("schedule"), dict):
-            rj["schedule"] = {}
-            needs_save = True
+        value = rj.get("schedule")
+        if isinstance(value, dict):
+            continue
+        if isinstance(value, str) and _schedule_dict(rj):
+            continue
+        rj["schedule"] = {}
+        needs_save = True
 
     # Normalize malformed "next_run_at" records (direct jobs.json edit,
     # corruption, migration, or buggy writer). If present but not a valid
@@ -2774,7 +3455,14 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             # is treated as stale (the claiming tick died mid-run) and allowed
             # through so the job is recovered rather than wedged forever.
             existing_claim = job.get("run_claim")
-            if existing_claim and job.get("schedule", {}).get("kind") == "once":
+            if existing_claim and _schedule_dict(job).get("kind") == "once":
+                # Contextual one-shots are conservative: once dispatched, an
+                # unacknowledged run is never retried merely because a TTL
+                # elapsed. The execution ledger will classify a dead owner as
+                # unknown; an operator can then resolve it without risking a
+                # duplicate hidden turn or external notification.
+                if existing_claim.get("durable") is True:
+                    continue
                 try:
                     claimed_at = _ensure_aware(
                         datetime.fromisoformat(existing_claim["at"])
@@ -2974,8 +3662,15 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 # stale claim that expires after the resolved run-claim TTL
                 # (_oneshot_run_claim_ttl_seconds, derived from HERMES_CRON_TIMEOUT),
                 # so the job is re-dispatched rather than wedged forever.
-                if kind == "once":
-                    claim = {"at": now.isoformat(), "by": _machine_id()}
+                if (
+                    kind == "once"
+                    and job.get("session_target", "isolated") != "current"
+                ):
+                    claim = {
+                        "at": now.isoformat(),
+                        "by": _machine_id(),
+                        "durable": job.get("session_target") == "current",
+                    }
                     job["run_claim"] = claim
                     for rj in raw_jobs:
                         if rj["id"] == job["id"]:

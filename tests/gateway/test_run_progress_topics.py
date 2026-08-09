@@ -1042,6 +1042,12 @@ async def test_base_processing_stops_typing_before_hung_post_delivery_callback(
 ):
     """A stuck post-delivery callback must not keep the typing task alive."""
     monkeypatch.setattr(base_platform, "_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS", 0.01)
+    # This test exercises typing/callback ordering, not the durable delivery
+    # ledger. Disable the unrelated sqlite/thread hop so parallel suite load
+    # cannot consume its one-second end-to-end budget before the callback runs.
+    import gateway.delivery_ledger as delivery_ledger
+
+    monkeypatch.setattr(delivery_ledger, "ledger_enabled", lambda: False)
     adapter = ProgressCaptureAdapter()
     events = []
 

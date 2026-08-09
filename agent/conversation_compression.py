@@ -1223,7 +1223,7 @@ def _adopt_live_compression_child(
     if not child or not child.get("id"):
         return None
     child_session_id = str(child["id"])
-    recovered = loader(session_db, child_session_id)
+    recovered = loader(session_db, child_session_id, include_hidden=True)
     if not isinstance(recovered, list) or not recovered:
         return None
     # Revalidate after loading: the child may have rotated or a competing
@@ -2747,7 +2747,9 @@ def compress_context(
                 type(_lock_db), "get_messages_as_conversation", None
             )
             if callable(durable_loader):
-                durable_parent = durable_loader(_lock_db, _lock_sid)
+                durable_parent = durable_loader(
+                    _lock_db, _lock_sid, include_hidden=True
+                )
                 if isinstance(durable_parent, list) and len(durable_parent) > len(messages):
                     logger.info(
                         "compression: session=%s grew before lease "

@@ -89,3 +89,40 @@ class TestSessionIsolation:
         # All bookend messages should have session_id = s1 (or session_id col)
         for m in view["bookend_start"] + view["bookend_end"]:
             assert m.get("session_id") == "s1"
+
+
+class TestHiddenProjection:
+    def test_hidden_rows_are_filtered_before_window_and_bookend_limits(self, db):
+        db.create_session("s1", source="cli")
+        visible_start = db.append_message("s1", role="user", content="visible start")
+        db.append_message(
+            "s1", role="assistant", content="HIDDEN-START", display_kind="hidden"
+        )
+        anchor = db.append_message("s1", role="user", content="visible anchor")
+        db.append_message(
+            "s1", role="assistant", content="HIDDEN-END", display_kind="hidden"
+        )
+        visible_end = db.append_message("s1", role="assistant", content="visible end")
+
+        view = db.get_anchored_view("s1", anchor, window=0, bookend=1)
+        contents = [
+            row["content"]
+            for row in view["bookend_start"] + view["window"] + view["bookend_end"]
+        ]
+        assert contents == ["visible start", "visible anchor", "visible end"]
+        assert [row["id"] for row in view["bookend_start"]] == [visible_start]
+        assert [row["id"] for row in view["bookend_end"]] == [visible_end]
+
+    def test_hidden_anchor_is_not_addressable_without_privileged_opt_in(self, db):
+        db.create_session("s1", source="cli")
+        db.append_message("s1", role="user", content="visible")
+        hidden = db.append_message(
+            "s1", role="assistant", content="HIDDEN-ANCHOR", display_kind="hidden"
+        )
+        db.append_message("s1", role="user", content="visible tail")
+
+        assert db.get_anchored_view("s1", hidden, window=1, bookend=1)["window"] == []
+        privileged = db.get_anchored_view(
+            "s1", hidden, window=0, bookend=0, include_hidden=True
+        )
+        assert [row["content"] for row in privileged["window"]] == ["HIDDEN-ANCHOR"]

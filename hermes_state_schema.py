@@ -668,6 +668,17 @@ class SessionSchemaMixin:
         # column (idx_messages_session_active) — same ordering constraint.
         cursor.executescript(DEFERRED_INDEX_SQL)
 
+        # v24 causal fence: legacy databases have no transcript revision history.
+        # Seed a deterministic non-zero generation from the rows present at
+        # migration time; all subsequent model-visible message mutations are
+        # tracked by the deferred triggers above.
+        cursor.execute(
+            "UPDATE sessions SET transcript_revision = "
+            "(SELECT COUNT(*) FROM messages WHERE messages.session_id = sessions.id) "
+            "WHERE transcript_revision = 0 AND EXISTS "
+            "(SELECT 1 FROM messages WHERE messages.session_id = sessions.id)"
+        )
+
         # Heal NULL ``active`` rows unconditionally on every startup.
         # On real-world DBs the reconciler-added ``active`` column can lack
         # its NOT NULL DEFAULT 1 (older reconciler builds reconstructed the

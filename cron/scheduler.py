@@ -34,7 +34,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Mapping, Optional, cast
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -57,6 +57,29 @@ from agent.delegation_context import (
 )
 
 logger = logging.getLogger(__name__)
+
+_CONTEXTUAL_DISPATCHER = None
+_CONTEXTUAL_AUTHORIZER = None
+
+
+def set_contextual_dispatcher(dispatcher) -> None:
+    """Install the live gateway bridge for built-in and external providers."""
+    global _CONTEXTUAL_DISPATCHER
+    _CONTEXTUAL_DISPATCHER = dispatcher
+
+
+def get_contextual_dispatcher():
+    return _CONTEXTUAL_DISPATCHER
+
+
+def set_contextual_authorizer(authorizer) -> None:
+    """Install the gateway-owned authorization check for destination effects."""
+    global _CONTEXTUAL_AUTHORIZER
+    _CONTEXTUAL_AUTHORIZER = authorizer
+
+
+def get_contextual_authorizer():
+    return _CONTEXTUAL_AUTHORIZER
 
 
 def _set_cron_session_title(session_db, session_id, base_title):
@@ -290,8 +313,34 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_runs, claim_dispatch, heartbeat_run_claim
-from cron.executions import create_execution, finish_execution, mark_execution_running
+from cron.jobs import (
+    advance_next_runs,
+    claim_contextual_occurrence,
+    claim_dispatch,
+    clear_job_accounting_marker,
+    contextual_accounting_lock,
+    get_due_jobs,
+    heartbeat_run_claim,
+    mark_job_run,
+    save_job_output,
+    verify_contextual_occurrence_claim,
+)
+from cron.executions import (
+    claim_contextual_delivery,
+    claim_contextual_job_accounting,
+    create_execution,
+    finish_contextual_delivery,
+    finish_contextual_execution,
+    finish_execution,
+    get_execution,
+    list_pending_contextual_deliveries,
+    list_unaccounted_contextual_executions,
+    mark_execution_running,
+    persist_contextual_agent_result,
+    prepare_contextual_retry,
+    seal_contextual_delivery_target,
+    suppress_contextual_delivery,
+)
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -775,6 +824,12 @@ def _cron_mirror_delivery_enabled(job: dict, cfg: Optional[dict] = None) -> bool
     alternation- and cache-safe: the append lands at a turn boundary between
     user turns, never mid-loop, and never mutates the cached system prompt.
     """
+    # A current-session cron result is already persisted as the assistant side
+    # of the live contextual turn.  Mirroring it would append the same output a
+    # second time (often as a synthetic user row) and corrupt role order.
+    if str(job.get("session_target") or "isolated").strip().lower() == "current":
+        return False
+
     per_job = job.get("attach_to_session")
     if isinstance(per_job, bool):
         return per_job
@@ -1546,6 +1601,13 @@ def _confirm_adapter_delivery(send_result) -> bool:
     return bool(getattr(send_result, "success"))
 
 
+def _confirm_standalone_delivery(send_result) -> bool:
+    """Require a positive transport acknowledgement for contextual delivery."""
+    if isinstance(send_result, dict):
+        return send_result.get("success") is True or send_result.get("ok") is True
+    return _confirm_adapter_delivery(send_result)
+
+
 def _is_channel_dm_topic(
     runtime_adapter: Any,
     chat_id: Any,
@@ -1602,7 +1664,18 @@ def _is_channel_dm_topic(
     return is_channel
 
 
-def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
+class ContextualDeliveryUnknown(RuntimeError):
+    """A contextual send may have crossed the external side-effect boundary."""
+
+
+def _deliver_result(
+    job: dict,
+    content: str,
+    adapters=None,
+    loop=None,
+    *,
+    at_most_once: bool = False,
+) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
 
@@ -1666,6 +1739,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     from gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    if at_most_once and media_files:
+        return "Contextual cron delivery forbids native media attachments."
 
     # Resolve the delivery-mirror gate ONCE (default off). When on, each
     # successful delivery is also appended to the target chat's gateway session
@@ -1679,6 +1754,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     if mirror_enabled:
         _, mirror_text = BasePlatformAdapter.extract_media(content)
         mirror_text = (mirror_text or "").strip()
+    if at_most_once:
+        # Contextual delivery owns exactly one final transport effect. Mirroring,
+        # thread creation, and transcript seeding are separate side effects.
+        mirror_enabled = False
+        mirror_text = ""
 
     try:
         config = load_gateway_config()
@@ -1970,6 +2050,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         try:
                             send_result = future.result(timeout=60)
                         except TimeoutError:
+                            if at_most_once:
+                                future.cancel()
+                                raise ContextualDeliveryUnknown(
+                                    f"Live delivery to {platform_name}:{chat_id} "
+                                    "timed out after scheduling; acknowledgement is unknown."
+                                )
                             # #38922: a slow confirmation does NOT necessarily
                             # mean the send failed — but we must distinguish two
                             # cases via future.cancel()'s return value:
@@ -2011,6 +2097,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                     job["id"], platform_name, chat_id,
                                 )
                         except Exception as ex:
+                            if at_most_once:
+                                raise ContextualDeliveryUnknown(
+                                    f"Live delivery to {platform_name}:{chat_id} "
+                                    f"raised after scheduling: {ex}"
+                                ) from ex
                             # A real send error (not a slow confirmation) — fall
                             # through to the standalone path so the message is
                             # still delivered.
@@ -2053,6 +2144,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                     f"live adapter send to {platform_name}:{chat_id} "
                                     f"returned unconfirmed result ({shape}, error={err})"
                                 )
+                                if at_most_once:
+                                    raise ContextualDeliveryUnknown(msg)
                                 if transport is not None and transport.is_relay:
                                     logger.warning("Job '%s': %s", job["id"], msg)
                                 else:
@@ -2062,18 +2155,27 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                     )
                                 target_errors.append(msg)
                                 adapter_ok = False  # fall through to standalone path
-                            elif (
-                                send_raw_response
-                                and thread_id
-                                and send_raw_response.get("thread_fallback")
-                            ):
-                                requested_thread_id = send_raw_response.get("requested_thread_id") or thread_id
-                                msg = (
-                                    f"configured thread_id {requested_thread_id} for "
-                                    f"{platform_name}:{chat_id} was not found; delivered without thread_id"
-                                )
-                                logger.warning("Job '%s': %s", job["id"], msg)
-                                delivery_errors.append(msg)
+                            elif send_success:
+                                # Once the transport has explicitly confirmed the
+                                # external effect, no response-metadata parsing or
+                                # local post-processing may reopen a fallback path.
+                                if at_most_once:
+                                    delivered = True
+                                if (
+                                    isinstance(send_raw_response, dict)
+                                    and thread_id
+                                    and send_raw_response.get("thread_fallback")
+                                ):
+                                    requested_thread_id = (
+                                        send_raw_response.get("requested_thread_id")
+                                        or thread_id
+                                    )
+                                    msg = (
+                                        f"configured thread_id {requested_thread_id} for "
+                                        f"{platform_name}:{chat_id} was not found; delivered without thread_id"
+                                    )
+                                    logger.warning("Job '%s': %s", job["id"], msg)
+                                    delivery_errors.append(msg)
 
                 # Send extracted media files as native attachments via the live
                 # adapter, using the same DM-topic-aware routing as the text send
@@ -2140,6 +2242,20 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         enabled=mirror_this_target and not thread_seeded and not inchannel_seeded,
                     )
             except Exception as e:
+                if at_most_once:
+                    if isinstance(e, ContextualDeliveryUnknown):
+                        raise
+                    if delivered:
+                        logger.warning(
+                            "Job '%s': post-send processing failed after confirmed "
+                            "delivery to %s:%s; suppressing fallback: %s",
+                            job["id"], platform_name, chat_id, e,
+                        )
+                        continue
+                    raise ContextualDeliveryUnknown(
+                        f"Live delivery to {platform_name}:{chat_id} failed without "
+                        f"a safe retry boundary: {e}"
+                    ) from e
                 err_msg = f"live adapter delivery to {platform_name}:{chat_id} failed: {e}"
                 if not any(err_msg in err for err in target_errors):
                     target_errors.append(err_msg)
@@ -2152,6 +2268,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     )
 
         if not delivered:
+            if at_most_once:
+                detail = "; ".join(target_errors) or (
+                    f"no confirmed live adapter delivery path for "
+                    f"{platform_name}:{chat_id}"
+                )
+                raise ContextualDeliveryUnknown(
+                    f"Contextual delivery requires the gateway-owned live "
+                    f"transport; standalone fallback is forbidden: {detail}"
+                )
             if transport is not None and transport.is_relay:
                 # Relay owns the logical destination and its connector owns the
                 # platform credential. A native retry could duplicate delivery
@@ -2209,6 +2334,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     finally:
                         pool.shutdown(wait=False)
                 except Exception as e:
+                    if at_most_once:
+                        raise ContextualDeliveryUnknown(
+                            f"Standalone delivery to {platform_name}:{chat_id} "
+                            f"raised after its attempt began: {e}"
+                        ) from e
                     # A shutdown-race here is expected during teardown; downgrade
                     # to a warning so it doesn't read as a genuine failure.
                     if _interpreter_shutting_down(e):
@@ -2223,14 +2353,43 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     delivery_errors.extend(target_errors)
                     continue
             except Exception as e:
+                if at_most_once:
+                    raise ContextualDeliveryUnknown(
+                        f"Standalone delivery to {platform_name}:{chat_id} "
+                        f"raised after its attempt began: {e}"
+                    ) from e
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
                 logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
                 target_errors.extend([msg])
                 delivery_errors.extend(target_errors)
                 continue
 
-            if result and result.get("error"):
-                msg = f"delivery error: {result['error']}"
+            if at_most_once and not _confirm_standalone_delivery(result):
+                result_mapping = (
+                    cast(Mapping[str, Any], result)
+                    if isinstance(result, Mapping)
+                    else {}
+                )
+                result_error = result_mapping.get("error")
+                detail = result_error or f"unacknowledged {type(result).__name__} result"
+                raise ContextualDeliveryUnknown(
+                    f"Standalone delivery to {platform_name}:{chat_id} "
+                    f"returned an unconfirmed result: {detail}"
+                )
+
+            result_mapping = (
+                cast(Mapping[str, Any], result)
+                if isinstance(result, Mapping)
+                else {}
+            )
+            result_error = result_mapping.get("error")
+            if result_error:
+                if at_most_once:
+                    raise ContextualDeliveryUnknown(
+                        f"Standalone delivery to {platform_name}:{chat_id} "
+                        f"returned an unconfirmed result: {result_error}"
+                    )
+                msg = f"delivery error: {result_error}"
                 logger.error("Job '%s': %s", job["id"], msg)
                 target_errors.extend([msg])
                 delivery_errors.extend(target_errors)
@@ -4500,8 +4659,283 @@ def _teardown_cron_agent(agent, job_id: str) -> None:
         logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
+def _account_contextual_job_run(
+    *,
+    execution_id: str,
+    job_id: str,
+    success: bool,
+    error: Optional[str],
+    delivery_error: Optional[str],
+) -> bool:
+    """Apply restart-idempotent job accounting without changing outcome truth."""
+    try:
+        with contextual_accounting_lock():
+            # Re-read only after acquiring the cross-process transaction lock.
+            # A reconciler may have observed job_accounted=0 before another
+            # process completed the jobs-file mutation and ledger acknowledgement.
+            durable = get_execution(execution_id)
+            if durable and durable.get("job_accounted"):
+                clear_job_accounting_marker(job_id, execution_id)
+                return True
+            if not mark_job_run(
+                job_id,
+                success,
+                error,
+                delivery_error=delivery_error,
+                execution_id=execution_id,
+                require_cross_process_lock=True,
+            ):
+                return False
+            newly_recorded = claim_contextual_job_accounting(execution_id)
+            durable = get_execution(execution_id)
+            if newly_recorded or (durable and durable.get("job_accounted")):
+                clear_job_accounting_marker(job_id, execution_id)
+                return True
+            return False
+    except Exception:
+        # The durable occurrence remains unaccounted and startup reconciliation
+        # retries this idempotent local mutation. Never misclassify a confirmed
+        # transport outcome because jobs.json accounting happened to fail.
+        logger.exception(
+            "Failed to account contextual execution %s for job %s",
+            execution_id,
+            job_id,
+        )
+        return False
+
+
+def _contextual_authorization_target(delivery_job: dict, record: dict) -> dict:
+    """Attach sealed admission authority for the gateway-only auth callback."""
+    target = dict(delivery_job)
+    target["_contextual_authority"] = {
+        "execution_id": str(record.get("id") or ""),
+        "session_key": str(record.get("session_key") or ""),
+        "binding_version": record.get("admitted_binding_version"),
+        "route_instance_id": str(record.get("admitted_route_instance_id") or ""),
+        "session_id": str(record.get("admitted_session_id") or ""),
+        "routing_revision": record.get("admitted_routing_revision"),
+    }
+    return target
+
+
+def _resume_contextual_delivery_record(
+    job: dict,
+    record: dict,
+    *,
+    adapters=None,
+    loop=None,
+) -> bool:
+    """Resume only a durable pre-send outbox item; never rerun its agent."""
+    execution_id = str(record.get("id") or "")
+    try:
+        payload = json.loads(record.get("result_json") or "{}")
+    except Exception:
+        payload = {}
+    content = str(payload.get("final_response") or "")
+    try:
+        immutable_delivery_job = json.loads(
+            record.get("delivery_target_json") or "null"
+        )
+    except Exception:
+        immutable_delivery_job = None
+    if not execution_id or not content.strip():
+        return False
+    if not isinstance(immutable_delivery_job, dict) or not immutable_delivery_job.get("id"):
+        finish_contextual_execution(
+            execution_id,
+            outcome="unknown",
+            error="Pending contextual delivery has no valid immutable destination.",
+        )
+        return False
+    try:
+        admitted_binding_version = int(record.get("admitted_binding_version") or 1)
+    except (TypeError, ValueError):
+        admitted_binding_version = 0
+    if admitted_binding_version not in (1, 2):
+        finish_contextual_execution(
+            execution_id,
+            outcome="unknown",
+            error="Pending contextual delivery has invalid binding authority.",
+        )
+        return False
+    if admitted_binding_version == 2:
+        if not record.get("admitted_route_instance_id"):
+            finish_contextual_execution(
+                execution_id,
+                outcome="unknown",
+                error="Pending contextual delivery has incomplete v2 authority.",
+            )
+            return False
+        from cron.contextual import validate_contextual_origin
+
+        try:
+            immutable_delivery_job["origin"] = validate_contextual_origin(
+                immutable_delivery_job.get("origin")
+            )
+        except ValueError:
+            finish_contextual_execution(
+                execution_id,
+                outcome="unknown",
+                error="Pending contextual delivery has invalid creator authority.",
+            )
+            return False
+    authorizer = get_contextual_authorizer()
+    authorization_target = _contextual_authorization_target(
+        immutable_delivery_job, record
+    )
+    try:
+        authorized = bool(
+            callable(authorizer) and authorizer(authorization_target)
+        )
+    except Exception as auth_exc:
+        authorized = False
+        authorization_error = str(auth_exc) or type(auth_exc).__name__
+    else:
+        authorization_error = ""
+    if not authorized:
+        authorization_error = authorization_error or (
+            "Contextual cron authorization was revoked before delivery recovery."
+        )
+        suppress_contextual_delivery(execution_id, error=authorization_error)
+        _account_contextual_job_run(
+            execution_id=execution_id,
+            job_id=str(immutable_delivery_job["id"]),
+            success=False,
+            error=authorization_error,
+            delivery_error=authorization_error,
+        )
+        return False
+    delivery_claimed = bool(
+        authorization_target.get("_contextual_delivery_claimed")
+    )
+    delivery_claim_attempted = bool(
+        authorization_target.get("_contextual_delivery_claim_attempted")
+    )
+    if (
+        not delivery_claimed
+        and not delivery_claim_attempted
+        and claim_contextual_delivery(execution_id) is None
+    ):
+        return False
+    if not delivery_claimed and delivery_claim_attempted:
+        return False
+    try:
+        try:
+            save_job_output(str(immutable_delivery_job["id"]), content)
+        except Exception as exc:
+            logger.warning(
+                "Could not refresh output artifact while resuming contextual delivery %s: %s",
+                execution_id,
+                exc,
+            )
+        unresolved_origin = (
+            _normalize_deliver_value(immutable_delivery_job.get("deliver", "local"))
+            == "origin"
+            and not _resolve_delivery_targets(immutable_delivery_job)
+        )
+        if unresolved_origin:
+            delivery_error = "Contextual cron delivery origin could not be resolved."
+        else:
+            delivery_error = _deliver_result(
+                immutable_delivery_job,
+                content,
+                adapters=adapters,
+                loop=loop,
+                at_most_once=True,
+            )
+    except BaseException as exc:
+        # The send may have crossed the transport boundary. Preserve uncertainty
+        # and never auto-resend this occurrence.
+        finish_contextual_delivery(
+            execution_id,
+            delivery_state="unknown",
+            error=str(exc) or type(exc).__name__,
+        )
+        if not isinstance(exc, Exception):
+            raise
+        return False
+    if delivery_error:
+        finish_contextual_delivery(
+            execution_id,
+            delivery_state="failed",
+            error=str(delivery_error),
+        )
+        _account_contextual_job_run(
+            execution_id=execution_id,
+            job_id=str(immutable_delivery_job["id"]),
+            success=False,
+            error=str(delivery_error),
+            delivery_error=str(delivery_error),
+        )
+        return False
+    finish_contextual_delivery(execution_id, delivery_state="sent")
+    _account_contextual_job_run(
+        execution_id=execution_id,
+        job_id=str(immutable_delivery_job["id"]),
+        success=True,
+        error=None,
+        delivery_error=None,
+    )
+    return True
+
+
+def reconcile_contextual_job_accounting() -> int:
+    """Replay terminal occurrence accounting idempotently after a crash."""
+    reconciled = 0
+    for record in list_unaccounted_contextual_executions():
+        execution_id = str(record.get("id") or "")
+        try:
+            delivery_job = json.loads(record.get("delivery_target_json") or "null")
+        except Exception:
+            delivery_job = None
+        if not execution_id or not isinstance(delivery_job, dict) or not delivery_job.get("id"):
+            logger.error(
+                "Cannot reconcile contextual accounting for %s: immutable job target missing",
+                execution_id or "<missing>",
+            )
+            continue
+        outcome = str(record.get("outcome") or "unknown")
+        success = outcome in {"notify", "no_action"}
+        error = None if success else str(record.get("error") or outcome)
+        delivery_error = record.get("delivery_error")
+        if _account_contextual_job_run(
+            execution_id=execution_id,
+            job_id=str(delivery_job["id"]),
+            success=success,
+            error=error,
+            delivery_error=(str(delivery_error) if delivery_error else None),
+        ):
+            reconciled += 1
+    return reconciled
+
+
+def resume_pending_contextual_deliveries(*, adapters=None, loop=None) -> int:
+    """Drain restart-safe agent-complete/pre-send outbox rows."""
+    from cron.jobs import get_job
+
+    resumed = 0
+    for record in list_pending_contextual_deliveries():
+        job = get_job(str(record.get("job_id") or ""))
+        if job is None:
+            job = {"id": str(record.get("job_id") or "")}
+        if _resume_contextual_delivery_record(
+            job,
+            record,
+            adapters=adapters,
+            loop=loop,
+        ):
+            resumed += 1
+    reconcile_contextual_job_accounting()
+    return resumed
+
+
 def run_one_job(
-    job: dict, *, adapters=None, loop=None, verbose: bool = False,
+    job: dict,
+    *,
+    adapters=None,
+    loop=None,
+    verbose: bool = False,
+    contextual_dispatch=None,
     extra_prompt: Optional[str] = None,
 ) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
@@ -4520,8 +4954,157 @@ def run_one_job(
     """
     execution_id = job.get("execution_id")
     if not execution_id:
-        execution_id = create_execution(job["id"], source="direct")["id"]
+        execution_id = create_execution(
+            job["id"],
+            source="direct",
+            requires_job_accounting=job.get("session_target") == "current",
+        )["id"]
+
+    # Normalize before *any* dispatch claim or executor selection.  A malformed
+    # persisted value must never downgrade to the isolated runner.
+    from cron.contextual import normalize_session_target
+    from gateway.contextual_cron import ContextualCronOutcome
+
     try:
+        session_target = normalize_session_target(job.get("session_target"))
+    except ValueError as exc:
+        error = str(exc)
+        try:
+            mark_job_run(job["id"], False, error)
+        finally:
+            finish_contextual_execution(
+                execution_id,
+                outcome="rejected",
+                error=error,
+                delivery_outcome="suppressed",
+            )
+        return True
+
+    existing_execution = get_execution(execution_id)
+    contextual_delivery_job = None
+    if session_target == "current":
+        contextual_delivery_job = {
+            "id": str(job.get("id") or ""),
+            "name": job.get("name"),
+            "deliver": _normalize_deliver_value(job.get("deliver") or "origin"),
+            "origin": dict(job.get("origin") or {}),
+        }
+        if (
+            existing_execution
+            and not existing_execution.get("delivery_target_json")
+            and existing_execution.get("phase") == "claimed"
+        ):
+            if not seal_contextual_delivery_target(
+                execution_id,
+                target=contextual_delivery_job,
+            ):
+                finish_contextual_execution(
+                    execution_id,
+                    outcome="unknown",
+                    error="Could not durably seal the contextual delivery destination.",
+                )
+                return True
+            existing_execution = get_execution(execution_id)
+        if existing_execution and not existing_execution.get("delivery_target_json"):
+            finish_contextual_execution(
+                execution_id,
+                outcome="unknown",
+                error="Contextual execution has no immutable delivery destination.",
+            )
+            return True
+        if existing_execution:
+            try:
+                sealed_delivery_job = json.loads(
+                    existing_execution.get("delivery_target_json") or "null"
+                )
+            except (TypeError, ValueError) as target_exc:
+                sealed_delivery_job = None
+                target_error = str(target_exc)
+            else:
+                target_error = ""
+            if (
+                not isinstance(sealed_delivery_job, dict)
+                or str(sealed_delivery_job.get("id") or "") != str(job.get("id") or "")
+            ):
+                corruption_error = (
+                    "Contextual execution has a malformed immutable delivery destination."
+                )
+                if target_error:
+                    corruption_error = f"{corruption_error} {target_error}"
+                occurrence_claimed = verify_contextual_occurrence_claim(
+                    str(job["id"]), execution_id=str(execution_id)
+                )
+                terminal = finish_contextual_execution(
+                    execution_id,
+                    outcome="unknown" if occurrence_claimed else "rejected",
+                    error=corruption_error,
+                    delivery_outcome="suppressed",
+                )
+                if occurrence_claimed and terminal is not None:
+                    _account_contextual_job_run(
+                        execution_id=execution_id,
+                        job_id=str(job["id"]),
+                        success=False,
+                        error=corruption_error,
+                        delivery_error=None,
+                    )
+                elif terminal is not None:
+                    claim_contextual_job_accounting(execution_id)
+                return True
+            contextual_delivery_job = sealed_delivery_job
+
+    # A terminal occurrence has already passed its scheduler-owned delivery
+    # boundary.  Replaying it is metadata lookup, never a fresh execution or
+    # notification.
+    if (
+        existing_execution
+        and existing_execution.get("status") == "running"
+        and existing_execution.get("phase") == "agent_completed"
+        and existing_execution.get("delivery_state") == "pending"
+    ):
+        _resume_contextual_delivery_record(
+            job,
+            existing_execution,
+            adapters=adapters,
+            loop=loop,
+        )
+        return True
+    if existing_execution and existing_execution.get("phase") == "delivering":
+        # A delivery claimant already owns the only external attempt.
+        return True
+    if existing_execution and existing_execution.get("status") in {
+        "completed",
+        "failed",
+        "unknown",
+    }:
+        return True
+    try:
+        # Built-in contextual ticks arrive with an execution-specific occurrence
+        # claim created only after the ledger and immutable destination exist.
+        # Revalidate that authority at the worker boundary. Manual/direct runs do
+        # not carry this private marker and retain legacy claim_dispatch behavior.
+        if session_target == "current" and job.get("_contextual_occurrence_preclaimed"):
+            if not verify_contextual_occurrence_claim(
+                str(job["id"]), execution_id=str(execution_id)
+            ):
+                claim_error = (
+                    "Contextual occurrence authority was lost before executor start."
+                )
+                terminal = finish_contextual_execution(
+                    execution_id,
+                    outcome="unknown",
+                    error=claim_error,
+                    delivery_outcome="suppressed",
+                )
+                if terminal is not None:
+                    _account_contextual_job_run(
+                        execution_id=execution_id,
+                        job_id=str(job["id"]),
+                        success=False,
+                        error=claim_error,
+                        delivery_error=None,
+                    )
+                return True
         # Pre-run dispatch claim (issue #38758): atomically commit a finite
         # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
         # mid-execution (gateway kill, OOM, segfault, hard-timeout) cannot
@@ -4529,7 +5112,7 @@ def run_one_job(
         # use advance_next_run) and infinite/no-repeat jobs. This lives here in
         # the shared body so BOTH the built-in ticker and the external provider
         # (Chronos fire_due) get at-most-times semantics.
-        if not claim_dispatch(job["id"]):
+        elif not claim_dispatch(job["id"]):
             logger.info(
                 "Job '%s': one-shot dispatch limit reached — skipping",
                 job.get("name", job["id"]),
@@ -4543,7 +5126,10 @@ def run_one_job(
 
         # The attempt is claimed durably before executor/provider dispatch and
         # becomes running only immediately before the actual run.
-        mark_execution_running(execution_id)
+        if mark_execution_running(execution_id) is None:
+            # Another scheduler/process owns this occurrence, or it already
+            # advanced.  Only the claimed→running CAS winner may execute.
+            return True
 
         # Run the job under the profile's secret scope. get_secret() fails
         # closed outside a scope once profile isolation is in play (multiple
@@ -4569,11 +5155,71 @@ def run_one_job(
         # below once delivery is done. Defense-in-depth alongside the
         # interpreter-shutdown guard in _deliver_result.
         _deferred_agents: list = []
+        contextual_outcome = None
         try:
-            success, output, final_response, error = run_job(
-                job, defer_agent_teardown=_deferred_agents,
-                extra_prompt=extra_prompt,
-            )
+            if session_target == "current" and extra_prompt:
+                rejection_error = (
+                    "Transient per-run prompt context is not supported for "
+                    "session_target='current'. Store the instruction on the "
+                    "job so the hidden contextual turn is durable and auditable."
+                )
+                contextual_outcome = ContextualCronOutcome.rejected(rejection_error)
+                success = False
+                output = rejection_error
+                final_response = ""
+                error = rejection_error
+            elif session_target == "current":
+                from cron.contextual import validate_contextual_job_shape
+
+                try:
+                    validate_contextual_job_shape(job)
+                except ValueError as exc:
+                    contextual_outcome = ContextualCronOutcome.rejected(str(exc))
+                else:
+                    effective_contextual_dispatch = (
+                        contextual_dispatch or get_contextual_dispatcher()
+                    )
+                    if effective_contextual_dispatch is None:
+                        contextual_outcome = ContextualCronOutcome.rejected(
+                            "No live gateway contextual cron lane is available; isolation fallback is forbidden."
+                        )
+                    else:
+                        # Retry only typed pre-side-effect transient outcomes,
+                        # preserving the same occurrence/admission identity.
+                        for contextual_attempt in range(3):
+                            contextual_outcome = effective_contextual_dispatch(
+                                job, execution_id=execution_id
+                            )
+                            if getattr(contextual_outcome, "kind", None) != "retryable":
+                                break
+                            if contextual_attempt >= 2:
+                                contextual_outcome = ContextualCronOutcome.failure(
+                                    "Contextual cron retry budget exhausted."
+                                )
+                                break
+                            if prepare_contextual_retry(execution_id) is None:
+                                contextual_outcome = ContextualCronOutcome.unknown(
+                                    "Could not durably prepare the contextual retry."
+                                )
+                                break
+                            time.sleep(0.05 * (2 ** contextual_attempt))
+                kind = getattr(contextual_outcome, "kind", None)
+                final_response = str(
+                    getattr(contextual_outcome, "final_response", "") or ""
+                )
+                error = getattr(contextual_outcome, "error", None)
+                success = kind in {"notify", "no_action"}
+                output = final_response or str(error or "")
+                if kind == "no_action":
+                    final_response = ""
+                elif kind != "notify" and not error:
+                    error = f"Contextual cron ended with {kind or 'unknown'}."
+            else:
+                success, output, final_response, error = run_job(
+                    job,
+                    defer_agent_teardown=_deferred_agents,
+                    extra_prompt=extra_prompt,
+                )
         except BaseException:
             # run_job's finally still hands back the agent when it raises; tear
             # it down here so a failed run never leaks its async resources
@@ -4586,6 +5232,27 @@ def run_one_job(
         finally:
             reset_secret_scope(_scope_token)
 
+        # The typed contextual agent result is durable before any delivery
+        # claim. The live gateway normally writes this immediately before
+        # resolving its future; this idempotent scheduler acknowledgement also
+        # covers injected providers/test lanes.
+        persisted_contextual = None
+        if contextual_outcome is not None:
+            persisted_contextual = persist_contextual_agent_result(
+                execution_id,
+                outcome=getattr(contextual_outcome, "kind", "unknown"),
+                final_response=getattr(contextual_outcome, "final_response", ""),
+                error=getattr(contextual_outcome, "error", None),
+            )
+            if persisted_contextual is None:
+                contextual_outcome = ContextualCronOutcome.unknown(
+                    "Could not durably persist the contextual cron result."
+                )
+                success = False
+                final_response = ""
+                error = contextual_outcome.error
+                output = str(error or "")
+
         # Everything from here through delivery runs with the agent still live
         # (deferred teardown). Wrap it ALL in a try/finally so that if any step
         # between run_job returning and delivery — save_job_output, the [SILENT]
@@ -4594,6 +5261,7 @@ def run_one_job(
         # swallow the error and leak the agent's subprocesses/clients (#10200).
         delivery_error = None
         blocked_config = False
+        delivery_uncertain = False
         try:
             output_file = save_job_output(job["id"], output)
             if verbose:
@@ -4613,44 +5281,96 @@ def run_one_job(
                     "(tool subprocess was killed mid-flight)."
                 )
 
-            # Deliver the final response to the origin/target chat.
-            # If the agent responded with [SILENT], skip delivery (but
-            # output is already saved above).  Failed jobs always deliver.
-            #
-            # Exception: a run blocked by pre-dispatch config validation
-            # (T1-26) alerts exactly ONCE — the silent marker means the
-            # operator was already told on a previous tick, so re-delivering
-            # the same alert every tick would be spam (#73506 alert-once
-            # shape).
-            blocked_config_silent = (
-                bool(error) and BLOCKED_CONFIG_SILENT_MARKER in str(error)
+            # Contextual turns expose only an explicit notify as externally
+            # deliverable. Rejected/stale/failure/unknown details stay internal.
+            contextual_kind = (
+                getattr(contextual_outcome, "kind", None)
+                if contextual_outcome is not None
+                else None
             )
-            blocked_config = blocked_config_silent or (
-                bool(error) and BLOCKED_CONFIG_MARKER in str(error)
-            )
-            if blocked_config and not success:
-                # Blocked-config alert: bypass the generic failure summarizer
-                # (whose auth/timeout heuristics would mislabel this as a
-                # provider runtime failure) — say plainly that config
-                # validation blocked the run and nothing was spent.
-                _pf_text = re.sub(
-                    r"\[blocked_config[^\]]*\]\s*", "", str(error)
-                ).strip()
-                deliver_content = (
-                    f"⛔ Cron '{job.get('name') or job['id']}' blocked by "
-                    f"configuration validation (no LLM call was made): "
-                    f"{_pf_text} "
-                    "This alert is sent once; the job stays blocked until "
-                    "the configuration is fixed."
-                )
+            blocked_config_silent = False
+            if contextual_outcome is not None:
+                deliver_content = final_response if contextual_kind == "notify" else ""
             else:
-                deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+                # Ordinary isolated cron keeps the alert-once behavior for
+                # pre-dispatch configuration failures.
+                blocked_config_silent = (
+                    bool(error) and BLOCKED_CONFIG_SILENT_MARKER in str(error)
+                )
+                blocked_config = blocked_config_silent or (
+                    bool(error) and BLOCKED_CONFIG_MARKER in str(error)
+                )
+                if blocked_config and not success:
+                    _pf_text = re.sub(
+                        r"\[blocked_config[^\]]*\]\s*", "", str(error)
+                    ).strip()
+                    deliver_content = (
+                        f"⛔ Cron '{job.get('name') or job['id']}' blocked by "
+                        f"configuration validation (no LLM call was made): "
+                        f"{_pf_text} "
+                        "This alert is sent once; the job stays blocked until "
+                        "the configuration is fixed."
+                    )
+                else:
+                    deliver_content = (
+                        final_response
+                        if success
+                        else _summarize_cron_failure_for_delivery(job, error)
+                    )
             # Treat whitespace-only final responses the same as empty
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.
             should_deliver = bool(deliver_content.strip())
             if blocked_config_silent:
                 should_deliver = False
+            contextual_delivery_claimed = False
+            contextual_delivery_claim_lost = False
+            if contextual_kind == "notify":
+                authorizer = get_contextual_authorizer()
+                authorization_error = None
+                authorization_record = persisted_contextual or {}
+                authorization_target = _contextual_authorization_target(
+                    contextual_delivery_job or {}, authorization_record
+                )
+                try:
+                    authorized = bool(
+                        callable(authorizer)
+                        and authorizer(authorization_target)
+                    )
+                except Exception as auth_exc:
+                    authorized = False
+                    authorization_error = str(auth_exc) or type(auth_exc).__name__
+                if not authorized:
+                    authorization_error = authorization_error or (
+                        "Contextual cron authorization was revoked before delivery."
+                    )
+                    suppress_contextual_delivery(
+                        execution_id, error=authorization_error
+                    )
+                    should_deliver = False
+                    success = False
+                    error = authorization_error
+                    delivery_error = authorization_error
+                else:
+                    contextual_delivery_claimed = bool(
+                        authorization_target.get("_contextual_delivery_claimed")
+                    )
+                    contextual_delivery_claim_attempted = bool(
+                        authorization_target.get(
+                            "_contextual_delivery_claim_attempted"
+                        )
+                    )
+                    if (
+                        not contextual_delivery_claimed
+                        and not contextual_delivery_claim_attempted
+                    ):
+                        contextual_delivery_claimed = (
+                            claim_contextual_delivery(execution_id) is not None
+                        )
+                    if not contextual_delivery_claimed:
+                        # A concurrent/replayed scheduler does not own delivery.
+                        should_deliver = False
+                        contextual_delivery_claim_lost = True
             unresolved_origin = False
             # Cron silence suppression — see _is_cron_silence_response.  Replaces the
             # old `SILENT_MARKER in ...upper()` substring check, which both leaked
@@ -4663,14 +5383,30 @@ def run_one_job(
                 should_deliver = False
 
             if should_deliver:
+                delivery_job = contextual_delivery_job or job
                 unresolved_origin = (
-                    _normalize_deliver_value(job.get("deliver", "local")) == "origin"
-                    and not _resolve_delivery_targets(job)
+                    _normalize_deliver_value(delivery_job.get("deliver", "local")) == "origin"
+                    and not _resolve_delivery_targets(delivery_job)
                 )
                 try:
-                    delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                    if contextual_outcome is not None:
+                        delivery_error = _deliver_result(
+                            delivery_job,
+                            deliver_content,
+                            adapters=adapters,
+                            loop=loop,
+                            at_most_once=True,
+                        )
+                    else:
+                        delivery_error = _deliver_result(
+                            delivery_job,
+                            deliver_content,
+                            adapters=adapters,
+                            loop=loop,
+                        )
                 except Exception as de:
                     delivery_error = str(de)
+                    delivery_uncertain = contextual_delivery_claimed
                     logger.error("Delivery failed for job %s: %s", job["id"], de)
         finally:
             # Tear down the deferred agent(s) now that save + delivery have run
@@ -4679,22 +5415,40 @@ def run_one_job(
             for _deferred_agent in _deferred_agents:
                 _teardown_cron_agent(_deferred_agent, job["id"])
 
-        # Treat empty final_response as a soft failure so last_status
-        # is not "ok" — the agent ran but produced nothing useful.
-        # (issue #8585)
-        if success and not final_response.strip():
+        if contextual_delivery_claim_lost:
+            # Another worker owns (or already consumed) this delivery CAS.
+            # Leave terminalization and accounting to that owner.
+            return False
+
+        # no_action is an explicit successful terminal state, not an empty
+        # model response. Preserve the legacy empty-response guard otherwise.
+        if success and not final_response.strip() and (
+            contextual_outcome is None
+            or getattr(contextual_outcome, "kind", None) != "no_action"
+        ):
             success = False
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
-        if not _consume_interrupted_flag(job["id"]):
+        should_account_job = not _consume_interrupted_flag(job["id"])
+        if should_account_job and contextual_outcome is None:
             if blocked_config:
                 mark_job_run(
-                    job["id"], success, error, delivery_error=delivery_error,
+                    job["id"],
+                    success,
+                    error,
+                    delivery_error=delivery_error,
                     status="blocked_config",
                 )
             else:
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-        normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
+                mark_job_run(
+                    job["id"],
+                    success,
+                    error,
+                    delivery_error=delivery_error,
+                )
+        normalized_deliver = _normalize_deliver_value(
+            (contextual_delivery_job or job).get("deliver", "local")
+        )
         if delivery_error:
             delivery_outcome = "failed"
         elif should_deliver and unresolved_origin:
@@ -4703,12 +5457,43 @@ def run_one_job(
             delivery_outcome = "delivered"
         else:
             delivery_outcome = "suppressed"
-        finish_execution(
-            execution_id,
-            success=success,
-            error=error,
-            delivery_outcome=delivery_outcome,
-        )
+        if contextual_outcome is not None:
+            if contextual_kind == "notify" and contextual_delivery_claimed:
+                if delivery_uncertain:
+                    finish_contextual_delivery(
+                        execution_id,
+                        delivery_state="unknown",
+                        error=delivery_error,
+                    )
+                elif delivery_error or unresolved_origin:
+                    finish_contextual_delivery(
+                        execution_id,
+                        delivery_state="failed",
+                        error=(
+                            delivery_error
+                            or "Contextual cron delivery origin could not be resolved."
+                        ),
+                    )
+                else:
+                    finish_contextual_delivery(
+                        execution_id,
+                        delivery_state="sent",
+                    )
+        else:
+            finish_execution(
+                execution_id,
+                success=success,
+                error=error,
+                delivery_outcome=delivery_outcome,
+            )
+        if should_account_job and contextual_outcome is not None:
+            _account_contextual_job_run(
+                execution_id=execution_id,
+                job_id=str(job["id"]),
+                success=success,
+                error=error,
+                delivery_error=delivery_error,
+            )
         return True
 
     except BaseException as e:  # noqa: BLE001 — deliberate: see below
@@ -4723,22 +5508,69 @@ def run_one_job(
         # anything that isn't a plain Exception.
         _err_text = str(e) or type(e).__name__
         logger.error("Error processing job %s: %s", job['id'], _err_text)
-        try:
-            if not _consume_interrupted_flag(job["id"]):
-                mark_job_run(job["id"], False, _err_text)
-        except Exception as record_err:
-            # Never let bookkeeping mask the original interruption.
-            logger.error(
-                "Failed to record interrupted run for job %s: %s",
-                job["id"], record_err,
-            )
-        try:
-            finish_execution(execution_id, success=False, error=_err_text)
-        except Exception as record_err:
-            logger.error(
-                "Failed to finish execution record for job %s: %s",
-                job["id"], record_err,
-            )
+        should_account_interrupted_job = not _consume_interrupted_flag(job["id"])
+        contextual_terminal_durable = False
+        contextual_delivery_error = None
+        if session_target == "current" and execution_id:
+            try:
+                current_record = get_execution(execution_id)
+                if current_record:
+                    if (
+                        current_record.get("phase") == "delivering"
+                        and current_record.get("delivery_state") == "claimed"
+                    ):
+                        contextual_delivery_error = (
+                            "Contextual delivery was interrupted after its external "
+                            f"attempt began: {_err_text}"
+                        )
+                        contextual_terminal_durable = finish_contextual_delivery(
+                            execution_id,
+                            delivery_state="unknown",
+                            error=contextual_delivery_error,
+                        ) is not None
+                    elif (
+                        current_record.get("phase") == "agent_completed"
+                        and current_record.get("delivery_state") == "pending"
+                    ):
+                        # Safe restart point: the agent will not rerun; startup may
+                        # claim and resume only this not-yet-started delivery.
+                        pass
+                    else:
+                        contextual_terminal_durable = finish_contextual_execution(
+                            execution_id,
+                            outcome="failure",
+                            error=_err_text,
+                        ) is not None
+            except Exception as record_err:
+                logger.error(
+                    "Failed to finish execution record for job %s: %s",
+                    job["id"], record_err,
+                )
+            if should_account_interrupted_job and contextual_terminal_durable:
+                _account_contextual_job_run(
+                    execution_id=execution_id,
+                    job_id=str(job["id"]),
+                    success=False,
+                    error=_err_text,
+                    delivery_error=contextual_delivery_error,
+                )
+        else:
+            try:
+                if should_account_interrupted_job:
+                    mark_job_run(job["id"], False, _err_text)
+            except Exception as record_err:
+                # Never let bookkeeping mask the original interruption.
+                logger.error(
+                    "Failed to record interrupted run for job %s: %s",
+                    job["id"], record_err,
+                )
+            try:
+                finish_execution(execution_id, success=False, error=_err_text)
+            except Exception as record_err:
+                logger.error(
+                    "Failed to finish execution record for job %s: %s",
+                    job["id"], record_err,
+                )
         if not isinstance(e, Exception):
             raise
         return False
@@ -4796,14 +5628,14 @@ class CronSchedulerRegistrationError(RuntimeError):
 
 def create_job_with_scheduler_registration(**kwargs) -> dict:
     """Persist one job and register its first trigger with the active provider."""
-    from cron.jobs import create_job
+    from cron.jobs import create_job, get_job
     from cron.scheduler_provider import resolve_cron_scheduler
 
     job = create_job(**kwargs)
     try:
         resolve_cron_scheduler().register_job(job)
     except Exception as exc:
-        raise CronSchedulerRegistrationError(job, exc) from exc
+        raise CronSchedulerRegistrationError(get_job(job["id"]) or job, exc) from exc
     return job
 
 
@@ -4814,6 +5646,7 @@ def tick(
     sync: bool = True,
     *,
     can_dispatch=None,
+    contextual_dispatch=None,
 ):
     """
     Check and run all due jobs.
@@ -4885,13 +5718,16 @@ def tick(
         if verbose:
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
 
-        # Advance next_run_at for all recurring jobs FIRST, under the file lock,
-        # before any execution begins.  This preserves at-most-once semantics.
-        # For parallel jobs that are already running, the advance keeps
-        # bumping next_run_at forward so the grace window never expires.
-        # mark_job_run() overwrites next_run_at on completion.
-        # Batched: one load + one save for the whole due set, not one per job.
-        advance_next_runs([job["id"] for job in due_jobs])
+        # Preserve upstream's O(1) batch advance for ordinary isolated jobs.
+        # Contextual occurrences are admitted later, one at a time, only after
+        # their ledger row and immutable delivery target exist.
+        advance_next_runs(
+            [
+                job["id"]
+                for job in due_jobs
+                if job.get("session_target", "isolated") != "current"
+            ]
+        )
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
         # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
@@ -4925,7 +5761,13 @@ def tick(
             module-level ``run_one_job`` so ``tick`` and external providers
             (Chronos ``fire_due``) use the identical execute→save→deliver→mark
             body."""
-            return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
+            return run_one_job(
+                job,
+                adapters=adapters,
+                loop=loop,
+                verbose=verbose,
+                contextual_dispatch=contextual_dispatch,
+            )
 
         # Partition due jobs: those with a per-job workdir mutate
         # os.environ["TERMINAL_CWD"] inside run_job, which is process-global, so
@@ -4963,8 +5805,127 @@ def tick(
                 return None
             # Record the attempt before executor dispatch. Recovery classifies
             # abandoned records as unknown; it never automatically retries them.
-            execution = create_execution(job_id, source="builtin")
-            dispatched_job = dict(job, execution_id=execution["id"])
+            try:
+                execution = create_execution(
+                    job_id,
+                    source="builtin",
+                    requires_job_accounting=job.get("session_target") == "current",
+                )
+            except Exception as ledger_err:
+                with _running_lock:
+                    _running_job_ids.discard(job_id)
+                logger.error(
+                    "Job '%s' not dispatched because its execution ledger claim failed: %s",
+                    job.get("name", job_id),
+                    ledger_err,
+                )
+                return None
+            execution_id = str(execution["id"])
+            is_contextual = job.get("session_target", "isolated") == "current"
+            dispatched_job: dict[str, Any] = dict(job, execution_id=execution_id)
+            if is_contextual:
+                delivery_target = {
+                    "id": str(job_id),
+                    "name": job.get("name"),
+                    "deliver": _normalize_deliver_value(job.get("deliver") or "origin"),
+                    "origin": dict(job.get("origin") or {}),
+                }
+                try:
+                    sealed = seal_contextual_delivery_target(
+                        execution_id, target=delivery_target
+                    )
+                except BaseException as seal_err:
+                    release_running_job(job_id)
+                    error_text = str(seal_err) or type(seal_err).__name__
+                    terminal = finish_contextual_execution(
+                        execution_id,
+                        outcome="rejected",
+                        error=error_text,
+                        delivery_outcome="suppressed",
+                    )
+                    if terminal is not None:
+                        claim_contextual_job_accounting(execution_id)
+                    if not isinstance(seal_err, Exception):
+                        raise
+                    logger.error(
+                        "Contextual job '%s' not dispatched: %s",
+                        job.get("name", job_id),
+                        seal_err,
+                    )
+                    return None
+                if not sealed:
+                    release_running_job(job_id)
+                    error_text = (
+                        "Could not durably seal the contextual delivery destination."
+                    )
+                    terminal = finish_contextual_execution(
+                        execution_id,
+                        outcome="rejected",
+                        error=error_text,
+                        delivery_outcome="suppressed",
+                    )
+                    if terminal is not None:
+                        claim_contextual_job_accounting(execution_id)
+                    logger.error(
+                        "Contextual job '%s' not dispatched: %s",
+                        job.get("name", job_id),
+                        error_text,
+                    )
+                    return None
+                try:
+                    occurrence_claimed = claim_contextual_occurrence(
+                        job_id,
+                        execution_id=execution_id,
+                        expected_next_run_at=str(job.get("next_run_at") or ""),
+                    )
+                except BaseException as claim_err:
+                    # The jobs-file save may have crossed its atomic boundary;
+                    # classify the occurrence as unknown and account it rather
+                    # than assuming the cursor is untouched and retrying.
+                    release_running_job(job_id)
+                    error_text = str(claim_err) or type(claim_err).__name__
+                    terminal = finish_contextual_execution(
+                        execution_id,
+                        outcome="unknown",
+                        error=error_text,
+                        delivery_outcome="suppressed",
+                    )
+                    if terminal is not None:
+                        _account_contextual_job_run(
+                            execution_id=execution_id,
+                            job_id=str(job_id),
+                            success=False,
+                            error=error_text,
+                            delivery_error=None,
+                        )
+                    if not isinstance(claim_err, Exception):
+                        raise
+                    logger.error(
+                        "Contextual job '%s' admission became ambiguous: %s",
+                        job.get("name", job_id),
+                        claim_err,
+                    )
+                    return None
+                if not occurrence_claimed:
+                    release_running_job(job_id)
+                    error_text = (
+                        "The exact contextual schedule occurrence could not be claimed."
+                    )
+                    terminal = finish_contextual_execution(
+                        execution_id,
+                        outcome="rejected",
+                        error=error_text,
+                        delivery_outcome="suppressed",
+                    )
+                    if terminal is not None:
+                        claim_contextual_job_accounting(execution_id)
+                    logger.error(
+                        "Contextual job '%s' not dispatched: %s",
+                        job.get("name", job_id),
+                        error_text,
+                    )
+                    return None
+                dispatched_job["_contextual_occurrence_preclaimed"] = True
             _ctx = contextvars.copy_context()
 
             def _run_and_release(j=dispatched_job, ctx=_ctx):
@@ -4975,13 +5936,32 @@ def tick(
 
             try:
                 return pool.submit(_run_and_release)
-            except Exception as submit_err:
+            except BaseException as submit_err:
                 release_running_job(job_id)
-                finish_execution(
-                    execution["id"],
-                    success=False,
-                    error=f"Executor dispatch failed: {submit_err}",
-                )
+                dispatch_error = f"Executor dispatch failed: {submit_err}"
+                if is_contextual:
+                    terminal = finish_contextual_execution(
+                        execution_id,
+                        outcome="failure",
+                        error=dispatch_error,
+                        delivery_outcome="suppressed",
+                    )
+                    if terminal is not None:
+                        _account_contextual_job_run(
+                            execution_id=execution_id,
+                            job_id=str(job_id),
+                            success=False,
+                            error=dispatch_error,
+                            delivery_error=None,
+                        )
+                else:
+                    finish_execution(
+                        execution_id,
+                        success=False,
+                        error=dispatch_error,
+                    )
+                if not isinstance(submit_err, Exception):
+                    raise
                 # Interpreter began finalizing between the guard above and the
                 # submit — release the in-flight claim we just took and skip.
                 if isinstance(submit_err, RuntimeError) and _interpreter_shutting_down(submit_err):

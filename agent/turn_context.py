@@ -130,6 +130,46 @@ def extract_api_content_sidecar(msg: Mapping[str, Any]) -> Optional[str]:
     return v if isinstance(v, str) else None
 
 
+def clone_transcript_message_for_branch(
+    msg: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Build the durable message payload used by every branch/fork surface.
+
+    Branching creates new rows, so storage-only fields such as row IDs and
+    active/compacted flags must not be copied.  Every replay, provenance, and
+    presentation sidecar consumed by ``SessionDB._insert_message_rows`` must be
+    preserved, however.  In particular, dropping ``display_kind`` declassifies
+    privileged hidden rows into ordinary public transcript content.
+
+    Keeping this projection in one helper prevents the CLI, gateway, TUI, and
+    delayed desktop branch seed from drifting as the durable message schema
+    grows.
+    """
+    return {
+        "role": msg.get("role", "user"),
+        "content": msg.get("content"),
+        "tool_name": msg.get("tool_name") or msg.get("name"),
+        "tool_calls": msg.get("tool_calls"),
+        "tool_call_id": msg.get("tool_call_id"),
+        "effect_disposition": msg.get("effect_disposition"),
+        "token_count": msg.get("token_count"),
+        "finish_reason": msg.get("finish_reason"),
+        "reasoning": msg.get("reasoning"),
+        "reasoning_content": msg.get("reasoning_content"),
+        "reasoning_details": msg.get("reasoning_details"),
+        "codex_reasoning_items": msg.get("codex_reasoning_items"),
+        "codex_message_items": msg.get("codex_message_items"),
+        "platform_message_id": (
+            msg.get("platform_message_id") or msg.get("message_id")
+        ),
+        "observed": msg.get("observed"),
+        "api_content": extract_api_content_sidecar(msg),
+        "display_kind": msg.get("display_kind"),
+        "display_metadata": msg.get("display_metadata"),
+        "timestamp": msg.get("timestamp"),
+    }
+
+
 def consume_gateway_turn_context_notes(agent: Any) -> str:
     """Pop the gateway's per-turn must-deliver notes off the agent (one-shot).
 
@@ -429,6 +469,7 @@ def build_turn_context(
     set_current_write_origin,
     ra,
     moa_active: bool = False,
+    contextual_execution: bool = False,
 ) -> TurnContext:
     """Run the once-per-turn setup and return the loop's input context.
 
@@ -442,7 +483,11 @@ def build_turn_context(
     # Recover a session rotated by another path before binding log/turn ids or
     # copying client-supplied history. Everything in this turn must consistently
     # belong to the canonical child, including observability metadata.
-    recovered_history = recover_rotated_compression_session(agent)
+    recovered_history = (
+        None
+        if contextual_execution
+        else recover_rotated_compression_session(agent)
+    )
     if recovered_history is not None:
         conversation_history = recovered_history
 
@@ -491,7 +536,10 @@ def build_turn_context(
     # or when the tool set is unchanged (``refresh_agent_mcp_tools`` diffs by
     # name and leaves the snapshot untouched on no-change).
     try:
-        if not getattr(agent, "_skip_mcp_refresh", False):
+        if (
+            not contextual_execution
+            and not getattr(agent, "_skip_mcp_refresh", False)
+        ):
             # Import-cost gate: ``tools.mcp_tool`` pulls in the whole ``mcp``
             # package (~0.4s measured) even when the user has zero MCP servers
             # configured.  MCP tools can only be registered by code that has
@@ -713,11 +761,12 @@ def build_turn_context(
     # persist lock as CLI close persistence.
     persist_lock = getattr(agent, "_session_persist_lock", None)
     try:
-        if persist_lock is None:
-            agent._ensure_db_session()
-        else:
-            with persist_lock:
+        if not contextual_execution:
+            if persist_lock is None:
                 agent._ensure_db_session()
+            else:
+                with persist_lock:
+                    agent._ensure_db_session()
     except Exception:
         logger.warning(
             "Turn-start session row creation failed for session=%s",
@@ -743,7 +792,12 @@ def build_turn_context(
     # the previous turn finished. The cheap gap pre-check gates the (more
     # expensive) token estimate, mirroring ``_should_run_preflight_estimate``.
     _idle_after = getattr(agent, "compression_idle_compact_after_seconds", 0)
-    if agent.compression_enabled and _idle_after > 0 and messages:
+    if (
+        not contextual_execution
+        and agent.compression_enabled
+        and _idle_after > 0
+        and messages
+    ):
         _idle_gap = time.time() - getattr(agent, "_last_activity_ts", time.time())
         if _idle_gap >= _idle_after:
             _compressor = agent.context_compressor
@@ -820,7 +874,7 @@ def build_turn_context(
     _preflight_compression_blocked = False
     agent._turn_received_provider_response = False
     agent._turn_preflight_display_snapshot = None
-    if agent.compression_enabled and _should_run_preflight_estimate(
+    if not contextual_execution and agent.compression_enabled and _should_run_preflight_estimate(
         messages,
         agent.context_compressor.protect_first_n,
         agent.context_compressor.protect_last_n,
@@ -1134,20 +1188,23 @@ def build_turn_context(
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
     plugin_user_context = ""
     try:
-        from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-        _pre_results = _invoke_hook(
-            "pre_llm_call",
-            session_id=agent.session_id,
-            task_id=effective_task_id,
-            turn_id=turn_id,
-            user_message=original_user_message,
-            conversation_history=list(messages),
-            is_first_turn=(not bool(conversation_history)),
-            model=agent.model,
-            platform=getattr(agent, "platform", None) or "",
-            parent_session_id=getattr(agent, "_parent_session_id", None) or "",
-            sender_id=getattr(agent, "_user_id", None) or "",
-        )
+        if contextual_execution:
+            _pre_results = []
+        else:
+            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+            _pre_results = _invoke_hook(
+                "pre_llm_call",
+                session_id=agent.session_id,
+                task_id=effective_task_id,
+                turn_id=turn_id,
+                user_message=original_user_message,
+                conversation_history=list(messages),
+                is_first_turn=(not bool(conversation_history)),
+                model=agent.model,
+                platform=getattr(agent, "platform", None) or "",
+                parent_session_id=getattr(agent, "_parent_session_id", None) or "",
+                sender_id=getattr(agent, "_user_id", None) or "",
+            )
         _ctx_parts: list[str] = []
         # Spill oversized per-hook context to disk so a runaway plugin
         # can't inflate every subsequent turn's prompt. Ported from
@@ -1191,7 +1248,9 @@ def build_turn_context(
     # One-shot: staged by the gateway right before this turn, consumed here.
     # Multimodal (list) content can't take the string sidecar — append a
     # durable text part instead of dropping the fact.
-    _gateway_notes = consume_gateway_turn_context_notes(agent)
+    _gateway_notes = (
+        "" if contextual_execution else consume_gateway_turn_context_notes(agent)
+    )
     if _gateway_notes:
         _gw_turn_content = (
             messages[current_turn_user_idx].get("content")
@@ -1228,7 +1287,7 @@ def build_turn_context(
         agent._interrupt_thread_signal_pending = False
 
     # Notify memory providers of the new turn (BEFORE prefetch_all).
-    if agent._memory_manager:
+    if agent._memory_manager and not contextual_execution:
         try:
             _turn_msg = original_user_message if isinstance(original_user_message, str) else ""
             agent._memory_manager.on_turn_start(agent._user_turn_count, _turn_msg)
@@ -1240,7 +1299,7 @@ def build_turn_context(
     # Skip prefetch on trivial prompts (greetings, acknowledgements) to
     # prevent memory-context injection on turns that carry no semantic signal.
     ext_prefetch_cache = ""
-    if agent._memory_manager:
+    if agent._memory_manager and not contextual_execution:
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
             if not is_trivial_prompt(_query):
@@ -1312,6 +1371,8 @@ def build_turn_context(
     # critical section as CLI close persistence, and retry the row create if
     # the pre-compression attempt above failed transiently.
     def _ensure_and_persist() -> None:
+        if contextual_execution:
+            return
         agent._ensure_db_session()
         agent._persist_session(messages, conversation_history)
 

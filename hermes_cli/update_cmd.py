@@ -889,7 +889,7 @@ def _update_via_zip(args):
             f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
         )
     _m()._record_bytecode_fingerprint()
-    _m()._refresh_bootstrap_cache_scripts()
+    _m()._refresh_bootstrap_cache_scripts(branch)
 
     # Reinstall Python dependencies. Prefer .[all], but if one optional extra
     # breaks on this machine, keep base deps and reinstall the remaining extras
@@ -3475,7 +3475,7 @@ def _refresh_windows_gateway_launchers() -> None:
     except Exception as exc:
         logger.debug("Could not refresh Windows gateway launchers after update: %s", exc)
 
-def _refresh_bootstrap_cache_scripts() -> None:
+def _refresh_bootstrap_cache_scripts(branch: str = "main") -> None:
     """Sync the installer's bootstrap-cache scripts from the fresh checkout.
 
     The Desktop GUI updater (``hermes-setup.exe``) executes
@@ -3489,18 +3489,30 @@ def _refresh_bootstrap_cache_scripts() -> None:
     has no self-update path, so the poisoned cache outlives every
     ``hermes update``.
 
-    Overwriting the cached branch scripts with the freshly pulled
+    Overwriting the cached script for *branch* with the freshly pulled
     ``scripts/install.ps1`` / ``scripts/install.sh`` on every update turns
     the stale binary's unconditional reuse into a feature: it "reuses" a
     file this function keeps permanently current. Post-#67193 installers
     re-download on each run anyway, so for them this is a harmless
     pre-seed of the same bytes.
 
-    Only branch-ref cache entries (mutable refs) are rewritten — commit-SHA
-    entries (``install-<40 hex>.ps1``) are immutable by design and must
-    keep matching their pinned commit. The .ps1 copy gets a UTF-8 BOM to
-    match the installer's own cache format (#67193 encoding fix).
-    Best-effort: a failed refresh must never fail the update.
+    Scope guards, mirroring ``install_script.rs``:
+
+    - Only the cache key for the update-target *branch* is rewritten
+      (``sanitize_ref``: non ``[A-Za-z0-9._-]`` chars become ``_``, so
+      ``bb/gui`` → ``install-bb_gui.ps1``). Sibling mutable refs cache
+      DIFFERENT branches' scripts — updating main must not clobber
+      ``install-bb_gui.ps1`` with main's script.
+    - Commit-SHA pins are immutable by design and never touched. The
+      installer's ``is_valid_commit()`` accepts **7–40** hex chars, so an
+      abbreviated pin like ``install-4ce1994.ps1`` is just as immutable as
+      a full 40-hex one; the sanitized *branch* is additionally required
+      to not itself look like a commit pin (defense in depth against a
+      caller passing a SHA as the branch).
+
+    The .ps1 copy gets a UTF-8 BOM to match the installer's cache format
+    (#67193 encoding fix). Best-effort: a failed refresh must never fail
+    the update.
     """
     try:
         import re as _re
@@ -3508,26 +3520,31 @@ def _refresh_bootstrap_cache_scripts() -> None:
         cache_dir = Path(_m().get_hermes_home()) / "bootstrap-cache"
         if not cache_dir.is_dir():
             return
-        sha_re = _re.compile(r"^install-[0-9a-f]{40}\.(ps1|sh)$")
+        # Mirror install_script.rs::sanitize_ref().
+        safe_ref = _re.sub(r"[^A-Za-z0-9._-]", "_", str(branch or "main"))
+        # Mirror install_script.rs::is_valid_commit(): 7-40 hex chars is an
+        # immutable commit pin — abbreviated SHAs included. Never rewrite.
+        if _re.fullmatch(r"[0-9a-fA-F]{7,40}", safe_ref):
+            return
         refreshed = []
         for kind, src_name in (("ps1", "install.ps1"), ("sh", "install.sh")):
             src = _m().PROJECT_ROOT / "scripts" / src_name
             if not src.is_file():
                 continue
+            cached = cache_dir / f"install-{safe_ref}.{kind}"
+            if not cached.is_file():
+                continue  # this ref was never bootstrap-cached — nothing to heal
             data = src.read_bytes()
             if kind == "ps1" and not data.startswith(b"\xef\xbb\xbf"):
                 # Match the installer's cache format: PowerShell needs the
                 # UTF-8 BOM or localized/em-dash text mis-decodes (#67193).
                 data = b"\xef\xbb\xbf" + data
-            for cached in cache_dir.glob(f"install-*.{kind}"):
-                if sha_re.match(cached.name):
-                    continue  # immutable commit pin — leave it alone
-                if cached.read_bytes() == data:
-                    continue  # already current
-                tmp = cached.with_suffix(cached.suffix + ".tmp")
-                tmp.write_bytes(data)
-                os.replace(tmp, cached)
-                refreshed.append(cached.name)
+            if cached.read_bytes() == data:
+                continue  # already current
+            tmp = cached.with_suffix(cached.suffix + ".tmp")
+            tmp.write_bytes(data)
+            os.replace(tmp, cached)
+            refreshed.append(cached.name)
         if refreshed:
             print(
                 "  ✓ Refreshed installer bootstrap-cache script(s): "
@@ -4288,7 +4305,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
             )
         _m()._record_bytecode_fingerprint()
-        _m()._refresh_bootstrap_cache_scripts()
+        _m()._refresh_bootstrap_cache_scripts(branch)
 
         # Fork upstream sync logic (only for main branch on forks)
         if is_fork and branch == "main":
@@ -4378,7 +4395,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
             )
         _m()._record_bytecode_fingerprint()
-        _m()._refresh_bootstrap_cache_scripts()
+        _m()._refresh_bootstrap_cache_scripts(branch)
         _m()._reload_updated_runtime_modules()
 
         # Upgrade pip before lazy refreshes — stale pip can fail source builds

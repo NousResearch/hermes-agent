@@ -4,6 +4,7 @@ import { type RefObject, useLayoutEffect, useRef } from 'react'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { useI18n } from '@/i18n'
+import { isSlashCommandText, SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, type ComposerAttachment, isFreshDraftScope } from '@/store/composer'
@@ -290,7 +291,7 @@ export function useComposerSubmit({
       // busy guard for commands that genuinely need an idle session (skill
       // /send directives).  Queuing them would make every slash command wait
       // for the current turn to finish, which is how the TUI never behaves.
-      if (SLASH_COMMAND_RE.test(text.trim())) {
+      if (isSlashCommandText(text)) {
         if (attachments.length) {
           // Slash commands cannot ride alongside attachments — warn the user
           // instead of silently queuing the payload (which would then reach the

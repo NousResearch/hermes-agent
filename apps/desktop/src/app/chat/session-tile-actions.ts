@@ -16,6 +16,7 @@ import type { ClientSessionState } from '@/app/types'
 import type { WorkspaceMode } from '@/contrib/types'
 import { useI18n } from '@/i18n'
 import { textPart } from '@/lib/chat-messages'
+import { isSlashCommandText } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { clearClarifyRequest } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
@@ -325,7 +326,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
       listTileSession(visibleText)
 
-      if (SLASH_COMMAND_RE.test(visibleText)) {
+      if (isSlashCommandText(visibleText)) {
         if (attachments.length) {
           notify({
             kind: 'warning',

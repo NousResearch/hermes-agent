@@ -10,9 +10,13 @@ import {
   coerceThinkingText,
   createClientSessionState,
   createToolMergeCache,
+  isSlashCommandText,
   messageCreatedAt,
   optimisticAttachmentRef,
+  parseCommandDispatch,
+  parseSlashCommand,
   personalityNamesFromConfig,
+  stripAttachmentRefs,
   toRuntimeMessage
 } from './chat-runtime'
 
@@ -298,5 +302,63 @@ describe('personalityNamesFromConfig', () => {
     })
 
     expect(names).toEqual(['catgirl', 'spaced'])
+  })
+})
+
+describe('stripAttachmentRefs', () => {
+  it('strips a single leading image ref line', () => {
+    expect(stripAttachmentRefs('@image:/tmp/screenshot.png\n\n/moa what is this?')).toBe('\n/moa what is this?')
+  })
+
+  it('strips multiple ref lines joined by a single newline (producer format)', () => {
+    expect(stripAttachmentRefs('@image:a.png\n@file:b.pdf\n\n/moa hi')).toBe('\n/moa hi')
+  })
+
+  it('strips backtick-quoted ref values (formatRefValue output for spaced paths)', () => {
+    expect(stripAttachmentRefs('@image:`C:\\Users\\John Doe\\photo.png`\n\n/moa hi')).toBe('\n/moa hi')
+  })
+
+  it('strips folder/terminal/line refs from the inline palette', () => {
+    expect(stripAttachmentRefs('@folder:`apps/desktop/`\n\n/moa hi')).toBe('\n/moa hi')
+    expect(stripAttachmentRefs('@terminal:main\n\n/status')).toBe('\n/status')
+    expect(stripAttachmentRefs('@line:src/a.ts:12\n\n/moa')).toBe('\n/moa')
+  })
+
+  it('does not strip a ref-looking token in the middle of the text', () => {
+    expect(stripAttachmentRefs('look at @image:x /moa hi')).toBe('look at @image:x /moa hi')
+  })
+
+  it('leaves plain text untouched', () => {
+    expect(stripAttachmentRefs('hello world')).toBe('hello world')
+  })
+
+  it('handles an empty string', () => {
+    expect(stripAttachmentRefs('')).toBe('')
+  })
+})
+
+describe('isSlashCommandText', () => {
+  it('detects a plain slash command', () => {
+    expect(isSlashCommandText('/new')).toBe(true)
+  })
+
+  it('detects a command after an image ref (composer wire format)', () => {
+    expect(isSlashCommandText('@image:/tmp/foo.png\n\n/moa something')).toBe(true)
+  })
+
+  it('detects a command after a folder ref from the inline palette', () => {
+    expect(isSlashCommandText('@folder:`apps/desktop/`\n\n/moa hi')).toBe(true)
+  })
+
+  it('detects a command after multiple refs with one newline each', () => {
+    expect(isSlashCommandText('@image:a.png\n@file:b.pdf\n\n/compress')).toBe(true)
+  })
+
+  it('rejects plain text that merely contains a slash later', () => {
+    expect(isSlashCommandText('what is this?')).toBe(false)
+  })
+
+  it('rejects a ref-only message (no command)', () => {
+    expect(isSlashCommandText('@image:/tmp/foo.png')).toBe(false)
   })
 })

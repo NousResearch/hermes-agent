@@ -9,7 +9,7 @@ import { type ResolvedOwner, transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { attachmentPathNeedsUpload } from '@/lib/attachment-upload-policy'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
-import { pathLabel } from '@/lib/chat-runtime'
+import { isSlashCommandText, pathLabel } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
@@ -632,7 +632,7 @@ export function usePromptActions({
       const visibleText = sanitizeComposerInput(rawText).trim()
       const attachments = options?.attachments ?? $composerAttachments.get()
 
-      if (SLASH_COMMAND_RE.test(visibleText)) {
+      if (isSlashCommandText(visibleText)) {
         if (attachments.length) {
           notify({
             kind: 'warning',

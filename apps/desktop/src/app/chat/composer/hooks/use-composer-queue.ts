@@ -3,6 +3,7 @@ import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { isSlashCommandText } from '@/lib/chat-runtime'
 import { useSessionSlice } from '@/lib/use-session-slice'
 import { type ComposerAttachment } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
@@ -170,6 +171,19 @@ export function useComposerQueue({
         return false
       }
 
+      // Editing a queued entry into a slash-command + attachment combo would
+      // produce an undrainable entry (submitText rejects it on every attempt).
+      // Refuse the save so the queue can never hold an entry that livelocks.
+      if (isSlashCommandText(text) && next.length) {
+        notify({
+          kind: 'warning',
+          title: t.desktop.slashCommandIgnoredTitle,
+          message: t.desktop.slashCommandIgnoredBody
+        })
+
+        return false
+      }
+
       const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, { attachments: next, text })
       triggerHaptic(saved ? 'success' : 'selection')
     } else {
@@ -187,6 +201,19 @@ export function useComposerQueue({
     const text = draftRef.current
 
     if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
+      return false
+    }
+
+    // Slash commands cannot ride alongside attachments — the drain path would
+    // reject the entry on every attempt (submitText warns + returns false) and
+    // the queue would livelock. Refuse to enqueue it in the first place.
+    if (isSlashCommandText(text) && attachments.length) {
+      notify({
+        kind: 'warning',
+        title: t.desktop.slashCommandIgnoredTitle,
+        message: t.desktop.slashCommandIgnoredBody
+      })
+
       return false
     }
 

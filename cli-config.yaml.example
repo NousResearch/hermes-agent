@@ -933,6 +933,15 @@ agent:
   #   "deepseek/deepseek-v4-pro": "xhigh" # dots and dashes are interchangeable
   reasoning_overrides: {}
   
+  # Preserve assistant reasoning_content when replaying history to
+  # OpenAI-compatible local servers (llama.cpp, vLLM, LM Studio, ...).
+  # These backends keep thinking tokens in their KV cache; stripping the
+  # field on every turn invalidates the prompt-cache prefix and forces full
+  # re-prompts in long conversations. Default false preserves strict-provider
+  # behavior (Mistral, Groq, Cerebras reject the field with HTTP 400).
+  # Enable only for endpoints that accept reasoning_content.
+  reasoning_echo: false
+  
   # Predefined personalities (use with /personality command)
   personalities:
     helpful: "You are a helpful, friendly AI assistant."

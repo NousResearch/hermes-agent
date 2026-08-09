@@ -1703,7 +1703,9 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             raw_reasoning_content = model_extra["reasoning_content"]
     if raw_reasoning_content is not None:
         msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
-    elif assistant_tool_calls and agent._needs_thinking_reasoning_pad():
+    elif assistant_tool_calls and (
+        agent._needs_thinking_reasoning_pad() or agent._preserve_reasoning_echo()
+    ):
         # DeepSeek v4 thinking mode and Kimi / Moonshot thinking mode
         # both require reasoning_content on every assistant tool-call
         # message. Without it, replaying the persisted message causes

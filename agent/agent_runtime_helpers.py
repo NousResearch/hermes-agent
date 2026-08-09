@@ -3633,8 +3633,16 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     """
     from agent.message_sanitization import apply_reasoning_content_policy
 
+    # Replay gate: provider-family echo-back (DeepSeek/Kimi/MiMo) OR the
+    # user opt-in agent.reasoning_echo for OpenAI-compatible local backends
+    # whose KV cache keeps thinking tokens. The fallback reconciling path
+    # (reapply_reasoning_echo_for_provider) deliberately uses only
+    # _needs_thinking_reasoning_pad, so a strict-provider fallback still
+    # strips the field.
+    needs_pad = agent._needs_thinking_reasoning_pad() or agent._preserve_reasoning_echo()
+
     apply_reasoning_content_policy(
-        source_msg, api_msg, agent._needs_thinking_reasoning_pad()
+        source_msg, api_msg, needs_pad
     )
 
 

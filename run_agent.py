@@ -7300,6 +7300,13 @@ class AIAgent:
         otherwise re-run ~5 ``base_url_host_matches`` (and therefore
         ``urlparse``) calls under it. Caching drops the per-turn cost from
         ~5us × 16 = ~80us to <1us.
+
+        NOTE: this is also the fallback-reconciling predicate used by
+        ``reapply_reasoning_echo_for_provider`` — keep it strictly
+        provider-family based. The user-facing ``model.reasoning_echo``
+        opt-in is evaluated separately in ``_preserve_reasoning_echo`` so a
+        global ``true`` cannot leak reasoning_content into a strict-provider
+        fallback (Mistral / Groq / Cerebras reject it with HTTP 400).
         """
         key = (self.provider, self.model, getattr(self, "_base_url_lower", self.base_url))
         cached = getattr(self, "_thinking_pad_cache", None)
@@ -7311,6 +7318,32 @@ class AIAgent:
             or self._needs_mimo_tool_reasoning()
         )
         self._thinking_pad_cache = (key, result)
+        return result
+
+    def _preserve_reasoning_echo(self) -> bool:
+        """Return True when ``agent.reasoning_echo`` opt-in is enabled.
+
+        Preserves assistant ``reasoning_content`` on replay for
+        OpenAI-compatible local backends (llama.cpp, vLLM, LM Studio) whose
+        KV cache keeps thinking tokens. Stripping the field there breaks the
+        prompt-cache prefix on every turn; keeping it lets long conversations
+        hit the server-side cache (measured 52% → 91% on llama.cpp).
+
+        Deliberately separate from ``_needs_thinking_reasoning_pad``: this
+        only widens the replay gate for the *primary* endpoint and never the
+        fallback reconciling path, so a strict-provider fallback still strips
+        the field. Result cached on the AIAgent instance.
+        """
+        cached = getattr(self, "_preserve_reasoning_echo_cache", None)
+        if cached is not None:
+            return cached
+        result = False
+        try:
+            from hermes_cli.config import load_config_readonly
+            result = bool((load_config_readonly().get("agent") or {}).get("reasoning_echo"))
+        except Exception:
+            result = False
+        self._preserve_reasoning_echo_cache = result
         return result
 
     def _needs_kimi_tool_reasoning(self) -> bool:

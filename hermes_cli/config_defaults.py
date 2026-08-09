@@ -274,6 +274,16 @@ DEFAULT_CONFIG = {
         # matches a key in this dict.
         # Edit directly in config.yaml (no CLI support due to dots in keys).
         "reasoning_overrides": {},
+
+        # Preserve assistant reasoning_content when replaying history to
+        # OpenAI-compatible local servers (llama.cpp, vLLM, LM Studio, ...).
+        # These backends keep thinking tokens in their KV cache, so stripping
+        # the field on every turn invalidates the cache prefix and forces a
+        # full re-prompt. Default false keeps the historical strict-provider
+        # behavior (Mistral, Groq, Cerebras ... reject the field with 400).
+        # Set true only for endpoints that accept reasoning_content and where
+        # per-turn prompt-cache hits matter (long conversations).
+        "reasoning_echo": False,
     },
 
     "terminal": {

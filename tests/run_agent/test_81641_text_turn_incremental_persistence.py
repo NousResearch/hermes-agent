@@ -138,9 +138,14 @@ class TestCompletedTextTurnIncrementalPersistence:
             f"transcript tail; observed events: {events!r}"
         )
 
-        final_persist = max(
+        persist_indices = [
             i for i, (kind, _) in enumerate(events) if kind == "persist_session"
+        ]
+        assert persist_indices, (
+            "finalize_turn must call _persist_session after the loop exits; "
+            f"observed events: {events!r}"
         )
+        final_persist = persist_indices[-1]
         assert answer_flushes[0] < final_persist, (
             "The assistant row must be durable BEFORE post-loop finalization, "
             f"but the answer flush at index {answer_flushes[0]} did not precede "

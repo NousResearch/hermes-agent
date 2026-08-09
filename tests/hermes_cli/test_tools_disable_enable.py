@@ -5,7 +5,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gateway.platform_registry import platform_registry
-from hermes_cli.tools_config import tools_disable_enable_command
+from hermes_cli.tools_config import _get_platform_tools, tools_disable_enable_command
+from toolsets import resolve_toolset
 
 
 # ── Built-in toolset disable ────────────────────────────────────────────────
@@ -24,6 +25,28 @@ class TestToolsDisableBuiltin:
 
 
 # ── Built-in toolset enable ─────────────────────────────────────────────────
+
+
+class TestToolsEnableBuiltin:
+
+    def test_enable_search_without_web_extract(self):
+        config = {"platform_toolsets": {"cli": []}}
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(
+                Namespace(tools_action="enable", names=["search"], platform="cli")
+            )
+
+        saved = mock_save.call_args[0][0]
+        assert "search" in saved["platform_toolsets"]["cli"]
+
+        enabled = _get_platform_tools(saved, "cli", include_default_mcp_servers=False)
+        assert "search" in enabled
+        assert "web" not in enabled
+
+        tools = set().union(*(resolve_toolset(toolset) for toolset in enabled))
+        assert "web_search" in tools
+        assert "web_extract" not in tools
 
 
 # ── MCP tool disable ────────────────────────────────────────────────────────

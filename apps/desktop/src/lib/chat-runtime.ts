@@ -1,5 +1,6 @@
 import type { ThreadMessage } from '@assistant-ui/react'
 import type { ModelOptionsResult } from '@hermes/shared'
+import { SLASH_COMMAND_RE } from '@hermes/shared'
 
 import type { QuickModelOption } from '@/app/chat/composer/types'
 import type { ClientSessionState } from '@/app/types'
@@ -340,52 +341,6 @@ export function stripAttachmentRefs(text: string): string {
 
 export function isSlashCommandText(text: string): boolean {
   return SLASH_COMMAND_RE.test(stripAttachmentRefs(text).trimStart())
-}
-
-export function parseSlashCommand(command: string) {
-  // `[\s\S]*` (not `.*`): the arg may span newlines — `/goal <multi-line text>`
-  // or a skill command with a long pasted context. The old `.*$` regex failed
-  // the whole match on any newline, so every multiline slash command parsed as
-  // an empty name and got swallowed (#41323, #55510). The backend and CLI both
-  // split on any whitespace (`split(maxsplit=1)`), so this is the parity fix.
-  const match = command.replace(/^\/+/, '').match(/^(\S+)([\s\S]*)$/)
-
-  return match ? { name: match[1], arg: match[2].trim() } : { name: '', arg: '' }
-}
-
-export function parseCommandDispatch(raw: unknown): CommandDispatchResponse | null {
-  if (!raw || typeof raw !== 'object') {
-    return null
-  }
-
-  const row = raw as Record<string, unknown>
-  const str = (value: unknown) => (typeof value === 'string' ? value : undefined)
-
-  switch (row.type) {
-    case 'exec':
-
-    case 'plugin':
-      return { type: row.type, output: str(row.output) }
-
-    case 'alias':
-      return typeof row.target === 'string' ? { type: 'alias', target: row.target } : null
-
-    case 'skill':
-      return typeof row.name === 'string'
-        ? { type: 'skill', name: row.name, message: str(row.message), display: str(row.display) }
-        : null
-
-    case 'send':
-      return typeof row.message === 'string'
-        ? { type: 'send', message: row.message, notice: str(row.notice), display: str(row.display) }
-        : null
-
-    case 'prefill':
-      return typeof row.message === 'string' ? { type: 'prefill', message: row.message, notice: str(row.notice) } : null
-
-    default:
-      return null
-  }
 }
 
 export function quickModelOptions(

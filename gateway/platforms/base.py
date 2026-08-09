@@ -1309,15 +1309,6 @@ MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
     r'''[`"'*_]{0,3}\s*''',
     re.IGNORECASE)
 
-# Desktop attachment reference tags prepended by buildContextText before the
-# user's visible text (e.g. "@image:/tmp/foo.png\n\n/moa ask something").
-# Strip these when detecting slash commands so a media-ref prefix does not hide
-# a slash token from MessageEvent.is_command() / get_command().
-# The pattern matches to end-of-line (not just whitespace-bounded) to handle
-# Windows paths that may contain spaces (e.g. "C:\Users\John Doe\image.png").
-_ATTACHMENT_REF_RE = re.compile(r"^(?:@(?:image|file|url):[^\n]+\n?)+", re.IGNORECASE)
-
-
 
 def _match_extensionless_path(scan_text: str, match: "re.Match") -> Optional[Tuple[str, int]]:
     """Extensionless MEDIA tag match -> validated on-disk ``(safe_path, end_offset)`` or None: the
@@ -1582,7 +1573,6 @@ async def cache_media_bytes_async(
         mime_type=mime_type,
         default_kind=default_kind,
     )
-
 
 
 @dataclass

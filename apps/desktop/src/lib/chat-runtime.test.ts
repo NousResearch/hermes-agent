@@ -13,8 +13,6 @@ import {
   isSlashCommandText,
   messageCreatedAt,
   optimisticAttachmentRef,
-  parseCommandDispatch,
-  parseSlashCommand,
   personalityNamesFromConfig,
   stripAttachmentRefs,
   toRuntimeMessage

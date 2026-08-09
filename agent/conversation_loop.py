@@ -542,13 +542,27 @@ def _billing_or_entitlement_message(
     if (provider or "").strip().lower() == "anthropic":
         lines = [
             (
-                f"{provider_label} reported that your Claude subscription usage is "
+                f"{provider_label} reported that your Claude subscription usage may be "
                 f"exhausted for {model_label} (included quota + extra-usage credits)."
             ),
             "Options: wait for the billing cycle to reset, or add extra usage at "
             "https://claude.ai/settings/usage",
             "You can also switch to an Anthropic API key or another provider with "
             "/model <model> --provider <provider>.",
+            # This 400 is not proof of a billing problem. Anthropic returns the
+            # same "out of extra usage" body when its server-side content filter
+            # rejects part of the request on a subscription OAuth token, so the
+            # message reliably misdirects diagnosis toward buying quota (#82154).
+            # Say so here rather than asserting exhaustion the caller can't check.
+            "If https://claude.ai/settings/usage still shows quota remaining, this is "
+            "probably NOT a billing problem: on a Claude subscription (OAuth) token "
+            "Anthropic returns this same message when its content filter rejects part "
+            "of the request — typically a phrase in the system prompt.",
+            # The exhaustion latch replays the stored error for ~60 min without
+            # issuing a request, so a real fix looks like it didn't work.
+            "Retry with a fresh credential state: `hermes auth reset anthropic`. Until "
+            "that cooldown clears, this error can be replayed from cache without "
+            "contacting the API.",
         ]
         return "\n".join(lines)
 

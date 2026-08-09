@@ -395,6 +395,15 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="Anthropic",
         auth_type="api_key",
         inference_base_url="https://api.anthropic.com",
+        # CLAUDE_CODE_OAUTH_TOKEN is NOT an API key, despite auth_type="api_key"
+        # and its place in this tuple (#82154). `claude setup-token` yields an
+        # `sk-ant-oat01…` OAuth token: sent as `x-api-key` it 401s, and sent as a
+        # bare Bearer it 429s. It is listed here because this tuple doubles as the
+        # credential-DISCOVERY list (agent/credential_pool.py builds its env scan
+        # from it), so removing it would stop Hermes finding a setup-token
+        # credential at all. The adapter routes such a value down the OAuth path
+        # on the strength of its prefix, not on this entry. Only ANTHROPIC_API_KEY
+        # and ANTHROPIC_TOKEN are usable as literal API keys.
         api_key_env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
         base_url_env_var="ANTHROPIC_BASE_URL",
     ),

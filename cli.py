@@ -4186,6 +4186,23 @@ def _normalize_moa_model(model: Optional[str]) -> tuple[Optional[str], Optional[
     return None, model
 
 
+class _VoiceInputMessage:
+    """Sentinel wrapper for voice-transcribed messages in ``_pending_input``.
+
+    Distinguishes STT output from manually typed text while voice mode is
+    active, so the concise-voice-response prefix is applied only to messages
+    that actually came from the microphone (#65827).
+    """
+
+    __slots__ = ("text",)
+
+    def __init__(self, text: str):
+        self.text = text
+
+    def __str__(self) -> str:
+        return self.text
+
+
 class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     """
     Interactive CLI for the Hermes Agent.
@@ -12398,14 +12415,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         )
         # voice.max_recording_seconds — hard cap on a single recording's length.
         # Same numeric guard as the silence params (bool excluded: a hand-edited
-        # ``max_recording_seconds: true`` must not become ``1``). <= 0 disables
-        # the cap. Previously this documented key was never read, so the setting
-        # had no effect (dead config); wiring it here makes it take effect.
+        # ``max_recording_seconds: true`` must not become ``1`` — it falls back
+        # to the documented 120 default, mirroring the silence-param handling).
+        # An explicit numeric value <= 0 disables the cap. Previously this
+        # documented key was never read (dead config); wiring it here makes it
+        # take effect.
         _max_rec = voice_cfg.get("max_recording_seconds")
         self._voice_recorder._max_recording_seconds = (
-            _max_rec
-            if isinstance(_max_rec, (int, float)) and not isinstance(_max_rec, bool) and _max_rec > 0
-            else 0.0
+            (_max_rec if _max_rec > 0 else 0.0)
+            if isinstance(_max_rec, (int, float)) and not isinstance(_max_rec, bool)
+            else 120.0
         )
 
         def _on_silence():
@@ -12525,7 +12544,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._attached_images.clear()
                 if hasattr(self, '_app') and self._app:
                     self._app.invalidate()
-                self._pending_input.put(transcript)
+                self._pending_input.put(_VoiceInputMessage(transcript))
                 submitted = True
             elif result.get("success"):
                 _cprint(f"{_DIM}No speech detected.{_RST}")
@@ -12784,7 +12803,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     _cprint(f"\n{_DIM}Stop phrase detected — ending voice chat.{_RST}")
                     self._disable_voice_mode()
                     return
-                self._pending_input.put(transcript)
+                self._pending_input.put(_VoiceInputMessage(transcript))
                 submitted = True
             elif not result.get("success"):
                 _cprint(f"\n{_DIM}Transcription failed: {result.get('error', 'Unknown error')}{_RST}")
@@ -13878,7 +13897,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception:
                 pass
 
-    def chat(self, message, images: list = None) -> Optional[str]:
+    def chat(self, message, images: list = None, voice_input: bool = False) -> Optional[str]:
         """
         Send a message to the agent and get a response.
         
@@ -13893,6 +13912,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         Args:
             message: The user's message (str or multimodal content list)
             images: Optional list of Path objects for attached images
+            voice_input: True when the message came from voice transcription
+                (gates the concise voice-response prefix, #65827)
             
         Returns:
             The agent's response, or None on error
@@ -14170,7 +14191,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # model responds concisely. The prefix is API-call-local only —
             # run_conversation persists the original clean user message.
             _voice_prefix = ""
-            if self._voice_mode and isinstance(message, str):
+            if voice_input and isinstance(message, str):
                 _voice_prefix = (
                     "[Voice input — respond concisely and conversationally, "
                     "2-3 sentences max. No code blocks or markdown.] "
@@ -17804,7 +17825,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             except Exception:
                                 pass
                         continue
-                    
+
+                    # Voice-transcribed messages arrive wrapped in a sentinel
+                    # so only genuine STT output gets the voice prefix (#65827).
+                    is_voice_input = isinstance(user_input, _VoiceInputMessage)
+                    if is_voice_input:
+                        user_input = user_input.text
+
                     if not user_input:
                         continue
 
@@ -17925,7 +17952,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     app.invalidate()  # Refresh status line
 
                     try:
-                        self.chat(user_input, images=submit_images or None)
+                        self.chat(user_input, images=submit_images or None, voice_input=is_voice_input)
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""

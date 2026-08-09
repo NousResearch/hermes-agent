@@ -1095,7 +1095,6 @@ class ProcessRegistry:
         # cgroup (and the messaging control plane with it). This applies to
         # both pipe mode and the PTY path above.
         shell_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
-        use_systemd_scope = False
         in_supervised_gateway = not _IS_WINDOWS and _is_supervised_gateway_process()
         use_systemd_scope = (
             in_supervised_gateway and _systemd_run_user_scope_available()
@@ -1130,7 +1129,7 @@ class ProcessRegistry:
                 # in the worker can still kill the whole gateway (#70716).
                 logger.debug(
                     "Local background executor not isolated in a systemd scope "
-                    "(supervisor=%s, systemd-run --user available=%s); "
+                    "(in_supervised_gateway=%s, systemd-run --user available=%s); "
                     "worker shares the gateway cgroup.",
                     in_supervised_gateway,
                     _systemd_run_user_scope_available(),

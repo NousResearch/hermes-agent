@@ -1649,8 +1649,9 @@ class TestSystemdCgroupIsolation:
     ENTIRE gateway cgroup, taking down the messaging control plane.
     """
 
-    @pytest.fixture(autouse=True)
-    def _mark_gateway_process(self, monkeypatch):
+    @pytest.fixture()
+    def _gateway_identity(self, monkeypatch):
+        """Opt-in: mark this test as running AS the live gateway process."""
         monkeypatch.setenv("_HERMES_GATEWAY", "1")
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
@@ -1675,7 +1676,7 @@ class TestSystemdCgroupIsolation:
         return fake_popen, captured
 
     def test_wraps_in_systemd_scope_when_supervisor_and_available(
-        self, registry, monkeypatch
+        self, registry, monkeypatch, _gateway_identity
     ):
         """Under a supervisor with systemd-run available, the spawn argv is
         wrapped in ``systemd-run --user --scope --unit=hermes-worker-<id>``."""
@@ -1740,7 +1741,7 @@ class TestSystemdCgroupIsolation:
         # The session must record the unit name so kill_process can stop it.
         assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
 
-    def test_falls_back_when_systemd_run_unavailable(self, registry, monkeypatch):
+    def test_falls_back_when_systemd_run_unavailable(self, registry, monkeypatch, _gateway_identity):
         """Under a supervisor but without systemd-run, fall back to the
         legacy ``start_new_session=True`` path (worker shares the gateway
         cgroup)."""
@@ -1794,12 +1795,15 @@ class TestSystemdCgroupIsolation:
         assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
         assert captured["start_new_session"] is True
 
+    @pytest.mark.parametrize("use_pty", [False, True])
     def test_inherited_systemd_marker_does_not_scope_interactive_cli(
-        self, registry, monkeypatch
+        self, registry, monkeypatch, use_pty
     ):
-        """A CLI inside a supervised terminal must keep workers off its tty."""
-        fake_popen, captured = self._fake_popen_capture()
+        """A CLI inside a supervised terminal must keep workers off its tty.
 
+        INVOCATION_ID is inherited by every descendant, so its presence
+        alone must not activate the gateway-only systemd scope path.
+        """
         monkeypatch.setenv("INVOCATION_ID", "herdr-service-inherited-marker")
         monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
         monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
@@ -1809,58 +1813,44 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
-        with (
-            patch("subprocess.Popen", side_effect=fake_popen),
-            patch("threading.Thread", return_value=MagicMock()),
-            patch.object(registry, "_write_checkpoint"),
-        ):
-            registry.spawn_local("echo hello", cwd="/tmp")
+        if use_pty:
+            from ptyprocess import PtyProcess
 
-        assert captured["argv"] == [
-            "/bin/bash",
-            "-lic",
-            "set +m; echo hello",
-        ]
-        assert captured["start_new_session"] is True
+            fake_pty = MagicMock(pid=4321)
+            with (
+                patch.object(PtyProcess, "spawn", return_value=fake_pty) as pty_spawn,
+                patch("threading.Thread", return_value=MagicMock()),
+                patch.object(registry, "_write_checkpoint"),
+            ):
+                session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
+            assert pty_spawn.call_args.args[0] == [
+                "/bin/bash", "-lic", "set +m; codex",
+            ]
+        else:
+            fake_popen, captured = self._fake_popen_capture()
+            with (
+                patch("subprocess.Popen", side_effect=fake_popen),
+                patch("threading.Thread", return_value=MagicMock()),
+                patch.object(registry, "_write_checkpoint"),
+            ):
+                session = registry.spawn_local("echo hello", cwd="/tmp")
+            assert captured["argv"] == [
+                "/bin/bash", "-lic", "set +m; echo hello",
+            ]
+            assert captured["start_new_session"] is True
 
-    def test_inherited_systemd_marker_does_not_scope_interactive_cli_pty(
-        self, registry, monkeypatch
-    ):
-        """The same gateway-identity gate applies to PTY-backed workers."""
-        from ptyprocess import PtyProcess
-
-        fake_pty = MagicMock()
-        fake_pty.pid = 4321
-
-        monkeypatch.setenv("INVOCATION_ID", "herdr-service-inherited-marker")
-        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
-        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
-        monkeypatch.setattr(
-            "tools.process_registry._systemd_run_user_scope_available",
-            lambda: True,
-        )
-        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
-
-        with (
-            patch.object(PtyProcess, "spawn", return_value=fake_pty) as pty_spawn,
-            patch("threading.Thread", return_value=MagicMock()),
-            patch.object(registry, "_write_checkpoint"),
-        ):
-            session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
-
-        assert pty_spawn.call_args.args[0] == [
-            "/bin/bash",
-            "-lic",
-            "set +m; codex",
-        ]
         assert session.systemd_unit == ""
 
+    @pytest.mark.parametrize("use_pty", [False, True])
     def test_inherited_gateway_tree_markers_do_not_scope_child_cli(
-        self, registry, monkeypatch
+        self, registry, monkeypatch, use_pty
     ):
-        """Gateway descendants are not the gateway process that owns the PID file."""
-        fake_popen, captured = self._fake_popen_capture()
+        """Gateway descendants are not the gateway process that owns the PID file.
 
+        _HERMES_GATEWAY is inherited (and set by importing gateway.run), so
+        both it and INVOCATION_ID may be present in a child process. The
+        PID-ownership gate must still keep the scope path off.
+        """
         monkeypatch.setenv("INVOCATION_ID", "inherited-systemd-marker")
         monkeypatch.setenv("_HERMES_GATEWAY", "1")
         monkeypatch.setattr(
@@ -1874,57 +1864,36 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
-        with (
-            patch("subprocess.Popen", side_effect=fake_popen),
-            patch("threading.Thread", return_value=MagicMock()),
-            patch.object(registry, "_write_checkpoint"),
-        ):
-            registry.spawn_local("echo hello", cwd="/tmp")
+        if use_pty:
+            from ptyprocess import PtyProcess
 
-        assert captured["argv"] == [
-            "/bin/bash",
-            "-lic",
-            "set +m; echo hello",
-        ]
-        assert captured["start_new_session"] is True
+            fake_pty = MagicMock(pid=4321)
+            with (
+                patch.object(PtyProcess, "spawn", return_value=fake_pty) as pty_spawn,
+                patch("threading.Thread", return_value=MagicMock()),
+                patch.object(registry, "_write_checkpoint"),
+            ):
+                session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
+            assert pty_spawn.call_args.args[0] == [
+                "/bin/bash", "-lic", "set +m; codex",
+            ]
+        else:
+            fake_popen, captured = self._fake_popen_capture()
+            with (
+                patch("subprocess.Popen", side_effect=fake_popen),
+                patch("threading.Thread", return_value=MagicMock()),
+                patch.object(registry, "_write_checkpoint"),
+            ):
+                session = registry.spawn_local("echo hello", cwd="/tmp")
+            assert captured["argv"] == [
+                "/bin/bash", "-lic", "set +m; echo hello",
+            ]
+            assert captured["start_new_session"] is True
 
-    def test_inherited_gateway_tree_markers_do_not_scope_child_cli_pty(
-        self, registry, monkeypatch
-    ):
-        """The PID-bound gateway identity gate also protects PTY-backed children."""
-        from ptyprocess import PtyProcess
-
-        fake_pty = MagicMock(pid=4321)
-
-        monkeypatch.setenv("INVOCATION_ID", "inherited-systemd-marker")
-        monkeypatch.setenv("_HERMES_GATEWAY", "1")
-        monkeypatch.setattr(
-            "gateway.status.get_running_pid",
-            lambda *, cleanup_stale=False: os.getpid() + 1,
-        )
-        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
-        monkeypatch.setattr(
-            "tools.process_registry._systemd_run_user_scope_available",
-            lambda: True,
-        )
-        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
-
-        with (
-            patch.object(PtyProcess, "spawn", return_value=fake_pty) as pty_spawn,
-            patch("threading.Thread", return_value=MagicMock()),
-            patch.object(registry, "_write_checkpoint"),
-        ):
-            session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
-
-        assert pty_spawn.call_args.args[0] == [
-            "/bin/bash",
-            "-lic",
-            "set +m; codex",
-        ]
         assert session.systemd_unit == ""
 
     def test_systemd_post_spawn_failure_never_kills_gateway_process_group(
-        self, registry, monkeypatch
+        self, registry, monkeypatch, _gateway_identity
     ):
         """Cleanup must not killpg: scope teardown is the authoritative path."""
         fake_popen, _captured = self._fake_popen_capture()
@@ -1957,7 +1926,7 @@ class TestSystemdCgroupIsolation:
         assert stop_unit.call_args.args[0].endswith(".scope")
         killpg.assert_not_called()
 
-    def test_pty_spawn_is_wrapped_in_systemd_scope(self, registry, monkeypatch):
+    def test_pty_spawn_is_wrapped_in_systemd_scope(self, registry, monkeypatch, _gateway_identity):
         """Interactive executors receive the same sibling-cgroup isolation."""
         from ptyprocess import PtyProcess
 
@@ -1989,7 +1958,7 @@ class TestSystemdCgroupIsolation:
         assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
 
     def test_pty_spawn_failure_reaps_scope_before_distinct_pipe_fallback(
-        self, registry, monkeypatch
+        self, registry, monkeypatch, _gateway_identity
     ):
         """A failed PTY scope must not collide with the pipe fallback scope."""
         from ptyprocess import PtyProcess
@@ -2044,7 +2013,7 @@ class TestSystemdCgroupIsolation:
         )
 
     def test_pty_spawn_failure_does_not_fallback_when_scope_reap_fails(
-        self, registry, monkeypatch
+        self, registry, monkeypatch, _gateway_identity
     ):
         """Do not launch a duplicate command while the failed PTY scope may live."""
         from ptyprocess import PtyProcess

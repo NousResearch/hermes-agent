@@ -148,6 +148,10 @@ class PersistentState:
     # Monotonic run-generation counter (#28686).  NEVER reset: clearing it
     # would break stale-run detection.
     run_generation: int = 0
+    # Process-local consecutive hygiene failures, keyed by chat session state.
+    # The persisted cooldown deadline survives restarts; this escalation streak
+    # intentionally resets to rung one after a process restart.
+    hygiene_failure_streak: int = 0
 
 
 @dataclass

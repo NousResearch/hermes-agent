@@ -60,6 +60,7 @@ from agent.conversation_compression import (
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
+from agent.turn_context import compression_made_progress
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -120,15 +121,67 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
 )
 
 
-def _record_hygiene_cooldown(gateway, session_id: str, cooldown_seconds: float) -> None:
-    """Persist a session-hygiene compression-failure cooldown to the state DB.
+_HYGIENE_COOLDOWN_LADDER_MULTIPLIERS = (1, 3, 9)
+_HYGIENE_COOLDOWN_MAX_SECONDS = 3600.0
 
-    Uses the same ``compression_failure_cooldown_until`` column and
-    ``record_compression_failure_cooldown`` method that the in-conversation
-    compression path (``agent/context_compressor.py``) already uses, so the
-    cooldown survives gateway restarts (#74136).
-    """
+
+def _hygiene_cooldown_for_failure(
+    gateway,
+    session_key: str,
+    base_cooldown_seconds: float,
+) -> float:
+    """Increment the per-session failure streak and return its cooldown rung."""
+    streak = 1
+    try:
+        state = gateway._session_state(session_key).persistent
+        state.hygiene_failure_streak += 1
+        streak = state.hygiene_failure_streak
+    except Exception as exc:
+        # Never let state failure remove the cooldown entirely.
+        logger.debug("hygiene failure streak update failed: %s", exc)
+    multiplier = _HYGIENE_COOLDOWN_LADDER_MULTIPLIERS[
+        min(streak, len(_HYGIENE_COOLDOWN_LADDER_MULTIPLIERS)) - 1
+    ]
+    return min(base_cooldown_seconds * multiplier, _HYGIENE_COOLDOWN_MAX_SECONDS)
+
+
+def _reset_hygiene_failure_streak(gateway, session_key: str) -> None:
+    """Clear the streak after a compression that materially reduced context."""
+    try:
+        state = gateway._peek_session_state(session_key)
+        if state is not None:
+            state.persistent.hygiene_failure_streak = 0
+    except Exception as exc:
+        logger.debug("hygiene failure streak reset failed: %s", exc)
+
+
+def hygiene_compaction_recovered(
+    *,
+    aborted: bool,
+    rotated: bool,
+    in_place: bool,
+    msg_count: int,
+    new_count: int,
+    approx_tokens: int,
+    new_tokens: int,
+) -> bool:
+    """Return whether a hygiene run rewrote and materially reduced context."""
+    if aborted or not (rotated or in_place):
+        return False
+    return compression_made_progress(
+        msg_count, new_count, approx_tokens, new_tokens
+    )
+
+
+def _record_hygiene_cooldown(
+    gateway,
+    session_id: str,
+    cooldown_seconds: float,
+    error: Optional[str] = None,
+) -> None:
+    """Persist a session-hygiene failure cooldown and its reason."""
     import time as _time
+
     session_db = getattr(gateway, "_session_db", None)
     if session_db is None:
         return
@@ -137,7 +190,7 @@ def _record_hygiene_cooldown(gateway, session_id: str, cooldown_seconds: float) 
     if recorder is None:
         return
     try:
-        recorder(session_id, _time.time() + cooldown_seconds)
+        recorder(session_id, _time.time() + cooldown_seconds, error)
     except Exception as exc:
         logger.debug("session hygiene cooldown persist failed: %s", exc)
 
@@ -16820,8 +16873,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             _hyg_cleanup_deferred = True
                                             if _hyg_failure_cooldown_seconds >= 0:
                                                 _record_hygiene_cooldown(
-                                                    self, session_entry.session_id,
-                                                    _hyg_failure_cooldown_seconds,
+                                                    self,
+                                                    session_entry.session_id,
+                                                    _hygiene_cooldown_for_failure(
+                                                        self,
+                                                        session_key,
+                                                        _hyg_failure_cooldown_seconds,
+                                                    ),
+                                                    "session hygiene compression timed out "
+                                                    "with no output from the summary model",
                                                 )
                                             from agent.session_activity import (
                                                 ActivityProvenance,
@@ -16991,11 +17051,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # /compress to retry or /reset to start
                                     # fresh.
                                     _comp = getattr(_hyg_agent, "context_compressor", None)
-                                    if _comp is not None and getattr(_comp, "_last_compress_aborted", False):
+                                    _hyg_aborted = _comp is not None and getattr(
+                                        _comp, "_last_compress_aborted", False
+                                    )
+                                    if not _hyg_aborted and hygiene_compaction_recovered(
+                                        aborted=_hyg_aborted,
+                                        rotated=_hyg_rotated,
+                                        in_place=_hyg_in_place,
+                                        msg_count=_msg_count,
+                                        new_count=_new_count,
+                                        approx_tokens=_approx_tokens,
+                                        new_tokens=_new_tokens,
+                                    ):
+                                        _reset_hygiene_failure_streak(self, session_key)
+                                    if _hyg_aborted:
                                         if _hyg_failure_cooldown_seconds >= 0:
                                             _record_hygiene_cooldown(
-                                                self, session_entry.session_id,
-                                                _hyg_failure_cooldown_seconds,
+                                                self,
+                                                session_entry.session_id,
+                                                _hygiene_cooldown_for_failure(
+                                                    self,
+                                                    session_key,
+                                                    _hyg_failure_cooldown_seconds,
+                                                ),
+                                                getattr(
+                                                    _comp, "_last_summary_error", None
+                                                ),
                                             )
                                         from agent.session_activity import (
                                             ActivityProvenance,

@@ -2398,6 +2398,17 @@ class TextDebounceState:
     last_ts: float
 
 
+@dataclass(frozen=True)
+class TextDebounceBoundary:
+    """Immutable view of debounce work that predates a control command."""
+
+    state: TextDebounceState
+    text: str
+
+
+_DEBOUNCE_STATE_UNSET = object()
+
+
 _PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^(?:please\s+)?restart\s+(?:the\s+)?gateway[.!?\s]*$", re.IGNORECASE),
     re.compile(r"^(?:please\s+)?restart\s+(?:the\s+)?hermes\s+gateway[.!?\s]*$", re.IGNORECASE),
@@ -2667,13 +2678,77 @@ def _invalidate_pending_stt_cache(event: MessageEvent) -> None:
             delattr(event, attr)
 
 
+def _sender_ids_match(
+    existing_source: Any,
+    incoming_source: Any,
+) -> Optional[bool]:
+    """Compare sender IDs only within their source-field namespace.
+
+    Stable alternate IDs take precedence when both sources carry one; a raw-ID
+    match cannot override contradictory stable identities. Otherwise compare
+    raw IDs when both are available. ``None`` means neither namespace was
+    directly comparable and callers must stay conservative.
+    """
+    for field in ("user_id_alt", "user_id"):
+        existing_value = getattr(existing_source, field, None)
+        incoming_value = getattr(incoming_source, field, None)
+        if existing_value and incoming_value:
+            return str(existing_value) == str(incoming_value)
+    return None
+
+
+def _source_has_sender_id(source: Any) -> bool:
+    """Return whether a source carries identity in either sender-ID namespace."""
+    return bool(
+        getattr(source, "user_id_alt", None)
+        or getattr(source, "user_id", None)
+    )
+
+
+def pending_merge_sender_conflict(
+    existing: Optional[MessageEvent],
+    event: Optional[MessageEvent],
+) -> bool:
+    """True when two events for one pending slot came from *different* humans.
+
+    Shared sessions (a group/channel without ``isolate_user``) put several
+    senders on one ``session_key``.  Merging across senders splices one human's
+    words or media into another human's pending turn, which is then rendered
+    under a single ``[Verified sender: ...]`` envelope — the turn claims an
+    author it does not have.
+
+    The guard is deliberately conservative: directly comparable alternate IDs
+    take precedence over raw IDs, while a raw match remains sufficient when an
+    alternate ID is absent on either side. Identity-bearing sources with no
+    comparable namespace fail closed; equal text in different ID fields is not
+    proof of identity. When either whole source has no identity, the
+    compatibility fallback remains "unknown" and the merge proceeds exactly as
+    it did before.
+
+    In per-user/DM sessions the guard is unreachable by construction:
+    ``build_session_key`` appends ``user_id_alt or user_id`` when ``isolate_user``
+    is in effect, so two distinct senders cannot share a ``session_key``.
+    """
+    existing_source = getattr(existing, "source", None)
+    incoming_source = getattr(event, "source", None)
+    if existing_source is None or incoming_source is None:
+        return False
+
+    sender_match = _sender_ids_match(existing_source, incoming_source)
+    if sender_match is not None:
+        return not sender_match
+    return _source_has_sender_id(existing_source) and _source_has_sender_id(
+        incoming_source
+    )
+
+
 def merge_pending_message_event(
     pending_messages: Dict[str, MessageEvent],
     session_key: str,
     event: MessageEvent,
     *,
     merge_text: bool = False,
-) -> None:
+) -> bool:
     """Store or merge a pending event for a session.
 
     Photo bursts/albums often arrive as multiple near-simultaneous PHOTO
@@ -2684,8 +2759,21 @@ def merge_pending_message_event(
     instead of replacing the pending turn. This is used for Telegram bursty
     follow-ups so a multi-part user thought is not silently truncated to only
     the last queued fragment.
+
+    Returns ``True`` when *event* was absorbed (stored into an empty slot or
+    merged into the existing turn) and ``False`` when the merge was REFUSED
+    because the pending turn belongs to a different sender
+    (see :func:`pending_merge_sender_conflict`).
+
+    A ``False`` return transfers ownership of *event* back to the caller, which
+    MUST queue it as its own turn.  Ignoring a ``False`` return silently drops
+    a user's message.
     """
     existing = pending_messages.get(session_key)
+    if existing is not None and pending_merge_sender_conflict(existing, event):
+        # Cross-sender: refuse. The caller owns the event and must give it its
+        # own turn so attribution stays 1:1 with content.
+        return False
     if existing:
         existing_is_photo = getattr(existing, "message_type", None) == MessageType.PHOTO
         incoming_is_photo = event.message_type == MessageType.PHOTO
@@ -2698,7 +2786,7 @@ def merge_pending_message_event(
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
             _invalidate_pending_stt_cache(existing)
-            return
+            return True
 
         if existing_has_media or incoming_has_media:
             if incoming_has_media:
@@ -2717,7 +2805,7 @@ def merge_pending_message_event(
             ):
                 existing.message_type = event.message_type
             _invalidate_pending_stt_cache(existing)
-            return
+            return True
 
         if (
             merge_text
@@ -2726,9 +2814,10 @@ def merge_pending_message_event(
         ):
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
-            return
+            return True
 
     pending_messages[session_key] = event
+    return True
 
 
 # Error substrings that indicate a transient *connection* failure worth retrying.
@@ -2868,6 +2957,7 @@ class BasePlatformAdapter(ABC):
     - Sending messages/responses
     - Handling media
     """
+
 
     # Whether this platform renders triple-backtick fenced code blocks (i.e.
     # ``format_message`` translates/preserves markdown fences into a real code
@@ -3042,6 +3132,7 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
+        self._pending_event_queue_handler: Optional[Callable[[str, MessageEvent], None]] = None
         # Optional authorization check, registered by GatewayRunner. Used by
         # adapters that fetch external context (e.g. Slack thread history) to
         # mark senders not on the allowlist as unverified in LLM context,
@@ -3577,6 +3668,32 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    def set_pending_event_queue_handler(
+        self,
+        handler: Optional[Callable[[str, MessageEvent], None]],
+    ) -> None:
+        """Set the runner-owned FIFO used when a pending merge is refused."""
+        self._pending_event_queue_handler = handler
+
+    def _queue_refused_pending_event(self, session_key: str, event: MessageEvent) -> None:
+        """Transfer a refused event to the runner's canonical per-session FIFO."""
+        handler = getattr(self, "_pending_event_queue_handler", None)
+        if handler is None:
+            raise RuntimeError(
+                "Cross-sender pending merge refused without a runner FIFO handler"
+            )
+        handler(session_key, event)
+
+    def _queue_pending_event_with_runner(
+        self, session_key: str, event: MessageEvent
+    ) -> bool:
+        """Let the runner place an event in its canonical FIFO when available."""
+        handler = getattr(self, "_pending_event_queue_handler", None)
+        if handler is None:
+            return False
+        handler(session_key, event)
+        return True
 
     def set_reaction_handler(
         self, handler: Optional[Callable[[Dict[str, Any]], Awaitable[None]]]
@@ -5498,22 +5615,35 @@ class BasePlatformAdapter(ABC):
 
     def _can_merge_text_debounce_events(self, existing: MessageEvent, event: MessageEvent) -> bool:
         """Return True when two text debounce events came from the same sender."""
+        existing_source = getattr(existing, "source", None)
+        incoming_source = getattr(event, "source", None)
+        if existing_source is None or incoming_source is None:
+            return False
+        if _platform_name(getattr(existing_source, "platform", None)) != _platform_name(
+            getattr(incoming_source, "platform", None)
+        ):
+            return False
 
-        def _identity(candidate: MessageEvent) -> tuple[str, ...] | None:
-            source = getattr(candidate, "source", None)
-            if source is None:
-                return None
-            platform = _platform_name(getattr(source, "platform", None))
-            sender = getattr(source, "user_id_alt", None) or getattr(source, "user_id", None)
-            if sender:
-                return (platform, str(sender))
-            if getattr(source, "chat_type", None) in {"dm", "private"} and getattr(source, "chat_id", None):
-                return (platform, "dm", str(source.chat_id))
-            return None
+        sender_match = _sender_ids_match(existing_source, incoming_source)
+        if sender_match is not None:
+            return sender_match
 
-        existing_sender = _identity(existing)
-        incoming_sender = _identity(event)
-        return existing_sender is not None and existing_sender == incoming_sender
+        # Preserve the identity-free DM fallback. Do not use it when either
+        # side carries an ID: absent comparability cannot prove equivalence.
+        dm_types = {"dm", "private"}
+        existing_chat_id = getattr(existing_source, "chat_id", None)
+        incoming_chat_id = getattr(incoming_source, "chat_id", None)
+        existing_has_id = _source_has_sender_id(existing_source)
+        incoming_has_id = _source_has_sender_id(incoming_source)
+        return (
+            not existing_has_id
+            and not incoming_has_id
+            and getattr(existing_source, "chat_type", None) in dm_types
+            and getattr(incoming_source, "chat_type", None) in dm_types
+            and bool(existing_chat_id)
+            and bool(incoming_chat_id)
+            and str(existing_chat_id) == str(incoming_chat_id)
+        )
 
     def _text_debounce_delay(self, session_key: str) -> float:
         """Return bounded busy-text debounce delay for ``session_key``."""
@@ -5537,15 +5667,17 @@ class BasePlatformAdapter(ABC):
             await self._flush_text_debounce_now(session_key)
             state = store.get(session_key)
             if state is not None and not self._can_merge_text_debounce_events(state.event, event):
-                existing_pending = self._pending_messages.get(session_key)
-                if existing_pending is not None and self._can_merge_text_debounce_events(existing_pending, event):
-                    merge_pending_message_event(
-                        self._pending_messages,
-                        session_key,
-                        event,
-                        merge_text=True,
-                    )
-                return
+                # The occupied head prevented the older sender's debounce
+                # state from flushing. Preserve arrival order by handing that
+                # older state to the runner FIFO before starting a fresh burst
+                # for the new sender below.
+                blocked_state = store.pop(session_key, None)
+                if blocked_state is not None:
+                    if blocked_state.task is not None and not blocked_state.task.done():
+                        blocked_state.task.cancel()
+                    blocked_state.task = None
+                    self._queue_refused_pending_event(session_key, blocked_state.event)
+                state = None
 
         now = time.monotonic()
         if state is None:
@@ -5612,12 +5744,18 @@ class BasePlatformAdapter(ABC):
         state = store.pop(session_key, None)
         if state is None:
             return False
-        merge_pending_message_event(
+        if self._queue_pending_event_with_runner(session_key, state.event):
+            return True
+        # Guarded above: the pending slot is either empty or same-sender. Keep a
+        # defensive FIFO handoff so future guard changes cannot drop the event.
+        absorbed = merge_pending_message_event(
             self._pending_messages,
             session_key,
             state.event,
             merge_text=True,
         )
+        if not absorbed:
+            self._queue_refused_pending_event(session_key, state.event)
         return True
 
     def _discard_text_debounce(self, session_key: str) -> None:
@@ -5804,6 +5942,7 @@ class BasePlatformAdapter(ABC):
         event: MessageEvent,
         session_key: str,
         cmd: str,
+        preexisting_debounce_boundary: Any = _DEBOUNCE_STATE_UNSET,
     ) -> None:
         """Dispatch a reset-like bypass command while preserving guard ordering.
 
@@ -5827,6 +5966,32 @@ class BasePlatformAdapter(ABC):
         current_guard = self._active_sessions.get(session_key)
         command_guard = asyncio.Event()
         self._active_sessions[session_key] = command_guard
+        # Drop only debounce work captured when the command entered the outer
+        # handle_message boundary. Topic recovery above can await long enough
+        # for a same-sender follow-up to mutate that object in place, so object
+        # identity alone is not an arrival boundary: remove the snapshotted
+        # prefix while preserving the post-snapshot suffix and latest metadata.
+        store = self._text_debounce_store()
+        if preexisting_debounce_boundary is _DEBOUNCE_STATE_UNSET:
+            state = store.get(session_key)
+            preexisting_debounce_boundary = (
+                TextDebounceBoundary(state=state, text=state.event.text or "")
+                if state is not None
+                else None
+            )
+        if preexisting_debounce_boundary is not None:
+            current_state = store.get(session_key)
+            if (
+                current_state is not None
+                and current_state is preexisting_debounce_boundary.state
+            ):
+                stale_text = preexisting_debounce_boundary.text
+                current_text = current_state.event.text or ""
+                if current_text == stale_text:
+                    self._discard_text_debounce(session_key)
+                elif current_text.startswith(f"{stale_text}\n"):
+                    current_state.event.text = current_text[len(stale_text) + 1 :]
+                    current_state.first_ts = current_state.last_ts
         thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
 
         try:
@@ -5889,6 +6054,18 @@ class BasePlatformAdapter(ABC):
 
         coerce_plaintext_gateway_command(event)
 
+        # Capture debounce ownership before the topic-recovery await.  The
+        # recovered key is selected afterward from this mapping, preserving
+        # correctness when recovery rewrites the thread lane.
+        pre_recovery_debounce = (
+            {
+                key: TextDebounceBoundary(state=state, text=state.event.text or "")
+                for key, state in self._text_debounce_store().items()
+            }
+            if event.is_command()
+            else {}
+        )
+
         # Telegram topic recovery only applies to private DM topic lanes. Do
         # not submit a no-op check for group/forum/channel traffic to the
         # shared default executor: a busy pool would delay message dispatch.
@@ -5939,9 +6116,13 @@ class BasePlatformAdapter(ABC):
                 # cancellation + runner response + pending drain.
                 # (Registry-derived: busy_policy == "interrupt_then_dispatch".)
                 if cmd and is_interrupt_then_dispatch(cmd):
-                    self._discard_text_debounce(session_key)
                     try:
-                        await self._dispatch_active_session_command(event, session_key, cmd)
+                        await self._dispatch_active_session_command(
+                            event,
+                            session_key,
+                            cmd,
+                            pre_recovery_debounce.get(session_key),
+                        )
                     except Exception as e:
                         logger.error(
                             "[%s] Command '/%s' dispatch failed: %s",
@@ -6045,7 +6226,12 @@ class BasePlatformAdapter(ABC):
             # then process them immediately after the current task finishes.
             if event.message_type == MessageType.PHOTO:
                 logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
-                merge_pending_message_event(self._pending_messages, session_key, event)
+                if self._queue_pending_event_with_runner(session_key, event):
+                    return
+                if not merge_pending_message_event(self._pending_messages, session_key, event):
+                    # Keep the pending turn's attribution intact and transfer
+                    # the refused event to the runner's canonical FIFO.
+                    self._queue_refused_pending_event(session_key, event)
                 return  # Don't interrupt now - will run after current task completes
 
             if self._is_queue_text_debounce_candidate(event):
@@ -6064,12 +6250,15 @@ class BasePlatformAdapter(ABC):
                     self.name,
                     session_key,
                 )
-                merge_pending_message_event(
+                if self._queue_pending_event_with_runner(session_key, event):
+                    return
+                if not merge_pending_message_event(
                     self._pending_messages,
                     session_key,
                     event,
                     merge_text=event.message_type == MessageType.TEXT,
-                )
+                ):
+                    self._queue_refused_pending_event(session_key, event)
             return  # Don't process now - will be handled after current task finishes
         
         # Mark session as active BEFORE spawning background task to close
@@ -6903,7 +7092,22 @@ class BasePlatformAdapter(ABC):
         # Flush pending messages to disk before clearing (#72680).
         try:
             from gateway.shutdown_flush import flush_pending_to_file
-            flush_pending_to_file(self._pending_messages, reason="adapter_shutdown")
+
+            session_ids = {}
+            session_store = getattr(self, "_session_store", None)
+            if session_store is not None:
+                for session_key in self._pending_messages:
+                    try:
+                        session_id = session_store.peek_session_id(session_key)
+                    except Exception:
+                        session_id = None
+                    if session_id:
+                        session_ids[session_key] = session_id
+            flush_pending_to_file(
+                self._pending_messages,
+                reason="adapter_shutdown",
+                session_ids=session_ids,
+            )
         except Exception:
             pass
         self._pending_messages.clear()
@@ -6916,7 +7120,7 @@ class BasePlatformAdapter(ABC):
     def has_pending_interrupt(self, session_key: str) -> bool:
         """Check if there's a pending interrupt for a session."""
         return session_key in self._active_sessions and self._active_sessions[session_key].is_set()
-    
+
     def get_pending_message(self, session_key: str) -> Optional[MessageEvent]:
         """Get and clear any pending message for a session."""
         return self._pending_messages.pop(session_key, None)

@@ -10,6 +10,9 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import MessageEvent, MessageType
+from gateway.run import GatewayRunner
+from gateway.session import SessionSource
 from plugins.platforms.raft.adapter import (
     ACTIVITY_DRAIN_SCHEMA,
     ACTIVITY_EVENT_SCHEMA,
@@ -117,6 +120,46 @@ class TestRaftWakeHttp:
 
         assert body == {"ok": False, "error": "content_not_allowed"}
         adapter.handle_message.assert_not_called()
+
+
+    @pytest.mark.asyncio
+    async def test_busy_wakes_preserve_runner_fifo_tail_order(self):
+        """A later wake must not replace the head across an occupied FIFO tail."""
+        adapter = _make_adapter()
+        runner = object.__new__(GatewayRunner)
+        runner._queued_events = {}
+        adapter.set_pending_event_queue_handler(
+            lambda session_key, event: runner._queue_or_replace_pending_event(
+                session_key, event, adapter
+            )
+        )
+        adapter.set_message_handler(AsyncMock())
+        source = SessionSource(
+            platform=Platform("raft"),
+            chat_id="default",
+            chat_type="dm",
+            user_id="raft-bridge",
+        )
+        session_key = build_session_key(source)
+        events = [
+            MessageEvent(
+                text=f"wake-{message_id}",
+                message_type=MessageType.TEXT,
+                source=source,
+                message_id=message_id,
+                internal=True,
+            )
+            for message_id in ("a1", "b1", "a2")
+        ]
+        runner._enqueue_fifo(session_key, events[0], adapter)
+        runner._enqueue_fifo(session_key, events[1], adapter)
+        adapter._active_sessions[session_key] = asyncio.Event()
+
+        await adapter.handle_message(events[2])
+
+        turns = [adapter._pending_messages[session_key]]
+        turns.extend(runner._queued_events.get(session_key, []))
+        assert [turn.message_id for turn in turns] == ["a1", "b1", "a2"]
 
 
 class TestRaftActivityHttp:

@@ -1332,6 +1332,22 @@ def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
     return bool(mt)
 
 
+def _without_verified_sender_envelope(content: Any) -> Any:
+    """Return text content with Hermes' sender envelope removed.
+
+    Shared-session turns attach this gateway-authenticated envelope to the
+    API-facing message so the model can trust the current platform sender.
+    Hidden-reasoning incomplete turns are not completed model output, so their
+    gateway fallback persistence should keep only the clean user text in the
+    transcript while still shedding any forged envelope that the normal inbound
+    path already normalized.
+    """
+
+    if not isinstance(content, str):
+        return content
+    return re.sub(r"^(?:\s*\[Verified sender:[^\]\n]*\]\s*)+", "", content)
+
+
 def _build_gateway_agent_history(
     history: List[Dict[str, Any]],
     *,
@@ -7826,8 +7842,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # tail.  Enqueue puts new items in the slot when free, otherwise in
     # the overflow.  Promotion (called after each run's drain) moves the
     # next overflow item into the slot so the following recursion picks
-    # it up.  Clearing happens on /new and /reset via
-    # _handle_reset_command.
+    # it up.  Clearing happens on /new, /reset, and /stop via
+    # _interrupt_and_clear_session.
 
     def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> None:
         """Append a /queue event to the FIFO chain for a session."""
@@ -7842,6 +7858,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         else:
             pending_slot[session_key] = queued_event
+
+    def _requeue_fifo_head(
+        self,
+        session_key: str,
+        queued_event: "MessageEvent",
+        adapter: Any,
+    ) -> None:
+        """Put an earlier drained event back ahead of any promoted overflow."""
+        if adapter is None:
+            return
+        pending_slot = getattr(adapter, "_pending_messages", None)
+        if pending_slot is None:
+            return
+        displaced = pending_slot.get(session_key)
+        pending_slot[session_key] = queued_event
+        if displaced is not None:
+            self._session_state(session_key).conversation.queued_events.insert(
+                0, displaced
+            )
 
     def _promote_queued_event(
         self,
@@ -8806,8 +8841,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # still small enough to never threaten memory.
     _BUSY_QUEUE_MAX_PENDING = 32
 
-    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
-        adapter = self._adapter_for_source(event.source)
+    def _queue_or_replace_pending_event(
+        self,
+        session_key: str,
+        event: MessageEvent,
+        adapter: Any = None,
+        *,
+        merge_text: bool = False,
+    ) -> None:
+        adapter = adapter or self._adapter_for_source(event.source)
         if not adapter:
             return
         # #28503 — Previously this called ``merge_pending_message_event``
@@ -8815,24 +8857,87 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # the single pending slot when consecutive text messages arrived
         # in ``busy_input_mode: queue``. Route through the FIFO
         # infrastructure shared with ``/queue`` so each follow-up gets
-        # its own turn in arrival order. Photo bursts still merge into
-        # the head slot via ``merge_pending_message_event`` (album
-        # semantics); everything else appends to the overflow tail.
+        # its own turn in arrival order. Contiguous photo/media bursts still
+        # merge at the canonical queue tail (album semantics); everything else
+        # appends without overtaking an existing overflow item.
         pending_slot = getattr(adapter, "_pending_messages", None)
         existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
+        _q_state = self._peek_session_state(session_key)
+        overflow = _q_state.conversation.queued_events if _q_state else []
+        if overflow:
+            tail = overflow[-1]
+            if (
+                getattr(tail, "message_type", None) == MessageType.PHOTO
+                or event.message_type == MessageType.PHOTO
+                or bool(getattr(tail, "media_urls", None))
+                or bool(getattr(event, "media_urls", None))
+                or (
+                    merge_text
+                    and getattr(tail, "message_type", None) == MessageType.TEXT
+                    and event.message_type == MessageType.TEXT
+                )
+            ):
+                tail_slot = {session_key: tail}
+                if merge_pending_message_event(
+                    tail_slot,
+                    session_key,
+                    event,
+                    merge_text=merge_text,
+                ):
+                    if tail_slot.get(session_key) is tail:
+                        return
+                    # The helper may report success by replacing its slot
+                    # rather than mutating the existing event. ``tail_slot``
+                    # is only a probe around the real FIFO tail, so retain the
+                    # replacement as its own turn instead of discarding it.
+                    self._enqueue_fifo(session_key, event, adapter)
+                    return
+                # A cross-sender media refusal remains lossless even at the
+                # ordinary busy cap, but must append after the current tail.
+                self._enqueue_fifo(session_key, event, adapter)
+                return
+            if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
+                logger.warning(
+                    "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
+                    session_key,
+                    self._BUSY_QUEUE_MAX_PENDING,
+                )
+                return
+            self._enqueue_fifo(session_key, event, adapter)
+            return
         if existing is not None and (
             getattr(existing, "message_type", None) == MessageType.PHOTO
             or event.message_type == MessageType.PHOTO
             or bool(getattr(existing, "media_urls", None))
             or bool(getattr(event, "media_urls", None))
+            or (
+                merge_text
+                and getattr(existing, "message_type", None) == MessageType.TEXT
+                and event.message_type == MessageType.TEXT
+            )
         ):
             # Preserve photo-burst / media-merge semantics for the head slot.
-            merge_pending_message_event(
+            # A False return means the head slot belongs to a different sender:
+            # the event is still ours, so fall through to the FIFO and give it
+            # its own turn instead of splicing it into someone else's album.
+            if merge_pending_message_event(
                 adapter._pending_messages,
                 session_key,
                 event,
-                merge_text=event.message_type == MessageType.TEXT,
-            )
+                merge_text=merge_text,
+            ):
+                if adapter._pending_messages.get(session_key) is existing:
+                    return
+                # Slot replacement would overtake and silently discard the
+                # occupied head. Restore the head and queue the incoming event
+                # as the next turn instead.
+                adapter._pending_messages[session_key] = existing
+                self._enqueue_fifo(session_key, event, adapter)
+                return
+            # Refusal transfers ownership back to this caller. It must bypass
+            # the ordinary busy-queue cap: the refusal itself must never cost
+            # the incoming sender a message.
+            self._enqueue_fifo(session_key, event, adapter)
             return
 
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
@@ -11288,6 +11393,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+            _set_pending_queue = getattr(
+                adapter, "set_pending_event_queue_handler", None
+            )
+            if callable(_set_pending_queue):
+                _set_pending_queue(
+                    lambda session_key, event, _adapter=adapter: self._queue_or_replace_pending_event(
+                        session_key, event, _adapter
+                    )
+                )
             _set_reaction = getattr(adapter, "set_reaction_handler", None)
             if callable(_set_reaction):
                 _set_reaction(self._handle_reaction_event)
@@ -12671,6 +12785,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+                    _set_pending_queue = getattr(
+                        adapter, "set_pending_event_queue_handler", None
+                    )
+                    if callable(_set_pending_queue):
+                        _set_pending_queue(
+                            lambda session_key, event, _adapter=adapter: self._queue_or_replace_pending_event(
+                                session_key, event, _adapter
+                            )
+                        )
                     _set_reaction = getattr(adapter, "set_reaction_handler", None)
                     if callable(_set_reaction):
                         _set_reaction(self._handle_reaction_event)
@@ -13233,8 +13356,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # in-memory pending text is the only surviving copy.  Clearing
             # without flushing causes permanent data loss.
             try:
-                from gateway.shutdown_flush import flush_pending_to_file
-                flush_pending_to_file(dict(self._pending_messages), reason="shutdown")
+                from gateway.shutdown_flush import (
+                    flush_pending_to_file,
+                    flush_queued_events_to_file,
+                )
+
+                pending_messages = dict(self._pending_messages)
+                queued_events = dict(self._queued_events)
+                session_ids = {}
+                for session_key in pending_messages.keys() | queued_events.keys():
+                    try:
+                        session_id = self.session_store.peek_session_id(session_key)
+                    except Exception:
+                        session_id = None
+                    if session_id:
+                        session_ids[session_key] = session_id
+
+                flush_pending_to_file(
+                    pending_messages,
+                    reason="shutdown",
+                    session_ids=session_ids,
+                )
+                flush_queued_events_to_file(
+                    queued_events,
+                    reason="shutdown_queued",
+                    session_ids=session_ids,
+                )
             except Exception:
                 pass
             # On the real runner these are live SessionState views whose
@@ -13640,6 +13787,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         adapter.set_session_store(self.session_store)
         adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+        _set_pending_queue = getattr(adapter, "set_pending_event_queue_handler", None)
+        if callable(_set_pending_queue):
+            _set_pending_queue(
+                lambda session_key, event, _adapter=adapter: self._queue_or_replace_pending_event(
+                    session_key, event, _adapter
+                )
+            )
         _set_reaction = getattr(adapter, "set_reaction_handler", None)
         if callable(_set_reaction):
             _set_reaction(self._handle_reaction_event)
@@ -15129,7 +15283,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
                 adapter = self._adapter_for_source(source)
                 if adapter:
-                    merge_pending_message_event(adapter._pending_messages, _quick_key, event)
+                    self._queue_or_replace_pending_event(_quick_key, event, adapter)
                 return None
 
             _telegram_followup_grace = float(
@@ -15154,11 +15308,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if self._busy_input_mode == "queue":
                         self._enqueue_fifo(_quick_key, event, adapter)
                     else:
-                        merge_pending_message_event(
-                            adapter._pending_messages,
-                            _quick_key,
-                            event,
-                            merge_text=True,
+                        self._queue_or_replace_pending_event(
+                            _quick_key, event, adapter, merge_text=True
                         )
                 return None
 
@@ -15175,11 +15326,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # agent starts.
                 adapter = self._adapter_for_source(source)
                 if adapter:
-                    merge_pending_message_event(
-                        adapter._pending_messages,
-                        _quick_key,
-                        event,
-                        merge_text=True,
+                    self._queue_or_replace_pending_event(
+                        _quick_key, event, adapter, merge_text=True
                     )
                 return None
             if self._draining:
@@ -16178,7 +16326,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             group_sessions_per_user=_group_sessions_per_user,
             thread_sessions_per_user=_thread_sessions_per_user,
         )
-        if _is_shared_multi_user and source.user_name:
+        if _is_shared_multi_user:
+            _has_trusted_sender_id = bool(source.user_id or source.user_id_alt)
+            # Strip any user-supplied copy of Hermes' canonical sender envelope
+            # before attaching the gateway-authenticated one. In a shared
+            # session, leaving a forged leading envelope in place lets one
+            # participant impersonate another in the exact metadata shape we ask
+            # the model to trust.
+            message_text = re.sub(
+                r"^(?:\s*\[Verified sender:[^\]\n]*\]\s*)+",
+                "",
+                message_text,
+            )
             # source.user_name is the platform display name — attacker-
             # influenceable on any platform that lets participants set their
             # own name. Neutralize embedded newlines/control chars before
@@ -16186,18 +16345,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # a hostile name can masquerade as a fake markdown section
             # (mirrors the same field's treatment in
             # build_session_context_prompt via _format_untrusted_prompt_value).
-            _safe_user_name = neutralize_untrusted_inline_text(source.user_name)
-            # On Slack, expose the current author's verifiable user ID next to
-            # the display name (#17916): "mention me again" requests need a
-            # trusted `<@U...>` target for the CURRENT speaker — display names
-            # are ambiguous and historical mentions may point at someone else.
-            # The user_id comes from the Slack event envelope (not
-            # user-editable text), so it does not need neutralization.
-            if source.platform == Platform.SLACK and source.user_id:
-                _safe_user_name = (
-                    f"{_safe_user_name} | Slack user <@{source.user_id}>"
+            _safe_user_name = neutralize_untrusted_inline_text(
+                source.user_name or "unknown sender"
+            )
+            if _has_trusted_sender_id:
+                _sender_parts = [_safe_user_name]
+                # Expose platform-authenticated IDs for every shared session so
+                # "mention me" / "who said this?" requests have a trusted current
+                # sender target. Keep Slack's native mention syntax from #17916.
+                if source.platform == Platform.SLACK and source.user_id:
+                    _sender_parts.append(f"Slack user <@{source.user_id}>")
+                elif source.user_id:
+                    _sender_parts.append(
+                        f"{source.platform.value.title()} user_id {source.user_id}"
+                    )
+                if source.user_id_alt and source.user_id_alt != source.user_id:
+                    _sender_parts.append(f"user_id_alt {source.user_id_alt}")
+                message_text = (
+                    f"[Verified sender: {' | '.join(_sender_parts)}] {message_text}"
                 )
-            message_text = f"[{_safe_user_name}] {message_text}"
+            elif source.user_name:
+                message_text = f"[{_safe_user_name}] {message_text}"
 
         # Prepend channel context from history backfill (if any).  This
         # happens after sender-prefix so the prefix only applies to the
@@ -18433,13 +18601,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # reasoning-only incomplete turns follow the same persistence
                 # rule so peer-agent channels don't ingest them as completed
                 # assistant turns. (#7100, #51628)
+                _fallback_user_content = (
+                    persist_user_message
+                    if persist_user_message is not None
+                    else message_text
+                )
+                if hidden_reasoning_incomplete:
+                    _fallback_user_content = _without_verified_sender_envelope(
+                        _fallback_user_content
+                    )
                 _user_entry = {
                     "role": "user",
-                    "content": (
-                        persist_user_message
-                        if persist_user_message is not None
-                        else message_text
-                    ),
+                    "content": _fallback_user_content,
                     "timestamp": (
                         persist_user_timestamp
                         if persist_user_timestamp is not None
@@ -23604,6 +23777,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if adapter and hasattr(adapter, "get_pending_message"):
             adapter.get_pending_message(session_key)  # consume and discard
         if _iac_state is not None:
+            # Refused cross-sender turns and /queue overflow live outside the
+            # adapter's single pending slot and must share /stop discard semantics.
+            _iac_state.conversation.queued_events.clear()
             _iac_state.persistent.pending_command_text = None
         if release_running_state:
             self._release_running_agent_state(session_key)
@@ -26241,7 +26417,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                     adapter = self._adapter_for_source(source)
                     if adapter and pending_event:
-                        merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
+                        self._requeue_fifo_head(session_key, pending_event, adapter)
                     elif adapter and hasattr(adapter, 'queue_message'):
                         adapter.queue_message(session_key, pending)
                     return result_holder[0] or {"final_response": response, "messages": history}

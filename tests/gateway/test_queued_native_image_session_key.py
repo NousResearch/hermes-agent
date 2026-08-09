@@ -149,3 +149,66 @@ async def test_queued_followup_uses_pending_event_session_key_for_native_images(
     assert queued_message[0]["type"] == "text"
     assert queued_message[0]["text"].startswith("describe this")
     assert any(part.get("type") == "image_url" for part in queued_message)
+
+
+@pytest.mark.asyncio
+async def test_interrupt_depth_cap_requeues_earlier_event_before_promoted_overflow(
+    monkeypatch, tmp_path
+):
+    """At the recursion cap, drained A must remain ahead of already-queued B."""
+    CaptureQueuedNativeImageAgent.calls = []
+    fake_dotenv = types.ModuleType("dotenv")
+    setattr(fake_dotenv, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    fake_run_agent = types.ModuleType("run_agent")
+    setattr(fake_run_agent, "AIAgent", CaptureQueuedNativeImageAgent)
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    adapter = CaptureAdapter()
+    runner = _make_runner(adapter)
+    session_key = "agent:main:telegram:group:-1001"
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        user_id="original",
+    )
+    alice = MessageEvent(
+        text="A",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_type="group",
+            user_id="alice",
+        ),
+        message_id="a",
+    )
+    bob = MessageEvent(
+        text="B",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_type="group",
+            user_id="bob",
+        ),
+        message_id="b",
+    )
+    runner._enqueue_fifo(session_key, alice, adapter)
+    runner._enqueue_fifo(session_key, bob, adapter)
+
+    await runner._run_agent(
+        message="original",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-depth-cap",
+        session_key=session_key,
+        _interrupt_depth=runner._MAX_INTERRUPT_DEPTH,
+    )
+
+    turns = [adapter._pending_messages[session_key]]
+    turns.extend(runner._queued_events.get(session_key, []))
+    assert [turn.message_id for turn in turns] == ["a", "b"]

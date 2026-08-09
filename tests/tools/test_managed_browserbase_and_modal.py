@@ -112,6 +112,9 @@ def _install_fake_tools_package():
     sys.modules["agent.credential_persistence"] = types.SimpleNamespace(
         sanitize_borrowed_credential_payload=lambda entry, provider_id=None: entry,
     )
+    sys.modules["agent.secret_scope"] = types.SimpleNamespace(
+        get_secret=lambda name, default=None: os.environ.get(name, default),
+    )
 
     # ``browser_tool`` and ``hermes_cli.auth`` import these helpers even in
     # this deliberately fake-agent fixture. Load them by path while retaining

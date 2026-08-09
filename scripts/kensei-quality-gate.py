@@ -291,7 +291,7 @@ def main():
             for t in tasks_in_review:
                 gates = get_required_gates(t["title"] or "", t["body"] or "")
                 gate_names = ", ".join(g["gate"] for g in gates) if gates else "(no gates)"
-                print(f"[dry-run] {t["id"][:12]} ({t["_board_slug"]}): {gate_names}")
+                print(f"[dry-run] {t['id'][:12]} ({t['_board_slug']}): {gate_names}")
         return
 
     results = process_tasks(tasks_in_review)

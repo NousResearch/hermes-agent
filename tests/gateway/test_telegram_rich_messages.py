@@ -389,7 +389,10 @@ def test_prefers_fresh_final_streaming_stays_disabled_when_rich_enabled():
 async def test_legacy_draft_stream_finalizes_with_persistent_rich_message():
     """A MarkdownV2 draft must not force the persistent final to MarkdownV2."""
     adapter = _make_adapter()  # rich messages on, rich drafts off
-    assert adapter.supports_draft_streaming(chat_type="dm") is True
+    # With the gate in supports_draft_streaming, draft streaming is declined
+    # when rich_drafts is off.  The test force-enables it to verify that even
+    # a legacy MDV2 draft still finalizes as a rich message.
+    assert adapter.supports_draft_streaming(chat_type="dm") is False
 
     consumer = GatewayStreamConsumer(
         adapter,
@@ -429,9 +432,6 @@ def test_supports_draft_streaming_enabled_when_rich_drafts_opt_in():
 
 def test_supports_draft_streaming_legacy_when_rich_messages_off():
     adapter = _make_adapter(extra={"rich_messages": False})
-    # _make_adapter always injects rich_messages True via default; force off.
-    adapter._rich_messages_enabled = False
-    adapter._rich_drafts_enabled = False
     assert adapter.supports_draft_streaming(chat_type="dm") is True
 
 

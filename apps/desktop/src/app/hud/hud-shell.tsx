@@ -28,7 +28,7 @@ import { useHudThreadFocus } from './thread-focus'
  *  Long enough to actually be the middle stage. Under a second it read as part
  *  of the fade rather than a state you could still glance at and finish
  *  reading. */
-const HUD_RECENT_HOLD_MS = 2500
+const HUD_RECENT_HOLD_MS = 1750
 
 /** Band visibility timings, published to CSS as custom properties so this
  *  module and the stylesheet cannot drift apart. Reveal is quick — it is an

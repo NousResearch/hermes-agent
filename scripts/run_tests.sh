@@ -39,9 +39,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Locate Python launcher ─────────────────────────────────────────────────
-# Prefer a worktree-local dev venv, but never select a release venv that lacks
-# pytest. The canonical checkout venv is deliberately included for isolated
-# worktrees; HERMES_PYTHON remains the Nix-devShell fallback.
+# Prefer an explicit interpreter when the caller supplies one. This is the
+# only reliable way for isolated worktrees and audits to prove a lock-aligned
+# runtime instead of silently falling back to the canonical production venv.
+# Without an override, probe worktree-local and canonical development venvs.
 VENV=""
 VENV_PYTHON=""
 SKIPPED_VENVS=""
@@ -74,12 +75,12 @@ if [ -n "$SKIPPED_VENVS" ]; then
   done
 fi
 
-if [ -n "$VENV" ]; then
-  PYTHON="$VENV_PYTHON"
-elif [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
+if [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
     && "$HERMES_PYTHON" -c 'import pytest' 2>/dev/null; then
   PYTHON="$HERMES_PYTHON"
-  echo "▶ no local dev venv — using HERMES_PYTHON: $PYTHON"
+  echo "▶ using explicit HERMES_PYTHON: $PYTHON"
+elif [ -n "$VENV" ]; then
+  PYTHON="$VENV_PYTHON"
 else
   echo "error: no virtualenv with pytest found in $REPO_ROOT/.venv, $REPO_ROOT/venv," >&2
   echo "       $HOME/repos/KenseiAgent/.venv, or $HOME/.hermes/hermes-agent/venv," >&2

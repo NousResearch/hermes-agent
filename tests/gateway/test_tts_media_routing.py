@@ -414,6 +414,44 @@ async def test_queued_followup_delivery_preserves_protected_media_example():
     adapter.send_document.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_queued_followup_delivery_skips_media_when_turn_failed():
+    """A failed first turn delivers its (failure) text but never uploads
+    attachments as if the turn succeeded — deliver_media=False mirrors the
+    completed-turn path's ``not agent_result.get("failed")`` guard."""
+    event = _event(thread_id="topic-1")
+    runner = object.__new__(GatewayRunner)
+    runner._thread_metadata_for_source = lambda source, anchor=None: {"thread_id": "topic-1"}
+    runner._reply_anchor_for_event = lambda event: event.message_id
+
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send=AsyncMock(return_value=SendResult(success=True, message_id="text")),
+        send_multiple_images=AsyncMock(return_value=None),
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+
+    await GatewayRunner._deliver_queued_first_response(
+        runner,
+        "The request failed: provider exploded\nMEDIA:/tmp/pricelist.png",
+        source=event.source,
+        adapter=adapter,
+        metadata={"thread_id": "topic-1"},
+        event_message_id=event.message_id,
+        deliver_media=False,
+    )
+
+    adapter.send.assert_awaited_once()
+    adapter.send_multiple_images.assert_not_awaited()
+    adapter.send_document.assert_not_awaited()
+    adapter.send_video.assert_not_awaited()
+
+
 class _QueuedMediaCaptureAdapter(BasePlatformAdapter):
     """Adapter that records text + native image delivery for queued-resend tests."""
 

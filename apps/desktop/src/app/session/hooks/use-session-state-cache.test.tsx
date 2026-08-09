@@ -22,6 +22,8 @@ import {
   setTurnStartedAt
 } from '@/store/session'
 
+import { clearDismissedErrorRows } from '@/app/contrib/wiring'
+
 import { useSessionStateCache } from './use-session-state-cache'
 
 type Cache = ReturnType<typeof useSessionStateCache>
@@ -377,6 +379,19 @@ function assistantError(id: string, error: string): ChatMessage {
   return { id, role: 'assistant', parts: [], error, pending: false }
 }
 
+function assistantPartialError(id: string, error: string): ChatMessage {
+  return {
+    id,
+    role: 'assistant',
+    parts: [
+      { type: 'reasoning', text: 'failed turn thought' },
+      { type: 'text', text: 'failed turn partial result' }
+    ],
+    error,
+    pending: false
+  }
+}
+
 interface ViewHarnessProps {
   activeSessionId: string | null
   onReady: (cache: Cache) => void
@@ -475,6 +490,83 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
     expect($messages.get().some(message => message.error === 'OpenRouter 403')).toBe(true)
   })
 
+  it('does not restore a dismissed recovered failed turn on warm switch', () => {
+    $messages.set([])
+    let cache!: Cache
+    const { rerender } = render(<ViewHarness activeSessionId="thread-A" onReady={value => (cache = value)} />)
+
+    const authoritative = [
+      userMessage('user-a-before', 'before'),
+      assistantText('assistant-a-before', 'before answer'),
+      userMessage('user-a-after', 'after'),
+      assistantText('assistant-a-after', 'after answer')
+    ]
+
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({ ...state, busy: false, messages: authoritative }), 'stored-A')
+    })
+
+    $messages.set([
+      authoritative[0],
+      authoritative[1],
+      userMessage('user-1723000000000-abc123', 'failed prompt'),
+      assistantPartialError('assistant-a-partial', 'Connection error.'),
+      authoritative[2],
+      authoritative[3]
+    ])
+
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({ ...state, busy: false, messages: authoritative }))
+    })
+
+    const recoveredTail = $messages.get()
+    expect(recoveredTail.map(message => message.id)).toEqual([
+      'user-a-before',
+      'assistant-a-before',
+      'user-a-after',
+      'assistant-a-after',
+      'user-1723000000000-abc123',
+      'assistant-a-partial'
+    ])
+
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({ ...state, messages: recoveredTail }))
+    })
+
+    // Dismiss with the same production transform dismissError uses: the failed
+    // assistant row and its optimistic companion user row leave both the live
+    // view and the owning warm cache.
+    $messages.set(clearDismissedErrorRows($messages.get(), 'assistant-a-partial'))
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({
+        ...state,
+        messages: clearDismissedErrorRows(state.messages, 'assistant-a-partial')
+      }))
+    })
+
+    expect($messages.get().map(message => message.id)).toEqual(authoritative.map(message => message.id))
+    expect(cache.sessionStateByRuntimeIdRef.current.get('thread-A')?.messages.map(message => message.id)).toEqual(
+      authoritative.map(message => message.id)
+    )
+
+    rerender(<ViewHarness activeSessionId="thread-B" onReady={value => (cache = value)} />)
+    act(() => {
+      cache.updateSessionState('thread-B', state => ({
+        ...state,
+        busy: false,
+        messages: [userMessage('user-b', 'other thread'), assistantText('assistant-b', 'other answer')]
+      }))
+    })
+
+    rerender(<ViewHarness activeSessionId="thread-A" onReady={value => (cache = value)} />)
+    act(() => {
+      cache.syncSessionStateToView('thread-A', cache.sessionStateByRuntimeIdRef.current.get('thread-A')!)
+    })
+
+    // The renderer-local pair stays absent after the warm switch.
+    expect($messages.get().map(message => message.id)).toEqual(authoritative.map(message => message.id))
+  })
+
   it('only returns a runtime whose cached state owns the requested stored session', () => {
     let cache!: Cache
     render(<Harness activeSessionId={null} onReady={value => (cache = value)} selectedStoredSessionId={null} />)
@@ -491,5 +583,82 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
     // check must reject it instead of allowing a submit into stored-B.
     cache.runtimeIdByStoredSessionIdRef.current.set('stored-A', 'runtime-B')
     expect(cache.getRuntimeIdForStoredSession('stored-A')).toBeNull()
+  })
+})
+
+describe('clearDismissedErrorRows — failed-turn dismissal transform', () => {
+  it('removes a bare-error assistant row and its optimistic companion user row', () => {
+    const messages = [
+      userMessage('user-1723000000000-', 'failed prompt'),
+      assistantError('assistant-a-error', 'Connection error.'),
+      userMessage('user-next', 'next prompt'),
+      assistantText('assistant-next', 'next answer')
+    ]
+
+    expect(clearDismissedErrorRows(messages, 'assistant-a-error').map(message => message.id)).toEqual([
+      'user-next',
+      'assistant-next'
+    ])
+  })
+
+  it('removes a partial-output errored assistant row carrying reasoning, text, and tool payload', () => {
+    const messages = [
+      userMessage('user-1723000000000-def456', 'failed prompt'),
+      {
+        id: 'assistant-a-partial',
+        role: 'assistant',
+        parts: [
+          { type: 'reasoning', text: 'failed turn thought' },
+          { type: 'text', text: 'failed turn partial result' },
+          { type: 'tool-call', toolCallId: 'call-1', toolName: 'read_file', result: 'partial' }
+        ],
+        error: 'Connection error.',
+        pending: false
+      } as ChatMessage
+    ]
+
+    expect(clearDismissedErrorRows(messages, 'assistant-a-partial')).toEqual([])
+  })
+
+  it('keeps an authoritative user row with a durable rowId preceding the dismissed error', () => {
+    const authoritativeUser = { ...userMessage('user-1723000000000-ghi789', 'committed prompt'), rowId: 101 }
+    const messages = [authoritativeUser, assistantError('assistant-a-error', 'Connection error.')]
+
+    expect(clearDismissedErrorRows(messages, 'assistant-a-error')).toEqual([authoritativeUser])
+  })
+
+  it('keeps a non-optimistic user row that precedes the dismissed error', () => {
+    const messages = [
+      userMessage('u-stored-1', 'stored prompt'),
+      assistantError('assistant-a-error', 'Connection error.')
+    ]
+
+    expect(clearDismissedErrorRows(messages, 'assistant-a-error').map(message => message.id)).toEqual(['u-stored-1'])
+  })
+
+  it('keeps successful messages and rows that are not the dismissed turn', () => {
+    const messages = [
+      userMessage('user-b', 'other thread'),
+      assistantText('assistant-b', 'other answer'),
+      userMessage('user-1723000000000-jkl012', 'failed prompt'),
+      assistantError('assistant-a-error', 'Connection error.')
+    ]
+
+    expect(clearDismissedErrorRows(messages, 'assistant-a-error').map(message => message.id)).toEqual([
+      'user-b',
+      'assistant-b'
+    ])
+  })
+
+  it('does not remove an errored non-assistant row even when its id is targeted', () => {
+    const user = { ...userMessage('user-1723000000000-pqr678', 'prompt'), error: 'client marker' }
+
+    expect(clearDismissedErrorRows([user], user.id)).toEqual([user])
+  })
+
+  it('returns the input unchanged when no row matches the dismissed id', () => {
+    const messages = [userMessage('user-1723000000000-mno345', 'prompt'), assistantText('assistant-a', 'answer')]
+
+    expect(clearDismissedErrorRows(messages, 'missing-id')).toEqual(messages)
   })
 })

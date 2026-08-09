@@ -25,7 +25,7 @@ import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { emitGatewayEvent } from '@/contrib/events'
 import { getLatestSessionMessages, triggerCronJob } from '@/hermes'
-import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import { type ChatMessage, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
@@ -125,6 +125,37 @@ import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
 import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
+
+// The optimistic user rows submit paints (use-prompt-actions/submit.ts), and
+// the session-tile steer path mirrors, share this id shape:
+// `user-<ms>-<base36 nonce>`. Combined with the missing durable rowId it
+// mechanically identifies the renderer-local companion of a failed turn.
+const OPTIMISTIC_USER_ID = /^user-\d+-[a-z0-9]{0,6}$/
+
+function isLocalOptimisticUserRow(message: ChatMessage): boolean {
+  return message.role === 'user' && message.rowId === undefined && OPTIMISTIC_USER_ID.test(message.id)
+}
+
+// Dismiss transform shared by dismissError: drops the errored assistant row
+// (bare error or partial-output payload) plus its immediately preceding
+// renderer-local optimistic companion user row. Authoritative user rows
+// (durable rowId or non-submit id shape), successful messages, and rows of
+// other sessions are preserved.
+export function clearDismissedErrorRows(messages: ChatMessage[], messageId: string): ChatMessage[] {
+  return messages.flatMap((message, index) => {
+    if (message.id === messageId && message.role === 'assistant' && message.error) {
+      return []
+    }
+
+    const next = messages[index + 1]
+
+    if (next?.id === messageId && next.role === 'assistant' && next.error && isLocalOptimisticUserRow(message)) {
+      return []
+    }
+
+    return [message]
+  })
+}
 
 // Overlay views the controller mounts over the shell — lazy, load on demand.
 // The workspace-route full-page views (skills/messaging/artifacts) are the
@@ -629,10 +660,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   useHudHandoff({ navigate, resumeSession })
 
   // Clear a failed turn's red error banner. Errors are renderer-local (never
-  // persisted): a bare error placeholder is dropped entirely; a partial-output
-  // failure keeps its content and sheds the error. Both the runtime cache AND
-  // the live $messages view must be updated — preserveLocalAssistantErrors
-  // re-grafts any still-errored view message on the next session.info flush.
+  // persisted), so dismissal removes the failed turn entirely: the errored
+  // assistant row (bare error or partial-output payload) and its immediately
+  // preceding renderer-local optimistic companion user row, from BOTH the
+  // runtime cache AND the live $messages view. Authoritative rows (durable
+  // rowId or non-optimistic ids) are never touched.
   const dismissError = useCallback(
     (messageId: string) => {
       const runtimeSessionId = activeSessionIdRef.current
@@ -641,26 +673,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         return
       }
 
-      const clearErrorIn = (messages: ChatMessage[]): ChatMessage[] =>
-        messages.flatMap(message => {
-          if (message.id !== messageId || !message.error) {
-            return [message]
-          }
-
-          if (!chatMessageText(message).trim() && !message.parts.some(part => part.type !== 'text')) {
-            return []
-          }
-
-          return [{ ...message, error: undefined, pending: false }]
-        })
-
       // View first: the cache update below triggers a re-sync that reads
       // $messages as the error-preservation baseline.
-      setMessages(clearErrorIn($messages.get()))
+      setMessages(clearDismissedErrorRows($messages.get(), messageId))
 
       updateSessionState(runtimeSessionId, state => ({
         ...state,
-        messages: clearErrorIn(state.messages)
+        messages: clearDismissedErrorRows(state.messages, messageId)
       }))
     },
     [activeSessionIdRef, updateSessionState]

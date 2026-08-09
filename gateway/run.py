@@ -13946,9 +13946,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # In-flight cron work gets its own floor, clamped to the watchdog
             # leash we're already running under so the extra wait can never
             # cost us the post-drain cleanup window (#82161).
+            # getattr-guard: shutdown-path tests drive _stop_impl_body from
+            # bare doubles that aren't GatewayRunner instances, so they don't
+            # pick up the class-level default.
+            _cron_drain_cfg = getattr(
+                self, "_cron_drain_timeout", DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT
+            )
             _cron_timeout = resolve_cron_drain_budget(
                 timeout,
-                self._cron_drain_timeout,
+                _cron_drain_cfg,
                 watchdog_delay=resolve_shutdown_watchdog_delay(timeout),
                 elapsed=_phase_elapsed(),
             )
@@ -13959,7 +13965,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "restart_drain_timeout=%.0fs)",
                     _cron_at_start,
                     _cron_timeout,
-                    self._cron_drain_timeout,
+                    _cron_drain_cfg,
                     timeout,
                 )
             _drain_started_at = time.monotonic()

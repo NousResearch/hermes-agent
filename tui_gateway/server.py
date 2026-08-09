@@ -11772,6 +11772,10 @@ def _project_tree_inputs(
         include_children=False,
         exclude_sources=_PROJECT_TREE_EXCLUDED_SOURCES,
         include_archived=False,
+        # `_project_tree_row` keeps ~18 fields and drops the rest, so selecting
+        # the system-prompt blob only to discard it costs tens of MB of B-tree
+        # reads per build on a long-lived database.
+        compact_rows=True,
     )
     sessions = [_project_tree_row(r) for r in rows]
     # Parallel-warm the git cache so build_tree's resolver reads it instead of

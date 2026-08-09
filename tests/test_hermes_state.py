@@ -4570,3 +4570,19 @@ class TestFts5SanitizerCharacterClass:
             "SELECT count(*) FROM t WHERE t MATCH ?", (sanitized,)
         ).fetchone()
         assert rows[0] == 1
+
+    def test_percent_stripped_for_non_cjk_query(self):
+        # % is kept only for the CJK LIKE fallback; a non-CJK query never
+        # reaches that fallback, so % must be stripped before MATCH.
+        conn = self._fts_table()
+        sanitized = self._sanitize("50%")
+        assert "%" not in sanitized
+        conn.execute(
+            "SELECT count(*) FROM t WHERE t MATCH ?", (sanitized,)
+        ).fetchone()
+
+    def test_percent_preserved_for_cjk_query(self):
+        # The CJK LIKE fallback builds its own pattern from the sanitized
+        # text; keep % intact there (pre-existing contract).
+        sanitized = self._sanitize("完成50%")
+        assert "%" in sanitized

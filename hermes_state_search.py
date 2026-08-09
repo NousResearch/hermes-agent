@@ -1230,6 +1230,14 @@ class SessionSearchMixin:
         # ``50%`` all raised before the class was completed.
         sanitized = _FTS5_SPECIAL_RE.sub(" ", sanitized)
 
+        # Step 2b: ``%`` is excluded from the class above only to protect the
+        # CJK LIKE-fallback path (LIKE treats % as a wildcard the fallback
+        # builds itself). A non-CJK query never reaches that fallback
+        # (``is_cjk`` gates it), so ``50%`` would sail into MATCH raw and
+        # raise like the rest. Strip it whenever the query has no CJK.
+        if "%" in sanitized and not SessionSearchMixin._contains_cjk(sanitized):
+            sanitized = sanitized.replace("%", " ")
+
         # Step 3: Collapse repeated * (e.g. "***") into a single one,
         # and remove leading * (prefix-only needs at least one char before *)
         sanitized = re.sub(r"\*+", "*", sanitized)

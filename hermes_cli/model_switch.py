@@ -3381,7 +3381,7 @@ def list_authenticated_providers(
                         has_explicit_models,
                         headers=_extra_headers_from_config(ep_cfg) or None,
                         timeout=(1.5 if for_picker else 5.0),
-                        api_mode=grp.get("api_mode"),
+                        api_mode=ep_cfg.get("api_mode"),
                     )
                     if isinstance(live_models, _NativePickerModelList):
                         native_catalog_empty = not live_models
@@ -3403,7 +3403,7 @@ def list_authenticated_providers(
                         cache_only=True,
                         timeout=(1.5 if for_picker else 5.0),
                         headers=_extra_headers_from_config(ep_cfg) or None,
-                        api_mode=grp.get("api_mode"),
+                        api_mode=ep_cfg.get("api_mode"),
                     )
                     if cached_models:
                         models_list = cached_models

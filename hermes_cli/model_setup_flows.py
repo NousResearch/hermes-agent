@@ -1553,7 +1553,11 @@ def _model_flow_named_custom(config, provider_info):
         configured_models = [
             str(m)
             for m in cfg_models
-            if m != "__explicit_model_allowlist__" and str(m).strip()
+            if m not in {
+                "__explicit_model_allowlist__",
+                "__discovered_model_catalog__",
+            }
+            and str(m).strip()
         ]
     elif isinstance(cfg_models, list):
         configured_models = []

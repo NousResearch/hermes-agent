@@ -886,7 +886,7 @@ class HermesACPAgent(acp.Agent):
                 if normalized == "custom":
                     return any(
                         candidate == raw
-                        or candidate == f"custom:{raw}"
+                        or f"custom:{candidate}" == raw
                         or (raw == "custom" and candidate == "custom")
                         for candidate in named_empty_authoritative
                     )

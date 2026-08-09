@@ -2,6 +2,11 @@
 Description=Turbohaul Main — Darwin 28B (Sirvir primary)
 # P12 memory policy: weights are GPU0-only, never offloaded; huge-context
 # CPU/system-RAM offload is opt-in only (see docs/adr/0012-p12-256k-memory-policy.md).
+# P12 performance rule: the main model must feel fast for ordinary daily work;
+# 256K context is a required capability, but occasional near-256K jobs may run
+# slower. Fast path (default, ctx <= 128K): GPU-resident KV, no offload.
+# Slow path (rare, explicit darwin-28b-256k route, ctx 128K-256K): host-RAM KV.
+# Canonical rule page: ~/brain/conventions/performance-rules.md (P12, promoted 2026-08-09).
 After=network.target
 Wants=network.target
 

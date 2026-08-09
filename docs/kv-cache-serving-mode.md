@@ -4,6 +4,7 @@
 **Date:** 2026-08-09
 **Applies to:** P12 local inference stack (`KenseiAgent`, dual-RTX-3090 rig through Turbohaul)
 **Policy authority:** `docs/adr/0012-p12-256k-memory-policy.md`
+**Performance rule:** `~/brain/conventions/performance-rules.md` — **P12**: *"The main model must feel fast for ordinary daily work. 256K context is a required capability, but occasional near-256K jobs may run slower."* (promoted 2026-08-09). This serving-mode policy is the operational expression of that rule.
 **Implementation:** `scripts/kv_cache_policy.py` (single source of truth), `scripts/p12_offload_gate.py` (launch-path gate), `scripts/p12_offload_live_check.py` (live integration check)
 
 ---
@@ -333,6 +334,7 @@ falls back to a different tier than the operator intended.
 
 ## 7. Related documents
 
+- `~/brain/conventions/performance-rules.md` — the canonical **P12 performance rule** (main model fast for ordinary daily work; 256K required capability; near-256K jobs may run slower). This policy operationalises it.
 - `docs/adr/0012-p12-256k-memory-policy.md` — the memory policy: weights
   GPU0-only, context/KV offload opt-in, GPU1 isolation.
 - `docs/design/p12-long-context-mode-switch-contract.md` — the explicit

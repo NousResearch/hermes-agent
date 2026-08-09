@@ -5,7 +5,8 @@
 **Owner:** Kensei (spec), implementation split across
   `t_fb7af9a5` (Turbohaul mode manager), `t_18b0ffeb` (route wiring), `t_74d0713a` (E2E).
 **Consumes:** `docs/adr/0012-p12-256k-memory-policy.md` (policy),
-  `scripts/kv_cache_policy.py` (tier decision), Turbohaul-Manager v0.2 FSM/manifest model.
+  `scripts/kv_cache_policy.py` (tier decision), Turbohaul-Manager v0.2 FSM/manifest model,
+  `~/brain/conventions/performance-rules.md` (canonical P12 performance rule).
 **Consumed by:** route wiring, Turbohaul mode manager, E2E tests.
 
 ---
@@ -308,6 +309,7 @@ both the state and the logs.
 
 ## 9. References
 
+- `~/brain/conventions/performance-rules.md` — canonical **P12 performance rule**: ordinary daily work must feel fast; 256K is a required capability; occasional near-256K jobs may run slower. This contract implements the slow-path (RAM-KV) part of that rule.
 - `docs/adr/0012-p12-256k-memory-policy.md` — memory policy (weights GPU0-only,
   KV offload opt-in).
 - `scripts/kv_cache_policy.py` — tier decision source of truth (128K threshold,

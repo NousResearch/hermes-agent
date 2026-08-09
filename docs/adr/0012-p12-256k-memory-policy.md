@@ -66,6 +66,7 @@ isolation contract.
 
 ## References
 
+- `~/brain/conventions/performance-rules.md` — the canonical **P12 performance rule**: the main model must feel fast for ordinary daily work; 256K context is a required capability; occasional near-256K jobs may run slower. ADR 0012's GPU0-only weight policy and opt-in offload are the mechanism that keeps the fast path fast while preserving the 256K capability.
 - `scripts/systemd/turbohaul-main.service` — main lane, GPU0.
 - `scripts/systemd/turbohaul-aux.service` — aux lane, GPU1.
 - `scripts/sirvir_turbohaul_observer.py` — Sirvir pressure/contraction policy

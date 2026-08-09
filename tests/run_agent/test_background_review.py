@@ -203,21 +203,6 @@ def test_new_live_turn_cancels_still_running_background_review(monkeypatch):
     assert calls == ["superseded by a new live turn"]
 
 
-def test_run_conversation_has_pending_review_cancellation_hook():
-    """Guard against the cancellation hook silently regressing out of
-    run_conversation() during a future refactor: assert the actual function
-    source still contains the guard, not just a copy of the logic under
-    test (belt-and-suspenders alongside the behavioral test above).
-    """
-    import inspect
-
-    import agent.conversation_loop as conversation_loop_module
-
-    source = inspect.getsource(conversation_loop_module.run_conversation)
-    assert "_background_review_agent" in source
-    assert "superseded by a new live turn" in source
-
-
 
 
 

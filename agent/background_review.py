@@ -686,29 +686,29 @@ def _run_review_in_thread(
     review_messages: List[Dict] = []
 
     def _unregister_review_agent(agent_ref) -> None:
-        """Remove a completed/failed review fork from the parent's tracking.
-
-        Called on every exit path (success, tool-whitelist exception, and the
-        outer safety-net finally) so the parent's ``_active_children`` /
-        ``_background_review_agent`` never hold a stale reference to a
-        review that has already finished — that would make a later
-        interrupt() try to cancel an agent that's already closed, or make
-        the next turn wait on a review that no longer exists.
+        """Idempotent: clears the review fork from both tracking slots.
+        Called from the run_conversation finally and the outer safety-net finally.
         """
         if agent_ref is None:
             return
-        try:
-            with agent._background_review_lock:
-                if agent._background_review_agent is agent_ref:
-                    agent._background_review_agent = None
-        except Exception:
-            pass
-        try:
-            with agent._active_children_lock:
-                if agent_ref in agent._active_children:
+        if hasattr(agent, "_background_review_agent"):
+            _br_lock = getattr(agent, "_background_review_lock", None)
+            if _br_lock is not None:
+                with _br_lock:
+                    if agent._background_review_agent is agent_ref:
+                        agent._background_review_agent = None
+            elif agent._background_review_agent is agent_ref:
+                agent._background_review_agent = None
+        if hasattr(agent, "_active_children"):
+            try:
+                _ac_lock = getattr(agent, "_active_children_lock", None)
+                if _ac_lock is not None:
+                    with _ac_lock:
+                        agent._active_children.remove(agent_ref)
+                else:
                     agent._active_children.remove(agent_ref)
-        except Exception:
-            pass
+            except (ValueError, AttributeError):
+                pass
 
     try:
         # Silence stdout/stderr for THIS worker thread only.  A process-global
@@ -906,52 +906,29 @@ def _run_review_in_thread(
             # agent.compression_enabled, so this short-circuits both paths.
             review_agent.compression_enabled = False
 
-            # Register this fork on the PARENT so (a) the parent's
-            # interrupt()/Ctrl+C can cancel a still-running review instead of
-            # being architecturally unable to reach it (the fork is a fully
-            # separate AIAgent with its own _interrupt_requested flag that
-            # nothing previously fanned out to), and (b) the NEXT live turn
-            # can proactively cancel a review that hasn't finished yet rather
-            # than letting the two race concurrently against the same
-            # session_id/credentials — the two together can produce doubled
-            # prompt-token accounting and a Ctrl+C-proof lockup.
-            # ``_active_children`` is the same list ``interrupt()`` already
-            # fans out to for real subagent delegation (tools/delegate_tool.py),
-            # so this reuses an existing, tested propagation path rather than
-            # adding a new one. Best-effort: an agent built without going
-            # through agent_init.py's setup (test stubs, older/foreign
-            # AIAgent construction paths) won't have these attributes yet —
-            # degrade to "no cross-cancellation" rather than aborting the
-            # whole review, matching this function's existing best-effort
-            # style everywhere else.
-            try:
+            # Register this fork on the PARENT's _active_children (the same
+            # list interrupt() fans out to for subagent delegation) and
+            # _background_review_agent (a direct pointer the next live turn
+            # uses to proactively cancel a still-running review). Without
+            # this, a review still streaming when the next turn starts races
+            # the live turn against the same session_id/credentials — producing
+            # doubled prompt-token accounting and a Ctrl+C-proof lockup.
+            # Best-effort: agents built without agent_init.py (test stubs)
+            # degrade to "no cross-cancellation" rather than aborting the review.
+            if hasattr(agent, "_background_review_agent"):
                 _br_lock = getattr(agent, "_background_review_lock", None)
                 if _br_lock is not None:
                     with _br_lock:
                         agent._background_review_agent = review_agent
                 else:
                     agent._background_review_agent = review_agent
-            except Exception:
-                logger.debug(
-                    "Could not register review fork for cross-turn "
-                    "cancellation (parent agent missing review-tracking "
-                    "state)", exc_info=True,
-                )
-            try:
+            if hasattr(agent, "_active_children"):
                 _ac_lock = getattr(agent, "_active_children_lock", None)
-                _active_children = getattr(agent, "_active_children", None)
-                if _active_children is not None:
-                    if _ac_lock is not None:
-                        with _ac_lock:
-                            _active_children.append(review_agent)
-                    else:
-                        _active_children.append(review_agent)
-            except Exception:
-                logger.debug(
-                    "Could not register review fork on _active_children "
-                    "(parent agent missing subagent-tracking state)",
-                    exc_info=True,
-                )
+                if _ac_lock is not None:
+                    with _ac_lock:
+                        agent._active_children.append(review_agent)
+                else:
+                    agent._active_children.append(review_agent)
 
             from model_tools import get_tool_definitions
             from hermes_cli.plugins import (

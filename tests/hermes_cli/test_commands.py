@@ -807,6 +807,70 @@ class TestTelegramMenuCommands:
         # No empty string in menu names
         assert "" not in menu_names
 
+    def test_configured_priority_promotes_skill_into_last_menu_slot(
+        self, tmp_path, monkeypatch
+    ):
+        """A prioritized dynamic skill must not be trimmed behind alphabetical peers."""
+        from unittest.mock import patch
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        local_dir = tmp_path / "skills"
+        local_dir.mkdir()
+        fake_cmds = {
+            "/aaa-skill": {
+                "name": "aaa-skill",
+                "description": "Alphabetically first",
+                "skill_md_path": f"{local_dir}/aaa-skill/SKILL.md",
+                "skill_dir": f"{local_dir}/aaa-skill",
+            },
+            "/gym": {
+                "name": "gym",
+                "description": "GymPilot",
+                "skill_md_path": f"{local_dir}/gym/SKILL.md",
+                "skill_dir": f"{local_dir}/gym",
+            },
+        }
+        core_count = len(telegram_bot_commands())
+
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch(
+                "hermes_cli.commands._telegram_effective_priority",
+                return_value=("gym",),
+            ),
+        ):
+            menu, hidden = telegram_menu_commands(max_commands=core_count)
+
+        menu_names = [name for name, _description in menu]
+        assert len(menu_names) == core_count
+        assert menu_names[0] == "gym"
+        assert "aaa_skill" not in menu_names
+        assert hidden == 2
+
+    def test_scalar_configured_priority_is_accepted_as_one_command(self):
+        """The config CLI's scalar value form must work for a single priority."""
+        from unittest.mock import patch
+        from hermes_cli.commands import _telegram_effective_priority
+
+        raw_config = {
+            "platforms": {
+                "telegram": {
+                    "extra": {
+                        "command_menu": {
+                            "priority": "gym",
+                            "priority_mode": "prepend",
+                        }
+                    }
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.read_raw_config", return_value=raw_config):
+            priority = _telegram_effective_priority()
+
+        assert priority[0] == "gym"
+
 
 # ---------------------------------------------------------------------------
 # Backward-compat aliases

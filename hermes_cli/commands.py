@@ -836,6 +836,8 @@ def _telegram_command_menu_config() -> dict[str, Any]:
     raw_priority = menu_cfg.get("priority")
     if isinstance(raw_priority, list):
         priority = [str(item) for item in raw_priority if str(item).strip()]
+    elif isinstance(raw_priority, str) and raw_priority.strip():
+        priority = [raw_priority]
     else:
         priority = []
 
@@ -1091,6 +1093,32 @@ def _collect_gateway_skill_entries(
     # any clamp-induced renames.
     skill_triples = _clamp_command_names(skill_triples, reserved_names)
 
+    # Telegram's configured command-menu priority applies to dynamic skills as
+    # well as core commands. Reorder before trimming so a prioritized skill can
+    # claim a scarce remaining BotCommand slot instead of losing to the
+    # alphabetical default order.
+    if platform == "telegram":
+        priority = {
+            name: index
+            for index, name in enumerate(_telegram_effective_priority())
+        }
+        skill_triples = [
+            entry
+            for original_index, entry in sorted(
+                enumerate(skill_triples),
+                key=lambda item: (
+                    0,
+                    priority[item[1][0]],
+                    item[0],
+                )
+                if item[1][0] in priority
+                else (
+                    1,
+                    item[0],
+                ),
+            )
+        ]
+
     # Skills fill remaining slots — only tier that gets trimmed
     remaining = max(0, max_slots - len(all_entries))
     hidden_count = max(0, len(skill_triples) - remaining)
@@ -1112,7 +1140,12 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
       2. Plugin slash commands (take precedence over skills)
       3. Built-in skill commands (fill remaining slots, alphabetical)
 
-    Skills are the only tier that gets trimmed when the cap is hit.
+    Core, plugin, and skill tiers keep their existing relative order unless a
+    command is named in ``platforms.telegram.extra.command_menu.priority``.
+    Explicit priority is applied to the combined candidate list before the Bot
+    API cap, so a prioritized dynamic command can displace an unprioritized core
+    command when the core tier already fills the menu.
+
     User-installed hub skills are excluded — accessible via /skills.
     Skills disabled for the ``"telegram"`` platform (via ``hermes skills
     config``) are excluded from the menu entirely.
@@ -1121,22 +1154,21 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
         (menu_commands, hidden_count) where hidden_count is the number of
         commands omitted due to the cap.
     """
-    core_commands = _prioritize_telegram_menu_commands(list(telegram_bot_commands()))
+    core_commands = list(telegram_bot_commands())
     reserved_names = {n for n, _ in core_commands}
-    all_commands = list(core_commands)
-    hidden_core_count = max(0, len(all_commands) - max_commands)
-
-    remaining_slots = max(0, max_commands - len(all_commands))
     entries, hidden_count = _collect_gateway_skill_entries(
         platform="telegram",
-        max_slots=remaining_slots,
+        max_slots=max_commands,
         reserved_names=reserved_names,
         desc_limit=40,
         sanitize_name=_sanitize_telegram_name,
     )
-    # Drop the cmd_key — Telegram only needs (name, desc) pairs.
-    all_commands.extend((n, d) for n, d, _k in entries)
-    return all_commands[:max_commands], hidden_count + hidden_core_count
+    # Drop the cmd_key — Telegram only needs (name, desc) pairs. Apply the
+    # configured priority across all tiers before enforcing the global cap.
+    all_commands = core_commands + [(n, d) for n, d, _k in entries]
+    all_commands = _prioritize_telegram_menu_commands(all_commands)
+    overflow_count = max(0, len(all_commands) - max_commands)
+    return all_commands[:max_commands], hidden_count + overflow_count
 
 
 def discord_skill_commands(

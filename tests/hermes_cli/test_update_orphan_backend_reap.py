@@ -49,6 +49,7 @@ def _proc(
     *,
     ppid: int = 0,
     create_time: float = 100.0,
+    parents: list[MagicMock] | None = None,
 ):
     proc = MagicMock()
     proc.pid = pid
@@ -56,6 +57,7 @@ def _proc(
     proc.ppid.return_value = ppid
     proc.create_time.return_value = create_time
     proc.is_running.return_value = True
+    proc.parents.return_value = parents or []
     return proc
 
 
@@ -118,6 +120,59 @@ def test_mixed_holders_keep_refusal():
     with patch.dict(sys.modules, {"psutil": fake}):
         holders = _holders() + [(300, "python.exe", "python.exe some_script.py")]
         assert cli_main._orphaned_desktop_backend_pids(holders) is None
+
+
+def test_orphan_root_plus_managed_runtime_descendant_qualifies():
+    # helix4u's review case (#82179): the scanner returns BOTH the orphaned
+    # serve root and its .hermes-runtime interpreter child. The child's live
+    # parent IS the orphan root, so the set is safe — only the root is
+    # returned (taskkill /T reaps the descendant with it).
+    backend = _proc(200, _SERVE_ARGV, ppid=999)
+    child_argv = [
+        "C:\\hermes\\.hermes-runtime\\python\\generation-1\\python.exe",
+        "worker.py",
+    ]
+    child = _proc(210, child_argv, ppid=200, parents=[backend])
+    fake = _fake_psutil({200: backend, 210: child})
+    with patch.dict(sys.modules, {"psutil": fake}):
+        holders = _holders() + [(210, "python.exe", " ".join(child_argv))]
+        assert cli_main._orphaned_desktop_backend_pids(holders) == [200]
+
+
+def test_descendant_of_grandchild_depth_qualifies():
+    # Descendant two hops below the orphan root (root → child → grandchild):
+    # psutil.parents() walks the full chain, so ancestry still matches.
+    backend = _proc(200, _SERVE_ARGV, ppid=999)
+    mid = _proc(210, ["python.exe", "mid.py"], ppid=200, parents=[backend])
+    grand = _proc(
+        220, ["python.exe", "leaf.py"], ppid=210, parents=[mid, backend]
+    )
+    fake = _fake_psutil({200: backend, 210: mid, 220: grand})
+    with patch.dict(sys.modules, {"psutil": fake}):
+        holders = _holders() + [(220, "python.exe", "python.exe leaf.py")]
+        assert cli_main._orphaned_desktop_backend_pids(holders) == [200]
+
+
+def test_non_descendant_alongside_orphan_root_keeps_refusal():
+    # A stray process that is NOT under the orphan root disqualifies the set
+    # even though an orphan root exists.
+    backend = _proc(200, _SERVE_ARGV, ppid=999)
+    unrelated_parent = _proc(50, ["explorer.exe"])
+    stray = _proc(
+        300, ["python.exe", "stray.py"], ppid=50, parents=[unrelated_parent]
+    )
+    fake = _fake_psutil({50: unrelated_parent, 200: backend, 300: stray})
+    with patch.dict(sys.modules, {"psutil": fake}):
+        holders = _holders() + [(300, "python.exe", "python.exe stray.py")]
+        assert cli_main._orphaned_desktop_backend_pids(holders) is None
+
+
+def test_descendant_exited_between_scan_and_classify_is_skipped():
+    backend = _proc(200, _SERVE_ARGV, ppid=999)
+    fake = _fake_psutil({200: backend})  # descendant 210 already gone
+    with patch.dict(sys.modules, {"psutil": fake}):
+        holders = _holders() + [(210, "python.exe", "python.exe worker.py")]
+        assert cli_main._orphaned_desktop_backend_pids(holders) == [200]
 
 
 def test_holder_gone_between_scan_and_classify_is_skipped():

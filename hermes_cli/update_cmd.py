@@ -3101,17 +3101,33 @@ def _orphaned_desktop_backend_pids(
     - its supervising parent is demonstrably gone: the parent PID no longer
       exists, or the PID was reused (parent created *after* the child).
 
-    A backend whose parent is alive (the Desktop is still open) disqualifies
-    the whole set — the guard must keep refusing exactly as before. Returns
-    ``None`` in that case, or when any holder is not a backend, or when
-    psutil is unavailable (can't prove orphanhood → refuse). Never raises.
+    Tree-aware: the scanner can return an orphaned backend AND one of its
+    managed-runtime descendants (the ``.hermes-runtime`` interpreter child)
+    in the same holder set. That descendant has a live parent — the orphaned
+    backend itself — and isn't a ``serve`` cmdline, so per-process rules
+    would refuse a set that is entirely safe to reap. Holders that sit
+    inside an accepted orphan root's tree are therefore folded into that
+    root (only roots are returned; ``taskkill /T`` reaps the descendants).
+
+    Any other live-parent backend (the Desktop is still open), non-backend
+    holder outside an orphan tree, or unprovable case disqualifies the whole
+    set — the guard must keep refusing exactly as before. Returns ``None``
+    in that case, or when psutil is unavailable (can't prove orphanhood →
+    refuse). Never raises.
     """
     try:
         import psutil  # type: ignore
     except Exception:
         return None
 
-    pids: list[int] = []
+    def _is_backend(argv_low: str) -> bool:
+        return "hermes_cli.main" in argv_low and (
+            " serve" in argv_low or " dashboard" in argv_low
+        )
+
+    # Pass 1: find orphaned backend ROOTS among the holders.
+    roots: list[int] = []
+    remaining: list[tuple[int, str]] = []  # (pid, argv_low) still to justify
     for pid, _name, cmdline in matches:
         argv = cmdline
         try:
@@ -3123,10 +3139,9 @@ def _orphaned_desktop_backend_pids(
         except Exception:
             pass
         low = argv.lower()
-        if "hermes_cli.main" not in low or not (
-            " serve" in low or " dashboard" in low
-        ):
-            return None
+        if not _is_backend(low):
+            remaining.append((int(pid), low))
+            continue
         try:
             proc = psutil.Process(int(pid))
             ppid = proc.ppid()
@@ -3135,13 +3150,36 @@ def _orphaned_desktop_backend_pids(
                 # PID-reuse check: a "parent" created after its child is a
                 # recycled PID, not the real (dead) supervisor.
                 if parent.create_time() <= proc.create_time():
-                    return None
+                    # Live parent — NOT a root. But it may still be a
+                    # descendant of an orphan root: the venv python.exe is
+                    # a trampoline that re-execs the uv-managed interpreter
+                    # with the SAME backend argv, so the worker half of the
+                    # two-process chain lands here. Defer to pass 2 instead
+                    # of refusing outright.
+                    remaining.append((int(pid), low))
+                    continue
         except psutil.NoSuchProcess:
             pass  # parent gone → orphan
         except Exception:
             return None
-        pids.append(int(pid))
-    return pids
+        roots.append(int(pid))
+
+    # Pass 2: every non-backend holder must be a descendant of an accepted
+    # orphan root — then it dies with the root's tree reap. Anything else
+    # (operator REPL, stray script) keeps the refusal.
+    root_set = set(roots)
+    for pid, _low in remaining:
+        if not root_set:
+            return None
+        try:
+            ancestors = {int(a.pid) for a in psutil.Process(pid).parents()}
+        except psutil.NoSuchProcess:
+            continue  # exited already
+        except Exception:
+            return None
+        if not (ancestors & root_set):
+            return None
+    return roots
 
 
 def _stop_process_trees(pids: list[int]) -> None:

@@ -24,8 +24,18 @@ export interface StopBackendChildDeps {
   forceKillProcessTree: (pid: number) => void
 }
 
-export interface KillableChild {
+export interface StopBackendTreesForUpdateDeps {
+  /** Synchronous Windows taskkill /T /F implementation. */
+  forceKillProcessTree: (pid: number) => void
+  /** Clears and stops the desktop's pooled backends. */
+  stopAllPoolBackends: () => void
+}
+
+export interface BackendProcessRoot {
   pid?: number | null
+}
+
+export interface KillableChild extends BackendProcessRoot {
   killed?: boolean
   kill: (signal: string) => void
 }
@@ -52,4 +62,24 @@ export function stopBackendChild(child: KillableChild | null | undefined, deps: 
   } catch {
     // Already gone.
   }
+}
+
+/**
+ * Stop every backend tree owned by a Windows Desktop update hand-off.
+ *
+ * Tree-kill the primary root while its PID is still live, then delegate pool
+ * teardown to the existing routine that tree-kills each pooled root exactly
+ * once before mutating its registry. In particular, do not signal the primary
+ * first: if that root exits before taskkill /T runs, Windows can no longer
+ * enumerate its MCP grandchildren and they survive with the venv locked.
+ */
+export function stopBackendTreesForUpdate(
+  primary: BackendProcessRoot | null | undefined,
+  deps: StopBackendTreesForUpdateDeps
+): void {
+  if (primary && Number.isInteger(primary.pid)) {
+    deps.forceKillProcessTree(primary.pid as number)
+  }
+
+  deps.stopAllPoolBackends()
 }

@@ -206,7 +206,8 @@ import {
   resolveStagedUpdaterBinary,
   resolveUpdateScriptHandoff,
   spawnUpdaterProcess,
-  stagedUpdaterSupportsPrewrittenMarker
+  stagedUpdaterSupportsPrewrittenMarker,
+  wrapHandoffForDetachedConsole
 } from './updater-process'
 import { formatBlockerMessage, formatProbeFailedMessage, scanVenvBlockers } from './venv-blocker-scan'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
@@ -2997,8 +2998,14 @@ async function applyUpdates(opts = {}) {
     let child
 
     if (scriptHandoff) {
-      const scriptArgs = [
-        ...scriptHandoff.args,
+      // A bare detached+hidden powershell spawn silently dies before -File
+      // processing (console-subsystem init failure — see
+      // wrapHandoffForDetachedConsole). Route through `cmd start` so the
+      // script gets its own minimized console and survives our exit. The
+      // wrapper cmd.exe exits immediately, so child.pid is NOT the script's
+      // pid — the script claims the update marker itself with its own $PID
+      // as its first action, and a relaunched Desktop parks on that.
+      const wrapped = wrapHandoffForDetachedConsole(scriptHandoff, [
         '-InstallRoot',
         updateRoot,
         '-Branch',
@@ -3007,9 +3014,9 @@ async function applyUpdates(opts = {}) {
         String(process.pid),
         '-RelaunchExe',
         process.execPath
-      ]
+      ])
 
-      child = spawnUpdaterProcess(scriptHandoff.command, scriptArgs, {
+      child = spawnUpdaterProcess(wrapped.command, wrapped.args, {
         cwd: HERMES_HOME,
         env: {
           ...process.env,
@@ -3020,11 +3027,13 @@ async function applyUpdates(opts = {}) {
         stdio: 'ignore'
       })
 
-      // The script's own pid owns the marker. Unlike the stale-binary path
-      // there is NO adoption hazard: hermes_cli/update_lock.py accepts a live
-      // marker held by a process ANCESTOR (the script is the `hermes update`
-      // child's parent), so the pre-write is always safe here — no
-      // stagedUpdaterSupportsPrewrittenMarker() mtime heuristics needed.
+      // Bridge marker: child.pid is the short-lived cmd.exe WRAPPER, not the
+      // script (see wrapHandoffForDetachedConsole). Write it anyway to cover
+      // the first moments of the hand-off — the script's step 0 overwrites it
+      // with its own live $PID, and if the script never starts the wrapper's
+      // dead pid makes the marker read as stale and self-delete (no wedge).
+      // The `hermes update` child adopts the SCRIPT's claim via
+      // update_lock.py's process-ancestry rule; no mtime heuristics needed.
       if (Number.isInteger(child.pid)) {
         writeUpdateMarker(HERMES_HOME, child.pid)
       }

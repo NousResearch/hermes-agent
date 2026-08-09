@@ -66,6 +66,25 @@ function Remove-Marker {
 try {
     Write-HandoffLog "hand-off start: root=$InstallRoot branch=$Branch desktopPid=$DesktopPid pid=$PID"
 
+    # -- 0. Claim the update marker with OUR pid ---------------------------
+    # The Desktop spawns us through a `cmd start` wrapper (a console-subsystem
+    # child needs its own console to survive the parent's exit), so the pid
+    # the Desktop observed is the short-lived cmd.exe -- useless as a marker
+    # owner. We claim it ourselves as step 0: `hermes update` (our child)
+    # adopts the claim via update_lock.py's process-ancestry rule, and a
+    # relaunched Desktop parks on it (update-marker.ts) instead of spawning a
+    # backend into the update window. Unix seconds + pid, same format as
+    # every other writer.
+    try {
+        $epoch = [int][double]::Parse((Get-Date -UFormat %s), [System.Globalization.CultureInfo]::InvariantCulture)
+        # WriteAllText for byte-exact LF framing: Set-Content/Add-Content emit
+        # CRLF, and the marker contract (Rust/TS/Python readers) is "<pid>\n<ts>\n".
+        [System.IO.File]::WriteAllText($MarkerPath, "$PID`n$epoch`n")
+        Write-HandoffLog "claimed update marker (pid $PID)"
+    } catch {
+        Write-HandoffLog "WARNING: could not write update marker: $($_.Exception.Message)"
+    }
+
     # -- 1. Wait for the Desktop to actually exit -------------------------
     # The Desktop quits right after spawning us, but Electron teardown is
     # asynchronous. Bounded wait; a Desktop that never exits is a bug we

@@ -61,6 +61,36 @@ export function resolveUpdateScriptHandoff(
   }
 }
 
+/**
+ * Wrap a PowerShell hand-off invocation so it survives a detached, hidden
+ * spawn from Electron.
+ *
+ * Verified empirically (2026-08-09, Windows 11): `spawn('powershell', [...,
+ * '-File', script], { detached: true, stdio: 'ignore', windowsHide: true })`
+ * exits 0 WITHOUT executing a single line of the script. powershell.exe is a
+ * console-subsystem binary; detached+windowsHide gives it no console to
+ * attach to, and Windows PowerShell 5.1 dies during console init before
+ * -File processing (the same class of failure as #54220's conhost work, on
+ * the launch side). The same spawn with a visible console, or non-detached,
+ * runs fine — so unit tests and foreground use hide the bug.
+ *
+ * `cmd /c start "" /min powershell ...` was the variant that survived the
+ * full detached+hidden production shape in testing: `start` allocates the
+ * child its own (minimized) console and fully detaches it from cmd.exe,
+ * which exits immediately. The spawned pid is therefore the WRAPPER's —
+ * callers must not use it as a marker owner (the script claims the marker
+ * itself with its own $PID).
+ */
+export function wrapHandoffForDetachedConsole(handoff: UpdateScriptHandoff, extraArgs: string[]): {
+  command: string
+  args: string[]
+} {
+  return {
+    command: 'cmd.exe',
+    args: ['/d', '/s', '/c', 'start', '', '/min', handoff.command, ...handoff.args, ...extraArgs]
+  }
+}
+
 export interface ResolveStagedUpdaterBinaryDeps {
   isWindows?: boolean
   fileExists?: (candidate: string) => boolean

@@ -2577,6 +2577,25 @@ button[data-slot='aui_msg-reactions'] svg {
   border-radius: 0 0 0.75rem 0.75rem;
 }
 
+/* …so the edge it falls back from is the bar's, which is now above it. */
+[data-hud-shell][data-hud-edge='top'] :is([data-slot='composer-bounds'], [data-hud-glass]) {
+  transform-origin: top center;
+}
+
+/* The completion list — `/`, `@`, `:`, and the help hint — hangs off the bar's
+   outer edge, the same side the band is on. It grows UP by default, which is
+   right everywhere the composer has a window above it; parked at the top edge
+   there is nothing up there, so the list rendered off screen and `/` looked
+   dead. Capped to the room below the bar, since the app's own cap assumes a
+   full window. */
+[data-hud-shell][data-hud-edge='top'] [data-slot='composer-completion-drawer'] {
+  top: 100%;
+  bottom: auto;
+  margin-top: 0.25rem;
+  margin-bottom: 0;
+  max-height: calc(100dvh - var(--hud-bar-height, var(--composer-fallback-height)) - 0.75rem);
+}
+
 /* Tighten the thread on every side. The docked chat's gutters (px-6 py-8 plus
    a 1.5rem inline pad) are sized for a full window column; in a bar a few
    lines tall they're most of the surface. Bottom pad drops to a hairline —

@@ -107,11 +107,16 @@ async def test_reader_failure_retires_client_and_rejects_later_work(
     assert proc is not None
     assert reader_task is not None
     try:
-        await client.open_file(str(f), language_id="python")
+        version = await client.open_file(str(f), language_id="python")
         await asyncio.wait_for(asyncio.shield(reader_task), timeout=3.0)
 
         assert not client.is_running
         await asyncio.wait_for(proc.wait(), timeout=3.0)
+        with pytest.raises(LSPProtocolError):
+            await asyncio.wait_for(
+                client.wait_for_diagnostics(str(f), version, timeout=3.0),
+                timeout=0.5,
+            )
         with pytest.raises(LSPProtocolError):
             await asyncio.wait_for(
                 client.open_file(str(f), language_id="python"),

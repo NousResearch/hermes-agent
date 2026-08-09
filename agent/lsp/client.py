@@ -919,6 +919,10 @@ class LSPClient:
         abs_path = os.path.abspath(path)
 
         while True:
+            if not self._connection_is_open():
+                raise LSPProtocolError(
+                    "server connection closed while waiting for diagnostics"
+                )
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
                 return False

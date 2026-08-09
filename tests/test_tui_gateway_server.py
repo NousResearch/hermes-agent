@@ -15440,6 +15440,14 @@ def test_session_branch_full_history_by_default_truncates_by_row_id(monkeypatch,
     at exactly that durable DB row."""
     captured = {}
 
+    # The handler resolves the parent's DB through the cached ``server._db``
+    # handle when the session has no profile home. A earlier test in this
+    # file may have left a real SessionDB cached there — drop it so the
+    # monkeypatched ProfileDB below is what the handler actually gets, and
+    # restore the previous handle afterwards.
+    monkeypatch.setattr(server, "_db", None)
+    monkeypatch.setattr(server, "_db_error", None)
+
     class ProfileDB:
         def __init__(self, db_path=None):
             pass
@@ -15455,7 +15463,15 @@ def test_session_branch_full_history_by_default_truncates_by_row_id(monkeypatch,
 
         def append_messages_batch(self, session_id, messages, **kwargs):
             captured["msgs"] = [dict(m, session_id=session_id) for m in messages]
-            return list(range(1, len(messages) + 1))
+            return len(messages)
+
+        def get_messages_as_conversation(self, session_id, include_row_ids=False, **kwargs):
+            if not include_row_ids:
+                return [dict(m) for m in captured.get("msgs", [])]
+            return [
+                dict(m, _row_id=1000 + i)
+                for i, m in enumerate(captured.get("msgs", []))
+            ]
 
         def set_session_title(self, key, title):
             return True
@@ -15500,34 +15516,53 @@ def test_session_branch_full_history_by_default_truncates_by_row_id(monkeypatch,
         monkeypatch.setattr(server, "_attach_worker", lambda *a, **k: None)
         req = {"id": "1", "method": "session.branch", "params": {"session_id": "parent", "name": "forked"}}
         req["params"].update(params or {})
-        resp = server.handle_request(req)
-        assert "result" in resp, resp
-        return captured["msgs"]
+        captured.pop("msgs", None)
+        response = server.handle_request(req)
+        if "result" in response:
+            child_sid = response["result"]["session_id"]
+            captured["live_history"] = server._sessions[child_sid]["history"]
+        return response
 
     try:
         history = [
             {"role": "user", "content": "q1", "_row_id": 1},
             {"role": "assistant", "content": "a1", "_row_id": 2},
-            {"role": "tool", "content": "t1-result", "_row_id": 3},
             {"role": "user", "content": "q2", "_row_id": 4},
             {"role": "assistant", "content": "a2", "_row_id": 5},
-            {"role": "tool", "content": "t2-result", "_row_id": 6},
         ]
-        # No truncation params → the whole raw history is copied, tool rows
-        # included. (The desktop used to send a merged-message count here,
-        # which sliced history[:4] and lost a2 + t2 — the branch bug.)
-        msgs = _run_branch(history, {"count": 4})
-        assert [m["content"] for m in msgs] == ["q1", "a1", "t1-result", "q2", "a2", "t2-result"]
+        # No truncation params → the whole history is copied. (The desktop
+        # used to send a merged-message count here, which silently dropped
+        # the conversation tail — the branch bug.)
+        resp = _run_branch(history, {"count": 2})
+        assert "result" in resp, resp
+        msgs = captured["msgs"]
+        assert [m["content"] for m in msgs] == ["q1", "a1", "q2", "a2"]
 
-        # Branch from the first assistant reply: up_to_row_id=2 keeps exactly
-        # the rows up to and including that durable row.
-        msgs = _run_branch(history, {"up_to_row_id": 2})
-        assert [m["content"] for m in msgs] == ["q1", "a1", "t1-result"]
+        # Branch from the second user turn: rows up to and including that
+        # bubble's durable row survive.
+        resp = _run_branch(history, {"up_to_row_id": 4})
+        assert "result" in resp, resp
+        msgs = captured["msgs"]
+        assert [m["content"] for m in msgs] == ["q1", "a1", "q2"]
 
-        # A row id that is not in the live history (unflushed turn) falls back
-        # to the full history instead of mis-slicing.
-        msgs = _run_branch(history, {"up_to_row_id": 999})
-        assert len(msgs) == 6
+        # A merged-bubble cut may name a row this projection never carried
+        # (a folded tool row); the ordinal cut still lands between the rows
+        # that bracket it.
+        resp = _run_branch(history, {"up_to_row_id": 3})
+        assert "result" in resp, resp
+        assert [m["content"] for m in captured["msgs"]] == ["q1", "a1"]
+
+        # A row id below every visible row refuses rather than forking an
+        # empty child; an id above every row cannot silently broaden.
+        resp = _run_branch(history, {"up_to_row_id": 0})
+        assert "result" in resp  # ignored: only positive ids address rows
+        assert [m["content"] for m in captured["msgs"]] == ["q1", "a1", "q2", "a2"]
+
+        # A row id from a DIFFERENT (stale) session must fail instead of
+        # silently becoming a full-history branch.
+        resp = _run_branch(history, {"up_to_row_id": 9999})
+        assert resp["error"]["code"] == 4009
+        assert "branch target row not found" in resp["error"]["message"]
     finally:
         for k in list(server._sessions):
             server._sessions.pop(k, None)

@@ -3340,21 +3340,34 @@ def _(rid, params: dict) -> dict:
         # projection (tool rows folded into assistant bubbles), so a "count" of
         # merged messages has no stable mapping onto this raw row history — the
         # desktop's count-based slice silently dropped the conversation tail
-        # (branch context-loss bug). Default (no up_to_row_id) = copy the whole
-        # history; a legacy ``count`` param is ignored for the same reason.
+        # (#80973). Default (no up_to_row_id) = copy the whole history.
+        #
+        # The cut is ORDINAL ("keep rows up to the last row whose id <= X"),
+        # not an exact-member match: a merged bubble's terminal id may belong
+        # to a row this projection filtered out (a folded tool row, a hidden
+        # marker), and requiring that exact row would wrongly reject the fork.
+        # Rows carry monotonically increasing ids in insertion order, so the
+        # ordinal cut lands on exactly the last visible row of the clicked
+        # bubble's span.
         up_to_row_id = params.get("up_to_row_id")
-        if isinstance(up_to_row_id, int) and up_to_row_id > 0:
-            for _idx, msg in enumerate(history):
-                if msg.get("_row_id") == up_to_row_id:
-                    # Include the target row plus any tool rows that follow it:
-                    # the desktop's merged bubbles can carry a tool result
-                    # paired to the target's tool_calls, and an orphaned
-                    # tool_calls tail breaks replay.
-                    _end = _idx + 1
-                    while _end < len(history) and history[_end].get("role") == "tool":
-                        _end += 1
-                    history = history[:_end]
-                    break
+        if isinstance(up_to_row_id, bool) or not isinstance(up_to_row_id, int):
+            up_to_row_id = None
+        if up_to_row_id is not None and up_to_row_id > 0:
+            row_ids = [
+                row_id
+                for message in history
+                if isinstance(row_id := message.get("_row_id"), int) and not isinstance(row_id, bool)
+            ]
+            # Outside the id range this transcript ever persisted, the target
+            # cannot belong to this session — it is stale or foreign. Refuse
+            # rather than silently forking the whole (or an empty) history.
+            if not row_ids or up_to_row_id < min(row_ids) or up_to_row_id > max(row_ids):
+                return _err(rid, 4009, f"branch target row not found: {up_to_row_id}")
+            history = [
+                message
+                for message in history
+                if not isinstance(message.get("_row_id"), int) or message.get("_row_id") <= up_to_row_id
+            ]
         new_key = _new_session_key()
         new_sid = uuid.uuid4().hex[:8]
         source = _session_source(session)
@@ -3422,6 +3435,23 @@ def _(rid, params: dict) -> dict:
                 ],
                 chunk_rows=500,
             )
+            # The copied rows received NEW SQLite ids in the CHILD's database.
+            # Re-address the in-memory history with them: the child branched
+            # again later (a second-generation branch) sends the terminal row's
+            # id, and an id that only exists in the parent's DB would be
+            # rejected as "branch target row not found". Read back with
+            # include_row_ids — the same rows, in insertion order, stamped
+            # with their new durable ids (#80973).
+            try:
+                child_rows = db.get_messages_as_conversation(new_key, include_row_ids=True)
+                if len(child_rows) == len(history):
+                    for message, row in zip(history, child_rows):
+                        child_id = row.get("_row_id")
+
+                        if isinstance(child_id, int):
+                            message["_row_id"] = child_id
+            except Exception:
+                logger.debug("branch child row-id restamp failed", exc_info=True)
             db.set_session_title(new_key, title)
         except Exception as e:
             if lease is not None:

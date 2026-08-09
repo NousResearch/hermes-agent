@@ -30,6 +30,7 @@ import {
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
   removeRepresentedLocalLiveProjection,
+  resolveDurableRowIdForMessage,
   resolveResumedBusy,
   selectBranchMessages,
   sessionMatchesStoredId,
@@ -327,6 +328,28 @@ describe('selectBranchMessages', () => {
       'latest question',
       'latest answer'
     ])
+  })
+})
+
+describe('resolveDurableRowIdForMessage', () => {
+  it('resolves the matching occurrence when live messages have ephemeral ids', () => {
+    const liveMessages = [msg('u1', 'user', 'repeat'), msg('a1', 'assistant', 'first'), msg('u2', 'user', 'repeat')]
+
+    const persistedMessages = [
+      { id: 11, role: 'user' as const, content: 'repeat' },
+      { id: 12, role: 'assistant' as const, content: 'first' },
+      { id: 13, role: 'user' as const, content: 'repeat' }
+    ]
+
+    expect(resolveDurableRowIdForMessage(liveMessages, 2, persistedMessages)).toBe(13)
+  })
+
+  it('returns undefined when the selected message is not in the persisted transcript', () => {
+    expect(
+      resolveDurableRowIdForMessage([msg('a1', 'assistant', 'live only')], 0, [
+        { id: 11, role: 'user', content: 'older' }
+      ])
+    ).toBeUndefined()
   })
 })
 

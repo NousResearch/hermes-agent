@@ -167,6 +167,48 @@ describe('performScopedFind', () => {
     expect(result.activeOrdinal).toBe(2)
   })
 
+  it('re-wraps when a stale mark from an earlier query survives (fast path, #81778 review)', () => {
+    // Regression: a mark left over from an earlier query can match the
+    // current query case-insensitively even though the mark set no longer
+    // covers every occurrence — the genuine mark was destroyed by a
+    // re-render, the stale one survived, and the current query's live
+    // matches arrived unwrapped. The fast path must not step on the stale
+    // set — it must drop it and re-wrap, or the live match stays dark.
+    const surface = plantSurface('surface', '<p>hermes</p>')
+    performScopedFind(surface, 'hermes', { forward: true, findNext: false })
+    // Re-render replaces the paragraph (destroying the genuine mark)…
+    surface.querySelector('p')!.innerHTML = 'beta'
+    // …but a stale mark survives the edit (external write / raced cleanup),
+    // and the live content that matches the current query arrives unwrapped.
+    surface.insertAdjacentHTML('beforeend', '<mark class="find-hit">Hermes</mark>')
+    surface.insertAdjacentHTML('beforeend', '<p>hermes</p>')
+
+    const result = performScopedFind(surface, 'hermes', { forward: true, findNext: true })
+
+    // Re-wrapped: the stale mark's text is re-wrapped as a live occurrence
+    // and the previously unwrapped match is wrapped too.
+    expect(result.count).toBe(2)
+    const marks = [...surface.querySelectorAll('mark.find-hit')]
+    expect(marks.length).toBe(2)
+    expect(marks.every(mark => mark.textContent.toLowerCase() === 'hermes')).toBe(true)
+  })
+
+  it('re-wraps when new unmarked content contains the query (fast path, #81778 review)', () => {
+    // Regression: content appended after the last wrap (streamed tokens,
+    // external writes) carries no mark, so the existing marks no longer
+    // cover every occurrence. Stepping must re-wrap instead of walking the
+    // stale set, or the new match would never be highlighted.
+    const surface = plantSurface('surface', '<p>needle</p>')
+    performScopedFind(surface, 'needle', { forward: true, findNext: false })
+
+    surface.insertAdjacentHTML('beforeend', '<p>needle</p>')
+
+    const result = performScopedFind(surface, 'needle', { forward: true, findNext: true })
+
+    expect(result.count).toBe(2)
+    expect(surface.querySelectorAll('mark.find-hit').length).toBe(2)
+  })
+
   it('re-wraps when the query changes (marks are not reused across queries)', () => {
     const surface = plantSurface('surface', '<p>alpha beta alpha</p>')
     performScopedFind(surface, 'alpha', { forward: true, findNext: false })

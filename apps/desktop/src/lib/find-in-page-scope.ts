@@ -246,6 +246,39 @@ function shouldSkipElement(el: Element): boolean {
   return false
 }
 
+/**
+ * True when `root` contains an occurrence of `query` that is NOT inside one
+ * of our find-hit marks. Read-only counterpart of `highlightMatches` with
+ * the identical skip rules, used by the findNext fast path to verify that
+ * the existing marks still cover every match — a stale mark from an earlier
+ * query can satisfy the per-mark text comparison yet leave live occurrences
+ * unwrapped, and stepping on that set would never highlight them.
+ */
+function hasUnmarkedMatch(root: Element, query: string): boolean {
+  const lowerQuery = query.toLowerCase()
+
+  if (!lowerQuery) {
+    return false
+  }
+
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text
+    const parent = node.parentElement
+
+    if (parent && shouldSkipElement(parent)) {
+      continue
+    }
+
+    if (node.nodeValue?.toLowerCase().includes(lowerQuery)) {
+      return true
+    }
+  }
+
+  return false
+}
+
 /** Remove every find-hit mark we previously added, restoring original text. */
 function clearHighlights(root: Element): void {
   const marks = root.querySelectorAll<HTMLElement>(`mark.${HIGHLIGHT_CLASS}`)
@@ -327,10 +360,17 @@ export function performScopedFind(
   // case-insensitive comparison, every Enter/⌘G step re-wraps all
   // highlights, `data-find-active` is lost on the fresh DOM, and the
   // active ordinal resets to 1 forever (triage finding on #81778).
+  // The per-mark comparison alone is not enough: a stale mark from an
+  // earlier query that survived a raced re-wrap (or external DOM writes)
+  // can match the current query case-insensitively while the mark set no
+  // longer covers every match — stepping would walk old highlights and
+  // never wrap the live ones. Only step when the marks match AND cover
+  // every occurrence (review finding on #81778).
   const sameQuery =
     options.findNext &&
     existingMarks.length > 0 &&
-    existingMarks.every(mark => mark.textContent.toLowerCase() === query.toLowerCase())
+    existingMarks.every(mark => mark.textContent.toLowerCase() === query.toLowerCase()) &&
+    !hasUnmarkedMatch(root, query)
 
   let marks = existingMarks
 

@@ -241,6 +241,35 @@ def test_unroutable_raw_completion_stays_durable_pending(
     assert record["delivery_attempts"] == 0
 
 
+def test_unparseable_key_with_persisted_source_still_delivers(
+    isolated_registry,
+):
+    """Persisted gateway origin outranks the opaque shape of a legacy key."""
+    event = _raw_async_event("deleg_legacy_persisted_route")
+    _persist_pending_completion(event)
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+    )
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(
+        adapter,
+        origins={event["session_key"]: SimpleNamespace(origin=source)},
+    )
+
+    result = asyncio.run(
+        runner._deliver_completion_notification("completion", dict(event))
+    )
+
+    assert result is True
+    adapter.handle_message.assert_awaited_once()
+    record = _durable(event["delegation_id"])
+    assert record["delivery_state"] == "delivered"
+    assert record["delivery_attempts"] == 1
+
+
 def test_raw_cli_completion_stays_pending_even_with_api_server_route(
     monkeypatch, isolated_registry,
 ):

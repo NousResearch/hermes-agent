@@ -24915,32 +24915,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         from gateway.wake import adapter_supports_push
 
-        # Only an explicit origin_session_id proves that an opaque session
-        # belongs to api_server. A raw session_key without that stamp may be
-        # owned by CLI/TUI (or predate the stamp) and must not be self-posted
-        # merely because this gateway happens to host an api_server adapter.
-        raw_sid = str(evt.get("origin_session_id") or "").strip()
-        if raw_sid:
-            adapter = self.adapters.get(Platform.API_SERVER)
-            return adapter is not None and not adapter_supports_push(adapter)
-
-        session_key = str(evt.get("session_key") or "").strip()
-        if session_key and _parse_session_key(session_key) is None:
-            return False
-
+        # Mirror _inject_watch_notification's precedence: a persisted/cached
+        # structured source is positive route proof even when the legacy
+        # session key itself is opaque.
         source = self._build_process_event_source(evt)
-        if source is None:
-            return False
+        if source is not None:
+            platform_name = (
+                source.platform.value
+                if hasattr(source.platform, "value")
+                else str(source.platform)
+            )
+            return any(
+                platform.value == platform_name and adapter is not None
+                for platform, adapter in self.adapters.items()
+            )
 
-        platform_name = (
-            source.platform.value
-            if hasattr(source.platform, "value")
-            else str(source.platform)
-        )
-        return any(
-            platform.value == platform_name and adapter is not None
-            for platform, adapter in self.adapters.items()
-        )
+        # Without a structured source, only an explicit origin_session_id
+        # proves that an opaque session belongs to api_server. A raw
+        # session_key alone may be owned by CLI/TUI (or predate the stamp).
+        raw_sid = str(evt.get("origin_session_id") or "").strip()
+        if not raw_sid:
+            return False
+        adapter = self.adapters.get(Platform.API_SERVER)
+        return adapter is not None and not adapter_supports_push(adapter)
 
     @staticmethod
     def _completion_delivery_identity(evt: dict) -> Optional[tuple[str, str, object]]:

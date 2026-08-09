@@ -120,6 +120,11 @@ def _source_files() -> list[Path]:
         rel = path.relative_to(REPO_ROOT)
         if rel.parts and rel.parts[0] in _EXEMPT_DIRS:
             continue
+        # Profile-scoped skills moved under agents/<profile>/skills during the
+        # fleet refactor. They remain standalone user-invoked skill scripts,
+        # with the same runtime-resolution exemption as top-level skills/.
+        if "skills" in rel.parts or "optional-skills" in rel.parts:
+            continue
         files.append(path)
     return files
 
